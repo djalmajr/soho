@@ -193,16 +193,14 @@ func TestConfigGetUnknownKeyAndUsage(t *testing.T) {
 }
 
 func TestConfigGetUnreadableUserFileDiesLikeTheJob(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads every file; the unreadable-file case needs an unprivileged user")
-	}
+	// A directory where the user file belongs cannot be read as a file on
+	// any platform, root included (a chmod 0 file stays readable on
+	// Windows and for root).
 	env, cwd := commandFixture(t)
 	userFile := platform.UserConfigPath(platform.Current(), env)
-	writeConfigFile(t, userFile, "job_wake_cmd=wake\n")
-	if err := os.Chmod(userFile, 0); err != nil {
+	if err := os.MkdirAll(userFile, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(userFile, 0o600) })
 	code, out, errOut := runIn(t, []string{"config", "get", "job_wake_cmd"}, env, cwd)
 	if code != 2 || out != "" || errOut != "soho: job: cannot read user configuration\n" {
 		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
