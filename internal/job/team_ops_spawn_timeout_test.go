@@ -49,6 +49,29 @@ func TestSelfCLISpawnTimeoutFollowsSpawnTimeout(t *testing.T) {
 			t.Fatalf("spawnTimeout = %s, want %s", got, defaultTeamOpsTimeout)
 		}
 	})
+	t.Run("a huge spawn_timeout saturates instead of wrapping into no deadline", func(t *testing.T) {
+		got := selfCLI{Exe: "x", Dir: t.TempDir(), Env: env("9223372036854")}.spawnTimeout()
+		if want := defaultTeamOpsTimeout + 24*time.Hour; got != want {
+			t.Fatalf("spawnTimeout = %s, want %s", got, want)
+		}
+		// The platform turns the millisecond deadline back into a duration.
+		if back := time.Duration(timeoutMs(got)) * time.Millisecond; back != got {
+			t.Fatalf("deadline round trip = %s, want %s", back, got)
+		}
+	})
+	t.Run("a bounded ceiling between 120 s and the spawn bound caps only the spawn", func(t *testing.T) {
+		bounded := selfCLI{Exe: "x", Dir: t.TempDir(), Env: env("")}.bounded(150 * time.Second).(selfCLI)
+		if got := bounded.spawnTimeout(); got != 150*time.Second {
+			t.Fatalf("bounded(150s) spawnTimeout = %s, want 150s", got)
+		}
+		if got := bounded.timeout(); got != defaultTeamOpsTimeout {
+			t.Fatalf("bounded(150s) timeout = %s, want %s for the other steps", got, defaultTeamOpsTimeout)
+		}
+		wide := selfCLI{Exe: "x", Dir: t.TempDir(), Env: env("")}.bounded(time.Hour).(selfCLI)
+		if got := wide.spawnTimeout(); got != defaultTeamOpsTimeout+60*time.Second {
+			t.Fatalf("bounded(1h) spawnTimeout = %s, want %s", got, defaultTeamOpsTimeout+60*time.Second)
+		}
+	})
 	t.Run("an explicit Timeout stays the bound", func(t *testing.T) {
 		c := selfCLI{Exe: "x", Dir: t.TempDir(), Env: env("90000"), Timeout: 30 * time.Second}
 		if got := c.spawnTimeout(); got != 30*time.Second {

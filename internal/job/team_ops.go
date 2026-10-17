@@ -65,6 +65,9 @@ type selfCLI struct {
 	// process tree). The supervisor sets it on the in-flight delivery the
 	// pending cancel interrupts.
 	Ctx context.Context
+	// ceiling is the lowest bound a bounded() call asked for: no command,
+	// the spawn's longer default included, runs past it. Zero is none.
+	ceiling time.Duration
 }
 
 func (c selfCLI) timeout() time.Duration {
@@ -84,6 +87,9 @@ func (c selfCLI) bounded(d time.Duration) teamOps {
 	if d > 0 && d < c.timeout() {
 		c.Timeout = d
 	}
+	if d > 0 && (c.ceiling <= 0 || d < c.ceiling) {
+		c.ceiling = d
+	}
 	return c
 }
 
@@ -102,12 +108,29 @@ func (c selfCLI) interruptible(ctx context.Context) teamOps {
 // spawn_timeout for the agent to start, so the default adapter allows that
 // wait on top of its own bound for the rest of the spawn; a slow machine
 // raises spawn_timeout, not a fixed job constant. An explicit Timeout (a
-// bounded adapter, a test) stays the bound, and a configuration that cannot
-// be read keeps the team-ops bound: the supervisor must not die over it.
-func (c selfCLI) spawnTimeout() (bound time.Duration) {
-	if c.Timeout > 0 {
-		return c.Timeout
+// test) stays the bound, a bounded() ceiling caps it, and a configuration
+// that cannot be read keeps the team-ops bound: the supervisor must not die
+// over it.
+func (c selfCLI) spawnTimeout() time.Duration {
+	bound := c.Timeout
+	if bound <= 0 {
+		bound = configuredSpawnBound(c.Env, c.Dir)
 	}
+	if c.ceiling > 0 && bound > c.ceiling {
+		bound = c.ceiling
+	}
+	return bound
+}
+
+// maxSpawnTimeoutMS caps the spawn_timeout the spawn step adds: 24 h, the
+// ceiling of job_timeout, since no job outlives it. A larger value
+// saturates to it, so the millisecond deadline the platform converts back
+// to a time.Duration never overflows into "no deadline".
+const maxSpawnTimeoutMS = int64(24 * time.Hour / time.Millisecond)
+
+// configuredSpawnBound is the team-ops bound plus the job worktree's
+// spawn_timeout.
+func configuredSpawnBound(env platform.Env, dir string) (bound time.Duration) {
 	defer func() {
 		if value := recover(); value != nil {
 			if _, ok := value.(*platform.ExitError); !ok {
@@ -116,10 +139,13 @@ func (c selfCLI) spawnTimeout() (bound time.Duration) {
 			bound = defaultTeamOpsTimeout
 		}
 	}()
-	cfg := core.LoadConfig(c.Env, c.Dir)
-	ms, ok := core.ParseTimeoutMS(core.Cfg(&cfg, "spawn_timeout", "60000", c.Env))
+	cfg := core.LoadConfig(env, dir)
+	ms, ok := core.ParseTimeoutMS(core.Cfg(&cfg, "spawn_timeout", "60000", env))
 	if !ok || ms <= 0 {
 		return defaultTeamOpsTimeout
+	}
+	if ms > maxSpawnTimeoutMS {
+		ms = maxSpawnTimeoutMS
 	}
 	return defaultTeamOpsTimeout + time.Duration(ms)*time.Millisecond
 }

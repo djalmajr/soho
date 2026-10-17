@@ -176,7 +176,8 @@ family_check=strict
 settled_grace=45
 
 # Milliseconds `spawn` waits for the agent CLI to become interactive. A job's
-# supervisor gives its spawn of the job orchestrator this long plus 120 s.
+# supervisor gives its spawn of the job orchestrator this long (at most
+# 24 h) plus 120 s.
 spawn_timeout=60000
 
 # Milliseconds `dispatch`/`wait` allow per brief when the role sets no `timeout`.
