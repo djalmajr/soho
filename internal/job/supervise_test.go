@@ -952,6 +952,29 @@ func TestSuperviseStepFailures(t *testing.T) {
 		}
 	})
 
+	t.Run("a spawn failure with a detail writes the detail to the friction log only (DJA-395)", func(t *testing.T) {
+		store, _, clock, team := supFixture(t)
+		team.spawnErr = &ExitError{Code: ExitHerdr, Msg: "job: cannot spawn the job orchestrator", Detail: "exit 7: agent start failed"}
+		var friction []string
+		sup := supSupervisor(store, clock, team, &friction)
+		if exit, err := sup.Run(); err != nil || exit != ExitHerdr {
+			t.Fatalf("Run = %d, %v", exit, err)
+		}
+		st := supState(t, store)
+		if st.Motivo == nil || *st.Motivo != "job: cannot spawn the job orchestrator" {
+			t.Fatalf("the motivo must stay fixed: %+v", st)
+		}
+		found := false
+		for _, line := range friction {
+			if line == "job: spawn the job orchestrator failed: exit 7: agent start failed" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("friction = %v", friction)
+		}
+	})
+
 	t.Run("a dispatch failure fails the job with exit 4 and keeps the orchestrator", func(t *testing.T) {
 		store, jobDir, clock, team := supFixture(t)
 		team.dispatchErr = errors.New("dispatch failed")

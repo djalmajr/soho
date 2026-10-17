@@ -1,6 +1,7 @@
 package job
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -808,6 +809,11 @@ func (s *Supervisor) appendWorkerSpawnedOnce(name string) error {
 func (s *Supervisor) spawnOrchestrator() (string, bool, error) {
 	name, err := s.Ops.SpawnOrchestrator()
 	if err != nil {
+		// The message stays fixed; the cause goes to the job's friction log.
+		var exitErr *ExitError
+		if errors.As(err, &exitErr) && exitErr.Detail != "" {
+			s.frictionf("job: spawn the job orchestrator failed: " + exitErr.Detail)
+		}
 		if err := s.fail("job: cannot spawn the job orchestrator", ExitHerdr); err != nil {
 			return "", true, err
 		}

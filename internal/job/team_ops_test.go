@@ -200,6 +200,20 @@ func TestTeamOpsSpawnOrchestrator(t *testing.T) {
 		_, err := f.cli().SpawnOrchestrator()
 		wantExit(t, err, ExitHerdr, "job: cannot spawn the job orchestrator")
 	})
+
+	t.Run("a failed spawn keeps its exit and stderr tail as the error's detail (DJA-395)", func(t *testing.T) {
+		f := newTeamOpsFix(t, []fakecli.Rule{
+			{ArgvPrefix: true, Argv: []string{"spawn", "job-orchestrator"}, Code: 7, Stderr: "first\n\nsecond\nthird\r\nsoho: spawn: agent start failed\n"},
+		})
+		_, err := f.cli().SpawnOrchestrator()
+		wantExit(t, err, ExitHerdr, "job: cannot spawn the job orchestrator")
+		if got := err.(*ExitError).Detail; got != "exit 7: second | third | soho: spawn: agent start failed" {
+			t.Fatalf("detail = %q", got)
+		}
+		if strings.Contains(err.Error(), "agent start failed") {
+			t.Fatalf("the detail leaked into the message: %q", err.Error())
+		}
+	})
 }
 
 func TestTeamOpsRoster(t *testing.T) {
