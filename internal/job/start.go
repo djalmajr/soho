@@ -393,6 +393,15 @@ func runMode(mode string) string {
 	return "worktree"
 }
 
+// The job's automatic close settings defaults: the values used when the
+// layered configuration carries no job_auto_cleanup / job_human_input_minutes.
+const (
+	// DefaultJobAutoCleanup is the default job_auto_cleanup.
+	DefaultJobAutoCleanup = "on"
+	// DefaultJobHumanInputMinutes is the default job_human_input_minutes.
+	DefaultJobHumanInputMinutes = "5"
+)
+
 // autoCloseSettings resolves the job's automatic close settings from the
 // layered configuration of the job's checkout (core.LoadConfig over the
 // checkout: defaults, user, project) plus the SOHO_* environment
@@ -401,11 +410,11 @@ func runMode(mode string) string {
 // 2 naming the key, the same failure job_finishing_timeout uses.
 func autoCloseSettings(env platform.Env, checkout string) (string, int, error) {
 	ctx := core.LoadConfig(env, checkout)
-	autoCleanup := core.Cfg(&ctx, "job_auto_cleanup", "on", env)
+	autoCleanup := core.Cfg(&ctx, "job_auto_cleanup", DefaultJobAutoCleanup, env)
 	if !core.ConfigValueOk("job_auto_cleanup", autoCleanup, env, "") {
 		return "", 0, exitErr(2, "job: invalid job_auto_cleanup '"+autoCleanup+"'")
 	}
-	raw := core.Cfg(&ctx, "job_human_input_minutes", "5", env)
+	raw := core.Cfg(&ctx, "job_human_input_minutes", DefaultJobHumanInputMinutes, env)
 	if !core.ConfigValueOk("job_human_input_minutes", raw, env, "") {
 		return "", 0, exitErr(2, "job: invalid job_human_input_minutes '"+raw+"'")
 	}

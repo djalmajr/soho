@@ -452,7 +452,7 @@ func TestNowriteRejectsConfigSetWithTheNewMessage(t *testing.T) {
 	env, cwd := commandFixture(t)
 	env["SOHO_NOWRITE"] = "1"
 	code, out, errOut := runIn(t, []string{"config", "set", "panes", "3"}, env, cwd)
-	wantErr := "soho: soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json'; rejected: config (3 extra arguments not allowed) — unset SOHO_NOWRITE to write\n"
+	wantErr := "soho: soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json'; rejected: config (3 extra arguments not allowed) — unset SOHO_NOWRITE to write\n"
 	if code != 2 || out != "" || errOut != wantErr {
 		t.Fatalf("config set under NOWRITE code=%d out=%q err=%q", code, out, errOut)
 	}
