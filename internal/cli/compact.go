@@ -15,8 +15,7 @@ import (
 	"github.com/djalmajr/soho/internal/text"
 )
 
-const compactDefaultTimeoutMS = 300000
-
+// compactPollInterval is the pause between the compact's screen reads.
 const compactPollInterval = 2 * time.Second
 
 // compactComposerWindow is how long the composer confirm waits, after each
@@ -120,7 +119,9 @@ func compactEndings(kind string) []compactEnding {
 
 func cmdCompact(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	agent := ""
-	timeoutMS := int64(compactDefaultTimeoutMS)
+	// Without --timeout the compact_timeout key sets the limit; the flag
+	// below overrides it.
+	timeoutMS := core.CompactTimeoutMS(ctx, env)
 	for i := 0; i < len(argv); i++ {
 		switch argv[i] {
 		case "--timeout":

@@ -80,7 +80,7 @@ var ConfigScalarKeys = []string{
 	"multi_role", "panes", "lanes", "pane_mode", "flex_extra", "flex_roles",
 	"worker_context", "brief_lint", "brief_lint_aliases", "brief_lint_placeholders", "approvals",
 	"auto_approve", "max_auto_approvals", "max_effort", "family_check",
-	"settled_grace", "spawn_timeout", "dispatch_timeout", "provider_retries",
+	"settled_grace", "spawn_timeout", "dispatch_timeout", "compact_timeout", "provider_retries",
 	"provider_retry_delay", "provider_capacity_texts", "provider_error_texts",
 	"prompt_check_seconds", "prompt_settle_seconds", "stuck_warn_minutes", "context_warn_percent", "state_dir",
 	"report_language", "notify", "feedback", "feedback_repo", "feedback_dir", "feedback_to",
@@ -306,6 +306,23 @@ func Cfg(ctx *Config, key, fallback string, env platform.Env) string {
 	return fallback
 }
 
+// CompactTimeoutDefaultMS is the compact phase's timeout when the
+// compact_timeout key is absent or holds a value the reader cannot use.
+const CompactTimeoutDefaultMS int64 = 300000
+
+// CompactTimeoutMS is the effective compact phase timeout in milliseconds,
+// shared by the dispatch's --compact phase and soho compact without
+// --timeout: the compact_timeout key read the usual way (the SOHO_
+// environment over the file layers) in the --timeout grammar (milliseconds,
+// or a number with an ms, s, m or h unit via ParseTimeoutMS). An invalid or
+// <= 0 value from any layer falls back to the default.
+func CompactTimeoutMS(ctx *Config, env platform.Env) int64 {
+	if ms, ok := ParseTimeoutMS(Cfg(ctx, "compact_timeout", "", env)); ok && ms > 0 {
+		return ms
+	}
+	return CompactTimeoutDefaultMS
+}
+
 func CfgSource(ctx *Config, key string, env platform.Env) string {
 	if env.Get("SOHO_"+strings.ToUpper(key)) != "" {
 		return "env"
@@ -384,6 +401,11 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return value == "inherit" || value == "none"
 	case key == "job_timeout":
 		return jobTimeoutValueOk(value)
+	case key == "compact_timeout":
+		// The --timeout grammar (ParseTimeoutMS) with the key's own bound:
+		// a timeout of zero or less is a refusal, not a value.
+		ms, ok := ParseTimeoutMS(value)
+		return ok && ms > 0
 	case key == "job_blocked_timeout":
 		return jobBlockedTimeoutValueOk(value)
 	case key == "job_finishing_timeout":

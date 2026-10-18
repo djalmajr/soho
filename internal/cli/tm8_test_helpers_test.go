@@ -149,7 +149,8 @@ func runTM8ConfigGolden(t *testing.T, name string) {
 	// The DJA-392 oracle likewise adapts the frozen config listing that now
 	// ends with the two pressure refusal keys. The DJA-393 pane_columns
 	// oracle adapts the config listing that now shows the declared-columns
-	// keys after split_min_pane.
+	// keys after split_min_pane, and the DJA-399 oracle adds
+	// the compact_timeout line after dispatch_timeout.
 	for i := range want.Files {
 		want.Files[i].Rel = testutil.RewriteSohoName(want.Files[i].Rel)
 		if want.Files[i].Content != nil {
@@ -157,6 +158,7 @@ func runTM8ConfigGolden(t *testing.T, name string) {
 			*want.Files[i].Content = testutil.RewritePressureRefusal(*want.Files[i].Content)
 			*want.Files[i].Content = testutil.RewritePaneColumns(*want.Files[i].Content)
 			*want.Files[i].Content = testutil.RewriteFootprint(*want.Files[i].Content)
+			*want.Files[i].Content = testutil.RewriteCompactTimeout(*want.Files[i].Content)
 		}
 	}
 	for i := range want.Steps {
@@ -164,10 +166,12 @@ func runTM8ConfigGolden(t *testing.T, name string) {
 		want.Steps[i].Out = testutil.RewritePressureRefusal(want.Steps[i].Out)
 		want.Steps[i].Out = testutil.RewritePaneColumns(want.Steps[i].Out)
 		want.Steps[i].Out = testutil.RewriteFootprint(want.Steps[i].Out)
+		want.Steps[i].Out = testutil.RewriteCompactTimeout(want.Steps[i].Out)
 		want.Steps[i].Err = testutil.RewriteSohoName(want.Steps[i].Err)
 		want.Steps[i].Err = testutil.RewritePressureRefusal(want.Steps[i].Err)
 		want.Steps[i].Err = testutil.RewritePaneColumns(want.Steps[i].Err)
 		want.Steps[i].Err = testutil.RewriteFootprint(want.Steps[i].Err)
+		want.Steps[i].Err = testutil.RewriteCompactTimeout(want.Steps[i].Err)
 	}
 	for i, step := range want.Steps {
 		stepEnv := env.Clone()
