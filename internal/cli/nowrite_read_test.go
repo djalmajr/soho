@@ -32,7 +32,11 @@ const nowriteRosterRow = "worker               implementer        grok     p-wor
 
 const nowriteExplainIdle = "soho runs a small team of agents in Herdr panels. You stay in this panel and lead. Each other panel is one agent with one job: writing code (research included) or reviewing. Those agents never commit or push. You can watch a panel or close it. Each assistant spends the quota of its own account. Nothing is running yet. To start, describe the work here. The first time, you are asked how many panels to open and which assistant each job should use, and nothing opens until you agree. Four panels are recommended: two write code in parallel and one reviews; that uses more quota. Three panels are lighter: one writes and one reviews. With two panels one writes and the review happens here.\n"
 
-const nowriteExplainRunning = "Panels: 4.\nbuild: implementer, grok, model grok-4.7, idle\nreview: not started\n\nRecommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here.\n"
+// nowriteExplainRunning is the byte-exact explain output of the sample
+// state: the two registered copies on disk make the footprint line due (it
+// sits after the lane lines and before the blank line); the sizes are
+// deterministic (the fixture files are fixed-length).
+const nowriteExplainRunning = "Panels: 4.\nbuild: implementer, grok, model grok-4.7, idle\nreview: not started\nFootprint: 4.5 KB on disk (copies 3.0 KB in 2, state 1.5 KB, scratch 0 B); no registered process running.\n\nRecommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here.\n"
 
 const nowriteGcNoneLine = "resource pressure: none (disk 60% free, swap 30% used)\n"
 

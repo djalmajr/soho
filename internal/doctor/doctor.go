@@ -443,7 +443,40 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 		s.Ok(fmt.Sprintf("config: herd_label='%s' herd_label_max=%d", core.Cfg(ctx, "herd_label", "{roles}", env), layout.HerdLabelMax(ctx, env)))
 	}
 	checkSetup(ctx, env, cwd, s)
+	doctorFootprint(ctx, env, cwd, s)
 	fmt.Fprintf(out, "first_run: %t\n%d ok, %d warning(s)\n", ProjectIsFirstRun(ctx, env, cwd), s.OK, s.Warn)
+}
+
+// doctorFootprint warns when the team's total on-disk footprint (the
+// registered copies on disk plus the state dir plus the workspace
+// scratch, measured read-only) is at or above footprint_warn_gb (1 GB =
+// 1024^3 bytes). With the limit at 0 or unreadable, nothing is measured
+// or printed; outside a Herdr workspace there is no team footprint to
+// measure, and the check stays silent.
+func doctorFootprint(ctx *core.Config, env platform.Env, cwd string, s *Say) {
+	workspaceID := env.Get("HERDR_WORKSPACE_ID")
+	if workspaceID == "" {
+		return
+	}
+	raw := core.Cfg(ctx, "footprint_warn_gb", "5", env)
+	limit, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || limit <= 0 {
+		return
+	}
+	fp := core.MeasureFootprint(core.StateDirPath(ctx, env, cwd), workspaceID, env)
+	if line := doctorFootprintLine(fp, raw); line != "" {
+		s.Warning(line)
+	}
+}
+
+// doctorFootprintLine is the exact warning (or "" when it is not due):
+// the limit must be above 0 and the total at or above it.
+func doctorFootprintLine(fp *core.Footprint, raw string) string {
+	limit, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || !core.FootprintLimitReached(fp.Total, limit) {
+		return ""
+	}
+	return "footprint: " + core.FootprintDiskText(fp) + " is at or above footprint_warn_gb=" + raw + "; run 'soho gc' or release idle workers with --close"
 }
 
 // herdrContextCheck verifies the context HERDR_ENV=1 claims: the inherited

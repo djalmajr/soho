@@ -247,6 +247,9 @@ pressure_refuse_disk_free_percent=5
 # Same as the disk refusal limit, for swap in use. 0 = off.
 pressure_refuse_swap_percent=95
 
+# Total team footprint (registered copies on disk + state dir + workspace scratch) at which `doctor` warns. 1 GB = 1024^3 bytes; 0 = off.
+footprint_warn_gb=5
+
 # State root: briefs, reports, roster. Relative paths are under the repo root.
 # Must be writable by every worker sandbox (Codex denies .agents/ and .codex/).
 state_dir=.soho
