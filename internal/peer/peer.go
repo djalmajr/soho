@@ -919,13 +919,6 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O("status", result.Status, "assignment", assignment, "type", messageType)))
 		return 0
 	}
-	// The caller-pane check runs after the arguments are valid and before
-	// the first Herdr call that acts on the caller's pane (DJA-394): a
-	// usage error never calls Herdr, and a forked session must not send
-	// in the name of the pane its environment claims. The assignment
-	// branch above delivers through peer.SendAssignmentMessage, which
-	// gates itself after its own validation.
-	core.CallerGate("send", ctx, env, cwd)
 	id := RandomPeerID()
 	// Decide with StateInSkill/StateRootPath before any StateDirPath/StateRoot/
 	// WorkspaceID, so the refusal leaves no side effect (no .gitignore append,
@@ -941,6 +934,14 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	// unchanged; the short-timeout warning still goes to stderr, only
 	// without the log file.
 	_, _, formerWaiting := core.FormerStateWaiting(ctx, env, cwd)
+	// The caller-pane check runs after the arguments are valid and the
+	// state refusals above, and before the first Herdr call that acts on
+	// the caller's pane (DJA-394): a usage error never calls Herdr, and a
+	// forked session must not send in the name of the pane its
+	// environment claims. The assignment branch above delivers through
+	// peer.SendAssignmentMessage, which gates itself after its own
+	// validation.
+	core.CallerGate("send", ctx, env, cwd)
 	senderRef, senderName, senderKind, senderRole, senderModel := SenderInfo(ctx, env, cwd, formerWaiting)
 	if !formerWaiting {
 		if _, err := os.ReadFile(filepath.Join(core.StateDirPath(ctx, env, cwd), "agents.tsv")); err != nil && !os.IsNotExist(err) {

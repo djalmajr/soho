@@ -577,6 +577,14 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 	return o
 }
 
+func approvalsOk(value string) bool {
+	return value == "ask" || value == "edits" || value == "full"
+}
+
+func effortOk(value string) bool {
+	return text.HasWord(strings.Join(core.EffortLadder, " "), value)
+}
+
 func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	// Machine under pressure: warn before opening more work (stderr only;
 	// the spawn proceeds as usual).
@@ -589,18 +597,33 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	if err != nil || !info.IsDir() {
 		core.DieFriction("spawn: --cwd "+o.cwd+" is not a directory", 2, "", "")
 	}
+	// The values of the flags that only the argv decides are checked here,
+	// before the caller-pane check: a usage error never calls Herdr. The
+	// resolved values (role, lane, config) are checked where they resolve,
+	// below, with the same messages.
+	if o.approvals != "" && !approvalsOk(o.approvals) {
+		core.DieFriction(fmt.Sprintf("invalid approvals '%s' (ask|edits|full)", o.approvals), 2, "", "")
+	}
+	if o.timeout != "" {
+		if _, ok := core.ParseTimeoutMS(o.timeout); !ok {
+			core.DieFriction(fmt.Sprintf("spawn: --timeout expects milliseconds or a duration such as 90s, 30m or 2h, got '%s'", o.timeout), 2, "", "spawn")
+		}
+	}
+	if o.effort != "" && !effortOk(o.effort) {
+		core.DieFriction(fmt.Sprintf("invalid effort '%s' (low|medium|high|xhigh|max)", o.effort), 2, "", "")
+	}
+	if o.role == "planner" {
+		core.DieFriction("spawn planner: the orchestrator is the planner and does not open a pane. Plan in this session.", 12, "", "")
+	}
 	// The caller-pane check runs after the arguments are valid and before
 	// the first Herdr call that acts on the claimed pane (DJA-394): a
 	// usage error never calls Herdr, and a forked session must not open
 	// panes in the name of the pane its environment claims. It also
-	// covers the run and reopen paths, which open panes through
-	// CmdSpawn.
+	// covers the run path and, for reopen, the second look of the same
+	// memo (the reopen checks before it releases the worker).
 	core.CallerGate("spawn", ctx, env, cwd)
 	EnsureOrchestratorName(ctx, env, cwd, "spawn")
 	core.ResolveRole(o.role, env, cwd)
-	if o.role == "planner" {
-		core.DieFriction("spawn planner: the orchestrator is the planner and does not open a pane. Plan in this session.", 12, "", "")
-	}
 	res := core.ResolveRoleSettings(o.role, ctx, env, cwd, core.RoleFlags{Kind: o.kind, Model: o.model, Effort: o.effort, Approvals: o.approvals})
 	lane, kind := res.Lane, res.Kind
 	if lane == "" && core.LanesEnabled(ctx, env) {
@@ -621,7 +644,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	}
 	o.effort, o.model, o.approvals = res.Effort, res.ModelSpec, res.Approvals
 	modelSpec := o.model
-	if o.approvals != "ask" && o.approvals != "edits" && o.approvals != "full" {
+	if !approvalsOk(o.approvals) {
 		core.DieFriction(fmt.Sprintf("invalid approvals '%s' (ask|edits|full)", o.approvals), 2, "", "")
 	}
 	// DJA-392: the per-role MCP server choice — flag > lane.<n>.mcp >
@@ -641,7 +664,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		o.timeout = strconv.FormatInt(ms, 10)
 	}
 	if o.effort != "" {
-		if !text.HasWord(strings.Join(core.EffortLadder, " "), o.effort) {
+		if !effortOk(o.effort) {
 			core.DieFriction(fmt.Sprintf("invalid effort '%s' (low|medium|high|xhigh|max)", o.effort), 2, "", "")
 		}
 		clamped := clampSpawnEffort(o.effort, kind, core.Cfg(ctx, "max_effort", "max", env))

@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/djalmajr/soho/internal/herdr"
@@ -52,6 +53,18 @@ const callerGateFix = " Run soho from the pane that hosts this agent, or set cal
 // A mismatch with refuse records the line in the command's friction log
 // and exits 2 without changing anything; with warn it logs the line and
 // returns so the command proceeds.
+//
+// The refusal comes after the state refusals (the state dir inside the
+// skill, the former state dir waiting for the setup): with either one the
+// line goes to stderr only, without resolving the state dir or writing
+// the friction log. Otherwise the log directory is created if it is
+// missing (a first invocation in a workspace without state) so the
+// refusal is recorded; the roster and every other state file are left
+// alone. The `cli.Run` state skeleton (briefs, reports, wait and the
+// roster header) that some commands get before their handler predates
+// the gate and is outside this guarantee: a refusal never appends a
+// roster line, event, delivery or message, nor changes a pane or a state
+// that already existed.
 func CallerGate(command string, ctx *Config, env platform.Env, cwd string) {
 	if ctx == nil {
 		ctx = &Config{}
@@ -67,11 +80,27 @@ func CallerGate(command string, ctx *Config, env platform.Env, cwd string) {
 	if res.State != herdr.CallerMismatch {
 		return
 	}
-	logFile := filepath.Join(StateDirPath(ctx, env, cwd), "friction.log")
+	logFile := ""
+	if !callerGateStateless(ctx, env, cwd) {
+		logFile = filepath.Join(StateDirPath(ctx, env, cwd), "friction.log")
+		// Only the directory that holds the log: no roster, no other file.
+		_ = os.MkdirAll(filepath.Dir(logFile), 0o777)
+	}
 	if mode == "refuse" {
 		message := command + ": " + callerGateLine(res) + "Nothing was changed." + callerGateFix
 		RecordFrictionError(message, 2, logFile, command)
 		platform.Die(message, 2)
 	}
 	Warn(command+": "+callerGateLine(res)+"Continuing because caller_check=warn."+callerGateFix, logFile, command)
+}
+
+// callerGateStateless reports the two cases where the state dir is not
+// resolved or written: inside the soho skill, or the former state dir
+// still waiting for `soho setup`.
+func callerGateStateless(ctx *Config, env platform.Env, cwd string) bool {
+	if StateInSkill(ctx, env, cwd) != "" {
+		return true
+	}
+	_, _, waiting := FormerStateWaiting(ctx, env, cwd)
+	return waiting
 }
