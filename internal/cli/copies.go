@@ -167,6 +167,11 @@ var errCopyChanged = errors.New("changed after the check")
 // validated directory.
 var removeCopyHook func(path string)
 
+// removeMarkerHook runs between the copy's removal and its marker's; tests
+// swap the parent there to prove the marker's removal stays bound to the
+// verified directory too.
+var removeMarkerHook func(parent string)
+
 // removeCopy runs the (test-only) hook and the descriptor-bound removal.
 func removeCopy(resolved string, parentInfo fs.FileInfo) error {
 	if removeCopyHook != nil {
@@ -181,7 +186,10 @@ func removeCopy(resolved string, parentInfo fs.FileInfo) error {
 // is the same file (os.SameFile) as the parent the check validated and the
 // entry inside it is a directory, not a symlink; a failed proof removes
 // nothing and returns errCopyChanged (the copy stays, reported as
-// "changed after the check").
+// "changed after the check"). The copy's origin marker goes with it through
+// the same verified parent descriptor, best effort and only when it is a
+// regular file: a parent swapped after the copy's removal cannot redirect
+// the marker's removal outside that directory either.
 func removeVerifiedCopy(resolved string, parentInfo fs.FileInfo) error {
 	parent := filepath.Dir(resolved)
 	base := filepath.Base(resolved)
@@ -204,7 +212,17 @@ func removeVerifiedCopy(resolved string, parentInfo fs.FileInfo) error {
 	if err != nil || entry.Mode()&fs.ModeSymlink != 0 || !entry.IsDir() {
 		return errCopyChanged
 	}
-	return root.RemoveAll(base)
+	if err := root.RemoveAll(base); err != nil {
+		return err
+	}
+	if removeMarkerHook != nil {
+		removeMarkerHook(parent)
+	}
+	marker := originMarkerPath(base)
+	if info, err := root.Lstat(marker); err == nil && info.Mode().IsRegular() {
+		_ = root.Remove(marker)
+	}
+	return nil
 }
 
 // rosterAgentForPane returns the roster name whose pane is pane, or "".
@@ -550,7 +568,6 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			keptCopyError(cand.path, err)
 			continue
 		}
-		removeOriginMarker(resolved)
 		removedLines[cand.path] = true
 		removedAny = true
 		freed += cand.size
@@ -584,7 +601,6 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 					keptCopyError(entry.path, err)
 					continue
 				}
-				removeOriginMarker(resolved)
 				removedAny = true
 				freed += entry.size
 				_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", entry.path, humanSize(entry.size))
@@ -775,7 +791,9 @@ func readOriginMarker(markerPath string) (project, source string, ok bool) {
 	if err != nil {
 		return "", "", false
 	}
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	// Exactly three lines: only the third line's own terminator is dropped,
+	// so a blank fourth line (or any extra line) is malformed.
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 	if len(lines) != 3 {
 		return "", "", false
 	}
@@ -812,19 +830,6 @@ func sameOriginProject(marker, current string) bool {
 		return strings.EqualFold(marker, current)
 	}
 	return marker == current
-}
-
-// removeOriginMarker removes the marker beside a removed copy when it is a
-// regular file (never a symlink). Best effort: the marker's removal never
-// changes the copy's removal outcome (an orphaned marker is out of this
-// slice's scope).
-func removeOriginMarker(copyPath string) {
-	marker := originMarkerPath(copyPath)
-	info, err := os.Lstat(marker)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return
-	}
-	_ = os.Remove(marker)
 }
 
 // gcUnregistered lists the soho-mutation-* directories directly below

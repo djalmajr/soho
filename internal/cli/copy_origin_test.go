@@ -317,11 +317,15 @@ func TestGcUnregisteredOrigin(t *testing.T) {
 		if err := os.WriteFile(empty+".soho-origin", []byte("project=\nsource="+f.repo+"\ncreated=2026-01-01T00:00:00Z\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		blank := mkOldUnregCopy(t, f.tmp, "soho-mutation-blank-fourth-line", 40)
+		if err := os.WriteFile(blank+".soho-origin", []byte("project="+gitCommonDirOf(t, f.repo, f.env)+"\nsource="+f.repo+"\ncreated=2026-01-01T00:00:00Z\n\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		code, out, errOut := f.run(t, f.env, "gc")
 		if code != 0 || errOut != "" {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
-		for _, path := range []string{valid, short, swapped, empty} {
+		for _, path := range []string{valid, short, swapped, empty, blank} {
 			if !strings.Contains(out, path+"  40 B  3h  no origin marker\n") {
 				t.Fatalf("%s is not no origin marker:\n%s", path, out)
 			}
@@ -396,4 +400,53 @@ func TestRegisteredCopyRemovalDropsTheMarker(t *testing.T) {
 			t.Fatalf("the marker beside the released copy was not removed: %v", err)
 		}
 	})
+}
+
+// DJA-391 review: the marker leaves through the same verified parent
+// descriptor as the copy. A parent swapped for a symlink between the copy's
+// removal and the marker's never redirects the marker's removal outside the
+// verified directory.
+func TestMarkerRemovalStaysInTheVerifiedParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need elevation on Windows without developer mode")
+	}
+	root := t.TempDir()
+	parent := filepath.Join(root, "tmp")
+	hidden := filepath.Join(root, "tmp-hidden")
+	outside := filepath.Join(root, "outside")
+	for _, dir := range []string{filepath.Join(parent, "copy"), outside} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, marker := range []string{filepath.Join(parent, "copy.soho-origin"), filepath.Join(outside, "copy.soho-origin")} {
+		if err := os.WriteFile(marker, []byte("marker\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parentInfo, err := statByHandle(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { removeMarkerHook = nil })
+	removeMarkerHook = func(string) {
+		if err := os.Rename(parent, hidden); err != nil {
+			t.Error(err)
+		}
+		if err := os.Symlink(outside, parent); err != nil {
+			t.Error(err)
+		}
+	}
+	if err := removeVerifiedCopy(filepath.Join(parent, "copy"), parentInfo); err != nil {
+		t.Fatalf("removeVerifiedCopy: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "copy.soho-origin")); err != nil {
+		t.Fatalf("the marker outside the verified parent was removed: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(hidden, "copy.soho-origin")); !os.IsNotExist(err) {
+		t.Fatalf("the removed copy's own marker is still there (err=%v)", err)
+	}
+	if _, err := os.Lstat(filepath.Join(hidden, "copy")); !os.IsNotExist(err) {
+		t.Fatalf("the copy is still there (err=%v)", err)
+	}
 }
