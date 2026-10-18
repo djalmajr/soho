@@ -690,11 +690,17 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 				ok = waitWorkingTurnEnd(agent, preSeq, time.Duration(settleSecs)*time.Second, env) &&
 					waitDispatchArrival(window, env, arrived)
 			}
-			if !ok {
+			if !ok && noWait {
 				return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, true, "the working target showed no prompt evidence")
 			}
-			st := herdr.AgentState(agent, env, herdr.Timeout, nil)
-			if !(nonEmpty(report) || ((st.State == "working" || st.State == "blocked") && preSeq != "" && seqString(st.Seq) != "" && preSeq != seqString(st.Seq))) {
+			if !ok {
+				// A target that was already working may have taken the prompt without
+				// showing it (a codex right after spawn --fresh): the blocking dispatch
+				// records the marker and the warning as --no-wait does, then waits for
+				// the report the way soho wait would, which reads that marker.
+				markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA, forEntries, env, true)
+				warnNotReceived(agent, "the working target showed no prompt evidence", true, true)
+			} else if st := herdr.AgentState(agent, env, herdr.Timeout, nil); !(nonEmpty(report) || ((st.State == "working" || st.State == "blocked") && preSeq != "" && seqString(st.Seq) != "" && preSeq != seqString(st.Seq))) {
 				status = "queued"
 				if err := writeDispatchSidecarFor(forEntries, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "queued", session); err != nil {
 					core.Warn(fmt.Sprintf("could not record the queued arrival in the attempt sidecar %s: %s; the dispatch result stands", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
@@ -1175,6 +1181,16 @@ func dispatchCursorStartupRefusal(agent, role, kind, composed, report, taskRepor
 }
 func dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA string, forEntries []any, env platform.Env, wasWorking bool, why string) int {
 	_ = lane
+	markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA, forEntries, env, wasWorking)
+	obj := jsonjs.O("wait_status", "not-received", "agent", agent, "role", role, "kind", kind, "composed_prompt", composed, "report", report, "task_report", taskReport, "report_exists", nonEmpty(report))
+	fmt.Fprintln(platform.Stdout, jsonjs.Stringify(obj))
+	warnNotReceived(agent, why, wasWorking, false)
+	return 15
+}
+
+// markNotReceived records the not-received arrival in the attempt sidecar and
+// writes wait/<agent>.not-received, which the next wait reads.
+func markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA string, forEntries []any, env platform.Env, wasWorking bool) {
 	if err := writeDispatchSidecarFor(forEntries, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "not-received", session); err != nil {
 		core.Warn(fmt.Sprintf("could not record the not-received arrival in the attempt sidecar %s: %s; the dispatch result stands", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 	}
@@ -1193,14 +1209,19 @@ func dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, si
 	}
 	marker += "\n"
 	_ = os.WriteFile(filepath.Join(sd, "wait", agent+".not-received"), []byte(marker), 0o666)
-	obj := jsonjs.O("wait_status", "not-received", "agent", agent, "role", role, "kind", kind, "composed_prompt", composed, "report", report, "task_report", taskReport, "report_exists", nonEmpty(report))
-	fmt.Fprintln(platform.Stdout, jsonjs.Stringify(obj))
+}
+
+// warnNotReceived warns that the prompt was not confirmed; waiting is set when
+// the blocking dispatch goes on to wait for the report instead of exiting 15.
+func warnNotReceived(agent, why string, wasWorking, waiting bool) {
 	warning := fmt.Sprintf("prompt to '%s' was not received after %s; read the pane (herdr agent read %s --source visible) before sending anything else", agent, why, agent)
 	if wasWorking {
 		warning = fmt.Sprintf("prompt to '%s' not confirmed: it was working and shows no sign of the prompt; no key was sent. Read the pane before sending anything else.", agent)
 	}
+	if waiting {
+		warning += " Waiting for its report as soho wait would."
+	}
 	core.Warn(warning, frictionLogPath, "dispatch")
-	return 15
 }
 
 func emitDispatchResult(agent, role, kind, composed, report, taskReport, status string, amend bool, last *jsonjs.Object, waitCode int, sd string, enterSent, resent bool) int {
