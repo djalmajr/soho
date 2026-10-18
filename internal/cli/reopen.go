@@ -55,6 +55,11 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	}
 	role, wkind, model, wdir, native := field(3), field(2), field(8), field(6), field(13)
 	effort := field(14)
+	// DJA-392 fatia 2 R2: the roster's last field carries the worker's
+	// effective MCP choice; reopen forwards it so the respawn keeps the MCP
+	// it was opened with. A row without the field (predating it) passes no
+	// --mcp and the normal resolution decides, as in a fresh open.
+	mcp := field(15)
 
 	releaseArgs := []string{agent, "--close"}
 	if force {
@@ -78,6 +83,9 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	}
 	if effort != "" {
 		spawnArgs = append(spawnArgs, "--effort", effort)
+	}
+	if mcp != "" {
+		spawnArgs = append(spawnArgs, "--mcp", mcp)
 	}
 	if native != "" {
 		spawnArgs = append(spawnArgs, "--")

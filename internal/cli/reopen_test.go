@@ -152,7 +152,10 @@ func TestReopenClosesAndReopensWithRosterValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(roster), "\n") != 2 || !strings.Contains(string(roster), "worker\tp-new\tgrok\timplementer") || !strings.Contains(string(roster), "\tgrok-4.7\t") || !strings.HasSuffix(strings.TrimSpace(string(roster)), "high") {
+	if strings.Count(string(roster), "\n") != 2 || !strings.Contains(string(roster), "worker\tp-new\tgrok\timplementer") || !strings.Contains(string(roster), "\tgrok-4.7\t") || !strings.HasSuffix(strings.TrimSpace(string(roster)), "high\tnone") {
+		// DJA-392 fatia 2 R2: the row ends with the effective MCP choice.
+		// The 15-field row predates it, so reopen passes no --mcp and the
+		// implementer frontmatter (mcp: none) decides: the row records none.
 		t.Fatalf("roster=%q", roster)
 	}
 }

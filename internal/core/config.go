@@ -100,7 +100,7 @@ var jobMachineKeys = []string{
 var KnownKinds = []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode"}
 var EffortLadder = []string{"low", "medium", "high", "xhigh", "max"}
 
-var dottedKeyRE = regexp.MustCompile(`^(?:role\.[a-z][a-z0-9_-]*\.(?:kind|model|effort|args)|lane\.[a-z][a-z0-9_-]*\.(?:roles|kind|model|effort|approvals|panes|args)|model\.[a-z][a-z0-9_.-]+|effort\.[a-z][a-z0-9_-]+|context_window\.[a-z][a-z0-9_-]+|args\.[a-z][a-z0-9_-]+|worker_messages\.rules\.[a-z][a-z0-9_]*\.(?:from|to|types|scope|enabled))$`)
+var dottedKeyRE = regexp.MustCompile(`^(?:role\.[a-z][a-z0-9_-]*\.(?:kind|model|effort|mcp|args)|lane\.[a-z][a-z0-9_-]*\.(?:roles|kind|model|effort|approvals|panes|args|mcp)|model\.[a-z][a-z0-9_.-]+|effort\.[a-z][a-z0-9_-]+|context_window\.[a-z][a-z0-9_-]+|args\.[a-z][a-z0-9_-]+|worker_messages\.rules\.[a-z][a-z0-9_]*\.(?:from|to|types|scope|enabled))$`)
 var decimalRE = regexp.MustCompile(`^[0-9]+$`)
 var positiveDecimalRE = regexp.MustCompile(`^[1-9][0-9]*$`)
 
@@ -375,6 +375,8 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return ConfigRolesOk(value, env, cwd)
 	case strings.HasPrefix(key, "lane.") && strings.HasSuffix(key, ".effort"):
 		return contains(EffortLadder, value)
+	case strings.HasPrefix(key, "role.") && strings.HasSuffix(key, ".mcp"), strings.HasPrefix(key, "lane.") && strings.HasSuffix(key, ".mcp"):
+		return value == "inherit" || value == "none"
 	case key == "job_timeout":
 		return jobTimeoutValueOk(value)
 	case key == "job_blocked_timeout":

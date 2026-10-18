@@ -847,6 +847,19 @@ func runRetirementDispatchScenario(t *testing.T, goldens map[string]json.RawMess
 		// only the anchored name/message forms, everything else is
 		// byte-identical.
 		wantOut, wantErr := testutil.RewriteSohoName(step.Out), testutil.RewriteSohoName(step.Err)
+		// DJA-392 intentional contract adaptation: roles with mcp=none add
+		// the kind's MCP-off flag after the effort args; the frozen bytes
+		// are unchanged.
+		if adapted, adErr := testutil.RewriteMcpSpawnJSON(wantOut); adErr != nil {
+			t.Fatalf("DJA-392 spawn JSON adaptation: %s", adErr)
+		} else {
+			wantOut = adapted
+		}
+		if adaptedErr, adErr := testutil.RewriteMcpErr(wantErr, wantOut); adErr != nil {
+			t.Fatalf("DJA-392 dispatch stderr adaptation: %s", adErr)
+		} else {
+			wantErr = adaptedErr
+		}
 		errOut = f.norm(normalizeParityError(errOut))
 		if code != step.RC || out != wantOut || errOut != wantErr {
 			t.Fatalf("step %d args=%v: code=%d want %d; first stdout diff: %s; stderr=%q want %q",
@@ -857,6 +870,11 @@ func runRetirementDispatchScenario(t *testing.T, goldens map[string]json.RawMess
 		// one joined-argv line per call (an empty log is an empty slice).
 		if wantRaw, ok := stored.StepFiles[i]["herdr.log"]; ok {
 			wantRaw = testutil.RewriteSohoName(wantRaw)
+			if adapted, adErr := testutil.RewriteMcpAgentStartLog(wantRaw); adErr != nil {
+				t.Fatalf("DJA-392 dispatch log adaptation: %s", adErr)
+			} else {
+				wantRaw = adapted
+			}
 			want := []string{}
 			if trimmed := strings.TrimSuffix(wantRaw, "\n"); trimmed != "" {
 				want = strings.Split(trimmed, "\n")
@@ -1369,6 +1387,19 @@ func runRetirementRunWait(t *testing.T, goldens map[string]json.RawMessage) {
 	// only the anchored name/message forms, everything else is
 	// byte-identical.
 	wantOut, wantErr := testutil.RewriteSohoName(step.Out), testutil.RewriteSohoName(step.Err)
+	// DJA-392 intentional contract adaptation: roles with mcp=none add the
+	// kind's MCP-off flag after the effort args; the frozen bytes are
+	// unchanged.
+	if adapted, adErr := testutil.RewriteMcpSpawnJSON(wantOut); adErr != nil {
+		t.Fatalf("DJA-392 spawn JSON adaptation: %s", adErr)
+	} else {
+		wantOut = adapted
+	}
+	if adaptedErr, adErr := testutil.RewriteMcpErr(wantErr, wantOut); adErr != nil {
+		t.Fatalf("DJA-392 run-wait stderr adaptation: %s", adErr)
+	} else {
+		wantErr = adaptedErr
+	}
 	errOut = f.norm(normalizeParityError(errOut))
 	if code != step.RC || out != wantOut || errOut != wantErr {
 		t.Fatalf("step 0 args=%v: code=%d want %d; first stdout diff: %s; stderr=%q want %q",
@@ -1377,6 +1408,11 @@ func runRetirementRunWait(t *testing.T, goldens map[string]json.RawMessage) {
 	stepOuts := []string{out}
 	if wantRaw, ok := stored.StepFiles[0]["herdr.log"]; ok {
 		wantRaw = testutil.RewriteSohoName(wantRaw)
+		if adapted, adErr := testutil.RewriteMcpAgentStartLog(wantRaw); adErr != nil {
+			t.Fatalf("DJA-392 run-wait log adaptation: %s", adErr)
+		} else {
+			wantRaw = adapted
+		}
 		want := strings.Split(strings.TrimSuffix(wantRaw, "\n"), "\n")
 		if got := f.herdrLogLines(t); !reflect.DeepEqual(got, want) {
 			t.Fatalf("herdr call log:\ngot  %v\nwant %v", got, want)
@@ -1402,6 +1438,16 @@ func checkDispatchFinalFiles(t *testing.T, f *retirementFixture, stored retireDi
 		if key == "herdr.log" {
 			continue
 		}
+		if key == "state/ws/agents.tsv" {
+			// DJA-392 fatia 2 R2: the spawn records the effective MCP
+			// choice as the roster's last field; adapt the frozen rows the
+			// scenario's run spawned (the frozen bytes stay unchanged).
+			adapted, adErr := testutil.RewriteMcpRoster(want, testutil.McpSpawnedAgents(stepOuts...))
+			if adErr != nil {
+				t.Fatalf("DJA-392 R2 roster adaptation for %s: %s", key, adErr)
+			}
+			want = adapted
+		}
 		got, ok := final[key]
 		if !ok {
 			t.Fatalf("missing state file %s (have %v)", key, sortedKeys(final))
@@ -1420,6 +1466,12 @@ func checkDispatchFinalFiles(t *testing.T, f *retirementFixture, stored retireDi
 	}
 	for key := range final {
 		if _, ok := wantFiles[key]; !ok {
+			// DJA-392 intentional contract adaptation: the fresh-spawn MCP
+			// warning is the only friction line the frozen scenarios can
+			// gain; anything else is still a failure.
+			if testutil.IsMcpFrictionLog(key, final[key]) {
+				continue
+			}
 			t.Fatalf("unexpected state file %s: %q (the legacy run left no such file)", key, final[key])
 		}
 	}

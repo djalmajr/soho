@@ -88,7 +88,9 @@ func TestSpawnMapsConfiguredArgumentsAndWritesRoster(t *testing.T) {
 		t.Fatal(err)
 	}
 	row := strings.Split(strings.TrimSpace(string(roster)), "\n")
-	if len(row) != 2 || !strings.HasSuffix(row[1], "\t--config-arg value --role-arg\thigh") {
+	// DJA-392 fatia 2 R2: the row's last column is the effective MCP
+	// choice; the worker role has no mcp key, so it records inherit.
+	if len(row) != 2 || !strings.HasSuffix(row[1], "\t--config-arg value --role-arg\thigh\tinherit") {
 		t.Fatalf("roster=%q", roster)
 	}
 	for _, call := range calls {

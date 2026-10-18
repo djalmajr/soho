@@ -2,6 +2,7 @@
 name: reviewer
 description: Code review for correctness — patch-anchored, evidence-backed findings the author would want fixed before merge. Read-only.
 kind: codex
+mcp: none
 alternatives: [claude]
 effort: high
 mode: read-only
@@ -10,6 +11,7 @@ timeout: 1800000
 
 Identify bugs in the change under review that the author would want fixed before merge.
 
+Use the project's default build cache (or the one the brief names) when the review needs a build; never create a cache or build-output directory per run or slice.
 <procedure>
 1. View the patch (`git diff <base>...`, `git diff --staged`, or the range in the brief) and read the modified files for full context. `git diff` omits untracked files: list them with `git status --short` and read each new file directly.
 2. For every new type, variant, event, command, or message that crosses a module boundary, locate the **consuming dispatch point** (switch, router, handler registry) even when it is outside the diff. A silent fall-through there is a defect.

@@ -76,8 +76,14 @@ func TestTM11KindsCommandParity(t *testing.T) {
 				code, out, errOut := runIn(t, want.Args, stepEnv, cwd)
 				out = strings.ReplaceAll(out, root, "<ROOT>")
 				errOut = strings.ReplaceAll(normalizeParityError(errOut), root, "<ROOT>")
-				if code != want.RC || out != want.Out || errOut != want.Err {
-					t.Fatalf("step %d args=%v\ncode=%d want=%d\nstdout=%q\nwant=%q\nstderr=%q\nwant=%q", i, want.Args, code, want.RC, out, want.Out, errOut, want.Err)
+				// DJA-392 intentional contract adaptation: the kinds table
+				// gains the MCP column; the frozen bytes are unchanged.
+				wantOut, adErr := testutil.RewriteMcpKindsTable(want.Out)
+				if adErr != nil {
+					t.Fatalf("DJA-392 kinds adaptation: %s", adErr)
+				}
+				if code != want.RC || out != wantOut || errOut != want.Err {
+					t.Fatalf("step %d args=%v\ncode=%d want=%d\nstdout=%q\nwant=%q\nstderr=%q\nwant=%q", i, want.Args, code, want.RC, out, wantOut, errOut, want.Err)
 				}
 			}
 			for _, expected := range golden.Files {

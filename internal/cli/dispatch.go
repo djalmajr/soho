@@ -2078,7 +2078,7 @@ func cmdRun(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 func splitRunArgs(argv []string) ([]string, []string, bool) {
 	spawnArgs, dispatchArgs := []string{}, []string{}
 	noWait := false
-	valueFlags := map[string]bool{"--name": true, "--kind": true, "--direction": true, "--ratio": true, "--cwd": true, "--pane": true, "--effort": true, "--model": true, "--approvals": true, "--tab-label": true}
+	valueFlags := map[string]bool{"--name": true, "--kind": true, "--direction": true, "--ratio": true, "--cwd": true, "--pane": true, "--effort": true, "--model": true, "--approvals": true, "--tab-label": true, "--mcp": true}
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
 		if a == "--" {

@@ -132,7 +132,7 @@ func burstAgentStarts(calls []fakecli.Call) []string {
 }
 
 func TestSpawnBurstContract(t *testing.T) {
-	t.Run("flex docs capacity 0 opens a burst worker with the exact 15-column roster row", func(t *testing.T) {
+	t.Run("flex docs capacity 0 opens a burst worker with the exact 16-column roster row", func(t *testing.T) {
 		// (a) the docs lane holds no resident worker (capacity 0): the
 		// documenter opens a temporary (burst) worker.
 		f := burstFixture(t, nil)
@@ -156,8 +156,10 @@ func TestSpawnBurstContract(t *testing.T) {
 			t.Fatalf("the roster gained %d rows, want exactly one: %v", len(rows), rows)
 		}
 		fields := strings.Split(rows[0], "\t")
-		if len(fields) != 15 {
-			t.Fatalf("the burst row has %d columns, want 15 (13 present even when empty): %q", len(fields), rows[0])
+		// DJA-392 fatia 2 R2: the last column is the effective MCP choice
+		// (the documenter frontmatter mcp: none).
+		if len(fields) != 16 {
+			t.Fatalf("the burst row has %d columns, want 16 (13 present even when empty): %q", len(fields), rows[0])
 		}
 		if fields[0] != "docs" || fields[11] != "docs" {
 			t.Fatalf("lane column: %q", rows[0])
@@ -174,6 +176,9 @@ func TestSpawnBurstContract(t *testing.T) {
 		}
 		if fields[14] != wantEffort {
 			t.Fatalf("roster column 15 %q is not the JSON effort %q", fields[14], effort)
+		}
+		if fields[15] != "none" {
+			t.Fatalf("roster column 16 (MCP) %q is not the documenter frontmatter none", fields[15])
 		}
 		starts := burstAgentStarts(calls)
 		if len(starts) != 1 || starts[0] != "docs" {

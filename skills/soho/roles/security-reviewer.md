@@ -2,6 +2,7 @@
 name: security-reviewer
 description: Read-only security review of a change or area — authn/authz, input handling, secrets, injection, data exposure — with evidence and CWE references.
 kind: claude
+mcp: none
 alternatives: [codex]
 effort: high
 mode: read-only

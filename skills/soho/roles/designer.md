@@ -10,6 +10,7 @@ timeout: 1800000
 
 Implement (or refine) the UI described in the brief, composing with the project's design system rather than around it.
 
+Use the project's default build cache (or the one the brief names); never create a cache or build-output directory per run or slice — the disposable copy's own build output is the only exception.
 <design-system>
 Work in this order:
 1. **Tokens first.** Before any markup or styles, locate the design tokens (colors, spacing, typography, radii, shadows), theme files, and shared primitives (Button, Card, Input, Layout). If the project has a root `DESIGN.md`, it is the contract. Read 5–10 existing components to learn naming, spacing grid, type scale.

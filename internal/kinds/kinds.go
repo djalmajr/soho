@@ -148,6 +148,42 @@ func KindEffortArgs(kind, effort, model string, env platform.Env, warn WarnFunc)
 	return nil
 }
 
+// KindMcpArgs translates the per-spawn MCP choice into the kind's static
+// per-process flag (DJA-392): mcp=none turns the user's MCP servers off for
+// this process, inherit (or anything else) changes nothing. The ok result
+// reports whether the kind has a static flag at all: when it does not, the
+// caller warns once and the agent keeps the user's MCP servers. Codex has
+// no static flag — its off args are dynamic (one
+// -c mcp_servers.<name>.enabled=false pair per enabled server, built by the
+// spawn from `codex mcp list --json`) — so it reports not-ok for mcp=none
+// and the spawn handles it.
+func KindMcpArgs(kind, mcp string) (args []string, ok bool) {
+	if mcp != "none" {
+		return nil, true
+	}
+	switch kind {
+	case "claude":
+		return []string{"--strict-mcp-config"}, true
+	case "pi":
+		return []string{"--no-mcp"}, true
+	default:
+		return nil, false
+	}
+}
+
+// KindMcpOff reports whether the kind can turn the user's MCP servers off
+// per process (the `soho kinds` table column): claude and pi through a
+// static flag, codex through a per-server override built from its live
+// listing. Both count.
+func KindMcpOff(kind string) bool {
+	switch kind {
+	case "claude", "codex", "pi":
+		return true
+	default:
+		return false
+	}
+}
+
 func KindModelArgs(kind, model, effort string, warn WarnFunc) []string {
 	if model == "" {
 		return nil
@@ -243,14 +279,20 @@ func KindSummary(kind string) string {
 }
 
 func CmdKinds(env platform.Env, platformName string) {
-	row := func(a, b, c, d, e string) string { return fmt.Sprintf("%-8s %-13s %-10s %-8s %s", a, b, c, d, e) }
-	lines := []string{row("KIND", "EXECUTABLE", "FAMILY", "EFFORT", "INSTALLED")}
+	row := func(a, b, c, d, e, f string) string {
+		return fmt.Sprintf("%-8s %-13s %-10s %-8s %-9s %s", a, b, c, d, e, f)
+	}
+	lines := []string{row("KIND", "EXECUTABLE", "FAMILY", "EFFORT", "INSTALLED", "MCP")}
 	for _, k := range KnownKinds {
 		installed := "no"
 		if _, ok := platform.FindExecutable(KindExe(k), env, platformName); ok {
 			installed = "yes"
 		}
-		lines = append(lines, row(k, KindExe(k), KindFamilyDisplay(k), KindEffortCeiling(k), installed))
+		mcp := "no"
+		if KindMcpOff(k) {
+			mcp = "yes"
+		}
+		lines = append(lines, row(k, KindExe(k), KindFamilyDisplay(k), KindEffortCeiling(k), installed, mcp))
 	}
 	_, _ = fmt.Fprintln(platform.Stdout, strings.Join(lines, "\n"))
 }

@@ -2,6 +2,7 @@
 name: documenter
 description: Project documentation after a slice passed review — README, guides, references, ADRs, CHANGELOG. Documents what exists, never code.
 kind: codex
+mcp: none
 alternatives: [claude, cursor, grok]
 effort: high
 mode: edit

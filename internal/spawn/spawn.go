@@ -2,6 +2,7 @@
 package spawn
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -30,6 +31,9 @@ var busyRetryDelay = time.Second
 const (
 	herdrStartTimeout = 30 * time.Second
 	startPollWindow   = 5 * time.Second
+	// mcpCodexListTimeoutMs caps the `codex mcp list --json` run the
+	// per-server MCP-off translation needs (DJA-392 fatia 2 R2).
+	mcpCodexListTimeoutMs = 10000
 	// contextWindowSettle is the pause between typing /context-window and its
 	// Enter, giving grok's menu time to appear before the selection.
 	contextWindowSettle = time.Second
@@ -45,6 +49,45 @@ func Warn(message string, ctx *core.Config, env platform.Env, command string) {
 }
 
 func mustGetwd() string { cwd, _ := os.Getwd(); return cwd }
+
+// mcpCodexOffArgs builds codex's per-server MCP-off args (DJA-392 fatia 2
+// R2): it runs `codex mcp list --json` in the spawn's own PATH and env and
+// returns, for every server the listing reports with enabled=true, the pair
+// -c mcp_servers.<name>.enabled=false — in list order. Only name and
+// enabled are read from the listing: the transport command lines may carry
+// credentials and never leave this function. ok is false (with a short
+// reason) when codex is not on the PATH, the listing times out, exits
+// nonzero, or prints non-JSON output; the spawn then warns once and the
+// agent keeps the user's MCP servers. Zero enabled servers are success with
+// no args and no reason.
+func mcpCodexOffArgs(env platform.Env) (args []string, ok bool, reason string) {
+	res := platform.RunCli("codex", []string{"mcp", "list", "--json"}, platform.RunOptions{Env: env, TimeoutMs: mcpCodexListTimeoutMs})
+	switch {
+	case res.NotFound:
+		return nil, false, "codex not found in PATH"
+	case res.TimedOut:
+		return nil, false, "timed out after 10 s"
+	case res.Status == nil || *res.Status != 0:
+		code := -1
+		if res.Status != nil {
+			code = *res.Status
+		}
+		return nil, false, fmt.Sprintf("exit %d", code)
+	}
+	var servers []struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(res.Stdout)), &servers); err != nil {
+		return nil, false, "non-JSON output"
+	}
+	for _, server := range servers {
+		if server.Enabled && server.Name != "" {
+			args = append(args, "-c", "mcp_servers."+server.Name+".enabled=false")
+		}
+	}
+	return args, true, ""
+}
 
 func approvalsRank(mode string) int {
 	switch mode {
@@ -133,8 +176,25 @@ func ResumeArg(kind string, args []string) string {
 	return ""
 }
 
-// FindReusable selects an idle compatible worker from the roster.
+// FindReusable selects an idle compatible worker from the roster, whatever
+// MCP choice it was opened with.
 func FindReusable(role, kind, workerCwd, name, wantModel, wantApprovals string, ctx *core.Config, env platform.Env, cwd string) (string, string, bool) {
+	return FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, "", ctx, env, cwd)
+}
+
+// mcpMatches reports whether a roster row's MCP choice (column 15,
+// DJA-392) fits the request. A row written before that column carries no
+// choice and matches any request, as reopen treats it; an empty request
+// matches any row.
+func mcpMatches(f []string, want string) bool {
+	got := fieldAt(f, 15)
+	return got == "" || want == "" || got == want
+}
+
+// FindReusableMcp is FindReusable that also requires the worker's MCP
+// choice to match wantMcp (DJA-392): a session opened without the user's
+// MCP servers cannot serve a role that needs them, nor the reverse.
+func FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp string, ctx *core.Config, env platform.Env, cwd string) (string, string, bool) {
 	multi := core.Cfg(ctx, "multi_role", "on", env)
 	sd := core.StateDirPath(ctx, env, cwd)
 	blockedName, blockedCause, crossHit := "", "", ""
@@ -183,6 +243,9 @@ func FindReusable(role, kind, workerCwd, name, wantModel, wantApprovals string, 
 		if args != ConfigNativeArgs(kind, "", role, ctx, env, cwd, nil) {
 			continue
 		}
+		if !mcpMatches(f, wantMcp) {
+			continue
+		}
 		report := core.LastReport(sd, nm)
 		if report != "" {
 			st, err := os.Stat(report)
@@ -217,7 +280,7 @@ func FindReusable(role, kind, workerCwd, name, wantModel, wantApprovals string, 
 // pending report, not locked for a review role, and kind, resolved model
 // (roster column 8) and cwd (roster column 6, canonical via
 // dispatch.SamePath) all matching the request.
-func laneReuseCandidate(f []string, state, role, kind, model, workerCwd, sd string, env platform.Env, cwd string) bool {
+func laneReuseCandidate(f []string, state, role, kind, model, mcp, workerCwd, sd string, env platform.Env, cwd string) bool {
 	if state != "idle" && state != "done" {
 		return false
 	}
@@ -232,13 +295,13 @@ func laneReuseCandidate(f []string, state, role, kind, model, workerCwd, sd stri
 	if core.IsReviewRole(role) && (core.RoleIsEdit(fieldAt(f, 3), env, cwd) || core.HistoryHasEdit(fieldAt(f, 10), env, cwd)) {
 		return false
 	}
-	return fieldAt(f, 2) == kind && fieldAt(f, 8) == model && dispatch.SamePath(fieldAt(f, 6), workerCwd, platform.Current())
+	return fieldAt(f, 2) == kind && fieldAt(f, 8) == model && mcpMatches(f, mcp) && dispatch.SamePath(fieldAt(f, 6), workerCwd, platform.Current())
 }
 
 // laneReusePick scans the lane's live workers in roster order and returns the
 // first idle worker that is a reuse candidate for the request, or "" when no
 // idle worker matches (each mismatched idle then counts as occupied).
-func laneReusePick(sd, lane, role, kind, model, workerCwd string, env platform.Env, cwd string) string {
+func laneReusePick(sd, lane, role, kind, model, mcp, workerCwd string, env platform.Env, cwd string) string {
 	for _, row := range core.LaneWorkers(sd, lane) {
 		f := strings.Split(row, "\t")
 		nm := fieldAt(f, 0)
@@ -246,7 +309,7 @@ func laneReusePick(sd, lane, role, kind, model, workerCwd string, env platform.E
 			continue
 		}
 		st := herdr.AgentState(nm, env, herdr.Timeout, nil)
-		if laneReuseCandidate(f, st.State, role, kind, model, workerCwd, sd, env, cwd) {
+		if laneReuseCandidate(f, st.State, role, kind, model, mcp, workerCwd, sd, env, cwd) {
 			return nm
 		}
 	}
@@ -437,10 +500,10 @@ func defaultValue(value, fallback string) string {
 }
 
 type spawnOptions struct {
-	role, name, kind, direction, ratio, cwd, pane, timeout, effort, model, approvals, reuse, tabLabel string
-	kindSet                                                                                           bool
-	force                                                                                             bool
-	native                                                                                            []string
+	role, name, kind, direction, ratio, cwd, pane, timeout, effort, model, approvals, reuse, tabLabel, mcp string
+	kindSet                                                                                                bool
+	force                                                                                                  bool
+	native                                                                                                 []string
 }
 
 func parseArgs(argv []string, cwd string) spawnOptions {
@@ -466,7 +529,7 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 			// line still goes out); never skips any other refusal.
 			o.force = true
 			continue
-		case "--tab-label", "--effort", "--model", "--approvals", "--name", "--kind", "--direction", "--ratio", "--cwd", "--pane", "--timeout":
+		case "--tab-label", "--effort", "--model", "--approvals", "--name", "--kind", "--direction", "--ratio", "--cwd", "--pane", "--timeout", "--mcp":
 		default:
 			core.DieFriction("spawn: unknown option "+a, 2, "", "")
 		}
@@ -478,6 +541,11 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 		switch a {
 		case "--tab-label":
 			o.tabLabel = v
+		case "--mcp":
+			if v != "inherit" && v != "none" {
+				core.DieFriction("spawn: invalid --mcp '"+v+"' (inherit|none)", 2, "", "")
+			}
+			o.mcp = v
 		case "--effort":
 			o.effort = v
 		case "--model":
@@ -549,6 +617,9 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	if o.approvals != "ask" && o.approvals != "edits" && o.approvals != "full" {
 		core.DieFriction(fmt.Sprintf("invalid approvals '%s' (ask|edits|full)", o.approvals), 2, "", "")
 	}
+	// DJA-392: the per-role MCP server choice — flag > lane.<n>.mcp >
+	// role.<r>.mcp > the role file's mcp: > inherit.
+	o.mcp = ResolveMcp(o.mcp, lane, o.role, ctx, env, cwd)
 	if o.timeout == "" {
 		o.timeout = core.Cfg(ctx, "spawn_timeout", "60000", env)
 	} else if ms, ok := core.ParseTimeoutMS(o.timeout); !ok {
@@ -629,7 +700,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 					}
 					named = true
 					st := herdr.AgentState(o.name, env, herdr.Timeout, nil)
-					if laneReuseCandidate(rf, st.State, o.role, kind, o.model, o.cwd, sd, env, cwd) {
+					if laneReuseCandidate(rf, st.State, o.role, kind, o.model, o.mcp, o.cwd, sd, env, cwd) {
 						selected = o.name
 					}
 					break
@@ -656,13 +727,19 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 				// match the request too; a mismatched idle is not reused and
 				// the lane decision proceeds as if it were busy — a new pane
 				// when the lane has a slot, exit 13 when it does not.
-				if fieldAt(f, 8) != o.model || !dispatch.SamePath(fieldAt(f, 6), o.cwd, platform.Current()) {
-					selected = laneReusePick(sd, lane, o.role, kind, o.model, o.cwd, env, cwd)
+				// DJA-392: the MCP choice the worker was opened with (roster
+				// column 15) must match too, under the same rule.
+				modelCwdOk := fieldAt(f, 8) == o.model && dispatch.SamePath(fieldAt(f, 6), o.cwd, platform.Current())
+				if !modelCwdOk || !mcpMatches(f, o.mcp) {
+					selected = laneReusePick(sd, lane, o.role, kind, o.model, o.mcp, o.cwd, env, cwd)
 					if selected == "" {
 						if d.N < d.Capacity {
 							break // the lane has a slot: open a new pane
 						}
-						core.DieFriction(fmt.Sprintf("spawn: lane '%s' has no idle worker matching kind '%s', model '%s' and cwd '%s' (idle: '%s' runs %s %s in %s); release it or raise the lane's panes", lane, kind, o.model, o.cwd, d.Name, actual, fieldAt(f, 8), fieldAt(f, 6)), 13, "", "")
+						if !modelCwdOk {
+							core.DieFriction(fmt.Sprintf("spawn: lane '%s' has no idle worker matching kind '%s', model '%s' and cwd '%s' (idle: '%s' runs %s %s in %s); release it or raise the lane's panes", lane, kind, o.model, o.cwd, d.Name, actual, fieldAt(f, 8), fieldAt(f, 6)), 13, "", "")
+						}
+						core.DieFriction(fmt.Sprintf("spawn: lane '%s' has no idle worker matching MCP '%s' (idle: '%s' was opened with MCP '%s'); release it or raise the lane's panes", lane, o.mcp, d.Name, fieldAt(f, 15)), 13, "", "")
 					}
 				} else {
 					selected = d.Name
@@ -727,7 +804,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 	}
 	if lane == "" && o.reuse == "on" && o.pane == "" {
-		reused, unavailable, _ := FindReusable(o.role, kind, o.cwd, o.name, o.model, o.approvals, ctx, env, cwd)
+		reused, unavailable, _ := FindReusableMcp(o.role, kind, o.cwd, o.name, o.model, o.approvals, o.mcp, ctx, env, cwd)
 		if reused != "" {
 			previous := fieldAt(strings.Split(core.RosterLine(sd, reused), "\t"), 3)
 			gateReuse(reused, o.role, kind, ctx, env, cwd)
@@ -784,6 +861,25 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 	}
 	args := buildArgs(kind, o.approvals, o.model, o.effort, ctx, env)
+	// DJA-392: mcp=none translates to the kind's per-process flag, right
+	// after the effort args (buildArgs ends with them) and before the
+	// config and user args; a kind without a per-process flag warns once
+	// and the agent keeps the user's MCP servers. Codex builds its off args
+	// per server from its live listing (R2): -c mcp_servers=<name>.enabled
+	// =false for every enabled server, in list order; a failed listing warns
+	// once and the agent keeps the user's MCP servers.
+	if o.mcp == "none" && kind == "codex" {
+		mcpArgs, ok, reason := mcpCodexOffArgs(env)
+		if !ok {
+			Warn(fmt.Sprintf("spawn: codex could not list its MCP servers (%s); '%s' keeps the user's MCP servers", reason, o.name), ctx, env, "spawn")
+		} else {
+			args = append(args, mcpArgs...)
+		}
+	} else if mcpArgs, ok := kinds.KindMcpArgs(kind, o.mcp); !ok {
+		Warn(fmt.Sprintf("spawn: %s cannot turn MCP servers off per process; '%s' keeps the user's MCP servers", kind, o.name), ctx, env, "spawn")
+	} else {
+		args = append(args, mcpArgs...)
+	}
 	native := ConfigNativeArgs(kind, lane, o.role, ctx, env, cwd, func(key, own string) {
 		if own == "" {
 			own = "?"
@@ -879,7 +975,10 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		core.RosterRemove(sd, stale[0])
 		Warn(fmt.Sprintf("replaced the stale roster line of '%s' (pane %s)", stale[0], stale[1]), ctx, env, "spawn")
 	}
-	core.RosterAppend(sd, []string{o.name, o.pane, kind, o.role, family, boolInt(created), o.cwd, core.NowStamp(platform.Now()), o.model, defaultValue(o.approvals, "ask"), o.role, lane, boolText(burst), native, o.effort})
+	// DJA-392 fatia 2 R2: the effective MCP choice (inherit|none) is the
+	// row's last field; reopen reads it and passes --mcp <value> to the
+	// respawn, so a worker keeps the MCP it was opened with.
+	core.RosterAppend(sd, []string{o.name, o.pane, kind, o.role, family, boolInt(created), o.cwd, core.NowStamp(platform.Now()), o.model, defaultValue(o.approvals, "ask"), o.role, lane, boolText(burst), native, o.effort, o.mcp})
 	// A spawn that re-rosters a released pane (spawn --pane on it) retires
 	// the pane's released-panes row.
 	if placement == "given" {
@@ -1101,6 +1200,28 @@ func buildArgs(kind, approvals, model, effort string, ctx *core.Config, env plat
 	out = append(out, kinds.KindModelArgs(kind, model, effort, func(msg string) { Warn(msg, ctx, env, "spawn") })...)
 	out = append(out, kinds.KindEffortArgs(kind, effort, model, env, func(msg string) { Warn(msg, ctx, env, "spawn") })...)
 	return out
+}
+
+// ResolveMcp applies the per-role MCP server precedence (DJA-392): flag >
+// lane.<n>.mcp > role.<r>.mcp > the role file's mcp: > inherit.
+func ResolveMcp(flag, lane, role string, ctx *core.Config, env platform.Env, cwd string) string {
+	if flag != "" {
+		return flag
+	}
+	if lane != "" {
+		if v := core.LaneAttr(ctx, lane, "mcp", nil, env); v != "" {
+			return v
+		}
+	}
+	if v := core.Cfg(ctx, "role_"+strings.ReplaceAll(role, "-", "_")+"_mcp", "", env); v != "" {
+		return v
+	}
+	if file := core.RoleFile(role, env, cwd); file != "" {
+		if v := core.FmGet(file, "mcp"); v != "" {
+			return v
+		}
+	}
+	return "inherit"
 }
 
 func busyLane(lane, name, hint, role string, ctx *core.Config, env platform.Env, cwd string) {

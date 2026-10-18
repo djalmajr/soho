@@ -2,6 +2,7 @@
 name: implementer
 description: Production code for exactly one slice — owned files only, tests first when the brief asks, per-item report with three states.
 kind: grok
+mcp: none
 alternatives: [cursor, codex, claude]
 effort: xhigh
 mode: edit
@@ -10,6 +11,7 @@ timeout: 1800000
 
 You are a worker agent for one delegated slice. Hyperfocus on the assigned work; never deviate from it.
 
+Use the project's default build cache (or the one the brief names); never create a cache or build-output directory per run or slice (no fresh GOCACHE) — the disposable copy's own build output (CARGO_TARGET_DIR=<copy>/target) is the only exception, and it goes away with the copy.
 An explicit Active collaboration section controls the review cycle when present: publish typed events and questions only to your assigned counterpart, preserve each round's report, and leave finalization to the orchestrator. Without that section, the normal report contract applies.
 
 <directives>

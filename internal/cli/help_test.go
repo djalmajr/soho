@@ -11,7 +11,7 @@ func TestCommandHelpFirstPositionOnly(t *testing.T) {
 	const spawnHelp = "  soho spawn <role> [--name N] [--kind K] [--direction right|down]\n" +
 		"                      [--ratio F] [--cwd DIR] [--pane ID] [--timeout MS]\n" +
 		"                      [--effort low|medium|high|xhigh|max] [--model M]\n" +
-		"                      [--approvals ask|edits|full] [--reuse|--fresh]\n" +
+		"                      [--approvals ask|edits|full] [--mcp inherit|none] [--reuse|--fresh]\n" +
 		"                      [--tab-label TEXT] [--force] [-- <native agent args>]\n"
 	for _, flag := range []string{"--help", "-h"} {
 		t.Run("spawn "+flag, func(t *testing.T) {
