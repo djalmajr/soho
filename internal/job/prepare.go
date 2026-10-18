@@ -68,8 +68,30 @@ type Preparer struct {
 	GhTimeout    time.Duration
 }
 
+// prepareMsgPrefix opens the message of every preparation failure; what
+// follows it is the step.
+const prepareMsgPrefix = "job: preparation failed: "
+
 func prepareError(step string) error {
-	return &ExitError{Code: ExitPrepare, Msg: "job: preparation failed: " + step}
+	return prepareErrorDetail(step, "")
+}
+
+// prepareErrorDetail is prepareError plus the step's diagnostic in Detail:
+// how its subprocess ended and the last lines of its stderr, credentials
+// redacted. The message and the exit code are the same.
+func prepareErrorDetail(step, detail string) error {
+	return &ExitError{Code: ExitPrepare, Msg: prepareMsgPrefix + step, Detail: detail}
+}
+
+// PrepareFailure splits a preparation failure into its step and its detail;
+// ok is false for any other error, and for a failure that has no detail.
+func PrepareFailure(err error) (step, detail string, ok bool) {
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) || exitErr == nil || exitErr.Code != ExitPrepare || exitErr.Detail == "" {
+		return "", "", false
+	}
+	step, ok = strings.CutPrefix(exitErr.Msg, prepareMsgPrefix)
+	return step, exitErr.Detail, ok
 }
 
 // validPrepareID applies the Dir id rule: the contract regex, and "." / ".."
@@ -114,27 +136,31 @@ func (p Preparer) Prepare(req PrepareRequest) (Prepared, error) {
 
 	// Gh authentication and push access are checked for every job, before
 	// any pane opens and before any clone.
-	if _, err := p.cli("gh", []string{"auth", "status"}, gh, ghEnv); err != nil {
-		return out, prepareError("gh authentication")
+	if _, detail, err := p.cliDetail("gh", []string{"auth", "status"}, gh, ghEnv); err != nil {
+		return out, prepareErrorDetail("gh authentication", detail)
 	}
 	checkout := filepath.Join(p.Machine.ReposRoot, req.Org, req.Repo)
 	out.Checkout = checkout
 	if _, statErr := os.Stat(checkout); statErr == nil {
-		if !p.isGitCheckout(checkout, local, gitEnv) {
-			return out, prepareError("not a git checkout")
+		if ok, detail := p.isGitCheckout(checkout, local, gitEnv); !ok {
+			return out, prepareErrorDetail("not a git checkout", detail)
 		}
 	} else if os.IsNotExist(statErr) {
 		if err := os.MkdirAll(filepath.Join(p.Machine.ReposRoot, req.Org), 0o755); err != nil {
 			return out, prepareError("clone")
 		}
 		var cloneErr error
+		var cloneDetail string
 		if p.Clone != nil {
 			cloneErr = p.Clone(req.Org, req.Repo, checkout)
 		} else {
-			_, cloneErr = p.cli("gh", []string{"repo", "clone", req.Org + "/" + req.Repo, checkout}, net, ghEnv)
+			_, cloneDetail, cloneErr = p.cliDetail("gh", []string{"repo", "clone", req.Org + "/" + req.Repo, checkout}, net, ghEnv)
 		}
-		if cloneErr != nil || !p.isGitCheckout(checkout, local, gitEnv) {
-			return out, prepareError("clone")
+		if cloneErr != nil {
+			return out, prepareErrorDetail("clone", cloneDetail)
+		}
+		if ok, detail := p.isGitCheckout(checkout, local, gitEnv); !ok {
+			return out, prepareErrorDetail("clone", detail)
 		}
 		out.Cloned = true
 	} else {
@@ -144,20 +170,23 @@ func (p Preparer) Prepare(req PrepareRequest) (Prepared, error) {
 	if err := p.excludeJobDirs(checkout, local, gitEnv); err != nil {
 		return out, err
 	}
-	if _, err := p.cli("git", []string{"-C", checkout, "fetch", "--prune", "origin"}, net, gitEnv); err != nil {
-		return out, prepareError("fetch")
+	if _, detail, err := p.cliDetail("git", []string{"-C", checkout, "fetch", "--prune", "origin"}, net, gitEnv); err != nil {
+		return out, prepareErrorDetail("fetch", detail)
 	}
 	base := req.Base
 	if base == "" {
-		resolved, ok, err := p.remoteDefaultBase(checkout, net, gitEnv)
-		if err != nil || !ok || !validBaseName(resolved) {
-			return out, prepareError("unknown base")
+		resolved, ok, detail, err := p.remoteDefaultBase(checkout, net, gitEnv)
+		if err != nil {
+			return out, prepareErrorDetail("unknown base", detail)
+		}
+		if !ok || !validBaseName(resolved) {
+			return out, prepareErrorDetail("unknown base", unexpectedOutput)
 		}
 		base = resolved
 	}
-	baseSHA, err := p.cli("git", []string{"-C", checkout, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/" + base + "^{commit}"}, local, gitEnv)
+	baseSHA, baseDetail, err := p.cliDetail("git", []string{"-C", checkout, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/" + base + "^{commit}"}, local, gitEnv)
 	if err != nil {
-		return out, prepareError("unknown base")
+		return out, prepareErrorDetail("unknown base", baseDetail)
 	}
 	out.Base = base
 	out.BaseSHA = strings.TrimSpace(baseSHA)
@@ -166,9 +195,9 @@ func (p Preparer) Prepare(req PrepareRequest) (Prepared, error) {
 		if err := p.prepareWorkspace(checkout, local, gitEnv); err != nil {
 			return out, err
 		}
-		name, err := p.cli("git", []string{"-C", checkout, "rev-parse", "--abbrev-ref", "HEAD"}, local, gitEnv)
+		name, detail, err := p.cliDetail("git", []string{"-C", checkout, "rev-parse", "--abbrev-ref", "HEAD"}, local, gitEnv)
 		if err != nil {
-			return out, prepareError("workspace")
+			return out, prepareErrorDetail("workspace", detail)
 		}
 		out.Dir = checkout
 		out.Branch = strings.TrimSpace(name)
@@ -181,20 +210,21 @@ func (p Preparer) Prepare(req PrepareRequest) (Prepared, error) {
 		out.Branch = branch
 	}
 
-	if _, err := p.cli("git", []string{"-C", out.Dir, "push", "--dry-run", "--no-verify", "--porcelain", "origin", "HEAD:refs/heads/" + branch}, net, gitEnv); err != nil {
-		return out, prepareError("push access")
+	if _, detail, err := p.cliDetail("git", []string{"-C", out.Dir, "push", "--dry-run", "--no-verify", "--porcelain", "origin", "HEAD:refs/heads/" + branch}, net, gitEnv); err != nil {
+		return out, prepareErrorDetail("push access", detail)
 	}
 	return out, nil
 }
 
 // isGitCheckout reports whether path is a git checkout whose toplevel is
-// exactly path (both sides canonicalized).
-func (p Preparer) isGitCheckout(checkout string, timeout time.Duration, env platform.Env) bool {
-	top, err := p.cli("git", []string{"-C", checkout, "rev-parse", "--show-toplevel"}, timeout, env)
+// exactly path (both sides canonicalized). When the answer is no because the
+// query failed, detail says how; a toplevel elsewhere has none.
+func (p Preparer) isGitCheckout(checkout string, timeout time.Duration, env platform.Env) (ok bool, detail string) {
+	top, detail, err := p.cliDetail("git", []string{"-C", checkout, "rev-parse", "--show-toplevel"}, timeout, env)
 	if err != nil {
-		return false
+		return false, detail
 	}
-	return samePath(strings.TrimSpace(top), checkout)
+	return samePath(strings.TrimSpace(top), checkout), ""
 }
 
 // jobExcludeLines are the checkout paths the job family writes: the job
@@ -208,9 +238,9 @@ var jobExcludeLines = []string{"/.soho/", "/.worktrees/", "/.herdr-soho/"}
 // excludeJobDirs appends each missing jobExcludeLines entry to
 // <git-common-dir>/info/exclude; a retry adds nothing.
 func (p Preparer) excludeJobDirs(checkout string, timeout time.Duration, env platform.Env) error {
-	common, err := p.cli("git", []string{"-C", checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"}, timeout, env)
+	common, detail, err := p.cliDetail("git", []string{"-C", checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"}, timeout, env)
 	if err != nil {
-		return prepareError("checkout")
+		return prepareErrorDetail("checkout", detail)
 	}
 	file := filepath.Join(strings.TrimSpace(common), "info", "exclude")
 	existing, err := os.ReadFile(file)
@@ -254,19 +284,19 @@ func (p Preparer) excludeJobDirs(checkout string, timeout time.Duration, env pla
 
 // remoteDefaultBase parses `ref: refs/heads/<name>\tHEAD` from
 // `git ls-remote --symref origin HEAD`.
-func (p Preparer) remoteDefaultBase(checkout string, timeout time.Duration, env platform.Env) (string, bool, error) {
-	output, err := p.cli("git", []string{"-C", checkout, "ls-remote", "--symref", "origin", "HEAD"}, timeout, env)
+func (p Preparer) remoteDefaultBase(checkout string, timeout time.Duration, env platform.Env) (base string, ok bool, detail string, err error) {
+	output, detail, err := p.cliDetail("git", []string{"-C", checkout, "ls-remote", "--symref", "origin", "HEAD"}, timeout, env)
 	if err != nil {
-		return "", false, err
+		return "", false, detail, err
 	}
 	const prefix = "ref: refs/heads/"
 	for _, line := range strings.Split(output, "\n") {
 		if !strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, "\tHEAD") {
 			continue
 		}
-		return strings.TrimSuffix(strings.TrimPrefix(line, prefix), "\tHEAD"), true, nil
+		return strings.TrimSuffix(strings.TrimPrefix(line, prefix), "\tHEAD"), true, "", nil
 	}
-	return "", false, nil
+	return "", false, "", nil
 }
 
 func validBaseName(base string) bool {
@@ -281,15 +311,21 @@ func validBaseName(base string) bool {
 // upstream.
 func (p Preparer) prepareWorktree(checkout, dir, branch, base string, timeout time.Duration, env platform.Env) error {
 	if _, statErr := os.Stat(dir); statErr == nil {
-		if !p.isGitCheckout(dir, timeout, env) {
+		if ok, detail := p.isGitCheckout(dir, timeout, env); !ok {
+			return prepareErrorDetail("worktree", detail)
+		}
+		name, detail, err := p.cliDetail("git", []string{"-C", dir, "rev-parse", "--abbrev-ref", "HEAD"}, timeout, env)
+		if err != nil {
+			return prepareErrorDetail("worktree", detail)
+		}
+		if strings.TrimSpace(name) != branch {
 			return prepareError("worktree")
 		}
-		name, err := p.cli("git", []string{"-C", dir, "rev-parse", "--abbrev-ref", "HEAD"}, timeout, env)
-		if err != nil || strings.TrimSpace(name) != branch {
-			return prepareError("worktree")
+		common, detail, err := p.cliDetail("git", []string{"-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"}, timeout, env)
+		if err != nil {
+			return prepareErrorDetail("worktree", detail)
 		}
-		common, err := p.cli("git", []string{"-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"}, timeout, env)
-		if err != nil || !samePath(strings.TrimSpace(common), filepath.Join(checkout, ".git")) {
+		if !samePath(strings.TrimSpace(common), filepath.Join(checkout, ".git")) {
 			return prepareError("worktree")
 		}
 		return nil
@@ -297,13 +333,13 @@ func (p Preparer) prepareWorktree(checkout, dir, branch, base string, timeout ti
 		return prepareError("worktree")
 	}
 	if _, err := p.cli("git", []string{"-C", checkout, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch}, timeout, env); err == nil {
-		if _, err := p.cli("git", []string{"-C", checkout, "worktree", "add", dir, branch}, timeout, env); err != nil {
-			return prepareError("worktree")
+		if _, detail, err := p.cliDetail("git", []string{"-C", checkout, "worktree", "add", dir, branch}, timeout, env); err != nil {
+			return prepareErrorDetail("worktree", detail)
 		}
 		return nil
 	}
-	if _, err := p.cli("git", []string{"-C", checkout, "worktree", "add", "--no-track", "-b", branch, dir, "refs/remotes/origin/" + base}, timeout, env); err != nil {
-		return prepareError("worktree")
+	if _, detail, err := p.cliDetail("git", []string{"-C", checkout, "worktree", "add", "--no-track", "-b", branch, dir, "refs/remotes/origin/" + base}, timeout, env); err != nil {
+		return prepareErrorDetail("worktree", detail)
 	}
 	return nil
 }
@@ -312,16 +348,16 @@ func (p Preparer) prepareWorktree(checkout, dir, branch, base string, timeout ti
 // index (index.lock in the git dir) and any dirty status (untracked
 // non-ignored files included) are refused.
 func (p Preparer) prepareWorkspace(checkout string, timeout time.Duration, env platform.Env) error {
-	gitDir, err := p.cli("git", []string{"-C", checkout, "rev-parse", "--path-format=absolute", "--git-dir"}, timeout, env)
+	gitDir, detail, err := p.cliDetail("git", []string{"-C", checkout, "rev-parse", "--path-format=absolute", "--git-dir"}, timeout, env)
 	if err != nil {
-		return prepareError("workspace")
+		return prepareErrorDetail("workspace", detail)
 	}
 	if _, statErr := os.Stat(filepath.Join(strings.TrimSpace(gitDir), "index.lock")); statErr == nil {
 		return prepareError("checkout locked")
 	}
-	status, err := p.cli("git", []string{"-C", checkout, "status", "--porcelain"}, timeout, env)
+	status, detail, err := p.cliDetail("git", []string{"-C", checkout, "status", "--porcelain"}, timeout, env)
 	if err != nil {
-		return prepareError("workspace")
+		return prepareErrorDetail("workspace", detail)
 	}
 	if strings.TrimSpace(status) != "" {
 		return prepareError("checkout dirty")
@@ -343,6 +379,11 @@ func samePath(a, b string) bool {
 
 func (p Preparer) cli(exe string, args []string, timeout time.Duration, env platform.Env) (string, error) {
 	return runStep(exe, args, timeout, env)
+}
+
+// cliDetail is cli plus, on failure, the step's diagnostic (stepFailureDetail).
+func (p Preparer) cliDetail(exe string, args []string, timeout time.Duration, env platform.Env) (string, string, error) {
+	return runStepDetailInCtx("", exe, args, timeout, env, nil)
 }
 
 // runStep runs one job subprocess through platform.RunCli (context deadline

@@ -182,6 +182,7 @@ func (s Starter) Start(req StartRequest) (State, *Store, error) {
 		prepared, err = s.Preparer.Prepare(prepareRequest(req))
 		if err != nil {
 			_, _ = store.Fail(req.ID, err.Error(), prepareExitCode(err))
+			frictionPrepare(jobDir, err)
 			return State{}, store, err
 		}
 	}
@@ -375,6 +376,24 @@ func (s Starter) Start(req StartRequest) (State, *Store, error) {
 		return State{}, store, err
 	}
 	return st, store, nil
+}
+
+// frictionPrepare records the diagnostic of a failed preparation step in the
+// friction log of the job directory, as a second line after the message the
+// events carry. It writes the file itself, with the exit of the start, because
+// the starter's friction sink also echoes to the stderr that `job start` fills
+// with the same line. A failure with no detail records nothing; the events,
+// the motivo and the report do not change.
+func frictionPrepare(jobDir string, err error) {
+	if step, detail, ok := PrepareFailure(err); ok {
+		core.RecordFrictionError(PrepareFailureLine(step, detail), ExitPrepare, filepath.Join(jobDir, "friction.log"))
+	}
+}
+
+// PrepareFailureLine is the line that carries a preparation step's diagnostic,
+// in the job's friction log and, behind "soho: ", on the stderr of job start.
+func PrepareFailureLine(step, detail string) string {
+	return core.FrictionSafe("job: preparation " + step + " failed: " + detail)
 }
 
 // prepareRequest maps the start request to the preparation input. The CLI
