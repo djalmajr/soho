@@ -3,7 +3,6 @@ package cli
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -39,22 +38,17 @@ func TestConfigSetCallerCheck(t *testing.T) {
 	}
 }
 
-// titlePSRules returns the fake ps rules for a forked tree (the claimed
-// pane's shell 4000 is never reached) and for a verified tree.
-func titlePSRules(t *testing.T, forked bool) []fakecli.Rule {
+// scriptCallerTree scripts the ancestry the caller-pane check walks
+// (platform.OverrideAncestorParents: the same test point on every system,
+// no ps, no process snapshot): a forked tree never reaches the claimed
+// pane's shell 4000; a verified one does.
+func scriptCallerTree(t *testing.T, forked bool) {
 	t.Helper()
-	self := strconv.Itoa(os.Getpid())
-	middle := "3000"
+	parents := map[int]int{os.Getpid(): 4000, 4000: 1}
 	if forked {
-		return []fakecli.Rule{
-			{Argv: []string{"-o", "ppid=", "-p", self}, Stdout: middle + "\n"},
-			{Argv: []string{"-o", "ppid=", "-p", middle}, Stdout: "1\n"},
-		}
+		parents = map[int]int{os.Getpid(): 3000, 3000: 1}
 	}
-	return []fakecli.Rule{
-		{Argv: []string{"-o", "ppid=", "-p", self}, Stdout: "4000\n"},
-		{Argv: []string{"-o", "ppid=", "-p", "4000"}, Stdout: "1\n"},
-	}
+	t.Cleanup(platform.OverrideAncestorParents(parents))
 }
 
 func titleCallCount(t *testing.T, dir string, argv ...string) int {
@@ -100,9 +94,7 @@ func TestTitleCallerPaneCheck(t *testing.T) {
 		if _, err := fakecli.Install(t, dir, "herdr", herdrRules); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := fakecli.Install(t, dir, "ps", titlePSRules(t, forked)); err != nil {
-			t.Fatal(err)
-		}
+		scriptCallerTree(t, forked)
 		env, cwd := commandFixture(t)
 		env["PATH"] = dir
 		// The fake CLI config (and its call log) must live in the fixture

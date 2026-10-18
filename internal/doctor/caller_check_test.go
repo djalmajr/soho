@@ -3,7 +3,6 @@ package doctor
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -15,10 +14,9 @@ import (
 const callerDoctorWarn = "warn   Herdr context invalid: HERDR_PANE_ID='w0test:p0a' is live but this process does not run in it (its process tree does not reach shell pid 4000); fix the inherited HERDR_* environment\n"
 
 // callerDoctorFixture extends the pane-context fixture with the
-// process-info read of the claimed pane and a fake ps in the same bin
-// dir (so the ancestry walk reads the scripted table, never a command
-// line).
-func callerDoctorFixture(t *testing.T, withProcessInfo bool, psTable map[string]string) (platform.Env, string) {
+// process-info read of the claimed pane and the scripted ancestry
+// (platform.OverrideAncestorParents: no ps, no process snapshot).
+func callerDoctorFixture(t *testing.T, withProcessInfo bool, parents map[int]int) (platform.Env, string) {
 	t.Helper()
 	rules := []fakecli.Rule{
 		{Argv: []string{"--version"}, Stdout: "herdr 1.2.3\n"},
@@ -29,14 +27,7 @@ func callerDoctorFixture(t *testing.T, withProcessInfo bool, psTable map[string]
 		rules = append(rules, fakecli.Rule{Argv: []string{"pane", "process-info", "--pane", "w0test:p0a"}, Stdout: `{"result":{"process_info":{"shell_pid":4000}}}`})
 	}
 	env, root := paneContextFixture(t, rules)
-	bin := filepath.Join(root, "bin")
-	psRules := make([]fakecli.Rule, 0, len(psTable))
-	for pid, out := range psTable {
-		psRules = append(psRules, fakecli.Rule{Argv: []string{"-o", "ppid=", "-p", pid}, Stdout: out})
-	}
-	if _, err := fakecli.Install(t, bin, "ps", psRules); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(platform.OverrideAncestorParents(parents))
 	env["HERDR_PANE_ID"] = "w0test:p0a"
 	env["HERDR_WORKSPACE_ID"] = "ws"
 	return env, root
@@ -44,13 +35,13 @@ func callerDoctorFixture(t *testing.T, withProcessInfo bool, psTable map[string]
 
 // forkedDoctorPS is an ancestry table that reaches the root without the
 // pane's shell (4000).
-func forkedDoctorPS() map[string]string {
-	return map[string]string{strconv.Itoa(os.Getpid()): "3000\n", "3000": "1\n"}
+func forkedDoctorPS() map[int]int {
+	return map[int]int{os.Getpid(): 3000, 3000: 1}
 }
 
 // verifiedDoctorPS is an ancestry table that reaches the pane's shell.
-func verifiedDoctorPS() map[string]string {
-	return map[string]string{strconv.Itoa(os.Getpid()): "4000\n", "4000": "1\n"}
+func verifiedDoctorPS() map[int]int {
+	return map[int]int{os.Getpid(): 4000, 4000: 1}
 }
 
 // doctorProcessInfoCalls counts the fake herdr's process-info calls.

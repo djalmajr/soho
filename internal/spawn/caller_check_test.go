@@ -3,7 +3,6 @@ package spawn_test
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -18,9 +17,9 @@ import (
 const spawnRefuseLine = "soho: spawn: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Nothing was changed. Run soho from the pane that hosts this agent, or set caller_check=warn\n"
 
 // callerSpawnFixture builds a spawn fixture (the same shape as the
-// internal newSpawnFixture) with a fake ps in the same bin dir as the
-// fake herdr, so the caller-pane check's ancestry walk reads the fake.
-func callerSpawnFixture(t *testing.T, herdrRules []fakecli.Rule, psTable map[string]string) (platform.Env, *core.Config, string, string) {
+// internal newSpawnFixture) with the scripted ancestry the caller-pane
+// check walks (platform.OverrideAncestorParents: no ps, no snapshot).
+func callerSpawnFixture(t *testing.T, herdrRules []fakecli.Rule, parents map[int]int) (platform.Env, *core.Config, string, string) {
 	t.Helper()
 	root := t.TempDir()
 	cwd := filepath.Join(root, "repo")
@@ -34,13 +33,7 @@ func callerSpawnFixture(t *testing.T, herdrRules []fakecli.Rule, psTable map[str
 	if _, err := fakecli.Install(t, bin, "herdr", herdrRules); err != nil {
 		t.Fatal(err)
 	}
-	psRules := make([]fakecli.Rule, 0, len(psTable))
-	for pid, out := range psTable {
-		psRules = append(psRules, fakecli.Rule{Argv: []string{"-o", "ppid=", "-p", pid}, Stdout: out})
-	}
-	if _, err := fakecli.Install(t, bin, "ps", psRules); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(platform.OverrideAncestorParents(parents))
 	env := platform.Env{}
 	for _, item := range fakecli.Env(testutil.CleanEnv(t), bin) {
 		key, value, ok := strings.Cut(item, "=")
@@ -114,8 +107,8 @@ func freshSpawnRules() []fakecli.Rule {
 
 // forkedPS is the ancestry table of a process that is NOT in the claimed
 // pane: the walk reaches the root without the pane's shell (4000).
-func forkedPS() map[string]string {
-	return map[string]string{strconv.Itoa(os.Getpid()): "3000\n", "3000": "1\n"}
+func forkedPS() map[int]int {
+	return map[int]int{os.Getpid(): 3000, 3000: 1}
 }
 
 // spawnCallCount counts the fake herdr calls whose argv starts with argv.

@@ -5,12 +5,12 @@ import (
 	"crypto/rand"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/peer"
+	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -24,21 +24,13 @@ func callerSendRules() []fakecli.Rule {
 	}
 }
 
-// forkedPSRules is the ancestry table of a process that is NOT in the
+// installForkedTree scripts the ancestry of a process that is NOT in the
 // claimed pane: the walk reaches the root without the pane's shell (4000).
-func forkedPSRules() []fakecli.Rule {
-	self := strconv.Itoa(os.Getpid())
-	return []fakecli.Rule{
-		{Argv: []string{"-o", "ppid=", "-p", self}, Stdout: "3000\n"},
-		{Argv: []string{"-o", "ppid=", "-p", "3000"}, Stdout: "1\n"},
-	}
-}
-
-func installForkedPS(t *testing.T, f *fixture) {
+// It goes through platform.OverrideAncestorParents, the same test point on
+// every system (no ps, no process snapshot).
+func installForkedTree(t *testing.T) {
 	t.Helper()
-	if _, err := fakecli.Install(t, filepath.Dir(f.bin), "ps", forkedPSRules()); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(platform.OverrideAncestorParents(map[int]int{os.Getpid(): 3000, 3000: 1}))
 }
 
 // callerSendPrompt is the deterministic prompt the send delivers to the
@@ -87,7 +79,7 @@ func TestCmdSendCallerPaneCheck(t *testing.T) {
 	t.Run("mismatch with refuse exits 2 before agent prompt or pane send-text", func(t *testing.T) {
 		herdr.ResetCallerCheck()
 		f := newFixture(t, callerSendRules())
-		installForkedPS(t, f)
+		installForkedTree(t)
 		f.env["HERDR_PANE_ID"] = "w1:p9"
 		code, _, stderr := f.run([]string{"send", "w0test:p0a", "hello"})
 		if code != 2 {
@@ -119,7 +111,7 @@ func TestCmdSendCallerPaneCheck(t *testing.T) {
 			{Argv: []string{"agent", "prompt", "w0test:p0a", prompt, "--wait", "--until", "working", "--until", "blocked", "--until", "idle", "--until", "done", "--timeout", "15000"}},
 		}, callerSendRules()...)
 		f := newFixture(t, rules)
-		installForkedPS(t, f)
+		installForkedTree(t)
 		f.env["HERDR_PANE_ID"] = "w1:p9"
 		f.env["SOHO_CALLER_CHECK"] = "warn"
 		f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
@@ -151,7 +143,7 @@ func TestCmdSendCallerPaneCheck(t *testing.T) {
 			{Argv: []string{"agent", "prompt", "w0test:p0a", prompt, "--wait", "--until", "working", "--until", "blocked", "--until", "idle", "--until", "done", "--timeout", "15000"}},
 		}, callerSendRules()...)
 		f := newFixture(t, rules)
-		installForkedPS(t, f)
+		installForkedTree(t)
 		f.env["HERDR_PANE_ID"] = "w1:p9"
 		f.env["SOHO_CALLER_CHECK"] = "off"
 		f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"

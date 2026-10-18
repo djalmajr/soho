@@ -26,15 +26,26 @@ var (
 // caller can still see how far it got). Only parent pids are read —
 // never a command line or an environment of any process. The platform
 // supplies the parent provider: POSIX reads one ps per hop, Windows
-// builds one Toolhelp32 snapshot that answers every hop.
+// builds one Toolhelp32 snapshot that answers every hop (a parent that
+// already exited ends the chain there). OverrideAncestorParents replaces
+// the provider in tests.
 func ProcessAncestors(pid int, env Env) ([]int, error) {
 	if pid <= 0 {
 		return nil, errAncestorRead
 	}
-	next, err := ancestorProvider(env)
-	if err != nil {
-		return nil, err
+	next := overriddenAncestorReader()
+	if next == nil {
+		var err error
+		next, err = ancestorProvider(env)
+		if err != nil {
+			return nil, err
+		}
 	}
+	return walkAncestors(pid, next)
+}
+
+// walkAncestors is the walk over a per-hop parent read.
+func walkAncestors(pid int, next func(pid int) (int, error)) ([]int, error) {
 	chain := []int{pid}
 	seen := map[int]bool{pid: true}
 	cur := pid

@@ -322,7 +322,9 @@ func TestNotReadyRetryOutOfBudget(t *testing.T) {
 }
 
 // The timed-out flag reaches the resolved target: a get cut by its own
-// timeout reports TimedOut, a get that answers does not.
+// timeout reports TimedOut, a get that answers does not. The answering
+// get has no delay; its 20 s budget only covers starting the fake on a
+// loaded Windows runner, where 2 s was not always enough.
 func TestResolveTargetWithinReportsTimedOut(t *testing.T) {
 	f := newFixture(t, []fakecli.Rule{
 		{Argv: []string{"agent", "get", "slow"}, Delay: 3000, Stderr: notReadyErr, Code: 1},
@@ -331,7 +333,7 @@ func TestResolveTargetWithinReportsTimedOut(t *testing.T) {
 	if !peer.ResolveTargetWithinTimedOut("slow", f.env, 100) {
 		t.Fatal("a get past its 100 ms timeout did not report TimedOut")
 	}
-	if peer.ResolveTargetWithinTimedOut("fast", f.env, 2000) {
+	if peer.ResolveTargetWithinTimedOut("fast", f.env, 20000) {
 		t.Fatal("a get that answered reported TimedOut")
 	}
 }

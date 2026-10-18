@@ -22,7 +22,7 @@ import (
 const forkedClaim = "HERDR_PANE_ID='%s' is a live pane but this process does not run in it"
 
 // claimShell gives the claimed pane its shell (4000) in the fake herdr that
-// the config file drives, and installs the fake ps beside it: forked is a
+// the config file drives, and scripts the ancestry (OverrideAncestorParents): forked is a
 // process tree that never reaches the shell.
 func claimShell(t *testing.T, config, pane string, forked bool) {
 	t.Helper()
@@ -45,13 +45,11 @@ func claimShell(t *testing.T, config, pane string, forked bool) {
 	if err := os.WriteFile(config, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fakecli.Install(t, filepath.Dir(config), "ps", titlePSRules(t, forked)); err != nil {
-		t.Fatal(err)
-	}
+	scriptCallerTree(t, forked)
 }
 
 // callerGateEnv is a command fixture whose fake herdr answers the
-// process-info of w1:p9 (shell 4000) and whose ps shows a forked tree.
+// process-info of w1:p9 (shell 4000) and whose ancestry is a forked tree.
 func callerGateEnv(t *testing.T) (platform.Env, string, string) {
 	t.Helper()
 	env, cwd := commandFixture(t)
@@ -63,9 +61,7 @@ func callerGateEnv(t *testing.T) (platform.Env, string, string) {
 	if _, err := fakecli.Install(t, dir, "herdr", rules); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fakecli.Install(t, dir, "ps", titlePSRules(t, true)); err != nil {
-		t.Fatal(err)
-	}
+	scriptCallerTree(t, true)
 	env["PATH"] = dir
 	env["SOHO_FAKECLI_CONFIG"] = dir
 	env["HERDR_ENV"] = "1"
