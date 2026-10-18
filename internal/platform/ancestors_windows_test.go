@@ -10,11 +10,13 @@ import (
 )
 
 // TestProcessAncestorsRealChildWindows walks the parent chain of a real
-// child of this test process (a short-lived cmd.exe) and requires the
-// test's own pid to be in it. The walk reads one Toolhelp32 process
-// snapshot (pid and parent fields only), never a command line.
+// child of this test process (a ping that runs for about 5 s) and requires
+// the test's own pid to be in it. The walk reads one Toolhelp32 process
+// snapshot (pid and parent fields only), never a command line. The child
+// is not `timeout`: without a console it exits at once, and a child that
+// is already gone when the snapshot is taken is not in it.
 func TestProcessAncestorsRealChildWindows(t *testing.T) {
-	cmd := exec.Command("cmd", "/c", "timeout", "/t", "2")
+	cmd := exec.Command("ping", "-n", "6", "127.0.0.1")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start child: %v", err)
 	}
@@ -22,7 +24,7 @@ func TestProcessAncestorsRealChildWindows(t *testing.T) {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 	}()
-	time.Sleep(200 * time.Millisecond) // let cmd.exe reach its prompt
+	time.Sleep(200 * time.Millisecond) // let the child start
 	chain, err := ProcessAncestors(cmd.Process.Pid, Env{})
 	if err != nil {
 		t.Fatalf("ProcessAncestors(%d)=%v", cmd.Process.Pid, err)
