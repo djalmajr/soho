@@ -237,7 +237,7 @@ func TestNowriteReadCommandsWriteNothing(t *testing.T) {
 				cases[8].wantOut = nowriteGcNoneLine +
 					fmt.Sprintf("would remove %s  2.0 KB  ghost  1d\ntotal: 2.0 KB\nrun 'soho gc --yes' to remove them\n", nr.orphan) +
 					"unregistered mutation copies (another project or an older version may own them):\n" +
-					fmt.Sprintf("%s  100 B  3h\n", nr.mutation)
+					fmt.Sprintf("%s  100 B  3h  no origin marker\n", nr.mutation)
 				cases[9].wantOut = cases[8].wantOut
 			} else {
 				cases[1].wantOut = nowriteRosterHeader + nowriteRosterTail
