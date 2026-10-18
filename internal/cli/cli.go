@@ -88,6 +88,7 @@ func liveAgentsFriction(env platform.Env) []any {
 // without executing or probing a runtime (R1 retired the JS fallback).
 func Run(args []string, env platform.Env) (code int) {
 	frictionLogPath = ""
+	herdr.ResetCallerCheck()
 	defer func() {
 		value := recover()
 		if value == nil {
@@ -304,7 +305,7 @@ func Run(args []string, env platform.Env) (code int) {
 		cmdFriction(args[1:], ctx, decisionEnv, commandCwd)
 		return 0
 	case "title":
-		cmdTitle(args[1:], decisionEnv)
+		cmdTitle(args[1:], ctx, decisionEnv, commandCwd)
 		return 0
 	case "clean":
 		cmdClean(args[1:], ctx, decisionEnv, commandCwd)

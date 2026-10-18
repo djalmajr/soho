@@ -40,6 +40,11 @@ func SendAssignmentMessage(options AssignmentMessageOptions) (collaboration.Deli
 	if options.Config == nil || options.AssignmentID == "" || options.Type == "" || strings.TrimSpace(options.Body) == "" {
 		return refused(errors.New("worker message requires assignment, type and nonempty body"))
 	}
+	// The caller-pane check runs after the options are valid and before
+	// the delivery acts in the name of the sender pane (DJA-394); under
+	// refuse it exits 2, under warn it logs the line and the delivery
+	// proceeds.
+	core.CallerGate("collaborate", options.Config, options.Env, options.Cwd)
 	if platform.Current() == "win32" {
 		if executable, ok := platform.FindExecutable("herdr", options.Env, platform.Current()); ok {
 			ext := strings.ToLower(filepath.Ext(executable))

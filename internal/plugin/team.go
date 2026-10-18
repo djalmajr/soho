@@ -210,6 +210,12 @@ func teamCall(ctx contextpkg.Context, exe string, env platform.Env, platformName
 	childEnv := env.Clone()
 	childEnv["HERDR_WORKSPACE_ID"] = target.WorkspaceID
 	childEnv["HERDR_PANE_ID"] = target.PaneID
+	// The panel acts deliberately in the name of the focused pane (the
+	// only soho runner that does): the caller-pane check (DJA-394)
+	// trusts the delegation and skips the ancestry climb for it. A
+	// script that wants to act on purpose for a pane sets the same
+	// variable itself.
+	childEnv["SOHO_DELEGATED_PANE"] = target.PaneID
 	if target.TabID != "" {
 		childEnv["HERDR_TAB_ID"] = target.TabID
 	} else {

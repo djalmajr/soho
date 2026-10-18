@@ -88,6 +88,9 @@ func setupUnifiedDiff(before, after, label string) string {
 
 func CmdInit(ctx *core.Config, env platform.Env, cwd string) {
 	herdr.RequireEnv(env, platform.Current(), os.Getpid(), nil)
+	// The caller-pane check runs before naming the caller's agent and
+	// titling the claimed pane (DJA-394).
+	core.CallerGate("init", ctx, env, cwd)
 	// Refuse before DoctorCheck: the state check would create the state dir
 	// inside the skill before the refusal. Decided with StateInSkill/
 	// StateRootPath, so the refusal itself has no side effect.
@@ -257,6 +260,15 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	s := &Say{Out: out}
 	if env.Get("HERDR_ENV") == "1" {
 		herdrContextCheck(env, s)
+		// After the context check: this process must actually run in the
+		// claimed pane (DJA-394). The warning appears for every
+		// caller_check value except off; the command itself keeps its own
+		// gate.
+		if core.CallerCheckMode(ctx, env) != "off" {
+			if res := herdr.CheckCallerPane(env); res.State == herdr.CallerMismatch {
+				s.Warning(fmt.Sprintf("Herdr context invalid: HERDR_PANE_ID='%s' is live but this process does not run in it (its process tree does not reach shell pid %d); fix the inherited HERDR_* environment", res.Pane, res.ShellPID))
+			}
+		}
 	} else {
 		s.Warning(codexenv.DiagnoseOutsideHerdr("HERDR_ENV != 1: not inside a Herdr pane", env, platform.Current(), 0, nil))
 	}

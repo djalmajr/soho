@@ -343,6 +343,9 @@ func gridShapeFor(ctx *core.Config, env platform.Env, n int) Grid {
 }
 
 func CmdRegrid(_ []string, ctx *core.Config, env platform.Env, cwd string) int {
+	// The caller-pane check runs before touching the claimed pane's tab
+	// (DJA-394); the callerContext slow path below keeps its own rule.
+	core.CallerGate("regrid", ctx, env, cwd)
 	dir := core.StateDirPath(ctx, env, cwd)
 	ws := core.WorkspaceID(ctx, env, cwd)
 	root := platform.ProjectRoot(env, cwd)

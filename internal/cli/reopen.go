@@ -34,6 +34,12 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	if line == "" {
 		core.DieFriction(fmt.Sprintf("agent '%s' is not in the roster", agent), 3, frictionLogPath, "reopen")
 	}
+	// DJA-394: the caller-pane check runs here, after the arguments and the
+	// roster are valid and before the release half closes the worker's
+	// pane and drops its roster line: a refused reopen leaves the worker
+	// as it was. The spawn half checks again through the same memo, so
+	// Herdr is asked once.
+	core.CallerGate("reopen", ctx, env, cwd)
 	// DJA-392: the spawn half of a reopen always opens a new pane (--fresh,
 	// never reuse), so the pressure refusal runs here, before the release
 	// half changes any state (roster line, pane, copies): a refused reopen

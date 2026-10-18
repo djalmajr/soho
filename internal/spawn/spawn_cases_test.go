@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
@@ -21,6 +22,10 @@ type spawnFixture struct {
 
 func newSpawnFixture(t *testing.T, rules []fakecli.Rule) spawnFixture {
 	t.Helper()
+	// The tests of this package call CmdSpawn directly, without cli.Run
+	// (which resets the caller-pane memo): each fixture starts with a
+	// clean memo so the assertions never depend on test order (DJA-394).
+	herdr.ResetCallerCheck()
 	root := t.TempDir()
 	f := spawnFixture{root: root, cwd: filepath.Join(root, "repo"), state: filepath.Join(root, "state"), bin: filepath.Join(root, "bin")}
 	for _, dir := range []string{f.cwd, f.state, f.bin, filepath.Join(root, "roles"), filepath.Join(root, "skill", "roles")} {

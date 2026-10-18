@@ -23,6 +23,9 @@ func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd strin
 		return fail(errors.New("expected start, status, event, stop or finalize"))
 	}
 	store := collaboration.Store{StateDir: core.StateDirPath(cfg, env, cwd)}
+	// The caller-pane check runs after the arguments are valid and before
+	// the first Herdr call of the operations that act in the name of the
+	// caller pane (DJA-394): a usage error never calls Herdr.
 	if argv[0] != "status" && core.StateInSkill(cfg, env, cwd) != "" {
 		return fail(errors.New("state inside the skill is forbidden"))
 	}
@@ -30,9 +33,6 @@ func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd strin
 	var err error
 	switch argv[0] {
 	case "start":
-		if err := collaborationOrchestrator(store.StateDir, cfg, env, cwd); err != nil {
-			return fail(err)
-		}
 		if len(argv) < 5 {
 			return fail(errors.New("start requires author reviewer --brief <path>"))
 		}
@@ -59,6 +59,10 @@ func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd strin
 		}
 		if brief == "" {
 			return fail(errors.New("start requires --brief"))
+		}
+		core.CallerGate("collaborate", cfg, env, cwd)
+		if err := collaborationOrchestrator(store.StateDir, cfg, env, cwd); err != nil {
+			return fail(err)
 		}
 		brief, err = filepath.Abs(brief)
 		if err != nil {
@@ -152,6 +156,14 @@ func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd strin
 		if len(argv) != 7 || argv[3] != "--report" || argv[5] != "--revision" {
 			return fail(errors.New("event requires assignment ready|findings|corrected|approved|escalate --report <path> --revision <fingerprint>"))
 		}
+		typ := map[string]string{"ready": "review.ready", "corrected": "review.ready", "findings": "review.finding", "approved": "review.result"}[argv[2]]
+		if typ == "" && argv[2] != "escalate" {
+			return fail(errors.New("unknown collaboration event"))
+		}
+		// Before anything is read or persisted, and also for `escalate`
+		// (no delivery): PrepareEvent writes the transition. The delivery
+		// below checks again through the same memo.
+		core.CallerGate("collaborate", cfg, env, cwd)
 		a, err = store.Read(argv[1])
 		if err != nil {
 			return fail(err)
@@ -169,10 +181,6 @@ func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd strin
 		target := a.Reviewer
 		if actor.Pane == target.Pane {
 			target = a.Author
-		}
-		typ := map[string]string{"ready": "review.ready", "corrected": "review.ready", "findings": "review.finding", "approved": "review.result"}[argv[2]]
-		if typ == "" && argv[2] != "escalate" {
-			return fail(errors.New("unknown collaboration event"))
 		}
 		if typ != "" {
 			if err := collaborationPermission(cfg, env, a, actor, target, typ); err != nil {
@@ -204,11 +212,15 @@ func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd strin
 		}
 		return 0
 	case "stop", "finalize":
-		if err := collaborationOrchestrator(store.StateDir, cfg, env, cwd); err != nil {
-			return fail(err)
-		}
 		if (argv[0] == "stop" && len(argv) != 2) || (argv[0] == "finalize" && (len(argv) != 4 || argv[2] != "--verdict")) {
 			return fail(errors.New("stop requires assignment; finalize requires assignment --verdict accept|reject"))
+		}
+		if argv[0] == "finalize" && argv[3] != "accept" && argv[3] != "reject" {
+			return fail(errors.New("verdict must be accept or reject"))
+		}
+		core.CallerGate("collaborate", cfg, env, cwd)
+		if err := collaborationOrchestrator(store.StateDir, cfg, env, cwd); err != nil {
+			return fail(err)
 		}
 		a, err = store.Read(argv[1])
 		if err != nil {

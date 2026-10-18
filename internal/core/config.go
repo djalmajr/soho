@@ -84,7 +84,7 @@ var ConfigScalarKeys = []string{
 	"provider_retry_delay", "provider_capacity_texts", "provider_error_texts",
 	"prompt_check_seconds", "prompt_settle_seconds", "stuck_warn_minutes", "context_warn_percent", "state_dir",
 	"report_language", "notify", "feedback", "feedback_repo", "feedback_dir", "feedback_to",
-	"setup_target", "inbound", "worker_messages", "metrics",
+	"setup_target", "inbound", "caller_check", "worker_messages", "metrics",
 	"pressure_disk_free_percent", "pressure_swap_percent",
 	"pressure_refuse_disk_free_percent", "pressure_refuse_swap_percent",
 	"footprint_warn_gb",
@@ -375,6 +375,8 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return value == "canonical" || value == "local"
 	case key == "inbound":
 		return value == "auto" || value == "off"
+	case key == "caller_check":
+		return callerCheckModeOk(value)
 	case key == "worker_messages":
 		return value == "off" || value == "policy"
 	case key == "panes":

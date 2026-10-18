@@ -15,6 +15,7 @@ import (
 	_ "unsafe"
 
 	"github.com/djalmajr/soho/internal/cli"
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/peer"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
@@ -205,6 +206,11 @@ func newFixture(t *testing.T, rules []fakecli.Rule) *fixture {
 
 func newFixtureAt(t *testing.T, dir string, rules []fakecli.Rule) *fixture {
 	t.Helper()
+	// Some tests of this package call peer.CmdSend directly, without
+	// cli.Run (which resets the caller-pane memo): each fixture starts
+	// with a clean memo so the call-list assertions never depend on
+	// test order (DJA-394).
+	herdr.ResetCallerCheck()
 	binDir := filepath.Join(dir, "bin")
 	for _, d := range []string{binDir, filepath.Join(dir, "home"), filepath.Join(dir, "config"), filepath.Join(dir, "state"), filepath.Join(dir, "tmp")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {

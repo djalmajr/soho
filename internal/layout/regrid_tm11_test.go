@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -96,6 +97,12 @@ func TestTM11RegridCommandParity(t *testing.T) {
 						t.Fatal("legacy capture must contain exactly one final caller move")
 					}
 					expectedLog = strings.Replace(expectedLog, lastCallerMove, lastCallerMove+"pane list --workspace ws\n", 1)
+				}
+				// DJA-394: the caller has HERDR_PANE_ID, so the regrid reads
+				// its pane's shell pid first (the fake has no rule for it:
+				// unknown, and the step's output and files are unchanged).
+				if tc.golden == "pull" || tc.golden == "kept" {
+					expectedLog = *testutil.RewriteCallerCheckLog(&expectedLog, "C")
 				}
 				if actualLog != expectedLog {
 					t.Fatalf("Go call-log divergence after the explicit topology refresh; Go=%q expected=%q", actualLog, expectedLog)
