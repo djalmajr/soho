@@ -101,7 +101,7 @@ var jobMachineKeys = []string{
 var KnownKinds = []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode"}
 var EffortLadder = []string{"low", "medium", "high", "xhigh", "max"}
 
-var dottedKeyRE = regexp.MustCompile(`^(?:role\.[a-z][a-z0-9_-]*\.(?:kind|model|effort|mcp|args)|lane\.[a-z][a-z0-9_-]*\.(?:roles|kind|model|effort|approvals|panes|args|mcp)|model\.[a-z][a-z0-9_.-]+|effort\.[a-z][a-z0-9_-]+|context_window\.[a-z][a-z0-9_-]+|args\.[a-z][a-z0-9_-]+|worker_messages\.rules\.[a-z][a-z0-9_]*\.(?:from|to|types|scope|enabled))$`)
+var dottedKeyRE = regexp.MustCompile(`^(?:role\.[a-z][a-z0-9_-]*\.(?:kind|model|effort|mcp|args)|lane\.[a-z][a-z0-9_-]*\.(?:roles|kind|model|effort|approvals|panes|args|mcp)|model\.[a-z][a-z0-9_.-]+|effort\.[a-z][a-z0-9_-]+|context_window\.[a-z][a-z0-9_-]+|background_patterns\.[a-z][a-z0-9_-]+|args\.[a-z][a-z0-9_-]+|worker_messages\.rules\.[a-z][a-z0-9_]*\.(?:from|to|types|scope|enabled))$`)
 var decimalRE = regexp.MustCompile(`^[0-9]+$`)
 var positiveDecimalRE = regexp.MustCompile(`^[1-9][0-9]*$`)
 
@@ -498,20 +498,39 @@ func ContextWindowKey(kind string) string {
 // every kind present in a config layer or in the environment, kind →
 // (value, source), empty values dropped.
 func ContextWindowEntries(ctx *Config, env platform.Env) map[string]ConfigEntry {
+	return kindEntries(ctx, env, "context_window_")
+}
+
+// BackgroundPatternKey is the normalized config key background_patterns.<kind>.
+func BackgroundPatternKey(kind string) string {
+	return "background_patterns_" + kind
+}
+
+// BackgroundPatternEntries reports the effective background_patterns.<kind>
+// values, the same layers as Cfg: for every kind present in a config layer or
+// in the environment, kind → (value, source), empty values dropped.
+func BackgroundPatternEntries(ctx *Config, env platform.Env) map[string]ConfigEntry {
+	return kindEntries(ctx, env, "background_patterns_")
+}
+
+// kindEntries is the effective value of every <prefix><kind> key (prefix in
+// its normalized form, like "context_window_"), by kind.
+func kindEntries(ctx *Config, env platform.Env, prefix string) map[string]ConfigEntry {
+	envPrefix := "SOHO_" + strings.ToUpper(prefix)
 	kinds := make(map[string]bool)
 	for key := range ctx.Entries {
-		if strings.HasPrefix(key, "context_window_") {
-			kinds[strings.TrimPrefix(key, "context_window_")] = true
+		if strings.HasPrefix(key, prefix) {
+			kinds[strings.TrimPrefix(key, prefix)] = true
 		}
 	}
 	for name := range env {
-		if strings.HasPrefix(name, "SOHO_CONTEXT_WINDOW_") {
-			kinds[strings.ToLower(NormalizeKey(strings.TrimPrefix(name, "SOHO_CONTEXT_WINDOW_")))] = true
+		if strings.HasPrefix(name, envPrefix) {
+			kinds[strings.ToLower(NormalizeKey(strings.TrimPrefix(name, envPrefix)))] = true
 		}
 	}
 	out := make(map[string]ConfigEntry, len(kinds))
 	for kind := range kinds {
-		key := ContextWindowKey(kind)
+		key := prefix + kind
 		if value := Cfg(ctx, key, "", env); value != "" {
 			out[kind] = ConfigEntry{Value: value, Source: CfgSource(ctx, key, env)}
 		}
@@ -794,6 +813,9 @@ func DottedKeyName(key string, ctx *Config, env platform.Env, cwd string) string
 	if head == "context" && len(parts) >= 3 && parts[1] == "window" {
 		return "context_window." + strings.Join(parts[2:], ".")
 	}
+	if head == "background" && len(parts) >= 3 && parts[1] == "patterns" {
+		return "background_patterns." + strings.Join(parts[2:], ".")
+	}
 	if head == "worker" && len(parts) >= 5 && parts[1] == "messages" && parts[2] == "rules" {
 		// worker_messages.rules.<name>.<field>: the name may hold underscores,
 		// so the field is the longest known suffix of the joined tail.
@@ -940,7 +962,7 @@ func ConfigScalarValue(ctx *Config, key string, env platform.Env, cwd string) st
 var ruleNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 func isDottedNormalizedKey(key string) bool {
-	return strings.HasPrefix(key, "args_") || strings.HasPrefix(key, "role_") || strings.HasPrefix(key, "model_") || strings.HasPrefix(key, "effort_") || strings.HasPrefix(key, "lane_") || strings.HasPrefix(key, "context_window_") || strings.HasPrefix(key, "worker_messages_rules_")
+	return strings.HasPrefix(key, "args_") || strings.HasPrefix(key, "role_") || strings.HasPrefix(key, "model_") || strings.HasPrefix(key, "effort_") || strings.HasPrefix(key, "lane_") || strings.HasPrefix(key, "context_window_") || strings.HasPrefix(key, "background_patterns_") || strings.HasPrefix(key, "worker_messages_rules_")
 }
 
 func padUTF16(value string, width int) string {

@@ -150,7 +150,8 @@ func runTM8ConfigGolden(t *testing.T, name string) {
 	// ends with the two pressure refusal keys. The DJA-393 pane_columns
 	// oracle adapts the config listing that now shows the declared-columns
 	// keys after split_min_pane, and the DJA-399 oracle adds
-	// the compact_timeout line after dispatch_timeout.
+	// the compact_timeout line after dispatch_timeout, and the DJA-405 oracle
+	// adds the background_patterns.claude row before effort.cursor.
 	for i := range want.Files {
 		want.Files[i].Rel = testutil.RewriteSohoName(want.Files[i].Rel)
 		if want.Files[i].Content != nil {
@@ -159,6 +160,7 @@ func runTM8ConfigGolden(t *testing.T, name string) {
 			*want.Files[i].Content = testutil.RewritePaneColumns(*want.Files[i].Content)
 			*want.Files[i].Content = testutil.RewriteFootprint(*want.Files[i].Content)
 			*want.Files[i].Content = testutil.RewriteCompactTimeout(*want.Files[i].Content)
+			*want.Files[i].Content = testutil.RewriteBackgroundPatterns(*want.Files[i].Content)
 			*want.Files[i].Content = testutil.RewriteCallerCheck(*want.Files[i].Content)
 		}
 	}
@@ -168,12 +170,14 @@ func runTM8ConfigGolden(t *testing.T, name string) {
 		want.Steps[i].Out = testutil.RewritePaneColumns(want.Steps[i].Out)
 		want.Steps[i].Out = testutil.RewriteFootprint(want.Steps[i].Out)
 		want.Steps[i].Out = testutil.RewriteCompactTimeout(want.Steps[i].Out)
+		want.Steps[i].Out = testutil.RewriteBackgroundPatterns(want.Steps[i].Out)
 		want.Steps[i].Out = testutil.RewriteCallerCheck(want.Steps[i].Out)
 		want.Steps[i].Err = testutil.RewriteSohoName(want.Steps[i].Err)
 		want.Steps[i].Err = testutil.RewritePressureRefusal(want.Steps[i].Err)
 		want.Steps[i].Err = testutil.RewritePaneColumns(want.Steps[i].Err)
 		want.Steps[i].Err = testutil.RewriteFootprint(want.Steps[i].Err)
 		want.Steps[i].Err = testutil.RewriteCompactTimeout(want.Steps[i].Err)
+		want.Steps[i].Err = testutil.RewriteBackgroundPatterns(want.Steps[i].Err)
 		want.Steps[i].Err = testutil.RewriteCallerCheck(want.Steps[i].Err)
 	}
 	for i, step := range want.Steps {

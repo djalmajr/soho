@@ -120,6 +120,13 @@ Use a verified native release binary, or build an explicitly selected checkout w
 - **Cause:** approval UIs flash briefly; a single `blocked` sample is not proof.
 - **Now:** two consecutive probes (≈6 s) are required. With `auto_approve=on` the default option is sent and the wait continues.
 
+## `wait` returned `settled-no-report` for a claude worker with a shell or Monitor still running
+
+- **Symptom:** `wait` returns `settled-no-report` (exit 6) about `settled_grace` seconds after the worker's turn ends; the screen shows `✻ Cooked for 7m 37s · done 2:47 PM · 1 shell still running` or `… · 2 monitors still running`, and the footer ends with `· 1 shell` or `· 2 monitors`. The report appears minutes later.
+- **Cause:** Herdr sees the worker idle, but Claude Code resumes by itself when the background shell or Monitor ends, and the worker then writes the report.
+- **Now:** `background_patterns.claude` (shipped; one RE2 regular expression per kind) is checked right before `wait` would return `settled-no-report`: when any of the last 15 non-empty lines of the visible screen matches, the wait keeps waiting for the report until `--timeout`, and prints once per `wait` and agent `'<agent>' is idle with a background task still running ("<match>"); waiting for its report`. `status` is unchanged.
+- **Do:** other kinds have no pattern: wait for the report file (a `settled-no-report` is not proof that the worker ended), or set `background_patterns.<kind>` for the text that kind prints. An expression that does not compile is ignored and `doctor` warns. Workers should wait for their own background gates before ending the turn.
+
 ## `auto_approve` loops on the same dialog
 
 - **Symptom:** with `auto_approve=on` the worker keeps re-asking the same dialog (a prompt the default "yes" does not resolve).
