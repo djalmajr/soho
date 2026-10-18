@@ -376,12 +376,39 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	}
 	capRaw := core.Cfg(ctx, "split_max_panes", "4", env)
 	cap := layout.SplitCap(ctx, env)
+	pcsRaw := core.Cfg(ctx, "pane_columns", "", env)
+	_, _, paneColumnsSet := layout.PaneColumns(ctx, env)
+	capDisplay := strconv.Itoa(cap)
 	if !decimal.MatchString(capRaw) {
 		s.Warning(fmt.Sprintf("config: split_max_panes='%s' is not a number (using 4)", capRaw))
-	} else if cap < 2 {
+	} else if !paneColumnsSet && cap < 2 {
 		s.Warning(fmt.Sprintf("config: split_max_panes=%d leaves no room next to the caller; every worker will overflow into herd tabs (set 2 or more)", cap))
+	} else if paneColumnsSet {
+		// The declared shape decides the cap: last-column and new-column
+		// leave the caller tab uncapped (shown as none); tab caps it at the
+		// declared total (an explicit split_max_panes wins and shows the
+		// number).
+		if displayCap, unlimited := layout.SplitCapDeclared(ctx, env); unlimited {
+			capDisplay = "none"
+		} else {
+			capDisplay = strconv.Itoa(displayCap)
+		}
+		// The raw pane_overflow shows, so an invalid value (read as
+		// last-column) is visible.
+		s.Ok(fmt.Sprintf("config: split_max_panes=%s split_min_pane=%g pane_columns=%s pane_overflow=%s", capDisplay, layout.SplitMin(ctx, env), pcsRaw, core.Cfg(ctx, "pane_overflow", layout.DefaultPaneOverflow, env)))
 	} else {
 		s.Ok(fmt.Sprintf("config: split_max_panes=%d split_min_pane=%g", cap, layout.SplitMin(ctx, env)))
+	}
+	if pcsRaw != "" && !paneColumnsSet {
+		s.Warning(fmt.Sprintf("config: pane_columns='%s' must be 1 to 6 comma-separated row counts from 1 to 9, like 1,2,3 (using the default grid)", pcsRaw))
+	}
+	if paneColumnsSet {
+		if core.Cfg(ctx, "layout", "split", env) == "tab" {
+			s.Warning("config: pane_columns has no effect with layout=tab")
+		}
+		if core.Cfg(ctx, "regrid", "on", env) == "off" {
+			s.Warning("config: pane_columns is set but regrid=off; workers are placed by split only, not in the declared columns")
+		}
 	}
 	mwRaw := core.Cfg(ctx, "max_workers", "3", env)
 	mw := core.MaxWorkers(ctx, env)

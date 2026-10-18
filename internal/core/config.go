@@ -76,7 +76,7 @@ func baseConfigLayerPaths(env platform.Env, cwd string, sel UserSelection) []Con
 
 var ConfigScalarKeys = []string{
 	"orchestrator_name", "layout", "regrid", "max_workers", "split_max_panes",
-	"split_min_pane", "herd_label", "herd_label_max", "reuse_workers",
+	"split_min_pane", "pane_columns", "pane_overflow", "herd_label", "herd_label_max", "reuse_workers",
 	"multi_role", "panes", "lanes", "pane_mode", "flex_extra", "flex_roles",
 	"worker_context", "brief_lint", "brief_lint_aliases", "brief_lint_placeholders", "approvals",
 	"auto_approve", "max_auto_approvals", "max_effort", "family_check",
@@ -361,6 +361,10 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return value == "off" || value == "policy"
 	case key == "panes":
 		return value == "2" || value == "3" || value == "4"
+	case key == "pane_columns":
+		return paneColumnsValueOk(value)
+	case key == "pane_overflow":
+		return value == "last-column" || value == "new-column" || value == "tab"
 	case key == "pane_mode":
 		return value == "strict" || value == "flex"
 	case key == "flex_extra":
@@ -399,6 +403,17 @@ func jobTimeoutValueOk(value string) bool {
 	}
 	n, err := strconv.Atoi(value)
 	return err == nil && n >= 1 && n <= 1440
+}
+
+// paneColumnsValueOk is the declared caller-tab shape: 1 to 6 single-digit
+// row counts (1 to 9) separated by commas, no spaces. The empty value is
+// valid too: it is the default grid (an empty pane_columns in a config
+// file resolves to the empty default through the normal empty-value
+// fallback; `config set` still refuses empty values for every key).
+var paneColumnsRE = regexp.MustCompile(`^[1-9](,[1-9]){0,5}$`)
+
+func paneColumnsValueOk(value string) bool {
+	return value == "" || paneColumnsRE.MatchString(value)
 }
 
 // jobFinishingTimeoutValueOk is the contract range for the terminal

@@ -359,7 +359,13 @@ func PickSplitAnchor(ctx *core.Config, env platform.Env, cwd string) *Anchor {
 			mine = append(mine, fields[1])
 		}
 	}
-	out := SplitAnchor([]byte(r.Stdout), me, mine, SplitCap(ctx, env), SplitMin(ctx, env))
+	var out *Anchor
+	if cols, overflow, declared := PaneColumns(ctx, env); declared {
+		cap, unlimited := SplitCapDeclared(ctx, env)
+		out = SplitAnchorDeclared([]byte(r.Stdout), me, mine, cols, overflow, cap, unlimited, SplitMin(ctx, env))
+	} else {
+		out = SplitAnchor([]byte(r.Stdout), me, mine, SplitCap(ctx, env), SplitMin(ctx, env))
+	}
 	if out == nil {
 		return &Anchor{Anchor: me, Direction: "right"}
 	}
