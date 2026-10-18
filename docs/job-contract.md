@@ -131,7 +131,7 @@ When the checkout is missing, the job clones it into `<job_repos_root>/<org>/<re
 ## Git: always in sync, always a draft pull request
 
 - The job orchestrator commits once per integrated slice; workers never commit or push.
-- Every new commit on `job/<id>` is pushed by the supervisor (it watches `HEAD` every 30 seconds; `job checkpoint` pushes immediately). Pushes never use `--force`; a rejected push becomes a `blocked` event.
+- Every new commit on `job/<id>` is pushed by the supervisor (it watches `HEAD` every 30 seconds; `job checkpoint` pushes immediately). Pushes never use `--force`; only a push the remote refused (`git push --porcelain` exits non-zero and prints a rejected ref line) becomes a `blocked` event. Any other failure (network, authentication, a missing repository) is a git sync error: the supervisor records it in the friction log with the redacted detail and the next cycle pushes again, with no `blocked` event and the job still `running`.
 - The first push opens a draft pull request against `base`. The final push happens in `finishing`. The job never merges and never marks the pull request ready for review.
 - A job that ends with no commit (research, review) opens no pull request: `report.json` has `"pr": null` and `"motivo": "sem commits"`.
 - On cancel or timeout, uncommitted changes in the job worktree become a `wip(job): checkpoint` commit, which is pushed; the pull request stays a draft.
