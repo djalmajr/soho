@@ -10,18 +10,22 @@ import (
 // an opened process (the K32 alias takes no dummy first parameter).
 var windowsProcK32GetProcessMemoryInfo = windowsKernel32.NewProc("K32GetProcessMemoryInfo")
 
-// windowsProcMemoryCounters is PROC_MEMORY_COUNTERS. The whole struct is
-// declared (K32GetProcessMemoryInfo validates the passed size against
-// sizeof(PROC_MEMORY_COUNTERS)); only WorkingSetSize is read.
+// windowsProcMemoryCounters is PROCESS_MEMORY_COUNTERS: two DWORDs and
+// eight SIZE_Ts (uintptr, so the layout also holds on 32-bit Windows). The
+// whole struct is declared (K32GetProcessMemoryInfo validates the passed
+// size against sizeof(PROCESS_MEMORY_COUNTERS)); only WorkingSetSize is
+// read.
 type windowsProcMemoryCounters struct {
-	Size                   uint32
-	PageFaultCount         uint32
-	PeakWorkingSetSize     uint64
-	WorkingSetSize         uint64
-	QuotaPagedPoolUsage    uint64
-	QuotaNonPagedPoolUsage uint64
-	PagefileUsage          uint64
-	PeakPagefileUsage      uint64
+	Size                       uint32
+	PageFaultCount             uint32
+	PeakWorkingSetSize         uintptr
+	WorkingSetSize             uintptr
+	QuotaPeakPagedPoolUsage    uintptr
+	QuotaPagedPoolUsage        uintptr
+	QuotaPeakNonPagedPoolUsage uintptr
+	QuotaNonPagedPoolUsage     uintptr
+	PagefileUsage              uintptr
+	PeakPagefileUsage          uintptr
 }
 
 // ReadProcessRSS reads the pid's resident working set (bytes) through
