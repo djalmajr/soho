@@ -231,6 +231,13 @@ Use a verified native release binary, or build an explicitly selected checkout w
 - **Now:** a `not-received` dispatch records the moment and the agent's `state_change_seq` in `<state>/wait/<agent>.not-received`. A `wait` retries one Enter per `prompt_check_seconds` window while the prompt is still visible in the input box, up to 3 retries; the agent starting to work, blocking, or its state having changed since the marker (a different `state_change_seq`) clears the markers and the wait goes on as usual; after the 3 retries — or when the prompt is no longer in the input box with the agent not working — the wait exits 15 with `not-received`. `status` reports `not-received` (exit 15) read-only, never sending a key, and a moved seq clears the report there too. A new dispatch clears the markers.
 - **Do:** on a 15, read the pane (`herdr agent read <agent> --source visible`) and dispatch again — the CLI is usually ready by then.
 
+## Prompt to an agent that was already working shows no sign of arriving
+
+- **Symptom:** `prompt to '<agent>' not confirmed: it was working and shows no sign of the prompt; no key was sent.` A `dispatch --no-wait` exits 15 (`not-received`) right after it.
+- **Cause:** a working agent (a codex just after `spawn --fresh`) can take the prompt without showing it, so its arrival is not proved.
+- **Now:** the blocking `dispatch` records the same `<state>/wait/<agent>.not-received` marker and the same warning, adds `Waiting for its report as soho wait would.`, and keeps waiting for the report (same `--timeout`); the JSON and the exit are those of that wait. Every other `not-received` (a dialog, an auth error, text stuck in the input box, an unreadable or unconfirmed input region, a resend) still ends the dispatch with 15, because the prompt certainly did not enter.
+- **Do:** with `--no-wait`, run `soho wait <agent>` to get the end signal.
+
 ## Running native tests
 
 - Use Go 1.25 or newer. Run the focused package/test named by the brief while editing, then gofmt, `go vet ./...`, `go test ./...` and `go test -race ./...` after integration.
