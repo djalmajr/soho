@@ -50,6 +50,8 @@ func claimShell(t *testing.T, config, pane string, forked bool) {
 
 // callerGateEnv is a command fixture whose fake herdr answers the
 // process-info of w1:p9 (shell 4000) and whose ancestry is a forked tree.
+// It sets caller_check=refuse: the default is warn since DJA-406, and these
+// tests prove the refusal.
 func callerGateEnv(t *testing.T) (platform.Env, string, string) {
 	t.Helper()
 	env, cwd := commandFixture(t)
@@ -66,6 +68,7 @@ func callerGateEnv(t *testing.T) (platform.Env, string, string) {
 	env["SOHO_FAKECLI_CONFIG"] = dir
 	env["HERDR_ENV"] = "1"
 	env["HERDR_PANE_ID"] = "w1:p9"
+	env["SOHO_CALLER_CHECK"] = "refuse"
 	herdr.ResetCallerCheck()
 	return env, cwd, dir
 }
@@ -86,6 +89,7 @@ func TestReopenCallerRefusalKeepsTheWorker(t *testing.T) {
 	f := newReopenFixture(t, "working")
 	setReopenRules(t, f)
 	f.env["HERDR_PANE_ID"] = "w1:p9"
+	f.env["SOHO_CALLER_CHECK"] = "refuse"
 	delete(f.env, "SOHO_DELEGATED_PANE")
 	claimShell(t, f.configFile, "w1:p9", true)
 	before, err := os.ReadFile(filepath.Join(f.state, "agents.tsv"))
@@ -152,6 +156,7 @@ func TestCollaborateEventCallerRefusalKeepsTheAssignment(t *testing.T) {
 			a := startCollaboration(t, f, brief)
 			env := f.env.Clone()
 			env["HERDR_PANE_ID"] = "ws:p1"
+			env["SOHO_CALLER_CHECK"] = "refuse"
 			delete(env, "SOHO_DELEGATED_PANE")
 			claimShell(t, filepath.Join(env["SOHO_FAKECLI_CONFIG"], "herdr.json"), "ws:p1", true)
 			r, err := collaboration.Fingerprint(a.Author.Cwd, a.Paths)

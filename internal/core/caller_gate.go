@@ -15,10 +15,11 @@ func callerCheckModeOk(value string) bool {
 	return value == "refuse" || value == "warn" || value == "off"
 }
 
-// CallerCheckMode resolves the caller_check policy (DJA-394): refuse by
-// default, then warn or off. The SOHO_CALLER_CHECK environment layer wins
-// over the file layers; an invalid value in either layer counts as
-// refuse.
+// CallerCheckMode resolves the caller_check policy (DJA-394): warn by
+// default (DJA-406: the check still refuses an orchestrator that runs as a
+// Claude Code background job), then refuse or off. The SOHO_CALLER_CHECK
+// environment layer wins over the file layers; an invalid value in either
+// layer counts as refuse, the strict reading of a key written wrong.
 func CallerCheckMode(ctx *Config, env platform.Env) string {
 	if value := env.Get("SOHO_CALLER_CHECK"); value != "" {
 		if callerCheckModeOk(value) {
@@ -31,9 +32,10 @@ func CallerCheckMode(ctx *Config, env platform.Env) string {
 			if callerCheckModeOk(entry.Value) {
 				return entry.Value
 			}
+			return "refuse"
 		}
 	}
-	return "refuse"
+	return "warn"
 }
 
 // callerGateLine is the shared mismatch text (the command prefix is

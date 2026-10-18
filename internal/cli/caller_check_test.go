@@ -78,8 +78,9 @@ func titleCallCount(t *testing.T, dir string, argv ...string) int {
 
 // TestTitleCallerPaneCheck: a forked caller tree (the inherited
 // HERDR_PANE_ID is live, but this process is not in it) makes `title`
-// refuse before `pane report-metadata`, continue with a warning under
-// caller_check=warn, and skip the check entirely under off.
+// refuse before `pane report-metadata` under caller_check=refuse, continue
+// with a warning under warn (the default since DJA-406) and skip the check
+// entirely under off.
 func TestTitleCallerPaneCheck(t *testing.T) {
 	const pane = "w1:p9"
 	const refuseLine = "soho: title: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Nothing was changed. Run soho from the pane that hosts this agent, or set caller_check=warn\n"
@@ -108,6 +109,7 @@ func TestTitleCallerPaneCheck(t *testing.T) {
 	t.Run("mismatch with refuse exits 2 before pane report-metadata", func(t *testing.T) {
 		herdr.ResetCallerCheck()
 		env, cwd, dir := install(t, true)
+		env["SOHO_CALLER_CHECK"] = "refuse"
 		code, out, errOut := runIn(t, []string{"title", "goal"}, env, cwd)
 		if code != 2 {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
@@ -132,6 +134,31 @@ func TestTitleCallerPaneCheck(t *testing.T) {
 		}
 		if !strings.Contains(errOut, "soho: warning: title: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Continuing because caller_check=warn. Run soho from the pane that hosts this agent, or set caller_check=warn") {
 			t.Fatalf("stderr missing the warn line: %q", errOut)
+		}
+		friction, err := os.ReadFile(filepath.Join(env["SOHO_DIR"], "ws", "friction.log"))
+		if err != nil || !strings.Contains(string(friction), "Continuing because caller_check=warn.") {
+			t.Fatalf("friction.log=%q err=%v", friction, err)
+		}
+	})
+	t.Run("mismatch without the key only warns and the command goes on (DJA-406)", func(t *testing.T) {
+		herdr.ResetCallerCheck()
+		env, cwd, dir := install(t, true)
+		if _, set := env["SOHO_CALLER_CHECK"]; set {
+			t.Fatal("the fixture sets SOHO_CALLER_CHECK: it would not exercise the default")
+		}
+		code, out, errOut := runIn(t, []string{"title", "goal"}, env, cwd)
+		if code != 0 || !strings.Contains(out, `"pane_id": "w1:p9"`) {
+			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
+		}
+		if !strings.Contains(errOut, "soho: warning: title: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it") ||
+			!strings.Contains(errOut, "Continuing because caller_check=warn.") {
+			t.Fatalf("stderr missing the warn line: %q", errOut)
+		}
+		if strings.Contains(errOut, "Nothing was changed.") {
+			t.Fatalf("the default refused: %q", errOut)
+		}
+		if n := titleCallCount(t, dir, "pane", "report-metadata"); n != 1 {
+			t.Fatalf("report-metadata calls=%d want 1", n)
 		}
 		friction, err := os.ReadFile(filepath.Join(env["SOHO_DIR"], "ws", "friction.log"))
 		if err != nil || !strings.Contains(string(friction), "Continuing because caller_check=warn.") {

@@ -163,6 +163,7 @@ func TestCmdSpawnCallerPaneCheck(t *testing.T) {
 	t.Run("mismatch with refuse exits 2 before pane split, agent start or agent rename", func(t *testing.T) {
 		herdr.ResetCallerCheck()
 		env, _, cwd, bin := callerSpawnFixture(t, freshSpawnRules(), forkedPS())
+		env["SOHO_CALLER_CHECK"] = "refuse"
 		code, _, errOut := runSpawnCLI(t, env, cwd, []string{"worker", "--pane", "w0test:p0a", "--name", "worker"})
 		if code != 2 {
 			t.Fatalf("code=%d err=%q", code, errOut)

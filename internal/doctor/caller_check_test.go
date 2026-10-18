@@ -61,7 +61,7 @@ func doctorProcessInfoCalls(t *testing.T, root string) int {
 }
 
 func TestDoctorCallerPaneWarning(t *testing.T) {
-	t.Run("mismatch warns under refuse (the default)", func(t *testing.T) {
+	t.Run("mismatch warns without the key (the default is warn)", func(t *testing.T) {
 		herdr.ResetCallerCheck()
 		env, root := callerDoctorFixture(t, true, forkedDoctorPS())
 		got := doctorCheckOutput(t, env, root)
@@ -72,10 +72,10 @@ func TestDoctorCallerPaneWarning(t *testing.T) {
 			t.Fatalf("process-info calls=%d want 1", n)
 		}
 	})
-	t.Run("mismatch warns under warn too", func(t *testing.T) {
+	t.Run("mismatch warns under refuse too", func(t *testing.T) {
 		herdr.ResetCallerCheck()
 		env, root := callerDoctorFixture(t, true, forkedDoctorPS())
-		env["SOHO_CALLER_CHECK"] = "warn"
+		env["SOHO_CALLER_CHECK"] = "refuse"
 		got := doctorCheckOutput(t, env, root)
 		if !strings.Contains(got, callerDoctorWarn) {
 			t.Fatalf("doctor output missing the warning:\n%s", got)

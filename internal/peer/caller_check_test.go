@@ -81,6 +81,7 @@ func TestCmdSendCallerPaneCheck(t *testing.T) {
 		f := newFixture(t, callerSendRules())
 		installForkedTree(t)
 		f.env["HERDR_PANE_ID"] = "w1:p9"
+		f.env["SOHO_CALLER_CHECK"] = "refuse"
 		code, _, stderr := f.run([]string{"send", "w0test:p0a", "hello"})
 		if code != 2 {
 			t.Fatalf("code=%d stderr=%q", code, stderr)

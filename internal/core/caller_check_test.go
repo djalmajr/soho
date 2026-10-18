@@ -21,9 +21,26 @@ func TestConfigValueOkCallerCheck(t *testing.T) {
 
 func TestCallerCheckMode(t *testing.T) {
 	env := platform.Env{}
-	// Absent key: the default refuse.
-	if got := CallerCheckMode(&Config{Entries: map[string]ConfigEntry{}}, env); got != "refuse" {
+	// Absent key: the default warn (DJA-406), in a config with no entries
+	// and with a nil one.
+	if got := CallerCheckMode(&Config{Entries: map[string]ConfigEntry{}}, env); got != "warn" {
 		t.Fatalf("default=%q", got)
+	}
+	if got := CallerCheckMode(nil, env); got != "warn" {
+		t.Fatalf("default without a config=%q", got)
+	}
+	// An explicit refuse is kept, in a file and in the environment.
+	fileRefuse := &Config{Entries: map[string]ConfigEntry{"caller_check": {Value: "refuse", Source: "project"}}}
+	if got := CallerCheckMode(fileRefuse, env); got != "refuse" {
+		t.Fatalf("file refuse=%q", got)
+	}
+	if got := CallerCheckMode(&Config{Entries: map[string]ConfigEntry{}}, platform.Env{"SOHO_CALLER_CHECK": "refuse"}); got != "refuse" {
+		t.Fatalf("env refuse=%q", got)
+	}
+	// An empty entry value is no value: it falls to the default.
+	fileEmpty := &Config{Entries: map[string]ConfigEntry{"caller_check": {Value: "", Source: "project"}}}
+	if got := CallerCheckMode(fileEmpty, env); got != "warn" {
+		t.Fatalf("empty file value=%q", got)
 	}
 	// A file value.
 	fileWarn := &Config{Entries: map[string]ConfigEntry{"caller_check": {Value: "warn", Source: "project"}}}

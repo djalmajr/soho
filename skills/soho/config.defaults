@@ -282,10 +282,14 @@ inbound=auto
 # Caller-pane check (soho spawn, send, regrid, title, init, collaborate):
 # whether a command that acts in the name of HERDR_PANE_ID verifies that
 # this process actually runs in that pane (its process tree must reach the
-# pane's shell, read from `herdr pane process-info`): refuse (default, exit
-# 2) | warn | off. An invalid value counts as refuse. A SOHO_DELEGATED_PANE
-# equal to HERDR_PANE_ID is a deliberate delegation and is never refused.
-caller_check=refuse
+# pane's shell, read from `herdr pane process-info`): warn (default) |
+# refuse (exit 2) | off. The default is warn because the check still refuses
+# an orchestrator that runs as a Claude Code background job (DJA-406): the job
+# continues the pane's session, but its process does not descend from the
+# pane's shell. refuse is the strict choice. An invalid value counts as
+# refuse. A SOHO_DELEGATED_PANE equal to HERDR_PANE_ID is a deliberate
+# delegation and is never refused.
+caller_check=warn
 
 # Worker-to-worker messages: off (default) | policy. With policy, named
 # directional rules decide which worker may send which message type to which

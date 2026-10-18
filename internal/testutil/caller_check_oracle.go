@@ -4,7 +4,7 @@
 // The frozen goldens (internal/testdata/legacy: parity-config.json) predate
 // the caller_check scalar key: their expected `soho config` output lists
 // the scalar keys with inbound and no line after it. The implementation now
-// lists caller_check (default refuse) right after inbound, so this
+// lists caller_check (default warn, since DJA-406) right after inbound, so this
 // exact-string adaptation inserts the new listing line after the frozen
 // anchor line in every expected output.
 // Every other frozen expectation passes through byte-identical.
@@ -18,11 +18,11 @@ import "strings"
 const callerCheckAnchor = "inbound            auto                           defaults"
 
 // callerCheckInsert is the anchor plus the exact listing line the current
-// `soho config` prints right after it (caller_check, the refuse default
+// `soho config` prints right after it (caller_check, the warn default
 // from skills/soho/config.defaults, source defaults). If the row format or
 // the default drifts, the parity comparison fails on purpose.
 const callerCheckInsert = callerCheckAnchor + "\n" +
-	"caller_check       refuse                         defaults"
+	"caller_check       warn                           defaults"
 
 // DJA-394 intentional contract adaptation: soho config lists caller_check
 // after inbound; the frozen bytes are unchanged.

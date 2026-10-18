@@ -13,7 +13,7 @@ func TestCallerCheckOracleRowFormat(t *testing.T) {
 		t.Fatalf("anchor drifted: %q", callerCheckAnchor)
 	}
 	if !strings.HasSuffix(callerCheckInsert,
-		"caller_check"+strings.Repeat(" ", 6)+" "+"refuse"+strings.Repeat(" ", 24)+" "+"defaults") {
+		"caller_check"+strings.Repeat(" ", 6)+" "+"warn"+strings.Repeat(" ", 26)+" "+"defaults") {
 		t.Fatalf("caller_check line drifted: %q", callerCheckInsert)
 	}
 	if !strings.HasPrefix(callerCheckInsert, callerCheckAnchor+"\n") {
