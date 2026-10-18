@@ -191,6 +191,34 @@ func TestGitSyncStepDetail(t *testing.T) {
 		}
 	})
 
+	t.Run("a checkpoint whose diff and commit both fail keeps the diff's diagnostic", func(t *testing.T) {
+		env := detailFakeEnv(t, []fakecli.Rule{
+			{Argv: []string{"-C", dir, "add", "-A"}},
+			{Argv: []string{"-C", dir, "diff", "--cached", "--quiet"}, Code: 128, Stderr: "fatal: index file corrupt\n"},
+			{Argv: []string{"-C", dir, "commit", "--no-verify", "-m", "wip(job): checkpoint"}, Code: 1},
+		}, nil)
+		g := &GitSync{Env: env, Dir: dir, Branch: branch, Base: "main", Repo: gitSyncRepo}
+		_, err := g.Checkpoint()
+		wantExit(t, err, ExitFailed, "job: git sync failed: checkpoint")
+		if got, want := err.(*ExitError).Detail, "diff exit 128: fatal: index file corrupt; commit exit 1"; got != want {
+			t.Fatalf("detail = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a checkpoint with a staged change and a failed commit keeps only the commit's diagnostic", func(t *testing.T) {
+		env := detailFakeEnv(t, []fakecli.Rule{
+			{Argv: []string{"-C", dir, "add", "-A"}},
+			{Argv: []string{"-C", dir, "diff", "--cached", "--quiet"}, Code: 1},
+			{Argv: []string{"-C", dir, "commit", "--no-verify", "-m", "wip(job): checkpoint"}, Code: 128, Stderr: "fatal: unable to write new index file\n"},
+		}, nil)
+		g := &GitSync{Env: env, Dir: dir, Branch: branch, Base: "main", Repo: gitSyncRepo}
+		_, err := g.Checkpoint()
+		wantExit(t, err, ExitFailed, "job: git sync failed: checkpoint")
+		if got, want := err.(*ExitError).Detail, "exit 128: fatal: unable to write new index file"; got != want {
+			t.Fatalf("detail = %q, want %q", got, want)
+		}
+	})
+
 	t.Run("a push whose git is missing says the executable was not found", func(t *testing.T) {
 		g := &GitSync{Env: platform.Env{"PATH": t.TempDir()}, Dir: dir, Branch: branch, Base: "main", Repo: gitSyncRepo}
 		_, err := g.Push()

@@ -290,13 +290,22 @@ func (g *GitSync) Checkpoint() (bool, error) {
 	// index differs from HEAD. runStep reports every non-zero exit as the
 	// same error, so a genuine diff failure falls through to the commit,
 	// which fails on its own when nothing was staged and surfaces as the
-	// checkpoint error instead of committing an empty commit.
-	if _, err := runStepInCtx("", "git", []string{"-C", g.Dir, "diff", "--cached", "--quiet"}, g.localTimeout(), env, g.Context); err == nil {
+	// checkpoint error instead of committing an empty commit. The diff's own
+	// diagnostic is kept for that error unless it is the plain exit 1 of a
+	// staged change.
+	_, diffDetail, err := runStepDetailInCtx("", "git", []string{"-C", g.Dir, "diff", "--cached", "--quiet"}, g.localTimeout(), env, g.Context)
+	if err == nil {
 		return false, nil
 	}
 	if _, detail, err := runStepDetailInCtx("", "git", []string{"-C", g.Dir, "commit", "--no-verify", "-m", "wip(job): checkpoint"}, g.localTimeout(), env, g.Context); err != nil {
 		if g.cancelled() {
 			return false, errCancelled
+		}
+		if diffDetail != "exit 1" {
+			detail = "diff " + diffDetail + "; commit " + detail
+			if len(detail) > 400 {
+				detail = detail[:400]
+			}
 		}
 		return false, gitSyncErrorDetail("checkpoint", detail)
 	}
