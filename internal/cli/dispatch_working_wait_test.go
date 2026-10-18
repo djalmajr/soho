@@ -37,38 +37,39 @@ func TestDispatchBlockingWaitsForTheReportWhenAWorkingTargetShowsNoPrompt(t *tes
 	f.env["SOHO_WAIT_POLL_MS"] = "100"
 	sd := filepath.Join(f.state, "ws")
 	marker := filepath.Join(sd, "wait", "worker.not-received")
-	// The report appears only after the dispatch recorded the marker: the
-	// dispatch is then past the arrival check and inside the wait.
-	seen, written := make(chan string, 1), make(chan struct{})
-	go func() {
-		defer close(written)
-		deadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(deadline) {
-			raw, err := os.ReadFile(marker)
-			report := core.LastReport(sd, "worker")
-			if err == nil && report != "" {
-				seen <- string(raw)
-				_ = os.WriteFile(report, []byte("<!-- report: completed -->\n\nfinished report text\n"), 0o600)
-				return
-			}
-			time.Sleep(20 * time.Millisecond)
+	// The report is written when the dispatch enters the real wait, after it
+	// recorded the marker: the wait seam reads the marker there (the wait's
+	// first probe removes it for a target that stays working), writes the
+	// report, then runs the real wait.
+	var seen string
+	var markerErr, reportErr error
+	realWait := dispatchWaitFor
+	dispatchWaitFor = func(agents []string, sd string, ctx *core.Config, env platform.Env, timeout float64, quiet bool, cwd string) int {
+		raw, err := os.ReadFile(marker)
+		seen, markerErr = string(raw), err
+		if report := core.LastReport(sd, "worker"); report != "" {
+			reportErr = os.WriteFile(report, []byte("<!-- report: completed -->\n\nfinished report text\n"), 0o600)
+		} else {
+			reportErr = os.ErrNotExist
 		}
-	}()
+		return realWait(agents, sd, ctx, env, timeout, quiet, cwd)
+	}
+	t.Cleanup(func() { dispatchWaitFor = realWait })
 	code, out, errText := f.run(t, "worker", f.brief, "--timeout", "30000")
-	<-written
+	if markerErr != nil {
+		t.Fatalf("the dispatch entered the wait without the not-received marker: %v", markerErr)
+	}
+	if reportErr != nil {
+		t.Fatalf("could not write the report at the wait's entry: %v", reportErr)
+	}
 	if code != 0 || dispatchOutputStatus(t, out) != "done" || !strings.Contains(out, `"report_exists":true`) {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
 	if !strings.Contains(errText, "not confirmed: it was working and shows no sign of the prompt; no key was sent.") || !strings.Contains(errText, waitingForReport) {
 		t.Fatalf("warning without the waiting sentence: %s", errText)
 	}
-	select {
-	case raw := <-seen:
-		if fields := strings.Fields(raw); len(fields) != 3 || !strings.HasPrefix(fields[2], filepath.Join(sd, "briefs", "worker-")) {
-			t.Fatalf("not-received marker without the prompt path: %q", raw)
-		}
-	default:
-		t.Fatal("the report was written without the not-received marker")
+	if fields := strings.Fields(seen); len(fields) != 3 || !strings.HasPrefix(fields[2], filepath.Join(sd, "briefs", "worker-")) {
+		t.Fatalf("not-received marker without the prompt path: %q", seen)
 	}
 	sidecars, err := filepath.Glob(filepath.Join(sd, "briefs", "worker-*.dispatch.json"))
 	if err != nil || len(sidecars) == 0 {
