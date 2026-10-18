@@ -46,6 +46,13 @@ func TestDoctorPaneColumnsLineAndWarnings(t *testing.T) {
 			t.Fatalf("the tab-cap line is missing:\n%s", got)
 		}
 	})
+	t.Run(`an invalid pane_overflow shows raw in the line and is read as last-column`, func(t *testing.T) {
+		got := paneColumnsDoctor(t, map[string]string{"pane_columns": "1,2", "pane_overflow": "side"})
+		want := "ok     config: split_max_panes=none split_min_pane=0.18 pane_columns=1,2 pane_overflow=side"
+		if !strings.Contains(got, want) {
+			t.Fatalf("the raw pane_overflow is hidden:\n%s", got)
+		}
+	})
 	t.Run(`an explicit split_max_panes wins in the line too`, func(t *testing.T) {
 		got := paneColumnsDoctor(t, map[string]string{"pane_columns": "1,2,3", "split_max_panes": "9"})
 		want := "ok     config: split_max_panes=9 split_min_pane=0.18 pane_columns=1,2,3 pane_overflow=last-column"

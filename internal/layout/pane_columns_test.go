@@ -76,8 +76,8 @@ func TestDeclaredGridShapeTable(t *testing.T) {
 			{"1,2,3", "tab", 1, []int{1}},
 			{"1,2,3", "tab", 4, []int{1, 2, 1}},
 			{"1,2,3", "tab", 6, []int{1, 2, 3}},
-			{"1,2,3", "tab", 7, []int{1, 2, 3}},
-			{"1,2,3", "tab", 9, []int{1, 2, 3}},
+			{"1,2,3", "tab", 7, []int{1, 2, 4}}, // past the total (explicit cap): the last column grows
+			{"1,2,3", "tab", 9, []int{1, 2, 6}},
 			{"1,2,2", "last-column", 0, nil},
 			{"1,2,2", "last-column", 1, []int{1}},
 			{"1,2,2", "last-column", 2, []int{1, 1}},
@@ -98,8 +98,8 @@ func TestDeclaredGridShapeTable(t *testing.T) {
 			{"1,2,2", "tab", 0, nil},
 			{"1,2,2", "tab", 4, []int{1, 2, 1}},
 			{"1,2,2", "tab", 5, []int{1, 2, 2}},
-			{"1,2,2", "tab", 7, []int{1, 2, 2}},
-			{"1,2,2", "tab", 9, []int{1, 2, 2}},
+			{"1,2,2", "tab", 7, []int{1, 2, 4}},
+			{"1,2,2", "tab", 9, []int{1, 2, 6}},
 			{"1,1,2", "last-column", 0, nil},
 			{"1,1,2", "last-column", 1, []int{1}},
 			{"1,1,2", "last-column", 2, []int{1, 1}},
@@ -121,8 +121,8 @@ func TestDeclaredGridShapeTable(t *testing.T) {
 			{"1,1,2", "tab", 0, nil},
 			{"1,1,2", "tab", 3, []int{1, 1, 1}},
 			{"1,1,2", "tab", 4, []int{1, 1, 2}},
-			{"1,1,2", "tab", 6, []int{1, 1, 2}},
-			{"1,1,2", "tab", 9, []int{1, 1, 2}},
+			{"1,1,2", "tab", 6, []int{1, 1, 4}},
+			{"1,1,2", "tab", 9, []int{1, 1, 7}},
 		}
 		for _, tt := range tests {
 			got := shapeOf(t, tt.cols, tt.overflow, tt.n)
@@ -135,7 +135,7 @@ func TestDeclaredGridShapeTable(t *testing.T) {
 			if got.Cols != len(tt.want) || !reflect.DeepEqual(got.Rows, tt.want) {
 				t.Fatalf("DeclaredGrid(%s, %s, %d)=%+v, want cols %d rows %v", tt.cols, tt.overflow, tt.n, got, len(tt.want), tt.want)
 			}
-			if tt.n >= 1 && tt.overflow != "tab" {
+			if tt.n >= 1 {
 				sum := 0
 				for _, r := range got.Rows {
 					sum += r
@@ -224,4 +224,18 @@ func TestBuildGridDeclaredShapeMoveSequence(t *testing.T) {
 			})
 		}
 	})
+}
+
+// DJA-393 review: a shape that holds fewer cells than the panes given would
+// leave the rest parked; buildGridShape refuses it before any move.
+func TestBuildGridShapeRefusesAShapeThatDropsCells(t *testing.T) {
+	// The fake accepts the one move the short shape would make, so only the
+	// guard can fail the call.
+	env, _, _, _ := layoutFake(t, []fakecli.Rule{
+		{Argv: []string{"pane", "move", "p1", "--tab", "t0", "--split", "right", "--target-pane", "C", "--ratio", "0.5000", "--no-focus"}, Stdout: `{"result":{"move_result":{"pane":{"pane_id":"p1"}}}}`},
+	})
+	r := buildGridShape("t0", []string{"C", "p1", "p2"}, Grid{Cols: 2, Rows: []int{1, 1}}, env)
+	if r.Ok || len(r.Moved) != 0 {
+		t.Fatalf("buildGridShape with 2 slots for 3 panes = %+v, want a failure before any move", r)
+	}
 }

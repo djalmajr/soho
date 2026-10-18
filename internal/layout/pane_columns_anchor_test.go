@@ -45,6 +45,8 @@ func TestSplitCapDeclared(t *testing.T) {
 			{"an explicit split_max_panes wins for an uncapped overflow too", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_SPLIT_MAX_PANES": "9"}, 9, false},
 			{"an explicit split_max_panes=0 keeps today's meaning (a full tab)", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_SPLIT_MAX_PANES": "0"}, 0, false},
 			{"an invalid pane_columns keeps today's cap", platform.Env{"SOHO_PANE_COLUMNS": "1,,2"}, 4, false},
+			{"no key: an invalid explicit split_max_panes keeps today's fallback", platform.Env{"SOHO_SPLIT_MAX_PANES": "-1"}, 4, false},
+			{"declared: an invalid explicit split_max_panes keeps today's fallback", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_PANE_OVERFLOW": "tab", "SOHO_SPLIT_MAX_PANES": "+3"}, 4, false},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
@@ -239,6 +241,37 @@ func TestCmdRegridDeclaredColumns(t *testing.T) {
 		}
 		if !reflect.DeepEqual(callerTabMoves(calls), want) {
 			t.Fatalf("caller-tab moves=%#v, want %#v", callerTabMoves(calls), want)
+		}
+	})
+	t.Run(`regrid with pane_columns tab and a larger explicit split_max_panes: no caller-tab worker is left parked`, func(t *testing.T) {
+		// 1,1 declares 2 slots, but the explicit cap of 4 let a third pane
+		// into the caller tab: the last column grows to hold it (1+2), and
+		// both parked workers come back.
+		all := `{"result":{"panes":[{"pane_id":"C","tab_id":"t0"},{"pane_id":"p1","tab_id":"t0"},{"pane_id":"p2","tab_id":"t0"}]}}`
+		roster := "w1\tp1\tgrok\timplementer\nw2\tp2\tgrok\ttasker\n"
+		rules := []fakecli.Rule{
+			{Argv: []string{"pane", "list"}, Stdout: `{"result":{"panes":[]}}`},
+			{Argv: []string{"pane", "list", "--workspace", "ws"}, Call: 1, Stdout: all},
+			{Argv: []string{"agent", "get", "w1"}, Stdout: `{"result":{"agent":{"agent_status":"working"}}}`},
+			{Argv: []string{"agent", "get", "w2"}, Stdout: `{"result":{"agent":{"agent_status":"working"}}}`},
+			{Argv: []string{"pane", "list", "--workspace", "ws"}, Call: 2, Stdout: all},
+			{Argv: []string{"pane", "move", "p1", "--new-tab", "--label", "herd-park", "--no-focus"}, Stdout: `{"result":{"move_result":{"pane":{"pane_id":"p1","tab_id":"park-1"}}}}`},
+			{Argv: []string{"pane", "move", "p2", "--tab", "park-1", "--split", "down", "--target-pane", "p1", "--ratio", "0.5", "--no-focus"}},
+			{Argv: []string{"pane", "move", "p1", "--tab", "t0", "--split", "right", "--target-pane", "C", "--ratio", "0.5000", "--no-focus"}},
+			{Argv: []string{"pane", "move", "p2", "--tab", "t0", "--split", "down", "--target-pane", "p1", "--ratio", "0.5000", "--no-focus"}},
+			{Argv: []string{"pane", "list", "--workspace", "ws"}, Call: 3, Stdout: all},
+		}
+		env, ctx, cwd, _ := regridDeclaredFixture(t, platform.Env{"SOHO_PANE_COLUMNS": "1,1", "SOHO_PANE_OVERFLOW": "tab", "SOHO_SPLIT_MAX_PANES": "4"}, roster, "", rules)
+		out, calls := runCmdRegridCaptured(t, ctx, env, cwd)
+		if out != "{\"regridded\":[{\"tab\":\"t0\",\"label\":\"caller\",\"panes\":3,\"cols\":2}]}\n" {
+			t.Fatalf("output=%q", out)
+		}
+		want := [][]string{
+			{"pane", "move", "p1", "--tab", "t0", "--split", "right", "--target-pane", "C", "--ratio", "0.5000", "--no-focus"},
+			{"pane", "move", "p2", "--tab", "t0", "--split", "down", "--target-pane", "p1", "--ratio", "0.5000", "--no-focus"},
+		}
+		if !reflect.DeepEqual(callerTabMoves(calls), want) {
+			t.Fatalf("caller-tab moves=%#v, want %#v (a parked worker was left behind)", callerTabMoves(calls), want)
 		}
 	})
 	t.Run(`regrid with pane_columns last-column: every herd-tab worker is pulled back, past today's cap`, func(t *testing.T) {

@@ -377,7 +377,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	capRaw := core.Cfg(ctx, "split_max_panes", "4", env)
 	cap := layout.SplitCap(ctx, env)
 	pcsRaw := core.Cfg(ctx, "pane_columns", "", env)
-	_, paneOverflow, paneColumnsSet := layout.PaneColumns(ctx, env)
+	_, _, paneColumnsSet := layout.PaneColumns(ctx, env)
 	capDisplay := strconv.Itoa(cap)
 	if !decimal.MatchString(capRaw) {
 		s.Warning(fmt.Sprintf("config: split_max_panes='%s' is not a number (using 4)", capRaw))
@@ -393,7 +393,9 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 		} else {
 			capDisplay = strconv.Itoa(displayCap)
 		}
-		s.Ok(fmt.Sprintf("config: split_max_panes=%s split_min_pane=%g pane_columns=%s pane_overflow=%s", capDisplay, layout.SplitMin(ctx, env), pcsRaw, paneOverflow))
+		// The raw pane_overflow shows, so an invalid value (read as
+		// last-column) is visible.
+		s.Ok(fmt.Sprintf("config: split_max_panes=%s split_min_pane=%g pane_columns=%s pane_overflow=%s", capDisplay, layout.SplitMin(ctx, env), pcsRaw, core.Cfg(ctx, "pane_overflow", layout.DefaultPaneOverflow, env)))
 	} else {
 		s.Ok(fmt.Sprintf("config: split_max_panes=%d split_min_pane=%g", cap, layout.SplitMin(ctx, env)))
 	}

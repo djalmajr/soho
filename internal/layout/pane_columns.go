@@ -71,9 +71,10 @@ func PaneColumns(ctx *core.Config, env platform.Env) ([]int, string, bool) {
 // dropped. Under last-column the last column keeps growing beyond its
 // declared count; under new-column the excess cells open new columns right
 // of the last one, each holding the last declared column's row count (the
-// final new column holds the remainder); under tab there is no excess — the
-// caller never holds more than the declared total (the shape is capped at
-// the total; the overflow never enters the caller tab).
+// final new column holds the remainder). Under tab the spawn stops at the
+// declared total, but a tab that already holds more (an explicit, larger
+// split_max_panes, or a declaration shrunk over an occupied tab) grows the
+// last column as last-column does: no cell is ever dropped.
 func DeclaredGrid(cols []int, overflow string, n int) Grid {
 	if n < 1 {
 		return Grid{Rows: []int{}}
@@ -105,28 +106,25 @@ func DeclaredGrid(cols []int, overflow string, n int) Grid {
 			rows = append(rows, take)
 			remaining -= take
 		}
-	case "last-column":
-		// The last declared column keeps growing (1 + an excess of 2 is a
-		// column of 3, not two columns of 2).
+	default:
+		// last-column, and tab past its total: the last declared column
+		// keeps growing (1 + an excess of 2 is a column of 3, not two
+		// columns of 2).
 		rows[len(rows)-1] += remaining
 	}
 	return Grid{Cols: len(rows), Rows: rows}
 }
 
 // SplitCapDeclared resolves the caller-tab cap with the declared shape in
-// force. An explicit split_max_panes (env or a non-defaults layer, including
-// 0, which keeps today's "a full tab" meaning) always wins. last-column and
-// new-column leave the caller tab uncapped (unlimited is true); tab caps it
-// at the declared total. Without a valid declaration the cap is exactly
-// today's SplitCap.
+// force. Without a valid declaration the cap is exactly today's SplitCap,
+// and so is an explicit split_max_panes (env or a non-defaults layer,
+// including 0, which keeps today's "a full tab" meaning), read with
+// SplitCap's own grammar and fallback. Otherwise last-column and new-column
+// leave the caller tab uncapped (unlimited is true), and tab caps it at the
+// declared total.
 func SplitCapDeclared(ctx *core.Config, env platform.Env) (int, bool) {
-	if core.ConfigExplicit(ctx, "split_max_panes", env) {
-		if n, err := strconv.Atoi(core.Cfg(ctx, "split_max_panes", "", env)); err == nil {
-			return n, false
-		}
-	}
 	cols, overflow, declared := PaneColumns(ctx, env)
-	if !declared {
+	if !declared || core.ConfigExplicit(ctx, "split_max_panes", env) {
 		return SplitCap(ctx, env), false
 	}
 	switch overflow {
@@ -273,7 +271,9 @@ func buildGridShape(tab string, cells []string, shape Grid, env platform.Env) gr
 			ids[i] = m.Pane
 		}
 	}
-	if len(cells) < 1 || len(g.Rows) < 1 {
+	// A shape that does not hold every cell would leave the rest where they
+	// are (a parked worker stranded in the temporary tab): fail instead.
+	if len(cells) < 1 || len(g.Rows) < 1 || idx != len(cells) {
 		return gridResult{Ok: false, Changes: changes, Moved: moved}
 	}
 	prev := ids[0]
