@@ -667,9 +667,9 @@ func TestCancelCutsTheStalledPeriodicPush(t *testing.T) {
 	if n := countTipes(events, "commit"); n != 1 {
 		t.Fatalf("commit events = %d, want the one announced before the push", n)
 	}
-	// The friction is exactly the finishing's cut final push: the periodic
-	// cut wrote none.
-	if len(*f.friction) != 1 || (*f.friction)[0] != "job: git sync failed: push" {
+	// The friction is exactly the finishing's cut final push (its message
+	// and the detail line saying it timed out): the periodic cut wrote none.
+	if len(*f.friction) != 2 || (*f.friction)[0] != "job: git sync failed: push" || !strings.HasPrefix((*f.friction)[1], "job: git sync push failed: timed out") {
 		t.Fatalf("friction = %v, want exactly the finishing's cut final push", *f.friction)
 	}
 	// Both pushes reached the remote (the cut periodic and the cut
