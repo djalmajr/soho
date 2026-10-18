@@ -92,14 +92,20 @@ func TestCompactCommandReadsCompactTimeoutKey(t *testing.T) {
 
 func TestDispatchCompactTimeoutFrictionLine(t *testing.T) {
 	// A timeout in the phase (exit 9) keeps today's stderr line and adds the
-	// friction line with the effective limit, in the numberSeconds form.
+	// friction line with the effective limit, in the numberSeconds form. The
+	// pinned clock advances 30 s per read, as in the cmdCompact test, so the
+	// number of screen reads is the deadline the dispatch's phase actually
+	// got: 5 for 90 s, 12 for the 300 s default (the old constant).
 	t.Run("the timeout exit 9 records the friction line with the effective ms", func(t *testing.T) {
-		f := newCompactPhaseDispatchFixture(t, "", 400*time.Second) // the cap runs out within one poll
+		f := newCompactPhaseDispatchFixture(t, "", 30*time.Second)
 		f.install(t, compactTimeoutRules())
 		f.env["SOHO_COMPACT_TIMEOUT"] = "90s"
 		code, out, errText := f.run(t, "worker", f.brief, "--compact", "--no-wait")
 		if code != 9 || !strings.Contains(out, `"status":"timeout"`) {
 			t.Fatalf("code=%d out=%q err=%q; want the 9 timeout", code, out, errText)
+		}
+		if got := compactTimeoutReads(t, f); got != 5 { // 1 before + 3 polls + 1 after
+			t.Fatalf("screen reads = %d; want 5 (the configured 90 s deadline, not 300 s): %#v", got, f.calls(t))
 		}
 		if !strings.Contains(errText, "soho: dispatch: the compact step of 'worker' did not finish (exit 9); the brief was not sent") {
 			t.Fatalf("stderr=%q; want today's did-not-finish line", errText)
@@ -115,11 +121,14 @@ func TestDispatchCompactTimeoutFrictionLine(t *testing.T) {
 		}
 	})
 	t.Run("the default limit records 300s and 300000", func(t *testing.T) {
-		f := newCompactPhaseDispatchFixture(t, "", 400*time.Second)
+		f := newCompactPhaseDispatchFixture(t, "", 30*time.Second)
 		f.install(t, compactTimeoutRules())
 		code, out, errText := f.run(t, "worker", f.brief, "--compact", "--no-wait")
 		if code != 9 || !strings.Contains(out, `"status":"timeout"`) {
 			t.Fatalf("code=%d out=%q err=%q; want the 9 timeout", code, out, errText)
+		}
+		if got := compactTimeoutReads(t, f); got != 12 { // 1 before + 10 polls + 1 after
+			t.Fatalf("screen reads = %d; want 12 (the 300 s default deadline): %#v", got, f.calls(t))
 		}
 		log, err := os.ReadFile(filepath.Join(f.stateDir, "friction.log"))
 		if err != nil {
