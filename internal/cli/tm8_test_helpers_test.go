@@ -156,15 +156,18 @@ func runTM8ConfigGolden(t *testing.T, name string) {
 			*want.Files[i].Content = testutil.RewriteSohoName(*want.Files[i].Content)
 			*want.Files[i].Content = testutil.RewritePressureRefusal(*want.Files[i].Content)
 			*want.Files[i].Content = testutil.RewritePaneColumns(*want.Files[i].Content)
+			*want.Files[i].Content = testutil.RewriteFootprint(*want.Files[i].Content)
 		}
 	}
 	for i := range want.Steps {
 		want.Steps[i].Out = testutil.RewriteSohoName(want.Steps[i].Out)
 		want.Steps[i].Out = testutil.RewritePressureRefusal(want.Steps[i].Out)
 		want.Steps[i].Out = testutil.RewritePaneColumns(want.Steps[i].Out)
+		want.Steps[i].Out = testutil.RewriteFootprint(want.Steps[i].Out)
 		want.Steps[i].Err = testutil.RewriteSohoName(want.Steps[i].Err)
 		want.Steps[i].Err = testutil.RewritePressureRefusal(want.Steps[i].Err)
 		want.Steps[i].Err = testutil.RewritePaneColumns(want.Steps[i].Err)
+		want.Steps[i].Err = testutil.RewriteFootprint(want.Steps[i].Err)
 	}
 	for i, step := range want.Steps {
 		stepEnv := env.Clone()

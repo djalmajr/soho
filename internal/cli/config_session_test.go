@@ -158,9 +158,11 @@ func TestParityConfigGolden(t *testing.T) {
 				wantErr = normalizeGoldenRootPathSeparators(wantErr)
 				wantErr = testutil.RewritePressureRefusal(wantErr)
 				wantErr = testutil.RewritePaneColumns(wantErr)
+				wantErr = testutil.RewriteFootprint(wantErr)
 				want.Out = testutil.RewriteSohoName(want.Out)
 				want.Out = testutil.RewritePressureRefusal(want.Out)
 				want.Out = testutil.RewritePaneColumns(want.Out)
+				want.Out = testutil.RewriteFootprint(want.Out)
 				if code != want.RC || out != want.Out || errOut != wantErr {
 					t.Fatalf("step %d args=%v\ncode=%d want=%d\nstdout:\n%s\nwant:\n%s\nstderr=%q want=%q", i, want.Args, code, want.RC, out, want.Out, errOut, wantErr)
 				}
@@ -178,6 +180,7 @@ func TestParityConfigGolden(t *testing.T) {
 				wantContent := testutil.RewriteSohoName(*expected.Content)
 				wantContent = testutil.RewritePressureRefusal(wantContent)
 				wantContent = testutil.RewritePaneColumns(wantContent)
+				wantContent = testutil.RewriteFootprint(wantContent)
 				if readErr != nil || string(actual) != wantContent {
 					t.Fatalf("file %s=%q err=%v want=%q", expected.Rel, actual, readErr, wantContent)
 				}

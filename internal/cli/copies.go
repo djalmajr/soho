@@ -927,38 +927,12 @@ func humanAge(d time.Duration) string {
 }
 
 // humanSize renders a byte count in base-1024 human units (1.2 GB).
-func humanSize(n int64) string {
-	if n < 1024 {
-		return fmt.Sprintf("%d B", n)
-	}
-	value := float64(n)
-	for _, unit := range []struct {
-		size float64
-		name string
-	}{
-		{1 << 40, "TB"},
-		{1 << 30, "GB"},
-		{1 << 20, "MB"},
-	} {
-		if value >= unit.size {
-			return fmt.Sprintf("%.1f %s", value/unit.size, unit.name)
-		}
-	}
-	return fmt.Sprintf("%.1f KB", value/1024)
-}
+// humanSize is core.HumanSize: the shared byte formatting of the copy and
+// gc reports (moved to core so the footprint line of explain and the
+// doctor warning format the sizes in one place).
+func humanSize(n int64) string { return core.HumanSize(n) }
 
 // copyDirSize sums the sizes of the regular files under root without
-// following symlinks.
-func copyDirSize(root string) int64 {
-	var total int64
-	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.Type()&fs.ModeSymlink != 0 || !entry.Type().IsRegular() {
-			return nil
-		}
-		if info, infoErr := entry.Info(); infoErr == nil {
-			total += info.Size()
-		}
-		return nil
-	})
-	return total
-}
+// following symlinks: the shared walk moved to core (DirSize) so the
+// footprint measure and the copy measure cannot drift apart.
+func copyDirSize(root string) int64 { return core.DirSize(root) }

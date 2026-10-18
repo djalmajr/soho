@@ -72,7 +72,7 @@ func TestExplainTextAndRecommendation(t *testing.T) {
 			{lane: "build", role: "implementer", kind: "grok", model: "grok-4.7", activity: "working"},
 			{lane: "review", role: "reviewer", kind: "codex", model: "gpt-5", activity: "idle"},
 		}
-		lines := explainPrintRunning(rows, &ctx, env)
+		lines := explainPrintRunning(rows, "", &ctx, env, "")
 		for _, line := range []string{"Panels: 4.", "build: implementer, grok, model grok-4.7, working", "review: reviewer, codex, model gpt-5, idle"} {
 			if !containsLocal(lines, line) {
 				t.Fatalf("running explanation missing %q: %#v", line, lines)

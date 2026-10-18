@@ -37,11 +37,65 @@ func cmdExplain(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		for _, line := range explainIdleParagraph() {
 			_, _ = platform.Stdout.Write([]byte(line + "\n"))
 		}
+		// The footprint line, when it is due, sits after the paragraph with a
+		// blank line between the two.
+		if line := explainFootprintLine(resolved.dir, ctx, env, cwd); line != "" {
+			_, _ = platform.Stdout.Write([]byte("\n" + line + "\n"))
+		}
 		return
 	}
-	for _, line := range explainPrintRunning(rows, ctx, env) {
+	for _, line := range explainPrintRunning(rows, resolved.dir, ctx, env, cwd) {
 		_, _ = platform.Stdout.Write([]byte(line + "\n"))
 	}
+}
+
+// explainFootprintLine returns the team-footprint line for the explain
+// output, or "" when it is not due: it shows when at least one registered
+// copy is on disk, or a registered process reads as running, or the total
+// on-disk footprint reaches footprint_warn_gb (with the limit above 0;
+// an unreadable limit is off). It measures read-only.
+func explainFootprintLine(stateDir string, ctx *core.Config, env platform.Env, cwd string) string {
+	// The workspace id of the state dir (its directory name): the
+	// env-var-only rule, so explain never dies on a missing herdr the way
+	// core.WorkspaceID can.
+	workspaceID := env.Get("HERDR_WORKSPACE_ID")
+	if stateDir != "" {
+		workspaceID = filepath.Base(stateDir)
+	}
+	fp := core.MeasureFootprint(stateDir, workspaceID, env)
+	limitRaw := core.Cfg(ctx, "footprint_warn_gb", "5", env)
+	limit, err := strconv.ParseInt(limitRaw, 10, 64)
+	if !explainFootprintGate(fp, limit, err == nil) {
+		return ""
+	}
+	return explainFootprintText(fp)
+}
+
+// explainFootprintGate is the "is the line due" rule: a copy on disk, a
+// running registered process, or the total reaching the limit (above 0).
+func explainFootprintGate(fp *core.Footprint, limit int64, limitOK bool) bool {
+	if fp.Copies > 0 || fp.Running > 0 {
+		return true
+	}
+	return limitOK && core.FootprintLimitReached(fp.Total, limit)
+}
+
+// explainFootprintText is the exact line: the disk part in the shared
+// human sizes, then the registered processes with the RSS summed in
+// memory (the unreadable count in parentheses when it is above zero), or
+// the no-process sentence. Singular counts keep the same text.
+func explainFootprintText(fp *core.Footprint) string {
+	line := "Footprint: " + core.FootprintDiskText(fp) + "; "
+	if fp.Running > 0 {
+		line += strconv.Itoa(fp.Running) + " registered processes using " + core.HumanSize(fp.RSS) + " of memory"
+		if fp.Unreadable > 0 {
+			line += " (" + strconv.Itoa(fp.Unreadable) + " unreadable)"
+		}
+		line += "."
+	} else {
+		line += "no registered process running."
+	}
+	return line
 }
 
 func explainStateDir(ctx *core.Config, env platform.Env, cwd string) explainStateDirResult {
@@ -231,7 +285,7 @@ func explainRecommendation(ctx *core.Config, env platform.Env) []string {
 	}
 	return out
 }
-func explainPrintRunning(rows []explainRow, ctx *core.Config, env platform.Env) []string {
+func explainPrintRunning(rows []explainRow, stateDir string, ctx *core.Config, env platform.Env, cwd string) []string {
 	flex := core.LanesEnabled(ctx, env) && core.PaneMode(ctx, env) == "flex"
 	head := "Panels: " + core.PanesValue(ctx, env) + "."
 	if flex {
@@ -263,6 +317,11 @@ func explainPrintRunning(rows []explainRow, ctx *core.Config, env platform.Env) 
 		for _, row := range rows {
 			out = append(out, explainRowLine(row))
 		}
+	}
+	// The footprint line, when it is due, sits after the lane lines and
+	// before the blank line.
+	if line := explainFootprintLine(stateDir, ctx, env, cwd); line != "" {
+		out = append(out, line)
 	}
 	out = append(out, "")
 	out = append(out, explainRecommendation(ctx, env)...)
