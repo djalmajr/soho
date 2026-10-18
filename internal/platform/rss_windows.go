@@ -32,13 +32,19 @@ type windowsProcMemoryCounters struct {
 // K32GetProcessMemoryInfo's WorkingSetSize, with a
 // PROCESS_QUERY_LIMITED_INFORMATION handle (the read-only access the
 // identity reads already use). A failed open or a failed read reports
-// unreadable; the process command line is never read.
+// unreadable, and so does a process that is not STILL_ACTIVE; the process
+// command line is never read.
 func ReadProcessRSS(pid int, _ Env) (int64, bool) {
 	handle, err := windowsOpenProcess(windowsProcessQueryLimitedInformation, pid)
 	if err != nil {
 		return 0, false
 	}
 	defer func() { _, _, _ = windowsProcCloseHandle.Call(handle) }()
+	// An exited process stays openable while any handle to it is open, and
+	// its counters still read: only a STILL_ACTIVE process has an RSS.
+	if windowsExitState(handle) != ProcRunning {
+		return 0, false
+	}
 	var counters windowsProcMemoryCounters
 	counters.Size = uint32(unsafe.Sizeof(counters))
 	done, _, _ := windowsProcK32GetProcessMemoryInfo.Call(handle,

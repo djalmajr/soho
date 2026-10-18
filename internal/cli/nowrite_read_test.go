@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -32,11 +33,16 @@ const nowriteRosterRow = "worker               implementer        grok     p-wor
 
 const nowriteExplainIdle = "soho runs a small team of agents in Herdr panels. You stay in this panel and lead. Each other panel is one agent with one job: writing code (research included) or reviewing. Those agents never commit or push. You can watch a panel or close it. Each assistant spends the quota of its own account. Nothing is running yet. To start, describe the work here. The first time, you are asked how many panels to open and which assistant each job should use, and nothing opens until you agree. Four panels are recommended: two write code in parallel and one reviews; that uses more quota. Three panels are lighter: one writes and one reviews. With two panels one writes and the review happens here.\n"
 
-// nowriteExplainRunning is the byte-exact explain output of the sample
-// state: the two registered copies on disk make the footprint line due (it
-// sits after the lane lines and before the blank line); the sizes are
-// deterministic (the fixture files are fixed-length).
-const nowriteExplainRunning = "Panels: 4.\nbuild: implementer, grok, model grok-4.7, idle\nreview: not started\nFootprint: 4.5 KB on disk (copies 3.0 KB in 2, state 1.5 KB, scratch 0 B); no registered process running.\n\nRecommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here.\n"
+// nowriteExplainRunning is the explain output of the sample state: the two
+// registered copies on disk make the footprint line due (it sits after the
+// lane lines and before the blank line). The copies are fixed-length; the
+// state dir holds absolute temporary paths, so its size (and the total)
+// depends on the machine and is matched by nowriteFootprintSizes.
+const nowriteExplainRunning = "Panels: 4.\nbuild: implementer, grok, model grok-4.7, idle\nreview: not started\nFootprint: <total> on disk (copies 3.0 KB in 2, state <state>, scratch 0 B); no registered process running.\n\nRecommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here.\n"
+
+// nowriteFootprintSizes replaces the machine-dependent total and state sizes
+// of the footprint line with the placeholders nowriteExplainRunning uses.
+var nowriteFootprintSizes = regexp.MustCompile(`Footprint: [0-9.]+ (?:B|KB|MB) on disk \(copies 3\.0 KB in 2, state [0-9.]+ (?:B|KB|MB),`)
 
 const nowriteGcNoneLine = "resource pressure: none (disk 60% free, swap 30% used)\n"
 
@@ -198,6 +204,9 @@ type nowriteReadCase struct {
 	// skipOut skips the exact stdout check (doctor's advisory output names
 	// fakecli internals); the snapshot still proves the read wrote nothing.
 	skipOut bool
+	// footprintSizes masks the footprint line's machine-dependent sizes in
+	// stdout before the exact comparison.
+	footprintSizes bool
 }
 
 // TestNowriteReadCommandsWriteNothing runs every accepted NOWRITE read in a
@@ -228,6 +237,7 @@ func TestNowriteReadCommandsWriteNothing(t *testing.T) {
 			if withState {
 				cases[1].wantOut = nowriteRosterHeader + nowriteRosterRow + nowriteRosterTail
 				cases[2].wantOut = nowriteExplainRunning
+				cases[2].footprintSizes = true
 				cases[3].wantOut = fmt.Sprintf("friction log (%s): timestamp, level, command, message\n"+
 					"2026-01-01T10:00:00Z\terror(exit 4)\tspawn\tworker spawn failed\n"+
 					"2026-01-01T11:00:00Z\twarning\tfriction\ta warning note\n"+
@@ -261,6 +271,9 @@ func TestNowriteReadCommandsWriteNothing(t *testing.T) {
 					code, out, errOut := nr.runNowrite(t, c.argv...)
 					if code != c.code {
 						t.Fatalf("code=%d want %d; out=%q err=%q", code, c.code, out, errOut)
+					}
+					if c.footprintSizes {
+						out = nowriteFootprintSizes.ReplaceAllString(out, "Footprint: <total> on disk (copies 3.0 KB in 2, state <state>,")
 					}
 					if !c.skipOut && out != c.wantOut {
 						t.Fatalf("stdout:\n got:  %q\nwant: %q", out, c.wantOut)
