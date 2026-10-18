@@ -396,11 +396,12 @@ type gcCandidate struct {
 }
 
 // gcUnregisteredCopy is a soho-mutation-* directory below TMPDIR that
-// the registry does not know.
+// the registry does not know, with the class of its origin marker.
 type gcUnregisteredCopy struct {
-	path string
-	size int64
-	age  time.Duration
+	path   string
+	size   int64
+	age    time.Duration
+	origin string
 }
 
 // cmdGc lists the orphan copies the registry holds (dry run), or removes the
@@ -463,7 +464,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		}
 		// owned lines are never touched
 	}
-	unregistered := gcUnregistered(env, rows, now, threshold)
+	unregistered := gcUnregistered(env, rows, now, threshold, cwd)
 
 	total := int64(0)
 	for _, cand := range candidates {
@@ -491,8 +492,14 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		if len(unregistered) > 0 {
 			gcPrintUnregistered(unregistered, false)
 			if len(candidates) == 0 {
-				// Only unregistered copies: name the flag that actually removes them.
-				_, _ = fmt.Fprintln(platform.Stdout, "run 'soho gc --yes --include-unregistered' to remove the unregistered ones")
+				// Only unregistered copies: name the flag that actually removes
+				// them, but only when gc may remove at least one of them (this
+				// project's); otherwise say what gc will not touch.
+				if unregisteredHasThisProject(unregistered) {
+					_, _ = fmt.Fprintln(platform.Stdout, "run 'soho gc --yes --include-unregistered' to remove the unregistered ones")
+				} else {
+					_, _ = fmt.Fprintln(platform.Stdout, "the unregistered copies belong to another project or have no origin marker; gc does not remove them (check each one and remove it by hand)")
+				}
 			}
 		}
 		if len(orphan) > 0 {
@@ -543,6 +550,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			keptCopyError(cand.path, err)
 			continue
 		}
+		removeOriginMarker(resolved)
 		removedLines[cand.path] = true
 		removedAny = true
 		freed += cand.size
@@ -561,6 +569,12 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		_, _ = fmt.Fprintln(platform.Stdout, gcUnregisteredHeader)
 		if includeUnregistered {
 			for _, entry := range unregistered {
+				// Only this project's unregistered copies are removal
+				// candidates; the others stay, with the reason in the line.
+				if entry.origin != originThisProject {
+					_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", entry.path, entry.origin)
+					continue
+				}
 				resolved, parentInfo, cause := checkedCopy(entry.path, env, cwd)
 				if cause != "" {
 					_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", entry.path, cause)
@@ -570,13 +584,14 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 					keptCopyError(entry.path, err)
 					continue
 				}
+				removeOriginMarker(resolved)
 				removedAny = true
 				freed += entry.size
 				_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", entry.path, humanSize(entry.size))
 			}
 		} else {
 			for _, entry := range unregistered {
-				_, _ = fmt.Fprintf(platform.Stdout, "%s  %s  %s\n", entry.path, humanSize(entry.size), humanAge(entry.age))
+				_, _ = fmt.Fprintf(platform.Stdout, "%s  %s  %s  %s\n", entry.path, humanSize(entry.size), humanAge(entry.age), entry.origin)
 			}
 		}
 	}
@@ -715,18 +730,110 @@ func gcPressureThreshold(ctx *core.Config, key string, limit int, env platform.E
 }
 
 // gcPrintUnregistered lists unregistered copies in their own block without
-// acting on them.
+// acting on them, each with the class of its origin marker.
 func gcPrintUnregistered(entries []gcUnregisteredCopy, _ bool) {
 	_, _ = fmt.Fprintln(platform.Stdout, gcUnregisteredHeader)
 	for _, entry := range entries {
-		_, _ = fmt.Fprintf(platform.Stdout, "%s  %s  %s\n", entry.path, humanSize(entry.size), humanAge(entry.age))
+		_, _ = fmt.Fprintf(platform.Stdout, "%s  %s  %s  %s\n", entry.path, humanSize(entry.size), humanAge(entry.age), entry.origin)
 	}
+}
+
+// unregisteredHasThisProject reports whether at least one unregistered copy
+// may be removed (its marker names the current project).
+func unregisteredHasThisProject(entries []gcUnregisteredCopy) bool {
+	for _, entry := range entries {
+		if entry.origin == originThisProject {
+			return true
+		}
+	}
+	return false
+}
+
+// The origin classes of an unregistered mutation copy.
+const (
+	originThisProject = "this project"
+	originNoMarker    = "no origin marker"
+)
+
+// originMarkerPath is the marker beside a copy: the copy's path with the
+// .soho-origin suffix.
+func originMarkerPath(copyPath string) string {
+	return copyPath + ".soho-origin"
+}
+
+// readOriginMarker reads the marker beside a copy. It is valid only when it
+// is a regular file (not a symlink) with exactly the three lines
+// project=, source= and created= in that order, with non-empty project and
+// source values; anything else — missing, unreadable or malformed — reads
+// as no origin marker.
+func readOriginMarker(markerPath string) (project, source string, ok bool) {
+	info, err := os.Lstat(markerPath)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", "", false
+	}
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		return "", "", false
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) != 3 {
+		return "", "", false
+	}
+	project, foundProject := strings.CutPrefix(lines[0], "project=")
+	source, foundSource := strings.CutPrefix(lines[1], "source=")
+	_, foundCreated := strings.CutPrefix(lines[2], "created=")
+	if !foundProject || !foundSource || !foundCreated || project == "" || source == "" {
+		return "", "", false
+	}
+	return project, source, true
+}
+
+// copyOrigin classifies the marker beside an unregistered copy against the
+// current project's identity (the gc's cwd's git common dir, "" when the
+// cwd is not in a git repository): this project when the marker is valid
+// and its project= matches (case-insensitively on Windows), another
+// project: <source> when the marker names a different project, and no
+// origin marker otherwise. Outside a git repository no copy is this
+// project: a valid marker still classifies the copy as another project
+// (it names one), and the marker-less reads as no origin marker.
+func copyOrigin(copyPath, current string) string {
+	project, source, ok := readOriginMarker(originMarkerPath(copyPath))
+	if !ok {
+		return originNoMarker
+	}
+	if current != "" && sameOriginProject(project, current) {
+		return originThisProject
+	}
+	return "another project: " + source
+}
+
+func sameOriginProject(marker, current string) bool {
+	if platform.Current() == "win32" {
+		return strings.EqualFold(marker, current)
+	}
+	return marker == current
+}
+
+// removeOriginMarker removes the marker beside a removed copy when it is a
+// regular file (never a symlink). Best effort: the marker's removal never
+// changes the copy's removal outcome (an orphaned marker is out of this
+// slice's scope).
+func removeOriginMarker(copyPath string) {
+	marker := originMarkerPath(copyPath)
+	info, err := os.Lstat(marker)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return
+	}
+	_ = os.Remove(marker)
 }
 
 // gcUnregistered lists the soho-mutation-* directories directly below
 // TMPDIR (or os.TempDir() without TMPDIR) that are not in the registry and
-// whose mtime is older than the threshold, sorted by path.
-func gcUnregistered(env platform.Env, rows []core.CopyRow, now time.Time, threshold time.Duration) []gcUnregisteredCopy {
+// whose mtime is older than the threshold, sorted by path. Each entry
+// carries the class of the marker beside it, computed against the git
+// common dir of cwd (the current project's identity; "" when cwd is not in
+// a git repository).
+func gcUnregistered(env platform.Env, rows []core.CopyRow, now time.Time, threshold time.Duration, cwd string) []gcUnregisteredCopy {
 	tmpDir := env.Get("TMPDIR")
 	if tmpDir == "" {
 		tmpDir = os.TempDir()
@@ -741,6 +848,10 @@ func gcUnregistered(env platform.Env, rows []core.CopyRow, now time.Time, thresh
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
 		return nil
+	}
+	current := ""
+	if project, err := gitCommonDirResolved(cwd, env); err == nil {
+		current = project
 	}
 	out := []gcUnregisteredCopy{}
 	for _, entry := range entries {
@@ -760,7 +871,7 @@ func gcUnregistered(env platform.Env, rows []core.CopyRow, now time.Time, thresh
 		if age <= threshold {
 			continue
 		}
-		out = append(out, gcUnregisteredCopy{path: path, size: copyDirSize(path), age: age})
+		out = append(out, gcUnregisteredCopy{path: path, size: copyDirSize(path), age: age, origin: copyOrigin(path, current)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
 	return out

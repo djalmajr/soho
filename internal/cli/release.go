@@ -319,6 +319,7 @@ func releaseCopies(sd, agent string, keepCopies bool, env platform.Env, cwd stri
 			}
 			continue
 		}
+		removeOriginMarker(resolved)
 		removed[row.Path] = true
 		_, _ = fmt.Fprintf(platform.Stdout, "removed copy %s\n", row.Path)
 	}

@@ -679,7 +679,7 @@ func TestGc(t *testing.T) {
 			"total: 25 B",
 			"run 'soho gc --yes' to remove them",
 			gcUnregisteredHeader,
-			l.unreg + "  40 B  3h",
+			l.unreg + "  40 B  3h  no origin marker",
 		}, "\n") + "\n"
 		if out != want {
 			t.Fatalf("stdout=%q; want\n%s", out, want)
@@ -706,7 +706,7 @@ func TestGc(t *testing.T) {
 			"removed " + l.oldOrphan + "  25 B",
 			"removed " + l.missing + "  0 B",
 			gcUnregisteredHeader,
-			l.unreg + "  40 B  3h",
+			l.unreg + "  40 B  3h  no origin marker",
 			"freed: 25 B",
 		}, "\n") + "\n"
 		if out != want {
@@ -747,6 +747,12 @@ func TestGc(t *testing.T) {
 		if err := os.Chtimes(target, old, old); err != nil {
 			t.Fatal(err)
 		}
+		// The two unregistered copies carry this project's marker, so the
+		// origin check passes and the safety check decides: the real
+		// directory is removed with its marker, the symlinked one is kept.
+		thisProject := gitCommonDirOf(t, f.repo, f.env)
+		writeTestOriginMarker(t, l.unreg, thisProject, f.repo)
+		writeTestOriginMarker(t, link, thisProject, f.repo)
 		// --yes without --include-unregistered leaves the unregistered copies.
 		code, out, errOut := f.run(t, f.env, "gc", "--yes")
 		if code != 0 || strings.Contains(out, "removed "+l.unreg) {
@@ -771,6 +777,12 @@ func TestGc(t *testing.T) {
 		}
 		if _, err := os.Stat(l.unreg); !os.IsNotExist(err) {
 			t.Fatalf("the unregistered copy was not removed: %v", err)
+		}
+		if _, err := os.Lstat(l.unreg + ".soho-origin"); !os.IsNotExist(err) {
+			t.Fatalf("the removed copy's marker was not removed: %v", err)
+		}
+		if _, err := os.Stat(link); err != nil {
+			t.Fatalf("the kept symlink was touched: %v", err)
 		}
 		if _, err := os.Stat(filepath.Join(target, "t.txt")); err != nil {
 			t.Fatalf("the symlink target was touched: %v", err)
@@ -841,13 +853,16 @@ func TestGc(t *testing.T) {
 		if err := os.Chtimes(unreg, old, old); err != nil {
 			t.Fatal(err)
 		}
+		// The copy carries this project's marker: the hint stays because at
+		// least one unregistered copy is this project's.
+		writeTestOriginMarker(t, unreg, gitCommonDirOf(t, f.repo, f.env), f.repo)
 		code, out, errOut := f.run(t, f.env, "gc")
 		if code != 0 || errOut != "" {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
 		want := "resource pressure: none (disk 60% free, swap 30% used)\n" +
 			gcUnregisteredHeader + "\n" +
-			unreg + "  40 B  3h\n" +
+			unreg + "  40 B  3h  this project\n" +
 			"run 'soho gc --yes --include-unregistered' to remove the unregistered ones\n"
 		if out != want {
 			t.Fatalf("stdout=%q; want\n%s", out, want)

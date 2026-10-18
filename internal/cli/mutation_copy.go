@@ -56,9 +56,24 @@ func runMutationCopy(args []string, env platform.Env) int {
 		}
 		return mutationCopyRefuse("destination", destGiven, reason)
 	}
+	// The origin marker goes beside the copies this command creates in
+	// TMPDIR (no --dest: gc never scans the other paths). It is written
+	// right after the destination exists and before the file copy, so an
+	// interrupted copy already carries it; a failure never changes the
+	// command's stdout or exit code.
+	markerPath := ""
+	if parsed.dest == "" {
+		markerPath = dest + ".soho-origin"
+		if err := writeCopyOriginMarker(markerPath, source, env); err != nil {
+			_, _ = fmt.Fprintf(platform.Stderr, "mutation-copy: origin marker not written (%s); gc will not remove this copy\n", err)
+		}
+	}
 	cleanup := func() {
 		if destCreated {
 			_ = os.RemoveAll(dest)
+			if markerPath != "" {
+				_ = os.Remove(markerPath)
+			}
 		}
 	}
 	failIO := func(cause string) int {
@@ -339,6 +354,47 @@ type mutationCopyResult struct {
 func mutationCopyUsageError() int {
 	_, _ = fmt.Fprintf(platform.Stderr, "soho: %s\n", mutationCopyUsage)
 	return 2
+}
+
+// writeOriginMarker writes the copy's origin marker file. Tests swap it to
+// prove a write failure does not change the command's stdout or exit.
+var writeOriginMarker = func(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+// writeCopyOriginMarker writes the copy's origin marker beside it: the
+// source's git common directory (project=, shared by every worktree of the
+// repository), the source root as reported in the result JSON (source=) and
+// the creation time in the registry's created format (created=) — one
+// key=value line per field, in that order.
+func writeCopyOriginMarker(markerPath, source string, env platform.Env) error {
+	project, err := gitCommonDirResolved(source, env)
+	if err != nil {
+		return err
+	}
+	content := "project=" + project + "\nsource=" + source + "\ncreated=" + core.FrictionISO(platform.Now()) + "\n"
+	return writeOriginMarker(markerPath, content)
+}
+
+// gitCommonDirResolved runs git rev-parse --path-format=absolute
+// --git-common-dir in dir and resolves symlinks. Every worktree of a
+// repository returns the same value (the main repository's .git), which
+// makes it the project identity the origin marker and the gc compare. The
+// error is non-nil when git cannot answer (missing git, not a repository,
+// an unreadable result).
+func gitCommonDirResolved(dir string, env platform.Env) (string, error) {
+	result := platform.RunCli("git", []string{"-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"}, platform.RunOptions{Env: env, Cwd: dir, TimeoutMs: 30_000})
+	if result.NotFound {
+		return "", errors.New("git is not available on PATH")
+	}
+	if result.Status == nil || *result.Status != 0 {
+		return "", errors.New("git rev-parse --git-common-dir failed: " + strings.TrimSpace(result.Stderr))
+	}
+	value := strings.TrimSpace(result.Stdout)
+	if value == "" {
+		return "", errors.New("git rev-parse --git-common-dir returned no path")
+	}
+	return canonicalPath(value)
 }
 
 func mutationCopyRefuse(what, value, reason string) int {
