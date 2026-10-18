@@ -52,8 +52,10 @@ type callResult struct {
 }
 
 type agentInfo struct {
-	OK          bool
-	NotFound    bool
+	OK       bool
+	NotFound bool
+	// TimedOut is a get cut by its own timeout.
+	TimedOut    bool
 	Code        string
 	Cause       string
 	Status      string
@@ -71,6 +73,7 @@ type resolvedTarget struct {
 	RefShown  string
 	Machine   string
 	OK        bool
+	TimedOut  bool
 	Code      string
 	Cause     string
 	TargetArg string
@@ -364,7 +367,7 @@ func agentGet(machine, target string, env platform.Env, timeoutMS int) agentInfo
 		return agentInfo{NotFound: true, Cause: "herdr CLI not found in PATH"}
 	}
 	if r.TimedOut {
-		return agentInfo{Cause: fmt.Sprintf("herdr agent get timed out after %ss", numberSeconds(timeoutMS))}
+		return agentInfo{TimedOut: true, Cause: fmt.Sprintf("herdr agent get timed out after %ss", numberSeconds(timeoutMS))}
 	}
 	status := 1
 	if r.Status != nil {
@@ -426,7 +429,7 @@ func resolveTargetWithin(target string, env platform.Env, timeoutMS int) resolve
 		return resolvedTarget{RefShown: shown, Machine: machine, Cause: a.Cause}
 	}
 	if !a.OK {
-		return resolvedTarget{RefShown: shown, Machine: machine, Code: a.Code, Cause: a.Cause}
+		return resolvedTarget{RefShown: shown, Machine: machine, Code: a.Code, Cause: a.Cause, TimedOut: a.TimedOut}
 	}
 	targetArg := paneTarget
 	if a.PaneID != "" {
@@ -1007,7 +1010,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 				break
 			}
 			next := resolveTargetWithin(target, env, left)
-			if !next.OK && next.Code != "agent_not_ready" && !time.Now().Before(deadline) {
+			if notReadyRetryOutOfBudget(next, deadline, time.Now()) {
 				// The retry ran out of the send's budget: the target is
 				// still the agent_not_ready one.
 				break
@@ -2055,6 +2058,18 @@ func contains(values []string, value string) bool {
 // sendBusyBudgetMS is the busy wait's budget: the full --timeout without an
 // agent_not_ready wait, else what is left before the shared deadline (never
 // floored up). wait is false when nothing is left.
+// notReadyRetryOutOfBudget reports whether an agent_not_ready retry that
+// failed otherwise ran out of the send's budget. The retry's get is bounded
+// by what was left, cut to whole milliseconds, so a get that timed out spent
+// the budget even when the clock still reads a fraction of a millisecond
+// before the deadline.
+func notReadyRetryOutOfBudget(next resolvedTarget, deadline, now time.Time) bool {
+	if next.OK || next.Code == "agent_not_ready" {
+		return false
+	}
+	return next.TimedOut || !now.Before(deadline)
+}
+
 func sendBusyBudgetMS(timeoutMS int, notReady bool, deadline, now time.Time) (int, bool) {
 	if !notReady {
 		return timeoutMS, true
