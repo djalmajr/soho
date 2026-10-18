@@ -88,16 +88,21 @@ func TestSendRefusesTheWorkerSender(t *testing.T) {
 		if stderr != want {
 			t.Fatalf("stderr=%q want %q", stderr, want)
 		}
-		// The only herdr call is the sender identity lookup: no target
-		// resolution, no prompt, no screen read.
+		// The first herdr call is the caller-pane check's process-info read
+		// (DJA-394: the fake has no rule for it, so it reads unknown and the
+		// check passes silently); the second is the sender identity lookup.
+		// No target resolution, no prompt, no screen read.
 		calls, err := fakecli.ReadCallsForConfig(filepath.Join(filepath.Dir(f.bin), "herdr.json"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(calls) != 1 {
+		if len(calls) != 2 {
 			t.Fatalf("calls=%#v", calls)
 		}
-		if got := calls[0]; len(got.Argv) != 3 || got.Argv[1] != "get" || got.Argv[2] != "w0test:p0a" {
+		if got := calls[0]; len(got.Argv) != 4 || got.Argv[1] != "process-info" || got.Argv[3] != "w0test:p0a" {
+			t.Fatalf("call=%#v", got)
+		}
+		if got := calls[1]; len(got.Argv) != 3 || got.Argv[1] != "get" || got.Argv[2] != "w0test:p0a" {
 			t.Fatalf("call=%#v", got)
 		}
 	})

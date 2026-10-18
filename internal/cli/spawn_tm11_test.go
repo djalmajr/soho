@@ -82,6 +82,12 @@ func TestTM11SpawnCommandParity(t *testing.T) {
 	})
 	t.Run(`JS: "parity spawn: a full caller tab overflows the worker into a herd tab"`, func(t *testing.T) {
 		golden := tm11RequireSpawnGolden(t, goldens, "overflow")
+		// DJA-394: the caller has HERDR_PANE_ID, so the spawn reads its
+		// pane's shell pid first (the fake has no rule for it: unknown,
+		// and the step's output and files are unchanged).
+		for i := range golden.Steps {
+			golden.Steps[i].Log = testutil.RewriteCallerCheckLog(golden.Steps[i].Log, "c")
+		}
 		layout := `{"result":{"layout":{"area":{"x":0,"y":0,"width":107,"height":57},"panes":[{"pane_id":"c","tab_id":"t-main","focused":false,"rect":{"x":0,"y":0,"width":53,"height":57}},{"pane_id":"p-w1","tab_id":"t-main","focused":false,"rect":{"x":53,"y":0,"width":54,"height":57}},{"pane_id":"p-w2","tab_id":"t-main","focused":false,"rect":{"x":0,"y":28,"width":53,"height":29}},{"pane_id":"p-w3","tab_id":"t-main","focused":false,"rect":{"x":53,"y":28,"width":54,"height":29}}]}}}`
 		panes := `{"result":{"panes":[{"pane_id":"c","tab_id":"t-main"},{"pane_id":"p-w1","tab_id":"t-main"},{"pane_id":"p-w2","tab_id":"t-main"},{"pane_id":"p-w3","tab_id":"t-main"}]}}`
 		live := `{"result":{"agents":[{"name":"w1","pane_id":"w1","agent_status":"idle"},{"name":"w2","pane_id":"w2","agent_status":"idle"},{"name":"w3","pane_id":"w3","agent_status":"idle"}]}}`

@@ -279,6 +279,14 @@ setup_target=canonical
 # <state>/peer-messages.tsv (never the message body).
 inbound=auto
 
+# Caller-pane check (soho spawn, send, regrid, title, init, collaborate):
+# whether a command that acts in the name of HERDR_PANE_ID verifies that
+# this process actually runs in that pane (its process tree must reach the
+# pane's shell, read from `herdr pane process-info`): refuse (default, exit
+# 2) | warn | off. An invalid value counts as refuse. A SOHO_DELEGATED_PANE
+# equal to HERDR_PANE_ID is a deliberate delegation and is never refused.
+caller_check=refuse
+
 # Worker-to-worker messages: off (default) | policy. With policy, named
 # directional rules decide which worker may send which message type to which
 # participant, inside an active assignment created by the orchestrator:

@@ -24,7 +24,7 @@ func isJSTrimSpace(r rune) bool {
 	return r == '\u0009' || r == '\u000a' || r == '\u000b' || r == '\u000c' || r == '\u000d' || r == '\u0020' || r == '\u00a0' || r == '\u1680' || (r >= '\u2000' && r <= '\u200a') || r == '\u2028' || r == '\u2029' || r == '\u202f' || r == '\u205f' || r == '\u3000' || r == '\ufeff'
 }
 
-func cmdTitle(argv []string, env platform.Env) {
+func cmdTitle(argv []string, cfg *core.Config, env platform.Env, cwd string) {
 	clear := false
 	rest := []string{}
 	for _, arg := range argv {
@@ -51,6 +51,11 @@ func cmdTitle(argv []string, env platform.Env) {
 		value := "orchestrator: " + objective
 		title = &value
 	}
+	// The caller-pane check runs after the arguments are valid and before
+	// the first Herdr call that acts on the caller's pane (DJA-394): a
+	// usage error never touches Herdr, and a forked session must not
+	// write the title of the pane its environment claims.
+	core.CallerGate("title", cfg, env, cwd)
 	if !herdr.PaneTitle(pane, title, env) {
 		core.DieFriction("title: herdr pane report-metadata failed", 4, frictionLogPath, "title")
 	}

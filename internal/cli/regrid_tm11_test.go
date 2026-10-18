@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -64,8 +65,12 @@ func TestTM11RegridFailureParity(t *testing.T) {
 			log.WriteString(strings.Join(call.Argv, " "))
 			log.WriteByte('\n')
 		}
-		if expected := want.Files["herdr.log"]; expected != nil && log.String() != *expected {
-			t.Fatalf("herdr log=%q want=%q", log.String(), *expected)
+		// DJA-394: the caller has HERDR_PANE_ID, so the regrid reads its
+		// pane's shell pid first (the fake has no rule for it: unknown,
+		// and the step's output and files are unchanged).
+		expectedLog := testutil.RewriteCallerCheckLog(want.Files["herdr.log"], "C")
+		if expectedLog != nil && log.String() != *expectedLog {
+			t.Fatalf("herdr log=%q want=%q", log.String(), *expectedLog)
 		}
 		if actual, err := os.ReadFile(filepath.Join(state, "agents.tsv")); err != nil || string(actual) != *want.Files["state/ws/agents.tsv"] {
 			t.Fatalf("roster=%q err=%v want=%q", actual, err, *want.Files["state/ws/agents.tsv"])

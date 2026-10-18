@@ -589,6 +589,13 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	if err != nil || !info.IsDir() {
 		core.DieFriction("spawn: --cwd "+o.cwd+" is not a directory", 2, "", "")
 	}
+	// The caller-pane check runs after the arguments are valid and before
+	// the first Herdr call that acts on the claimed pane (DJA-394): a
+	// usage error never calls Herdr, and a forked session must not open
+	// panes in the name of the pane its environment claims. It also
+	// covers the run and reopen paths, which open panes through
+	// CmdSpawn.
+	core.CallerGate("spawn", ctx, env, cwd)
 	EnsureOrchestratorName(ctx, env, cwd, "spawn")
 	core.ResolveRole(o.role, env, cwd)
 	if o.role == "planner" {

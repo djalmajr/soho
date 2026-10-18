@@ -20,6 +20,11 @@ func TestMain(m *testing.M) { fakecli.RunTests(m) }
 
 func layoutFake(t *testing.T, rules []fakecli.Rule) (platform.Env, *core.Config, string, string) {
 	t.Helper()
+	// The tests of this package call CmdRegrid directly, without cli.Run
+	// (which resets the caller-pane memo): each fixture starts with a
+	// clean memo so the call-list assertions never depend on test order
+	// (DJA-394).
+	herdr.ResetCallerCheck()
 	root := t.TempDir()
 	bin := filepath.Join(root, "bin")
 	if _, err := fakecli.Install(t, bin, "herdr", rules); err != nil {
