@@ -331,6 +331,17 @@ func relabelHerdTabs(relabel func(), ctx *core.Config, env platform.Env, cwd str
 
 func canPullBack(workerCount, cap int) bool { return workerCount+1 < cap }
 
+// gridShapeFor is the caller tab's shape: the declared columns when they
+// are in effect (non-empty, valid pane_columns), otherwise today's square
+// grid. The herd tabs always keep the square grid.
+func gridShapeFor(ctx *core.Config, env platform.Env, n int) Grid {
+	cols, overflow, declared := PaneColumns(ctx, env)
+	if !declared {
+		return GridSizes(n)
+	}
+	return DeclaredGrid(cols, overflow, n)
+}
+
 func CmdRegrid(_ []string, ctx *core.Config, env platform.Env, cwd string) int {
 	dir := core.StateDirPath(ctx, env, cwd)
 	ws := core.WorkspaceID(ctx, env, cwd)
@@ -345,7 +356,12 @@ func CmdRegrid(_ []string, ctx *core.Config, env platform.Env, cwd string) int {
 	}
 	if layout == "split" && callerTab != "" && callerPane != "" {
 		panes := withoutCaller(rosterPanes(ctx, live, callerTab, env, cwd), callerPane)
-		cap := SplitCap(ctx, env)
+		cap, unlimited := SplitCapDeclared(ctx, env)
+		if unlimited {
+			// canPullBack compares with <; the uncapped declared overflow
+			// (last-column, new-column) pulls every worker back.
+			cap = 1 << 30
+		}
 	outer:
 		for _, e := range HerdTabEntries(ctx, env, cwd) {
 			// The caller may itself live in a recorded herd tab: its workers
@@ -378,13 +394,14 @@ func CmdRegrid(_ []string, ctx *core.Config, env platform.Env, cwd string) int {
 			if !ok {
 				dieRegrid(ctx, env, cwd, fmt.Sprintf("regrid: could not park the workers of tab %s in a temporary tab", callerTab))
 			}
-			changes, moved, ok := gridApply(ctx, callerTab, append([]string{callerPane}, parked...), env, cwd)
+			shape := gridShapeFor(ctx, env, len(parked)+1)
+			changes, moved, ok := gridApplyShape(ctx, callerTab, append([]string{callerPane}, parked...), shape, env, cwd)
 			if !ok {
 				_, stillParked := whereAfterFailedGrid(parked, nil, changes, moved)
 				recovered := recoverParked(dir, callerTab, callerPane, stillParked, env)
 				dieRegrid(ctx, env, cwd, regridPartialFailureMessage("a move back into "+callerTab, callerTab, park+" (label herd-park)", parked, nil, changes, moved, recovered))
 			}
-			summary = append(summary, RegridEntry{callerTab, "caller", len(parked) + 1, GridSizes(len(parked) + 1).Cols})
+			summary = append(summary, RegridEntry{callerTab, "caller", len(parked) + 1, shape.Cols})
 			// Parking and gridding can change the pane ids recorded in the
 			// roster. Rebuild against the topology after those moves.
 			live = herdr.PaneList(env, ws)

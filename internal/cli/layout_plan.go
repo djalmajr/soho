@@ -114,8 +114,15 @@ func cmdLayoutPlan(args []string, ctx *core.Config, env platform.Env, cwd string
 		platform.Die("pane layout failed", 4)
 	}
 	ids := strings.Fields(mine)
-	cap, min := splitCap(ctx, env), splitMin(ctx, env)
-	anchor := layout.SplitAnchor(raw, me, ids, cap, min)
+	min := splitMin(ctx, env)
+	cols, overflow, declared := layout.PaneColumns(ctx, env)
+	cap, unlimited := layout.SplitCapDeclared(ctx, env)
+	var anchor *layout.Anchor
+	if declared {
+		anchor = layout.SplitAnchorDeclared(raw, me, ids, cols, overflow, cap, unlimited, min)
+	} else {
+		anchor = layout.SplitAnchor(raw, me, ids, cap, min)
+	}
 	plan := layoutPlan{Cap: cap, MinPane: min, Candidates: []layoutCandidate{}}
 	placement, direction, reason := "split", "right", "largest-area"
 	anchorID := me
@@ -149,7 +156,12 @@ func cmdLayoutPlan(args []string, ctx *core.Config, env platform.Env, cwd string
 	if placement == "split" {
 		plan.Anchor, plan.Direction = &anchorID, &direction
 		n := len(plan.Candidates) + 1
-		g := layout.GridSizes(n)
+		var g layout.Grid
+		if declared {
+			g = layout.DeclaredGrid(cols, overflow, n)
+		} else {
+			g = layout.GridSizes(n)
+		}
 		rows := make([]any, len(g.Rows))
 		for i, row := range g.Rows {
 			rows[i] = row
@@ -160,6 +172,12 @@ func cmdLayoutPlan(args []string, ctx *core.Config, env platform.Env, cwd string
 	for i, candidate := range plan.Candidates {
 		candidates[i] = jsonjs.O("pane_id", candidate.PaneID, "caller", candidate.Caller, "width", candidate.Width, "height", candidate.Height)
 	}
+	// An uncapped declared tab reports cap null: 0 is an explicit
+	// split_max_panes=0, the opposite of no cap.
+	var capValue any = plan.Cap
+	if unlimited {
+		capValue = nil
+	}
 	var anchorValue, directionValue any = nil, nil
 	if plan.Anchor != nil {
 		anchorValue = *plan.Anchor
@@ -168,7 +186,7 @@ func cmdLayoutPlan(args []string, ctx *core.Config, env platform.Env, cwd string
 		directionValue = *plan.Direction
 	}
 	result := jsonjs.O("placement", plan.Placement, "anchor", anchorValue, "direction", directionValue, "reason", plan.Reason,
-		"cap", plan.Cap, "min_pane", plan.MinPane, "candidates", candidates, "grid", plan.Grid)
+		"cap", capValue, "min_pane", plan.MinPane, "candidates", candidates, "grid", plan.Grid)
 	_, _ = fmt.Fprintf(platform.Stdout, "%s\n", jsonjs.Stringify(result))
 	return 0
 }

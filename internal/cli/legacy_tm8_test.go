@@ -39,12 +39,20 @@ func TestTM8FormerCLI(t *testing.T) {
 			}
 		}
 	})
-	t.Run(`config: the former env name is not read`, func(t *testing.T) {
+	t.Run(`config: the former env name is not read`, func(t *testing.T) { // JS: "config: the former env name is not read"
 		env, repo := tm8CommandFixture(t)
 		env["HERDR_SOHO_LAYOUT"] = "columns"
 		code, out, errOut := runIn(t, []string{"config"}, env, repo)
-		if code != 0 || errOut != "" || strings.Contains(out, "columns") {
+		if code != 0 || errOut != "" {
 			t.Fatalf("config code=%d out=%q err=%q; the former env name must not reach the layout", code, out, errOut)
+		}
+		// The value check is on the layout line: the declared-columns key
+		// pane_columns is listed by config and legitimately contains the
+		// word, so the full output may no longer be scanned for it.
+		for _, line := range strings.Split(out, "\n") {
+			if strings.HasPrefix(line, "layout ") && strings.Contains(line, "columns") {
+				t.Fatalf("config read the former env name: %s", line)
+			}
 		}
 	})
 	t.Run(`config set --user: the former user file is not copied and is left intact`, func(t *testing.T) {
