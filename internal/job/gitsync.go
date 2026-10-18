@@ -9,7 +9,9 @@
 // ends only the subprocesses this sync opened and the step reports
 // errCancelled, not the step error. The other errors are fixed strings that
 // name the step — subprocess output, URLs, and environment values never
-// appear in them.
+// appear in them. What a failed step knew (how the subprocess ended and the
+// last lines of its stderr, credentials redacted) travels apart, in the
+// ExitError's Detail, for the job's friction log only.
 package job
 
 import (
@@ -82,10 +84,18 @@ type PushResult struct {
 	Head     string
 }
 
-// gitSyncError is the fixed step error: code 19, a message that names the
-// step and nothing else.
-func gitSyncError(step string) error {
-	return &ExitError{Code: ExitFailed, Msg: "job: git sync failed: " + step}
+// gitSyncMsgPrefix starts the message of every git sync step error.
+const gitSyncMsgPrefix = "job: git sync failed: "
+
+// unexpectedOutput is the detail of a step whose subprocess succeeded but
+// printed something the step cannot read.
+const unexpectedOutput = "unexpected output"
+
+// gitSyncErrorDetail is the fixed step error: code 19, a message that names
+// the step and nothing else, plus the step's diagnostic in Detail, which
+// stays out of the message.
+func gitSyncErrorDetail(step, detail string) error {
+	return &ExitError{Code: ExitFailed, Msg: gitSyncMsgPrefix + step, Detail: detail}
 }
 
 // errCancelled is the fixed error of a step whose subprocess ended because
@@ -140,12 +150,12 @@ func (g *GitSync) ghEnv() platform.Env {
 
 // Head is the worktree's HEAD sha.
 func (g *GitSync) Head() (string, error) {
-	out, err := runStepInCtx("", "git", []string{"-C", g.Dir, "rev-parse", "HEAD"}, g.localTimeout(), g.gitEnv(), g.Context)
+	out, detail, err := runStepDetailInCtx("", "git", []string{"-C", g.Dir, "rev-parse", "HEAD"}, g.localTimeout(), g.gitEnv(), g.Context)
 	if err != nil {
 		if g.cancelled() {
 			return "", errCancelled
 		}
-		return "", gitSyncError("head")
+		return "", gitSyncErrorDetail("head", detail)
 	}
 	return strings.TrimSpace(out), nil
 }
@@ -153,19 +163,19 @@ func (g *GitSync) Head() (string, error) {
 // RemoteHead is the sha of the remote job branch; "" (no error) when the
 // remote branch does not exist yet.
 func (g *GitSync) RemoteHead() (string, error) {
-	out, err := runStepInCtx("", "git", []string{"-C", g.Dir, "ls-remote", "origin", "refs/heads/" + g.Branch}, g.netTimeout(), g.gitEnv(), g.Context)
+	out, detail, err := runStepDetailInCtx("", "git", []string{"-C", g.Dir, "ls-remote", "origin", "refs/heads/" + g.Branch}, g.netTimeout(), g.gitEnv(), g.Context)
 	if err != nil {
 		if g.cancelled() {
 			return "", errCancelled
 		}
-		return "", gitSyncError("remote head")
+		return "", gitSyncErrorDetail("remote head", detail)
 	}
 	fields := strings.Fields(out)
 	if len(fields) == 0 {
 		return "", nil
 	}
 	if len(fields) != 2 {
-		return "", gitSyncError("remote head")
+		return "", gitSyncErrorDetail("remote head", unexpectedOutput)
 	}
 	return fields[0], nil
 }
@@ -175,12 +185,12 @@ func (g *GitSync) RemoteHead() (string, error) {
 // non-nil slice.
 func (g *GitSync) Commits() ([]Commit, error) {
 	commits := []Commit{}
-	out, err := runStepInCtx("", "git", []string{"-C", g.Dir, "log", "--reverse", "--format=%H%x09%s", "refs/remotes/origin/" + g.Base + "..HEAD"}, g.localTimeout(), g.gitEnv(), g.Context)
+	out, detail, err := runStepDetailInCtx("", "git", []string{"-C", g.Dir, "log", "--reverse", "--format=%H%x09%s", "refs/remotes/origin/" + g.Base + "..HEAD"}, g.localTimeout(), g.gitEnv(), g.Context)
 	if err != nil {
 		if g.cancelled() {
 			return nil, errCancelled
 		}
-		return nil, gitSyncError("commits")
+		return nil, gitSyncErrorDetail("commits", detail)
 	}
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimRight(line, "\r")
@@ -189,7 +199,7 @@ func (g *GitSync) Commits() ([]Commit, error) {
 		}
 		sha, titulo, ok := strings.Cut(line, "\t")
 		if !ok || sha == "" {
-			return nil, gitSyncError("commits")
+			return nil, gitSyncErrorDetail("commits", unexpectedOutput)
 		}
 		commits = append(commits, Commit{SHA: sha, Titulo: titulo})
 	}
@@ -201,12 +211,12 @@ func (g *GitSync) Commits() ([]Commit, error) {
 // RemoteHead(). Resumo stays empty; the report builder derives removivel and
 // sincronizado from these fields.
 func (g *GitSync) Facts() (ReportFacts, error) {
-	out, err := runStepInCtx("", "git", []string{"-C", g.Dir, "status", "--porcelain"}, g.localTimeout(), g.gitEnv(), g.Context)
+	out, detail, err := runStepDetailInCtx("", "git", []string{"-C", g.Dir, "status", "--porcelain"}, g.localTimeout(), g.gitEnv(), g.Context)
 	if err != nil {
 		if g.cancelled() {
 			return ReportFacts{}, errCancelled
 		}
-		return ReportFacts{}, gitSyncError("status")
+		return ReportFacts{}, gitSyncErrorDetail("status", detail)
 	}
 	head, err := g.Head()
 	if err != nil {
@@ -228,7 +238,7 @@ func (g *GitSync) Facts() (ReportFacts, error) {
 func (g *GitSync) Push() (PushResult, error) {
 	gitEnv := g.gitEnv()
 	if _, ok := platform.FindExecutable("git", gitEnv, platform.Current()); !ok {
-		return PushResult{}, gitSyncError("push")
+		return PushResult{}, gitSyncErrorDetail("push", stepFailureDetail(platform.RunResult{NotFound: true}))
 	}
 	head, err := g.Head()
 	if err != nil {
@@ -255,7 +265,7 @@ func (g *GitSync) Push() (PushResult, error) {
 		// Windows exits 1), it is the cut, never a refusal.
 		return PushResult{}, errCancelled
 	case result.NotFound || result.TimedOut || result.Status == nil:
-		return PushResult{Head: head}, gitSyncError("push")
+		return PushResult{Head: head}, gitSyncErrorDetail("push", stepFailureDetail(result))
 	default:
 		return PushResult{Rejected: true, Head: head}, nil
 	}
@@ -270,25 +280,34 @@ func (g *GitSync) Checkpoint() (bool, error) {
 	// The timeout is read immediately before each subprocess: under a Limit
 	// that means "what is left of the step", a later command must not get the
 	// remainder the first one saw.
-	if _, err := runStepInCtx("", "git", []string{"-C", g.Dir, "add", "-A"}, g.localTimeout(), env, g.Context); err != nil {
+	if _, detail, err := runStepDetailInCtx("", "git", []string{"-C", g.Dir, "add", "-A"}, g.localTimeout(), env, g.Context); err != nil {
 		if g.cancelled() {
 			return false, errCancelled
 		}
-		return false, gitSyncError("checkpoint")
+		return false, gitSyncErrorDetail("checkpoint", detail)
 	}
 	// diff --cached --quiet exits 0 when nothing is staged and 1 when the
 	// index differs from HEAD. runStep reports every non-zero exit as the
 	// same error, so a genuine diff failure falls through to the commit,
 	// which fails on its own when nothing was staged and surfaces as the
-	// checkpoint error instead of committing an empty commit.
-	if _, err := runStepInCtx("", "git", []string{"-C", g.Dir, "diff", "--cached", "--quiet"}, g.localTimeout(), env, g.Context); err == nil {
+	// checkpoint error instead of committing an empty commit. The diff's own
+	// diagnostic is kept for that error unless it is the plain exit 1 of a
+	// staged change.
+	_, diffDetail, err := runStepDetailInCtx("", "git", []string{"-C", g.Dir, "diff", "--cached", "--quiet"}, g.localTimeout(), env, g.Context)
+	if err == nil {
 		return false, nil
 	}
-	if _, err := runStepInCtx("", "git", []string{"-C", g.Dir, "commit", "--no-verify", "-m", "wip(job): checkpoint"}, g.localTimeout(), env, g.Context); err != nil {
+	if _, detail, err := runStepDetailInCtx("", "git", []string{"-C", g.Dir, "commit", "--no-verify", "-m", "wip(job): checkpoint"}, g.localTimeout(), env, g.Context); err != nil {
 		if g.cancelled() {
 			return false, errCancelled
 		}
-		return false, gitSyncError("checkpoint")
+		if diffDetail != "exit 1" {
+			detail = "diff " + diffDetail + "; commit " + detail
+			if len(detail) > 400 {
+				detail = detail[:400]
+			}
+		}
+		return false, gitSyncErrorDetail("checkpoint", detail)
 	}
 	return true, nil
 }
@@ -300,19 +319,19 @@ func (g *GitSync) Checkpoint() (bool, error) {
 // deletes a branch.
 func (g *GitSync) EnsureDraftPR(title, body string) (PullRequest, bool, error) {
 	ghEnv := g.ghEnv()
-	list, err := runStepInCtx("", "gh", []string{"pr", "list", "--repo", g.Repo, "--head", g.Branch, "--state", "all", "--json", "number,url,isDraft", "--limit", "1"}, g.ghTimeout(), ghEnv, g.Context)
+	list, detail, err := runStepDetailInCtx("", "gh", []string{"pr", "list", "--repo", g.Repo, "--head", g.Branch, "--state", "all", "--json", "number,url,isDraft", "--limit", "1"}, g.ghTimeout(), ghEnv, g.Context)
 	if err != nil {
 		if g.cancelled() {
 			return PullRequest{}, false, errCancelled
 		}
-		return PullRequest{}, false, gitSyncError("pr")
+		return PullRequest{}, false, gitSyncErrorDetail("pr", detail)
 	}
 	// Only a JSON array of zero or one element is accepted; anything else
 	// (garbage, null, more than one) is a malformed response and refuses the
 	// whole call instead of guessing.
 	var items []json.RawMessage
 	if err := json.Unmarshal([]byte(list), &items); err != nil || items == nil {
-		return PullRequest{}, false, gitSyncError("pr")
+		return PullRequest{}, false, gitSyncErrorDetail("pr", unexpectedOutput)
 	}
 	if len(items) == 1 {
 		var item struct {
@@ -321,7 +340,7 @@ func (g *GitSync) EnsureDraftPR(title, body string) (PullRequest, bool, error) {
 			IsDraft bool   `json:"isDraft"`
 		}
 		if err := json.Unmarshal(items[0], &item); err != nil {
-			return PullRequest{}, false, gitSyncError("pr")
+			return PullRequest{}, false, gitSyncErrorDetail("pr", unexpectedOutput)
 		}
 		estado := "open"
 		if item.IsDraft {
@@ -330,23 +349,23 @@ func (g *GitSync) EnsureDraftPR(title, body string) (PullRequest, bool, error) {
 		return PullRequest{Numero: item.Numero, URL: item.URL, Estado: estado}, false, nil
 	}
 	if len(items) != 0 {
-		return PullRequest{}, false, gitSyncError("pr")
+		return PullRequest{}, false, gitSyncErrorDetail("pr", unexpectedOutput)
 	}
-	create, err := runStepInCtx("", "gh", []string{"pr", "create", "--repo", g.Repo, "--draft", "--base", g.Base, "--head", g.Branch, "--title", title, "--body", body}, g.ghTimeout(), ghEnv, g.Context)
+	create, detail, err := runStepDetailInCtx("", "gh", []string{"pr", "create", "--repo", g.Repo, "--draft", "--base", g.Base, "--head", g.Branch, "--title", title, "--body", body}, g.ghTimeout(), ghEnv, g.Context)
 	if err != nil {
 		if g.cancelled() {
 			return PullRequest{}, false, errCancelled
 		}
-		return PullRequest{}, false, gitSyncError("pr")
+		return PullRequest{}, false, gitSyncErrorDetail("pr", detail)
 	}
 	url := lastNonEmptyLine(create)
 	idx := strings.LastIndex(url, "/pull/")
 	if idx < 0 {
-		return PullRequest{}, false, gitSyncError("pr")
+		return PullRequest{}, false, gitSyncErrorDetail("pr", unexpectedOutput)
 	}
 	numero, err := strconv.Atoi(url[idx+len("/pull/"):])
 	if err != nil {
-		return PullRequest{}, false, gitSyncError("pr")
+		return PullRequest{}, false, gitSyncErrorDetail("pr", unexpectedOutput)
 	}
 	return PullRequest{Numero: numero, URL: url, Estado: "draft"}, true, nil
 }

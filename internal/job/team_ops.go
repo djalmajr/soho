@@ -215,7 +215,7 @@ func stepFailureDetail(result platform.RunResult) string {
 	}
 	detail := how
 	if len(tail) > 0 {
-		detail += ": " + strings.Join(tail, " | ")
+		detail += ": " + redactDetail(strings.Join(tail, " | "))
 	}
 	if len(detail) > 400 {
 		detail = detail[:400]

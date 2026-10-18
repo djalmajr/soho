@@ -134,7 +134,7 @@ func (s *Supervisor) syncGitPass(fin *finSync) (int, bool, error) {
 		if errors.Is(err, errCancelled) {
 			return 0, false, nil
 		}
-		s.frictionf(err.Error())
+		s.frictionGit(err)
 		fin.fail()
 		s.cutIfStepEnded(fin)
 		return 0, false, nil
@@ -175,7 +175,7 @@ func (s *Supervisor) syncGitPass(fin *finSync) (int, bool, error) {
 			if errors.Is(err, errCancelled) {
 				return 0, false, nil
 			}
-			s.frictionf(err.Error())
+			s.frictionGit(err)
 			fin.fail()
 			s.cutIfStepEnded(fin)
 			return 0, false, nil
@@ -209,7 +209,7 @@ func (s *Supervisor) syncGitPass(fin *finSync) (int, bool, error) {
 		if errors.Is(err, errCancelled) {
 			return 0, false, nil
 		}
-		s.frictionf(err.Error())
+		s.frictionGit(err)
 		fin.fail()
 		s.cutIfStepEnded(fin)
 		return 0, false, nil
@@ -250,7 +250,7 @@ func (s *Supervisor) syncGitPass(fin *finSync) (int, bool, error) {
 			if errors.Is(err, errCancelled) {
 				return 0, false, nil
 			}
-			s.frictionf(err.Error())
+			s.frictionGit(err)
 			fin.fail()
 			s.cutIfStepEnded(fin)
 			return 0, false, nil
@@ -350,6 +350,21 @@ func (s *Supervisor) frictionf(message string) {
 	}
 }
 
+// frictionGit reports a GitSync step error: the line of the message, and,
+// when the step kept a diagnostic, a second line with it (the exit and the
+// last lines of the subprocess's stderr, credentials already redacted). The
+// message, the events and the exit code do not change.
+func (s *Supervisor) frictionGit(err error) {
+	s.frictionf(err.Error())
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) || exitErr.Detail == "" {
+		return
+	}
+	if step, ok := strings.CutPrefix(exitErr.Msg, gitSyncMsgPrefix); ok {
+		s.frictionf("job: git sync " + step + " failed: " + exitErr.Detail)
+	}
+}
+
 // finalSync is the final push, run while the job is still finishing and
 // before the terminal event, so the final commit, push and pr_opened
 // events precede the terminal event and wake the dispatcher with it. On
@@ -386,7 +401,7 @@ func (s *Supervisor) finalSync(status string) (cut bool) {
 	fin := &finSync{}
 	if status == StatusCanceled || status == StatusTimeout {
 		if _, err := s.Git.Checkpoint(); err != nil {
-			s.frictionf(err.Error())
+			s.frictionGit(err)
 			fin.fail()
 			s.cutIfStepEnded(fin)
 		}
@@ -915,14 +930,14 @@ func (s *Supervisor) reportFacts(st State, events []Event, jobDir string) Report
 	facts := ReportFacts{}
 	if s.Git != nil {
 		if gitFacts, err := s.Git.Facts(); err != nil {
-			s.frictionf(err.Error())
+			s.frictionGit(err)
 		} else {
 			facts.Clean = gitFacts.Clean
 			facts.Head = gitFacts.Head
 			facts.HeadRemoto = gitFacts.HeadRemoto
 		}
 		if commits, err := s.Git.Commits(); err != nil {
-			s.frictionf(err.Error())
+			s.frictionGit(err)
 		} else {
 			// The remote head contains the commits when it is the local
 			// head; with the head unknown every commit is pending.
