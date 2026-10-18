@@ -292,3 +292,46 @@ func TestSendBusyBudgetAfterNotReady(t *testing.T) {
 		}
 	}
 }
+
+// DJA-377 follow-up: the retry's get is bounded by what is left of the
+// send's --timeout, cut to whole milliseconds, so it can time out a fraction
+// of a millisecond before the deadline. A timed-out retry still counts as
+// out of budget; any other failure counts only once the deadline passed.
+func TestNotReadyRetryOutOfBudget(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	cases := []struct {
+		name     string
+		ok       bool
+		code     string
+		timedOut bool
+		left     time.Duration
+		want     bool
+	}{
+		{"timed-out get just before the deadline", false, "", true, 500 * time.Microsecond, true},
+		{"timed-out get past the deadline", false, "", true, -time.Millisecond, true},
+		{"other failure before the deadline", false, "", false, 500 * time.Microsecond, false},
+		{"other failure past the deadline", false, "", false, 0, true},
+		{"still not ready", false, "agent_not_ready", false, 0, false},
+		{"resolved", true, "", false, 0, false},
+	}
+	for _, tc := range cases {
+		if got := peer.NotReadyRetryOutOfBudget(tc.ok, tc.code, tc.timedOut, now.Add(tc.left), now); got != tc.want {
+			t.Fatalf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The timed-out flag reaches the resolved target: a get cut by its own
+// timeout reports TimedOut, a get that answers does not.
+func TestResolveTargetWithinReportsTimedOut(t *testing.T) {
+	f := newFixture(t, []fakecli.Rule{
+		{Argv: []string{"agent", "get", "slow"}, Delay: 3000, Stderr: notReadyErr, Code: 1},
+		{Argv: []string{"agent", "get", "fast"}, Stderr: notReadyErr, Code: 1},
+	})
+	if !peer.ResolveTargetWithinTimedOut("slow", f.env, 100) {
+		t.Fatal("a get past its 100 ms timeout did not report TimedOut")
+	}
+	if peer.ResolveTargetWithinTimedOut("fast", f.env, 2000) {
+		t.Fatal("a get that answered reported TimedOut")
+	}
+}
