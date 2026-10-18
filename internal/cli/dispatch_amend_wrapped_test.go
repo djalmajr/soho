@@ -85,7 +85,7 @@ func TestDispatchAmendNoWaitWrappedPiHistory(t *testing.T) {
 	t.Run("control: a different path wrapped the same way stays not-received", func(t *testing.T) {
 		f := newAmendFixture(t, screen("19990101T000000"))
 		code, out, errText := f.run(t, "worker", f.brief, "--amend", "--no-wait")
-		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
 		calls, err := fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
