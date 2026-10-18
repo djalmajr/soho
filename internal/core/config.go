@@ -845,11 +845,7 @@ func CmdConfig(ctx *Config, env platform.Env, cwd string) {
 	}
 	lines := []string{row("KEY", "VALUE", "SOURCE")}
 	for _, key := range ConfigScalarKeys {
-		value := Cfg(ctx, key, "", env)
-		if key == "state_dir" && CfgSource(ctx, key, env) == "defaults" {
-			value = StateDirSetting(ctx, env, cwd)
-		}
-		lines = append(lines, row(key, value, CfgSource(ctx, key, env)))
+		lines = append(lines, row(key, ConfigScalarValue(ctx, key, env, cwd), CfgSource(ctx, key, env)))
 	}
 	dotted := map[string]bool{}
 	for _, key := range ctx.Order {
@@ -901,6 +897,19 @@ func CmdConfig(ctx *Config, env platform.Env, cwd string) {
 	}
 	lines = append(lines, "session file: "+sessionFile)
 	fmt.Fprintln(platform.Stdout, strings.Join(lines, "\n"))
+}
+
+// ConfigScalarValue is the listing's VALUE column for one scalar key: the
+// Cfg value over ctx and env, with the state_dir special case (a state_dir
+// whose only source is the defaults layer prints its effective setting).
+// CmdConfig and `soho config get` both read it, so the listing and the get
+// command never diverge.
+func ConfigScalarValue(ctx *Config, key string, env platform.Env, cwd string) string {
+	value := Cfg(ctx, key, "", env)
+	if key == "state_dir" && CfgSource(ctx, key, env) == "defaults" {
+		value = StateDirSetting(ctx, env, cwd)
+	}
+	return value
 }
 
 var ruleNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)

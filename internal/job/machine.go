@@ -59,17 +59,19 @@ func LoadMachine(osName string, env platform.Env) (Machine, error) {
 	return LoadMachineFor(osName, env, core.UserSelection{})
 }
 
-// LoadMachineFor is LoadMachine with an explicit user configuration
-// selection: the user file comes from sel.Base and a home-relative
-// job_repos_root expands from sel.Home when they are set (the job
-// supervisor's view of its starter's selection); the zero selection is
-// LoadMachine.
-func LoadMachineFor(osName string, env platform.Env, sel core.UserSelection) (Machine, error) {
+// MachineValues is the raw string of the seven machine keys LoadMachineFor
+// reads: the defaults above overridden by the user configuration file
+// (EffectiveUserConfigFile for sel), before any interpretation (no ~
+// expansion, no organization split, no timeout parsing). Project and
+// session files and SOHO_* environment variables never change these values.
+// An unreadable user file is *platform.ExitError with code 2, the same
+// failure LoadMachineFor returns.
+func MachineValues(osName string, env platform.Env, sel core.UserSelection) (map[string]string, error) {
 	file := core.EffectiveUserConfigFile(osName, env, sel)
 	pairs, err := core.ReadConfigFilePairs(file)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			return Machine{}, exitErr(2, "job: cannot read user configuration")
+			return nil, exitErr(2, "job: cannot read user configuration")
 		}
 	}
 	values := map[string]string{
@@ -85,6 +87,19 @@ func LoadMachineFor(osName string, env platform.Env, sel core.UserSelection) (Ma
 		if _, known := values[pair.Key]; known {
 			values[pair.Key] = pair.Value
 		}
+	}
+	return values, nil
+}
+
+// LoadMachineFor is LoadMachine with an explicit user configuration
+// selection: the user file comes from sel.Base and a home-relative
+// job_repos_root expands from sel.Home when they are set (the job
+// supervisor's view of its starter's selection); the zero selection is
+// LoadMachine. The seven raw values come from MachineValues.
+func LoadMachineFor(osName string, env platform.Env, sel core.UserSelection) (Machine, error) {
+	values, err := MachineValues(osName, env, sel)
+	if err != nil {
+		return Machine{}, err
 	}
 	orgs, err := parseOrgs(values["job_orgs"])
 	if err != nil {
