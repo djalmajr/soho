@@ -33,6 +33,10 @@ type ExitError struct {
 	Code int
 	Msg  string
 	Seqs []int
+	// Detail is diagnostic context kept out of Msg (and so out of the
+	// events and the report): for a failed subprocess step, its exit and
+	// the last lines of its stderr. Only the job's friction log records it.
+	Detail string
 }
 
 func (e *ExitError) Error() string {
