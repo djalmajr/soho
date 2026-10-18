@@ -300,15 +300,24 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	// there and re-raises, so the CLI boundary still prints the compact
 	// message and records the friction line.
 	if compact {
+		// The compact phase's limit, read once: the same value the phase is
+		// given (in place of the former constant) and the one the timeout's
+		// friction line reports.
+		compactTimeoutMS := core.CompactTimeoutMS(ctx, env)
 		if compactProof(kind) == "" {
 			core.Warn(fmt.Sprintf("dispatch: --compact skipped: kind '%s' has no verified compact command", kind), frictionLogPath, "dispatch")
 		} else if code := compactPhaseDispatch(compactPhaseDispatchOptions{
 			Agent: agent, Pane: at(1), Kind: kind, Role: role, Lane: lane, Model: model,
-			Brief: brief, SD: sd, TimeoutMS: compactDefaultTimeoutMS, Ctx: ctx, Env: env, Cwd: cwd,
+			Brief: brief, SD: sd, TimeoutMS: compactTimeoutMS, Ctx: ctx, Env: env, Cwd: cwd,
 		}); code != 0 {
 			// The compaction phase did not finish: say so, and that this brief was
 			// not sent, so the orchestrator does not look for it on the screen.
 			fmt.Fprintf(platform.Stderr, "soho: dispatch: the compact step of '%s' did not finish (exit %d); the brief was not sent\n", agent, code)
+			if code == 9 {
+				// 9 is the compact phase's timeout exit (compactRun): the limit
+				// is the effective compact_timeout, in the numberSeconds form.
+				core.Warn(fmt.Sprintf("dispatch: compact of '%s' timed out after %ss (compact_timeout=%d); the brief was not sent", agent, compactTimeoutSeconds(compactTimeoutMS), compactTimeoutMS), frictionLogPath, "dispatch")
+			}
 			return code
 		}
 	}
@@ -785,6 +794,16 @@ func compactDispatchStep(agent, pane, kind, role, lane, model string, timeoutMS 
 		panic(value)
 	}()
 	return compactRun(agent, pane, kind, role, lane, model, timeoutMS, ctx, env, cwd, true)
+}
+
+// compactTimeoutSeconds renders a millisecond count in the numberSeconds
+// form the peer package uses for timeout messages: whole seconds when the
+// value divides, a decimal otherwise (1500 -> 1.5).
+func compactTimeoutSeconds(ms int64) string {
+	if ms%1000 == 0 {
+		return strconv.FormatInt(ms/1000, 10)
+	}
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.3f", float64(ms)/1000), "0"), ".")
 }
 
 // compactPhaseDispatchOptions names the F11 wrapper's parameters: the

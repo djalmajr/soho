@@ -196,6 +196,9 @@ spawn_timeout=60000
 # Milliseconds `dispatch`/`wait` allow per brief when the role sets no `timeout`.
 dispatch_timeout=900000
 
+# Milliseconds the compact phase waits (`dispatch --compact`, and `soho compact` without `--timeout`).
+compact_timeout=300000
+
 # An idle worker whose last error line names a provider capacity limit (for
 # example an error type containing "capacity" or "overload", or status 529)
 # is sent "continue" after provider_retry_delay seconds, up to
