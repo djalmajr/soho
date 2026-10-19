@@ -635,6 +635,16 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	if kind == "" {
 		core.DieFriction(fmt.Sprintf("role %s has no default kind; pass --kind", o.role), 3, "", "")
 	}
+	// DJA-397: a --kind that differs from lane.<lane>.kind would put a worker
+	// of another kind in the lane and block its next spawns (exit 13). It is
+	// refused here, before the lane decision (which may drop gone workers
+	// from the roster), before any reuse and before any pane or agent opens.
+	// A given --pane skips the lane decision and the refusal with it.
+	if o.pane == "" && o.kindSet && o.kind != "" {
+		if lane, laneKind, conflict := LaneKindConflict(o.role, o.kind, ctx, env); conflict {
+			RefuseLaneKind(o.role, lane, laneKind, o.kind, fmt.Sprintf("spawn: role '%s' runs in lane '%s', whose kind is %s; --kind %s would put a %s worker in it and block the lane's next spawns. Spawn with --kind %s, change lane.%s.kind, or set SOHO_LANES=off for this spawn to open it outside the lanes.", o.role, lane, laneKind, o.kind, o.kind, laneKind, lane), "spawn", ctx, env, cwd)
+		}
+	}
 	kindLayer := core.SpawnKindLayer(ctx, o.role, lane, o.kindSet, env)
 	if _, ok := platform.FindExecutable(kinds.KindExe(kind), env, platform.Current()); !ok {
 		Warn("executable '"+kinds.KindExe(kind)+"' not found in PATH; herdr agent start may fail", ctx, env, "spawn")
@@ -1285,6 +1295,32 @@ func mismatchLane(name, lane, actual, want, sessionModel, requestedModel, sessio
 	obj := jsonjs.O("status", "kind-mismatch", "lane", lane, "name", name, "session_kind", actual, "requested_kind", want, "session_model", sessionModel, "requested_model", requestedModel, "session_effort", sessionEffort, "requested_effort", requestedEffort)
 	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(obj))
 	core.Warn(fmt.Sprintf("lane '%s' worker '%s' is %s (model %s, effort %s); this role wants %s (model %s, effort %s). Set lane.%s.kind or release the lane, then spawn again.", lane, name, actual, defaultValue(sessionModel, "?"), defaultValue(sessionEffort, "?"), want, defaultValue(requestedModel, "?"), defaultValue(requestedEffort, "?"), lane), filepath.Join(core.StateDirPath(ctx, env, cwd), "friction.log"), "spawn")
+	platform.Die("", 13)
+}
+
+// LaneKindConflict reports whether a worker of the given kind conflicts with
+// the lane of the role: lanes on, the role in a lane with lane.<lane>.kind
+// set, and a kind different from it. The spawn (for its --kind) and the
+// reopen (for the worker's kind) share it so the two checks cannot diverge.
+func LaneKindConflict(role, kind string, ctx *core.Config, env platform.Env) (lane, laneKind string, conflict bool) {
+	if kind == "" || !core.LanesEnabled(ctx, env) {
+		return "", "", false
+	}
+	lane = core.LaneOfRole(ctx, role, env)
+	if lane == "" {
+		return "", "", false
+	}
+	laneKind = core.LaneAttr(ctx, lane, "kind", nil, env)
+	return lane, laneKind, laneKind != "" && laneKind != kind
+}
+
+// RefuseLaneKind prints the kind-mismatch JSON line of a lane kind conflict,
+// logs the message to the friction log and exits 13. It runs before anything
+// opens, closes or changes.
+func RefuseLaneKind(role, lane, laneKind, requested, message, command string, ctx *core.Config, env platform.Env, cwd string) {
+	obj := jsonjs.O("status", "kind-mismatch", "lane", lane, "role", role, "lane_kind", laneKind, "requested_kind", requested)
+	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(obj))
+	core.Warn(message, filepath.Join(core.StateDirPath(ctx, env, cwd), "friction.log"), command)
 	platform.Die("", 13)
 }
 func mismatchSimple(name, lane, actual, want string, ctx *core.Config, env platform.Env, cwd string) {
