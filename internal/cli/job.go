@@ -366,7 +366,13 @@ func locateOwnJob(env platform.Env, cwd, id string) (*job.Store, error) {
 func dieJob(sub string, err error) {
 	var jobExit *job.ExitError
 	if errors.As(err, &jobExit) && jobExit != nil {
-		platform.Die(jobExit.Msg, jobExit.Code)
+		msg := jobExit.Msg
+		// A preparation step that kept a diagnostic says it on a second
+		// line, after the message the events carry; the exit does not change.
+		if step, detail, ok := job.PrepareFailure(jobExit); ok {
+			msg += "\nsoho: " + job.PrepareFailureLine(step, detail)
+		}
+		platform.Die(msg, jobExit.Code)
 	}
 	var platformExit *platform.ExitError
 	if errors.As(err, &platformExit) && platformExit != nil {
