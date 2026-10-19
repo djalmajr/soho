@@ -60,6 +60,14 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		return ""
 	}
 	role, wkind, model, wdir, native := field(3), field(2), field(8), field(6), field(13)
+
+	// DJA-397: the spawn half passes the worker's kind as --kind, which the
+	// spawn refuses when the role's lane has another kind by now. The same
+	// check runs here, before the release half closes the pane and drops the
+	// roster line, so a refused reopen leaves the worker as it was.
+	if lane, laneKind, conflict := spawn.LaneKindConflict(role, wkind, ctx, env); conflict {
+		spawn.RefuseLaneKind(role, lane, laneKind, wkind, fmt.Sprintf("reopen: worker '%s' runs %s, but lane '%s' is now %s; reopening would put a %s worker in it. Release it with 'soho release %s --close' and spawn the role again.", agent, wkind, lane, laneKind, wkind, agent), "reopen", ctx, env, cwd)
+	}
 	effort := field(14)
 	// DJA-392 fatia 2 R2: the roster's last field carries the worker's
 	// effective MCP choice; reopen forwards it so the respawn keeps the MCP
