@@ -109,3 +109,58 @@ func TestCmdSpawnMcpCodexNeutralListingRefusesATempDirInsideAProject(t *testing.
 		t.Fatalf("the refused temporary directory was left behind: %v", entries)
 	}
 }
+
+// codex's home is told apart by directory identity, not by spelling: another
+// capitalization on a case-insensitive filesystem, or a symlink, still names
+// the user layer.
+func TestCodexProjectAboveKnowsTheHomeByIdentity(t *testing.T) {
+	root := t.TempDir()
+	home := mkDir(t, filepath.Join(root, "Home"))
+	mkConfig(t, home)
+	under := mkDir(t, filepath.Join(home, "tmp", "soho-codex-mcp-3"))
+
+	t.Run("another capitalization of the same directory", func(t *testing.T) {
+		alias := filepath.Join(root, "HOME", ".CODEX")
+		if _, err := os.Stat(alias); err != nil {
+			t.Skip("case-sensitive filesystem: no second spelling of the same directory")
+		}
+		if codexProjectAbove(under, platform.Env{"CODEX_HOME": alias}) {
+			t.Fatal("the codex home spelled with other capitals was taken as a project")
+		}
+	})
+
+	t.Run("a symlink to the home", func(t *testing.T) {
+		link := filepath.Join(root, "codex-home-link")
+		if err := os.Symlink(filepath.Join(home, ".codex"), link); err != nil {
+			t.Skipf("symlink: %v", err)
+		}
+		if codexProjectAbove(under, platform.Env{"CODEX_HOME": link}) {
+			t.Fatal("the codex home named through a symlink was taken as a project")
+		}
+	})
+
+	t.Run("control: another directory's .codex is still a project", func(t *testing.T) {
+		project := mkDir(t, filepath.Join(home, "proj"))
+		mkConfig(t, project)
+		if !codexProjectAbove(mkDir(t, filepath.Join(project, "tmp")), platform.Env{"CODEX_HOME": filepath.Join(home, ".codex")}) {
+			t.Fatal("a project's own .codex under the home was taken as the user layer")
+		}
+	})
+}
+
+// A relative CODEX_HOME resolves against each process's cwd, so the neutral
+// listing would read another user layer than the worker: the failure path.
+func TestCmdSpawnMcpCodexRefusesARelativeCodexHome(t *testing.T) {
+	f := codexMcpFixture(t)
+	f.env["CODEX_HOME"] = filepath.Join("rel", ".codex")
+	installCodexMcpScript(t, f, projectListRules(codexListing("SECRET-DJA418", "a"), codexListing("SECRET-DJA418", "a"))...)
+	code, _, stderr := spawnCodexNone(t, f)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr)
+	}
+	if got := stdErrCount(stderr, codexMcpWarn("neutral listing: CODEX_HOME is not an absolute path", "worker")); got != 1 {
+		t.Fatalf("the exact listing-failure warning is not on stderr once: %q", stderr)
+	}
+	wantTail(t, f, codexMcpBaseArgv)
+	wantCodexCalls(t, f, codexListArgv)
+}

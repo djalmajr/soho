@@ -95,6 +95,11 @@ func mcpCodexOffArgs(env platform.Env, cwd string) (args []string, ok bool, reas
 	if len(enabled) == 0 {
 		return nil, true, "", nil, nil
 	}
+	// A relative CODEX_HOME resolves against each process's cwd, so the
+	// neutral listing would read another user layer than the worker.
+	if home := env.Get("CODEX_HOME"); home != "" && !filepath.IsAbs(home) {
+		return nil, false, "neutral listing: CODEX_HOME is not an absolute path", nil, nil
+	}
 	neutralDir, err := os.MkdirTemp("", "soho-codex-mcp-")
 	if err != nil {
 		return nil, false, "neutral listing: no empty directory", nil, nil
@@ -175,7 +180,9 @@ type mcpCodexServer struct {
 // codexProjectAbove reports whether dir, or a directory above it, holds a
 // .codex/config.toml other than codex's own home (CODEX_HOME, or ~/.codex):
 // codex reads such a file as a project layer for any process below it, so a
-// listing run there is not neutral (a TMPDIR inside the project, say). Only
+// listing run there is not neutral (a TMPDIR inside the project, say). The
+// home is told apart by directory identity (os.SameFile), not by spelling, so
+// a case-insensitive filesystem or a symlink does not make it a project. Only
 // the file's existence is checked; it is never read.
 func codexProjectAbove(dir string, env platform.Env) bool {
 	home := env.Get("CODEX_HOME")
@@ -191,14 +198,20 @@ func codexProjectAbove(dir string, env platform.Env) bool {
 			home = filepath.Join(base, ".codex")
 		}
 	}
-	codexHome := ""
+	var homeInfo os.FileInfo
 	if home != "" {
-		codexHome = canonicalPath(home)
+		homeInfo, _ = os.Stat(home)
 	}
 	d := canonicalPath(dir)
 	for {
 		layer := filepath.Join(d, ".codex")
-		if canonicalPath(layer) != codexHome {
+		isHome := false
+		if homeInfo != nil {
+			if info, err := os.Stat(layer); err == nil && os.SameFile(info, homeInfo) {
+				isHome = true
+			}
+		}
+		if !isHome {
 			if info, err := os.Stat(filepath.Join(layer, "config.toml")); err == nil && !info.IsDir() {
 				return true
 			}
