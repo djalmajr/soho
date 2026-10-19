@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
@@ -279,5 +280,59 @@ func TestStopUnregisteredProc(t *testing.T) {
 	})
 	if _, err := os.Stat(ProcsFile(dir)); !os.IsNotExist(err) {
 		t.Fatalf("procs.tsv was written (%v); the stop of an unregistered process never touches the registry", err)
+	}
+}
+
+// TestStopUnregisteredProcGuardsTheKillRound runs a real shell that
+// survives TERM and moves its cwd out of the listed one when it gets it:
+// the guard (start identity and cwd of the listing, the gc re-check)
+// passes before the TERM round and fails before the KILL round, so the
+// shell is kept with no KILL.
+func TestStopUnregisteredProcGuardsTheKillRound(t *testing.T) {
+	env := platform.Env{"PATH": "/usr/bin:/bin"}
+	listed, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := t.TempDir()
+	ready := filepath.Join(moved, "ready")
+	cmd := exec.Command("sh", "-c", `trap 'cd "$1"' TERM; : > "$2"; while :; do sleep 0.1; done`, "sh", moved, ready)
+	cmd.Dir = listed
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	pid := cmd.Process.Pid
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the shell did not install its TERM trap")
+		}
+	}
+	identity, _, live := platform.ProcStartIdentity(pid, env)
+	if live != platform.ProcRunning {
+		t.Fatalf("the shell %d is not running", pid)
+	}
+	checks := []string{}
+	still := func() bool {
+		now, _, live := platform.ProcStartIdentity(pid, env)
+		cwd, err := platform.ProcCwd(pid)
+		checks = append(checks, cwd)
+		return live == platform.ProcRunning && now == identity && err == nil && cwd == listed
+	}
+	res := StopUnregisteredProc(pid, "sh", still, env)
+	if res.Err != nil || res.Stopped || res.Line != fmt.Sprintf("kept process %d (it changed since the listing)", pid) {
+		t.Fatalf("StopUnregisteredProc = %+v (guard saw cwds %q); want the kept line", res, checks)
+	}
+	if len(checks) != 2 || checks[0] != listed || checks[1] == listed {
+		t.Fatalf("guard saw cwds %q; want the listed cwd before TERM and another before KILL", checks)
+	}
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("the shell %d got the KILL although its cwd changed after the TERM: %v", pid, err)
 	}
 }

@@ -11,6 +11,10 @@ import (
 // command line and the environment, is never read).
 var ErrOrphansNotDetected = errors.New("unregistered processes are not detected on this platform")
 
+// ErrStopGuardChanged is what StopProcessTreeGuarded returns when its
+// guard reported a change before a signal round: nothing more was sent.
+var ErrStopGuardChanged = errors.New("the process changed before a signal; not stopped")
+
 // OrphanProc is one orphan process of the current user: its pid, its start
 // identity (the same string ProcStartIdentity reads for that pid), the
 // base name of its command, its working directory as the kernel reports

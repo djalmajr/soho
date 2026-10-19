@@ -162,10 +162,11 @@ func TestProcsOrphanBlockAbsentAndWindowsLine(t *testing.T) {
 	})
 }
 
-// TestGcOrphanDryRun pins the dry-run block: would stop for a copy, state
-// or scratch orphan past --older-than, listed only for the root and the
-// worktree whatever their age, a young stoppable one left out, the hint
-// naming the new flag; --older-than 0 makes the young one a would stop.
+// TestGcOrphanDryRun pins the dry-run block: would stop for a copy or
+// state orphan past --older-than, listed only for the scratch, the root
+// and the worktree whatever their age, a young stoppable one left out, the
+// hint naming the new flag; --older-than 0 makes the young one a would
+// stop.
 func TestGcOrphanDryRun(t *testing.T) {
 	o := newOrphanScopeFixture(t)
 	stubOrphans(t, []platform.OrphanProc{
@@ -175,6 +176,7 @@ func TestGcOrphanDryRun(t *testing.T) {
 		fakeOrphan(4000004, "zsh", o.worktree, 3*time.Hour),
 		fakeOrphan(4000005, "nvim", o.root, 30*time.Minute),
 		fakeOrphan(4000006, "other", o.outside, 3*time.Hour),
+		fakeOrphan(4000008, "tsc", filepath.Join(o.copy, "young"), 30*time.Minute),
 	}, nil)
 	pressure := "resource pressure: none (disk 60% free, swap 30% used)\n"
 	t.Run("default --older-than", func(t *testing.T) {
@@ -182,6 +184,7 @@ func TestGcOrphanDryRun(t *testing.T) {
 		want := pressure + "unregistered orphan processes in this project:\n" +
 			"would stop 4000001  node  3h  " + o.copy + "  (copy)\n" +
 			"would stop 4000002  go  3h  " + o.state + "  (state)\n" +
+			"listed only 4000003  vite  30m  " + o.scratch + "  (scratch)\n" +
 			"listed only 4000004  zsh  3h  " + o.worktree + "  (worktree)\n" +
 			"listed only 4000005  nvim  30m  " + o.root + "  (root)\n" +
 			"run 'soho gc --yes --include-unregistered-procs' to stop them\n"
@@ -191,8 +194,8 @@ func TestGcOrphanDryRun(t *testing.T) {
 	})
 	t.Run("--older-than 0", func(t *testing.T) {
 		code, out, errOut := o.run(t, "gc", "--older-than", "0")
-		if code != 0 || errOut != "" || !strings.Contains(out, "would stop 4000003  vite  30m  "+o.scratch+"  (scratch)\n") {
-			t.Fatalf("gc --older-than 0: code=%d err=%q out=%q; want the young scratch orphan as would stop", code, errOut, out)
+		if code != 0 || errOut != "" || !strings.Contains(out, "would stop 4000008  tsc  30m  "+filepath.Join(o.copy, "young")+"  (copy)\n") || !strings.Contains(out, "listed only 4000003  vite  30m  "+o.scratch+"  (scratch)\n") {
+			t.Fatalf("gc --older-than 0: code=%d err=%q out=%q; want the young copy orphan as would stop and the scratch one still listed only", code, errOut, out)
 		}
 	})
 	t.Run("only listed-only orphans: nothing to remove, then the block", func(t *testing.T) {
@@ -208,7 +211,7 @@ func TestGcOrphanDryRun(t *testing.T) {
 
 // TestGcStopsOrphansOnlyWithTheFlag runs real processes: --yes alone and
 // the flag alone stop nothing; --include-unregistered-procs --yes stops
-// the copy, state and scratch orphans past --older-than, and never the
+// the copy and state orphans past --older-than, and never the scratch,
 // root or worktree ones nor a young one.
 func TestGcStopsOrphansOnlyWithTheFlag(t *testing.T) {
 	o := newOrphanScopeFixture(t)
@@ -239,7 +242,7 @@ func TestGcStopsOrphansOnlyWithTheFlag(t *testing.T) {
 	if code != 0 || errOut != "" {
 		t.Fatalf("gc --yes --include-unregistered-procs: code=%d err=%q out=%q", code, errOut, out)
 	}
-	for _, proc := range []platform.OrphanProc{inCopy, inState, inScratch} {
+	for _, proc := range []platform.OrphanProc{inCopy, inState} {
 		if !strings.Contains(out, "stopped process "+strconv.Itoa(proc.Pid)+" ("+proc.Name+")\n") {
 			t.Fatalf("output = %q; want process %d stopped", out, proc.Pid)
 		}
@@ -247,12 +250,12 @@ func TestGcStopsOrphansOnlyWithTheFlag(t *testing.T) {
 			t.Fatalf("process %d (%s) survived", proc.Pid, proc.Cwd)
 		}
 	}
-	for _, proc := range []platform.OrphanProc{young, inRoot, inTree} {
+	for _, proc := range []platform.OrphanProc{inScratch, young, inRoot, inTree} {
 		if !procAlive(t, o.env, proc.Pid) {
-			t.Fatalf("process %d (%s) was stopped; a young orphan, the root and a worktree are never stopped", proc.Pid, proc.Cwd)
+			t.Fatalf("process %d (%s) was stopped; a young orphan, the scratch, the root and a worktree are never stopped", proc.Pid, proc.Cwd)
 		}
 	}
-	for _, want := range []string{"listed only " + strconv.Itoa(inRoot.Pid) + "  ", "listed only " + strconv.Itoa(inTree.Pid) + "  "} {
+	for _, want := range []string{"listed only " + strconv.Itoa(inScratch.Pid) + "  ", "listed only " + strconv.Itoa(inRoot.Pid) + "  ", "listed only " + strconv.Itoa(inTree.Pid) + "  "} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output = %q; want %q", out, want)
 		}
@@ -308,5 +311,61 @@ func TestOrphanWithinComparesByComponent(t *testing.T) {
 		if got := orphanWithin(path, dir); got != want {
 			t.Fatalf("orphanWithin(%q, %q) = %v; want %v", path, dir, got, want)
 		}
+	}
+}
+
+// TestOrphanCopyLinesMustPassTheCopyCheck: a copies.tsv line becomes a
+// copy prefix only when its path passes the copy removal check and is not
+// the root, the state dir, a worktree or above one of them. A copy
+// replaced by a symlink to an outside directory, "/", HOME, the root and
+// an ancestor of it, a worktree and an ancestor of the state dir make no
+// copy prefix: an orphan there is listed by the root or worktree prefix
+// that holds it, or not at all; the valid copy stays a stoppable copy.
+func TestOrphanCopyLinesMustPassTheCopyCheck(t *testing.T) {
+	o := newOrphanScopeFixture(t)
+	// A valid copy, registered, then replaced by a symlink to an outside
+	// directory: the line stays in copies.tsv.
+	link := orphanResolvedDir(t, filepath.Join(filepath.Dir(o.copy), "copy-link"))
+	if refusal := copyRefusal(link, o.env, o.cwd); refusal != "" {
+		t.Fatalf("the copy before the swap is refused (%s)", refusal)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(o.outside, link); err != nil {
+		t.Fatal(err)
+	}
+	home := orphanResolvedDir(t, o.env.Get("HOME"))
+	stateParent := filepath.Dir(o.state)
+	now := core.FrictionISO(platform.Now())
+	rows := []core.CopyRow{}
+	for _, path := range []string{o.copy, link, string(filepath.Separator), home, o.root, filepath.Dir(o.root), o.worktree, stateParent} {
+		rows = append(rows, core.CopyRow{Path: path, Owner: "worker", Pane: "p-worker", Created: now, Source: "-", Origin: "add"})
+	}
+	if err := core.WriteCopies(o.state, rows); err != nil {
+		t.Fatal(err)
+	}
+	stubOrphans(t, []platform.OrphanProc{
+		fakeOrphan(4000001, "node", filepath.Join(o.copy, "x"), 3*time.Hour),
+		fakeOrphan(4000002, "editor", o.outside, 3*time.Hour),
+		fakeOrphan(4000003, "fish", filepath.Join(home, "x"), 3*time.Hour),
+		fakeOrphan(4000004, "nvim", filepath.Join(o.root, "src"), 3*time.Hour),
+		fakeOrphan(4000005, "top", filepath.Join(filepath.Dir(o.root), "other"), 3*time.Hour),
+		fakeOrphan(4000006, "zsh", filepath.Join(o.worktree, "a"), 3*time.Hour),
+		fakeOrphan(4000007, "make", filepath.Join(stateParent, "other"), 3*time.Hour),
+	}, nil)
+	code, out, errOut := o.run(t, "procs")
+	want := "no registered processes\n" +
+		"unregistered orphan processes in this project:\n" +
+		"4000001  node  3h  " + filepath.Join(o.copy, "x") + "  (copy)\n" +
+		"4000004  nvim  3h  " + filepath.Join(o.root, "src") + "  (root)\n" +
+		"4000006  zsh  3h  " + filepath.Join(o.worktree, "a") + "  (worktree)\n"
+	if code != 0 || errOut != "" || out != want {
+		t.Fatalf("procs: code=%d err=%q\nout=%q\nwant=%q", code, errOut, out, want)
+	}
+	code, out, errOut = o.run(t, "gc")
+	if code != 0 || errOut != "" || !strings.Contains(out, "would stop 4000001  ") || strings.Count(out, "would stop ") != 1 ||
+		!strings.Contains(out, "listed only 4000004  ") || !strings.Contains(out, "listed only 4000006  ") {
+		t.Fatalf("gc: code=%d err=%q out=%q; only the valid copy's orphan is a would stop", code, errOut, out)
 	}
 }

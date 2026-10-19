@@ -342,9 +342,9 @@ func gcOrphansWouldStop(orphans []projectOrphan, threshold time.Duration, now ti
 
 // gcPrintOrphanProcs is the unregistered processes' block without a stop:
 // "would stop <line>" for a stoppable one past --older-than, "listed only
-// <line>" for one in the root or a worktree; a stoppable one younger than
-// --older-than is not listed (the orphan copies' rule). The closing hint
-// names the flag that stops them. Nothing to show prints nothing.
+// <line>" for one in the scratch, the root or a worktree; a stoppable one
+// younger than --older-than is not listed (the orphan copies' rule). The
+// closing hint names the flag that stops them. Nothing to show prints nothing.
 func gcPrintOrphanProcs(orphans []projectOrphan, threshold time.Duration, now time.Time) {
 	lines := []string{}
 	for _, orphan := range orphans {
@@ -369,9 +369,9 @@ func gcPrintOrphanProcs(orphans []projectOrphan, threshold time.Duration, now ti
 
 // gcStopOrphanProcs is --include-unregistered-procs --yes: each stoppable
 // orphan past --older-than is stopped through core.StopUnregisteredProc,
-// which re-reads the start identity and the cwd (orphanStill) before the
-// signal and keeps a process that changed; the root and worktree ones are
-// only listed. It returns how many were stopped.
+// which re-reads the start identity and the cwd (orphanStill) before each
+// signal round and keeps a process that changed; the scratch, root and
+// worktree ones are only listed. It returns how many were stopped.
 func gcStopOrphanProcs(orphans []projectOrphan, threshold time.Duration, now time.Time, env platform.Env) int {
 	header := false
 	stopped := 0

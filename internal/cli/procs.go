@@ -183,9 +183,11 @@ const (
 	orphanWindowsLine = "unregistered processes: not detected on Windows (only registered processes are listed)"
 )
 
-// The orphan scope kinds. A cwd in a registered copy, the state dir or the
-// soho scratch may be stopped by gc; one in the repository root or one of
-// its worktrees is only listed: it can be the user's editor or terminal.
+// The orphan scope kinds. A cwd in a registered copy (one that passes the
+// copy removal check) or the state dir may be stopped by gc; one in the
+// soho scratch is only listed (the scratch depends only on the workspace
+// and can be another project's), and so is one in the repository root or
+// one of its worktrees (it can be the user's editor or terminal).
 const (
 	orphanKindCopy     = "copy"
 	orphanKindState    = "state"
@@ -210,11 +212,13 @@ type projectOrphan struct {
 	kind string
 }
 
-// stoppable is the scope rule of decision 4: a copy, the state dir or the
-// scratch; never the root or a worktree.
-func (o projectOrphan) stoppable() bool {
-	switch o.kind {
-	case orphanKindCopy, orphanKindState, orphanKindScratch:
+// stoppable is the scope rule: a copy or the state dir; never the
+// scratch, the root or a worktree.
+func (o projectOrphan) stoppable() bool { return orphanKindStoppable(o.kind) }
+
+func orphanKindStoppable(kind string) bool {
+	switch kind {
+	case orphanKindCopy, orphanKindState:
 		return true
 	}
 	return false
@@ -268,11 +272,11 @@ func projectOrphans(sd string, registered []core.ProcRow, env platform.Env, cwd 
 	return out, nil
 }
 
-// orphanScope is the project's prefixes: each registered copy, the state
-// dir, the soho scratch (<TMPDIR>/soho/<workspace>, the explain
-// footprint's rule), the worktrees of `git worktree list --porcelain`
-// (the root's own entry aside) and the repository root. A prefix that does
-// not resolve is left out.
+// orphanScope is the project's prefixes: the registered copies that pass
+// orphanCopyPrefix, the state dir, the soho scratch (<TMPDIR>/soho/
+// <workspace>, the explain footprint's rule), the worktrees of `git
+// worktree list --porcelain` (the root's own entry aside) and the
+// repository root. A prefix that does not resolve is left out.
 func orphanScope(sd string, env platform.Env, cwd string) []orphanPrefix {
 	out := []orphanPrefix{}
 	resolve := func(path string) string {
@@ -290,9 +294,21 @@ func orphanScope(sd string, env platform.Env, cwd string) []orphanPrefix {
 			out = append(out, orphanPrefix{kind: kind, path: resolved})
 		}
 	}
+	root := platform.StateProjectRoot(env, cwd)
+	resolvedRoot := resolve(root)
+	trees := []string{}
+	for _, tree := range orphanWorktrees(root, env) {
+		// The list's first entry is the main worktree, the root itself.
+		if resolved := resolve(tree); resolved != "" && resolved != resolvedRoot {
+			trees = append(trees, resolved)
+		}
+	}
+	protected := append([]string{resolvedRoot, resolve(sd)}, trees...)
 	if rows, err := core.ReadCopies(sd); err == nil {
 		for _, row := range rows {
-			add(orphanKindCopy, row.Path)
+			if resolved, ok := orphanCopyPrefix(row.Path, protected, env, cwd); ok {
+				out = append(out, orphanPrefix{kind: orphanKindCopy, path: resolved})
+			}
 		}
 	}
 	add(orphanKindState, sd)
@@ -301,29 +317,44 @@ func orphanScope(sd string, env platform.Env, cwd string) []orphanPrefix {
 		tmp = os.TempDir()
 	}
 	add(orphanKindScratch, filepath.Join(tmp, "soho", filepath.Base(sd)))
-	root := platform.StateProjectRoot(env, cwd)
-	resolvedRoot := resolve(root)
-	for _, tree := range orphanWorktrees(root, env) {
-		// The list's first entry is the main worktree, the root itself.
-		if resolved := resolve(tree); resolved != "" && resolved != resolvedRoot {
-			out = append(out, orphanPrefix{kind: orphanKindWorktree, path: resolved})
-		}
+	for _, tree := range trees {
+		out = append(out, orphanPrefix{kind: orphanKindWorktree, path: tree})
 	}
 	add(orphanKindRoot, root)
 	return out
 }
 
+// orphanCopyPrefix admits a copies.tsv line as a copy prefix only when its
+// path passes the check gc makes before removing a copy (checkedCopy: an
+// absolute, existing, non-symlink path that is not the filesystem root,
+// HOME or above it, the project root, inside it or above it, nor holds a
+// .git), and is none of the protected paths (the root, the state dir, a
+// worktree) nor above one of them. A refused line is no prefix at all.
+func orphanCopyPrefix(path string, protected []string, env platform.Env, cwd string) (string, bool) {
+	resolved, _, cause := checkedCopy(path, env, cwd)
+	if cause != "" {
+		return "", false
+	}
+	resolved = filepath.Clean(resolved)
+	for _, dir := range protected {
+		if dir != "" && inside(resolved, dir) {
+			return "", false
+		}
+	}
+	return resolved, true
+}
+
 // orphanKind is the kind of the deepest prefix that holds cwd, compared
-// by path component; on the same depth a listed-only kind (root,
-// worktree) wins, so a prefix shared with the root never makes it
-// stoppable. "" is outside the project.
+// by path component; on the same depth a listed-only kind (scratch,
+// root, worktree) wins, so a prefix shared with one of them never makes
+// it stoppable. "" is outside the project.
 func orphanKind(cwd string, scope []orphanPrefix) string {
 	best, bestLen := "", -1
 	for _, prefix := range scope {
 		if !orphanWithin(cwd, prefix.path) {
 			continue
 		}
-		listed := prefix.kind == orphanKindRoot || prefix.kind == orphanKindWorktree
+		listed := !orphanKindStoppable(prefix.kind)
 		if len(prefix.path) > bestLen || (len(prefix.path) == bestLen && listed) {
 			best, bestLen = prefix.kind, len(prefix.path)
 		}
