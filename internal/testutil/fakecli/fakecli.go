@@ -393,6 +393,7 @@ func Main() {
 	if configPath == "" {
 		return
 	}
+	started := time.Now()
 	if info, statErr := os.Stat(configPath); statErr == nil && info.IsDir() {
 		name := configName(filepath.Base(os.Args[0]))
 		configPath = filepath.Join(configPath, name+".json")
@@ -444,6 +445,7 @@ func Main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(126)
 	}
+	recordStart(cfg.Log, started)
 	callNumber := 0
 	if calls, readErr := ReadCalls(cfg.Log); readErr == nil {
 		for _, c := range calls {
@@ -475,6 +477,24 @@ func Main() {
 	}
 	fmt.Fprintf(os.Stderr, "fakecli: no rule for %q\n", argv)
 	os.Exit(127)
+}
+
+// startsFile is the file beside the call log that holds the start time of
+// each call, one line per log line and in the log's order.
+func startsFile(log string) string { return log + ".starts" }
+
+// recordStart appends the time the fake began running (UnixNano) to the
+// starts file. It runs inside the call log's lock, right after the call's log
+// line, so both files list the calls in the same order. It is best effort: a
+// failed write leaves the starts short, which ReadCallStarts callers see as
+// fewer starts than calls.
+func recordStart(log string, started time.Time) {
+	f, err := os.OpenFile(startsFile(log), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	_, _ = f.WriteString(strconv.FormatInt(started.UnixNano(), 10) + "\n")
+	_ = f.Close()
 }
 
 func configName(name string) string {
@@ -512,6 +532,29 @@ func ReadCalls(file string) ([]Call, error) {
 		calls = append(calls, c)
 	}
 	return calls, nil
+}
+
+// ReadCallStarts returns when each call of the log began running, in the log's
+// order: the fake takes the time as soon as the re-executed process reaches
+// Main, so it is the call's own start and does not depend on when, or how
+// late, the test reads the log.
+func ReadCallStarts(log string) ([]time.Time, error) {
+	b, err := os.ReadFile(startsFile(log))
+	if err != nil {
+		return nil, err
+	}
+	var starts []time.Time
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if line == "" {
+			continue
+		}
+		nano, err := strconv.ParseInt(line, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		starts = append(starts, time.Unix(0, nano))
+	}
+	return starts, nil
 }
 
 // ReadCallsForConfig locates and reads the log created from Install's config file.

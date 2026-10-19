@@ -1,6 +1,7 @@
 package job
 
 import (
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -72,6 +73,41 @@ func stepDeadlineLimit(deadline time.Time) func(time.Duration) time.Duration {
 	}
 }
 
+// firstGhStart returns when the fake gh began its first call, as the fake
+// itself recorded it. The time is the call's own start, so it does not depend
+// on when the test reads it, however late; the test fails when no gh call
+// was recorded, or when the start record does not hold one start per call.
+func firstGhStart(t *testing.T, f *supGitFixture) time.Time {
+	t.Helper()
+	log := filepath.Join(f.job.base.fakeDir, "gh.calls.jsonl")
+	calls, err := fakecli.ReadCalls(log)
+	if err != nil {
+		t.Fatalf("read the gh calls: %v", err)
+	}
+	starts, err := fakecli.ReadCallStarts(log)
+	if err != nil {
+		t.Fatalf("read the gh call starts: %v", err)
+	}
+	first, err := alignedFirstStart(len(calls), starts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return first
+}
+
+// alignedFirstStart is the first call's start when the record holds exactly
+// one start per logged call. A record that lost a write (say the first one)
+// would otherwise move the origin to a later call and shorten the measure.
+func alignedFirstStart(calls int, starts []time.Time) (time.Time, error) {
+	if calls == 0 {
+		return time.Time{}, fmt.Errorf("no gh call was recorded")
+	}
+	if len(starts) != calls {
+		return time.Time{}, fmt.Errorf("the gh start record holds %d starts for %d calls; a lost write would move the origin", len(starts), calls)
+	}
+	return starts[0], nil
+}
+
 // A slow first gh command followed by a hung second one stays inside the gh
 // step: `gh pr create` receives the remainder at its own start, not the whole
 // step again.
@@ -80,9 +116,13 @@ func TestFinishingGhStepBoundsTheSecondCommandByTheRemainder(t *testing.T) {
 		name  string
 		step  time.Duration
 		delay int
+		// lateRead holds the test back after the job ends, before it reads
+		// the recorded start: the measure must not depend on that delay.
+		lateRead time.Duration
 	}{
-		{"step 2s, list 1.8s", 2 * time.Second, 1800},
-		{"step 5s, list 4s", 5 * time.Second, 4000},
+		{"step 2s, list 1.8s", 2 * time.Second, 1800, 0},
+		{"step 5s, list 4s", 5 * time.Second, 4000, 0},
+		{"step 2s, list 1.8s, start read 4s after the job", 2 * time.Second, 1800, 4 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			step := scaledDuration(tc.step)
@@ -95,9 +135,16 @@ func TestFinishingGhStepBoundsTheSecondCommandByTheRemainder(t *testing.T) {
 			f.job.commitIn(t, "feat: first")
 			finishingRealClock(f, finishingLimits{Budget: 60 * time.Second, Git: 30 * time.Second, GH: step})
 			exit, err, elapsed := finishDone(t, f)
-			t.Logf("gh step %v, list %dms, create hangs: terminal in %v", step, delay, elapsed)
-			if elapsed > step+scaledDuration(clampSlack) {
-				t.Errorf("terminal path took %v, want at most the %v gh step + %v", elapsed, step, scaledDuration(clampSlack))
+			end := time.Now()
+			time.Sleep(tc.lateRead)
+			// The bound is the gh step, so it is measured from the start of
+			// the first gh call, as the fake recorded it: the final push
+			// before it runs real git and takes as long as the runner lets
+			// it, and is not part of the step.
+			ghElapsed := end.Sub(firstGhStart(t, f))
+			t.Logf("gh step %v, list %dms, create hangs: terminal in %v, %v after the first gh call", step, delay, elapsed, ghElapsed)
+			if ghElapsed > step+scaledDuration(clampSlack) {
+				t.Errorf("gh step took %v from the first gh call, want at most the %v gh step + %v", ghElapsed, step, scaledDuration(clampSlack))
 			}
 			requireBudgetFailed(t, f, exit, err, "the draft pull request")
 			if got := len(f.job.base.ghCalls()); got != 2 {
@@ -167,5 +214,25 @@ func TestCheckpointBoundsTheLaterCommandsByTheStepRemainder(t *testing.T) {
 				t.Errorf("fake git calls = %d (%v), want add, diff and (unless diff hung) commit", len(calls), err)
 			}
 		})
+	}
+}
+
+// A start record that lost a write never yields an origin: with the first
+// write lost and the second kept, the record's first start is the second
+// call's, which would shorten the measure and let a broken clamp pass.
+func TestAlignedFirstStartRefusesAPartialRecord(t *testing.T) {
+	first := time.Unix(0, 1_000)
+	second := time.Unix(0, 2_000)
+	if got, err := alignedFirstStart(2, []time.Time{first, second}); err != nil || !got.Equal(first) {
+		t.Fatalf("a full record = %v, %v; want the first call's start", got, err)
+	}
+	if _, err := alignedFirstStart(2, []time.Time{second}); err == nil {
+		t.Fatal("a record with the first write lost gave an origin; want an error")
+	}
+	if _, err := alignedFirstStart(1, []time.Time{first, second}); err == nil {
+		t.Fatal("a record with more starts than calls gave an origin; want an error")
+	}
+	if _, err := alignedFirstStart(0, nil); err == nil {
+		t.Fatal("no call gave an origin; want an error")
 	}
 }
