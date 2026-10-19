@@ -35,6 +35,9 @@ func laneKindFlagEnv(t *testing.T) (env platform.Env, bin, state string) {
 		{Argv: []string{"tab", "create"}, ArgvPrefix: true, Stdout: `{"result":{"tab":{"tab_id":"t-herd","label":"herd"},"root_pane":{"pane_id":"p-new"}}}`},
 		{Argv: []string{"tab", "get"}, ArgvPrefix: true, Stdout: `{"result":{"tab":{"tab_id":"t-herd","label":"herd"},"root_pane":{"pane_id":"p-root"}}}`},
 		{Argv: []string{"tab", "rename"}, ArgvPrefix: true},
+		// A caller without the orchestrator name gets renamed on the normal
+		// path; the rename succeeds so a refusal after it would show here.
+		{Argv: []string{"agent", "rename"}, ArgvPrefix: true, Stdout: `{"result":{"renamed":true}}`},
 	}
 	if _, err := fakecli.Install(t, bin, "herdr", rules); err != nil {
 		t.Fatal(err)
@@ -83,7 +86,7 @@ func runLaneKindFlag(t *testing.T, env platform.Env, bin, state string, argv ...
 			continue
 		}
 		switch c.Argv[0] + " " + c.Argv[1] {
-		case "pane split", "pane close", "tab create", "agent start":
+		case "pane split", "pane close", "tab create", "agent start", "agent rename":
 			acts = append(acts, strings.Join(c.Argv, " "))
 		}
 	}

@@ -622,6 +622,18 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	// covers the run path and, for reopen, the second look of the same
 	// memo (the reopen checks before it releases the worker).
 	core.CallerGate("spawn", ctx, env, cwd)
+	// DJA-397: a --kind that differs from lane.<lane>.kind would put a worker
+	// of another kind in the lane and block its next spawns (exit 13). It is
+	// refused here, right after the caller-pane check: before the caller is
+	// renamed to the orchestrator, before the lane decision (which may drop
+	// gone workers from the roster), before any reuse and before any pane or
+	// agent opens. It reads only the configuration. A given --pane skips the
+	// lane decision and the refusal with it.
+	if o.pane == "" && o.kindSet && o.kind != "" {
+		if lane, laneKind, conflict := LaneKindConflict(o.role, o.kind, ctx, env); conflict {
+			RefuseLaneKind(o.role, lane, laneKind, o.kind, fmt.Sprintf("spawn: role '%s' runs in lane '%s', whose kind is %s; --kind %s would put a %s worker in it and block the lane's next spawns. Spawn with --kind %s, change lane.%s.kind, or set SOHO_LANES=off for this spawn to open it outside the lanes.", o.role, lane, laneKind, o.kind, o.kind, laneKind, lane), "spawn", ctx, env, cwd)
+		}
+	}
 	EnsureOrchestratorName(ctx, env, cwd, "spawn")
 	core.ResolveRole(o.role, env, cwd)
 	res := core.ResolveRoleSettings(o.role, ctx, env, cwd, core.RoleFlags{Kind: o.kind, Model: o.model, Effort: o.effort, Approvals: o.approvals})
@@ -634,16 +646,6 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	}
 	if kind == "" {
 		core.DieFriction(fmt.Sprintf("role %s has no default kind; pass --kind", o.role), 3, "", "")
-	}
-	// DJA-397: a --kind that differs from lane.<lane>.kind would put a worker
-	// of another kind in the lane and block its next spawns (exit 13). It is
-	// refused here, before the lane decision (which may drop gone workers
-	// from the roster), before any reuse and before any pane or agent opens.
-	// A given --pane skips the lane decision and the refusal with it.
-	if o.pane == "" && o.kindSet && o.kind != "" {
-		if lane, laneKind, conflict := LaneKindConflict(o.role, o.kind, ctx, env); conflict {
-			RefuseLaneKind(o.role, lane, laneKind, o.kind, fmt.Sprintf("spawn: role '%s' runs in lane '%s', whose kind is %s; --kind %s would put a %s worker in it and block the lane's next spawns. Spawn with --kind %s, change lane.%s.kind, or set SOHO_LANES=off for this spawn to open it outside the lanes.", o.role, lane, laneKind, o.kind, o.kind, laneKind, lane), "spawn", ctx, env, cwd)
-		}
 	}
 	kindLayer := core.SpawnKindLayer(ctx, o.role, lane, o.kindSet, env)
 	if _, ok := platform.FindExecutable(kinds.KindExe(kind), env, platform.Current()); !ok {
