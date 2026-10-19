@@ -47,6 +47,33 @@ func countCalls(calls []fakecli.Call, sub ...string) int {
 	return n
 }
 
+// callStartsOf returns when each logged call whose argv is exactly argv
+// began running, as the fake recorded it (fakecli.ReadCallStarts), in the
+// log's order. It runs after the send returned, so every call's start is
+// already written.
+func callStartsOf(t *testing.T, f *fixture, argv []string) []time.Time {
+	t.Helper()
+	log := filepath.Join(filepath.Dir(f.bin), "herdr.calls.jsonl")
+	calls, err := fakecli.ReadCalls(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts, err := fakecli.ReadCallStarts(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(starts) != len(calls) {
+		t.Fatalf("the fake recorded %d starts for %d calls", len(starts), len(calls))
+	}
+	var out []time.Time
+	for i, c := range calls {
+		if strings.Join(c.Argv, "\x00") == strings.Join(argv, "\x00") {
+			out = append(out, starts[i])
+		}
+	}
+	return out
+}
+
 func TestSendAgentNotReady(t *testing.T) {
 	t.Run("--now --timeout 5000 delivers once the starting agent idles (two agent_not_ready polls)", func(t *testing.T) { // DJA-377: "agent get returns agent_not_ready twice, then the agent idles: send --now --timeout 5000 delivers, exits 0 and the log records the delivery"
 		id := "01020304"
@@ -66,15 +93,23 @@ func TestSendAgentNotReady(t *testing.T) {
 			{Argv: []string{"agent", "prompt", "w0test:p0a", prompt, "--wait", "--until", "working", "--until", "blocked", "--until", "idle", "--until", "done", "--timeout", "15000"}},
 		}
 		f := newFixture(t, rules)
-		start := time.Now()
 		code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "5000", "hello"})
-		elapsed := time.Since(start)
+		end := time.Now()
 		if code != 0 || out != "sent to local/w0test:p0a\n" || stderr != "" {
-			t.Fatalf("code=%d out=%q stderr=%q elapsed=%s", code, out, stderr, elapsed)
+			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 		}
 		// The send waited the two not-ready polls (the default 1 s
 		// SOHO_SEND_POLL_MS each) and delivered inside the 5 s --timeout:
 		// the deadline plus one poll is the outer bound the send may not pass.
+		// The deadline starts when the first get reports agent_not_ready, so
+		// the clock starts at that get's own start as the fake recorded it,
+		// as in the never-ready case below.
+		gets := callStartsOf(t, f, []string{"agent", "get", "w0test:p0a"})
+		if len(gets) == 0 {
+			t.Fatal("no agent get in the call log")
+		}
+		elapsed := end.Sub(gets[0])
+		t.Logf("gets=%d elapsed=%s", len(gets), elapsed)
 		if elapsed > time.Duration(5000+1100)*time.Millisecond {
 			t.Fatalf("elapsed=%s", elapsed)
 		}
@@ -100,9 +135,8 @@ func TestSendAgentNotReady(t *testing.T) {
 			{Argv: []string{"agent", "get", "w0test:p0a"}, Stderr: notReadyErr, Code: 1},
 		}
 		f := newFixture(t, rules)
-		start := time.Now()
 		code, _, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "1500", "hello"})
-		elapsed := time.Since(start)
+		end := time.Now()
 		if code != 4 {
 			t.Fatalf("code=%d stderr=%q", code, stderr)
 		}
@@ -116,7 +150,21 @@ func TestSendAgentNotReady(t *testing.T) {
 		}
 		// The deadline is the --timeout (1.5 s); one poll (the default 1 s
 		// SOHO_SEND_POLL_MS) plus spawn overhead is the most the run can
-		// overshoot it.
+		// overshoot it. The deadline starts when the first get reports
+		// agent_not_ready, so the clock starts at that get's own start as
+		// the fake recorded it: the send's setup and the opening of that
+		// first process are not part of the wait. The last get starts at
+		// most the --timeout plus one poll after the first, and the send
+		// ends inside the same outer bound as before.
+		gets := callStartsOf(t, f, []string{"agent", "get", "w0test:p0a"})
+		if len(gets) == 0 {
+			t.Fatal("no agent get in the call log")
+		}
+		retried, elapsed := gets[len(gets)-1].Sub(gets[0]), end.Sub(gets[0])
+		t.Logf("gets=%d last_get=%s elapsed=%s", len(gets), retried, elapsed)
+		if retried > time.Duration(1500+1000)*time.Millisecond {
+			t.Fatalf("the last get started after the --timeout plus one poll: %s", retried)
+		}
 		if elapsed > time.Duration(1500+1000+1000)*time.Millisecond {
 			t.Fatalf("elapsed=%s", elapsed)
 		}
@@ -161,9 +209,8 @@ func TestSendAgentNotReady(t *testing.T) {
 			{Argv: []string{"--machine", "remote", "agent", "get", "w0test:p0a"}, Stderr: notReadyErr, Code: 1},
 		}
 		f := newFixture(t, rules)
-		start := time.Now()
 		code, _, stderr := f.run([]string{"send", "remote/w0test:p0a", "--now", "--timeout", "1500", "hello"})
-		elapsed := time.Since(start)
+		end := time.Now()
 		if code != 4 {
 			t.Fatalf("code=%d stderr=%q", code, stderr)
 		}
@@ -171,6 +218,15 @@ func TestSendAgentNotReady(t *testing.T) {
 		if stderr != want {
 			t.Fatalf("stderr=%q want=%q", stderr, want)
 		}
+		// The same bound as the local case, from the first remote get's own
+		// start as the fake recorded it: the deadline starts when that get
+		// reports agent_not_ready.
+		gets := callStartsOf(t, f, []string{"--machine", "remote", "agent", "get", "w0test:p0a"})
+		if len(gets) == 0 {
+			t.Fatal("no agent get in the call log")
+		}
+		elapsed := end.Sub(gets[0])
+		t.Logf("gets=%d elapsed=%s", len(gets), elapsed)
 		if elapsed > time.Duration(1500+1000+1000)*time.Millisecond {
 			t.Fatalf("elapsed=%s", elapsed)
 		}

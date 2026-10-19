@@ -352,6 +352,14 @@ func TestReviewS74Deadline(t *testing.T) {
 	// deadline: the second check's 16s visible read runs against the default
 	// 15s window, and the send must still finish within one window plus the
 	// one-second floor a read gets to finish (the probe's 16s bound).
+	//
+	// The bound sits at the window phase: the send's preparation calls
+	// (the state and screen reads before the prompt, and the prompt) are not
+	// part of the window, so the clock starts at the box detection (the
+	// second visible read), as the fake recorded that call's own start. The
+	// window opens only when that read returns, so the phase timed here
+	// holds the whole window plus that read, and an uncapped 16s read,
+	// which starts after it, ends past the 16s bound.
 	slow := d15WindowVisible(4, d15WindowStale)
 	slow.Delay = 16000
 	tail := []fakecli.Rule{d15WindowVisible(3, d15WindowStale), slow}
@@ -359,8 +367,13 @@ func TestReviewS74Deadline(t *testing.T) {
 	f := newFixture(t, stalledWindowSetupRules(t, tail))
 	start := time.Now()
 	code, _, _ := f.run([]string{"send", d15Pane, "hello"})
-	elapsed := time.Since(start)
-	t.Logf("default_window=15s elapsed=%s code=%d prompts=%d enters=%d", elapsed, code, remotePrompts(t, f), remoteEnters(t, f))
+	end := time.Now()
+	box, ok := nthCallStart(f, d15WindowVisibleArgv, 2, start)
+	if !ok {
+		t.Fatal("the call log holds no box detection read with its start")
+	}
+	elapsed := end.Sub(box)
+	t.Logf("default_window=15s elapsed=%s send=%s code=%d prompts=%d enters=%d", elapsed, end.Sub(start), code, remotePrompts(t, f), remoteEnters(t, f))
 	if code != 15 || elapsed > 16*time.Second {
 		t.Fatal("stalled proof calls exceeded the one-window time budget")
 	}
@@ -540,24 +553,98 @@ func hasFlag(argv []string, flag string) bool {
 	return false
 }
 
+// nthCallStart returns when the n-th call whose argv is exactly argv began
+// running, as the fake recorded it (fakecli.ReadCallStarts), and false while
+// the call log does not hold that call and its start yet. A start before
+// notBefore is a line read while the fake was still writing it, and counts
+// as not there yet.
+func nthCallStart(f *fixture, argv []string, n int, notBefore time.Time) (time.Time, bool) {
+	log := filepath.Join(filepath.Dir(f.bin), "herdr.calls.jsonl")
+	calls, err := fakecli.ReadCalls(log)
+	if err != nil {
+		return time.Time{}, false
+	}
+	starts, err := fakecli.ReadCallStarts(log)
+	if err != nil {
+		return time.Time{}, false
+	}
+	seen := 0
+	for i, c := range calls {
+		if strings.Join(c.Argv, "\x00") != strings.Join(argv, "\x00") {
+			continue
+		}
+		if seen++; seen == n {
+			if i >= len(starts) || starts[i].Before(notBefore) {
+				return time.Time{}, false
+			}
+			return starts[i], true
+		}
+	}
+	return time.Time{}, false
+}
+
+// d15WindowVisibleArgv is the remote visible read d15WindowVisible scripts.
+var d15WindowVisibleArgv = []string{"--machine", "windows", "agent", "read", "w0test:p0a", "--source", "visible"}
+
 func TestIndependentFallbackBudget(t *testing.T) {
 	// The recent read's agent_not_idle fallback must not get a fresh copy of
-	// the budget the recent read already consumed: the recent read fails at
-	// 2.5s of the 3s window and the 10s fallback is cut by the time then
-	// left (floored at 1s). The bound sits at the budget phase — the send's
-	// preparation calls are not part of the 3s budget — so the whole-send
-	// wall clock is not bounded here and the phase test
-	// TestReadScreenFallbackGetsTheRemainingBudget measures it.
+	// the budget the recent read already consumed: the recent read fails
+	// 2.1s into the 3s window and the fallback runs on the time then left
+	// (floored at 1s). The bound sits at the budget phase — the send's
+	// preparation calls are not part of the 3s budget — so neither the
+	// whole-send wall clock nor the cut of a slow fallback is bounded here:
+	// the phase test TestReadScreenFallbackGetsTheRemainingBudget measures
+	// them.
+	//
+	// The fallback shows its own screen (a sentinel) and every visible read
+	// after it fails, so the screen the 15 saves — the last visible screen
+	// read — is the sentinel. The sentinel alone does not tell the fallback
+	// from the next check's first read: both are the fourth visible read.
+	// What tells them apart is the call after it: the fallback ends its
+	// check (its screen holds no receipt marker), so the next call is the
+	// next check's visible read, while a check's own readable screen is
+	// followed by the state get the check makes next.
+	//
+	// The window opens when the box detection (the second visible read)
+	// returns, so its deadline is at least 3s after that read's own start
+	// as the fake recorded it. The recent read waits for a file the test
+	// creates 2.1s after that start: it fails at a fixed point of the
+	// window's clock, and the time the window's earlier checks and its own
+	// opening take is absorbed in that wait instead of added to it, so it
+	// cannot run into the deadline and time out before its fallback.
+	const recentDelay = 2100 * time.Millisecond
+	release := filepath.Join(t.TempDir(), "recent-fails")
 	recent := d15WindowRecent(1, "")
-	recent.Delay = 2500
+	recent.WaitFile = release
 	recent.Stderr = notIdleErr
 	recent.Code = 1
-	fallback := d15WindowVisible(4, d15WindowStale)
-	fallback.Delay = 10000
-	tail := []fakecli.Rule{d15WindowVisible(3, d15WindowStale), d15WindowGet(4, "done", "1"), recent, fallback}
+	const fallbackScreen = "FALLBACK_VISIBLE_SENTINEL\n›\n"
+	fallback := d15WindowVisible(4, fallbackScreen)
+	unreadable := fakecli.Rule{Argv: d15WindowVisibleArgv, Stderr: `{"error":{"code":"screen_unavailable","message":"no screen"}}`, Code: 1}
+	tail := []fakecli.Rule{d15WindowVisible(3, d15WindowStale), d15WindowGet(4, "done", "1"), recent, fallback, unreadable}
 	f := newFixture(t, stalledWindowSetupRules(t, tail))
 	f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "3000", "1"
 	start := time.Now()
+	stop, released := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(released)
+		for {
+			if box, ok := nthCallStart(f, d15WindowVisibleArgv, 2, start); ok {
+				select {
+				case <-stop:
+				case <-time.After(time.Until(box.Add(recentDelay))):
+					_ = os.WriteFile(release, nil, 0o600)
+				}
+				return
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}()
+	t.Cleanup(func() { close(stop); <-released })
 	code, _, _ := f.run([]string{"send", d15Pane, "hello"})
 	elapsed := time.Since(start)
 	t.Logf("window=3s floor=1s elapsed=%s code=%d prompts=%d enters=%d", elapsed, code, remotePrompts(t, f), remoteEnters(t, f))
@@ -570,17 +657,22 @@ func TestIndependentFallbackBudget(t *testing.T) {
 	if enters := remoteEnters(t, f); enters != 0 {
 		t.Fatalf("no key is pressed while the screen is stale: %d enters", enters)
 	}
+	saved, err := os.ReadFile(filepath.Join(f.dir, "state", "ws-test", "wait", "send-"+d15WindowID+".screen"))
+	if err != nil || string(saved) != fallbackScreen {
+		t.Fatalf("the saved screen is the recent read's visible fallback: %v %q", err, saved)
+	}
 	calls, err := fakecli.ReadCallsForConfig(filepath.Join(filepath.Dir(f.bin), "herdr.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The expected recent → visible call sequence in the send: a --source
 	// recent-unwrapped read was made and the call right after the first one
-	// is a --source visible read without --lines. It does not prove the
-	// visible read is readScreen's fallback — a later diagnostic read
-	// matches the same shape; the fallback proof (it ran, the 1s floor,
-	// exactly two calls, recent + floor to window + floor + slack) is the direct
-	// TestReadScreenFallbackGetsTheRemainingBudget.
+	// is a --source visible read without --lines. On its own it does not
+	// prove the visible read is readScreen's fallback — a later diagnostic
+	// read matches the same shape; the saved sentinel screen above proves
+	// the fallback ran, and the rest of the fallback proof (the 1s floor,
+	// exactly two calls, recent + floor to window + floor + slack) is the
+	// direct TestReadScreenFallbackGetsTheRemainingBudget.
 	recentIdx := -1
 	for i, c := range calls {
 		if readSource(c.Argv) == "recent-unwrapped" {
@@ -601,6 +693,14 @@ func TestIndependentFallbackBudget(t *testing.T) {
 	if hasFlag(next.Argv, "--lines") {
 		t.Fatalf("the visible read right after the first recent read carries --lines: %v", next.Argv)
 	}
+	if recentIdx+2 < len(calls) && hasArgvSuffix(calls[recentIdx+2].Argv, "agent", "get", "w0test:p0a") {
+		t.Fatalf("the visible read after the recent read is a check's own read, not its fallback: a state get follows it: %v", calls[recentIdx+2].Argv)
+	}
+}
+
+// hasArgvSuffix reports whether the argv ends with tail.
+func hasArgvSuffix(argv []string, tail ...string) bool {
+	return len(argv) >= len(tail) && strings.Join(argv[len(argv)-len(tail):], "\x00") == strings.Join(tail, "\x00")
 }
 
 func TestReadScreenFallbackGetsTheRemainingBudget(t *testing.T) {
@@ -611,11 +711,15 @@ func TestReadScreenFallbackGetsTheRemainingBudget(t *testing.T) {
 	// inside the recent read + floor + the bound; a fresh budget would run
 	// near recent + 3s and time out after 3s.
 	//
-	// The recent read ends at recentDelay plus the time the process took to
-	// open, which counts against the same 3s budget. The window the fixture
-	// tolerates for that opening is the gap between the delay and the
-	// budget (900ms here); the floor engages for any opening time because
-	// the delay alone already leaves less than the 1s floor (100ms margin).
+	// The recent read fails at a fixed point of the budget's clock, not
+	// after a delay of its own: it waits for a file the test creates
+	// recentDelay after the budget starts, so the time the process takes to
+	// open, which counts against the same 3s budget, is absorbed in that
+	// wait instead of added to it. The read then ends recentDelay into the
+	// budget for any opening shorter than that (plus the fake's 20ms file
+	// poll and its exit), leaving under the 1s floor (100ms margin), and
+	// a slower opening only moves its end towards the 3s budget, where the
+	// floor still engages.
 	const (
 		window      = 3000 * time.Millisecond
 		floor       = 1000 * time.Millisecond
@@ -625,14 +729,17 @@ func TestReadScreenFallbackGetsTheRemainingBudget(t *testing.T) {
 		// the 4.8s ceiling it leaves.
 		slack = 800 * time.Millisecond
 	)
+	release := filepath.Join(t.TempDir(), "recent-fails")
 	recent := d15WindowRecent(1, "")
-	recent.Delay = int(recentDelay / time.Millisecond)
+	recent.WaitFile = release
 	recent.Stderr = notIdleErr
 	recent.Code = 1
 	fallback := d15WindowVisible(1, d15WindowStale)
 	fallback.Delay = 10000
 	f := newFixture(t, []fakecli.Rule{recent, fallback})
 	start := time.Now()
+	timer := time.AfterFunc(recentDelay, func() { _ = os.WriteFile(release, nil, 0o600) })
+	t.Cleanup(func() { timer.Stop() })
 	screen, cause := peer.ReadScreen("windows", "w0test:p0a", "recent-unwrapped", 67, f.env, int(window/time.Millisecond), nil)
 	elapsed := time.Since(start)
 	t.Logf("window=3s floor=1s elapsed=%s cause=%q", elapsed, cause)

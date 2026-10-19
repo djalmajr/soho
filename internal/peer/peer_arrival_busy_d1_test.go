@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"crypto/rand"
 	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/djalmajr/soho/internal/cli"
 	"github.com/djalmajr/soho/internal/peer"
+	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -65,6 +67,73 @@ func appendAfterPromptDelayed(t *testing.T, callsLog, transcriptPath, id, line s
 	return done
 }
 
+// stderrSignal is the send's stderr for a test that must act at the moment a
+// line is printed: it keeps everything written to it, and closes seen once
+// that text holds line.
+type stderrSignal struct {
+	mu   sync.Mutex
+	buf  bytes.Buffer
+	line string
+	seen chan struct{}
+}
+
+func newStderrSignal(line string) *stderrSignal {
+	return &stderrSignal{line: line, seen: make(chan struct{})}
+}
+
+func (w *stderrSignal) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	before := strings.Contains(w.buf.String(), w.line)
+	n, err := w.buf.Write(p)
+	if !before && strings.Contains(w.buf.String(), w.line) {
+		close(w.seen)
+	}
+	return n, err
+}
+
+func (w *stderrSignal) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+// runWithStderr is fixture.run with the send's stderr going to w.
+func (f *fixture) runWithStderr(args []string, w *stderrSignal) (int, string, string) {
+	f.t.Helper()
+	oldOut, oldErr := platform.Stdout, platform.Stderr
+	var out bytes.Buffer
+	platform.Stdout, platform.Stderr = &out, w
+	code := cli.Run(args, f.env)
+	platform.Stdout, platform.Stderr = oldOut, oldErr
+	return code, out.String(), w.String()
+}
+
+// appendAfterSignal appends line to the transcript once seen is closed: the
+// line lands after the event that closes it, however long the run took to
+// get there.
+func appendAfterSignal(t *testing.T, seen <-chan struct{}, transcriptPath, line string) <-chan bool {
+	t.Helper()
+	done := make(chan bool, 1)
+	go func() {
+		select {
+		case <-seen:
+		case <-time.After(30 * time.Second):
+			done <- false
+			return
+		}
+		ok := false
+		f, err := os.OpenFile(transcriptPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, err = f.WriteString(line + "\n")
+			_ = f.Close()
+			ok = err == nil
+		}
+		done <- ok
+	}()
+	return done
+}
+
 func TestSendArrivalBusyClaudeTranscript(t *testing.T) {
 	const id = "01020304"
 	const cwd = "/tmp/claude-work"
@@ -99,16 +168,28 @@ func TestSendArrivalBusyClaudeTranscript(t *testing.T) {
 		f := newFixture(t, rules)
 		f.env["CLAUDE_CONFIG_DIR"] = configRoot
 		f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1000", "50"
-		done := appendAfterPromptDelayed(t, filepath.Join(filepath.Dir(f.bin), "herdr.calls.jsonl"), transcriptPath, id, userLine, 1600)
-		code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "4000", "hello"})
+		// This subtest proves the outcome after the window (sent, the warning
+		// once); the queued subtest below proves the warning comes at the
+		// wait's entry. Here a warning given only at the end of the first lap
+		// prints the same stderr, so the entry warning is not observed.
+		//
+		// The user line lands after the window: the transcript gets it once
+		// the busy warning is printed, at the wait's entry, so a lap of the
+		// wait sees the count grow. A fixed delay after the prompt call let
+		// a slow window end after the line had landed, and the send then saw
+		// the count grown at the entry and gave no warning.
+		const warning = "send: local/w0test:p0a is busy; waiting for its transcript to show the message (up to 4s)\n"
+		w := newStderrSignal(warning)
+		done := appendAfterSignal(t, w.seen, transcriptPath, userLine)
+		code, out, stderr := f.runWithStderr([]string{"send", "w0test:p0a", "--now", "--timeout", "4000", "hello"}, w)
 		if code != 0 || out != "sent to local/w0test:p0a\n" {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 		}
-		if want := "send: local/w0test:p0a is busy; waiting for its transcript to show the message (up to 4s)\n"; stderr != want {
+		if stderr != warning {
 			t.Fatalf("the busy warning goes to stderr exactly once: %q", stderr)
 		}
 		if !<-done {
-			t.Fatal("the transcript line was not appended after the prompt call")
+			t.Fatal("the transcript line was not appended after the busy warning")
 		}
 		if enters := countSendKeyEnters(t, f); enters != 0 {
 			t.Fatalf("no key is sent in the extended wait: %d enters", enters)
@@ -136,16 +217,24 @@ func TestSendArrivalBusyClaudeTranscript(t *testing.T) {
 		f := newFixture(t, rules)
 		f.env["CLAUDE_CONFIG_DIR"] = configRoot
 		f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1000", "50"
-		done := appendAfterPromptDelayed(t, filepath.Join(filepath.Dir(f.bin), "herdr.calls.jsonl"), transcriptPath, id, userLine, 1600)
-		code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "4000", "hello"})
+		// The user line lands after the window: the transcript gets it once
+		// the busy warning is printed, which the send does only after the
+		// window ends without proof and the target still works. A fixed
+		// delay after the prompt call let a slow window end after the line
+		// had landed, and the send then saw the count grown at the wait's
+		// entry and gave no warning.
+		const warning = "send: local/w0test:p0a is busy; waiting for its transcript to show the message (up to 4s)\n"
+		w := newStderrSignal(warning)
+		done := appendAfterSignal(t, w.seen, transcriptPath, userLine)
+		code, out, stderr := f.runWithStderr([]string{"send", "w0test:p0a", "--now", "--timeout", "4000", "hello"}, w)
 		if code != 0 || !strings.HasPrefix(out, "queued for local/w0test:p0a") {
 			t.Fatalf("a visible queue line is queued, not sent: code=%d out=%q stderr=%q", code, out, stderr)
 		}
-		if want := "send: local/w0test:p0a is busy; waiting for its transcript to show the message (up to 4s)\n"; stderr != want {
+		if stderr != warning {
 			t.Fatalf("the busy warning goes to stderr exactly once: %q", stderr)
 		}
 		if !<-done {
-			t.Fatal("the transcript line was not appended after the prompt call")
+			t.Fatal("the transcript line was not appended after the busy warning")
 		}
 		if enters := countSendKeyEnters(t, f); enters != 0 {
 			t.Fatalf("no key may go to a busy claude with an open queue: %d enters", enters)
