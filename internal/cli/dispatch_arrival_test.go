@@ -213,7 +213,7 @@ func TestDispatchArrivalPortedCases(t *testing.T) {
 	t.Run(`arrival: a working target with another dispatch's queued prompt stays not-received`, func(t *testing.T) {
 		f := newDispatchArrivalFixture(t, "working", 5, 5, "old work output\nRead the file /…/briefs/review-20260928T090000.md in full\n", "0")
 		code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
-		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
 		if _, err := os.Stat(filepath.Join(f.state, "ws", "wait", "worker.not-received")); err != nil {
@@ -612,7 +612,7 @@ func TestDispatchWorkingTargetTakesThePromptAfterItsTurn(t *testing.T) {
 	if code != 0 || dispatchOutputStatus(t, out) != "submitted" {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
-	if strings.Contains(errText, "not confirmed") {
+	if strings.Contains(errText, "was typed while it was working") {
 		t.Fatalf("a prompt taken after the turn was reported unconfirmed: %s", errText)
 	}
 }
@@ -624,7 +624,7 @@ func TestDispatchWorkingTargetStillBusyAfterTheSettleWindow(t *testing.T) {
 	f.env["SOHO_WAIT_POLL_MS"] = "500"
 	start := time.Now()
 	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
-	if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+	if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
 	// The marker carries this prompt's path, so a later wait sends Enter only
@@ -695,7 +695,7 @@ func runAltScreenDispatch(t *testing.T, screen func(stamp string) string, screen
 // from the visible screen, with the wrapped path joined back.
 func TestDispatchWorkingAltScreenTargetShowsThePromptOnTheVisibleScreen(t *testing.T) {
 	code, out, errText, elapsed := runAltScreenDispatch(t, altScreenVisible, "20260930T125455")
-	if code != 0 || dispatchOutputStatus(t, out) != "queued" || strings.Contains(errText, "not confirmed") {
+	if code != 0 || dispatchOutputStatus(t, out) != "queued" || strings.Contains(errText, "was typed while it was working") {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
 	if !strings.Contains(out, "worker-20260930T125455.md") {
@@ -712,7 +712,7 @@ func TestDispatchWorkingAltScreenTargetShowsThePromptOnTheVisibleScreen(t *testi
 // earlier brief still on screen is not this prompt.
 func TestDispatchWorkingAltScreenEarlierBriefIsNotThisPrompt(t *testing.T) {
 	code, out, errText, _ := runAltScreenDispatch(t, altScreenVisible, "19990101T000000")
-	if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+	if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
 }
@@ -723,7 +723,7 @@ func TestDispatchWorkingAltScreenEarlierBriefIsNotThisPrompt(t *testing.T) {
 // reassembles no path and the delivery stays not-received.
 func TestDispatchWorkingAltScreenBoxProseQuotingExactFileIsNotThisPrompt(t *testing.T) {
 	code, out, errText, _ := runAltScreenDispatch(t, altScreenProseVisible, "20260930T125455")
-	if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+	if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
 }

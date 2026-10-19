@@ -208,7 +208,7 @@ func TestDispatchClaudeTranscriptArrival(t *testing.T) {
 		if code != 0 || dispatchOutputStatus(t, out) != "queued" || !strings.Contains(errText, "prompt queued") {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
-		if strings.Contains(errText, "not confirmed") {
+		if strings.Contains(errText, "was typed while it was working") {
 			t.Fatalf("the transcript rise was not accepted as arrival: %s", errText)
 		}
 		requireNoEnter(t, f.bin)
@@ -236,7 +236,7 @@ func TestDispatchClaudeTranscriptArrival(t *testing.T) {
 		f.seedTranscript(t, claudeTranscriptLine("user", previousPrompt))
 		withEarlierReport(t, f)
 		code, out, errText := f.run(t, "worker", f.brief, "--amend", "--no-wait")
-		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
 		requireNoEnter(t, f.bin)
@@ -251,7 +251,7 @@ func TestDispatchClaudeTranscriptArrival(t *testing.T) {
 		withEarlierReport(t, f)
 		appendTranscriptLine(t, f, claudeTranscriptLine("assistant", claudeDispatchText(f.composed, f.report, true)))
 		code, out, errText := f.run(t, "worker", f.brief, "--amend", "--no-wait")
-		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
 		requireNoEnter(t, f.bin)
@@ -285,7 +285,7 @@ func TestDispatchClaudeTranscriptArrival(t *testing.T) {
 		withEarlierReport(t, f)
 		appendTranscriptLine(t, f, claudeTranscriptLine("user", claudeDispatchText(f.composed, f.report, true)))
 		code, out, errText := f.run(t, "worker", f.brief, "--amend", "--no-wait")
-		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
 		requireNoEnter(t, f.bin)
@@ -295,7 +295,7 @@ func TestDispatchClaudeTranscriptArrival(t *testing.T) {
 		f := newClaudeDispatchFixture(t, "working", 5, "", "", "0")
 		withEarlierReport(t, f)
 		code, out, errText := f.run(t, "worker", f.brief, "--amend", "--no-wait")
-		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
 		requireNoEnter(t, f.bin)
@@ -306,7 +306,7 @@ func TestDispatchClaudeTranscriptArrival(t *testing.T) {
 		f.seedTranscript(t, claudeTranscriptLine("user", claudeDispatchText(f.composed, f.report, true)))
 		withEarlierReport(t, f)
 		code, out, errText := f.run(t, "worker", f.brief, "--amend", "--no-wait")
-		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
 		requireNoEnter(t, f.bin)

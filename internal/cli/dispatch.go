@@ -691,7 +691,10 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 					waitDispatchArrival(window, env, arrived)
 			}
 			if !ok && noWait {
-				return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, true, "the working target showed no prompt evidence")
+				// The text was typed: the CLI may run it when the turn ends. Record the
+				// new task before leaving so status, wait and the pane show it.
+				recordDispatchTask(sd, agent, role, brief, amend, env)
+				return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, true, whyWorkingNoEvidence)
 			}
 			if !ok {
 				// A target that was already working may have taken the prompt without
@@ -699,7 +702,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 				// records the marker and the warning as --no-wait does, then waits for
 				// the report the way soho wait would, which reads that marker.
 				markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA, forEntries, env, true)
-				warnNotReceived(agent, "the working target showed no prompt evidence", true, true)
+				warnNotReceived(agent, whyWorkingNoEvidence, true, true)
 			} else if st := herdr.AgentState(agent, env, herdr.Timeout, nil); !(nonEmpty(report) || ((st.State == "working" || st.State == "blocked") && preSeq != "" && seqString(st.Seq) != "" && preSeq != seqString(st.Seq))) {
 				status = "queued"
 				if err := writeDispatchSidecarFor(forEntries, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "queued", session); err != nil {
@@ -714,22 +717,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 			}
 		}
 	}
-	title := fmt.Sprintf("%s: %s", role, core.BriefTask(brief))
-	if amend {
-		if b, e := platform.ReadTextFile(filepath.Join(sd, "task-"+agent)); e == nil {
-			b = strings.TrimRight(b, "\n")
-			b = strings.TrimSuffix(b, " ✓")
-			if b != "" {
-				title = b
-			} else {
-				title = fmt.Sprintf("%s: %s", role, core.BriefTask(brief))
-			}
-		}
-	}
-	if err := os.WriteFile(filepath.Join(sd, "task-"+agent), []byte(title+"\n"), 0o666); err != nil {
-		panic(err)
-	}
-	core.PaneTaskTitle(sd, agent, &title, env)
+	recordDispatchTask(sd, agent, role, brief, amend, env)
 	var last *jsonjs.Object
 	if noWait && checkOn && status != "queued" {
 		status, last = noWaitObservation(agent, role, kind, lane, model, report, env, sd, ctx, priorAuth)
@@ -1179,6 +1167,32 @@ func dispatchCursorStartupRefusal(agent, role, kind, composed, report, taskRepor
 	last := jsonjs.O("cause", startup.EvidencePrefix+ev.Reason, "startup_evidence", jsonjs.O(startup.FieldState, state, startup.FieldReason, ev.Reason, startup.FieldSource, ev.Source))
 	return emitDispatchResult(agent, role, kind, composed, report, taskReport, "blocked", false, last, 0, sd, false, false)
 }
+
+// whyWorkingNoEvidence is the not-received cause of a target that was working
+// and shows no sign of the prompt: the one case whose text was typed.
+const whyWorkingNoEvidence = "the working target showed no prompt evidence"
+
+// recordDispatchTask writes the task title of a dispatch (task-<agent> and the
+// pane title, "<role>: <task>"); an amend keeps the title already there.
+func recordDispatchTask(sd, agent, role, brief string, amend bool, env platform.Env) {
+	title := fmt.Sprintf("%s: %s", role, core.BriefTask(brief))
+	if amend {
+		if b, e := platform.ReadTextFile(filepath.Join(sd, "task-"+agent)); e == nil {
+			b = strings.TrimRight(b, "\n")
+			b = strings.TrimSuffix(b, " ✓")
+			if b != "" {
+				title = b
+			} else {
+				title = fmt.Sprintf("%s: %s", role, core.BriefTask(brief))
+			}
+		}
+	}
+	if err := os.WriteFile(filepath.Join(sd, "task-"+agent), []byte(title+"\n"), 0o666); err != nil {
+		panic(err)
+	}
+	core.PaneTaskTitle(sd, agent, &title, env)
+}
+
 func dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA string, forEntries []any, env platform.Env, wasWorking bool, why string) int {
 	_ = lane
 	markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA, forEntries, env, wasWorking)
@@ -1217,6 +1231,11 @@ func warnNotReceived(agent, why string, wasWorking, waiting bool) {
 	warning := fmt.Sprintf("prompt to '%s' was not received after %s; read the pane (herdr agent read %s --source visible) before sending anything else", agent, why, agent)
 	if wasWorking {
 		warning = fmt.Sprintf("prompt to '%s' not confirmed: it was working and shows no sign of the prompt; no key was sent. Read the pane before sending anything else.", agent)
+	}
+	if why == whyWorkingNoEvidence {
+		// The text was typed into the pane: a CLI that queues it runs it when the
+		// turn ends, so the brief must not go to another worker.
+		warning = fmt.Sprintf("prompt to '%s' was typed while it was working and shows no sign of it yet: its CLI may run it when the current turn ends. Do not send this brief to another worker; run soho wait %s, or interrupt the agent and cancel the brief.", agent, agent)
 	}
 	if waiting {
 		warning += " Waiting for its report as soho wait would."

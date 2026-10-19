@@ -14,6 +14,34 @@ import (
 
 const waitingForReport = "Waiting for its report as soho wait would."
 
+// typedWhileWorking is the warning for a working target that shows no sign of
+// the prompt (DJA-404): the text was typed, so the brief must not go to
+// another worker.
+func typedWhileWorking(agent string) string {
+	return "prompt to '" + agent + "' was typed while it was working and shows no sign of it yet: its CLI may run it when the current turn ends. Do not send this brief to another worker; run soho wait " + agent + ", or interrupt the agent and cancel the brief."
+}
+
+// paneTitleRule lets the fake herdr take the title the dispatch gives the
+// pane: the fixture's default rule fails any pane title call.
+var paneTitleRule = fakecli.Rule{Argv: []string{"pane", "report-metadata", "w0test:p0a", "--source", "soho"}, ArgvPrefix: true}
+
+// paneTitleCalls returns the --title values of the fake herdr's
+// pane report-metadata calls.
+func paneTitleCalls(t *testing.T, f *dispatchArrivalFixture) []string {
+	t.Helper()
+	calls, err := fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var titles []string
+	for _, call := range calls {
+		if len(call.Argv) > 6 && call.Argv[0] == "pane" && call.Argv[1] == "report-metadata" && call.Argv[4] == "soho" && call.Argv[5] == "--title" {
+			titles = append(titles, call.Argv[6])
+		}
+	}
+	return titles
+}
+
 func noSendKeys(t *testing.T, f *dispatchArrivalFixture) {
 	t.Helper()
 	calls, err := fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
@@ -33,7 +61,7 @@ func noSendKeys(t *testing.T, f *dispatchArrivalFixture) {
 // not-received marker and the warning, then waits for the report like soho
 // wait; it does not exit 15 before the report exists.
 func TestDispatchBlockingWaitsForTheReportWhenAWorkingTargetShowsNoPrompt(t *testing.T) {
-	f := newDispatchArrivalFixture(t, "working", 5, 5, "old work output\n", "0")
+	f := newDispatchArrivalFixture(t, "working", 5, 5, "old work output\n", "0", paneTitleRule)
 	f.env["SOHO_WAIT_POLL_MS"] = "100"
 	sd := filepath.Join(f.state, "ws")
 	marker := filepath.Join(sd, "wait", "worker.not-received")
@@ -65,8 +93,16 @@ func TestDispatchBlockingWaitsForTheReportWhenAWorkingTargetShowsNoPrompt(t *tes
 	if code != 0 || dispatchOutputStatus(t, out) != "done" || !strings.Contains(out, `"report_exists":true`) {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
-	if !strings.Contains(errText, "not confirmed: it was working and shows no sign of the prompt; no key was sent.") || !strings.Contains(errText, waitingForReport) {
-		t.Fatalf("warning without the waiting sentence: %s", errText)
+	if !strings.Contains(errText, typedWhileWorking("worker")+" "+waitingForReport) || strings.Contains(errText, "no key was sent") {
+		t.Fatalf("warning without the typed text and the waiting sentence: %s", errText)
+	}
+	// The wait ended done, so the task carries the done mark.
+	wantTitle := "implementer: " + core.BriefTask(f.brief)
+	if got := strings.TrimSpace(mustRead(t, filepath.Join(sd, "task-worker"))); got != wantTitle+" ✓" {
+		t.Fatalf("task-worker=%q want %q", got, wantTitle+" ✓")
+	}
+	if titles := paneTitleCalls(t, f); len(titles) == 0 || titles[0] != wantTitle {
+		t.Fatalf("pane titles=%q: the first must be %q", titles, wantTitle)
 	}
 	if fields := strings.Fields(seen); len(fields) != 3 || !strings.HasPrefix(fields[2], filepath.Join(sd, "briefs", "worker-")) {
 		t.Fatalf("not-received marker without the prompt path: %q", seen)
@@ -82,18 +118,31 @@ func TestDispatchBlockingWaitsForTheReportWhenAWorkingTargetShowsNoPrompt(t *tes
 }
 
 // TestDispatchNoWaitKeepsNotReceivedForAWorkingTarget: --no-wait does not
-// wait, so it keeps the not-received JSON, exit 15 and the warning text.
+// wait, so it keeps the not-received JSON and exit 15, but the warning says the
+// text was typed (DJA-404) and the dispatch records the new task: task-<agent>
+// and the pane title show it, as the normal path does.
 func TestDispatchNoWaitKeepsNotReceivedForAWorkingTarget(t *testing.T) {
-	f := newDispatchArrivalFixture(t, "working", 5, 5, "old work output\n", "0")
+	f := newDispatchArrivalFixture(t, "working", 5, 5, "old work output\n", "0", paneTitleRule)
+	sd := filepath.Join(f.state, "ws")
+	if err := os.WriteFile(filepath.Join(sd, "task-worker"), []byte("implementer: the old task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
 	if code != 15 || dispatchOutputStatus(t, out) != "not-received" {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
-	if !strings.Contains(errText, "not confirmed: it was working and shows no sign of the prompt; no key was sent. Read the pane before sending anything else.") || strings.Contains(errText, waitingForReport) {
-		t.Fatalf("--no-wait warning changed: %s", errText)
+	if !strings.Contains(errText, typedWhileWorking("worker")) || strings.Contains(errText, waitingForReport) || strings.Contains(errText, "no key was sent") {
+		t.Fatalf("--no-wait warning: %s", errText)
 	}
-	if _, err := os.Stat(filepath.Join(f.state, "ws", "wait", "worker.not-received")); err != nil {
+	if _, err := os.Stat(filepath.Join(sd, "wait", "worker.not-received")); err != nil {
 		t.Fatalf("not-received marker missing: %v", err)
+	}
+	wantTitle := "implementer: " + core.BriefTask(f.brief)
+	if got := strings.TrimSpace(mustRead(t, filepath.Join(sd, "task-worker"))); got != wantTitle {
+		t.Fatalf("task-worker=%q want %q", got, wantTitle)
+	}
+	if titles := paneTitleCalls(t, f); len(titles) != 1 || titles[0] != wantTitle {
+		t.Fatalf("pane titles=%q want [%q]", titles, wantTitle)
 	}
 	noSendKeys(t, f)
 }
@@ -120,13 +169,24 @@ func TestDispatchBlockingStillExitsNotReceivedWhenThePromptStuckInTheInputBox(t 
 	)
 	arrivalRosterKind(t, f, "pi")
 	f.env["SOHO_WAIT_POLL_MS"] = "100"
+	taskFile := filepath.Join(f.state, "ws", "task-worker")
+	if err := os.WriteFile(taskFile, []byte("implementer: the old task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	start := time.Now()
 	code, out, errText := f.run(t, "worker", f.brief, "--timeout", "30000")
 	if code != 15 || dispatchOutputStatus(t, out) != "not-received" {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
-	if !strings.Contains(errText, "after an Enter on the text left in its input box") || strings.Contains(errText, waitingForReport) {
+	if !strings.Contains(errText, "after an Enter on the text left in its input box") || strings.Contains(errText, waitingForReport) || strings.Contains(errText, "was typed while it was working") {
 		t.Fatalf("warning=%q", errText)
+	}
+	// The prompt certainly did not enter: the task title stays the old one.
+	if got := strings.TrimSpace(mustRead(t, taskFile)); got != "implementer: the old task" {
+		t.Fatalf("task-worker=%q: a prompt that did not enter changed the title", got)
+	}
+	if titles := paneTitleCalls(t, f); len(titles) != 0 {
+		t.Fatalf("pane titles=%q: a prompt that did not enter retitled the pane", titles)
 	}
 	if elapsed := time.Since(start); elapsed > 20*time.Second {
 		t.Fatalf("the dispatch waited %v before exiting not-received", elapsed)

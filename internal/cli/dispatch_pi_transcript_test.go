@@ -164,7 +164,7 @@ func TestDispatchPiTranscriptArrival(t *testing.T) {
 		if code != 0 || dispatchOutputStatus(t, out) != "queued" || !strings.Contains(errText, "prompt queued") {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
-		if strings.Contains(errText, "not confirmed") {
+		if strings.Contains(errText, "was typed while it was working") {
 			t.Fatalf("the transcript rise was not accepted as arrival: %s", errText)
 		}
 		requireNoEnter(t, f.bin)
@@ -211,7 +211,7 @@ func TestDispatchPiTranscriptArrival(t *testing.T) {
 		withEarlierPiReport(t, f)
 		appendSessionLine(t, f, piTranscriptLine("assistant", claudeDispatchText(f.composed, f.report, true)))
 		code, out, errText := f.run(t, "worker", f.brief, "--amend", "--no-wait")
-		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
 		requireNoEnter(t, f.bin)
@@ -222,7 +222,7 @@ func TestDispatchPiTranscriptArrival(t *testing.T) {
 		f.seedSession(t, piTranscriptLine("user", claudeDispatchText(f.composed, f.report, true)))
 		withEarlierPiReport(t, f)
 		code, out, errText := f.run(t, "worker", f.brief, "--amend", "--no-wait")
-		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
 		requireNoEnter(t, f.bin)
@@ -232,7 +232,7 @@ func TestDispatchPiTranscriptArrival(t *testing.T) {
 		f := newPiDispatchFixture(t, "working", 5, "", "", "0")
 		withEarlierPiReport(t, f)
 		code, out, errText := f.run(t, "worker", f.brief, "--amend", "--no-wait")
-		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
 		requireNoEnter(t, f.bin)
@@ -242,7 +242,7 @@ func TestDispatchPiTranscriptArrival(t *testing.T) {
 		f := newPiDispatchFixture(t, "working", 5, "id", "3f2b8c1a-9d4e-4c7a-b1f0-5e6d7c8b9a0f", "0")
 		withEarlierPiReport(t, f)
 		code, out, errText := f.run(t, "worker", f.brief, "--amend", "--no-wait")
-		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
 		requireNoEnter(t, f.bin)
@@ -254,7 +254,7 @@ func TestDispatchPiTranscriptArrival(t *testing.T) {
 		f := newPiDispatchFixture(t, "working", 5, "path", sessionPath(t), "0")
 		withEarlierPiReport(t, f)
 		code, out, errText := f.run(t, "worker", f.brief, "--amend", "--no-wait")
-		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "not confirmed") {
+		if code != 15 || dispatchOutputStatus(t, out) != "not-received" || !strings.Contains(errText, "was typed while it was working") {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
 		requireNoEnter(t, f.bin)

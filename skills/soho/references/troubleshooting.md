@@ -233,10 +233,10 @@ Use a verified native release binary, or build an explicitly selected checkout w
 
 ## Prompt to an agent that was already working shows no sign of arriving
 
-- **Symptom:** `prompt to '<agent>' not confirmed: it was working and shows no sign of the prompt; no key was sent.` A `dispatch --no-wait` exits 15 (`not-received`) right after it.
-- **Cause:** a working agent (a codex just after `spawn --fresh`) can take the prompt without showing it, so its arrival is not proved.
-- **Now:** the blocking `dispatch` records the same `<state>/wait/<agent>.not-received` marker and the same warning, adds `Waiting for its report as soho wait would.`, and keeps waiting for the report (same `--timeout`); the JSON and the exit are those of that wait. Every other `not-received` (a dialog, an auth error, text stuck in the input box, an unreadable or unconfirmed input region, a resend) still ends the dispatch with 15, because the prompt certainly did not enter.
-- **Do:** with `--no-wait`, run `soho wait <agent>` to get the end signal.
+- **Symptom:** `prompt to '<agent>' was typed while it was working and shows no sign of it yet: its CLI may run it when the current turn ends. Do not send this brief to another worker; run soho wait <agent>, or interrupt the agent and cancel the brief.` A `dispatch --no-wait` exits 15 (`not-received`) right after it.
+- **Cause:** the prompt text was typed into the pane of an agent that was busy (a foreground command, a long turn). A CLI such as Claude Code queues it and runs it when the turn ends, and a working codex (just after `spawn --fresh`) can take it without showing it. Either way the arrival is not proved, but the text is there: it may run later.
+- **Now:** the dispatch records the new task (`task-<agent>` and the pane title, `<role>: <task>`) before it exits, so `status`, `wait` and the pane show it. The blocking `dispatch` records the same `<state>/wait/<agent>.not-received` marker and the same warning, adds `Waiting for its report as soho wait would.`, and keeps waiting for the report (same `--timeout`); the JSON and the exit are those of that wait. Every other `not-received` (a dialog, an auth error, text stuck in the input box, an unreadable or unconfirmed input region, a resend) still ends the dispatch with 15 and leaves the task title as it was, because the prompt certainly did not enter.
+- **Do:** with `--no-wait`, run `soho wait <agent>` to get the end signal. Do not send the same brief to another worker: both would take the slice. To drop it, interrupt the agent and cancel the brief.
 
 ## Running native tests
 
