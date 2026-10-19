@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1524,5 +1526,187 @@ func TestMutationCopyRecordsTheOwnersTask(t *testing.T) {
 	rows, err = core.ReadCopies(sd)
 	if err != nil || len(rows) != 1 || rows[0].Path != dest || rows[0].Task != task || rows[0].Report != current {
 		t.Fatalf("registry rows=%#v err=%v; want task %q and report %q", rows, err, task, current)
+	}
+}
+
+// pauseAtAgentGet rewrites this fixture's fake herdr so that the call-th
+// "agent get worker" waits for a gate file, every call answering idle. A
+// goroutine waits for that call to start, runs action, then opens the gate.
+// The returned channel carries action's error.
+func (g *idleGc) pauseAtAgentGet(t *testing.T, call int, action func() error) <-chan error {
+	t.Helper()
+	cfg := filepath.Join(g.f.env["SOHO_FAKECLI_CONFIG"], "herdr.json")
+	raw, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var script map[string]any
+	if err := json.Unmarshal(raw, &script); err != nil {
+		t.Fatal(err)
+	}
+	gate := filepath.Join(g.f.root, "gate")
+	script["rules"] = []fakecli.Rule{
+		{Argv: []string{"agent", "get", "worker"}, Call: call, WaitFile: gate, Stdout: agentStatusJSON("idle")},
+		{Argv: []string{"agent", "get", "worker"}, Stdout: agentStatusJSON("idle")},
+	}
+	if raw, err = json.Marshal(script); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		defer func() { _ = os.WriteFile(gate, []byte("go"), 0o600) }()
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) {
+			if calls, err := fakecli.ReadCallsForConfig(cfg); err == nil && len(callsTo(calls, "agent", "get", "worker")) >= call {
+				result <- action()
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+		result <- fmt.Errorf("agent get call %d was never reached", call)
+	}()
+	return result
+}
+
+// gc --yes asks herdr about this line three times: the live check (1) and
+// the idle rule (2) at the listing, then the re-read (3) inside the locked
+// removal section.
+func TestGcIdleOwnerCopyReadsTheCurrentLine(t *testing.T) {
+	// The reviewer's probe (review-3-20261019T203439, TestReview392ReRegistrationDuringGc):
+	// another worker re-registers the copy for an open task after the
+	// listing; gc keeps the copy and the new line.
+	t.Run("re-registered by another worker after the listing: kept with the new line", func(t *testing.T) {
+		g := newIdleGc(t, nil)
+		g.f.writeRoster(t, copiesRosterRow("worker", "p-worker"), copiesRosterRow("worker2", "p-worker2"))
+		writeTaskPointer(t, g.sd, "worker2", filepath.Join(g.f.root, "new-task.current.md"), filepath.Join(g.f.root, "not-yet-written.md"))
+		g.register(t)
+		fresh := g.row
+		fresh.Owner, fresh.Pane = "worker2", "p-worker2"
+		fresh.Task, fresh.Report = filepath.Join(g.f.root, "new-task.current.md"), filepath.Join(g.f.root, "not-yet-written.md")
+		fresh.Created = core.FrictionISO(platform.Now())
+		done := g.pauseAtAgentGet(t, 2, func() error { return core.UpsertCopies(g.sd, fresh) })
+		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "nothing to remove"}, "\n") + "\n"
+		if code != 0 || out != want {
+			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
+		}
+		if _, err := os.Stat(filepath.Join(g.copy, "sub", "a.txt")); err != nil {
+			t.Fatalf("the re-registered copy was removed: %v", err)
+		}
+		if rows := g.f.copiesRows(t); len(rows) != 1 || rows[0] != fresh {
+			t.Fatalf("registry rows=%#v; want only the new line %#v", rows, fresh)
+		}
+	})
+	t.Run("re-registered by the same owner, only created changes: kept", func(t *testing.T) {
+		g := newIdleGc(t, nil)
+		g.register(t)
+		fresh := g.row
+		fresh.Created = core.FrictionISO(platform.Now().Add(-150 * time.Minute))
+		done := g.pauseAtAgentGet(t, 2, func() error { return core.UpsertCopies(g.sd, fresh) })
+		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if code != 0 || !strings.Contains(out, "kept "+g.copy+" (the owner's state or task changed)\n") {
+			t.Fatalf("code=%d out=%q err=%q; want the copy kept", code, out, errOut)
+		}
+		if _, err := os.Stat(filepath.Join(g.copy, "sub", "a.txt")); err != nil {
+			t.Fatalf("the copy was removed: %v", err)
+		}
+		if rows := g.f.copiesRows(t); len(rows) != 1 || rows[0] != fresh {
+			t.Fatalf("registry rows=%#v; want the new line %#v", rows, fresh)
+		}
+	})
+	t.Run("the line leaves the registry after the listing: kept", func(t *testing.T) {
+		g := newIdleGc(t, nil)
+		g.register(t)
+		done := g.pauseAtAgentGet(t, 2, func() error { return core.DropCopiesLines(g.sd, map[string]bool{g.copy: true}) })
+		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "nothing to remove"}, "\n") + "\n"
+		if code != 0 || out != want {
+			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
+		}
+		if _, err := os.Stat(filepath.Join(g.copy, "sub", "a.txt")); err != nil {
+			t.Fatalf("the copy was removed: %v", err)
+		}
+		if rows := g.f.copiesRows(t); len(rows) != 0 {
+			t.Fatalf("registry rows=%#v; want none", rows)
+		}
+	})
+	// Control: an unchanged line goes, with the same pause in place.
+	t.Run("the line unchanged after the listing: removed", func(t *testing.T) {
+		g := newIdleGc(t, nil)
+		g.register(t)
+		done := g.pauseAtAgentGet(t, 2, func() error { return nil })
+		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B"}, "\n") + "\n"
+		if code != 0 || out != want {
+			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
+		}
+		if rows := g.f.copiesRows(t); len(rows) != 0 {
+			t.Fatalf("registry rows=%#v; want the line dropped", rows)
+		}
+	})
+}
+
+// The removal section holds the copies.tsv lock: a registration of the same
+// path (UpsertCopies, what copies add runs) cannot take it while gc re-reads
+// the owner, and one that waits goes in after gc dropped the old line, so
+// gc never drops it.
+func TestGcIdleOwnerRemovalHoldsTheRegistryLock(t *testing.T) {
+	old := core.CopiesLockTimeout
+	core.CopiesLockTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { core.CopiesLockTimeout = old })
+	g := newIdleGc(t, nil)
+	g.register(t)
+	fresh := g.row
+	fresh.Created = core.FrictionISO(platform.Now())
+	waited := make(chan error, 1)
+	done := g.pauseAtAgentGet(t, 3, func() error {
+		// Inside the section (the re-read is waiting on the gate): the lock
+		// is held, so a registration gives up with the lock error.
+		err := core.UpsertCopies(g.sd, fresh)
+		var locked *core.CopiesLockedError
+		if !errors.As(err, &locked) {
+			return fmt.Errorf("UpsertCopies inside gc's section returned %v; want the registry lock error", err)
+		}
+		// A registration that keeps trying goes in once gc is done.
+		go func() {
+			deadline := time.Now().Add(20 * time.Second)
+			for {
+				err := core.UpsertCopies(g.sd, fresh)
+				if err == nil || !errors.As(err, &locked) || time.Now().After(deadline) {
+					waited <- err
+					return
+				}
+			}
+		}()
+		return nil
+	})
+	code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-waited; err != nil {
+		t.Fatalf("the waiting registration failed: %v", err)
+	}
+	want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B"}, "\n") + "\n"
+	if code != 0 || out != want {
+		t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
+	}
+	if rows := g.f.copiesRows(t); len(rows) != 1 || rows[0] != fresh {
+		t.Fatalf("registry rows=%#v; want only the registration that waited, %#v", rows, fresh)
 	}
 }

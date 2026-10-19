@@ -487,6 +487,65 @@ func gcIdleOwnerStillClosed(row core.CopyRow, seen gcIdleClosed, sd string, env 
 	return ok && fresh == seen
 }
 
+// sameCopyLine is true when two registry lines of a copy agree on path,
+// owner, pane, created, task and report.
+func sameCopyLine(a, b core.CopyRow) bool {
+	return a.Path == b.Path && a.Owner == b.Owner && a.Pane == b.Pane && a.Created == b.Created && a.Task == b.Task && a.Report == b.Report
+}
+
+// gcCurrentCopyLine is the registry line of path as copies.tsv holds it
+// now; ok is false when the line is gone or the registry cannot be read.
+func gcCurrentCopyLine(sd, path string) (core.CopyRow, bool) {
+	rows, err := core.ReadCopies(sd)
+	if err != nil {
+		return core.CopyRow{}, false
+	}
+	for _, row := range rows {
+		if row.Path == path {
+			return row, true
+		}
+	}
+	return core.CopyRow{}, false
+}
+
+// gcRemoveIdleOwnerCopy removes the copy of a live, idle owner that gc
+// offered, holding the copies.tsv lock (core.LockCopies, the lock copies
+// add takes through UpsertCopies) from the check to the line's drop: the
+// line copies.tsv holds now must be the one gc listed, then the owner's
+// state and task pointer are re-read; any change keeps the copy. A copies
+// add of the same path waits for the section to end. It reports whether
+// the copy was removed.
+func gcRemoveIdleOwnerCopy(cand gcCandidate, sd string, env platform.Env, cwd string, threshold time.Duration) bool {
+	unlock, err := core.LockCopies(sd)
+	if err != nil {
+		var locked *core.CopiesLockedError
+		if errors.As(err, &locked) {
+			core.DieFriction(err.Error(), 4, frictionLogPath, "gc")
+		}
+		core.DieFriction(fmt.Sprintf("gc: could not take the copy registry lock (%v)", err), 4, frictionLogPath, "gc")
+	}
+	defer unlock()
+	current, ok := gcCurrentCopyLine(sd, cand.path)
+	if !ok || !sameCopyLine(current, cand.row) || !gcIdleOwnerStillClosed(current, *cand.idle, sd, env, platform.Now(), threshold) {
+		_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, gcIdleOwnerChanged)
+		return false
+	}
+	resolved, parentInfo, cause := checkedCopy(cand.path, env, cwd)
+	if cause != "" {
+		_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, cause)
+		return false
+	}
+	if err := removeCopy(resolved, parentInfo); err != nil {
+		keptCopyError(cand.path, err)
+		return false
+	}
+	if err := core.DropCopiesLinesHeld(sd, map[string]bool{cand.path: true}); err != nil {
+		core.DieFriction(fmt.Sprintf("gc: cannot update the copy registry (%v)", err), 4, frictionLogPath, "gc")
+	}
+	_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", cand.path, humanSize(cand.size))
+	return true
+}
+
 func nonEmptyFile(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.Mode().IsRegular() && info.Size() > 0
@@ -782,8 +841,13 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", cand.path, humanSize(0))
 			continue
 		}
-		if cand.idle != nil && !gcIdleOwnerStillClosed(cand.row, *cand.idle, sd, env, platform.Now(), threshold) {
-			_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, gcIdleOwnerChanged)
+		if cand.idle != nil {
+			// The check, the removal and the line's drop run in one section
+			// under the registry lock, apart from the batch below.
+			if gcRemoveIdleOwnerCopy(cand, sd, env, cwd, threshold) {
+				removedAny = true
+				freed += cand.size
+			}
 			continue
 		}
 		resolved, parentInfo, cause := checkedCopy(cand.path, env, cwd)

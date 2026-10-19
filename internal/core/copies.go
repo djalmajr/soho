@@ -208,6 +208,13 @@ func DropCopiesLines(stateDir string, removed map[string]bool) error {
 		return err
 	}
 	defer unlock()
+	return DropCopiesLinesHeld(stateDir, removed)
+}
+
+// DropCopiesLinesHeld is DropCopiesLines for a caller that already holds
+// the registry lock (LockCopies): it re-reads and rewrites the registry
+// without taking the lock again.
+func DropCopiesLinesHeld(stateDir string, removed map[string]bool) error {
 	rows, err := ReadCopies(stateDir)
 	if err != nil {
 		return err
