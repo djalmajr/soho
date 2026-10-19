@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -90,6 +91,57 @@ var compactThinkingFooterRE = regexp.MustCompile(`(^|[\s•:])(off|minimal|low|m
 
 func compactProof(kind string) string {
 	return compactProofByKind[kind]
+}
+
+// compactCodexFooterRE matches the context gauge of the codex footer:
+// `Context 49% used · 475K window`. Only a line that also names the window
+// counts: during a compaction the footer reads `Context 0% used` without it.
+var compactCodexFooterRE = regexp.MustCompile(`Context (\d{1,3})% used\s*\x{B7}\s*\d+(?:\.\d+)?[KM] window`)
+
+// compactCodexFooterLines is how many non-empty lines, counted from the
+// bottom of the screen, may hold the footer gauge. A gauge-shaped text higher
+// up (the history, a brief, a report) is not the footer.
+const compactCodexFooterLines = 4
+
+// compactCodexFooterMinBefore is the lowest gauge before the send that leaves
+// room for a drop to mean a compaction.
+const compactCodexFooterMinBefore = 10
+
+// compactCodexContext reads the `Context N% used` gauge from the footer of a
+// codex screen: the first match from the bottom within the last
+// compactCodexFooterLines non-empty lines, N from 0 to 100.
+func compactCodexContext(screen string) (int, bool) {
+	lines := compactLines(screen)
+	seen := 0
+	for i := len(lines) - 1; i >= 0 && seen < compactCodexFooterLines; i-- {
+		if strings.TrimSpace(lines[i]) == "" {
+			continue
+		}
+		seen++
+		m := compactCodexFooterRE.FindStringSubmatch(lines[i])
+		if m == nil {
+			continue
+		}
+		n, err := strconv.Atoi(m[1])
+		if err != nil || n > 100 {
+			continue
+		}
+		return n, true
+	}
+	return 0, false
+}
+
+// compactCodexContextDropped reports the footer proof of a codex compaction:
+// the gauge read before the send (base) was at least
+// compactCodexFooterMinBefore and the gauge on this screen is at most half of
+// it. A TUI scrolled up hides the `Context compacted` line, but the footer
+// stays on the bottom of the screen.
+func compactCodexContextDropped(base int, screen string) bool {
+	if base < compactCodexFooterMinBefore {
+		return false
+	}
+	now, ok := compactCodexContext(screen)
+	return ok && now <= base/2
 }
 
 // compactEnding is a screen line that ends the /compact wait without the
@@ -233,6 +285,17 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 		base := compactProofBaseline{screen: before, proof: proof, seen: compactProofLines(before, proof)}
 		proofNew = func(screen string) bool { return compactProofNew(screen, base) }
 	}
+	// codex: the footer gauge read before the send. A scrolled TUI hides the
+	// `Context compacted` line, so a gauge that fell to half or less also
+	// proves the compaction. Without a gauge before the send the footer proof
+	// does not apply.
+	footerBase, footerOK := 0, false
+	if kind == "codex" {
+		footerBase, footerOK = compactCodexContext(before)
+	}
+	footerDropped := func(screen string) bool {
+		return footerOK && compactCodexContextDropped(footerBase, screen)
+	}
 	endings := compactEndings(kind)
 	endSeen := make([]map[string]bool, len(endings))
 	for i := range endings {
@@ -348,7 +411,7 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 					// was compacted).
 					screen = compactCodexComposerRetry(agent, pane, kind, proof, env)
 				}
-				if proofNew(screen) || transcriptRisen() {
+				if proofNew(screen) || footerDropped(screen) || transcriptRisen() {
 					proofObserved = true
 				}
 				if proofObserved {
@@ -387,7 +450,7 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 	// capped idle wait that follows.
 	if !compacted && endStatus == "" {
 		screen := herdr.AgentRead(env, agent, "recent", intPtr(compactScreenLines))
-		if proofObserved || proofNew(screen) || transcriptRisen() {
+		if proofObserved || proofNew(screen) || footerDropped(screen) || transcriptRisen() {
 			// The idle wait that follows gets a short cap of its own: ten poll
 			// intervals from now.
 			compacted = compactWaitIdle(agent, env, platform.Now().Add(compactPollInterval*10))
