@@ -27,8 +27,10 @@ var (
 // never a command line or an environment of any process. The platform
 // supplies the parent provider: POSIX reads one ps per hop, Windows
 // builds one Toolhelp32 snapshot that answers every hop (a parent that
-// already exited ends the chain there). OverrideAncestorParents replaces
-// the provider in tests.
+// already exited ends the chain there; a parent created after its child,
+// a reused pid, or one whose creation time cannot be read ends the chain
+// at the child, without an error and without that parent).
+// OverrideAncestorParents replaces the provider in tests.
 func ProcessAncestors(pid int, env Env) ([]int, error) {
 	if pid <= 0 {
 		return nil, errAncestorRead

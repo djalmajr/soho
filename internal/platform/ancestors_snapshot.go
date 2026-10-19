@@ -6,15 +6,24 @@ import "sync"
 // snapshot (pid -> parent pid). The first pid asked is the start of the
 // chain: a start pid missing from the snapshot is a read failure. Any later
 // pid missing from it is an ancestor that already exited: a snapshot keeps
-// the parent pid of a dead parent and Windows never reassigns it, so a real
-// chain often reaches one. That pid ends the chain, like a parent 0 on
-// POSIX: it is treated as parentless.
+// the parent pid of a dead parent, so a real chain often reaches one. That
+// pid ends the chain, like a parent 0 on POSIX: it is treated as
+// parentless.
 //
-// A pid that Windows reused for another process can divert the chain into
-// another tree. That is accepted: it can only turn a refusal into
-// verified or unknown, never add one.
-func snapshotParentReader(parentOf map[int]int) func(pid int) (int, error) {
+// Windows reuses the pid of a process that exited, and the snapshot still
+// records it as the parent of the children that outlived it, so a parent
+// pid present in the snapshot can belong to an unrelated process. When
+// createdAt is set (the creation time of a pid, and whether it could be
+// read), a present parent is accepted only when it was created at the same
+// instant as the child of that hop or before it. A parent created after
+// the child (a reused pid), or one whose creation time cannot be read,
+// ends the chain at the child and stays out of it: the pid now names a
+// live process with no relation to the chain. The start pid needs a
+// readable creation time to compare against: an unreadable one is a read
+// failure. With createdAt nil nothing is compared.
+func snapshotParentReader(parentOf map[int]int, createdAt func(pid int) (int64, bool)) func(pid int) (int, error) {
 	started := false
+	created := map[int]int64{}
 	return func(pid int) (int, error) {
 		first := !started
 		started = true
@@ -25,6 +34,27 @@ func snapshotParentReader(parentOf map[int]int) func(pid int) (int, error) {
 			}
 			return 0, nil
 		}
+		if createdAt == nil {
+			return parent, nil
+		}
+		if first {
+			child, ok := createdAt(pid)
+			if !ok {
+				return 0, errAncestorRead
+			}
+			created[pid] = child
+		}
+		if parent == 0 {
+			return 0, nil
+		}
+		if _, present := parentOf[parent]; !present {
+			return parent, nil
+		}
+		born, ok := createdAt(parent)
+		if !ok || born > created[pid] {
+			return 0, nil
+		}
+		created[parent] = born
 		return parent, nil
 	}
 }

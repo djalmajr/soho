@@ -1008,6 +1008,12 @@ func versionProbePhases(binDir string, began, ended time.Time) string {
 // The exec-managed drain must let the child finish promptly (no spurious
 // timeout) while the captured output stays bounded to the first line.
 func TestInstallCommandVerifyVersionLargeOutputDrains(t *testing.T) {
+	// The probe's deadline also covers the start of the freshly installed
+	// binary (a new exe on Windows): widen it so the runner's speed does
+	// not decide the test; a pipe that stops draining still fails it.
+	oldTimeout := verifyVersionTimeout
+	verifyVersionTimeout = 60 * time.Second
+	t.Cleanup(func() { verifyVersionTimeout = oldTimeout })
 	flood := "herdr-soho v1.2.3-big\n" + strings.Repeat("X", 2_000_000) + "\n"
 	srv, reqs, binDir, _ := nativeArtifactServer(t, []fakecli.Rule{
 		{Argv: []string{"--version"}, Stdout: flood},

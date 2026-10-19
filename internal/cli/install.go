@@ -22,12 +22,14 @@ import (
 // local replacement), on top of the core's per-request timeout.
 const installTimeout = 10 * time.Minute
 
-// verifyVersionTimeout bounds the opt-in post-install --version probe;
+// verifyVersionTimeout bounds the opt-in post-install --version probe,
+// the start of the installed binary included; tests replace it.
+var verifyVersionTimeout = 10 * time.Second
+
 // verifyVersionWaitDelay gives the child a grace period to exit after the
 // timeout kill before the wait gives up on it. versionProbeOutputLimit
 // caps the probe's captured output.
 const (
-	verifyVersionTimeout    = 10 * time.Second
 	verifyVersionWaitDelay  = 5 * time.Second
 	versionProbeOutputLimit = 4096
 )
