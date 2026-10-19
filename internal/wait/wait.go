@@ -614,9 +614,54 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 		since = float64(now)
 	}
 	if float64(now)-since >= grace {
+		// A still screen that counts a background shell or Monitor is an
+		// agent that resumes on its own when the task ends: keep waiting
+		// for its report instead of settling.
+		if snippet := backgroundTaskMatch(rosterKind(sd, agent), visible(), ctx, env); snippet != "" {
+			if _, noted := readWaitFile(sd, agent, "background-noted"); !noted {
+				writeWaitFile(sd, agent, "background-noted", "")
+				sendWarning(fmt.Sprintf("'%s' is idle with a background task still running (\"%s\"); waiting for its report", agent, snippet))
+			}
+			return "working"
+		}
 		return "settled"
 	}
 	return "working"
+}
+
+// backgroundTaskLines is how many of the last non-empty lines of the visible
+// screen background_patterns.<kind> is matched against.
+const backgroundTaskLines = 15
+
+// backgroundTaskSnippetMax caps the matched text quoted in the notice.
+const backgroundTaskSnippetMax = 80
+
+// backgroundTaskMatch reports the text of the kind's background_patterns
+// match in the last lines of the screen, or "" when the kind has no pattern,
+// the pattern does not compile, or no line matches.
+func backgroundTaskMatch(kind, screen string, ctx *core.Config, env platform.Env) string {
+	if kind == "" {
+		return ""
+	}
+	pattern := core.Cfg(ctx, core.BackgroundPatternKey(kind), "", env)
+	if pattern == "" {
+		return ""
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return ""
+	}
+	for _, line := range LastNonEmptyLines(screen, backgroundTaskLines) {
+		line = strings.TrimSpace(line)
+		if loc := re.FindStringIndex(line); loc != nil {
+			snippet := []rune(line[loc[0]:loc[1]])
+			if len(snippet) > backgroundTaskSnippetMax {
+				snippet = snippet[:backgroundTaskSnippetMax]
+			}
+			return string(snippet)
+		}
+	}
+	return ""
 }
 
 func wcSize(size int64) string {
@@ -637,6 +682,7 @@ func jsonLine(value *jsonjs.Object) {
 func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, timeoutMs float64, anyDone bool, cwd string) int {
 	for _, agent := range agents {
 		removeWaitFile(sd, agent, "size")
+		removeWaitFile(sd, agent, "background-noted")
 	}
 	started := platform.Now()
 	deadline := started.Add(time.Duration(timeoutMs * float64(time.Millisecond)))

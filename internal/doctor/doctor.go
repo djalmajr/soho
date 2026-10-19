@@ -441,6 +441,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	doctorModelPairs(ctx, env, cwd, s)
 	doctorLaneArgs(ctx, env, s)
 	doctorContextWindow(ctx, env, s)
+	doctorBackgroundPatterns(ctx, env, s)
 	doctorCodexNetwork(ctx, env, cwd, s)
 	codexenv.DoctorCodexPolicyWarnings(env, platform.Current(), s.Warning)
 	doctorFeedback(ctx, env, s)
@@ -1104,6 +1105,22 @@ func doctorContextWindow(ctx *core.Config, env platform.Env, s *Say) {
 		}
 		if !core.ContextWindowValueOk(entry.Value) {
 			s.Warning(fmt.Sprintf("config: %s='%s' is not a token count like 500k or 256000 (ignored)", display, entry.Value))
+		}
+	}
+}
+
+// doctorBackgroundPatterns warns about a background_patterns.<kind> value that
+// does not compile: wait ignores it, so the kind keeps today's behavior.
+func doctorBackgroundPatterns(ctx *core.Config, env platform.Env, s *Say) {
+	entries := core.BackgroundPatternEntries(ctx, env)
+	kinds := make([]string, 0, len(entries))
+	for kind := range entries {
+		kinds = append(kinds, kind)
+	}
+	textutil.SortUTF16(kinds)
+	for _, kind := range kinds {
+		if _, err := regexp.Compile(entries[kind].Value); err != nil {
+			s.Warning(fmt.Sprintf("config: background_patterns.%s: invalid regular expression (ignored): %v", kind, err))
 		}
 	}
 }
