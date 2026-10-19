@@ -279,6 +279,7 @@ func registerMutationCopy(env platform.Env, source, dest string) {
 	if owner == "" {
 		owner = "-"
 	}
+	task, report := copyTaskColumns(sd, owner)
 	row := core.CopyRow{
 		Path:    dest,
 		Owner:   owner,
@@ -286,6 +287,8 @@ func registerMutationCopy(env platform.Env, source, dest string) {
 		Created: core.FrictionISO(platform.Now()),
 		Source:  source,
 		Origin:  "mutation-copy",
+		Task:    task,
+		Report:  report,
 	}
 	if err := core.UpsertCopies(sd, row); err != nil {
 		mutationCopyNotRegistered(err.Error())

@@ -14,8 +14,14 @@ import (
 )
 
 // copiesHeader is the first line of the per-workspace copy registry,
-// copies.tsv.
+// copies.tsv. It names only the first six columns: the task and report
+// columns follow them unnamed, so an earlier binary, which skips this
+// header and keeps the first six fields of a line, reads the file as before.
 const copiesHeader = "path\towner\tpane\tcreated\tsource\torigin"
+
+// namedTaskCopiesHeader is the eight-name header an intermediate build
+// wrote; the reader skips it, and nothing writes it any more.
+const namedTaskCopiesHeader = "path\towner\tpane\tcreated\tsource\torigin\ttask\treport"
 
 const (
 	// copiesLockName sits next to the registry: the exclusive creation of
@@ -110,10 +116,22 @@ type CopyRow struct {
 	Created string // ISO-8601 UTC
 	Source  string // the copied origin, or "-"
 	Origin  string // "mutation-copy" or "add"
+	// Task and Report are the owner's task pointer at registration time
+	// (task_report and current), or "-" without an owner or a pointer. A
+	// six-column line from an earlier binary reads them as "".
+	Task   string
+	Report string
 }
 
 func (r CopyRow) fields() []string {
-	return []string{r.Path, r.Owner, r.Pane, r.Created, r.Source, r.Origin}
+	return []string{r.Path, r.Owner, r.Pane, r.Created, r.Source, r.Origin, dashIfEmpty(r.Task), dashIfEmpty(r.Report)}
+}
+
+func dashIfEmpty(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 // CopiesFile returns the copy registry path inside the state dir.
@@ -131,14 +149,18 @@ func ReadCopies(stateDir string) ([]CopyRow, error) {
 	}
 	out := []CopyRow{}
 	for _, line := range strings.Split(raw, "\n") {
-		if line == "" || line == copiesHeader {
+		if line == "" || line == copiesHeader || line == namedTaskCopiesHeader {
 			continue
 		}
 		fields := strings.Split(line, "\t")
 		if len(fields) < 6 {
 			return nil, fmt.Errorf("copies.tsv: malformed line %q", line)
 		}
-		out = append(out, CopyRow{Path: fields[0], Owner: fields[1], Pane: fields[2], Created: fields[3], Source: fields[4], Origin: fields[5]})
+		row := CopyRow{Path: fields[0], Owner: fields[1], Pane: fields[2], Created: fields[3], Source: fields[4], Origin: fields[5]}
+		if len(fields) >= 8 {
+			row.Task, row.Report = fields[6], fields[7]
+		}
+		out = append(out, row)
 	}
 	return out, nil
 }

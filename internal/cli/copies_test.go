@@ -1134,3 +1134,395 @@ func TestReleaseDropsTheAgentsMissingCopyLines(t *testing.T) {
 		t.Fatalf("rows=%#v; want only the other agent's line", rows)
 	}
 }
+
+// agentStatusJSON is the fake herdr answer for an agent in state.
+func agentStatusJSON(state string) string {
+	return `{"result":{"agent":{"agent_status":"` + state + `"}}}`
+}
+
+// writeTaskPointer writes the agent's task-report pointer the way dispatch
+// does (version 1, task_report, current, history).
+func writeTaskPointer(t *testing.T, sd, agent, task, current string) {
+	t.Helper()
+	body := fmt.Sprintf(`{"version":1,"task_report":%q,"current":%q,"history":[]}`, task, current)
+	if err := os.WriteFile(filepath.Join(sd, "task-report-"+agent+".json"), []byte(body+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFileAt(t *testing.T, path, content string, mtime time.Time) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// idleGc is a live, idle owner "worker" with one copy whose task and the
+// owner's current task are closed, everything 3 h old: the copy gc offers.
+// Each case changes one thing.
+type idleGc struct {
+	f       *copiesFixture
+	sd      string
+	copy    string
+	task    string
+	report  string
+	current string
+	row     core.CopyRow
+}
+
+func newIdleGc(t *testing.T, rules []fakecli.Rule) *idleGc {
+	t.Helper()
+	f := newCopiesFixture(t, rules)
+	oldDisk, oldSwap := platform.DiskFree, platform.SwapUsage
+	platform.DiskFree = func(string) (int64, int64, bool) {
+		return int64(60) * 1024 * 1024 * 1024, int64(100) * 1024 * 1024 * 1024, true
+	}
+	platform.SwapUsage = func(platform.Env) (int64, int64, bool) {
+		return int64(30) * 1024 * 1024 * 1024, int64(100) * 1024 * 1024 * 1024, true
+	}
+	t.Cleanup(func() { platform.DiskFree, platform.SwapUsage = oldDisk, oldSwap })
+	f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+	sd := f.stateDir(t)
+	old := platform.Now().Add(-3 * time.Hour)
+	g := &idleGc{
+		f:       f,
+		sd:      sd,
+		copy:    filepath.Join(f.tmp, "idle-copy"),
+		task:    filepath.Join(f.root, "reports", "worker.current.md"),
+		report:  filepath.Join(f.root, "reports", "task-1.md"),
+		current: filepath.Join(f.root, "reports", "task-2.md"),
+	}
+	writeFileAt(t, filepath.Join(g.copy, "sub", "a.txt"), "0123456789", old)
+	for _, dir := range []string{filepath.Join(g.copy, "sub"), g.copy} {
+		if err := os.Chtimes(dir, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFileAt(t, g.report, "done\n", old)
+	writeFileAt(t, g.current, "done\n", old)
+	writeTaskPointer(t, sd, "worker", g.task, g.current)
+	g.row = core.CopyRow{Path: g.copy, Owner: "worker", Pane: "p-worker", Created: core.FrictionISO(old), Source: "-", Origin: "mutation-copy", Task: g.task, Report: g.report}
+	return g
+}
+
+func (g *idleGc) register(t *testing.T) {
+	t.Helper()
+	g.f.writeCopies(t, []core.CopyRow{g.row})
+}
+
+func idleRules(state string) []fakecli.Rule {
+	return []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentStatusJSON(state)}}
+}
+
+const gcPressureNone = "resource pressure: none (disk 60% free, swap 30% used)"
+
+func (g *idleGc) wantOffered(t *testing.T) {
+	t.Helper()
+	code, out, errOut := g.f.run(t, g.f.env, "gc")
+	want := strings.Join([]string{
+		gcPressureNone,
+		"would remove " + g.copy + "  10 B  worker  3h  (idle owner, task closed)",
+		"total: 10 B",
+		"run 'soho gc --yes' to remove them",
+	}, "\n") + "\n"
+	if code != 0 || errOut != "" || out != want {
+		t.Fatalf("code=%d out=%q err=%q; want the copy offered:\n%s", code, out, errOut, want)
+	}
+}
+
+func (g *idleGc) wantKept(t *testing.T) {
+	t.Helper()
+	code, out, errOut := g.f.run(t, g.f.env, "gc")
+	if want := gcPressureNone + "\nnothing to remove\n"; code != 0 || errOut != "" || out != want {
+		t.Fatalf("code=%d out=%q err=%q; want the copy not offered", code, out, errOut)
+	}
+	code, out, errOut = g.f.run(t, g.f.env, "gc", "--yes")
+	if want := gcPressureNone + "\nnothing to remove\n"; code != 0 || out != want {
+		t.Fatalf("--yes code=%d out=%q err=%q; want nothing removed", code, out, errOut)
+	}
+	if _, err := os.Stat(filepath.Join(g.copy, "sub", "a.txt")); err != nil {
+		t.Fatalf("the copy was touched: %v", err)
+	}
+	if rows := g.f.copiesRows(t); len(rows) != 1 || rows[0].Path != g.copy {
+		t.Fatalf("registry rows=%#v; want the line kept", rows)
+	}
+}
+
+func TestGcIdleOwnerCopies(t *testing.T) {
+	// Condition 1: the owner is live in the roster and idle or done.
+	t.Run("idle owner with closed tasks: offered, then removed with --yes", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		g.register(t)
+		g.wantOffered(t)
+		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
+		want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B"}, "\n") + "\n"
+		if code != 0 || out != want {
+			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
+		}
+		if _, err := os.Stat(g.copy); !os.IsNotExist(err) {
+			t.Fatalf("the copy was not removed: %v", err)
+		}
+		if rows := g.f.copiesRows(t); len(rows) != 0 {
+			t.Fatalf("registry rows=%#v; want the line dropped", rows)
+		}
+	})
+	t.Run("done owner: offered", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("done"))
+		g.register(t)
+		g.wantOffered(t)
+	})
+	for _, state := range []string{"working", "blocked"} {
+		t.Run(state+" owner: kept", func(t *testing.T) {
+			g := newIdleGc(t, idleRules(state))
+			g.register(t)
+			g.wantKept(t)
+		})
+	}
+	t.Run("unavailable owner: kept", func(t *testing.T) {
+		g := newIdleGc(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Code: 1, Stderr: "herdr is not answering"}})
+		g.register(t)
+		g.wantKept(t)
+	})
+
+	// Condition 2: the line carries the task and the report.
+	t.Run("task - : kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		g.row.Task = "-"
+		g.register(t)
+		g.wantKept(t)
+	})
+	t.Run("report - : kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		g.row.Report = "-"
+		g.register(t)
+		g.wantKept(t)
+	})
+	t.Run("an empty task column with a report: kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		line := strings.Join([]string{g.row.Path, g.row.Owner, g.row.Pane, g.row.Created, g.row.Source, g.row.Origin, "", g.row.Report}, "\t")
+		if err := os.WriteFile(g.f.registryPath(), []byte("path\towner\tpane\tcreated\tsource\torigin\n"+line+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		g.wantKept(t)
+	})
+	t.Run("a six-column line from an earlier binary: kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		legacy := "path\towner\tpane\tcreated\tsource\torigin\n" +
+			strings.Join([]string{g.row.Path, g.row.Owner, g.row.Pane, g.row.Created, g.row.Source, g.row.Origin}, "\t") + "\n"
+		if err := os.WriteFile(g.f.registryPath(), []byte(legacy), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		g.wantKept(t)
+	})
+
+	// Condition 3: the line's report exists and is not empty.
+	t.Run("empty report: kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		writeFileAt(t, g.report, "", platform.Now().Add(-3*time.Hour))
+		g.register(t)
+		g.wantKept(t)
+	})
+	t.Run("missing report: kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		if err := os.Remove(g.report); err != nil {
+			t.Fatal(err)
+		}
+		g.register(t)
+		g.wantKept(t)
+	})
+
+	// Condition 4: the owner's current task is closed too.
+	t.Run("current task open (no current report yet): kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		writeTaskPointer(t, g.sd, "worker", g.task, filepath.Join(g.f.root, "reports", "task-3.md"))
+		g.register(t)
+		g.wantKept(t)
+	})
+	t.Run("current report empty: kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		writeFileAt(t, g.current, "", platform.Now().Add(-3*time.Hour))
+		g.register(t)
+		g.wantKept(t)
+	})
+	t.Run("no current pointer: kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		if err := os.Remove(filepath.Join(g.sd, "task-report-worker.json")); err != nil {
+			t.Fatal(err)
+		}
+		g.register(t)
+		g.wantKept(t)
+	})
+
+	// Condition 5: created at least --older-than ago.
+	t.Run("created inside --older-than: kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		g.row.Created = core.FrictionISO(platform.Now().Add(-time.Hour))
+		g.register(t)
+		g.wantKept(t)
+	})
+	t.Run("--older-than 4 against a 3 h copy: kept; --older-than 3: offered", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		g.register(t)
+		code, out, errOut := g.f.run(t, g.f.env, "gc", "--older-than", "4")
+		if want := gcPressureNone + "\nnothing to remove\n"; code != 0 || out != want {
+			t.Fatalf("code=%d out=%q err=%q; want nothing offered", code, out, errOut)
+		}
+		code, out, errOut = g.f.run(t, g.f.env, "gc", "--older-than", "3")
+		if code != 0 || !strings.Contains(out, "would remove "+g.copy+"  10 B  worker  3h  (idle owner, task closed)\n") {
+			t.Fatalf("code=%d out=%q err=%q; want the copy offered", code, out, errOut)
+		}
+	})
+
+	// Condition 6: no entry of the copy was modified inside --older-than.
+	t.Run("a file of the copy modified inside --older-than: kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		recent := platform.Now().Add(-time.Hour)
+		if err := os.Chtimes(filepath.Join(g.copy, "sub", "a.txt"), recent, recent); err != nil {
+			t.Fatal(err)
+		}
+		g.register(t)
+		g.wantKept(t)
+	})
+	t.Run("the copy root modified inside --older-than: kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		recent := platform.Now().Add(-time.Hour)
+		if err := os.Chtimes(g.copy, recent, recent); err != nil {
+			t.Fatal(err)
+		}
+		g.register(t)
+		g.wantKept(t)
+	})
+
+	// Before each removal gc re-reads the owner: a change keeps the copy.
+	t.Run("the owner turns working between the listing and the removal: kept", func(t *testing.T) {
+		// gc --yes asks herdr three times for this line: the live check,
+		// the idle rule at the listing, and the re-read before removing.
+		g := newIdleGc(t, []fakecli.Rule{
+			{Argv: []string{"agent", "get", "worker"}, Call: 3, Stdout: agentStatusJSON("working")},
+			{Argv: []string{"agent", "get", "worker"}, Stdout: agentStatusJSON("idle")},
+		})
+		g.register(t)
+		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
+		want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "nothing to remove"}, "\n") + "\n"
+		if code != 0 || out != want {
+			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
+		}
+		if _, err := os.Stat(filepath.Join(g.copy, "sub", "a.txt")); err != nil {
+			t.Fatalf("the copy was removed: %v", err)
+		}
+		if rows := g.f.copiesRows(t); len(rows) != 1 || rows[0] != g.row {
+			t.Fatalf("registry rows=%#v; want the line kept as it was", rows)
+		}
+		calls, err := fakecli.ReadCallsForConfig(filepath.Join(g.f.env["SOHO_FAKECLI_CONFIG"], "herdr.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(callsTo(calls, "agent", "get", "worker")); got != 3 {
+			t.Fatalf("agent get calls=%d; want 3 (live check, rule, re-read)", got)
+		}
+	})
+}
+
+func TestCopiesRecordTheOwnersTask(t *testing.T) {
+	f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON}})
+	f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+	sd := f.stateDir(t)
+	src := filepath.Join(f.tmp, "handcopy")
+	if err := os.MkdirAll(src, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Without a pointer the two columns are "-".
+	if code, out, errOut := f.run(t, f.env, "copies", "add", src); code != 0 || errOut != "" {
+		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
+	}
+	if rows := f.copiesRows(t); len(rows) != 1 || rows[0].Task != "-" || rows[0].Report != "-" {
+		t.Fatalf("registry rows=%#v; want task and report -", rows)
+	}
+	// With the owner's pointer they carry its task_report and current, and a
+	// repeated add on the same path updates them.
+	for _, n := range []string{"1", "2"} {
+		task := filepath.Join(f.root, "reports", "worker.current.md")
+		current := filepath.Join(f.root, "reports", "task-"+n+".md")
+		writeTaskPointer(t, sd, "worker", task, current)
+		if code, out, errOut := f.run(t, f.env, "copies", "add", src); code != 0 || errOut != "" {
+			t.Fatalf("task %s: code=%d out=%q err=%q", n, code, out, errOut)
+		}
+		rows := f.copiesRows(t)
+		if len(rows) != 1 || rows[0].Path != src || rows[0].Task != task || rows[0].Report != current {
+			t.Fatalf("task %s: registry rows=%#v; want one line with task %q and report %q", n, rows, task, current)
+		}
+	}
+	raw, err := os.ReadFile(f.registryPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(raw), "path\towner\tpane\tcreated\tsource\torigin\n") || !strings.Contains(string(raw), "\tadd\t"+filepath.Join(f.root, "reports", "worker.current.md")+"\t"+filepath.Join(f.root, "reports", "task-2.md")+"\n") {
+		t.Fatalf("registry=%q; want the six-name header and the task and report as fields 7 and 8", raw)
+	}
+	// An owner-less registration (no pane in the roster) is "-" even when
+	// some agent has a pointer.
+	env := f.env.Clone()
+	delete(env, "HERDR_PANE_ID")
+	other := filepath.Join(f.tmp, "handcopy-other")
+	if err := os.MkdirAll(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, errOut := f.run(t, env, "copies", "add", other); code != 0 || errOut != "" {
+		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
+	}
+	rows := f.copiesRows(t)
+	if len(rows) != 2 || rows[1].Path != other || rows[1].Owner != "-" || rows[1].Task != "-" || rows[1].Report != "-" {
+		t.Fatalf("registry rows=%#v; want the owner-less line with task and report -", rows)
+	}
+}
+
+func TestMutationCopyRecordsTheOwnersTask(t *testing.T) {
+	f := newMutationCopyFixture(t)
+	skill := filepath.Join(f.root, "skill")
+	if err := os.MkdirAll(filepath.Join(skill, "roles"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("fixture skill\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(f.root, "state")
+	sd := filepath.Join(state, "ws")
+	if err := os.MkdirAll(sd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte("# roster\n"+releaseRow("worker", "p-worker", "1", "implementer", false, "/tmp/work")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(f.root, "mcopy")
+	overrides := platform.Env{"SOHO_DIR": state, "SOHO_SKILL_DIR": skill, "HERDR_WORKSPACE_ID": "ws", "HERDR_PANE_ID": "p-worker"}
+
+	// Without the owner's pointer the two columns are "-".
+	if code, out, errOut := runMutationCopyCmd(t, f, f.source, overrides, "--source", f.source, "--dest", dest); code != 0 || errOut != "" {
+		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
+	}
+	rows, err := core.ReadCopies(sd)
+	if err != nil || len(rows) != 1 || rows[0].Owner != "worker" || rows[0].Task != "-" || rows[0].Report != "-" {
+		t.Fatalf("registry rows=%#v err=%v; want task and report -", rows, err)
+	}
+
+	// With it, the task_report and the current of the pointer.
+	task := filepath.Join(f.root, "reports", "worker.current.md")
+	current := filepath.Join(f.root, "reports", "task-1.md")
+	writeTaskPointer(t, sd, "worker", task, current)
+	if err := os.RemoveAll(dest); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, errOut := runMutationCopyCmd(t, f, f.source, overrides, "--source", f.source, "--dest", dest); code != 0 || errOut != "" {
+		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
+	}
+	rows, err = core.ReadCopies(sd)
+	if err != nil || len(rows) != 1 || rows[0].Path != dest || rows[0].Task != task || rows[0].Report != current {
+		t.Fatalf("registry rows=%#v err=%v; want task %q and report %q", rows, err, task, current)
+	}
+}

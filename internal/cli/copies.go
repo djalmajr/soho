@@ -15,6 +15,7 @@ import (
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/taskreport"
 )
 
 const (
@@ -403,6 +404,115 @@ func gcStopOrphanProcs(orphans []projectOrphan, threshold time.Duration, now tim
 	return stopped
 }
 
+// copyTaskColumns are the task and report columns of a new registry line:
+// the task_report and current of the owner's task pointer, or "-" without
+// an owner or a pointer.
+func copyTaskColumns(sd, owner string) (string, string) {
+	if owner == "" || owner == "-" {
+		return "-", "-"
+	}
+	pointer := taskreport.ReadTaskReportPointer(sd, owner)
+	if pointer == nil {
+		return "-", "-"
+	}
+	task, _ := pointer.Get("task_report")
+	current, _ := pointer.Get("current")
+	return dashIfBlank(task.(string)), dashIfBlank(current.(string))
+}
+
+func dashIfBlank(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+// gcIdleOwnerMark closes the dry-run line of a copy of a live owner that gc
+// offers because the owner is idle and its tasks are closed.
+const gcIdleOwnerMark = "(idle owner, task closed)"
+
+// gcIdleOwnerChanged is the kept-line cause when the owner's state or task
+// pointer changed between the listing and the removal.
+const gcIdleOwnerChanged = "the owner's state or task changed"
+
+// gcIdleClosed is what gc saw when it offered a live owner's copy: the
+// owner's state and its current task pointer, compared again before the
+// removal.
+type gcIdleClosed struct {
+	state   string
+	task    string
+	current string
+}
+
+// gcIdleOwnerCopy decides whether gc offers the copy of a live owner: the
+// owner is in the roster and idle or done; the line carries the task and
+// report it was registered under (never a line from an earlier binary) and
+// that report is a non-empty file; the owner's current task is closed too
+// (its current report is a non-empty file); and both the line's created and
+// the newest modification of any entry of the copy, symlinks not followed,
+// are at least threshold old. ok is false when any of them fails.
+func gcIdleOwnerCopy(row core.CopyRow, sd string, env platform.Env, now time.Time, threshold time.Duration) (gcIdleClosed, bool) {
+	if row.Owner == "-" || core.RosterLine(sd, row.Owner) == "" {
+		return gcIdleClosed{}, false
+	}
+	if row.Task == "" || row.Task == "-" || row.Report == "" || row.Report == "-" {
+		return gcIdleClosed{}, false
+	}
+	if copyAge(row, now) < threshold {
+		return gcIdleClosed{}, false
+	}
+	state := herdr.AgentState(row.Owner, env, herdr.Timeout, nil).State
+	if state != "idle" && state != "done" {
+		return gcIdleClosed{}, false
+	}
+	if !nonEmptyFile(row.Report) {
+		return gcIdleClosed{}, false
+	}
+	task, current := copyTaskColumns(sd, row.Owner)
+	if current == "-" || !nonEmptyFile(current) {
+		return gcIdleClosed{}, false
+	}
+	newest, ok := newestModification(row.Path)
+	if !ok || now.Sub(newest) < threshold {
+		return gcIdleClosed{}, false
+	}
+	return gcIdleClosed{state: state, task: task, current: current}, true
+}
+
+// gcIdleOwnerStillClosed re-reads the owner's state and task pointer right
+// before the removal: the copy goes only when the rule still holds and
+// neither the state nor the pointer changed since gc offered it.
+func gcIdleOwnerStillClosed(row core.CopyRow, seen gcIdleClosed, sd string, env platform.Env, now time.Time, threshold time.Duration) bool {
+	fresh, ok := gcIdleOwnerCopy(row, sd, env, now, threshold)
+	return ok && fresh == seen
+}
+
+func nonEmptyFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
+}
+
+// newestModification is the newest mtime of the copy root and every entry
+// below it, read without following symlinks. ok is false when the walk
+// fails anywhere, so an unreadable copy never reads as old.
+func newestModification(root string) (time.Time, bool) {
+	var newest time.Time
+	err := filepath.WalkDir(root, func(_ string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+		return nil
+	})
+	return newest, err == nil
+}
+
 // copyAge is how long the copy has existed; an unparseable or future created
 // reads as 0, so gc never treats an unknown age as old.
 func copyAge(row core.CopyRow, now time.Time) time.Duration {
@@ -474,7 +584,8 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	if pane == "" {
 		pane = "-"
 	}
-	row := core.CopyRow{Path: resolved, Owner: owner, Pane: pane, Created: core.FrictionISO(platform.Now()), Source: "-", Origin: "add"}
+	task, report := copyTaskColumns(sd, owner)
+	row := core.CopyRow{Path: resolved, Owner: owner, Pane: pane, Created: core.FrictionISO(platform.Now()), Source: "-", Origin: "add", Task: task, Report: report}
 	if err := core.UpsertCopies(sd, row); err != nil {
 		var locked *core.CopiesLockedError
 		if errors.As(err, &locked) {
@@ -495,14 +606,17 @@ func isExistingDir(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-// gcCandidate is one registry line gc may act on: an orphan old enough, or a
-// missing line that only leaves the registry.
+// gcCandidate is one registry line gc may act on: an orphan old enough, a
+// copy of an idle owner whose tasks are closed (idle, with what gc saw), or
+// a missing line that only leaves the registry.
 type gcCandidate struct {
 	path    string
 	owner   string
 	age     time.Duration
 	size    int64
 	missing bool
+	row     core.CopyRow
+	idle    *gcIdleClosed
 }
 
 // gcUnregisteredCopy is a soho-mutation-* directory below TMPDIR that
@@ -575,8 +689,14 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			if age >= threshold {
 				candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: age, size: copyDirSize(row.Path)})
 			}
+		case "owned":
+			// A live owner's copy is offered only when the owner is idle
+			// and the copy's task and its current one are closed.
+			if seen, ok := gcIdleOwnerCopy(row, sd, env, now, threshold); ok {
+				candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: copyAge(row, now), size: copyDirSize(row.Path), row: row, idle: &seen})
+			}
 		}
-		// owned lines are never touched
+		// the other owned lines are never touched
 	}
 	unregistered := gcUnregistered(env, rows, now, threshold, cwd)
 	orphanProcs := gcProjectOrphans(sd, procRows, env, cwd)
@@ -600,6 +720,10 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		}
 		if len(candidates) > 0 {
 			for _, cand := range candidates {
+				if cand.idle != nil {
+					_, _ = fmt.Fprintf(platform.Stdout, "would remove %s  %s  %s  %s  %s\n", cand.path, humanSize(cand.size), cand.owner, humanAge(cand.age), gcIdleOwnerMark)
+					continue
+				}
 				_, _ = fmt.Fprintf(platform.Stdout, "would remove %s  %s  %s  %s\n", cand.path, humanSize(cand.size), cand.owner, humanAge(cand.age))
 			}
 			_, _ = fmt.Fprintf(platform.Stdout, "total: %s\n", humanSize(total))
@@ -656,6 +780,10 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			removedLines[cand.path] = true
 			removedAny = true
 			_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", cand.path, humanSize(0))
+			continue
+		}
+		if cand.idle != nil && !gcIdleOwnerStillClosed(cand.row, *cand.idle, sd, env, platform.Now(), threshold) {
+			_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, gcIdleOwnerChanged)
 			continue
 		}
 		resolved, parentInfo, cause := checkedCopy(cand.path, env, cwd)
