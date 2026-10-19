@@ -115,9 +115,15 @@ func (f *fixture) runWithStderr(args []string, w *stderrSignal) (int, string, st
 func appendAfterSignal(t *testing.T, seen <-chan struct{}, transcriptPath, line string) <-chan bool {
 	t.Helper()
 	done := make(chan bool, 1)
+	stop := make(chan struct{})
+	exited := make(chan struct{})
 	go func() {
+		defer close(exited)
 		select {
 		case <-seen:
+		case <-stop:
+			done <- false
+			return
 		case <-time.After(30 * time.Second):
 			done <- false
 			return
@@ -131,6 +137,12 @@ func appendAfterSignal(t *testing.T, seen <-chan struct{}, transcriptPath, line 
 		}
 		done <- ok
 	}()
+	// A test that ends before the warning (a failed assertion) stops the
+	// worker and waits for it, before its temporary directories go.
+	t.Cleanup(func() {
+		close(stop)
+		<-exited
+	})
 	return done
 }
 

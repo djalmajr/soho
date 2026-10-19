@@ -93,23 +93,18 @@ func TestSendAgentNotReady(t *testing.T) {
 			{Argv: []string{"agent", "prompt", "w0test:p0a", prompt, "--wait", "--until", "working", "--until", "blocked", "--until", "idle", "--until", "done", "--timeout", "15000"}},
 		}
 		f := newFixture(t, rules)
+		start := time.Now()
 		code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "5000", "hello"})
-		end := time.Now()
+		elapsed := time.Since(start)
 		if code != 0 || out != "sent to local/w0test:p0a\n" || stderr != "" {
-			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+			t.Fatalf("code=%d out=%q stderr=%q elapsed=%s", code, out, stderr, elapsed)
 		}
 		// The send waited the two not-ready polls (the default 1 s
 		// SOHO_SEND_POLL_MS each) and delivered inside the 5 s --timeout:
 		// the deadline plus one poll is the outer bound the send may not pass.
-		// The deadline starts when the first get reports agent_not_ready, so
-		// the clock starts at that get's own start as the fake recorded it,
-		// as in the never-ready case below.
-		gets := callStartsOf(t, f, []string{"agent", "get", "w0test:p0a"})
-		if len(gets) == 0 {
-			t.Fatal("no agent get in the call log")
-		}
-		elapsed := end.Sub(gets[0])
-		t.Logf("gets=%d elapsed=%s", len(gets), elapsed)
+		// This case measures the whole send, delivery included (DJA-332
+		// keeps it so: moving its clock to the first get would drop the
+		// first process start from the bound).
 		if elapsed > time.Duration(5000+1100)*time.Millisecond {
 			t.Fatalf("elapsed=%s", elapsed)
 		}
