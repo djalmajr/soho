@@ -551,10 +551,20 @@ func TestSend(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, call := range calls {
+		// The sequence is the proof: the id never has to be in the history.
+		// The history is read once, only to look for the receiver's refusal,
+		// and last, after the visible read that goes with the sequence proof.
+		recent := 0
+		for i, call := range calls {
 			if len(call.Argv) > 2 && call.Argv[1] == "read" && strings.Contains(strings.Join(call.Argv, " "), "recent-unwrapped") {
-				t.Fatalf("transcript was needed despite seq proof: %+v", calls)
+				recent++
+				if i != len(calls)-1 {
+					t.Fatalf("the history was read before the sequence proof ended: %+v", calls)
+				}
 			}
+		}
+		if recent != 1 {
+			t.Fatalf("the history was read %d times, want once (for a refusal): %+v", recent, calls)
 		}
 	})
 	t.Run("trust dialog blocks send without a prompt", func(t *testing.T) { // JS: "dialog: trust workspace dialog blocks send, exits 17 dialog with no prompt sent"
