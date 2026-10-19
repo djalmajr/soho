@@ -1238,6 +1238,9 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	// without one the pi target keeps today's exact call sequence (no
 	// transcript get, no file read).
 	transcript := transcriptProof{}
+	var transcriptBase int64
+	transcriptBaseOK := false
+	tooLargeBefore := countTooLarge(vScreen)
 	if t.Machine == sessionref.LocalMachine || t.Machine == "" {
 		if t.Kind == "claude" {
 			transcript = transcriptProof{path: herdr.ClaudeTranscriptPath(t.TargetArg, env), count: herdr.CountClaudeUserMarkerLines, queued: claudeQueued}
@@ -1248,6 +1251,9 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			if pre, ok := transcript.count(transcript.path, "#"+id); ok {
 				transcript.pre = pre
 				transcript.armed = true
+				// The too-large refusal has no id: only a system entry written after
+				// this point is the refusal of this send.
+				transcriptBase, transcriptBaseOK = transcriptEnd(transcript.path)
 			}
 		}
 	}
@@ -1271,10 +1277,21 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			if result, ok := refusalIn(text, id); ok {
 				refuse(result)
 			}
+			// The too-large refusal has no id, so a line on the screen or in
+			// the history is this send's only when there are more of them
+			// than on the visible screen before the prompt. A history read
+			// has no count of its own from before: it is compared with that
+			// one too.
+			if countTooLarge(text) > tooLargeBefore {
+				refuse("prompt-too-large")
+			}
 		}
 		if t.Kind == "claude" && (t.Machine == sessionref.LocalMachine || t.Machine == "") {
 			if result, ok := refusalInTranscript(transcript.path, id); ok {
 				refuse(result)
+			}
+			if transcriptBaseOK && tooLargeInTranscript(transcript.path, transcriptBase) {
+				refuse("prompt-too-large")
 			}
 		}
 		return text, cause
@@ -1300,6 +1317,10 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 							// off the visible screen: the recent history is read
 							// for it before the send is proved. readAfter ends
 							// the send on a refusal; what it returns is not used.
+							// A failed history read is not a failure of the proof: the
+							// moved sequence and the visible screen already proved the
+							// send, and the send stays proved when the history cannot
+							// be read to look for a refusal that may have scrolled off.
 							_, _ = readAfter("recent-unwrapped", recentLines, HerdrCallTimeoutMS)
 							return proofResult{Proven: true, RecentReadSucceeded: result.RecentReadSucceeded, LastCause: result.LastCause}
 						}

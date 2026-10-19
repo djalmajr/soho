@@ -111,3 +111,99 @@ func refusalInValue(v any, id string) (string, bool) {
 	}
 	return "", false
 }
+
+// tooLargeLine reports whether the line is the receiver's refusal of a prompt
+// that was too large: a line that, normalized as refusalLineIn normalizes, and
+// not quoted, starts with `[soho:peer-refused] prompt-too-large`. The hook
+// cannot name the message (it never parsed it), so the line has no id and
+// stands for no message in particular.
+func tooLargeLine(line string) bool {
+	norm := NormalizeScreen(line)
+	if strings.HasPrefix(norm, ">") {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimPrefix(norm, "›"), strings.ReplaceAll(peerauth.TooLargeLine, " ", ""))
+}
+
+// countTooLarge is how many lines of a screen or a recent read are the
+// too-large refusal. A refusal is this send's only when a read after the
+// prompt holds more of them than the visible screen before it.
+func countTooLarge(text string) int {
+	n := 0
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		if tooLargeLine(line) {
+			n++
+		}
+	}
+	return n
+}
+
+// transcriptEnd is the size of the transcript now: the point after which a
+// too-large refusal in it is new. ok is false when the file cannot be read.
+func transcriptEnd(path string) (int64, bool) {
+	if path == "" {
+		return 0, false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	return info.Size(), true
+}
+
+// tooLargeInTranscript reports whether the transcript holds, after the byte
+// offset from, a `system` entry with the too-large refusal line. Entries
+// before from are earlier refusals of earlier messages.
+func tooLargeInTranscript(path string, from int64) bool {
+	if path == "" {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.Size() <= from {
+		return false
+	}
+	if info.Size()-from > maxTranscriptScan {
+		from = info.Size() - maxTranscriptScan
+	}
+	if _, err := f.Seek(from, io.SeekStart); err != nil {
+		return false
+	}
+	reader := bufio.NewReaderSize(f, 1<<20)
+	for {
+		line, err := reader.ReadString('\n')
+		if strings.Contains(line, "soho:peer-refused") && strings.Contains(line, "prompt-too-large") {
+			var entry map[string]any
+			if json.Unmarshal([]byte(line), &entry) == nil && entry["type"] == "system" && tooLargeInValue(entry) {
+				return true
+			}
+		}
+		if err != nil {
+			return false
+		}
+	}
+}
+
+func tooLargeInValue(v any) bool {
+	switch x := v.(type) {
+	case string:
+		return countTooLarge(x) > 0
+	case map[string]any:
+		for _, item := range x {
+			if tooLargeInValue(item) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range x {
+			if tooLargeInValue(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
