@@ -38,18 +38,30 @@ func CallerCheckMode(ctx *Config, env platform.Env) string {
 
 // callerGateLine is the shared mismatch text (the command prefix is
 // added by the caller; the friction line is the same text, the `soho: `
-// prefix belongs to stderr only).
+// prefix belongs to stderr only). After the fixed sentence it says what the
+// session check (DJA-406) found: the two Claude Code sessions when no
+// continued-in record links them, and the one other pane that shows this
+// process's session. The suggestion is only text; no pane is ever switched.
 func callerGateLine(res herdr.CallerCheck) string {
-	return fmt.Sprintf("HERDR_PANE_ID='%s' is a live pane but this process does not run in it (its process tree does not reach the pane's shell %d); the id was inherited from another process, such as a forked session. ", res.Pane, res.ShellPID)
+	line := fmt.Sprintf("HERDR_PANE_ID='%s' is a live pane but this process does not run in it (its process tree does not reach the pane's shell %d); the id was inherited from another process, such as a forked session. ", res.Pane, res.ShellPID)
+	if res.Session != "" && res.PaneSession != "" {
+		line += fmt.Sprintf("This process is Claude Code session %s; the pane hosts session %s, and no continued-in record links them. ", res.Session, res.PaneSession)
+	}
+	if res.ShownIn != "" {
+		line += fmt.Sprintf("This Claude Code session is shown in pane '%s'; run with HERDR_PANE_ID=%s. ", res.ShownIn, res.ShownIn)
+	}
+	return line
 }
 
-const callerGateFix = " Run soho from the pane that hosts this agent, or set caller_check=warn"
+const callerGateFix = " Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn"
 
 // CallerGate applies the caller_check policy before the command acts on
 // the claimed pane (the commands that open, title or write in its name:
 // spawn/run/reopen, send, regrid, title, init and the collaborate
 // operations that use the caller pane). It is a no-op for
-// SOHO_NOWRITE=1, caller_check=off, and for verified and unknown results.
+// SOHO_NOWRITE=1, caller_check=off, and for verified and unknown results
+// (a pane whose Claude Code session is this process's, or continued in it,
+// is verified: no line in stderr or in the friction log).
 // A mismatch with refuse records the line in the command's friction log
 // and exits 2 without changing anything; with warn it logs the line and
 // returns so the command proceeds.

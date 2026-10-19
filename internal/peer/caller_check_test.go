@@ -14,7 +14,7 @@ import (
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
-const sendRefuseLine = "soho: send: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Nothing was changed. Run soho from the pane that hosts this agent, or set caller_check=warn\n"
+const sendRefuseLine = "soho: send: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Nothing was changed. Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn\n"
 
 // callerSendRules are the process-info rules of the claimed caller pane
 // (the send target is w0test:p0a; the caller claims w1:p9).
@@ -122,7 +122,7 @@ func TestCmdSendCallerPaneCheck(t *testing.T) {
 		if code != 0 || !strings.HasPrefix(out, "queued for local/w0test:p0a") {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 		}
-		if !strings.Contains(stderr, "soho: warning: send: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Continuing because caller_check=warn. Run soho from the pane that hosts this agent, or set caller_check=warn") {
+		if !strings.Contains(stderr, "soho: warning: send: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Continuing because caller_check=warn. Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn") {
 			t.Fatalf("stderr missing the warn line: %q", stderr)
 		}
 		friction, err := os.ReadFile(filepath.Join(f.env["SOHO_DIR"], "ws-test", "friction.log"))

@@ -31,6 +31,15 @@ type CallerCheck struct {
 	Pane     string
 	ShellPID int
 	Reason   string // short
+
+	// Session, PaneSession and ShownIn describe a mismatch for the refusal
+	// text (DJA-406). Session is this process's Claude Code session
+	// (CLAUDE_CODE_SESSION_ID), PaneSession the one herdr reports for the
+	// claimed pane, ShownIn the single other pane that shows this process's
+	// session. Each is "" when it is not known or not valid.
+	Session     string
+	PaneSession string
+	ShownIn     string
 }
 
 // callerCheckMemo is the per-command memo (decision 8: one check per
@@ -71,7 +80,10 @@ func ResetCallerCheck() {
 //  4. the parent chain of this process (platform.ProcessAncestors) that
 //     includes the shell_pid is verified; a chain read to the root
 //     (pid 1, 0 or a parentless pid) without it is a mismatch; a failed
-//     read midway is unknown.
+//     read midway is unknown;
+//  5. only for that mismatch, the session check (caller_session.go): the
+//     pane's Claude Code session is this process's session, or continued
+//     in it, is verified. Any failure there leaves the mismatch.
 //
 // The climb never treats the Herdr server as a match: only the pane's
 // shell_pid counts.
@@ -112,7 +124,15 @@ func checkCallerPane(pane, delegated string, env platform.Env) CallerCheck {
 			return CallerCheck{State: CallerVerified, Pane: pane, ShellPID: shellPID, Reason: "tree reaches the pane's shell"}
 		}
 	}
-	return CallerCheck{State: CallerMismatch, Pane: pane, ShellPID: shellPID, Reason: "tree does not reach the pane's shell"}
+	// The tree missed the shell. A Claude Code background session that
+	// continued the pane's session runs outside it: the session check can
+	// only turn this mismatch into verified (caller_session.go).
+	session, verified := verifiedBySession(pane, ownSession(env), env)
+	if verified {
+		return CallerCheck{State: CallerVerified, Pane: pane, ShellPID: shellPID, Reason: session.Reason}
+	}
+	return CallerCheck{State: CallerMismatch, Pane: pane, ShellPID: shellPID, Reason: "tree does not reach the pane's shell",
+		Session: session.Session, PaneSession: session.PaneSession, ShownIn: session.ShownIn}
 }
 
 // paneShellPID reads result.process_info.shell_pid from

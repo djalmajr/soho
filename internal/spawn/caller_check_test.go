@@ -14,7 +14,7 @@ import (
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
-const spawnRefuseLine = "soho: spawn: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Nothing was changed. Run soho from the pane that hosts this agent, or set caller_check=warn\n"
+const spawnRefuseLine = "soho: spawn: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Nothing was changed. Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn\n"
 
 // callerSpawnFixture builds a spawn fixture (the same shape as the
 // internal newSpawnFixture) with the scripted ancestry the caller-pane
@@ -191,7 +191,7 @@ func TestCmdSpawnCallerPaneCheck(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("code=%d stdout=%q err=%q", code, stdout, errOut)
 		}
-		if !strings.Contains(errOut, "soho: warning: spawn: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Continuing because caller_check=warn. Run soho from the pane that hosts this agent, or set caller_check=warn") {
+		if !strings.Contains(errOut, "soho: warning: spawn: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Continuing because caller_check=warn. Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn") {
 			t.Fatalf("stderr missing the warn line: %q", errOut)
 		}
 		friction, err := os.ReadFile(filepath.Join(env["SOHO_DIR"], "ws", "friction.log"))
