@@ -301,3 +301,60 @@ func TestDoctorInboundEnforceNamesUnprotectedAgents(t *testing.T) {
 		t.Fatalf("outside Herdr: %q", out.String())
 	}
 }
+
+// A replay cache that cannot be read refuses every peer message until it is
+// fixed: the doctor says so, with inbound_auth other than off.
+func TestDoctorInboundCorruptReplayCache(t *testing.T) {
+	good := "mac\t0f23aac6\t2026-10-19T12:00:00Z\t2026-10-19T12:00:01Z\n"
+	cacheWarning := func(out string) string {
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, "peer replay cache") {
+				return strings.TrimLeft(strings.TrimPrefix(line, "warn"), " ")
+			}
+		}
+		return ""
+	}
+	for _, mode := range []string{"warn", "enforce"} {
+		for name, tc := range map[string]struct {
+			body string
+			line int
+		}{
+			"too few fields":  {good + "oops\n", 2},
+			"too many fields": {"a\tb\tc\td\te\n", 1},
+			"unreadable time": {good + good + "mac\t1\t2\tnope\n", 3},
+		} {
+			t.Run(mode+", "+name, func(t *testing.T) {
+				d := newInboundDoctor(t)
+				d.user("inbound_auth=" + mode + "\ninbound_allow=mac\n")
+				d.key("local")
+				d.key("mac")
+				d.protect()
+				path := filepath.Join(d.conf, peerauth.SeenFile)
+				d.write(path, tc.body, 0o600)
+				want := fmt.Sprintf("peer replay cache %s is corrupt (line %d); messages are refused until it is fixed: delete it", path, tc.line)
+				if got := cacheWarning(d.out()); got != want {
+					t.Fatalf("warning = %q\nwant      %q", got, want)
+				}
+				if raw, err := os.ReadFile(path); err != nil || string(raw) != tc.body {
+					t.Fatalf("the doctor changed the cache: %q (%v)", raw, err)
+				}
+			})
+		}
+	}
+	t.Run("a good cache and an off policy say nothing", func(t *testing.T) {
+		d := newInboundDoctor(t)
+		d.user("inbound_auth=enforce\ninbound_allow=mac\n")
+		d.key("local")
+		d.key("mac")
+		d.protect()
+		d.write(filepath.Join(d.conf, peerauth.SeenFile), good, 0o600)
+		if got := cacheWarning(d.out()); got != "" {
+			t.Fatalf("warning for a good cache: %q", got)
+		}
+		d.user("inbound_auth=off\n")
+		d.write(filepath.Join(d.conf, peerauth.SeenFile), "oops\n", 0o600)
+		if got := cacheWarning(d.out()); got != "" {
+			t.Fatalf("warning with inbound_auth=off: %q", got)
+		}
+	})
+}

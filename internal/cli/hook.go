@@ -94,12 +94,17 @@ type hookBlock struct {
 // hookInbound runs the peer check on the hook's stdin and reports whether it
 // blocked the prompt. It reads the stdin first and only the prompt: a prompt
 // with no peer header reads no configuration, key, replay cache or log and
-// creates nothing. Anything but the JSON of a UserPromptSubmit passes, with a
+// creates nothing. A stdin over hookInputLimit is not interpreted: the user's
+// policy decides (hookTooLarge). A stdin of up to that size that is not the
+// JSON of a UserPromptSubmit does not come from a prompt: it passes, with a
 // line in the friction log.
 func hookInbound(env platform.Env, cwd string) bool {
-	input, read := readHookInput()
+	input, tooLarge, read := readHookInput()
 	if !read {
 		return false
+	}
+	if tooLarge {
+		return hookTooLarge(env, cwd)
 	}
 	target := cwd
 	if project := env.Get("CLAUDE_PROJECT_DIR"); project != "" {
@@ -147,14 +152,7 @@ func hookInbound(env platform.Env, cwd string) bool {
 		hookFriction(readEnv, target, fmt.Sprintf("hook inbound: refused peer message #%s (%s)", v.Header.ID, v.Result))
 	}
 	if outcome.Block {
-		var block hookBlock
-		block.Decision, block.Reason = "block", outcome.Reason()
-		block.Specific.HookEventName, block.Specific.SuppressOriginalPrompt = "UserPromptSubmit", true
-		var line bytes.Buffer
-		encoder := json.NewEncoder(&line)
-		encoder.SetEscapeHTML(false)
-		_ = encoder.Encode(block)
-		_, _ = platform.Stdout.Write(line.Bytes())
+		writeHookBlock(outcome.Reason())
 		return true
 	}
 	if outcome.Mode == peerauth.ModeWarn {
@@ -165,19 +163,67 @@ func hookInbound(env platform.Env, cwd string) bool {
 	return false
 }
 
+// hookTooLarge decides a stdin over hookInputLimit, which was read only up to
+// that limit and not interpreted. In enforce it blocks (the JSON of hookBlock,
+// exit 0), in warn it passes with a context line and in off it passes as a
+// stdin that is not a prompt always did, with its friction line. It reads the
+// user's policy and nothing else.
+func hookTooLarge(env platform.Env, cwd string) bool {
+	target := cwd
+	if project := env.Get("CLAUDE_PROJECT_DIR"); project != "" {
+		target = project
+	}
+	readEnv := env.Clone()
+	readEnv["SOHO_NOWRITE"] = "1"
+	userFile := core.EffectiveUserConfigFile(platform.Current(), env, core.UserSelection{})
+	outcome := peerauth.CheckTooLarge(peerauth.Source{
+		Dir:    filepath.Dir(userFile),
+		Policy: func() (peerauth.Policy, error) { return peerauth.LoadPolicy(userFile) },
+		Pane:   env.Get("HERDR_PANE_ID"),
+		Now:    platform.Now,
+	})
+	switch {
+	case outcome.Block:
+		writeHookBlock(outcome.Reason())
+		return true
+	case outcome.Mode == peerauth.ModeWarn:
+		fmt.Fprintln(platform.Stdout, peerauth.TooLargeWarn)
+	default:
+		hookFriction(readEnv, target, "hook inbound: stdin is not the JSON of a UserPromptSubmit; nothing was checked")
+	}
+	return false
+}
+
+// writeHookBlock prints the decision that blocks a prompt: exit 0 and this
+// JSON, never exit 2, which would echo the whole refused text back.
+func writeHookBlock(reason string) {
+	var block hookBlock
+	block.Decision, block.Reason = "block", reason
+	block.Specific.HookEventName, block.Specific.SuppressOriginalPrompt = "UserPromptSubmit", true
+	var line bytes.Buffer
+	encoder := json.NewEncoder(&line)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(block)
+	_, _ = platform.Stdout.Write(line.Bytes())
+}
+
 // readHookInput reads the hook's stdin, at most hookInputLimit bytes, and
-// nothing from a terminal. ok is false when there is nothing to check.
-func readHookInput() (data []byte, ok bool) {
+// nothing from a terminal. ok is false when there is nothing to check;
+// tooLarge reports a stdin past the limit (data is then not the input).
+func readHookInput() (data []byte, tooLarge, ok bool) {
 	if file, isFile := hookStdin.(*os.File); isFile {
 		if info, err := file.Stat(); err != nil || info.Mode()&os.ModeCharDevice != 0 {
-			return nil, false
+			return nil, false, false
 		}
 	}
 	data, err := io.ReadAll(io.LimitReader(hookStdin, hookInputLimit+1))
-	if err != nil || len(data) > hookInputLimit {
-		return []byte("not-json"), true
+	if err != nil {
+		return []byte("not-json"), false, true
 	}
-	return data, true
+	if len(data) > hookInputLimit {
+		return nil, true, true
+	}
+	return data, false, true
 }
 
 // hookFriction records a hook line the way core.Warn does, in the friction log

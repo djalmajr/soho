@@ -1,6 +1,7 @@
 package peerauth
 
 import (
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,6 +26,11 @@ type Header struct {
 	// after it, joined with LF; "" when Closed is false.
 	Text   string
 	Closed bool
+	// Ambiguous reports that the framing does not say where the message
+	// ends: another closing line for the same id after the one that closed
+	// it, or another opening line with the same id. The text past the first
+	// closing line is outside what a signature covers.
+	Ambiguous bool
 	// Remote reports the remote opening (` on <host>, sent `).
 	Remote bool
 	// Sent is the opening line's send time as written ("" when there is none).
@@ -40,28 +46,60 @@ func (h Header) Chars() int { return utf8.RuneCountInString(h.Text) }
 // with `[soho:peer] #<8 hex>` followed by a character that is not hex; a line
 // that starts with `>` is quoted text and never counts. The message runs to
 // the first closing line `[/soho:peer] #<same id> end of message` after it; a
-// header with no closing line is not Closed.
+// header with no closing line is not Closed. A header whose id has a second
+// closing line after the first, or a second opening line anywhere in the
+// prompt, is Ambiguous.
 func FindHeaders(prompt string) []Header {
 	lines := strings.Split(strings.ReplaceAll(prompt, "\r\n", "\n"), "\n")
 	var out []Header
+	// One pass indexes the opening lines per id and the closing lines per id,
+	// so a prompt of many lines is not scanned once per header.
+	openings := map[string]int{}
+	closers := map[string][]int{}
+	for i, line := range lines {
+		if id, ok := openingID(line); ok {
+			openings[id]++
+		}
+		if id, ok := closingID(line); ok {
+			closers[id] = append(closers[id], i)
+		}
+	}
 	for i, line := range lines {
 		id, ok := openingID(line)
 		if !ok {
 			continue
 		}
-		h := Header{ID: id}
-		closing := endMarker + id + endSuffix
-		for j := i; j < len(lines); j++ {
-			if j > i && strings.TrimSpace(lines[j]) == closing {
-				h.Closed = true
-				h.Text = strings.Join(lines[i:j+1], "\n")
-				break
-			}
+		h := Header{ID: id, Ambiguous: openings[id] > 1}
+		after := closers[id]
+		after = after[sort.SearchInts(after, i+1):]
+		if len(after) > 0 {
+			h.Closed = true
+			h.Text = strings.Join(lines[i:after[0]+1], "\n")
+			h.Ambiguous = h.Ambiguous || len(after) > 1
 		}
 		h.Remote, h.Sent = openingShape(line)
 		out = append(out, h)
 	}
 	return out
+}
+
+// closingID is the id of a closing line `[/soho:peer] #<id> end of message`,
+// with the whitespace around the line gone.
+func closingID(line string) (string, bool) {
+	rest := strings.TrimSpace(line)
+	if !strings.HasPrefix(rest, endMarker) {
+		return "", false
+	}
+	rest = rest[len(endMarker):]
+	if len(rest) != idLen+len(endSuffix) || rest[idLen:] != endSuffix {
+		return "", false
+	}
+	for i := 0; i < idLen; i++ {
+		if !isHex(rest[i]) {
+			return "", false
+		}
+	}
+	return rest[:idLen], true
 }
 
 func openingID(line string) (string, bool) {

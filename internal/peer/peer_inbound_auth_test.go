@@ -444,6 +444,40 @@ func TestSendRefusalBeatsTheArrivalProof(t *testing.T) {
 	}
 }
 
+// The sequence moved and the visible screen shows no refusal (it scrolled
+// away), but the recent history still holds it: the usual proof of a taken
+// message must not hide it.
+func TestSendRefusalInTheRecentHistoryBeatsTheSequenceProof(t *testing.T) {
+	signedFixtureID(t)
+	prompt := localUnsigned()
+	refusal := "⏺ UserPromptSubmit operation blocked by hook:\n  [soho:peer-refused] #" + signID + " refused-stale\n"
+	rules := []fakecli.Rule{
+		{Argv: []string{"agent", "get", "w0test:p0a"}, Call: 1, Stdout: agentJSON("idle", "1")},
+		{Argv: []string{"agent", "read", "w0test:p0a", "--source", "visible"}, Call: 1, Stdout: "before prompt\n"},
+		{Argv: []string{"agent", "get", "w0test:p0a"}, Call: 2, Stdout: agentJSON("idle", "1")},
+		{Argv: []string{"agent", "get", "w0test:p0a"}, Call: 3, Stdout: agentJSON("idle", "1")},
+		{Argv: []string{"agent", "prompt", "w0test:p0a", prompt, "--wait", "--until", "working", "--until", "blocked", "--until", "idle", "--until", "done", "--timeout", "15000"}},
+		// The sequence moves (the usual proof of a taken message)...
+		{Argv: []string{"agent", "get", "w0test:p0a"}, Stdout: agentJSON("idle", "2")},
+		// ...the visible screen shows nothing of the refusal...
+		{Argv: []string{"agent", "read", "w0test:p0a", "--source", "visible"}, Stdout: "done, the refusal scrolled out\n"},
+		// ...and the recent history still holds it.
+		{Argv: []string{"agent", "read", "w0test:p0a", "--source", "recent-unwrapped"}, ArgvPrefix: true, Stdout: "earlier output\n" + refusal},
+	}
+	f := newFixture(t, rules)
+	code, out, stderr := f.run([]string{"send", "w0test:p0a", "hello"})
+	if code != 18 || out != "" || !strings.Contains(stderr, "refused the message (refused-stale)") {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	if enters := countSendKeyEnters(t, f); enters != 0 {
+		t.Fatalf("%d Enter after the refusal", enters)
+	}
+	log := peerMessagesLog(t, f)
+	if strings.Contains(log, "\tsent\t") || !strings.Contains(log, "\trefused\t") {
+		t.Fatalf("peer-messages.tsv = %q", log)
+	}
+}
+
 // The refusal is read from the recent history alone (the visible screen has
 // scrolled it away), and from a local claude's transcript alone.
 func TestSendRefusalFromRecentHistoryAndTranscript(t *testing.T) {

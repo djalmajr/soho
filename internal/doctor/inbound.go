@@ -47,6 +47,9 @@ func doctorPeerInbound(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 		return
 	}
 	dir := filepath.Dir(userFile)
+	if line, corrupt := peerauth.SeenCorrupt(dir); corrupt {
+		s.Warning(fmt.Sprintf("peer replay cache %s is corrupt (line %d); messages are refused until it is fixed: delete it", filepath.Join(dir, peerauth.SeenFile), line))
+	}
 	checked := map[string]bool{}
 	checkKey := func(name string) {
 		if checked[name] {

@@ -1296,6 +1296,11 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 					visible, readErr := readAfter("visible", 0, HerdrCallTimeoutMS)
 					if readErr == "" {
 						if !isDialogScreen(visible, t.Kind, curGet.Status) {
+							// The sequence moved, but a refusal can have scrolled
+							// off the visible screen: the recent history is read
+							// for it before the send is proved. readAfter ends
+							// the send on a refusal; what it returns is not used.
+							_, _ = readAfter("recent-unwrapped", recentLines, HerdrCallTimeoutMS)
 							return proofResult{Proven: true, RecentReadSucceeded: result.RecentReadSucceeded, LastCause: result.LastCause}
 						}
 					} else {

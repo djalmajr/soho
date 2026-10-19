@@ -225,7 +225,9 @@ func TestCheckTwoMessagesInOnePrompt(t *testing.T) {
 	}
 	// The valid one on its own is still accepted afterwards: it was never cached.
 	wantOne(t, f.check(wrap(good)), peerauth.Accepted)
-	// Two valid messages are both accepted; the same one twice is a replay.
+	// Two valid messages are both accepted. The same one twice in one prompt
+	// has an id that repeats, so the framing is ambiguous (the same id again
+	// in a later prompt is the replay TestCheckReplay covers).
 	other := remoteSpec()
 	other.id = "11223344"
 	otherSigned := mustSign(t, key, other.unsigned())
@@ -236,7 +238,7 @@ func TestCheckTwoMessagesInOnePrompt(t *testing.T) {
 		t.Fatalf("two valid results = %v", got)
 	}
 	_ = os.Remove(filepath.Join(f.dir, peerauth.SeenFile))
-	if got := results(g.check(wrap(good + "\n" + good))); len(got) != 2 || got[0] != peerauth.RefusedWithAnother || got[1] != peerauth.RefusedReplay {
+	if got := results(g.check(wrap(good + "\n" + good))); len(got) != 2 || got[0] != peerauth.RefusedBadSig || got[1] != peerauth.RefusedBadSig {
 		t.Fatalf("the same message twice = %v", got)
 	}
 }
