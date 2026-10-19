@@ -171,3 +171,107 @@ func TestCheckCallerPaneSuggestionBudget(t *testing.T) {
 		}
 	})
 }
+
+func TestCheckCallerPaneSuggestionDeadlineAndCeiling(t *testing.T) {
+	claimedRule := paneGetRule(sessPane, "claude", "id", sessOther)
+
+	t.Run("a pane list slower than 2 s leaves no suggestion, even for a pane with S itself", func(t *testing.T) {
+		slow := paneListRule([2]string{"w2:p1", sessOwn})
+		slow.Delay = 2100
+		env := sessionEnv(t, sessOwn, claimedRule, slow)
+		_, reads := countReads(t, nil)
+		if got := CheckCallerPane(env); got.State != CallerMismatch || got.ShownIn != "" {
+			t.Fatalf("CheckCallerPane=%#v", got)
+		}
+		if *reads != 0 {
+			t.Fatalf("transcript reads=%d want 0", *reads)
+		}
+	})
+
+	t.Run("control: the same pane list without the delay names the pane", func(t *testing.T) {
+		env := sessionEnv(t, sessOwn, claimedRule, paneListRule([2]string{"w2:p1", sessOwn}))
+		if got := CheckCallerPane(env); got.State != CallerMismatch || got.ShownIn != "w2:p1" {
+			t.Fatalf("CheckCallerPane=%#v", got)
+		}
+	})
+
+	// The claimed pane hosts X, which continued in Y: the check reads both,
+	// so the panes that host them are cached for the suggestion.
+	x, y := budgetSession(100), budgetSession(101)
+	cachedEnv := func(t *testing.T, panes ...[2]string) platform.Env {
+		env := sessionEnv(t, sessOwn, paneGetRule(sessPane, "claude", "id", x), paneListRule(panes...))
+		writeSessionTranscript(t, env, "-p", x, continuedIn(x, y))
+		writeSessionTranscript(t, env, "-p", y, noise(2)...)
+		writeSessionTranscript(t, env, "-p", sessPaneA, continuedIn(sessPaneA, sessOwn))
+		return env
+	}
+	// crossing moves the clock 3 s during the third read, the first one
+	// of the suggestion.
+	crossing := func(t *testing.T) *int {
+		step := fixedClock(t)
+		_, reads := countReads(t, func(n int) {
+			if n == 3 {
+				step(3 * time.Second)
+			}
+		})
+		return reads
+	}
+
+	t.Run("a read that crosses the deadline and finds the candidate, the other panes cached: no suggestion", func(t *testing.T) {
+		env := cachedEnv(t, [2]string{"w2:p1", sessPaneA}, [2]string{"w2:p2", y}, [2]string{"w2:p3", x})
+		reads := crossing(t)
+		if got := CheckCallerPane(env); got.State != CallerMismatch || got.ShownIn != "" {
+			t.Fatalf("CheckCallerPane=%#v", got)
+		}
+		if *reads != 3 {
+			t.Fatalf("transcript reads=%d want 3", *reads)
+		}
+	})
+
+	t.Run("a read that crosses the deadline on the last pane: no suggestion", func(t *testing.T) {
+		env := cachedEnv(t, [2]string{"w2:p1", y}, [2]string{"w2:p2", sessPaneA})
+		reads := crossing(t)
+		if got := CheckCallerPane(env); got.State != CallerMismatch || got.ShownIn != "" {
+			t.Fatalf("CheckCallerPane=%#v", got)
+		}
+		if *reads != 3 {
+			t.Fatalf("transcript reads=%d want 3", *reads)
+		}
+	})
+
+	t.Run("control: the same panes without the clock moving name the pane", func(t *testing.T) {
+		env := cachedEnv(t, [2]string{"w2:p1", y}, [2]string{"w2:p2", sessPaneA})
+		_, reads := countReads(t, nil)
+		if got := CheckCallerPane(env); got.State != CallerMismatch || got.ShownIn != "w2:p2" {
+			t.Fatalf("CheckCallerPane=%#v", got)
+		}
+		if *reads != 3 {
+			t.Fatalf("transcript reads=%d want 3", *reads)
+		}
+	})
+
+	t.Run("a chain that crosses the deadline reads no further hop", func(t *testing.T) {
+		env := sessionEnv(t, sessOwn, claimedRule, paneListRule([2]string{"w2:p1", sessPaneA}))
+		writeSessionTranscript(t, env, "-p", sessPaneA, continuedIn(sessPaneA, sessMid))
+		writeSessionTranscript(t, env, "-p", sessMid, noise(2)...)
+		step := fixedClock(t)
+		_, reads := countReads(t, func(int) { step(3 * time.Second) })
+		if got := CheckCallerPane(env); got.State != CallerMismatch || got.ShownIn != "" {
+			t.Fatalf("CheckCallerPane=%#v", got)
+		}
+		if *reads != 1 {
+			t.Fatalf("transcript reads=%d want 1", *reads)
+		}
+	})
+
+	t.Run("39 panes whose sessions have no transcript, then the one with S: that pane, no read", func(t *testing.T) {
+		env := sessionEnv(t, sessOwn, claimedRule, paneListRule(manyPanes(39)...))
+		listings, reads := countReads(t, nil)
+		if got := CheckCallerPane(env); got.State != CallerMismatch || got.ShownIn != "w5:p39" {
+			t.Fatalf("CheckCallerPane=%#v", got)
+		}
+		if *reads != 0 || *listings != 1 {
+			t.Fatalf("transcript reads=%d listings=%d want 0 and 1", *reads, *listings)
+		}
+	})
+}

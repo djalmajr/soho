@@ -182,6 +182,11 @@ type readBudget struct {
 	spent    bool
 }
 
+// expired reports that the deadline has passed.
+func (b *readBudget) expired() bool {
+	return !platform.Now().Before(b.deadline)
+}
+
 func newSessionChain(env platform.Env) *sessionChain {
 	return &sessionChain{root: claudeConfigRoot(env), targets: map[string][]string{}}
 }
@@ -222,14 +227,15 @@ func (c *sessionChain) continuedFrom(session string) []string {
 	if got, ok := c.targets[session]; ok {
 		return got
 	}
-	if b := c.budget; b != nil {
-		if b.reads <= 0 || !platform.Now().Before(b.deadline) {
-			b.spent = true
-			return nil
-		}
-		b.reads--
+	if b := c.budget; b != nil && b.expired() {
+		b.spent = true
+		return nil
 	}
 	got := c.readContinued(session)
+	if c.budget != nil && c.budget.spent {
+		// A read the ceiling refused is not a result: it is not cached.
+		return nil
+	}
 	c.targets[session] = got
 	return got
 }
@@ -241,6 +247,15 @@ func (c *sessionChain) readContinued(session string) []string {
 	path, ok := c.transcriptPath(session)
 	if !ok {
 		return nil
+	}
+	// Only a transcript that is really read spends the ceiling: a session
+	// without one, an empty root or a failed listing does not.
+	if b := c.budget; b != nil {
+		if b.reads <= 0 {
+			b.spent = true
+			return nil
+		}
+		b.reads--
 	}
 	tail, ok := readTranscriptTail(path, continuedTailBytes)
 	if !ok {
@@ -360,8 +375,11 @@ func verifiedBySession(pane, own string, env platform.Env) (CallerCheck, bool) {
 // "": the refusal only suggests a pane when there is no doubt. The search
 // reads at most suggestMaxReads transcripts the check has not read yet,
 // within suggestMaxTime; once either runs out it gives "", even with a
-// candidate found. The panes go in id order, so the outcome does not
-// depend on the order of a map.
+// candidate found. The deadline is checked before each pane, with or
+// without a fresh read, and once after the loop: a read under way is not
+// cut short, and its result is dropped if the deadline passed meanwhile.
+// The panes go in id order, so the outcome does not depend on the order
+// of a map.
 func shownIn(claimed, own string, chain *sessionChain, env platform.Env) string {
 	budget := &readBudget{reads: suggestMaxReads, deadline: platform.Now().Add(suggestMaxTime)}
 	sessions := panesSessions(env)
@@ -374,6 +392,9 @@ func shownIn(claimed, own string, chain *sessionChain, env platform.Env) string 
 	defer func() { chain.budget = nil }()
 	found := ""
 	for _, pane := range panes {
+		if budget.expired() {
+			return ""
+		}
 		if pane == claimed {
 			continue
 		}
@@ -388,6 +409,9 @@ func shownIn(claimed, own string, chain *sessionChain, env platform.Env) string 
 			return ""
 		}
 		found = pane
+	}
+	if budget.expired() {
+		return ""
 	}
 	return found
 }
