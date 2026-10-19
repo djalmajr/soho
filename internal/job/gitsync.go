@@ -230,10 +230,13 @@ func (g *GitSync) Facts() (ReportFacts, error) {
 }
 
 // Push pushes the local head to the remote job branch. An up-to-date remote
-// runs no git push at all. A refused push (for example a non-fast-forward
-// after another clone advanced the branch) is Rejected with a nil error so
-// the caller can turn it into a blocked event; a timeout or a missing git is
-// an error code 19. It never forces — no --force, no --force-with-lease, no
+// runs no git push at all. A push the remote refused (for example a
+// non-fast-forward after another clone advanced the branch, or a hook that
+// declined it) is Rejected with a nil error so the caller can turn it into a
+// blocked event: it exits non-zero and --porcelain prints a ref line that
+// starts with "!". Any other failure (the network, the credentials, a missing
+// repository, a timeout, a missing git) is an error code 19 and the caller
+// tries again on the next cycle. It never forces — no --force, no --force-with-lease, no
 // + refspec, no --no-verify — and never retries.
 func (g *GitSync) Push() (PushResult, error) {
 	gitEnv := g.gitEnv()
@@ -253,7 +256,9 @@ func (g *GitSync) Push() (PushResult, error) {
 	}
 	// RunCli directly (deadline and WaitDelay, argv only) so a timeout, a
 	// missing executable or a killed process stays apart from a refused push:
-	// only a non-zero exit is reported as Rejected for the blocked event. The
+	// only a non-zero exit with a rejected ref line is reported as Rejected
+	// for the blocked event, never the stderr text (it changes with the git
+	// version and the language). The
 	// optional context runs under the supervisor's cancel observer: a cancel
 	// of it kills this push and reports the cut, not a refusal.
 	result := platform.RunCli("git", []string{"-C", g.Dir, "push", "--porcelain", "origin", "HEAD:refs/heads/" + g.Branch}, platform.RunOptions{Context: g.Context, Env: gitEnv, TimeoutMs: timeoutMs(g.netTimeout())})
@@ -266,9 +271,23 @@ func (g *GitSync) Push() (PushResult, error) {
 		return PushResult{}, errCancelled
 	case result.NotFound || result.TimedOut || result.Status == nil:
 		return PushResult{Head: head}, gitSyncErrorDetail("push", stepFailureDetail(result))
-	default:
+	case rejectedRefLine(result.Stdout):
 		return PushResult{Rejected: true, Head: head}, nil
+	default:
+		return PushResult{Head: head}, gitSyncErrorDetail("push", stepFailureDetail(result))
 	}
+}
+
+// rejectedRefLine reports whether the `git push --porcelain` output has a
+// ref line the remote refused: the status flag "!" starts the line, followed
+// by a tab ("!\tHEAD:refs/heads/x\t[rejected] (fetch first)").
+func rejectedRefLine(stdout string) bool {
+	for _, line := range strings.Split(strings.ReplaceAll(stdout, "\r\n", "\n"), "\n") {
+		if strings.HasPrefix(line, "!") {
+			return true
+		}
+	}
+	return false
 }
 
 // Checkpoint stages the tracked and untracked non-ignored files (.gitignore
