@@ -1,6 +1,7 @@
 package job
 
 import (
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -75,14 +76,36 @@ func stepDeadlineLimit(deadline time.Time) func(time.Duration) time.Duration {
 // firstGhStart returns when the fake gh began its first call, as the fake
 // itself recorded it. The time is the call's own start, so it does not depend
 // on when the test reads it, however late; the test fails when no gh call
-// was recorded.
+// was recorded, or when the start record does not hold one start per call.
 func firstGhStart(t *testing.T, f *supGitFixture) time.Time {
 	t.Helper()
-	starts, err := fakecli.ReadCallStarts(filepath.Join(f.job.base.fakeDir, "gh.calls.jsonl"))
-	if err != nil || len(starts) == 0 {
-		t.Fatalf("no gh call start was recorded: %d starts, %v", len(starts), err)
+	log := filepath.Join(f.job.base.fakeDir, "gh.calls.jsonl")
+	calls, err := fakecli.ReadCalls(log)
+	if err != nil {
+		t.Fatalf("read the gh calls: %v", err)
 	}
-	return starts[0]
+	starts, err := fakecli.ReadCallStarts(log)
+	if err != nil {
+		t.Fatalf("read the gh call starts: %v", err)
+	}
+	first, err := alignedFirstStart(len(calls), starts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return first
+}
+
+// alignedFirstStart is the first call's start when the record holds exactly
+// one start per logged call. A record that lost a write (say the first one)
+// would otherwise move the origin to a later call and shorten the measure.
+func alignedFirstStart(calls int, starts []time.Time) (time.Time, error) {
+	if calls == 0 {
+		return time.Time{}, fmt.Errorf("no gh call was recorded")
+	}
+	if len(starts) != calls {
+		return time.Time{}, fmt.Errorf("the gh start record holds %d starts for %d calls; a lost write would move the origin", len(starts), calls)
+	}
+	return starts[0], nil
 }
 
 // A slow first gh command followed by a hung second one stays inside the gh
@@ -191,5 +214,25 @@ func TestCheckpointBoundsTheLaterCommandsByTheStepRemainder(t *testing.T) {
 				t.Errorf("fake git calls = %d (%v), want add, diff and (unless diff hung) commit", len(calls), err)
 			}
 		})
+	}
+}
+
+// A start record that lost a write never yields an origin: with the first
+// write lost and the second kept, the record's first start is the second
+// call's, which would shorten the measure and let a broken clamp pass.
+func TestAlignedFirstStartRefusesAPartialRecord(t *testing.T) {
+	first := time.Unix(0, 1_000)
+	second := time.Unix(0, 2_000)
+	if got, err := alignedFirstStart(2, []time.Time{first, second}); err != nil || !got.Equal(first) {
+		t.Fatalf("a full record = %v, %v; want the first call's start", got, err)
+	}
+	if _, err := alignedFirstStart(2, []time.Time{second}); err == nil {
+		t.Fatal("a record with the first write lost gave an origin; want an error")
+	}
+	if _, err := alignedFirstStart(1, []time.Time{first, second}); err == nil {
+		t.Fatal("a record with more starts than calls gave an origin; want an error")
+	}
+	if _, err := alignedFirstStart(0, nil); err == nil {
+		t.Fatal("no call gave an origin; want an error")
 	}
 }
