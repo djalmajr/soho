@@ -288,7 +288,9 @@ func TestBackgroundTaskWaitEndToEnd(t *testing.T) {
 		platform.Now = time.Now
 		f.ctx.Entries["settled_grace"] = core.ConfigEntry{Value: "0"}
 		for i := 1; i <= 2; i++ {
-			code, out := f.waitForRun(t, 300)
+			// Long enough for a loaded Windows runner to start the fake
+			// herdr calls and reach the settled check at least once.
+			code, out := f.waitForRun(t, 2000)
 			if code == 0 || strings.Contains(out, "settled-no-report") {
 				t.Fatalf("wait %d: code=%d out=%q, want a timeout, never a settled verdict", i, code, out)
 			}
