@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -175,6 +176,78 @@ func TestCompactCodexFooterNoProofTimesOut(t *testing.T) {
 	}
 }
 
+// codexHistoryPhrase is a sentence of the history that looks like the footer
+// gauge; codexHistoryAboveComposer puts it right above the composer, with the
+// real footer of a compaction in progress (no window) below.
+const codexHistoryPhrase = "• Earlier report: Context 3% used · 475K window was recorded yesterday.\n"
+
+func codexHistoryAboveComposer() string {
+	return "• Earlier reply from the worker\n" + codexHistoryPhrase + "› Ask Codex to do anything\n\n" + codexFooterCompacting
+}
+
+// TestCompactCodexFooterHistoryAboveComposerTimesOut is the review finding:
+// with the real footer momentarily without the window, a gauge-shaped
+// sentence of the history just above the composer must not be read as the
+// footer. Nothing was compacted: the compact ends at the timeout (9).
+func TestCompactCodexFooterHistoryAboveComposerTimesOut(t *testing.T) {
+	fakeFastClock(t, 6*time.Second)
+	f := newCompactFixture(t, "codex", []fakecli.Rule{
+		{Argv: []string{"agent", "get", "worker"}, Call: 1, Stdout: compactStateJSON("idle", 1)},
+		{Argv: []string{"agent", "get", "worker"}, Stdout: compactStateJSON("idle", 2)},
+		{Argv: []string{"pane", "send-text", "p1", "/compact"}, Stdout: `{"result":{}}`},
+		{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
+		{Argv: compactReadArgv("worker"), Call: 1, Stdout: codexScrolled(codexFooterBefore49)},
+		{Argv: compactReadArgv("worker"), ArgvPrefix: true, Stdout: codexHistoryAboveComposer()},
+	})
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "500")
+	if code != 9 {
+		t.Fatalf("code=%d want 9 out=%s stderr=%s", code, out, errText)
+	}
+	if value := compactJSON(t, out); value["kind"] != "codex" || value["status"] != "timeout" {
+		t.Fatalf("json=%v", value)
+	}
+}
+
+// TestDispatchCompactCodexFooterHistoryAboveComposerKeepsBriefUnsent is the
+// same screen inside a dispatch: the compact step times out (9) and no brief
+// is sent.
+func TestDispatchCompactCodexFooterHistoryAboveComposerKeepsBriefUnsent(t *testing.T) {
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	fixedNow := platform.Now
+	platform.Now = func() time.Time {
+		value := base
+		base = base.Add(310 * time.Second)
+		return value
+	}
+	t.Cleanup(func() { platform.Now = fixedNow })
+	extra := []fakecli.Rule{
+		{Argv: []string{"agent", "get", "worker"}, Call: 1, Stdout: compactStateJSON("idle", 1)},
+		{Argv: []string{"agent", "get", "worker"}, Call: 2, Stdout: compactStateJSON("idle", 1)},
+		{Argv: []string{"pane", "send-text", "w0test:p0a", "/compact"}, Stdout: `{"result":{}}`},
+		{Argv: []string{"pane", "send-keys", "w0test:p0a", "Enter"}, Stdout: `{"result":{}}`},
+		{Argv: compactReadArgv("worker"), Call: 1, Stdout: codexScrolled(codexFooterBefore49)},
+		{Argv: compactReadArgv("worker"), ArgvPrefix: true, Stdout: codexHistoryAboveComposer()},
+	}
+	f := newDispatchArrivalFixture(t, "working", 1, 2, "$CURRENT_PATHS", "0", extra...)
+	code, out, errText := f.run(t, "worker", f.brief, "--no-wait", "--compact")
+	if code != 9 {
+		t.Fatalf("code=%d want 9 out=%s stderr=%s", code, out, errText)
+	}
+	if !strings.Contains(errText, "the compact step of 'worker' did not finish (exit 9); the brief was not sent") {
+		t.Fatalf("stderr without the phase and brief_sent note: %q", errText)
+	}
+	if !strings.Contains(out, `"status":"timeout"`) {
+		t.Fatalf("missing the timeout JSON: %s", out)
+	}
+	calls, err := fakecli.ReadCallsForConfig(filepath.Join(f.bin, "herdr.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countArgvPrefix(calls, []string{"agent", "prompt", "worker"}); n != 0 {
+		t.Fatalf("the brief was sent after the compact timeout: %#v", calls)
+	}
+}
+
 // TestCompactCodexFooterDropAfterDeadlineCompacted: the gauge falls only in
 // the read after the deadline; the last read runs the footer proof too, the
 // compact ends as compacted, and /compact is never sent again.
@@ -228,10 +301,18 @@ func TestCompactCodexContextRead(t *testing.T) {
 		{"over 100 is not a gauge", "› Ask Codex\n  Sol · Context 101% used · 475K window\n", 0, false},
 		{"no window", "› Ask Codex\n  Sol · Context 0% used · weekly 76% left\n", 0, false},
 		{"no dot before the window", "› Ask Codex\n  Sol Context 3% used 475K window\n", 0, false},
-		{"the bottom match wins", "  Context 40% used · 475K window\n› Ask Codex\n  Context 5% used · 475K window\n", 5, true},
-		{"the fourth non-empty line from the bottom counts", "  Context 5% used · 475K window\n\na\n\nb\nc\n", 5, true},
-		{"the fifth non-empty line from the bottom does not", "  Context 5% used · 475K window\na\nb\nc\nd\n", 0, false},
-		{"blank lines do not use the window", "  Context 5% used · 475K window\n\n\na\n\n\nb\nc\n\n", 5, true},
+		{"the bottom match wins", "› Ask Codex\n  Context 40% used · 475K window\n  Context 5% used · 475K window\n", 5, true},
+		{"the composer is the fourth non-empty line from the bottom", "› Ask Codex\n\na\n\nb\n  Context 5% used · 475K window\n", 5, true},
+		{"the composer is the fifth non-empty line from the bottom", "› Ask Codex\na\nb\nc\n  Context 5% used · 475K window\n", 0, false},
+		{"blank lines do not use the window", "› Ask Codex\n\n\na\n\n\nb\n  Context 5% used · 475K window\n\n", 5, true},
+		{"no composer in the last four lines", "  Context 5% used · 475K window\na\nb\n", 0, false},
+		{"a gauge above the composer is not read", "  Context 5% used · 475K window\n› Ask Codex\n  Sol · weekly 76% left\n", 0, false},
+		{"a gauge above the composer is not read when the footer has no window", codexHistoryAboveComposer(), 0, false},
+		{"the first gauge line decides: no window below a line with it", "› Ask Codex\n  Context 5% used · 475K window\n  Context 0% used\n", 0, false},
+		{"the first gauge line decides: an out-of-range N", "› Ask Codex\n  Context 5% used · 475K window\n  Context 101% used · 475K window\n", 0, false},
+		{"the first gauge line decides: with the window it counts", "› Ask Codex\n  Context 0% used\n  Context 5% used · 475K window\n", 5, true},
+		{"the bottom-most composer line anchors, a › line above it does not", "› /compact\n  Context 3% used · 475K window was noted\n› Ask Codex\n  Sol · weekly 76% left\n", 0, false},
+		{"a long indented composer line still anchors", "    › Ask Codex\n  Context 5% used · 475K window\n", 5, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

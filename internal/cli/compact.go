@@ -93,14 +93,19 @@ func compactProof(kind string) string {
 	return compactProofByKind[kind]
 }
 
+// compactCodexGaugeRE finds the context gauge in a line, with any N; the
+// footer regexp below is what makes it valid.
+var compactCodexGaugeRE = regexp.MustCompile(`Context (\d+)% used`)
+
 // compactCodexFooterRE matches the context gauge of the codex footer:
 // `Context 49% used · 475K window`. Only a line that also names the window
 // counts: during a compaction the footer reads `Context 0% used` without it.
 var compactCodexFooterRE = regexp.MustCompile(`Context (\d{1,3})% used\s*\x{B7}\s*\d+(?:\.\d+)?[KM] window`)
 
 // compactCodexFooterLines is how many non-empty lines, counted from the
-// bottom of the screen, may hold the footer gauge. A gauge-shaped text higher
-// up (the history, a brief, a report) is not the footer.
+// bottom of the screen, are looked at: the composer line and the footer
+// below it. A gauge-shaped text higher up (the history, a brief, a report) is
+// not the footer.
 const compactCodexFooterLines = 4
 
 // compactCodexFooterMinBefore is the lowest gauge before the send that leaves
@@ -108,23 +113,40 @@ const compactCodexFooterLines = 4
 const compactCodexFooterMinBefore = 10
 
 // compactCodexContext reads the `Context N% used` gauge from the footer of a
-// codex screen: the first match from the bottom within the last
-// compactCodexFooterLines non-empty lines, N from 0 to 100.
+// codex screen. The footer is the part below the composer line (the last line
+// that starts with `›`) within the last compactCodexFooterLines non-empty
+// lines; nothing above the composer is read, and without a composer there is
+// no reading. The first line from the bottom with a gauge decides alone: with
+// the window and N from 0 to 100 it gives N, otherwise (the footer during a
+// compaction has no window) there is no reading and the search does not go on.
 func compactCodexContext(screen string) (int, bool) {
 	lines := compactLines(screen)
-	seen := 0
-	for i := len(lines) - 1; i >= 0 && seen < compactCodexFooterLines; i-- {
-		if strings.TrimSpace(lines[i]) == "" {
+	var tail []string
+	for i := len(lines) - 1; i >= 0 && len(tail) < compactCodexFooterLines; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			tail = append(tail, lines[i])
+		}
+	}
+	// tail runs from the bottom up; the footer is what comes before the
+	// composer in it.
+	composer := -1
+	for i, line := range tail {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "\u203a") {
+			composer = i
+			break
+		}
+	}
+	for _, line := range tail[:max(composer, 0)] {
+		if !compactCodexGaugeRE.MatchString(line) {
 			continue
 		}
-		seen++
-		m := compactCodexFooterRE.FindStringSubmatch(lines[i])
+		m := compactCodexFooterRE.FindStringSubmatch(line)
 		if m == nil {
-			continue
+			return 0, false
 		}
 		n, err := strconv.Atoi(m[1])
 		if err != nil || n > 100 {
-			continue
+			return 0, false
 		}
 		return n, true
 	}
