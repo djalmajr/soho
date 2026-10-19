@@ -156,3 +156,21 @@ func TestRunKindFlagDifferentFromTheLaneKindIsRefusedBeforeAnyPane(t *testing.T)
 	}
 	t.Logf("run stdout on the refusal: %q", r.stdout)
 }
+
+// DJA-397 review 2: a role listed in the lane without a role file is still the
+// usage error of today (exit 3, unknown role) and never reads as a lane kind
+// conflict; nothing acts before it, the caller rename included.
+func TestSpawnUnknownRoleInALaneStaysAUsageError(t *testing.T) {
+	env, bin, state := laneKindFlagEnv(t)
+	env["SOHO_LANE_BUILD_ROLES"] = "scouter,ghostrole"
+	r := runLaneKindFlag(t, env, bin, state, "spawn", "ghostrole", "--kind", "codex")
+	if r.code != 3 || !strings.Contains(r.stderr, "unknown role 'ghostrole'") {
+		t.Fatalf("exit=%d stderr=%q, want 3 and the unknown role error", r.code, r.stderr)
+	}
+	if strings.Contains(r.stdout, "kind-mismatch") {
+		t.Fatalf("an unknown role read as a lane kind conflict: %q", r.stdout)
+	}
+	if len(r.acts) != 0 {
+		t.Fatalf("herdr acted before the usage error: %v", r.acts)
+	}
+}

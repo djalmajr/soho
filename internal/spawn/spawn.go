@@ -622,6 +622,9 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	// covers the run path and, for reopen, the second look of the same
 	// memo (the reopen checks before it releases the worker).
 	core.CallerGate("spawn", ctx, env, cwd)
+	// An unknown role is a usage error (exit 3) before the lane kind check
+	// below can read it as a lane member; resolving the role file only reads.
+	core.ResolveRole(o.role, env, cwd)
 	// DJA-397: a --kind that differs from lane.<lane>.kind would put a worker
 	// of another kind in the lane and block its next spawns (exit 13). It is
 	// refused here, right after the caller-pane check: before the caller is
@@ -635,7 +638,6 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 	}
 	EnsureOrchestratorName(ctx, env, cwd, "spawn")
-	core.ResolveRole(o.role, env, cwd)
 	res := core.ResolveRoleSettings(o.role, ctx, env, cwd, core.RoleFlags{Kind: o.kind, Model: o.model, Effort: o.effort, Approvals: o.approvals})
 	lane, kind := res.Lane, res.Kind
 	if lane == "" && core.LanesEnabled(ctx, env) {
