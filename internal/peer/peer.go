@@ -1238,7 +1238,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	// without one the pi target keeps today's exact call sequence (no
 	// transcript get, no file read).
 	transcript := transcriptProof{}
-	var transcriptBase int64
+	var transcriptBase transcriptBaseline
 	transcriptBaseOK := false
 	tooLargeBefore := countTooLarge(vScreen)
 	if t.Machine == sessionref.LocalMachine || t.Machine == "" {
@@ -1253,7 +1253,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 				transcript.armed = true
 				// The too-large refusal has no id: only a system entry written after
 				// this point is the refusal of this send.
-				transcriptBase, transcriptBaseOK = transcriptEnd(transcript.path)
+				transcriptBase, transcriptBaseOK = transcriptEnd(transcript.path, time.Now())
 			}
 		}
 	}
