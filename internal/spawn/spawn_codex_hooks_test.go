@@ -337,3 +337,53 @@ func TestCoreHooksReviewMode(t *testing.T) {
 		t.Fatalf("config set does not accept hooks_review=trust|block only")
 	}
 }
+
+// codexComposer is codex's real composer, below any transcript.
+const codexComposer = "› Ask Codex to do anything\n" +
+	"GPT-6.1-Sol low · Context 0% used · weekly 65% left · main\n" +
+	"? for shortcuts\n"
+
+func TestSpawnCodexWholeHooksScreenQuotedInTranscriptDoesNotMatch(t *testing.T) {
+	// The whole menu (› on option 2) or the whole table quoted in the
+	// transcript, with the composer below: not the active dialog, so no key
+	// and the spawn is ready.
+	for name, screen := range map[string]string{
+		"menu":  codexHooksMenuOnTrustScreen + codexComposer,
+		"table": codexHooksTableScreen + codexComposer,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newCodexHooksFixture(t, nil, screen)
+			code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker"})
+			assertSpawnReady(t, code, stdout, stderr)
+			if got := agentSendKeys(calls); len(got) != 0 {
+				t.Fatalf("send-keys = %q", got)
+			}
+			if strings.Contains(stderr, "hooks") {
+				t.Fatalf("stderr names hooks: %q", stderr)
+			}
+		})
+	}
+}
+
+func TestSpawnCodexHooksRedrawLosesMenuSendsNoEnter(t *testing.T) {
+	// After the down every re-read shows only the selected line: the menu is
+	// gone, so no enter — the blocked path takes it.
+	f := newCodexHooksFixture(t, []string{codexHooksMenuScreen}, "› 2. Trust all and continue\n")
+	code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker"})
+	if code != 7 || !strings.Contains(stdout, `"status": "blocked_at_startup"`) || !strings.Contains(stderr, "the approval did not take") {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if got, want := agentSendKeys(calls), []string{"down"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("send-keys = %q, want %q", got, want)
+	}
+}
+
+func TestSpawnCodexHooksMenuWithTrailingBlankLinesMatches(t *testing.T) {
+	// Blank lines after the footer still leave it the last non-empty line.
+	f := newCodexHooksFixture(t, []string{codexHooksMenuOnTrustScreen + "\n\n  \n"}, codexPromptScreen)
+	code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker"})
+	assertSpawnReady(t, code, stdout, stderr)
+	if got, want := agentSendKeys(calls), []string{"enter"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("send-keys = %q, want %q", got, want)
+	}
+}

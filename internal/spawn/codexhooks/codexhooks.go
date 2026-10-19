@@ -15,9 +15,10 @@ import (
 // hooks are new or changed (DJA-434). herdr reports the agent ready while it
 // is on screen, and the Enter of a typed prompt confirms the default option,
 // "1. Review hooks", which opens the hooks table instead of the prompt. Two
-// screens are recognized, each only with its title and its options or
-// footer together, so a brief or a reply that quotes one phrase does not
-// match:
+// screens are recognized, each only as the active dialog — its footer is
+// the last non-empty line of the visible screen — and with its title and
+// its options or notice above that footer, so a brief or a reply that
+// quotes the screen (codex's composer then comes below it) does not match:
 //
 //   - the menu: "Hooks need review" + "2. Trust all and continue" +
 //     "enter confirm · esc skip";
@@ -43,38 +44,42 @@ func codexHooksLines(screen string) []string {
 	return out
 }
 
-// IsMenu reports whether the screen is codex's "Hooks need review"
-// menu: the title line, the "Trust all and continue" option and the
-// "enter confirm" footer, all three.
+// IsMenu reports whether the screen is codex's active "Hooks need review"
+// menu: the "enter confirm" footer is the last non-empty line of the
+// visible screen, with the title line and the "Trust all and continue"
+// option above it. A transcript that quotes the whole menu has codex's
+// composer below it, so the quote does not match.
 func IsMenu(screen string) bool {
-	title, option, footer := false, false, false
-	for _, line := range codexHooksLines(screen) {
+	lines := codexHooksLines(screen)
+	if len(lines) == 0 || !strings.HasPrefix(lines[len(lines)-1], "enter confirm") {
+		return false
+	}
+	title, option := false, false
+	for _, line := range lines[:len(lines)-1] {
 		switch {
 		case line == "hooks need review":
 			title = true
 		case codexHooksMenuOptionRE.MatchString(line):
 			option = true
-		case strings.HasPrefix(line, "enter confirm"):
-			footer = true
 		}
 	}
-	return title && option && footer
+	return title && option
 }
 
-// IsTable reports whether the screen is codex's hooks table: the
-// "hooks need review before they can run" notice and the "t trust all"
-// footer, both.
+// IsTable reports whether the screen is codex's active hooks table: the
+// "t trust all" footer is the last non-empty line of the visible screen,
+// with the "hooks need review before they can run" notice above it.
 func IsTable(screen string) bool {
-	notice, footer := false, false
-	for _, line := range codexHooksLines(screen) {
-		switch {
-		case codexHooksTableNoticeRE.MatchString(line):
-			notice = true
-		case strings.HasPrefix(line, "t trust all"):
-			footer = true
+	lines := codexHooksLines(screen)
+	if len(lines) == 0 || !strings.HasPrefix(lines[len(lines)-1], "t trust all") {
+		return false
+	}
+	for _, line := range lines[:len(lines)-1] {
+		if codexHooksTableNoticeRE.MatchString(line) {
+			return true
 		}
 	}
-	return notice && footer
+	return false
 }
 
 // IsReview reports whether the screen is either hooks review
@@ -159,6 +164,12 @@ func Approve(screen string, io IO) (string, bool) {
 			screen = codexHooksReread(screen, io, func(s string) bool {
 				return codexHooksSelected(s) != before || !IsMenu(s)
 			})
+		}
+		// The last screen read is checked again right before the enter: a
+		// redraw that lost the menu but kept the "› 2. Trust all and
+		// continue" line ends the loop above without the menu.
+		if !IsMenu(screen) || !codexHooksMenuOnTrustAll(screen) {
+			return screen, false
 		}
 		if !io.SendKey("enter") {
 			return screen, false

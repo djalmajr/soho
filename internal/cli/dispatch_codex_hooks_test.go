@@ -145,3 +145,37 @@ func dispatchAssertNoTaskArtifactsButBriefs(t *testing.T, f *dispatchArrivalFixt
 		}
 	}
 }
+
+func TestDispatchCodexWholeHooksScreenQuotedInTranscriptDoesNotMatch(t *testing.T) {
+	// The whole menu (› on option 2) or table quoted in the transcript with
+	// codex's real composer below: no key, the prompt goes out.
+	composer := "› Ask Codex to do anything\n" +
+		"GPT-6.1-Sol low · Context 0% used · weekly 65% left · main\n" +
+		"? for shortcuts\n"
+	table := "Hooks\n" +
+		"Lifecycle hooks from config and enabled plugins.\n" +
+		"⚠ 3 hooks need review before they can run.\n" +
+		"SessionStart  4 installed  2 active  2 review\n" +
+		"SessionEnd    1 installed  0 active  1 review\n" +
+		"t trust all · enter review · esc close\n"
+	for name, screen := range map[string]string{"menu": dispatchHooksMenuOnTrustScreen + composer, "table": table + composer} {
+		t.Run(name, func(t *testing.T) {
+			extra := []fakecli.Rule{
+				{Argv: dispatchVisibleRead, Stdout: screen},
+				{Argv: []string{"agent", "send-keys", "worker"}, ArgvPrefix: true},
+			}
+			extra = append(extra, workingArrivalRules()...)
+			f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0", extra...)
+			code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
+			if code != 0 || dispatchOutputStatus(t, out) != "submitted" {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, errText)
+			}
+			if got, want := dispatchHooksCalls(dispatchCalls(t, f)), []string{"prompt"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("calls = %q, want %q", got, want)
+			}
+			if strings.Contains(errText, "hooks") {
+				t.Fatalf("stderr names hooks: %q", errText)
+			}
+		})
+	}
+}
