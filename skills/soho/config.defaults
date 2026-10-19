@@ -296,6 +296,16 @@ inbound=auto
 # equal to HERDR_PANE_ID is a deliberate delegation and is never refused.
 caller_check=refuse
 
+# codex's "Hooks need review" screen (codex opens on it whenever the user's
+# codex hooks are new or changed; herdr reports the agent ready meanwhile):
+# trust (default) | block. With trust, spawn of a new codex, dispatch and
+# send approve the hooks on that screen ("2. Trust all and continue" on the
+# menu, "t" on the hooks table), print one stderr line, and go on; an
+# approval that does not take ends like block. With block nothing is typed:
+# spawn ends blocked_at_startup (exit 7), dispatch blocked (exit 7), send
+# refused as a dialog (exit 17). An invalid value counts as block. Codex only.
+hooks_review=trust
+
 # Worker-to-worker messages: off (default) | policy. With policy, named
 # directional rules decide which worker may send which message type to which
 # participant, inside an active assignment created by the orchestrator:

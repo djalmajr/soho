@@ -21,6 +21,7 @@ import (
 	"github.com/djalmajr/soho/internal/layout"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/provider"
+	"github.com/djalmajr/soho/internal/spawn/codexhooks"
 	"github.com/djalmajr/soho/internal/startup"
 	"github.com/djalmajr/soho/internal/taskreport"
 	"github.com/djalmajr/soho/internal/text"
@@ -1270,6 +1271,35 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	if !blocked && kind == "grok" && isGrokTrustDialog(lastScreen) {
 		blocked = true
 	}
+	// codex's hooks review screen (DJA-434): herdr reports the new codex
+	// ready while it is on screen, and the Enter of the first dispatch
+	// confirms "1. Review hooks". The check reuses the screen the start
+	// window just read, so a codex without the screen gains no read. With
+	// hooks_review=trust (the default) the spawn approves the hooks and
+	// re-reads the screen; an approval that did not take, or
+	// hooks_review=block, takes the blocked path (screen printed, exit 7)
+	// with its own warning.
+	hooksBlocked := ""
+	if !blocked && kind == "codex" && codexhooks.IsReview(lastScreen) {
+		mode := core.HooksReviewMode(ctx, env)
+		if mode == "trust" {
+			io := codexhooks.IO{
+				SendKey: func(key string) bool { return herdr.AgentSendKeys(o.name, key, env) },
+				Read:    func() string { return herdr.AgentRead(env, o.name, "visible", intPtr(40)) },
+				Pause:   pollMillis(env),
+			}
+			if _, ok := codexhooks.Approve(lastScreen, io); ok {
+				_, _ = fmt.Fprintf(platform.Stderr, "soho: %s\n", codexhooks.TrustedLine("spawn", o.name, codexhooks.Count(lastScreen)))
+			} else {
+				blocked = true
+			}
+		} else {
+			blocked = true
+		}
+		if blocked {
+			hooksBlocked = codexhooks.BlockedLine("spawn", o.name, mode)
+		}
+	}
 	// The cursor/Windows startup gate (issue #59): herdr reports the agent
 	// ready (idle, interactive_ready) while the TUI never draws — the
 	// verified workspace trust dialog, or historically only the shell
@@ -1350,7 +1380,9 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		layout.AutoRegrid(ctx, env, cwd, "regrid after spawn failed; panes left as inserted (see friction)")
 	}
 	if blocked {
-		if !cursorGate {
+		if hooksBlocked != "" {
+			Warn(hooksBlocked, ctx, env, "spawn")
+		} else if !cursorGate {
 			// The gate already printed the precise warning when it refused
 			// the start; the generic line names the other startup dialogs.
 			Warn(fmt.Sprintf("agent '%s' is blocked during startup (update prompt, login, trust dialog…). Screen follows; ask the user before answering it, then: herdr agent send-keys %s <keys>; herdr agent wait %s --timeout 60000", o.name, o.name, o.name), ctx, env, "spawn")
