@@ -579,7 +579,7 @@ func TestIndependentFallbackBudget(t *testing.T) {
 	// is a --source visible read without --lines. It does not prove the
 	// visible read is readScreen's fallback — a later diagnostic read
 	// matches the same shape; the fallback proof (it ran, the 1s floor,
-	// exactly two calls, 3500–4300 ms) is the direct
+	// exactly two calls, recent + floor to window + floor + slack) is the direct
 	// TestReadScreenFallbackGetsTheRemainingBudget.
 	recentIdx := -1
 	for i, c := range calls {
@@ -606,19 +606,34 @@ func TestIndependentFallbackBudget(t *testing.T) {
 func TestReadScreenFallbackGetsTheRemainingBudget(t *testing.T) {
 	// The bound sits at the budget phase: the send's preparation calls are
 	// not part of the 3s budget, so only this readScreen call is timed —
-	// the recent read fails at 2.5s of the 3s budget and the 10s fallback
-	// is cut by the time then left (floored at 1s), so the call ends inside
-	// window + floor + the 300ms bound; a fresh budget would run near 5.5s
-	// and time out after 3s.
+	// the recent read fails inside the budget with the time left under the
+	// 1s floor, and the 10s fallback is cut by that floor, so the call ends
+	// inside the recent read + floor + the bound; a fresh budget would run
+	// near recent + 3s and time out after 3s.
+	//
+	// The recent read ends at recentDelay plus the time the process took to
+	// open, which counts against the same 3s budget. The window the fixture
+	// tolerates for that opening is the gap between the delay and the
+	// budget (900ms here); the floor engages for any opening time because
+	// the delay alone already leaves less than the 1s floor (100ms margin).
+	const (
+		window      = 3000 * time.Millisecond
+		floor       = 1000 * time.Millisecond
+		recentDelay = 2100 * time.Millisecond
+		// slack over window + floor for the kill of the cut fallback and the
+		// run around it; a fresh budget ends at recent + window (5.1s), above
+		// the 4.8s ceiling it leaves.
+		slack = 800 * time.Millisecond
+	)
 	recent := d15WindowRecent(1, "")
-	recent.Delay = 2500
+	recent.Delay = int(recentDelay / time.Millisecond)
 	recent.Stderr = notIdleErr
 	recent.Code = 1
 	fallback := d15WindowVisible(1, d15WindowStale)
 	fallback.Delay = 10000
 	f := newFixture(t, []fakecli.Rule{recent, fallback})
 	start := time.Now()
-	screen, cause := peer.ReadScreen("windows", "w0test:p0a", "recent-unwrapped", 67, f.env, 3000, nil)
+	screen, cause := peer.ReadScreen("windows", "w0test:p0a", "recent-unwrapped", 67, f.env, int(window/time.Millisecond), nil)
 	elapsed := time.Since(start)
 	t.Logf("window=3s floor=1s elapsed=%s cause=%q", elapsed, cause)
 	if screen != "" {
@@ -627,8 +642,8 @@ func TestReadScreenFallbackGetsTheRemainingBudget(t *testing.T) {
 	if cause != "herdr agent read timed out after 1s" {
 		t.Fatalf("the fallback got the floored remaining budget, not a fresh one: %q", cause)
 	}
-	if elapsed < 3500*time.Millisecond || elapsed > 4300*time.Millisecond {
-		t.Fatalf("the budget phase runs window + floor: elapsed=%s", elapsed)
+	if elapsed < recentDelay+floor || elapsed > window+floor+slack {
+		t.Fatalf("the budget phase runs the recent read + floor: elapsed=%s", elapsed)
 	}
 	calls, err := fakecli.ReadCallsForConfig(filepath.Join(filepath.Dir(f.bin), "herdr.json"))
 	if err != nil {

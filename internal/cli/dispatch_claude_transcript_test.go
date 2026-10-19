@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,13 +40,23 @@ type claudeDispatchFixture struct {
 
 // pinDispatchClock pins the clock at 2026-09-29 00:00:00 UTC (so the
 // composed prompt is worker-20260929T000000.md) but still advances with the
-// real clock, so the check window's deadline passes in real time.
+// real clock, so the check window's deadline passes in real time. The clock
+// starts to advance at its first reading, not when the test pins it: the
+// stamp has a resolution of one second, and a runner that takes a second to
+// build the fixture (it installs and opens fake processes) would otherwise
+// move the stamp before dispatch composes the prompt, so the transcript
+// line the test appends would carry another path than the one dispatch
+// counts. Nothing before the stamp in dispatch calls a fake process.
 func pinDispatchClock(t *testing.T) {
 	t.Helper()
 	base := time.Date(2026, 9, 29, 0, 0, 0, 0, time.UTC)
-	began := time.Now()
+	var once sync.Once
+	var began time.Time
 	oldNow := platform.Now
-	platform.Now = func() time.Time { return base.Add(time.Since(began)) }
+	platform.Now = func() time.Time {
+		once.Do(func() { began = time.Now() })
+		return base.Add(time.Since(began))
+	}
 	t.Cleanup(func() { platform.Now = oldNow })
 }
 

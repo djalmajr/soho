@@ -3,6 +3,7 @@ package job
 import (
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -72,6 +73,50 @@ func stepDeadlineLimit(deadline time.Time) func(time.Duration) time.Duration {
 	}
 }
 
+// watchFirstGhCall polls the fake gh's call log and records when the first
+// call shows up: the moment the gh step starts running commands. The
+// returned function stops the watcher and returns that time; it fails the
+// test when no gh call was ever logged. The watcher also stops with the test.
+func watchFirstGhCall(t *testing.T, f *supGitFixture) func() time.Time {
+	t.Helper()
+	log := filepath.Join(f.job.base.fakeDir, "gh.calls.jsonl")
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	var first time.Time
+	go func() {
+		defer close(done)
+		for {
+			// A read that fails (no log yet, a line still being written) is
+			// retried at the next tick.
+			if calls, err := fakecli.ReadCalls(log); err == nil && len(calls) > 0 {
+				first = time.Now()
+				return
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(2 * time.Millisecond):
+			}
+		}
+	}()
+	var once sync.Once
+	halt := func() {
+		once.Do(func() {
+			close(stop)
+			<-done
+		})
+	}
+	t.Cleanup(halt)
+	return func() time.Time {
+		t.Helper()
+		halt()
+		if first.IsZero() {
+			t.Fatalf("no gh call was logged")
+		}
+		return first
+	}
+}
+
 // A slow first gh command followed by a hung second one stays inside the gh
 // step: `gh pr create` receives the remainder at its own start, not the whole
 // step again.
@@ -94,10 +139,15 @@ func TestFinishingGhStepBoundsTheSecondCommandByTheRemainder(t *testing.T) {
 			f := newSupGitFixture(t, rules)
 			f.job.commitIn(t, "feat: first")
 			finishingRealClock(f, finishingLimits{Budget: 60 * time.Second, Git: 30 * time.Second, GH: step})
+			firstGh := watchFirstGhCall(t, f)
 			exit, err, elapsed := finishDone(t, f)
-			t.Logf("gh step %v, list %dms, create hangs: terminal in %v", step, delay, elapsed)
-			if elapsed > step+scaledDuration(clampSlack) {
-				t.Errorf("terminal path took %v, want at most the %v gh step + %v", elapsed, step, scaledDuration(clampSlack))
+			// The bound is the gh step, so it is measured from the first gh
+			// call: the final push before it runs real git and takes as long
+			// as the runner lets it, and is not part of the step.
+			ghElapsed := time.Since(firstGh())
+			t.Logf("gh step %v, list %dms, create hangs: terminal in %v, %v after the first gh call", step, delay, elapsed, ghElapsed)
+			if ghElapsed > step+scaledDuration(clampSlack) {
+				t.Errorf("gh step took %v from the first gh call, want at most the %v gh step + %v", ghElapsed, step, scaledDuration(clampSlack))
 			}
 			requireBudgetFailed(t, f, exit, err, "the draft pull request")
 			if got := len(f.job.base.ghCalls()); got != 2 {
