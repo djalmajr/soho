@@ -202,6 +202,21 @@ func AgentRead(env platform.Env, agent, source string, lines *int) string {
 	}
 	return r.Stdout
 }
+
+// PaneRead runs `herdr pane read <pane> --source <source> [--lines N]`. It
+// reads the pane itself, so it works before (or without) a registered agent:
+// a start that failed has no agent to read. ok is false when the read fails.
+func PaneRead(env platform.Env, pane, source string, lines *int) (string, bool) {
+	args := []string{"pane", "read", pane, "--source", source}
+	if lines != nil {
+		args = append(args, "--lines", fmt.Sprint(*lines))
+	}
+	r := run(args, env)
+	if !ok(r) {
+		return "", false
+	}
+	return r.Stdout, true
+}
 func AgentState(target string, env platform.Env, timeout time.Duration, retryPauses []time.Duration) AgentStateResult {
 	if timeout <= 0 {
 		timeout = Timeout

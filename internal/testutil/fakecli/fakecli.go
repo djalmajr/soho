@@ -36,10 +36,13 @@ type Rule struct {
 	Signal      string   `json:"signal,omitempty"`
 }
 
+// Call is one recorded run of the fake. Cwd is the working directory the
+// fake ran in, empty when it could not be read.
 type Call struct {
 	Argv  []string          `json:"argv"`
 	Stdin string            `json:"stdin,omitempty"`
 	Env   map[string]string `json:"env,omitempty"`
+	Cwd   string            `json:"cwd,omitempty"`
 }
 
 type script struct {
@@ -410,6 +413,9 @@ func Main() {
 	}
 	argv := append([]string(nil), os.Args[1:]...)
 	call := Call{Argv: argv}
+	if wd, wdErr := os.Getwd(); wdErr == nil {
+		call.Cwd = wd
+	}
 	if cfg.CaptureStdin {
 		stdin, readErr := io.ReadAll(os.Stdin)
 		if readErr != nil {

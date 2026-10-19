@@ -593,3 +593,33 @@ func TestAgentReadWorkingAltScreenFallsBackToVisible(t *testing.T) {
 		}
 	})
 }
+
+// TestPaneReadRunsPaneRead: PaneRead reads the pane, not an agent, with the
+// source and the line count it is given; a failed read is ok=false.
+func TestPaneReadRunsPaneRead(t *testing.T) {
+	lines := 40
+	t.Run("the argv and the screen", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"pane", "read", "w1:p2", "--source", "recent-unwrapped", "--lines", "40"}, Stdout: "Error: boom\n"},
+			{Argv: []string{"pane", "read", "w1:p2", "--source", "visible"}, Stdout: "visible\n"},
+		})
+		if got, ok := PaneRead(env, "w1:p2", "recent-unwrapped", &lines); !ok || got != "Error: boom\n" {
+			t.Fatalf("PaneRead=%q %v", got, ok)
+		}
+		if got, ok := PaneRead(env, "w1:p2", "visible", nil); !ok || got != "visible\n" {
+			t.Fatalf("PaneRead without --lines=%q %v", got, ok)
+		}
+		calls, err := fakecli.ReadCalls(filepath.Join(env.Get("PATH"), "herdr.calls.jsonl"))
+		if err != nil || len(calls) != 2 {
+			t.Fatalf("calls=%#v err=%v", calls, err)
+		}
+	})
+	t.Run("a failed read is not ok and returns no text", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"pane", "read"}, ArgvPrefix: true, Code: 1, Stdout: "partial\n", Stderr: `{"error":{"code":"pane_not_found","message":"no pane"}}`},
+		})
+		if got, ok := PaneRead(env, "w1:p2", "recent-unwrapped", &lines); ok || got != "" {
+			t.Fatalf("PaneRead=%q %v", got, ok)
+		}
+	})
+}

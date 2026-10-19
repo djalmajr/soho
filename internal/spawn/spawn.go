@@ -51,52 +51,77 @@ func Warn(message string, ctx *core.Config, env platform.Env, command string) {
 func mustGetwd() string { cwd, _ := os.Getwd(); return cwd }
 
 // mcpCodexOffArgs builds codex's per-server MCP-off args (DJA-392 fatia 2
-// R2): it runs `codex mcp list --json` in the spawn's own PATH and env and
-// returns, for every server the listing reports with enabled=true, the pair
-// -c mcp_servers.<name>.enabled=false — in list order. Only name and
-// enabled are read from the listing: the transport command lines may carry
-// credentials and never leave this function. ok is false (with a short
-// reason) when codex is not on the PATH, the listing times out, exits
-// nonzero, or prints non-JSON output; the spawn then warns once and the
+// R2): it runs `codex mcp list --json` in the spawn's own PATH and env, in
+// the worker's cwd, and returns, for every server the listing reports with
+// enabled=true, the pair -c mcp_servers.<name>.enabled=false — in list order.
+// Only name and enabled are read from the listing: the transport command
+// lines may carry credentials and never leave this function. ok is false
+// (with a short reason) when codex is not on the PATH, the listing times out,
+// exits nonzero, or prints non-JSON output; the spawn then warns once and the
 // agent keeps the user's MCP servers. Zero enabled servers are success with
 // no args and no reason.
+//
+// DJA-418: codex 0.163.0's TUI dies at bootstrap when an override names a
+// server defined only in the project's .codex/config.toml, and `codex mcp
+// list` accepts the same override. codex reads the project's config from its
+// process cwd, so the listing runs a second time in an empty directory made
+// with os.MkdirTemp and removed on return (the neutral listing). An enabled
+// server that the neutral listing does not report is the project's own: it
+// gets no override and no check, and projectOnly lists it in list order. A
+// neutral listing that fails is ok=false with "neutral listing <reason>".
 //
 // DJA-414: codex 0.163.0 refuses the whole config when an override names a
 // server that is not under [mcp_servers.*] of config.toml, and the pane dies
 // before drawing. So the overrides are checked with one
-// `codex <overrides> mcp list --json` run (same PATH, env and timeout). A
-// check that fails with a line naming `mcp_servers.<name>` of one of the
+// `codex <overrides> mcp list --json` run (same PATH, env, cwd and timeout).
+// A check that fails with a line naming `mcp_servers.<name>` of one of the
 // overrides drops that override and checks again (at most one check per
 // override, plus one); stayOn lists the dropped names in list order. A check
 // that names no override, or more than one (mcpCodexLineName reads only a
 // line that is exactly codex's), and any other failure of the check is
 // ok=false ("override check exit <n>" or "override check timed out"). Only the
 // server name is read from the check's output.
-func mcpCodexOffArgs(env platform.Env) (args []string, ok bool, reason string, stayOn []string) {
-	res := platform.RunCli("codex", []string{"mcp", "list", "--json"}, platform.RunOptions{Env: env, TimeoutMs: mcpCodexListTimeoutMs})
-	switch {
-	case res.NotFound:
-		return nil, false, "codex not found in PATH", nil
-	case res.TimedOut:
-		return nil, false, "timed out after 10 s", nil
-	case res.Status == nil || *res.Status != 0:
-		code := -1
-		if res.Status != nil {
-			code = *res.Status
-		}
-		return nil, false, fmt.Sprintf("exit %d", code), nil
+func mcpCodexOffArgs(env platform.Env, cwd string) (args []string, ok bool, reason string, stayOn, projectOnly []string) {
+	servers, reason := mcpCodexList(env, cwd)
+	if reason != "" {
+		return nil, false, reason, nil, nil
 	}
-	var servers []struct {
-		Name    string `json:"name"`
-		Enabled bool   `json:"enabled"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(res.Stdout)), &servers); err != nil {
-		return nil, false, "non-JSON output", nil
-	}
-	var names []string
+	var enabled []string
 	for _, server := range servers {
 		if server.Enabled && server.Name != "" {
-			names = append(names, server.Name)
+			enabled = append(enabled, server.Name)
+		}
+	}
+	if len(enabled) == 0 {
+		return nil, true, "", nil, nil
+	}
+	// A relative CODEX_HOME resolves against each process's cwd, so the
+	// neutral listing would read another user layer than the worker.
+	if home := env.Get("CODEX_HOME"); home != "" && !filepath.IsAbs(home) {
+		return nil, false, "neutral listing: CODEX_HOME is not an absolute path", nil, nil
+	}
+	neutralDir, err := os.MkdirTemp("", "soho-codex-mcp-")
+	if err != nil {
+		return nil, false, "neutral listing: no empty directory", nil, nil
+	}
+	defer os.RemoveAll(neutralDir)
+	if codexProjectAbove(neutralDir, env) {
+		return nil, false, "neutral listing: the temporary directory is inside a project with its own .codex/config.toml", nil, nil
+	}
+	neutral, reason := mcpCodexList(env, neutralDir)
+	if reason != "" {
+		return nil, false, "neutral listing " + reason, nil, nil
+	}
+	inNeutral := map[string]bool{}
+	for _, server := range neutral {
+		inNeutral[server.Name] = true
+	}
+	var names []string
+	for _, name := range enabled {
+		if inNeutral[name] {
+			names = append(names, name)
+		} else {
+			projectOnly = append(projectOnly, name)
 		}
 	}
 	dropped := map[string]bool{}
@@ -121,17 +146,18 @@ func mcpCodexOffArgs(env platform.Env) (args []string, ok bool, reason string, s
 			}
 		}
 		if len(kept) == 0 {
-			// Every override was refused: nothing is left to check.
-			return nil, true, "", stayOnList()
+			// Every override was refused (or none was left after the
+			// project's own servers): nothing is left to check.
+			return nil, true, "", stayOnList(), projectOnly
 		}
-		check := platform.RunCli("codex", append(append([]string(nil), args...), "mcp", "list", "--json"), platform.RunOptions{Env: env, TimeoutMs: mcpCodexListTimeoutMs})
+		check := platform.RunCli("codex", append(append([]string(nil), args...), "mcp", "list", "--json"), platform.RunOptions{Env: env, TimeoutMs: mcpCodexListTimeoutMs, Cwd: cwd})
 		switch {
 		case check.NotFound:
-			return nil, false, "codex not found in PATH", nil
+			return nil, false, "codex not found in PATH", nil, nil
 		case check.TimedOut:
-			return nil, false, "override check timed out", nil
+			return nil, false, "override check timed out", nil, nil
 		case check.Status != nil && *check.Status == 0:
-			return args, true, "", stayOnList()
+			return args, true, "", stayOnList(), projectOnly
 		}
 		code := -1
 		if check.Status != nil {
@@ -139,11 +165,96 @@ func mcpCodexOffArgs(env platform.Env) (args []string, ok bool, reason string, s
 		}
 		bad := mcpCodexNamedServer(check.Stderr+"\n"+check.Stdout, kept)
 		if bad == "" {
-			return nil, false, fmt.Sprintf("override check exit %d", code), nil
+			return nil, false, fmt.Sprintf("override check exit %d", code), nil, nil
 		}
 		dropped[bad] = true
 	}
-	return nil, false, "override check exit -1", nil
+	return nil, false, "override check exit -1", nil, nil
+}
+
+type mcpCodexServer struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+// codexProjectAbove reports whether dir, or a directory above it, holds a
+// .codex/config.toml other than codex's own home (CODEX_HOME, or ~/.codex):
+// codex reads such a file as a project layer for any process below it, so a
+// listing run there is not neutral (a TMPDIR inside the project, say). The
+// home is told apart by directory identity (os.SameFile), not by spelling, so
+// a case-insensitive filesystem or a symlink does not make it a project. Only
+// the file's existence is checked; it is never read.
+func codexProjectAbove(dir string, env platform.Env) bool {
+	home := env.Get("CODEX_HOME")
+	if home == "" {
+		base := env.Get("HOME")
+		if platform.Current() == "win32" {
+			base = env.Get("USERPROFILE")
+		}
+		if base == "" {
+			base, _ = os.UserHomeDir()
+		}
+		if base != "" {
+			home = filepath.Join(base, ".codex")
+		}
+	}
+	var homeInfo os.FileInfo
+	if home != "" {
+		homeInfo, _ = os.Stat(home)
+	}
+	d := canonicalPath(dir)
+	for {
+		layer := filepath.Join(d, ".codex")
+		isHome := false
+		if homeInfo != nil {
+			if info, err := os.Stat(layer); err == nil && os.SameFile(info, homeInfo) {
+				isHome = true
+			}
+		}
+		if !isHome {
+			if info, err := os.Stat(filepath.Join(layer, "config.toml")); err == nil && !info.IsDir() {
+				return true
+			}
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return false
+		}
+		d = parent
+	}
+}
+
+// canonicalPath is path with its symlinks resolved, or cleaned when it does
+// not resolve.
+func canonicalPath(path string) string {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real
+	}
+	return filepath.Clean(path)
+}
+
+// mcpCodexList runs `codex mcp list --json` in cwd and returns each server's
+// name and enabled flag, nothing else; reason is non-empty when the listing
+// fails (codex missing, timeout, nonzero exit, non-JSON output).
+func mcpCodexList(env platform.Env, cwd string) ([]mcpCodexServer, string) {
+	res := platform.RunCli("codex", []string{"mcp", "list", "--json"}, platform.RunOptions{Env: env, TimeoutMs: mcpCodexListTimeoutMs, Cwd: cwd})
+	switch {
+	case res.NotFound:
+		return nil, "codex not found in PATH"
+	case res.TimedOut:
+		return nil, "timed out after 10 s"
+	case res.Status == nil || *res.Status != 0:
+		code := -1
+		if res.Status != nil {
+			code = *res.Status
+		}
+		return nil, fmt.Sprintf("exit %d", code)
+	}
+	var servers []mcpCodexServer
+	if err := json.Unmarshal([]byte(strings.TrimSpace(res.Stdout)), &servers); err != nil {
+		return nil, "non-JSON output"
+	}
+	return servers, ""
 }
 
 // mcpCodexNamedServer returns the override from kept that a line of the
@@ -1012,11 +1123,14 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	// =false for every enabled server, in list order; a failed listing warns
 	// once and the agent keeps the user's MCP servers.
 	if o.mcp == "none" && kind == "codex" {
-		mcpArgs, ok, reason, stayOn := mcpCodexOffArgs(env)
+		mcpArgs, ok, reason, stayOn, projectOnly := mcpCodexOffArgs(env, o.cwd)
 		if !ok {
 			Warn(fmt.Sprintf("spawn: codex could not list its MCP servers (%s); '%s' keeps the user's MCP servers", reason, o.name), ctx, env, "spawn")
 		} else {
 			args = append(args, mcpArgs...)
+			if len(projectOnly) > 0 {
+				Warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are defined only in the project's .codex/config.toml); they stay on, the others are off", strings.Join(projectOnly, ", "), o.name), ctx, env, "spawn")
+			}
 			if len(stayOn) > 0 {
 				Warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are not defined in its config.toml); they stay on, the others are off", strings.Join(stayOn, ", "), o.name), ctx, env, "spawn")
 			}
@@ -1459,7 +1573,12 @@ func startAgent(o spawnOptions, kind string, env platform.Env, created bool, arg
 			_, _ = fmt.Fprintln(platform.Stderr, strings.TrimRight(out, "\n"))
 		}
 		if created {
-			scr := herdr.AgentRead(env, o.pane, "visible", intPtr(40))
+			// DJA-416: an agent that never registered leaves nothing for
+			// `agent read`; the pane read shows what the CLI printed.
+			scr, read := herdr.PaneRead(env, o.pane, "recent-unwrapped", intPtr(40))
+			if !read || strings.TrimSpace(scr) == "" {
+				scr = herdr.AgentRead(env, o.pane, "visible", intPtr(40))
+			}
 			tail := lastLines(scr, 5)
 			closed := herdr.PaneClose(o.pane, env)
 			if closed {
@@ -1581,6 +1700,14 @@ func checkStartWindow(o spawnOptions, kind string, env platform.Env, created boo
 				}
 				if len(strings.TrimSpace(lastScreen)) == 0 {
 					lastScreen = herdr.AgentRead(env, o.name, "visible", intPtr(40))
+				}
+				// DJA-416: still nothing from the agent; read the pane.
+				// Only a pane this spawn opened: a given --pane may show
+				// another occupant's screen.
+				if len(strings.TrimSpace(lastScreen)) == 0 && created && o.pane != "" {
+					if pane, read := herdr.PaneRead(env, o.pane, "recent-unwrapped", intPtr(40)); read {
+						lastScreen = pane
+					}
 				}
 				providerErr := provider.ProviderDetect("gone", lastScreen)
 				if providerErr != nil && providerErr.Status == "provider-error" && providerErr.Auth {

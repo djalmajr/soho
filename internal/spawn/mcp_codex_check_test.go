@@ -17,6 +17,8 @@ import (
 // and the pane then dies before drawing. A failing check that names one of the
 // overrides drops that override and checks again; any other failure is the
 // listing-failure path of today. Only the server name leaves the error output.
+// Since DJA-418 the listing runs twice (the project listing, then the neutral
+// one): with the same answer for both, no server is the project's own.
 
 const codexMcpBaseArgv = `-m gpt-5 -c model_reasoning_effort="high"`
 
@@ -139,7 +141,7 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 		if got := strings.Count(codexFriction(t, f), warn); got != 1 {
 			t.Fatalf("friction.log lacks the stay-on warning once:\n%s", codexFriction(t, f))
 		}
-		wantCodexCalls(t, f, codexListArgv, codexCheckArgv("a", "b", "c"), codexCheckArgv("a", "c"))
+		wantCodexCalls(t, f, codexListArgv, codexListArgv, codexCheckArgv("a", "b", "c"), codexCheckArgv("a", "c"))
 	})
 
 	t.Run("two bad servers in a row: both come off the overrides and the warning lists them", func(t *testing.T) {
@@ -158,7 +160,7 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 		if got := stdErrCount(stderr, "soho: warning: "+codexStayOnWarn("b, c", "worker")); got != 1 {
 			t.Fatalf("the exact two-server warning is not on stderr once: %q", stderr)
 		}
-		wantCodexCalls(t, f, codexListArgv, codexCheckArgv("a", "b", "c"), codexCheckArgv("a", "c"), codexCheckArgv("a"))
+		wantCodexCalls(t, f, codexListArgv, codexListArgv, codexCheckArgv("a", "b", "c"), codexCheckArgv("a", "c"), codexCheckArgv("a"))
 	})
 
 	t.Run("the warning lists the servers in list order, not in the order codex named them", func(t *testing.T) {
@@ -193,7 +195,7 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 		if got := stdErrCount(stderr, "soho: warning: "+codexStayOnWarn("a, b", "worker")); got != 1 {
 			t.Fatalf("the exact all-refused warning is not on stderr once: %q", stderr)
 		}
-		wantCodexCalls(t, f, codexListArgv, codexCheckArgv("a", "b"), codexCheckArgv("b"))
+		wantCodexCalls(t, f, codexListArgv, codexListArgv, codexCheckArgv("a", "b"), codexCheckArgv("b"))
 	})
 
 	t.Run("every override valid at once: today's args, one check, no new warning", func(t *testing.T) {
@@ -213,7 +215,7 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 		if strings.Contains(codexFriction(t, f), "cannot turn off MCP") {
 			t.Fatalf("a clean check wrote friction:\n%s", codexFriction(t, f))
 		}
-		wantCodexCalls(t, f, codexListArgv, codexCheckArgv("a", "c"))
+		wantCodexCalls(t, f, codexListArgv, codexListArgv, codexCheckArgv("a", "c"))
 	})
 
 	t.Run("no enabled server: no check, as today", func(t *testing.T) {
@@ -251,7 +253,7 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 					t.Fatalf("the exact listing-failure warning is not on stderr once: %q", stderr)
 				}
 				wantTail(t, f, codexMcpBaseArgv)
-				wantCodexCalls(t, f, codexListArgv, codexCheckArgv("a", "b"))
+				wantCodexCalls(t, f, codexListArgv, codexListArgv, codexCheckArgv("a", "b"))
 			})
 		}
 	})
@@ -274,7 +276,7 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 			t.Fatalf("a failed check also warned about the servers that stay on: %q", stderr)
 		}
 		wantTail(t, f, codexMcpBaseArgv)
-		wantCodexCalls(t, f, codexListArgv, codexCheckArgv("a", "b", "c"), codexCheckArgv("a", "c"))
+		wantCodexCalls(t, f, codexListArgv, codexListArgv, codexCheckArgv("a", "b", "c"), codexCheckArgv("a", "c"))
 	})
 
 	t.Run("a hung check hits the same 10 s timeout, warns and adds no flag", func(t *testing.T) {
@@ -424,7 +426,7 @@ func TestCmdSpawnMcpCodexNeverDropsAnOverrideItCannotNameWhole(t *testing.T) {
 				t.Fatalf("an override the check did not name whole was dropped: %q", stderr)
 			}
 			wantTail(t, f, codexMcpBaseArgv)
-			wantCodexCalls(t, f, codexListArgv, codexCheckArgv(tc.names...))
+			wantCodexCalls(t, f, codexListArgv, codexListArgv, codexCheckArgv(tc.names...))
 		})
 	}
 }
