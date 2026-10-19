@@ -146,45 +146,59 @@ func mcpCodexOffArgs(env platform.Env) (args []string, ok bool, reason string, s
 }
 
 // mcpCodexNamedServer returns the override from kept that the check's output
-// names with "in `mcp_servers.<name>`", the closing backtick ending the line
-// or followed by a space or tab. Text a name only starts with does not count:
-// a name with a backtick in it, shown escaped, would otherwise yield the text
-// up to that backtick, which can be another override. No override named, or
-// more than one, is "": the check's failure path. Nothing else of the output
-// is kept.
+// names with "in `mcp_servers.<name>`" (mcpCodexLineTokens). No override
+// named, or more than one, is "": the check's failure path. Nothing else of
+// the output is kept.
 func mcpCodexNamedServer(output string, kept []string) string {
 	found := ""
 	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
-		line = strings.TrimRight(line, " \t")
-		for _, name := range kept {
-			if !mcpCodexLineNames(line, name) {
-				continue
+		for _, token := range mcpCodexLineTokens(strings.TrimRight(line, " \t")) {
+			for _, name := range kept {
+				if token != name {
+					continue
+				}
+				if found != "" && found != name {
+					return ""
+				}
+				found = name
 			}
-			if found != "" && found != name {
-				return ""
-			}
-			found = name
 		}
 	}
 	return found
 }
 
-// mcpCodexLineNames reports whether line holds "in `mcp_servers.<name>`" with
-// the closing backtick at the end of the line or before a space or tab.
-func mcpCodexLineNames(line, name string) bool {
-	needle := "in `mcp_servers." + name + "`"
-	for from := 0; from < len(line); {
-		at := strings.Index(line[from:], needle)
+// mcpCodexLineTokens returns the server names line gives with
+// "in `mcp_servers.<name>`". A name runs up to the next backtick, and counts
+// only when it is certain where it ends: that backtick ends the line or comes
+// before a space or tab, no backtick follows it on the line, and the name has
+// no backslash (which may escape a backtick that belongs to the name). So a
+// name with a backtick or a backslash in it is never given, and a check that
+// shows one takes the failure path instead of dropping another override.
+func mcpCodexLineTokens(line string) (tokens []string) {
+	const prefix = "in `mcp_servers."
+	for from := 0; ; {
+		at := strings.Index(line[from:], prefix)
 		if at < 0 {
-			return false
+			return tokens
 		}
-		end := from + at + len(needle)
-		if end == len(line) || line[end] == ' ' || line[end] == '\t' {
-			return true
+		start := from + at + len(prefix)
+		from = start
+		end := strings.IndexByte(line[start:], '`')
+		if end < 0 {
+			return tokens
 		}
-		from += at + 1
+		token, after := line[start:start+end], start+end+1
+		if token == "" || strings.ContainsRune(token, '\\') {
+			continue
+		}
+		if after < len(line) && line[after] != ' ' && line[after] != '\t' {
+			continue
+		}
+		if strings.IndexByte(line[after:], '`') >= 0 {
+			continue
+		}
+		tokens = append(tokens, token)
 	}
-	return false
 }
 
 func approvalsRank(mode string) int {

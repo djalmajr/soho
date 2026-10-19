@@ -336,11 +336,11 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 	}
 }
 
-// The check's error names a server only with the whole name: the closing
-// backtick ends the line or comes before a space or tab. A name the text only
-// starts with, a name named next to another, or a line that names two
-// overrides is no name, so the check takes its failure path instead of
-// dropping the wrong override.
+// The check's error names a server only when the whole name is certain: it
+// runs up to the next backtick, that backtick ends the line or comes before a
+// space or tab, no backtick follows on the line, and the name has no
+// backslash. Anything else, or a check that names two overrides, is no name,
+// so the check takes its failure path instead of dropping the wrong override.
 func TestMcpCodexNamedServerNeedsTheWholeName(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -354,6 +354,10 @@ func TestMcpCodexNamedServerNeedsTheWholeName(t *testing.T) {
 		{"CRLF line ends", "Caused by:\r\n    in `mcp_servers.b`\r\n", []string{"b"}, "b"},
 		{"the same name twice", "in `mcp_servers.b`\nin `mcp_servers.b`\n", []string{"a", "b"}, "b"},
 		{"an escaped backtick: the prefix is another override", "    in `mcp_servers.a\\`b`\n", []string{"a\\", "a`b", "c"}, ""},
+		{"an escaped backtick before a space", "    in `mcp_servers.a\\` b`\n", []string{"a\\", "a` b", "c"}, ""},
+		{"an escaped backtick before a tab", "    in `mcp_servers.a\\`\tb`\n", []string{"a\\", "a`\tb", "c"}, ""},
+		{"a name that ends with a backslash", "    in `mcp_servers.a\\`\n", []string{"a\\", "c"}, ""},
+		{"a name with a bare backtick", "    in `mcp_servers.a`b`\n", []string{"a", "a`b"}, ""},
 		{"followed by punctuation", "in `mcp_servers.b`.\n", []string{"b"}, ""},
 		{"two overrides on one line", "in `mcp_servers.a` b`\n", []string{"a", "a` b"}, ""},
 		{"two overrides on two lines", "in `mcp_servers.a`\nin `mcp_servers.b`\n", []string{"a", "b"}, ""},
@@ -391,6 +395,9 @@ func TestCmdSpawnMcpCodexNeverDropsAnOverrideItCannotNameWhole(t *testing.T) {
 		// The error shows a`b escaped; its text up to the escaped backtick
 		// is the other override a\.
 		{"an escaped backtick never drops the override its prefix equals", []string{"a\\", "a`b", "c"}, "a\\`b"},
+		// The same, with a space or a tab after the escaped backtick.
+		{"an escaped backtick before a space never drops the override its prefix equals", []string{"a\\", "a` b", "c"}, "a\\` b"},
+		{"an escaped backtick before a tab never drops the override its prefix equals", []string{"a\\", "a`\tb", "c"}, "a\\`\tb"},
 		// The one line names both a and a` b.
 		{"a line naming two overrides drops neither", []string{"a", "a` b"}, "a` b"},
 	} {
