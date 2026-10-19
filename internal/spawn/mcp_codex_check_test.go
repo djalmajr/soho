@@ -1,6 +1,7 @@
 package spawn
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -331,6 +332,86 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 					t.Fatalf("%q leaked into stdout/stderr/friction/argv/roster:\n%s", leaked, all)
 				}
 			}
+		})
+	}
+}
+
+// The check's error names a server only with the whole name: the closing
+// backtick ends the line or comes before a space or tab. A name the text only
+// starts with, a name named next to another, or a line that names two
+// overrides is no name, so the check takes its failure path instead of
+// dropping the wrong override.
+func TestMcpCodexNamedServerNeedsTheWholeName(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output string
+		kept   []string
+		want   string
+	}{
+		{"the codex 0.163.0 shape", codexBootstrapError("b", "SECRET-DJA414"), []string{"a", "b", "c"}, "b"},
+		{"a dotted name", "    in `mcp_servers.a.b`\n", []string{"a", "a.b"}, "a.b"},
+		{"before a space", "invalid transport in `mcp_servers.b` (plugin)\n", []string{"b"}, "b"},
+		{"CRLF line ends", "Caused by:\r\n    in `mcp_servers.b`\r\n", []string{"b"}, "b"},
+		{"the same name twice", "in `mcp_servers.b`\nin `mcp_servers.b`\n", []string{"a", "b"}, "b"},
+		{"an escaped backtick: the prefix is another override", "    in `mcp_servers.a\\`b`\n", []string{"a\\", "a`b", "c"}, ""},
+		{"followed by punctuation", "in `mcp_servers.b`.\n", []string{"b"}, ""},
+		{"two overrides on one line", "in `mcp_servers.a` b`\n", []string{"a", "a` b"}, ""},
+		{"two overrides on two lines", "in `mcp_servers.a`\nin `mcp_servers.b`\n", []string{"a", "b"}, ""},
+		{"a server outside the overrides", codexBootstrapError("zzz", "SECRET-DJA414"), []string{"a", "b"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mcpCodexNamedServer(tc.output, tc.kept); got != tc.want {
+				t.Fatalf("mcpCodexNamedServer(%q, %q) = %q, want %q", tc.output, tc.kept, got, tc.want)
+			}
+		})
+	}
+}
+
+// codexPlainListing is a listing whose names may carry any character, with
+// name and enabled only.
+func codexPlainListing(t *testing.T, names ...string) string {
+	t.Helper()
+	rows := []map[string]any{}
+	for _, name := range names {
+		rows = append(rows, map[string]any{"name": name, "enabled": true})
+	}
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func TestCmdSpawnMcpCodexNeverDropsAnOverrideItCannotNameWhole(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		names []string
+		shown string
+	}{
+		// The error shows a`b escaped; its text up to the escaped backtick
+		// is the other override a\.
+		{"an escaped backtick never drops the override its prefix equals", []string{"a\\", "a`b", "c"}, "a\\`b"},
+		// The one line names both a and a` b.
+		{"a line naming two overrides drops neither", []string{"a", "a` b"}, "a` b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := codexMcpFixture(t)
+			installCodexMcpScript(t, f,
+				listRule(codexPlainListing(t, tc.names...)),
+				checkNaming(tc.shown, "SECRET-DJA414", tc.names...),
+			)
+			code, _, stderr := spawnCodexNone(t, f)
+			if code != 0 {
+				t.Fatalf("exit=%d stderr=%q", code, stderr)
+			}
+			if got := stdErrCount(stderr, codexMcpWarn("override check exit 1", "worker")); got != 1 {
+				t.Fatalf("the exact listing-failure warning is not on stderr once: %q", stderr)
+			}
+			if strings.Contains(stderr, "cannot turn off MCP") {
+				t.Fatalf("an override the check did not name whole was dropped: %q", stderr)
+			}
+			wantTail(t, f, codexMcpBaseArgv)
+			wantCodexCalls(t, f, codexListArgv, codexCheckArgv(tc.names...))
 		})
 	}
 }

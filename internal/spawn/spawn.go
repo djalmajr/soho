@@ -67,7 +67,8 @@ func mustGetwd() string { cwd, _ := os.Getwd(); return cwd }
 // `codex <overrides> mcp list --json` run (same PATH, env and timeout). A
 // check that fails with a line naming `mcp_servers.<name>` of one of the
 // overrides drops that override and checks again (at most one check per
-// override, plus one); stayOn lists the dropped names in list order. Any other
+// override, plus one); stayOn lists the dropped names in list order. A check
+// that names no override exactly, or more than one, is a failure. Any other
 // failure of the check is ok=false ("override check exit <n>" or "override
 // check timed out"). Only the server name is read from the check's output.
 func mcpCodexOffArgs(env platform.Env) (args []string, ok bool, reason string, stayOn []string) {
@@ -144,20 +145,46 @@ func mcpCodexOffArgs(env platform.Env) (args []string, ok bool, reason string, s
 	return nil, false, "override check exit -1", nil
 }
 
-var mcpCodexServerLineRE = regexp.MustCompile("in `mcp_servers\\.([^`]+)`")
-
 // mcpCodexNamedServer returns the override from kept that the check's output
-// names with a line "in `mcp_servers.<name>`", or "" when no line names one.
-// Nothing else of the output is kept.
+// names with "in `mcp_servers.<name>`", the closing backtick ending the line
+// or followed by a space or tab. Text a name only starts with does not count:
+// a name with a backtick in it, shown escaped, would otherwise yield the text
+// up to that backtick, which can be another override. No override named, or
+// more than one, is "": the check's failure path. Nothing else of the output
+// is kept.
 func mcpCodexNamedServer(output string, kept []string) string {
-	for _, m := range mcpCodexServerLineRE.FindAllStringSubmatch(output, -1) {
+	found := ""
+	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
+		line = strings.TrimRight(line, " \t")
 		for _, name := range kept {
-			if m[1] == name {
-				return name
+			if !mcpCodexLineNames(line, name) {
+				continue
 			}
+			if found != "" && found != name {
+				return ""
+			}
+			found = name
 		}
 	}
-	return ""
+	return found
+}
+
+// mcpCodexLineNames reports whether line holds "in `mcp_servers.<name>`" with
+// the closing backtick at the end of the line or before a space or tab.
+func mcpCodexLineNames(line, name string) bool {
+	needle := "in `mcp_servers." + name + "`"
+	for from := 0; from < len(line); {
+		at := strings.Index(line[from:], needle)
+		if at < 0 {
+			return false
+		}
+		end := from + at + len(needle)
+		if end == len(line) || line[end] == ' ' || line[end] == '\t' {
+			return true
+		}
+		from += at + 1
+	}
+	return false
 }
 
 func approvalsRank(mode string) int {
