@@ -20,6 +20,7 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/provider"
 	"github.com/djalmajr/soho/internal/spawn"
+	"github.com/djalmajr/soho/internal/spawn/codexhooks"
 	"github.com/djalmajr/soho/internal/startup"
 	"github.com/djalmajr/soho/internal/stats"
 	"github.com/djalmajr/soho/internal/taskreport"
@@ -448,14 +449,20 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	if settleErr != nil {
 		settleSecs = 20
 	}
+	// lastVisible is the last visible screen this dispatch already read
+	// before typing (the settle reads, then the check's baseline): the
+	// codex hooks review check below reads nothing of its own.
+	lastVisible := ""
 	if settleSecs > 0 && !wasWorking {
 		prev := herdr.AgentRead(env, agent, "visible", nil)
+		lastVisible = prev
 		settled := false
 		deadline := time.Now().Add(time.Duration(settleSecs) * time.Second)
 		for time.Now().Add(500 * time.Millisecond).Before(deadline) {
 			time.Sleep(500 * time.Millisecond)
 			ready := isInteractiveReady(agent, env)
 			curr := herdr.AgentRead(env, agent, "visible", nil)
+			lastVisible = curr
 			if ready && curr == prev {
 				settled = true
 				break
@@ -473,7 +480,8 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	H0, preSeq := "", ""
 	priorAuth := map[string]bool{}
 	if checkOn {
-		H0 = strconv.FormatUint(uint64(waitpkg.CksumField(herdr.AgentRead(env, agent, "visible", nil))), 10)
+		lastVisible = herdr.AgentRead(env, agent, "visible", nil)
+		H0 = strconv.FormatUint(uint64(waitpkg.CksumField(lastVisible)), 10)
 		preSeq = seqString(preState.Seq)
 		for _, cause := range authCauses(herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40))) {
 			priorAuth[cause] = true
@@ -532,6 +540,36 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	if blocked, ev, st := cursorStartupRefusal(kind, agent, env); blocked {
 		_ = restoreTaskDispatch(sd, agent, lastPath, lastData, priorPointer)
 		return dispatchCursorStartupRefusal(agent, role, kind, composed, report, taskReport, st.State, ev, sd)
+	}
+	// codex's hooks review screen (DJA-434) on the last screen read above:
+	// the prompt's Enter would confirm "1. Review hooks". hooks_review=trust
+	// approves the hooks with spawn's code and the send goes on (the
+	// check's baseline becomes the screen the approval ended on);
+	// hooks_review=block, or an approval that did not take, types nothing
+	// and ends like the startup refusal above: the task state restored, the
+	// blocked result, exit 7.
+	if kind == "codex" && codexhooks.IsReview(lastVisible) {
+		mode := core.HooksReviewMode(ctx, env)
+		approved := false
+		if mode == "trust" {
+			io := codexhooks.IO{
+				SendKey: func(key string) bool { return herdr.AgentSendKeys(agent, key, env) },
+				Read:    func() string { return herdr.AgentRead(env, agent, "visible", nil) },
+				Pause:   500 * time.Millisecond,
+			}
+			var screen string
+			if screen, approved = codexhooks.Approve(lastVisible, io); approved {
+				_, _ = fmt.Fprintf(platform.Stderr, "soho: %s\n", codexhooks.TrustedLine("dispatch", agent, codexhooks.Count(lastVisible)))
+				if checkOn {
+					H0 = strconv.FormatUint(uint64(waitpkg.CksumField(screen)), 10)
+				}
+			}
+		}
+		if !approved {
+			_ = restoreTaskDispatch(sd, agent, lastPath, lastData, priorPointer)
+			core.Warn(codexhooks.BlockedLine("dispatch", agent, mode), frictionLogPath, "dispatch")
+			return emitDispatchResult(agent, role, kind, composed, report, taskReport, "blocked", false, jsonjs.O("cause", "codex-hooks-review"), 0, sd, false, false)
+		}
 	}
 	p := herdr.AgentPrompt(agent, text, env)
 	if !p.Ok {

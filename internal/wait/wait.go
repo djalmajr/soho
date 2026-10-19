@@ -17,6 +17,7 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/provider"
 	"github.com/djalmajr/soho/internal/reportscan"
+	"github.com/djalmajr/soho/internal/spawn/codexhooks"
 	"github.com/djalmajr/soho/internal/startup"
 	"github.com/djalmajr/soho/internal/taskreport"
 )
@@ -815,7 +816,15 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					rc = 6
 				}
 			case "settled":
-				jsonLine(jsonjs.O("agent", agent, "status", "settled-no-report", "report", report))
+				// The last lines of the visible screen go in the JSON, as in
+				// the blocked case: an agent that settled without its report
+				// shows why (DJA-434: codex's hooks review screen took the
+				// brief's Enter).
+				visible := herdr.AgentRead(env, agent, "visible", nil)
+				jsonLine(jsonjs.O("agent", agent, "status", "settled-no-report", "report", report, "screen", lastNonEmpty(visible, 20)))
+				if field(strings.Split(core.RosterLine(sd, agent), "\t"), 2) == "codex" && codexhooks.IsReview(visible) {
+					sendWarning(fmt.Sprintf("agent '%s' is on codex's hooks review screen; it never took the brief. With hooks_review=trust (now %s) the next dispatch approves the hooks first: dispatch the brief again (soho dispatch %s <brief> --resend). With hooks_review=block nothing is typed into it: answer it in the pane yourself (2. Trust all and continue), then dispatch again.", agent, core.HooksReviewMode(ctx, env), agent))
+				}
 				if WaitRank(6) > WaitRank(rc) {
 					rc = 6
 				}

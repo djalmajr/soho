@@ -142,6 +142,10 @@ Use a verified native release binary, or build an explicitly selected checkout w
 - **Now:** `background_patterns.claude` (shipped; one RE2 regular expression per kind) is checked right before `wait` would return `settled-no-report`: when any of the last 15 non-empty lines of the visible screen matches, the wait keeps waiting for the report until `--timeout`, and prints once per `wait` and agent `'<agent>' is idle with a background task still running ("<match>"); waiting for its report`. `status` is unchanged.
 - **Do:** other kinds have no pattern: wait for the report file (a `settled-no-report` is not proof that the worker ended), or set `background_patterns.<kind>` for the text that kind prints. An expression that does not compile is ignored and `doctor` warns. Workers should wait for their own background gates before ending the turn.
 
+## Codex worker: `wait` returned `settled-no-report` and the pane shows `Hooks need review` or the hooks table
+
+- **Now:** with `hooks_review=trust` (default) `spawn`, `dispatch` and `send` approve the screen before typing (`<command>: trusted <n> codex hook(s) …` on stderr); with `hooks_review=block` they type nothing and exit 7 (`spawn`, `dispatch`) or 17 (`send`); a `wait` that still ends `settled-no-report` carries the screen in `screen` and says `agent '<agent>' is on codex's hooks review screen; …` — answer it (`2. Trust all and continue`) or set `hooks_review=trust`, then dispatch again.
+
 ## `auto_approve` loops on the same dialog
 
 - **Symptom:** with `auto_approve=on` the worker keeps re-asking the same dialog (a prompt the default "yes" does not resolve).

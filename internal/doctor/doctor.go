@@ -386,6 +386,9 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	if mr != "on" && mr != "off" {
 		s.Warning(fmt.Sprintf("config: multi_role='%s' is not on|off (cross-role reuse stays off until it is)", mr))
 	}
+	if hr := core.Cfg(ctx, "hooks_review", "trust", env); !core.HooksReviewModeOk(hr) {
+		s.Warning(fmt.Sprintf("config: hooks_review='%s' is not trust|block (it applies as block)", hr))
+	}
 	capRaw := core.Cfg(ctx, "split_max_panes", "4", env)
 	cap := layout.SplitCap(ctx, env)
 	pcsRaw := core.Cfg(ctx, "pane_columns", "", env)

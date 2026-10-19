@@ -103,6 +103,12 @@ var jobMachineKeys = []string{
 // pins that order) and only the user configuration file sets them.
 var peerInboundKeys = []string{"inbound_auth", "inbound_allow"}
 
+// startupDialogKeys are the keys of the startup dialogs soho answers
+// (DJA-434: hooks_review). Like jobMachineKeys they stay out of
+// ConfigScalarKeys, so `soho config` keeps the row order pinned by the
+// frozen parity oracle; config set and config get accept them.
+var startupDialogKeys = []string{"hooks_review"}
+
 var KnownKinds = []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode"}
 var EffortLadder = []string{"low", "medium", "high", "xhigh", "max"}
 
@@ -311,6 +317,35 @@ func Cfg(ctx *Config, key, fallback string, env platform.Env) string {
 	return fallback
 }
 
+// HooksReviewModeOk reports whether a hooks_review value is one of the two
+// the key accepts (trust, block).
+func HooksReviewModeOk(value string) bool {
+	return value == "trust" || value == "block"
+}
+
+// HooksReviewMode resolves the hooks_review policy (DJA-434): trust by
+// default — spawn, dispatch and send approve codex's "Hooks need review"
+// screen — or block, which leaves it to the operator. The
+// SOHO_HOOKS_REVIEW environment layer wins over the file layers; an invalid
+// value in either layer counts as block, the safer mode.
+func HooksReviewMode(ctx *Config, env platform.Env) string {
+	if value := env.Get("SOHO_HOOKS_REVIEW"); value != "" {
+		if HooksReviewModeOk(value) {
+			return value
+		}
+		return "block"
+	}
+	if ctx != nil {
+		if entry, ok := ctx.Entries["hooks_review"]; ok && entry.Value != "" {
+			if HooksReviewModeOk(entry.Value) {
+				return entry.Value
+			}
+			return "block"
+		}
+	}
+	return "trust"
+}
+
 // CompactTimeoutDefaultMS is the compact phase's timeout when the
 // compact_timeout key is absent or holds a value the reader cannot use.
 const CompactTimeoutDefaultMS int64 = 300000
@@ -354,6 +389,11 @@ func ConfigKeyOk(key string) bool {
 			return true
 		}
 	}
+	for _, scalar := range startupDialogKeys {
+		if scalar == key {
+			return true
+		}
+	}
 	return dottedKeyRE.MatchString(key)
 }
 
@@ -387,6 +427,8 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return value == "auto" || value == "off"
 	case key == "caller_check":
 		return callerCheckModeOk(value)
+	case key == "hooks_review":
+		return HooksReviewModeOk(value)
 	case key == "worker_messages":
 		return value == "off" || value == "policy"
 	case key == "panes":

@@ -22,6 +22,7 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/provider"
 	"github.com/djalmajr/soho/internal/sessionref"
+	"github.com/djalmajr/soho/internal/spawn/codexhooks"
 	textutil "github.com/djalmajr/soho/internal/text"
 )
 
@@ -1136,6 +1137,37 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		platform.Die(fmt.Sprintf("send: %s unavailable: %s", t.RefShown, screenGet.Cause), 4)
 	}
 	currentStatus = screenGet.Status
+	// codex's hooks review screen (DJA-434) on the pre-send read: the
+	// message's Enter would confirm "1. Review hooks". hooks_review=trust
+	// approves the hooks with spawn's code over this send's machine-aware
+	// calls, and the send goes on with the screen the approval ended on;
+	// hooks_review=block, or an approval that did not take, is the dialog
+	// refusal below: nothing is sent, exit 17.
+	if t.Kind == "codex" && codexhooks.IsReview(vScreen) {
+		mode := core.HooksReviewMode(ctx, env)
+		count := codexhooks.Count(vScreen)
+		approved := false
+		if mode == "trust" {
+			io := codexhooks.IO{
+				SendKey: func(key string) bool { return sendKey(t.Machine, t.TargetArg, key, env) },
+				Read: func() string {
+					screen, _ := readScreen(t.Machine, t.TargetArg, "visible", 0, env, HerdrCallTimeoutMS, noteVisibleScreen)
+					return screen
+				},
+				Pause: time.Duration(arrivalPollMS(env)) * time.Millisecond,
+			}
+			var screen string
+			if screen, approved = codexhooks.Approve(vScreen, io); approved {
+				vScreen = screen
+				_, _ = fmt.Fprintf(platform.Stderr, "soho: %s\n", codexhooks.TrustedLine("send", t.RefShown, count))
+			}
+		}
+		if !approved {
+			_, _ = fmt.Fprintf(platform.Stderr, "soho: warning: %s\n", codexhooks.BlockedLine("send", t.RefShown, mode))
+			log(senderRef, t.RefShown, "dialog")
+			platform.Die(fmt.Sprintf("send: %s is showing a dialog; nothing was sent", t.RefShown), 17)
+		}
+	}
 	if isDialogScreen(vScreen, t.Kind, currentStatus) {
 		// --now does not wait for the dialog to clear: the wait would follow
 		// the --timeout budget (the rc.14 --now send stalled over 5 minutes on
