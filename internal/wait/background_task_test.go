@@ -260,7 +260,19 @@ func TestBackgroundTaskWaitEndToEnd(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			time.Sleep(400 * time.Millisecond)
+			// The report lands only once the wait has announced the
+			// background task (read from the friction file, not from the
+			// stderr buffer the wait writes to), so a slow runner cannot
+			// end the wait done before the notice. A notice that never
+			// comes still writes the report after 15 s, and the assertion
+			// below fails.
+			deadline := time.Now().Add(15 * time.Second)
+			for time.Now().Before(deadline) {
+				if raw, err := os.ReadFile(f.friction); err == nil && strings.Contains(string(raw), "background task still running") {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
 			tmp := report + ".tmp"
 			_ = os.WriteFile(tmp, []byte("# Report\n"), 0o600)
 			_ = os.Rename(tmp, report)
