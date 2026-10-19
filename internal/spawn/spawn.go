@@ -60,33 +60,132 @@ func mustGetwd() string { cwd, _ := os.Getwd(); return cwd }
 // nonzero, or prints non-JSON output; the spawn then warns once and the
 // agent keeps the user's MCP servers. Zero enabled servers are success with
 // no args and no reason.
-func mcpCodexOffArgs(env platform.Env) (args []string, ok bool, reason string) {
+//
+// DJA-414: codex 0.163.0 refuses the whole config when an override names a
+// server that is not under [mcp_servers.*] of config.toml, and the pane dies
+// before drawing. So the overrides are checked with one
+// `codex <overrides> mcp list --json` run (same PATH, env and timeout). A
+// check that fails with a line naming `mcp_servers.<name>` of one of the
+// overrides drops that override and checks again (at most one check per
+// override, plus one); stayOn lists the dropped names in list order. A check
+// that names no override, or more than one (mcpCodexLineName reads only a
+// line that is exactly codex's), and any other failure of the check is
+// ok=false ("override check exit <n>" or "override check timed out"). Only the
+// server name is read from the check's output.
+func mcpCodexOffArgs(env platform.Env) (args []string, ok bool, reason string, stayOn []string) {
 	res := platform.RunCli("codex", []string{"mcp", "list", "--json"}, platform.RunOptions{Env: env, TimeoutMs: mcpCodexListTimeoutMs})
 	switch {
 	case res.NotFound:
-		return nil, false, "codex not found in PATH"
+		return nil, false, "codex not found in PATH", nil
 	case res.TimedOut:
-		return nil, false, "timed out after 10 s"
+		return nil, false, "timed out after 10 s", nil
 	case res.Status == nil || *res.Status != 0:
 		code := -1
 		if res.Status != nil {
 			code = *res.Status
 		}
-		return nil, false, fmt.Sprintf("exit %d", code)
+		return nil, false, fmt.Sprintf("exit %d", code), nil
 	}
 	var servers []struct {
 		Name    string `json:"name"`
 		Enabled bool   `json:"enabled"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(res.Stdout)), &servers); err != nil {
-		return nil, false, "non-JSON output"
+		return nil, false, "non-JSON output", nil
 	}
+	var names []string
 	for _, server := range servers {
 		if server.Enabled && server.Name != "" {
-			args = append(args, "-c", "mcp_servers."+server.Name+".enabled=false")
+			names = append(names, server.Name)
 		}
 	}
-	return args, true, ""
+	dropped := map[string]bool{}
+	// stayOnList is the dropped names in list order, each once.
+	stayOnList := func() (out []string) {
+		seen := map[string]bool{}
+		for _, name := range names {
+			if dropped[name] && !seen[name] {
+				seen[name] = true
+				out = append(out, name)
+			}
+		}
+		return out
+	}
+	for checks := 0; checks <= len(names); checks++ {
+		var kept []string
+		args = nil
+		for _, name := range names {
+			if !dropped[name] {
+				kept = append(kept, name)
+				args = append(args, "-c", "mcp_servers."+name+".enabled=false")
+			}
+		}
+		if len(kept) == 0 {
+			// Every override was refused: nothing is left to check.
+			return nil, true, "", stayOnList()
+		}
+		check := platform.RunCli("codex", append(append([]string(nil), args...), "mcp", "list", "--json"), platform.RunOptions{Env: env, TimeoutMs: mcpCodexListTimeoutMs})
+		switch {
+		case check.NotFound:
+			return nil, false, "codex not found in PATH", nil
+		case check.TimedOut:
+			return nil, false, "override check timed out", nil
+		case check.Status != nil && *check.Status == 0:
+			return args, true, "", stayOnList()
+		}
+		code := -1
+		if check.Status != nil {
+			code = *check.Status
+		}
+		bad := mcpCodexNamedServer(check.Stderr+"\n"+check.Stdout, kept)
+		if bad == "" {
+			return nil, false, fmt.Sprintf("override check exit %d", code), nil
+		}
+		dropped[bad] = true
+	}
+	return nil, false, "override check exit -1", nil
+}
+
+// mcpCodexNamedServer returns the override from kept that a line of the
+// check's output names (mcpCodexLineName). No override named, or more than
+// one, is "": the check's failure path. Nothing else of the output is kept.
+func mcpCodexNamedServer(output string, kept []string) string {
+	found := ""
+	for _, line := range strings.Split(output, "\n") {
+		token := mcpCodexLineName(line)
+		if token == "" {
+			continue
+		}
+		for _, name := range kept {
+			if token != name {
+				continue
+			}
+			if found != "" && found != name {
+				return ""
+			}
+			found = name
+		}
+	}
+	return found
+}
+
+// mcpCodexLineName returns the server a line of codex 0.163.0's error names:
+// the line, without its leading and trailing white space, is exactly
+// "in `mcp_servers.<name>`", and the name has no backtick and no backslash
+// (which may escape a backtick that belongs to the name). Any other line names
+// no server, so a name whose end is not certain never drops an override: the
+// check takes its failure path instead.
+func mcpCodexLineName(line string) string {
+	const prefix, suffix = "in `mcp_servers.", "`"
+	line = strings.TrimSpace(line)
+	if len(line) <= len(prefix)+len(suffix) || !strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, suffix) {
+		return ""
+	}
+	name := line[len(prefix) : len(line)-len(suffix)]
+	if strings.ContainsAny(name, "`\\") {
+		return ""
+	}
+	return name
 }
 
 func approvalsRank(mode string) int {
@@ -913,11 +1012,14 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	// =false for every enabled server, in list order; a failed listing warns
 	// once and the agent keeps the user's MCP servers.
 	if o.mcp == "none" && kind == "codex" {
-		mcpArgs, ok, reason := mcpCodexOffArgs(env)
+		mcpArgs, ok, reason, stayOn := mcpCodexOffArgs(env)
 		if !ok {
 			Warn(fmt.Sprintf("spawn: codex could not list its MCP servers (%s); '%s' keeps the user's MCP servers", reason, o.name), ctx, env, "spawn")
 		} else {
 			args = append(args, mcpArgs...)
+			if len(stayOn) > 0 {
+				Warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are not defined in its config.toml); they stay on, the others are off", strings.Join(stayOn, ", "), o.name), ctx, env, "spawn")
+			}
 		}
 	} else if mcpArgs, ok := kinds.KindMcpArgs(kind, o.mcp); !ok {
 		Warn(fmt.Sprintf("spawn: %s cannot turn MCP servers off per process; '%s' keeps the user's MCP servers", kind, o.name), ctx, env, "spawn")

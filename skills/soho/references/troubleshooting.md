@@ -32,6 +32,13 @@ Observed failures while building and validating this skill (2026-09-20, Herdr 0.
 - **Now:** right after a successful start, `spawn` watches a 5 s window. When the kind's update marker is on the screen it waits for the agent to go gone (until the spawn timeout) and relaunches it once, in the same pane with the same args (`'<name>' (<kind>) updated itself at start and exited; started it again`). An agent that exits right after start **without** the marker — or on the relaunch — makes `spawn` exit 4 with the last screen lines (up to 5, ` / `-joined); the pane stays open for inspection and no roster line is written.
 - **Do:** on the second exit, read the screen — usually an interrupted update or a login prompt; verify the codex CLI by hand before spawning the team.
 
+## Codex with `mcp: none`: `timed out waiting for agent startup` and an empty screen
+
+- **Symptom:** the `spawn` of a `codex` worker with `mcp: none` ends with `timed out waiting for agent startup (cli:agent:start)` and `last screen lines:` empty. The pane closed before codex drew anything.
+- **Cause:** `mcp: none` turns off each enabled server of `codex mcp list --json` with `-c mcp_servers.<name>.enabled=false`. codex 0.163.0 refuses the whole config when an override names a server that is not under `[mcp_servers.*]` of `~/.codex/config.toml` (it comes from another layer, such as a plugin): ``invalid transport in `mcp_servers.<name>` ``.
+- **Now:** `spawn` runs `codex <overrides> mcp list --json` once before it opens the pane. A server the check names is taken out of the overrides and the check runs again; the worker opens with the others off and `spawn` warns once (stderr and `friction.log`): `codex cannot turn off MCP server(s) <a, b> for '<name>' (they are not defined in its config.toml); they stay on, the others are off`. A check that fails without naming a server, or times out, warns `codex could not list its MCP servers (override check …)` and the worker keeps the user's servers.
+- **Do:** to run with those servers on without the warning, `--mcp inherit` on the `spawn`, or `lane.<lane>.mcp=inherit`.
+
 ## Focus jumps while you are typing
 
 - **Cause:** `herdr agent start` focuses the pane it starts, even after a `--no-focus` split. Spawn used to follow that by focusing the caller pane and tab, including after you had already moved.
