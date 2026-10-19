@@ -128,6 +128,8 @@ type PeerSender struct {
 	Kind  string
 	Role  string
 	Model string
+	// From is the sender machine's label, set only on a signed remote message.
+	From string
 }
 
 // knownPeerField reports whether a cleaned header field is a value the
@@ -135,7 +137,9 @@ type PeerSender struct {
 func knownPeerField(v string) bool { return v != "" && v != "-" && v != "unknown" }
 
 // peerSenderLine is the header's Sender line: the known name/kind/role/model
-// items, "; "-separated, ending with a period. It is "" when nothing is
+// items and the sender machine's `from` label, "; "-separated, ending with a
+// period (a signature, when the message has one, is added after the last item
+// by peerauth.Sign). It is "" when nothing is
 // known, and the header then omits the line.
 func peerSenderLine(s PeerSender) string {
 	items := []string{}
@@ -150,6 +154,9 @@ func peerSenderLine(s PeerSender) string {
 	}
 	if knownPeerField(s.Model) {
 		items = append(items, "model "+s.Model)
+	}
+	if knownPeerField(s.From) {
+		items = append(items, "from "+s.From)
 	}
 	if len(items) == 0 {
 		return ""
@@ -1068,6 +1075,16 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			platform.Die(fmt.Sprintf("send: %s does not accept peer messages (inbound=off)", t.RefShown), 18)
 		}
 	}
+	// A key that exists but is not valid stops the send before anything is
+	// typed: the message never goes out unsigned in its place.
+	signing, signNote, signRefusal := planSigning(t.Machine, env)
+	if signRefusal != "" {
+		log(SenderRefOf(env), t.RefShown, "error")
+		platform.Die("send: "+signRefusal, 2)
+	}
+	if signNote != "" {
+		_, _ = fmt.Fprintln(platform.Stderr, signNote)
+	}
 	currentStatus := t.Status
 	if !now && (t.Status == "working" || t.Status == "blocked") {
 		// The agent_not_ready wait above already spent part of the send's
@@ -1187,7 +1204,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	quotedBody := QuotePeerBody(clean(body))
 	endLine := PeerEndLine(id)
 	field := HeaderField
-	sender := PeerSender{Ref: field(senderRef), Name: field(senderName), Kind: field(senderKind), Role: field(senderRole), Model: field(senderModel)}
+	sender := PeerSender{Ref: field(senderRef), Name: field(senderName), Kind: field(senderKind), Role: field(senderRole), Model: field(senderModel), From: signing.from}
 	header := PeerHeaderFor(sender, id)
 	if t.Machine != sessionref.LocalMachine {
 		// A remote target would resolve the sender's "local/<pane>" back to
@@ -1197,6 +1214,11 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			field(senderHostname()), id)
 	}
 	message := header + "\n\n" + quotedBody + "\n" + endLine
+	message, signErr := signMessage(signing, message)
+	if signErr != nil {
+		log(senderRef, t.RefShown, "error")
+		platform.Die("send: could not sign the message; nothing was sent", 2)
+	}
 	msgLines := strings.Count(message, "\n") + 1
 	recentLines := msgLines + 60
 	// A local Claude Code or pi target writes every taken message to its
@@ -1230,6 +1252,33 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		}
 	}
 	windowMS, pollMS := arrivalWindowMS(env), arrivalPollMS(env)
+	// A receiver whose UserPromptSubmit hook blocked the message shows the
+	// refusal line `[soho:peer-refused] #<id> <result>` on its screen, in its
+	// recent history and, for a local claude, in its transcript. The refusal
+	// wins over every arrival proof, and no key is sent once it is seen: the
+	// refused text stays in the target's input until someone clears it.
+	refuse := func(result string) {
+		log(senderRef, t.RefShown, "refused")
+		platform.Die(fmt.Sprintf("send: %s refused the message (%s); the refused text stays in its input until someone clears it", t.RefShown, result), 18)
+	}
+	// readAfter is every screen read of the send after the prompt went out:
+	// it reads like readScreen, then looks for the refusal in what it read
+	// and, for a local claude, in its transcript. The one site where a
+	// refusal can be seen, whichever proof asked for the screen.
+	readAfter := func(source string, lines, timeoutMS int) (string, string) {
+		text, cause := readScreen(t.Machine, t.TargetArg, source, lines, env, timeoutMS, noteVisibleScreen)
+		if cause == "" {
+			if result, ok := refusalIn(text, id); ok {
+				refuse(result)
+			}
+		}
+		if t.Kind == "claude" && (t.Machine == sessionref.LocalMachine || t.Machine == "") {
+			if result, ok := refusalInTranscript(transcript.path, id); ok {
+				refuse(result)
+			}
+		}
+		return text, cause
+	}
 	pollWindow := func() proofResult {
 		deadline := time.Now().Add(time.Duration(windowMS) * time.Millisecond)
 		result := proofResult{}
@@ -1244,7 +1293,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 				// has to be working; the visible screen read below must still
 				// succeed and show no dialog.
 				if preSeq != "" && curGet.Seq != "" && curGet.Seq != preSeq && preIdle {
-					visible, readErr := readScreen(t.Machine, t.TargetArg, "visible", 0, env, HerdrCallTimeoutMS, noteVisibleScreen)
+					visible, readErr := readAfter("visible", 0, HerdrCallTimeoutMS)
 					if readErr == "" {
 						if !isDialogScreen(visible, t.Kind, curGet.Status) {
 							return proofResult{Proven: true, RecentReadSucceeded: result.RecentReadSucceeded, LastCause: result.LastCause}
@@ -1261,7 +1310,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 					// The target also writes the taken message to the transcript
 					// while it sits unread in its open queue: the count growth is
 					// not proof while the visible queue line still holds the id.
-					visible, visibleErr := readScreen(t.Machine, t.TargetArg, "visible", 0, env, HerdrCallTimeoutMS, noteVisibleScreen)
+					visible, visibleErr := readAfter("visible", 0, HerdrCallTimeoutMS)
 					if visibleErr == "" {
 						if !transcript.queued(visible, id) {
 							return proofResult{Proven: true, RecentReadSucceeded: result.RecentReadSucceeded, LastCause: result.LastCause}
@@ -1271,14 +1320,14 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 					}
 				}
 			}
-			recent, readErr := readScreen(t.Machine, t.TargetArg, "recent-unwrapped", recentLines, env, HerdrCallTimeoutMS, noteVisibleScreen)
+			recent, readErr := readAfter("recent-unwrapped", recentLines, HerdrCallTimeoutMS)
 			if readErr == "" {
 				result.RecentReadSucceeded = true
 				// The recent gate requires this message's receipt marker (header
 				// opening or closing line, either closing form, unquoted, exact
 				// id): a bare "#id" a reply or a footer can cite is not it.
 				if receiptLineInText(recent, id) {
-					visible, visibleErr := readScreen(t.Machine, t.TargetArg, "visible", 0, env, HerdrCallTimeoutMS, noteVisibleScreen)
+					visible, visibleErr := readAfter("visible", 0, HerdrCallTimeoutMS)
 					if visibleErr == "" {
 						if visible != preScreen && !isDialogScreen(visible, t.Kind, statusOr(curGet, currentStatus)) {
 							// A message in pi's Steering queue, in Claude Code's queued
@@ -1335,7 +1384,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	// far past its deadline; a screen that fails to read within it is not a
 	// proof.
 	stalledTaken := func(deadline time.Time) bool {
-		visible, visibleErr := readScreen(t.Machine, t.TargetArg, "visible", 0, env, stalledCheckBudget(deadline), noteVisibleScreen)
+		visible, visibleErr := readAfter("visible", 0, stalledCheckBudget(deadline))
 		if visibleErr != "" {
 			return false
 		}
@@ -1366,7 +1415,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		// Like pollWindow's recent gate, the marker must be this message's
 		// receipt marker (header opening or closing line, either closing form,
 		// unquoted, exact id), not a bare "#id" a reply can cite.
-		recent, readErr := readScreen(t.Machine, t.TargetArg, "recent-unwrapped", recentLines, env, stalledCheckBudget(deadline), noteVisibleScreen)
+		recent, readErr := readAfter("recent-unwrapped", recentLines, stalledCheckBudget(deadline))
 		if readErr != "" || !receiptLineInText(recent, id) {
 			return false
 		}
@@ -1408,7 +1457,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			// and, only when this message's marker is in the box, press one
 			// Enter and run the proof window. One Enter at most, no resend;
 			// agent_blocked and timeout keep today's exit below.
-			vis, visErr := readScreen(t.Machine, t.TargetArg, "visible", 0, env, HerdrCallTimeoutMS, noteVisibleScreen)
+			vis, visErr := readAfter("visible", 0, HerdrCallTimeoutMS)
 			if visErr == "" && idInInputBox(t.Kind, vis, id) {
 				// A dialog on screen takes the Enter as its answer: press
 				// nothing, as the Enter of the ok path does.
@@ -1512,7 +1561,8 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			// The queue line, like the count growth, proves the queued outcome
 			// and is due before the wait's laps and with no key: the same
 			// proof the path below returns after the window.
-			if visible, visibleErr := readScreen(t.Machine, t.TargetArg, "visible", 0, env, HerdrCallTimeoutMS, noteVisibleScreen); visibleErr == "" && claudeQueued(visible, id) {
+			visible, visibleErr := readAfter("visible", 0, HerdrCallTimeoutMS)
+			if visibleErr == "" && claudeQueued(visible, id) {
 				log(senderRef, t.RefShown, "queued")
 				_, _ = fmt.Fprintf(platform.Stdout, "queued for %s: it takes the message when its current turn ends\n", t.RefShown)
 				return 0
@@ -1521,7 +1571,8 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 				// The queue line is checked on every lap, independent of the
 				// count growth: the same queued proof, due as soon as it is
 				// visible.
-				if visible, visibleErr := readScreen(t.Machine, t.TargetArg, "visible", 0, env, HerdrCallTimeoutMS, noteVisibleScreen); visibleErr == "" && claudeQueued(visible, id) {
+				visible, visibleErr := readAfter("visible", 0, HerdrCallTimeoutMS)
+				if visibleErr == "" && claudeQueued(visible, id) {
 					log(senderRef, t.RefShown, "queued")
 					_, _ = fmt.Fprintf(platform.Stdout, "queued for %s: it takes the message when its current turn ends\n", t.RefShown)
 					return 0
@@ -1529,7 +1580,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 				if count, ok := herdr.CountClaudeUserMarkerLines(transcript.path, "#"+id); ok && count > transcript.pre {
 					// As in the window's transcript check, the count growth is
 					// not proof while the visible queue line still holds the id.
-					if visible, visibleErr := readScreen(t.Machine, t.TargetArg, "visible", 0, env, HerdrCallTimeoutMS, noteVisibleScreen); visibleErr == "" {
+					if visible, visibleErr := readAfter("visible", 0, HerdrCallTimeoutMS); visibleErr == "" {
 						if claudeQueued(visible, id) {
 							log(senderRef, t.RefShown, "queued")
 							_, _ = fmt.Fprintf(platform.Stdout, "queued for %s: it takes the message when its current turn ends\n", t.RefShown)
@@ -1561,7 +1612,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		}
 		platform.Die(fmt.Sprintf("send: could not confirm that %s took the message (%s); read its pane before sending again", t.RefShown, cause), 15)
 	}
-	preEnterVis, readErr := readScreen(t.Machine, t.TargetArg, "visible", 0, env, HerdrCallTimeoutMS, noteVisibleScreen)
+	preEnterVis, readErr := readAfter("visible", 0, HerdrCallTimeoutMS)
 	if readErr == "" && (steeringQueued(preEnterVis, id) || claudeQueued(preEnterVis, id) || (t.Kind == "codex" && codexQueued(preEnterVis, id))) {
 		// pi keeps a message sent during a turn in its Steering queue, Claude
 		// Code keeps it in its queued messages, and codex keeps it in its

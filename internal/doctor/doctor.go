@@ -456,6 +456,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 		s.Ok(fmt.Sprintf("config: herd_label='%s' herd_label_max=%d", core.Cfg(ctx, "herd_label", "{roles}", env), layout.HerdLabelMax(ctx, env)))
 	}
 	checkSetup(ctx, env, cwd, s)
+	doctorPeerInbound(ctx, env, cwd, s)
 	doctorFootprint(ctx, env, cwd, s)
 	fmt.Fprintf(out, "first_run: %t\n%d ok, %d warning(s)\n", ProjectIsFirstRun(ctx, env, cwd), s.OK, s.Warn)
 }
