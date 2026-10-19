@@ -68,9 +68,10 @@ func mustGetwd() string { cwd, _ := os.Getwd(); return cwd }
 // check that fails with a line naming `mcp_servers.<name>` of one of the
 // overrides drops that override and checks again (at most one check per
 // override, plus one); stayOn lists the dropped names in list order. A check
-// that names no override exactly, or more than one, is a failure. Any other
-// failure of the check is ok=false ("override check exit <n>" or "override
-// check timed out"). Only the server name is read from the check's output.
+// that names no override, or more than one (mcpCodexLineName reads only a
+// line that is exactly codex's), and any other failure of the check is
+// ok=false ("override check exit <n>" or "override check timed out"). Only the
+// server name is read from the check's output.
 func mcpCodexOffArgs(env platform.Env) (args []string, ok bool, reason string, stayOn []string) {
 	res := platform.RunCli("codex", []string{"mcp", "list", "--json"}, platform.RunOptions{Env: env, TimeoutMs: mcpCodexListTimeoutMs})
 	switch {
@@ -145,60 +146,46 @@ func mcpCodexOffArgs(env platform.Env) (args []string, ok bool, reason string, s
 	return nil, false, "override check exit -1", nil
 }
 
-// mcpCodexNamedServer returns the override from kept that the check's output
-// names with "in `mcp_servers.<name>`" (mcpCodexLineTokens). No override
-// named, or more than one, is "": the check's failure path. Nothing else of
-// the output is kept.
+// mcpCodexNamedServer returns the override from kept that a line of the
+// check's output names (mcpCodexLineName). No override named, or more than
+// one, is "": the check's failure path. Nothing else of the output is kept.
 func mcpCodexNamedServer(output string, kept []string) string {
 	found := ""
-	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
-		for _, token := range mcpCodexLineTokens(strings.TrimRight(line, " \t")) {
-			for _, name := range kept {
-				if token != name {
-					continue
-				}
-				if found != "" && found != name {
-					return ""
-				}
-				found = name
+	for _, line := range strings.Split(output, "\n") {
+		token := mcpCodexLineName(line)
+		if token == "" {
+			continue
+		}
+		for _, name := range kept {
+			if token != name {
+				continue
 			}
+			if found != "" && found != name {
+				return ""
+			}
+			found = name
 		}
 	}
 	return found
 }
 
-// mcpCodexLineTokens returns the server names line gives with
-// "in `mcp_servers.<name>`". A name runs up to the next backtick, and counts
-// only when it is certain where it ends: that backtick ends the line or comes
-// before a space or tab, no backtick follows it on the line, and the name has
-// no backslash (which may escape a backtick that belongs to the name). So a
-// name with a backtick or a backslash in it is never given, and a check that
-// shows one takes the failure path instead of dropping another override.
-func mcpCodexLineTokens(line string) (tokens []string) {
-	const prefix = "in `mcp_servers."
-	for from := 0; ; {
-		at := strings.Index(line[from:], prefix)
-		if at < 0 {
-			return tokens
-		}
-		start := from + at + len(prefix)
-		from = start
-		end := strings.IndexByte(line[start:], '`')
-		if end < 0 {
-			return tokens
-		}
-		token, after := line[start:start+end], start+end+1
-		if token == "" || strings.ContainsRune(token, '\\') {
-			continue
-		}
-		if after < len(line) && line[after] != ' ' && line[after] != '\t' {
-			continue
-		}
-		if strings.IndexByte(line[after:], '`') >= 0 {
-			continue
-		}
-		tokens = append(tokens, token)
+// mcpCodexLineName returns the server a line of codex 0.163.0's error names:
+// the line, without its leading and trailing white space, is exactly
+// "in `mcp_servers.<name>`", and the name has no backtick and no backslash
+// (which may escape a backtick that belongs to the name). Any other line names
+// no server, so a name whose end is not certain never drops an override: the
+// check takes its failure path instead.
+func mcpCodexLineName(line string) string {
+	const prefix, suffix = "in `mcp_servers.", "`"
+	line = strings.TrimSpace(line)
+	if len(line) <= len(prefix)+len(suffix) || !strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, suffix) {
+		return ""
 	}
+	name := line[len(prefix) : len(line)-len(suffix)]
+	if strings.ContainsAny(name, "`\\") {
+		return ""
+	}
+	return name
 }
 
 func approvalsRank(mode string) int {

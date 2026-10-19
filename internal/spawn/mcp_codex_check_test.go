@@ -336,11 +336,11 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 	}
 }
 
-// The check's error names a server only when the whole name is certain: it
-// runs up to the next backtick, that backtick ends the line or comes before a
-// space or tab, no backtick follows on the line, and the name has no
-// backslash. Anything else, or a check that names two overrides, is no name,
-// so the check takes its failure path instead of dropping the wrong override.
+// The check's error names a server only on a line that is exactly codex
+// 0.163.0's, "in `mcp_servers.<name>`" between white space, with no backtick
+// and no backslash in the name. Anything else, or a check that names two
+// overrides, is no name, so the check takes its failure path instead of
+// dropping the wrong override.
 func TestMcpCodexNamedServerNeedsTheWholeName(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -350,7 +350,11 @@ func TestMcpCodexNamedServerNeedsTheWholeName(t *testing.T) {
 	}{
 		{"the codex 0.163.0 shape", codexBootstrapError("b", "SECRET-DJA414"), []string{"a", "b", "c"}, "b"},
 		{"a dotted name", "    in `mcp_servers.a.b`\n", []string{"a", "a.b"}, "a.b"},
-		{"before a space", "invalid transport in `mcp_servers.b` (plugin)\n", []string{"b"}, "b"},
+		{"text after the name on the line", "    in `mcp_servers.b` (plugin)\n", []string{"b"}, ""},
+		{"text before the name on the line", "invalid transport in `mcp_servers.b`\n", []string{"b"}, ""},
+		{"text before the prefix never shifts the name", "    Xin `mcp_servers.b`\n", []string{".b", "b"}, ""},
+		{"no closing backtick", "    in `mcp_servers.bc\n", []string{"b", "bc"}, ""},
+		{"a prefix inside a name with a backtick", "    in `mcp_servers.a in `mcp_servers.b`\n", []string{"a in `mcp_servers.b", "b", "c"}, ""},
 		{"CRLF line ends", "Caused by:\r\n    in `mcp_servers.b`\r\n", []string{"b"}, "b"},
 		{"the same name twice", "in `mcp_servers.b`\nin `mcp_servers.b`\n", []string{"a", "b"}, "b"},
 		{"an escaped backtick: the prefix is another override", "    in `mcp_servers.a\\`b`\n", []string{"a\\", "a`b", "c"}, ""},
@@ -398,6 +402,8 @@ func TestCmdSpawnMcpCodexNeverDropsAnOverrideItCannotNameWhole(t *testing.T) {
 		// The same, with a space or a tab after the escaped backtick.
 		{"an escaped backtick before a space never drops the override its prefix equals", []string{"a\\", "a` b", "c"}, "a\\` b"},
 		{"an escaped backtick before a tab never drops the override its prefix equals", []string{"a\\", "a`\tb", "c"}, "a\\`\tb"},
+		// The name holds the line's own prefix; the text after it is b.
+		{"a prefix inside a name never drops the override it ends with", []string{"a in `mcp_servers.b", "b", "c"}, "a in `mcp_servers.b"},
 		// The one line names both a and a` b.
 		{"a line naming two overrides drops neither", []string{"a", "a` b"}, "a` b"},
 	} {
