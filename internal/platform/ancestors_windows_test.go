@@ -14,7 +14,8 @@ import (
 // the test's own pid to be in it. The walk reads one Toolhelp32 process
 // snapshot (pid and parent fields only), never a command line. The child
 // is not `timeout`: without a console it exits at once, and a child that
-// is already gone when the snapshot is taken is not in it.
+// is already gone when the snapshot is taken is not in it. Along the
+// chain, every parent was created no later than its child.
 func TestProcessAncestorsRealChildWindows(t *testing.T) {
 	cmd := exec.Command("ping", "-n", "6", "127.0.0.1")
 	if err := cmd.Start(); err != nil {
@@ -41,5 +42,25 @@ func TestProcessAncestorsRealChildWindows(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("the test pid is not among the child's ancestors %v", chain)
+	}
+	// Every child -> parent pair of the chain has the parent created at
+	// the same instant as the child or before it (no reused pid). Only the
+	// last pid may be unreadable: a parent that already exited.
+	for i := 0; i+1 < len(chain); i++ {
+		child, parent := chain[i], chain[i+1]
+		childAt, ok := windowsAncestorCreated(child)
+		if !ok {
+			t.Fatalf("creation time of %d (chain %v) is unreadable", child, chain)
+		}
+		parentAt, ok := windowsAncestorCreated(parent)
+		if !ok {
+			if i+2 == len(chain) {
+				continue
+			}
+			t.Fatalf("creation time of %d (chain %v) is unreadable", parent, chain)
+		}
+		if parentAt > childAt {
+			t.Fatalf("parent %d created at %d after its child %d at %d (chain %v)", parent, parentAt, child, childAt, chain)
+		}
 	}
 }
