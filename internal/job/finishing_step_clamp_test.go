@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -108,6 +109,39 @@ func alignedFirstStart(calls int, starts []time.Time) (time.Time, error) {
 	return starts[0], nil
 }
 
+// frictionTimes wraps the fixture's friction sink so it also keeps when each
+// line arrived, on the supervisor's own call.
+func frictionTimes(f *supGitFixture) func() []time.Time {
+	var mu sync.Mutex
+	var at []time.Time
+	sink := f.sup.Friction
+	f.sup.Friction = func(message string) {
+		mu.Lock()
+		at = append(at, time.Now())
+		mu.Unlock()
+		sink(message)
+	}
+	return func() []time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]time.Time(nil), at...)
+	}
+}
+
+// firstAtOrAfter is the earliest time of times at or after from.
+func firstAtOrAfter(times []time.Time, from time.Time) (time.Time, error) {
+	var first time.Time
+	for _, at := range times {
+		if !at.Before(from) && (first.IsZero() || at.Before(first)) {
+			first = at
+		}
+	}
+	if first.IsZero() {
+		return time.Time{}, fmt.Errorf("no friction line came after the first gh call (%d lines in all)", len(times))
+	}
+	return first, nil
+}
+
 // A slow first gh command followed by a hung second one stays inside the gh
 // step: `gh pr create` receives the remainder at its own start, not the whole
 // step again.
@@ -134,15 +168,23 @@ func TestFinishingGhStepBoundsTheSecondCommandByTheRemainder(t *testing.T) {
 			f := newSupGitFixture(t, rules)
 			f.job.commitIn(t, "feat: first")
 			finishingRealClock(f, finishingLimits{Budget: 60 * time.Second, Git: 30 * time.Second, GH: step})
+			frictionAt := frictionTimes(f)
 			exit, err, elapsed := finishDone(t, f)
-			end := time.Now()
 			time.Sleep(tc.lateRead)
-			// The bound is the gh step, so it is measured from the start of
-			// the first gh call, as the fake recorded it: the final push
-			// before it runs real git and takes as long as the runner lets
-			// it, and is not part of the step.
-			ghElapsed := end.Sub(firstGhStart(t, f))
-			t.Logf("gh step %v, list %dms, create hangs: terminal in %v, %v after the first gh call", step, delay, elapsed, ghElapsed)
+			// The bound is the gh step, so it is measured over the step
+			// alone. It starts at the first gh call, as the fake recorded
+			// it: the final push before it runs real git and takes as long
+			// as the runner lets it. It ends at the first friction line
+			// after that start, which the supervisor writes as soon as the
+			// cut `gh pr create` returns: the release, the cleanup and the
+			// report written after it are not part of the step.
+			ghStart := firstGhStart(t, f)
+			stepEnd, ferr := firstAtOrAfter(frictionAt(), ghStart)
+			if ferr != nil {
+				t.Fatal(ferr)
+			}
+			ghElapsed := stepEnd.Sub(ghStart)
+			t.Logf("gh step %v, list %dms, create hangs: terminal in %v, step over %v after the first gh call", step, delay, elapsed, ghElapsed)
 			if ghElapsed > step+scaledDuration(clampSlack) {
 				t.Errorf("gh step took %v from the first gh call, want at most the %v gh step + %v", ghElapsed, step, scaledDuration(clampSlack))
 			}
