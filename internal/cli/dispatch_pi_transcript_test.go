@@ -27,9 +27,10 @@ const (
 
 type piDispatchFixture struct {
 	*dispatchArrivalFixture
-	composed string
-	report   string
-	session  string
+	composed   string
+	report     string
+	session    string
+	promptGate string
 }
 
 // piAgentGet is an agent get response carrying the agent_session the way
@@ -45,10 +46,18 @@ func piAgentGet(mode string, seq int, sessionKind, sessionValue string) string {
 // newPiDispatchFixture builds the arrival fixture with the roster kind pi,
 // the check window at 2 s and the poll at 100 ms. The Call 2 `agent get`
 // rule is the PiSessionPath resolution; when sessionValue is set it carries
-// the agent_session and the session file exists at the path.
+// the agent_session and the session file exists at the path. The `agent
+// prompt` call returns only once its gate file exists; the fixture creates
+// it open, and appendSessionLine closes it until the session line is written.
 func newPiDispatchFixture(t *testing.T, mode string, seq int, sessionKind, sessionValue, settle string) *piDispatchFixture {
 	t.Helper()
-	extra := []fakecli.Rule{}
+	gate := filepath.Join(t.TempDir(), "prompt-gate")
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	extra := []fakecli.Rule{
+		{Argv: []string{"agent", "prompt", "worker"}, ArgvPrefix: true, WaitFile: gate, Stdout: `{"result":{"submitted":true}}`},
+	}
 	if sessionValue != "" {
 		extra = append(extra, fakecli.Rule{Argv: []string{"agent", "get", "worker"}, Call: 2, Stdout: piAgentGet(mode, seq, sessionKind, sessionValue)})
 	}
@@ -64,6 +73,7 @@ func newPiDispatchFixture(t *testing.T, mode string, seq int, sessionKind, sessi
 		dispatchArrivalFixture: base,
 		composed:               filepath.Join(base.state, "ws", "briefs", "worker-"+piTranscriptStamp+".md"),
 		report:                 filepath.Join(base.state, "ws", "reports", "worker-"+piTranscriptStamp+".md"),
+		promptGate:             gate,
 	}
 	if sessionKind == "path" && sessionValue != "" {
 		f.session = sessionValue
@@ -106,15 +116,29 @@ func piTranscriptLine(role, text string) string {
 // it receives: the goroutine polls the fake herdr's call log for the `agent
 // prompt` call and appends once it appears. The product logs that call while
 // submitting the prompt — after the pre-send count and before the check
-// window opens — so the line deterministically lands inside the 2 s check
-// window. If the deadline passes without the prompt call, the goroutine
-// gives up silently: the subtest's own code/status assertions fail on the
-// missing rise.
+// window opens — and the call returns only after the append opens its gate
+// file, so the line is in the session before the window's first probe,
+// however slow the runner opens the fake. The goroutine runs until the
+// subtest ends, without a deadline of its own: if the prompt call never
+// comes, the subtest's own code/status assertions fail on the missing rise.
 func appendSessionLine(t *testing.T, f *piDispatchFixture, line string) {
 	t.Helper()
+	if err := os.Remove(f.promptGate); err != nil {
+		t.Fatal(err)
+	}
+	stop, exited := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() {
+		close(stop)
+		<-exited
+	})
 	go func() {
-		deadline := time.Now().Add(15 * time.Second)
-		for time.Now().Before(deadline) {
+		defer close(exited)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
 			calls, _ := fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
 			for _, call := range calls {
 				if len(call.Argv) >= 2 && call.Argv[0] == "agent" && call.Argv[1] == "prompt" {
@@ -123,9 +147,16 @@ func appendSessionLine(t *testing.T, f *piDispatchFixture, line string) {
 						t.Errorf("session append open: %v", err)
 						return
 					}
-					defer file.Close()
-					if _, err := file.WriteString(line + "\n"); err != nil {
+					_, err = file.WriteString(line + "\n")
+					if closeErr := file.Close(); err == nil {
+						err = closeErr
+					}
+					if err != nil {
 						t.Errorf("session append: %v", err)
+						return
+					}
+					if err := os.WriteFile(f.promptGate, nil, 0o600); err != nil {
+						t.Errorf("prompt gate: %v", err)
 					}
 					return
 				}

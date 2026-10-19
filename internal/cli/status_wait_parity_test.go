@@ -705,10 +705,17 @@ func TestWaitRetryThenDoneCommandCase(t *testing.T) {
 		row := "worker\tp0a\tclaude\timplementer\tanthropic\t\t\t\tgrok-4.7\t\timplementer\tbuild\n"
 		sep := strings.Repeat("─", 66)
 		box := "Welcome to the worker\n" + sep + "\n❯ Read the file /tmp/worker-brief.md in full and execute it.\n" + sep + "\n  [Opus 5.5] 67% [main*]\n"
+		// The Enter the worker takes is the one that unblocks it: the
+		// send-keys call returns only once the goroutine below has written
+		// the report and then the gate, so the wait's next poll finds the
+		// report however late the runner schedules the goroutine. With the
+		// prompt window at 0 s every poll that still sees no report sends
+		// Enter again, which the count below refuses.
+		gate := filepath.Join(t.TempDir(), "enter-gate")
 		f := newWaitStatusFixture(t, row, []fakecli.Rule{
 			{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"agent_status":"idle","state_change_seq":5}}}`, Delay: 30},
 			{Argv: []string{"agent", "read", "worker", "--source", "recent-unwrapped", "--lines", "40"}, Stdout: box},
-			{Argv: []string{"agent", "send-keys", "worker", "enter"}},
+			{Argv: []string{"agent", "send-keys", "worker", "enter"}, WaitFile: gate},
 		})
 		f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
 		report := filepath.Join(f.state, "reports", "worker.md")
@@ -733,6 +740,7 @@ func TestWaitRetryThenDoneCommandCase(t *testing.T) {
 						for _, call := range calls {
 							if strings.Join(call.Argv, " ") == "agent send-keys worker enter" {
 								_ = os.WriteFile(report, []byte("finished\n"), 0o600)
+								_ = os.WriteFile(gate, nil, 0o600)
 								return
 							}
 						}
