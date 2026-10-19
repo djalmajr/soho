@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"time"
 
 	"github.com/djalmajr/soho/internal/platform"
 )
@@ -39,6 +41,14 @@ const (
 	continuedMaxHops = 2
 	// continuedMaxTargets caps the destinations followed per hop.
 	continuedMaxTargets = 4
+	// suggestMaxReads caps the transcripts the pane suggestion of a refusal
+	// reads beyond the ones the check already read. Past it the refusal
+	// names no pane: with panes left unexamined, a candidate is not proved
+	// to be the only one.
+	suggestMaxReads = 32
+	// suggestMaxTime caps the wall time of the pane suggestion, from its
+	// start, under the same rule.
+	suggestMaxTime = 2 * time.Second
 )
 
 // sessionIDPattern is the only shape of session id that is trusted: a
@@ -144,12 +154,32 @@ func panesSessions(env platform.Env) map[string]string {
 	return out
 }
 
+// listProjects and readTranscriptTail are the file reads of the session
+// check; the tests count them.
+var (
+	listProjects       = os.ReadDir
+	readTranscriptTail = readTail
+)
+
 // sessionChain follows continued-in records from a session. It keeps the
 // destinations it already read, so one check never reads a transcript
-// twice.
+// twice, and lists <root>/projects once, the failure included.
 type sessionChain struct {
 	root    string
 	targets map[string][]string
+	// listed reports that projects holds the listing (nil on a failure).
+	listed   bool
+	projects []os.DirEntry
+	// budget, when set, bounds the transcripts read beyond the cache.
+	budget *readBudget
+}
+
+// readBudget is what is left to a search: reads of transcripts not read
+// yet, and a deadline. spent records that a read was refused.
+type readBudget struct {
+	reads    int
+	deadline time.Time
+	spent    bool
 }
 
 func newSessionChain(env platform.Env) *sessionChain {
@@ -192,6 +222,13 @@ func (c *sessionChain) continuedFrom(session string) []string {
 	if got, ok := c.targets[session]; ok {
 		return got
 	}
+	if b := c.budget; b != nil {
+		if b.reads <= 0 || !platform.Now().Before(b.deadline) {
+			b.spent = true
+			return nil
+		}
+		b.reads--
+	}
 	got := c.readContinued(session)
 	c.targets[session] = got
 	return got
@@ -205,7 +242,7 @@ func (c *sessionChain) readContinued(session string) []string {
 	if !ok {
 		return nil
 	}
-	tail, ok := readTail(path, continuedTailBytes)
+	tail, ok := readTranscriptTail(path, continuedTailBytes)
 	if !ok {
 		return nil
 	}
@@ -238,12 +275,14 @@ func (c *sessionChain) readContinued(session string) []string {
 // safe.
 func (c *sessionChain) transcriptPath(session string) (string, bool) {
 	projects := filepath.Join(c.root, "projects")
-	entries, err := os.ReadDir(projects)
-	if err != nil {
-		return "", false
+	if !c.listed {
+		c.listed = true
+		if entries, err := listProjects(projects); err == nil {
+			c.projects = entries
+		}
 	}
 	found := ""
-	for _, entry := range entries {
+	for _, entry := range c.projects {
 		candidate := filepath.Join(projects, entry.Name(), session+".jsonl")
 		info, err := os.Stat(candidate)
 		if err != nil || !info.Mode().IsRegular() {
@@ -318,14 +357,31 @@ func verifiedBySession(pane, own string, env platform.Env) (CallerCheck, bool) {
 
 // shownIn is the single pane, other than the claimed one, whose Claude
 // session is this process's or leads to it. Two candidates, or none, give
-// "": the refusal only suggests a pane when there is no doubt.
+// "": the refusal only suggests a pane when there is no doubt. The search
+// reads at most suggestMaxReads transcripts the check has not read yet,
+// within suggestMaxTime; once either runs out it gives "", even with a
+// candidate found. The panes go in id order, so the outcome does not
+// depend on the order of a map.
 func shownIn(claimed, own string, chain *sessionChain, env platform.Env) string {
+	budget := &readBudget{reads: suggestMaxReads, deadline: platform.Now().Add(suggestMaxTime)}
+	sessions := panesSessions(env)
+	panes := make([]string, 0, len(sessions))
+	for pane := range sessions {
+		panes = append(panes, pane)
+	}
+	sort.Strings(panes)
+	chain.budget = budget
+	defer func() { chain.budget = nil }()
 	found := ""
-	for pane, session := range panesSessions(env) {
+	for _, pane := range panes {
 		if pane == claimed {
 			continue
 		}
-		if _, ok := chain.reaches(session, own); !ok {
+		_, ok := chain.reaches(sessions[pane], own)
+		if budget.spent {
+			return ""
+		}
+		if !ok {
 			continue
 		}
 		if found != "" {
