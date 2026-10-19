@@ -216,3 +216,40 @@ func valueFor(entries []string, key string) string {
 	}
 	return ""
 }
+
+// Mutation captured: a fake that does not record os.Getwd leaves Cwd empty,
+// and a test could not tell which directory a call ran in.
+func TestReexecRecordsTheWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Install(t, dir, "probe", []Rule{{AnyArgs: true}}); err != nil {
+		t.Fatal(err)
+	}
+	env := platform.Env{}
+	for _, entry := range Env(os.Environ(), dir) {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			env[key] = value
+		}
+	}
+	first, second := t.TempDir(), t.TempDir()
+	for _, cwd := range []string{first, second} {
+		r := platform.RunCli("probe", []string{"ping"}, platform.RunOptions{Env: env, Platform: platform.Current(), TimeoutMs: 5000, Cwd: cwd})
+		if r.Status == nil || *r.Status != 0 {
+			t.Fatalf("result: %+v", r)
+		}
+	}
+	calls, err := ReadCallsForConfig(filepath.Join(dir, "probe.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("calls: %#v", calls)
+	}
+	for i, want := range []string{first, second} {
+		wantReal, _ := filepath.EvalSymlinks(want)
+		gotReal, _ := filepath.EvalSymlinks(calls[i].Cwd)
+		if calls[i].Cwd == "" || gotReal != wantReal {
+			t.Fatalf("call %d cwd=%q, want %q", i, calls[i].Cwd, want)
+		}
+	}
+}
