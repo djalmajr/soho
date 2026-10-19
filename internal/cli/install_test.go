@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/install"
 	"github.com/djalmajr/soho/internal/platform"
@@ -986,6 +988,20 @@ func TestInstallCommandAddToPathWindowsRouting(t *testing.T) {
 	}
 }
 
+// versionProbePhases tells a failed probe's phases apart: the installed
+// fake records when its --version run reached its own code, so a probe that
+// timed out before that record spent the 10 s budget opening the freshly
+// installed binary (the runner), and one that timed out after it spent the
+// budget on the output (the drain the test guards).
+func versionProbePhases(binDir string, began, ended time.Time) string {
+	starts, err := fakecli.ReadCallStarts(filepath.Join(binDir, "soho.calls.jsonl"))
+	if err != nil || len(starts) == 0 {
+		return fmt.Sprintf("the installed binary's --version never reached the fake within the install's %v (start record: %v): its process start took the budget", ended.Sub(began).Round(time.Millisecond), err)
+	}
+	last := starts[len(starts)-1]
+	return fmt.Sprintf("the install ran %v; its --version reached the fake %v after the install began and ran %v more", ended.Sub(began).Round(time.Millisecond), last.Sub(began).Round(time.Millisecond), ended.Sub(last).Round(time.Millisecond))
+}
+
 // TestInstallCommandVerifyVersionLargeOutputDrains proves the bounded
 // stdout fix with a REAL native helper: the probe prints its version line
 // and then floods several megabytes — far beyond any OS pipe capacity.
@@ -1000,9 +1016,10 @@ func TestInstallCommandVerifyVersionLargeOutputDrains(t *testing.T) {
 	env := installTestEnv(t, t.TempDir())
 	env["SOHO_RELEASE_BASE"] = srv.URL + "/releases"
 	env["SOHO_FAKECLI_CONFIG"] = binDir
+	began := time.Now()
 	code, out, errOut := runInstallCLI(t, env, "--version", installFixtureTag, "--dir", dir, "--verify-version")
 	if code != 0 {
-		t.Fatalf("code=%d err=%q — the large output must drain to completion, not time out", code, errOut)
+		t.Fatalf("code=%d err=%q — the large output must drain to completion, not time out (%s)", code, errOut, versionProbePhases(binDir, began, time.Now()))
 	}
 	if !strings.Contains(out, "version check: herdr-soho v1.2.3-big") {
 		t.Fatalf("stdout missing the bounded version line:\n%s", out)

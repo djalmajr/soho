@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -671,13 +672,19 @@ func altScreenProseVisible(stamp string) string {
 // runAltScreenDispatch runs a dispatch to a working target whose recent read
 // Herdr refuses (agent_not_idle), with the clock at 2026-09-30 12:54:55 so the
 // composed prompt is worker-20260930T125455.md; screen builds the visible
-// screen from the given stamp.
-func runAltScreenDispatch(t *testing.T, screen func(stamp string) string, screenStamp string) (int, string, string, time.Duration) {
+// screen from the given stamp. The clock starts to advance at its first
+// reading, as pinDispatchClock does, so a runner slow to build the fixture
+// does not move the stamp. It returns the fake herdr's calls with the result.
+func runAltScreenDispatch(t *testing.T, screen func(stamp string) string, screenStamp string) (int, string, string, []fakecli.Call) {
 	t.Helper()
 	base := time.Date(2026, 9, 30, 12, 54, 55, 0, time.Local)
-	began := time.Now()
+	var once sync.Once
+	var began time.Time
 	oldNow := platform.Now
-	platform.Now = func() time.Time { return base.Add(time.Since(began)) }
+	platform.Now = func() time.Time {
+		once.Do(func() { began = time.Now() })
+		return base.Add(time.Since(began))
+	}
 	t.Cleanup(func() { platform.Now = oldNow })
 	notIdle := `{"error":{"code":"agent_not_idle","message":"cannot read 40 lines while worker is working: its alternate-screen history can only be captured by scrolling while idle. Wait and retry, or use --source visible"}}`
 	f := newDispatchArrivalFixture(t, "working", 5, 5, "", "2",
@@ -685,16 +692,37 @@ func runAltScreenDispatch(t *testing.T, screen func(stamp string) string, screen
 		fakecli.Rule{Argv: []string{"agent", "read", "worker", "--source", "visible"}, ArgvPrefix: true, Stdout: screen(screenStamp)},
 	)
 	f.env["SOHO_WAIT_POLL_MS"] = "500"
-	start := time.Now()
 	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
-	return code, out, errText, time.Since(start)
+	calls, err := fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code, out, errText, calls
+}
+
+// agentCallsAfterPrompt returns the argv of the `agent` calls made after the
+// first `agent prompt`, in order.
+func agentCallsAfterPrompt(calls []fakecli.Call) []string {
+	var after []string
+	sent := false
+	for _, call := range calls {
+		if len(call.Argv) < 2 || call.Argv[0] != "agent" {
+			continue
+		}
+		if sent {
+			after = append(after, strings.Join(call.Argv, " "))
+		} else if call.Argv[1] == "prompt" {
+			sent = true
+		}
+	}
+	return after
 }
 
 // TestDispatchWorkingAltScreenTargetShowsThePromptOnTheVisibleScreen: Herdr
 // refuses a recent read of a working full-screen TUI, so the evidence comes
 // from the visible screen, with the wrapped path joined back.
 func TestDispatchWorkingAltScreenTargetShowsThePromptOnTheVisibleScreen(t *testing.T) {
-	code, out, errText, elapsed := runAltScreenDispatch(t, altScreenVisible, "20260930T125455")
+	code, out, errText, calls := runAltScreenDispatch(t, altScreenVisible, "20260930T125455")
 	if code != 0 || dispatchOutputStatus(t, out) != "queued" || strings.Contains(errText, "was typed while it was working") {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
@@ -702,8 +730,19 @@ func TestDispatchWorkingAltScreenTargetShowsThePromptOnTheVisibleScreen(t *testi
 		t.Fatalf("the clock did not pin the composed name: %s", out)
 	}
 	// The evidence is on screen within the check window: no wait for the turn.
-	if elapsed >= 2*time.Second {
-		t.Fatalf("queued after %v: the visible prompt should confirm it before the 2 s turn wait", elapsed)
+	// The first probe of the window (its arrival get, the refused recent read
+	// and the visible read that replaces it) confirms the prompt, and the only
+	// other get is the queued state read; the 2 s turn wait polls get every
+	// 500 ms, so any poll of it shows here as an extra get, however slow the
+	// runner opens the fake.
+	want := []string{
+		"agent get worker",
+		"agent read worker --source recent-unwrapped --lines 40",
+		"agent read worker --source visible",
+		"agent get worker",
+	}
+	if got := agentCallsAfterPrompt(calls); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls after the prompt = %q, want %q: the visible prompt should confirm it before the 2 s turn wait", got, want)
 	}
 }
 
