@@ -86,7 +86,11 @@ func TestCmdSpawnMcpCodexNeutralListingRefusesATempDirInsideAProject(t *testing.
 	f := codexMcpFixture(t)
 	project := t.TempDir()
 	mkConfig(t, project)
-	t.Setenv("TMPDIR", mkDir(t, filepath.Join(project, "tmp")))
+	// os.TempDir reads TMPDIR on Unix and TMP (then TEMP) on Windows.
+	tmp := mkDir(t, filepath.Join(project, "tmp"))
+	t.Setenv("TMPDIR", tmp)
+	t.Setenv("TMP", tmp)
+	t.Setenv("TEMP", tmp)
 	installCodexMcpScript(t, f, projectListRules(codexListing("SECRET-DJA418", "a", "p1"), codexListing("SECRET-DJA418", "a", "p1"))...)
 	code, _, stderr := spawnCodexNone(t, f)
 	if code != 0 {
