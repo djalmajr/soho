@@ -139,6 +139,11 @@ type Supervisor struct {
 	prTitle      string
 	lastPR       *PullRequest
 
+	// gitFail groups the friction of repeated git sync failures
+	// (supervise_git.go): the cause of the last one, the identical ones
+	// left unwritten since, and every failure since the last clean pass.
+	gitFail gitFailStreak
+
 	// Tick bookkeeping: consecutive bad observations (the gone-family
 	// states, status errors) and the unknown states already reported to
 	// friction. tickCutByCancel marks the tick the pending cancel cut one

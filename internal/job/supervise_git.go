@@ -264,6 +264,9 @@ func (s *Supervisor) syncGitPass(fin *finSync) (int, bool, error) {
 			return 0, false, err
 		}
 	}
+	// Every step of the pass ran without a git sync error: the recovery of
+	// a failure streak.
+	s.gitSyncRecovered()
 	return 0, false, nil
 }
 
@@ -350,19 +353,74 @@ func (s *Supervisor) frictionf(message string) {
 	}
 }
 
+// gitFailStreak is the supervisor's run of git sync failures: cause is the
+// last failure's message and detail ("" before the first one), repeats the
+// failures with that same cause right after it that wrote nothing, and
+// failures every failure since the last clean pass, written or not.
+type gitFailStreak struct {
+	cause    string
+	msg      string
+	repeats  int
+	failures int
+}
+
 // frictionGit reports a GitSync step error: the line of the message, and,
 // when the step kept a diagnostic, a second line with it (the exit and the
 // last lines of the subprocess's stderr, credentials already redacted). The
+// cause is the message and the detail together: an error with the cause of
+// the failure right before it writes nothing and only counts, and a new
+// cause first writes the count of the repeats of the previous one. The
 // message, the events and the exit code do not change.
 func (s *Supervisor) frictionGit(err error) {
-	s.frictionf(err.Error())
+	cause := err.Error()
 	var exitErr *ExitError
-	if !errors.As(err, &exitErr) || exitErr.Detail == "" {
+	hasDetail := errors.As(err, &exitErr) && exitErr.Detail != ""
+	if hasDetail {
+		cause += "\x00" + exitErr.Detail
+	}
+	s.gitFail.failures++
+	if cause == s.gitFail.cause {
+		s.gitFail.repeats++
+		return
+	}
+	s.flushGitRepeats()
+	s.gitFail.cause, s.gitFail.msg = cause, err.Error()
+	s.frictionf(err.Error())
+	if !hasDetail {
 		return
 	}
 	if step, ok := strings.CutPrefix(exitErr.Msg, gitSyncMsgPrefix); ok {
 		s.frictionf("job: git sync " + step + " failed: " + exitErr.Detail)
 	}
+}
+
+// flushGitRepeats writes the count of the failures left unwritten because
+// they repeated the cause before them, and zeroes it; the cause stays, so
+// a later identical failure counts again. The step comes from the message,
+// as in frictionGit's detail line.
+func (s *Supervisor) flushGitRepeats() {
+	if s.gitFail.repeats == 0 {
+		return
+	}
+	n := strconv.Itoa(s.gitFail.repeats)
+	if step, ok := strings.CutPrefix(s.gitFail.msg, gitSyncMsgPrefix); ok {
+		s.frictionf("job: git sync " + step + " failed " + n + " more time(s) with the same cause")
+	} else {
+		s.frictionf("job: git sync failed " + n + " more time(s) with the same cause")
+	}
+	s.gitFail.repeats = 0
+}
+
+// gitSyncRecovered marks a sync pass that ended clean: after one failure or
+// more it writes the pending count of repeats and the recovery with every
+// failure since the last clean pass, and forgets the streak.
+func (s *Supervisor) gitSyncRecovered() {
+	if s.gitFail.failures == 0 {
+		return
+	}
+	s.flushGitRepeats()
+	s.frictionf("job: git sync recovered after " + strconv.Itoa(s.gitFail.failures) + " failed attempt(s)")
+	s.gitFail = gitFailStreak{}
 }
 
 // finalSync is the final push, run while the job is still finishing and
@@ -383,6 +441,9 @@ func (s *Supervisor) frictionGit(err error) {
 // or failed for another reason (a git or gh error, a refused push, a store
 // error) leaves the field false, and the restart runs the sync again.
 func (s *Supervisor) finalSync(status string) (cut bool) {
+	// The terminal procedure starts here: the repeats of the watch loop's
+	// last failure are written now, so the count is never lost.
+	s.flushGitRepeats()
 	if s.Git == nil {
 		return false
 	}
@@ -951,6 +1012,9 @@ func (s *Supervisor) reportFacts(st State, events []Event, jobDir string) Report
 			}
 			facts.Commits = commits
 		}
+		// These are the job's last git steps: the repeats they left
+		// unwritten are written here.
+		s.flushGitRepeats()
 	}
 	// The draft pull request: the number from the pr_opened event and the
 	// URL of this process's EnsureDraftPR when it is the same pull
