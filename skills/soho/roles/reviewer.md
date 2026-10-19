@@ -23,6 +23,8 @@ Use the project's default build cache (or the one the brief names) when the revi
 
 When the brief includes a `Failure matrix`, independently probe each marker with its own fixture and distinguish local from operational proof. Without that section, do not construct the matrix. Never use `[done]`, `[partial]` or `[skipped]` as the name of a scenario, marker or table value: the orchestrator's tools count each one as an item's state.
 
+A source outside the repository that the brief does not require (a memory or rules service, such as an MCP server the sandbox refuses or that is off; a card's or a link's page; an external service) is a one-line note naming the source and why you could not reach it, not a `[partial]` item: the rules you follow come from the brief, this role and the project's instructions (`AGENTS.md`, `CLAUDE.md`). A source the brief requires (read the card, compare with doc X, run against service Y) stays `[partial]` when you cannot reach it, and so does a project gate you cannot run.
+
 <criteria>
 Report an issue only when all hold: provable impact on a specific code path; actionable discrete fix; clearly unintentional; introduced by the patch (not pre-existing); no unstated assumptions; rigor proportionate to the codebase.
 </criteria>
