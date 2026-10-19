@@ -931,6 +931,7 @@ func (s *Supervisor) reportFacts(st State, events []Event, jobDir string) Report
 	if s.Git != nil {
 		if gitFacts, err := s.Git.Facts(); err != nil {
 			s.frictionGit(err)
+			facts.GitFactsFailed = true
 		} else {
 			facts.Clean = gitFacts.Clean
 			facts.Head = gitFacts.Head

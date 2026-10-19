@@ -35,6 +35,10 @@ type ReportFacts struct {
 	Logs          *Logs
 	Workspace     string
 	PanesFechados int
+	// GitFactsFailed is set by the supervisor when it had git facts to read
+	// and the read failed (a ls-remote over a flapping network): Head is
+	// empty then, which is not the workspace case of a job with no git.
+	GitFactsFailed bool
 }
 
 // PullRequest is the draft pull request recorded by a later slice.
@@ -228,19 +232,44 @@ func buildReport(dir string, st State, events []Event, facts ReportFacts) (Repor
 	}
 	global, projeto, decisions := decisionAggregates(events)
 	items, parciais, artefatos, mdResumo := readReportMD(dir)
-	// The report is built only from known facts: the motivo says so when
-	// the state carries none and either there are no git facts (no head,
-	// for example a workspace-mode job) or the commit list is known and
+	// The report is built only from known facts. When the state carries no
+	// motivo, it is chosen in this order: sem commits for a job without
+	// git facts (no head and no failed read, for example a workspace-mode
+	// job); push pendente when a listed commit never reached the remote
+	// (also when the facts read failed, which leaves the head empty);
+	// fatos de git indisponíveis when the facts read failed and the commit
+	// list is unknown; sem commits when the commit list is known and
 	// empty with no pull request (a worktree job that ends with no commit
-	// ahead of the base). A nil commit list means the listing failed or
-	// was not run (the friction already names it) and is never labeled sem
-	// commits; a state motivo that is already set (a terminal motivo, a
-	// failure) is never overwritten.
+	// ahead of the base); none otherwise. A nil commit list after a good
+	// facts read means the listing failed or was not run (the friction
+	// already names it) and is never labeled sem commits; a state motivo
+	// that is already set (a terminal motivo, a failure) is never
+	// overwritten.
+	noGit := facts.Head == "" && !facts.GitFactsFailed
 	noCommits := facts.PR == nil && facts.Commits != nil && len(facts.Commits) == 0
+	pending := false
+	for _, commit := range facts.Commits {
+		if commit.Push == "pendente" {
+			pending = true
+			break
+		}
+	}
 	motivo := st.Motivo
-	if motivo == nil && (facts.Head == "" || noCommits) {
-		none := "sem commits"
-		motivo = &none
+	if motivo == nil {
+		var reason string
+		switch {
+		case noGit:
+			reason = "sem commits"
+		case pending:
+			reason = "push pendente"
+		case facts.GitFactsFailed && facts.Commits == nil:
+			reason = "fatos de git indisponíveis"
+		case noCommits:
+			reason = "sem commits"
+		}
+		if reason != "" {
+			motivo = &reason
+		}
 	}
 	// The resumo is the supervisor's facts when it carries one; otherwise
 	// it is the `## Resumo` section of the orchestrator's report.md (the

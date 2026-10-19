@@ -1072,8 +1072,10 @@ func TestSuperviseFinishingRestartKeepsTheAnnouncedOutcome(t *testing.T) {
 		t.Errorf("hook calls = %d, want the one refused push of pass one", n)
 	}
 	rep := f.report(t)
-	if rep["status"] != "done" || rep["motivo"] != nil {
-		t.Errorf("report.json status=%v motivo=%v, want done without a motivo", rep["status"], rep["motivo"])
+	// The state keeps no motivo, but the commit never reached the remote:
+	// the report says so (push pendente) instead of leaving the motivo empty.
+	if rep["status"] != "done" || rep["motivo"] != "push pendente" {
+		t.Errorf("report.json status=%v motivo=%v, want done with push pendente", rep["status"], rep["motivo"])
 	}
 	events := f.events(t)
 	if n := countTipes(events, "terminal"); n != 1 {
