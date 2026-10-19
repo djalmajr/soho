@@ -90,8 +90,8 @@ func TestStartAgentFailedStartReadsThePane(t *testing.T) {
 }
 
 // checkStartWindowExit runs checkStartWindow and returns the DieFriction exit
-// and message.
-func checkStartWindowExit(t *testing.T, o spawnOptions, kind string, f spawnFixture) (code int, msg string) {
+// and message. created says whether this spawn opened the pane.
+func checkStartWindowExit(t *testing.T, o spawnOptions, kind string, f spawnFixture, created bool) (code int, msg string) {
 	t.Helper()
 	oldErr := platform.Stderr
 	platform.Stderr = &strings.Builder{}
@@ -108,7 +108,7 @@ func checkStartWindowExit(t *testing.T, o spawnOptions, kind string, f spawnFixt
 			}
 			t.Fatalf("recovered=%#v", value)
 		}()
-		_, _, _ = checkStartWindow(o, kind, f.env, false, nil, f.ctx)
+		_, _, _ = checkStartWindow(o, kind, f.env, created, nil, f.ctx)
 	}()
 	return code, msg
 }
@@ -124,9 +124,26 @@ func TestCheckStartWindowExitedRightAfterStartReadsThePane(t *testing.T) {
 			{Argv: paneReadArgv, Stdout: paneBootstrapScreen},
 		})
 		f.env["SOHO_WAIT_POLL_MS"] = "1"
-		code, msg := checkStartWindowExit(t, o, "codex", f)
+		code, msg := checkStartWindowExit(t, o, "codex", f, true)
 		if want := "agent 'worker' (codex) exited right after start; last screen lines: " + paneBootstrapTail; code != 4 || msg != want {
 			t.Fatalf("exit=%d msg=%q want %q", code, msg, want)
+		}
+	})
+
+	t.Run("a given --pane this spawn did not open is never read", func(t *testing.T) {
+		f := newSpawnFixture(t, []fakecli.Rule{
+			gone,
+			{Argv: []string{"agent", "read", "worker"}, ArgvPrefix: true},
+			{Argv: paneReadArgv, Stdout: "previous occupant's screen\n"},
+		})
+		f.env["SOHO_WAIT_POLL_MS"] = "1"
+		code, msg := checkStartWindowExit(t, o, "codex", f, false)
+		if want := "agent 'worker' (codex) exited right after start; last screen lines: "; code != 4 || msg != want {
+			t.Fatalf("exit=%d msg=%q want %q", code, msg, want)
+		}
+		calls, _ := fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
+		if herdrCallIndex(calls, []string{"pane", "read"}, true) >= 0 {
+			t.Fatalf("a pane this spawn did not open was read: %#v", calls)
 		}
 	})
 
@@ -137,7 +154,7 @@ func TestCheckStartWindowExitedRightAfterStartReadsThePane(t *testing.T) {
 			{Argv: paneReadArgv, Stdout: paneBootstrapScreen},
 		})
 		f.env["SOHO_WAIT_POLL_MS"] = "1"
-		code, msg := checkStartWindowExit(t, o, "codex", f)
+		code, msg := checkStartWindowExit(t, o, "codex", f, true)
 		if want := "agent 'worker' (codex) exited right after start; last screen lines: agent said bye"; code != 4 || msg != want {
 			t.Fatalf("exit=%d msg=%q want %q", code, msg, want)
 		}

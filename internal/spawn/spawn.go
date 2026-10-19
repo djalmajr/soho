@@ -99,8 +99,11 @@ func mcpCodexOffArgs(env platform.Env, cwd string) (args []string, ok bool, reas
 	if err != nil {
 		return nil, false, "neutral listing: no empty directory", nil, nil
 	}
+	defer os.RemoveAll(neutralDir)
+	if codexProjectAbove(neutralDir, env) {
+		return nil, false, "neutral listing: the temporary directory is inside a project with its own .codex/config.toml", nil, nil
+	}
 	neutral, reason := mcpCodexList(env, neutralDir)
-	_ = os.RemoveAll(neutralDir)
 	if reason != "" {
 		return nil, false, "neutral listing " + reason, nil, nil
 	}
@@ -167,6 +170,54 @@ func mcpCodexOffArgs(env platform.Env, cwd string) (args []string, ok bool, reas
 type mcpCodexServer struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
+}
+
+// codexProjectAbove reports whether dir, or a directory above it, holds a
+// .codex/config.toml other than codex's own home (CODEX_HOME, or ~/.codex):
+// codex reads such a file as a project layer for any process below it, so a
+// listing run there is not neutral (a TMPDIR inside the project, say). Only
+// the file's existence is checked; it is never read.
+func codexProjectAbove(dir string, env platform.Env) bool {
+	home := env.Get("CODEX_HOME")
+	if home == "" {
+		base := env.Get("HOME")
+		if platform.Current() == "win32" {
+			base = env.Get("USERPROFILE")
+		}
+		if base == "" {
+			base, _ = os.UserHomeDir()
+		}
+		if base != "" {
+			home = filepath.Join(base, ".codex")
+		}
+	}
+	codexHome := ""
+	if home != "" {
+		codexHome = canonicalPath(home)
+	}
+	d := canonicalPath(dir)
+	for {
+		layer := filepath.Join(d, ".codex")
+		if canonicalPath(layer) != codexHome {
+			if info, err := os.Stat(filepath.Join(layer, "config.toml")); err == nil && !info.IsDir() {
+				return true
+			}
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return false
+		}
+		d = parent
+	}
+}
+
+// canonicalPath is path with its symlinks resolved, or cleaned when it does
+// not resolve.
+func canonicalPath(path string) string {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real
+	}
+	return filepath.Clean(path)
 }
 
 // mcpCodexList runs `codex mcp list --json` in cwd and returns each server's
@@ -1638,7 +1689,9 @@ func checkStartWindow(o spawnOptions, kind string, env platform.Env, created boo
 					lastScreen = herdr.AgentRead(env, o.name, "visible", intPtr(40))
 				}
 				// DJA-416: still nothing from the agent; read the pane.
-				if len(strings.TrimSpace(lastScreen)) == 0 && o.pane != "" {
+				// Only a pane this spawn opened: a given --pane may show
+				// another occupant's screen.
+				if len(strings.TrimSpace(lastScreen)) == 0 && created && o.pane != "" {
 					if pane, read := herdr.PaneRead(env, o.pane, "recent-unwrapped", intPtr(40)); read {
 						lastScreen = pane
 					}
