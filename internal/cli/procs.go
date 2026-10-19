@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -37,14 +38,25 @@ func procsList(ctx *core.Config, env platform.Env, cwd string) int {
 	if err != nil {
 		core.DieFriction(fmt.Sprintf("procs: cannot read the process registry (%v)", err), 4, frictionLogPath, "procs")
 	}
+	now := platform.Now()
 	if len(rows) == 0 {
 		// An empty registry says so, apart from a silent failure (G3).
 		_, _ = fmt.Fprintln(platform.Stdout, "no registered processes")
-		return 0
 	}
-	now := platform.Now()
 	for _, row := range rows {
 		_, _ = fmt.Fprintf(platform.Stdout, "%d  %s  %s  %s  %s\n", row.Pid, row.Name, row.Owner, humanAge(procAge(row, now)), core.ProcRowState(row, env))
+	}
+	orphans, err := projectOrphans(sd, rows, env, cwd)
+	switch {
+	case errors.Is(err, platform.ErrOrphansNotDetected):
+		_, _ = fmt.Fprintln(platform.Stdout, orphanWindowsLine)
+	case err != nil:
+		_, _ = fmt.Fprintf(platform.Stderr, "procs: could not list the unregistered processes (%v)\n", err)
+	case len(orphans) > 0:
+		_, _ = fmt.Fprintln(platform.Stdout, orphanHeader)
+		for _, orphan := range orphans {
+			_, _ = fmt.Fprintln(platform.Stdout, orphan.line(now))
+		}
 	}
 	return 0
 }
@@ -160,4 +172,200 @@ func procAge(row core.ProcRow, now time.Time) time.Duration {
 		return 0
 	}
 	return age
+}
+
+const (
+	// orphanHeader opens the block of unregistered orphan processes whose
+	// cwd is in this project, in procs and in gc.
+	orphanHeader = "unregistered orphan processes in this project:"
+	// orphanWindowsLine replaces the block where the cwd of another
+	// process cannot be read without its PEB (decision 2).
+	orphanWindowsLine = "unregistered processes: not detected on Windows (only registered processes are listed)"
+)
+
+// The orphan scope kinds. A cwd in a registered copy, the state dir or the
+// soho scratch may be stopped by gc; one in the repository root or one of
+// its worktrees is only listed: it can be the user's editor or terminal.
+const (
+	orphanKindCopy     = "copy"
+	orphanKindState    = "state"
+	orphanKindScratch  = "scratch"
+	orphanKindWorktree = "worktree"
+	orphanKindRoot     = "root"
+)
+
+// The orphan seams: the platform reads behind the block and gc's re-check
+// before each signal, and the worktree list; tests replace them.
+var (
+	orphanProcesses    = platform.UserOrphanProcesses
+	orphanProcCwd      = platform.ProcCwd
+	orphanProcIdentity = platform.ProcStartIdentity
+	orphanWorktrees    = gitWorktreePaths
+)
+
+// projectOrphan is one unregistered orphan process whose cwd is in this
+// project, with the scope kind its cwd falls in.
+type projectOrphan struct {
+	platform.OrphanProc
+	kind string
+}
+
+// stoppable is the scope rule of decision 4: a copy, the state dir or the
+// scratch; never the root or a worktree.
+func (o projectOrphan) stoppable() bool {
+	switch o.kind {
+	case orphanKindCopy, orphanKindState, orphanKindScratch:
+		return true
+	}
+	return false
+}
+
+func (o projectOrphan) age(now time.Time) time.Duration {
+	if o.Started.IsZero() {
+		return 0
+	}
+	if age := now.Sub(o.Started); age > 0 {
+		return age
+	}
+	return 0
+}
+
+// line is <pid>  <name>  <age>  <cwd>  (<kind>).
+func (o projectOrphan) line(now time.Time) string {
+	return fmt.Sprintf("%d  %s  %s  %s  (%s)", o.Pid, o.Name, humanAge(o.age(now)), o.Cwd, o.kind)
+}
+
+// orphanPrefix is one directory of the project scope, symlinks resolved.
+type orphanPrefix struct {
+	kind string
+	path string
+}
+
+// projectOrphans lists the user's orphan processes (platform) whose cwd
+// falls in this project's scope, leaving out the pids procs.tsv holds. A
+// cwd outside every prefix is left out. The platform error (Windows:
+// platform.ErrOrphansNotDetected) is returned as is. The scope is built
+// only when the platform listed at least one orphan.
+func projectOrphans(sd string, registered []core.ProcRow, env platform.Env, cwd string) ([]projectOrphan, error) {
+	list, err := orphanProcesses()
+	if err != nil || len(list) == 0 {
+		return nil, err
+	}
+	scope := orphanScope(sd, env, cwd)
+	known := map[int]bool{}
+	for _, row := range registered {
+		known[row.Pid] = true
+	}
+	out := []projectOrphan{}
+	for _, proc := range list {
+		if known[proc.Pid] {
+			continue
+		}
+		if kind := orphanKind(proc.Cwd, scope); kind != "" {
+			out = append(out, projectOrphan{OrphanProc: proc, kind: kind})
+		}
+	}
+	return out, nil
+}
+
+// orphanScope is the project's prefixes: each registered copy, the state
+// dir, the soho scratch (<TMPDIR>/soho/<workspace>, the explain
+// footprint's rule), the worktrees of `git worktree list --porcelain`
+// (the root's own entry aside) and the repository root. A prefix that does
+// not resolve is left out.
+func orphanScope(sd string, env platform.Env, cwd string) []orphanPrefix {
+	out := []orphanPrefix{}
+	resolve := func(path string) string {
+		if path == "" {
+			return ""
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return ""
+		}
+		return filepath.Clean(resolved)
+	}
+	add := func(kind, path string) {
+		if resolved := resolve(path); resolved != "" {
+			out = append(out, orphanPrefix{kind: kind, path: resolved})
+		}
+	}
+	if rows, err := core.ReadCopies(sd); err == nil {
+		for _, row := range rows {
+			add(orphanKindCopy, row.Path)
+		}
+	}
+	add(orphanKindState, sd)
+	tmp := env.Get("TMPDIR")
+	if tmp == "" {
+		tmp = os.TempDir()
+	}
+	add(orphanKindScratch, filepath.Join(tmp, "soho", filepath.Base(sd)))
+	root := platform.StateProjectRoot(env, cwd)
+	resolvedRoot := resolve(root)
+	for _, tree := range orphanWorktrees(root, env) {
+		// The list's first entry is the main worktree, the root itself.
+		if resolved := resolve(tree); resolved != "" && resolved != resolvedRoot {
+			out = append(out, orphanPrefix{kind: orphanKindWorktree, path: resolved})
+		}
+	}
+	add(orphanKindRoot, root)
+	return out
+}
+
+// orphanKind is the kind of the deepest prefix that holds cwd, compared
+// by path component; on the same depth a listed-only kind (root,
+// worktree) wins, so a prefix shared with the root never makes it
+// stoppable. "" is outside the project.
+func orphanKind(cwd string, scope []orphanPrefix) string {
+	best, bestLen := "", -1
+	for _, prefix := range scope {
+		if !orphanWithin(cwd, prefix.path) {
+			continue
+		}
+		listed := prefix.kind == orphanKindRoot || prefix.kind == orphanKindWorktree
+		if len(prefix.path) > bestLen || (len(prefix.path) == bestLen && listed) {
+			best, bestLen = prefix.kind, len(prefix.path)
+		}
+	}
+	return best
+}
+
+// orphanWithin reports whether path is dir or under it, by path
+// component: /a/copy-2 is not within /a/copy.
+func orphanWithin(path, dir string) bool {
+	rel, err := filepath.Rel(dir, filepath.Clean(path))
+	if err != nil || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// gitWorktreePaths lists the worktree paths of `git worktree list
+// --porcelain` run in root, or none when git fails.
+func gitWorktreePaths(root string, env platform.Env) []string {
+	r := platform.RunCli("git", []string{"-C", root, "worktree", "list", "--porcelain"}, platform.RunOptions{Env: env, TimeoutMs: 10_000})
+	if r.NotFound || r.TimedOut || r.Status == nil || *r.Status != 0 {
+		return nil
+	}
+	out := []string{}
+	for _, line := range strings.Split(strings.ReplaceAll(r.Stdout, "\r\n", "\n"), "\n") {
+		if path, ok := strings.CutPrefix(line, "worktree "); ok && path != "" {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+// orphanStill is gc's re-check before a signal: the pid still reads the
+// start identity and the cwd of the listing.
+func orphanStill(orphan projectOrphan, env platform.Env) func() bool {
+	return func() bool {
+		identity, _, live := orphanProcIdentity(orphan.Pid, env)
+		if live != platform.ProcRunning || identity != orphan.Identity {
+			return false
+		}
+		now, err := orphanProcCwd(orphan.Pid)
+		return err == nil && now == orphan.Cwd
+	}
 }

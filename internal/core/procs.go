@@ -161,6 +161,8 @@ type StopProcResult struct {
 	Line    string
 	Dropped bool
 	Err     error
+	// Stopped is set by StopUnregisteredProc when the tree was stopped.
+	Stopped bool
 }
 
 // StopProcRow acts on one registry line at the last moment. A running line
@@ -192,4 +194,31 @@ func StopProcRow(stateDir string, row ProcRow, env platform.Env) StopProcResult 
 		return StopProcResult{Line: line, Err: err}
 	}
 	return StopProcResult{Line: line, Dropped: true}
+}
+
+// StopUnregisteredProc stops the process tree of a process procs.tsv does
+// not hold, with the signal and the wait of StopProcRow
+// (platform.StopProcessTree, the start time read now as the root's
+// expected identity). The start time is read first, then still re-checks
+// the caller's listing (its start identity and its cwd): when still
+// reports a change, nothing is signalled and the process stays. A process
+// that still matches the listing then existed when the start time was
+// read, so that start time is its own, and StopProcessTree re-reads it
+// before each signal. A gone pid is not an error; an unreadable one is,
+// and nothing is signalled.
+func StopUnregisteredProc(pid int, name string, still func() bool, env platform.Env) StopProcResult {
+	started, live := platform.ReadProc(pid, env)
+	switch live {
+	case platform.ProcGone:
+		return StopProcResult{Line: fmt.Sprintf("process %d already gone", pid)}
+	case platform.ProcUnknown:
+		return StopProcResult{Err: fmt.Errorf("process %d is unreadable; not stopped", pid)}
+	}
+	if !still() {
+		return StopProcResult{Line: fmt.Sprintf("kept process %d (it changed since the listing)", pid)}
+	}
+	if err := platform.StopProcessTree(pid, started, env); err != nil {
+		return StopProcResult{Err: err}
+	}
+	return StopProcResult{Line: fmt.Sprintf("stopped process %d (%s)", pid, name), Stopped: true}
 }
