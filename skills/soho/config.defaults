@@ -189,13 +189,15 @@ family_check=strict
 settled_grace=45
 
 # One regular expression (RE2) per kind: a still screen whose last 15
-# non-empty lines match it is not settled. A claude worker that ends its turn
-# with a background shell or Monitor ("1 shell still running", "· 2 monitors")
-# resumes on its own when the task ends, so `wait` keeps waiting for its
-# report instead of ending settled-no-report. No value for a kind (or an
-# empty one) changes nothing for it; a value that does not compile is ignored
-# and `doctor` warns.
-background_patterns.claude=\d+ (shells?|monitors?) still running|· \d+ (shells?|monitors?)( ·|$)
+# non-empty lines match it is not settled. Each line is tried, and also each
+# line joined to the next one by a space, so a footer a narrow pane wraps in
+# two lines still matches. A claude worker that ends its turn with a
+# background shell or Monitor ("1 shell still running", "· 2 monitors",
+# "1 shell, 1 monitor still running", "· 1 shell, 1 monitor ·") resumes on its
+# own when the task ends, so `wait` keeps waiting for its report instead of
+# ending settled-no-report. No value for a kind (or an empty one) changes
+# nothing for it; a value that does not compile is ignored and `doctor` warns.
+background_patterns.claude=\d+ (shells?|monitors?)(, \d+ (shells?|monitors?))* still running|· \d+ (shells?|monitors?)(, \d+ (shells?|monitors?))*( ·|$)
 
 # Milliseconds `spawn` waits for the agent CLI to become interactive. A job's
 # supervisor gives its spawn of the job orchestrator this long (at most

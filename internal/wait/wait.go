@@ -639,7 +639,9 @@ const backgroundTaskSnippetMax = 80
 
 // backgroundTaskMatch reports the text of the kind's background_patterns
 // match in the last lines of the screen, or "" when the kind has no pattern,
-// the pattern does not compile, or no line matches.
+// the pattern does not compile, or nothing matches. Each line is tried, then
+// that line and the next one joined by a space, so a footer a narrow pane
+// wraps in two still matches; the first match from the top wins.
 func backgroundTaskMatch(kind, screen string, ctx *core.Config, env platform.Env) string {
 	if kind == "" {
 		return ""
@@ -652,14 +654,23 @@ func backgroundTaskMatch(kind, screen string, ctx *core.Config, env platform.Env
 	if err != nil {
 		return ""
 	}
-	for _, line := range LastNonEmptyLines(screen, backgroundTaskLines) {
-		line = strings.TrimSpace(line)
-		if loc := re.FindStringIndex(line); loc != nil {
-			snippet := []rune(line[loc[0]:loc[1]])
-			if len(snippet) > backgroundTaskSnippetMax {
-				snippet = snippet[:backgroundTaskSnippetMax]
+	lines := LastNonEmptyLines(screen, backgroundTaskLines)
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+	for i, line := range lines {
+		candidates := []string{line}
+		if i+1 < len(lines) {
+			candidates = append(candidates, line+" "+lines[i+1])
+		}
+		for _, text := range candidates {
+			if loc := re.FindStringIndex(text); loc != nil {
+				snippet := []rune(text[loc[0]:loc[1]])
+				if len(snippet) > backgroundTaskSnippetMax {
+					snippet = snippet[:backgroundTaskSnippetMax]
+				}
+				return string(snippet)
 			}
-			return string(snippet)
 		}
 	}
 	return ""

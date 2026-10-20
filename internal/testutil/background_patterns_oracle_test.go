@@ -17,7 +17,7 @@ func TestBackgroundPatternsOracleRowFormat(t *testing.T) {
 		t.Fatalf("row key = %q, want background_patterns.claude (longer than its column, so one space follows)", key)
 	}
 	value, source, _ := strings.Cut(rest, " defaults")
-	if value != `\d+ (shells?|monitors?) still running|· \d+ (shells?|monitors?)( ·|$)` || len([]rune(value)) <= 30 || source != "" {
+	if value != `\d+ (shells?|monitors?)(, \d+ (shells?|monitors?))* still running|· \d+ (shells?|monitors?)(, \d+ (shells?|monitors?))*( ·|$)` || len([]rune(value)) <= 30 || source != "" {
 		t.Fatalf("row value = %q source=%q: the default or the row format drifted", value, source)
 	}
 }
