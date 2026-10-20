@@ -248,8 +248,11 @@ func runMutationCopy(args []string, env platform.Env) int {
 // registry so the copies commands know who made it. It never changes the
 // command's stdout or exit code: when the state dir cannot be resolved or
 // the registry cannot be written, the copy stays unregistered, with a
-// stderr warning. A dying config or state resolution is caught the same
-// way: the command must not die over the registration.
+// stderr warning. A registry the sandbox cannot write (a permission
+// error) sends the row to the copy queue instead (queueCopy), and only a
+// failed queue leaves the copy unregistered. A dying config or state
+// resolution is caught the same way: the command must not die over the
+// registration.
 func registerMutationCopy(env platform.Env, source, dest string) {
 	defer func() {
 		if value := recover(); value != nil {
@@ -290,8 +293,10 @@ func registerMutationCopy(env platform.Env, source, dest string) {
 		Task:    task,
 		Report:  report,
 	}
-	if err := core.UpsertCopies(sd, row); err != nil {
-		mutationCopyNotRegistered(err.Error())
+	if err := upsertCopies(sd, row); err != nil {
+		if err = queueCopy("mutation-copy", sd, row, err, env); err != nil {
+			mutationCopyNotRegistered(err.Error())
+		}
 	}
 }
 

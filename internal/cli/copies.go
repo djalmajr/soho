@@ -289,6 +289,82 @@ func rosterAgentForPane(stateDir, pane string) string {
 	return ""
 }
 
+// upsertCopies is the registry write of mutation-copy and copies add; tests
+// swap it to inject the permission error of a sandbox that cannot write the
+// state dir.
+var upsertCopies = core.UpsertCopies
+
+// queueCopy is the fallback of a copy registration that the state dir
+// refused with a permission error (DJA-323): the row goes to the copy queue
+// below the soho scratch dir, with the stderr line that says so. Any other
+// error, the held lock included, is returned as it is, with no queue.
+func queueCopy(cmd, sd string, row core.CopyRow, err error, env platform.Env) error {
+	if !errors.Is(err, fs.ErrPermission) {
+		return err
+	}
+	queue, queueErr := core.QueueCopy(env, filepath.Base(sd), sd, row)
+	if queueErr != nil {
+		return fmt.Errorf("%v; the queue failed too: %v", err, queueErr)
+	}
+	pendingQueuedLine(cmd, sd, queue)
+	return nil
+}
+
+func pendingQueuedLine(cmd, sd, queue string) {
+	_, _ = fmt.Fprintf(platform.Stderr, "%s: the state dir %s is not writable from here; the registration is queued for the orchestrator in %s\n", cmd, sd, queue)
+}
+
+// incorporateCopies and incorporateProcs are the queue incorporations;
+// tests swap them to inject the permission error of a sandbox that cannot
+// write the state dir.
+var (
+	incorporateCopies = core.IncorporatePendingCopies
+	incorporateProcs  = core.IncorporatePendingProcs
+)
+
+// incorporatePendingCopies moves the copy queue lines for sd into
+// copies.tsv before a command reads the registry to act (DJA-323). Each
+// line passes the copies add check (checkCopyPath, then an existing
+// directory); a refused line, a copy that no longer exists included, and a
+// malformed one leave the queue with a stderr line. When the incorporation
+// fails the command goes on with the registry as it is and the queue
+// stays, with a stderr line, except for a permission error: that is a
+// sandboxed worker that cannot write the state dir, and it says nothing.
+func incorporatePendingCopies(cmd, sd string, env platform.Env, cwd string) {
+	res, err := incorporateCopies(sd, filepath.Base(sd), env, func(row core.CopyRow) (core.CopyRow, string) {
+		resolved, cause := checkCopyPath(row.Path, env, cwd)
+		if cause != "" {
+			return row, cause
+		}
+		if !isExistingDir(resolved) {
+			return row, "not an existing directory"
+		}
+		row.Path = resolved
+		return row, ""
+	})
+	pendingResultLines(cmd, "copy", res, err)
+}
+
+// incorporatePendingProcs is incorporatePendingCopies for the process
+// queue: a line only has to be well formed.
+func incorporatePendingProcs(cmd, sd string, env platform.Env) {
+	res, err := incorporateProcs(sd, filepath.Base(sd), env)
+	pendingResultLines(cmd, "process", res, err)
+}
+
+func pendingResultLines(cmd, kind string, res core.PendingResult, err error) {
+	for _, drop := range res.Dropped {
+		if drop.Malformed {
+			_, _ = fmt.Fprintf(platform.Stderr, "%s: dropped a malformed line from %s: %q\n", cmd, res.Queue, drop.What)
+			continue
+		}
+		_, _ = fmt.Fprintf(platform.Stderr, "%s: dropped the queued copy '%s' from %s, not registered: %s\n", cmd, drop.What, res.Queue, drop.Cause)
+	}
+	if err != nil && !errors.Is(err, fs.ErrPermission) {
+		_, _ = fmt.Fprintf(platform.Stderr, "%s: the queued %s registrations in %s were not incorporated (%v); the queue stays and the registry is used as it is\n", cmd, kind, res.Queue, err)
+	}
+}
+
 // cmdCopies lists the copy registry, or registers a copy made by hand.
 func cmdCopies(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	if len(argv) == 0 {
@@ -306,6 +382,7 @@ func cmdCopies(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 // does not show sizes.
 func copiesList(ctx *core.Config, env platform.Env, cwd string) int {
 	sd := core.StateDir(ctx, env, cwd)
+	incorporatePendingCopies("copies", sd, env, cwd)
 	rows, err := core.ReadCopies(sd)
 	if err != nil {
 		core.DieFriction(fmt.Sprintf("copies: cannot read the copy registry (%v)", err), 4, frictionLogPath, "copies")
@@ -757,6 +834,7 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		return 2
 	}
 	sd := core.StateDir(ctx, env, cwd)
+	incorporatePendingCopies("copies add", sd, env, cwd)
 	pane := env.Get("HERDR_PANE_ID")
 	owner := "-"
 	if agentSeen {
@@ -779,7 +857,10 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	}
 	task, report := copyTaskColumns(sd, owner)
 	row := core.CopyRow{Path: resolved, Owner: owner, Pane: pane, Created: core.FrictionISO(platform.Now()), Source: "-", Origin: "add", Task: task, Report: report}
-	if err := core.UpsertCopies(sd, row); err != nil {
+	if err := upsertCopies(sd, row); err != nil {
+		if err = queueCopy("copies add", sd, row, err, env); err == nil {
+			return 0
+		}
 		var locked *core.CopiesLockedError
 		if errors.As(err, &locked) {
 			core.DieFriction(err.Error(), 4, frictionLogPath, "copies")
@@ -861,6 +942,8 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	// measured values; a metric that could not be measured shows as
 	// "<metric> not measured". No throttle, no stamp.
 	_, _ = fmt.Fprintln(platform.Stdout, gcPressureLine(ctx, env, sd))
+	incorporatePendingCopies("gc", sd, env, cwd)
+	incorporatePendingProcs("gc", sd, env)
 	rows, err := core.ReadCopies(sd)
 	if err != nil {
 		core.DieFriction(fmt.Sprintf("gc: cannot read the copy registry (%v)", err), 4, frictionLogPath, "gc")
