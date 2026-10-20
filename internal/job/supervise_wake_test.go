@@ -52,7 +52,10 @@ func wakeSupFixture(t *testing.T, rules []fakecli.Rule, opts fakecli.InstallOpti
 // exists.
 func wakeSeqValue(t *testing.T, jobDir string) (string, bool) {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(jobDir, "wake.seq"))
+	// The background worker may be replacing the cursor while the test
+	// reads it: read it the lock-free way, as the package's readers do, so
+	// the read neither fails on the replace nor makes it fail on Windows.
+	raw, err := readReplacedFile(filepath.Join(jobDir, "wake.seq"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", false
