@@ -22,12 +22,24 @@ func TestKindUnsandboxedApprovalArgs(t *testing.T) {
 		"agy":    {"--mode", "accept-edits"}, "gemini": {"--mode", "accept-edits"},
 		"cursor": {"--trust", "--auto-review"}, "pi": nil, "opencode": nil,
 	}
+	auto := map[string][]string{
+		"claude": {"--permission-mode", "auto"}, "grok": {"--permission-mode", "auto"},
+		"codex": {"--approve-for-me"}, "cursor": {"--trust", "--auto-review"},
+		"agy": {"--mode", "auto"}, "opencode": {"--auto"}, "pi": nil,
+		"gemini": {"--mode", "accept-edits"},
+	}
 	for kind, args := range full {
 		t.Run(kind, func(t *testing.T) {
-			for _, mode := range []string{"ask", "edits", "full", "unsandboxed"} {
+			for _, mode := range []string{"ask", "edits", "auto", "full", "unsandboxed"} {
 				want, warning := args, ""
 				if mode == "ask" {
 					want = nil
+				}
+				if mode == "auto" {
+					want = auto[kind]
+					if kind == "gemini" {
+						warning = "gemini has no verified auto mode; approvals=auto runs as edits"
+					}
 				}
 				if mode == "edits" {
 					want = edits[kind]

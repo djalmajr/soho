@@ -46,7 +46,7 @@ func assertNoStart(t *testing.T, calls []fakecli.Call) {
 // codex kind; the model column is empty so a flagless spawn matches the
 // session (no kind-mismatch) and the reuse decision is reached.
 func reuseLaneRow(name, wdir string) string {
-	return strings.Join([]string{name, "w0test:p0a", "codex", "reviewer", "openai", "1", wdir, "now", "", "ask", "reviewer", "review", "", ""}, "\t")
+	return strings.Join([]string{name, "w0test:p0a", "codex", "reviewer", "openai", "1", wdir, "now", "", "auto", "reviewer", "review", "", ""}, "\t")
 }
 
 // reuse8Row is an 8-column roster line (the shape the old writers left

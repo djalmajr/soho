@@ -15,6 +15,14 @@ func TestReuseUnsandboxedApprovalRank(t *testing.T) {
 			held, requested string
 			reuse           bool
 		}{
+			{"edits", "", false},
+			{"auto", "", true},
+			{"edits", "auto", false},
+			{"", "auto", false},
+			{"legacy", "auto", false},
+			{"full", "auto", true},
+			{"auto", "full", false},
+			{"auto", "auto", true},
 			{"full", "unsandboxed", false},
 			{"unsandboxed", "full", true},
 			{"unsandboxed", "unsandboxed", true},
@@ -41,6 +49,14 @@ func TestSpawnLaneUnsandboxedApprovalReuse(t *testing.T) {
 		named, alternative, fresh       bool
 		code                            int
 	}{
+		{"default-opens-new", "edits", "", "2", false, false, true, 0},
+		{"default-missing-approval-opens-new", "", "", "2", false, false, true, 0},
+		{"auto-opens-new", "edits", "auto", "2", false, false, true, 0},
+		{"auto-missing-approval-opens-new", "", "auto", "2", false, false, true, 0},
+		{"auto-unknown-approval-opens-new", "legacy", "auto", "2", false, false, true, 0},
+		{"legacy-missing-approval-still-reuses-full", "", "full", "1", false, false, false, 0},
+		{"auto-reuses-full", "full", "auto", "1", false, false, false, 0},
+		{"auto-cannot-satisfy-full", "auto", "full", "1", false, false, false, 10},
 		{"opens-new", "full", "unsandboxed", "2", false, false, true, 0},
 		{"full-lane-refuses", "full", "unsandboxed", "1", false, false, false, 10},
 		{"named-refuses", "full", "unsandboxed", "2", true, false, false, 10},
@@ -52,7 +68,11 @@ func TestSpawnLaneUnsandboxedApprovalReuse(t *testing.T) {
 			rules := []fakecli.Rule{idleHerdrRule("held"), idleHerdrRule("stronger")}
 			f := newSpawnFixture(t, append(rules, freshSpawnRules()...))
 			configureSpawnFixture(t, &f)
-			if err := os.WriteFile(filepath.Join(f.root, "roles", "worker.md"), []byte("---\nkind: codex\napprovals: ask\n---\n"), 0o600); err != nil {
+			front := "---\nkind: codex\napprovals: ask\n---\n"
+			if tc.requested == "" {
+				front = "---\nkind: codex\n---\n"
+			}
+			if err := os.WriteFile(filepath.Join(f.root, "roles", "worker.md"), []byte(front), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := fakecli.Install(t, f.bin, "codex", nil); err != nil {

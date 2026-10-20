@@ -355,6 +355,7 @@ func (f *tm11SpawnFixture) runStepsPrepared(t *testing.T, golden tm11SpawnGolden
 		if adErr != nil {
 			t.Fatalf("DJA-392 spawn JSON adaptation: %s", adErr)
 		}
+		wantOut = testutil.RewriteApprovalsAutoSpawnJSON(wantOut, want.Args)
 		wantErr, adErr := testutil.RewriteMcpErr(want.Err, wantOut)
 		if adErr != nil {
 			t.Fatalf("DJA-392 spawn stderr adaptation: %s", adErr)
@@ -364,6 +365,7 @@ func (f *tm11SpawnFixture) runStepsPrepared(t *testing.T, golden tm11SpawnGolden
 			if wantLog, adErr = testutil.RewriteMcpAgentStartLog(*want.Log); adErr != nil {
 				t.Fatalf("DJA-392 spawn log adaptation: %s", adErr)
 			}
+			wantLog = testutil.RewriteApprovalsAutoStartLog(wantLog, want.Args)
 		}
 		if code != want.RC || actualOut != wantOut || actualErr != wantErr || (want.Log != nil && actualLog != wantLog) {
 			t.Fatalf("step %d args=%v\ncode=%d want=%d\nstdout=%q want=%q\nstderr=%q want=%q\nlog=%q want=%q", i, want.Args, code, want.RC, actualOut, wantOut, actualErr, wantErr, actualLog, wantLog)
@@ -393,6 +395,13 @@ func (f *tm11SpawnFixture) runStepsPrepared(t *testing.T, golden tm11SpawnGolden
 				t.Fatalf("DJA-392 R2 roster adaptation: %s", adErr)
 			}
 			*want = adapted
+			var defaultSpawns []string
+			for _, step := range golden.Steps {
+				if testutil.RewriteApprovalsAutoSpawnJSON(step.Out, step.Args) != step.Out {
+					defaultSpawns = append(defaultSpawns, testutil.McpSpawnedAgents(step.Out)...)
+				}
+			}
+			*want = testutil.RewriteApprovalsAutoRoster(*want, defaultSpawns)
 		}
 		if value != *want {
 			t.Fatalf("%s=%q want=%q", name, value, *want)

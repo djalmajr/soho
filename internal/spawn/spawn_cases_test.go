@@ -359,7 +359,7 @@ func TestSpawnHelperJavaScriptCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := core.ResolveRoleSettings("worker", f.ctx, f.env, f.cwd, core.RoleFlags{})
-		if got.Kind != "grok" || got.Effort != "high" || got.Approvals != "ask" {
+		if got.Kind != "grok" || got.Effort != "high" || got.Approvals != "auto" {
 			t.Fatalf("settings=%#v", got)
 		}
 	})

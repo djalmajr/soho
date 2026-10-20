@@ -24,7 +24,9 @@ Not bypassed by the skill (pass after `--` if you accept it): Codex `--dangerous
 
 ## Codex sandbox limits (`-s workspace-write`)
 
-Both `edits` (`-s workspace-write -a on-request`) and `full` (`-s workspace-write -a never`) run the Codex worker in the `workspace-write` sandbox, which allows the repo root, `/tmp` and `$TMPDIR` but:
+`approvals: auto` selects automatic approval review below `full` in the order `ask < edits < auto < full < unsandboxed`: Claude and Grok `--permission-mode auto`, Codex `--approve-for-me`, Cursor `--trust --auto-review`, agy `--mode auto`, OpenCode `--auto`, and no flag for pi. Gemini uses `--mode accept-edits` and warns `gemini has no verified auto mode; approvals=auto runs as edits`. Codex's flag already selects the `workspace-write` sandbox, so Git, network and Windows runtime sandbox notes still apply. `doctor` warns only about `unsandboxed`, not `auto`. The shipped default is `auto`; choose `approvals=ask` explicitly to use the CLI's normal prompts.
+
+`auto` (`--approve-for-me`), `edits` (`-s workspace-write -a on-request`) and `full` (`-s workspace-write -a never`) run the Codex worker in the `workspace-write` sandbox, which allows the repo root, `/tmp` and `$TMPDIR` but:
 
 - **cannot write under `.git`** — `git mv` and `git checkout -- <file>` fail on `.git/index.lock`;
 - **has no network** — binding a local port included: a test that starts a local server fails with `Operation not permitted`;

@@ -322,6 +322,7 @@ func TestDoctorTM6CLIAndParity(t *testing.T) {
 				// DJA-318 rename oracle (outermost) adapts the setup block, the hook
 				// literals and the doctor advisory lines to the soho contract.
 				wantOut = testutil.ApplySohoRenameOracle(testutil.ApplyHookOracle(testutil.RewriteSohoName(wantOut))).(string)
+				wantOut = testutil.RewriteApprovalsAutoDoctor(wantOut)
 				wantErr := testutil.ApplySohoRenameOracle(testutil.ApplyHookOracle(testutil.RewriteSohoName(want.Err))).(string)
 				if code != want.RC || out != wantOut || errOut != wantErr {
 					want.Out = wantOut

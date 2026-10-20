@@ -10,6 +10,68 @@ import (
 )
 
 func TestSpawnUnsandboxedApprovals(t *testing.T) {
+	testSpawnApprovalMode(t, "unsandboxed", "-- -s danger-full-access -a never")
+}
+
+func TestSpawnAutoApprovals(t *testing.T) {
+	testSpawnApprovalMode(t, "auto", "-- --approve-for-me")
+}
+
+func TestSpawnApprovalDefaultAndExplicitAsk(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		t.Run(map[bool]string{false: "shipped-default", true: "explicit-ask"}[explicit], func(t *testing.T) {
+			env, bin, state := laneKindFlagEnv(t)
+			env["HOME"], env["USERPROFILE"], env["XDG_CONFIG_HOME"], env["TMPDIR"] = t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+			env["SOHO_LANES"] = "off"
+			args := []string{"spawn", "scouter", "--kind", "codex"}
+			mode := "auto"
+			if explicit {
+				args = append(args, "--approvals", "ask")
+				mode = "ask"
+			}
+			r := runLaneKindFlag(t, env, bin, state, args...)
+			if r.code != 0 || !strings.Contains(r.stdout, `"approvals": "`+mode+`"`) {
+				t.Fatalf("code=%d out=%s stderr=%s", r.code, r.stdout, r.stderr)
+			}
+			calls, err := fakecli.ReadCalls(filepath.Join(bin, "herdr.calls.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := false
+			for _, call := range calls {
+				if len(call.Argv) < 2 || call.Argv[0] != "agent" || call.Argv[1] != "start" {
+					continue
+				}
+				started = true
+				auto := 0
+				for _, arg := range call.Argv {
+					if arg == "--approve-for-me" {
+						auto++
+					}
+					if arg == "-a" || arg == "-s" {
+						t.Fatalf("unexpected approval flags: %q", call.Argv)
+					}
+				}
+				wantAuto := 1
+				if explicit {
+					wantAuto = 0
+				}
+				if auto != wantAuto {
+					t.Fatalf("mode=%s argv=%q automatic flags=%d want=%d", mode, call.Argv, auto, wantAuto)
+				}
+			}
+			if !started {
+				t.Fatal("no agent start")
+			}
+			if !strings.Contains(r.roster, "\t"+mode+"\tscouter\t") {
+				t.Fatalf("roster=%q", r.roster)
+			}
+		})
+	}
+}
+
+func testSpawnApprovalMode(t *testing.T, mode, wantStart string) {
+	t.Helper()
 	for _, source := range []string{"flag", "lane", "role", "global"} {
 		t.Run(source, func(t *testing.T) {
 			env, bin, state := laneKindFlagEnv(t)
@@ -17,20 +79,20 @@ func TestSpawnUnsandboxedApprovals(t *testing.T) {
 			args := []string{"spawn", "scouter", "--kind", "codex"}
 			if source == "lane" {
 				env["SOHO_LANE_BUILD_KIND"] = "codex"
-				env["SOHO_LANE_BUILD_APPROVALS"] = "unsandboxed"
+				env["SOHO_LANE_BUILD_APPROVALS"] = mode
 			} else {
 				env["SOHO_LANES"] = "off"
 				switch source {
 				case "flag":
-					args = append(args, "--approvals", "unsandboxed")
+					args = append(args, "--approvals", mode)
 				case "role":
-					env["SOHO_ROLE_SCOUTER_APPROVALS"] = "unsandboxed"
+					env["SOHO_ROLE_SCOUTER_APPROVALS"] = mode
 				case "global":
-					env["SOHO_APPROVALS"] = "unsandboxed"
+					env["SOHO_APPROVALS"] = mode
 				}
 			}
 			r := runLaneKindFlag(t, env, bin, state, args...)
-			if r.code != 0 || !strings.Contains(r.stdout, `"approvals": "unsandboxed"`) {
+			if r.code != 0 || !strings.Contains(r.stdout, `"approvals": "`+mode+`"`) {
 				t.Fatalf("code=%d out=%s stderr=%s", r.code, r.stdout, r.stderr)
 			}
 			calls, err := fakecli.ReadCalls(filepath.Join(bin, "herdr.calls.jsonl"))
@@ -41,7 +103,7 @@ func TestSpawnUnsandboxedApprovals(t *testing.T) {
 			for _, call := range calls {
 				if len(call.Argv) >= 2 && call.Argv[0] == "agent" && call.Argv[1] == "start" {
 					started = true
-					if !strings.Contains(strings.Join(call.Argv, " "), "-- -s danger-full-access -a never") {
+					if !strings.Contains(strings.Join(call.Argv, " "), wantStart) {
 						t.Fatalf("argv=%q", call.Argv)
 					}
 				}
@@ -54,7 +116,7 @@ func TestSpawnUnsandboxedApprovals(t *testing.T) {
 				cols := strings.Split(row, "\t")
 				if len(cols) > 9 && cols[2] == "codex" {
 					found = true
-					if cols[9] != "unsandboxed" {
+					if cols[9] != mode {
 						t.Fatalf("roster=%q", row)
 					}
 				}
@@ -69,7 +131,7 @@ func TestSpawnUnsandboxedApprovals(t *testing.T) {
 func TestConfigUnsandboxedApprovals(t *testing.T) {
 	env, cwd := tm6CLIEnv(t)
 	for _, key := range []string{"approvals", "role.scouter.approvals", "lane.build.approvals"} {
-		for _, value := range []string{"ask", "edits", "full", "unsandboxed", "UNKNOWN"} {
+		for _, value := range []string{"ask", "edits", "auto", "full", "unsandboxed", "UNKNOWN"} {
 			code, out, stderr := runIn(t, []string{"config", "set", key, value}, env, cwd)
 			want := 0
 			if value == "UNKNOWN" {
@@ -83,7 +145,7 @@ func TestConfigUnsandboxedApprovals(t *testing.T) {
 }
 
 func TestDoctorUnsandboxedApprovals(t *testing.T) {
-	for _, value := range []string{"ask", "edits", "full", "unsandboxed"} {
+	for _, value := range []string{"ask", "edits", "auto", "full", "unsandboxed"} {
 		t.Run(value, func(t *testing.T) {
 			env, cwd := tm6CLIEnv(t)
 			keys := []string{"approvals", "role.scouter.approvals", "lane.build.approvals"}
@@ -119,7 +181,7 @@ func TestDoctorUnsandboxedApprovals(t *testing.T) {
 }
 
 func TestDispatchUnsandboxedRosterApprovals(t *testing.T) {
-	for _, mode := range []string{"full", "unsandboxed"} {
+	for _, mode := range []string{"auto", "full", "unsandboxed"} {
 		for _, amend := range []bool{false, true} {
 			f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
 			f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
@@ -147,7 +209,7 @@ func TestDispatchUnsandboxedRosterApprovals(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, note := range []string{"Your sandbox cannot write under .git", "Your sandbox has no network"} {
-				if strings.Contains(string(body), note) != (mode == "full") {
+				if strings.Contains(string(body), note) != (mode != "unsandboxed") {
 					t.Fatalf("mode=%s amend=%v note=%q prompt=%s", mode, amend, note, body)
 				}
 			}

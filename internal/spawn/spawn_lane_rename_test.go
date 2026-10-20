@@ -16,7 +16,7 @@ import (
 // the codex kind; the model column is empty so a flagless spawn matches the
 // session (no kind-mismatch) and the reuse path is reached.
 func laneReuseRow(name, cwd string) string {
-	return strings.Join([]string{name, "w0test:p0a", "codex", "reviewer", "openai", "1", cwd, "now", "", "ask", "reviewer", "review", "", ""}, "\t")
+	return strings.Join([]string{name, "w0test:p0a", "codex", "reviewer", "openai", "1", cwd, "now", "", "auto", "reviewer", "review", "", ""}, "\t")
 }
 
 func renameCalls(calls []fakecli.Call) int {

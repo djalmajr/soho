@@ -416,7 +416,7 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 	}
 	switch {
 	case key == "approvals" || (strings.HasPrefix(key, "lane.") || strings.HasPrefix(key, "role.")) && strings.HasSuffix(key, ".approvals"):
-		return value == "ask" || value == "edits" || value == "full" || value == "unsandboxed"
+		return value == "ask" || value == "edits" || value == "auto" || value == "full" || value == "unsandboxed"
 	case key == "max_workers" || key == "provider_retries" || key == "provider_retry_delay" || key == "prompt_check_seconds" || key == "prompt_settle_seconds" || key == "stuck_warn_minutes" || key == "pressure_disk_free_percent" || key == "pressure_swap_percent" || key == "pressure_refuse_disk_free_percent" || key == "pressure_refuse_swap_percent" || key == "footprint_warn_gb":
 		return decimalRE.MatchString(value)
 	case key == "multi_role" || key == "reuse_workers" || key == "lanes":

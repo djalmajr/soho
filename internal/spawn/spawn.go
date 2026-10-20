@@ -306,10 +306,12 @@ func approvalsRank(mode string) int {
 		return 1
 	case "edits":
 		return 2
-	case "full":
+	case "auto":
 		return 3
-	case "unsandboxed":
+	case "full":
 		return 4
+	case "unsandboxed":
+		return 5
 	default:
 		return 0
 	}
@@ -438,11 +440,11 @@ func FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, want
 			if len(f) >= 9 && wModel != wantModel {
 				continue
 			}
-			if len(f) >= 10 && approvalsRank(wApprovals) < approvalsRank(defaultValue(wantApprovals, "ask")) {
+			if len(f) >= 10 && approvalsRank(wApprovals) < approvalsRank(defaultValue(wantApprovals, "auto")) {
 				continue
 			}
 		} else {
-			if multi != "on" || len(f) < 11 || wantModel == "" || wModel == "" || wModel != wantModel || wApprovals == "" || approvalsRank(defaultValue(wantApprovals, "ask")) == 0 || approvalsRank(wApprovals) < approvalsRank(defaultValue(wantApprovals, "ask")) {
+			if multi != "on" || len(f) < 11 || wantModel == "" || wModel == "" || wModel != wantModel || wApprovals == "" || approvalsRank(defaultValue(wantApprovals, "auto")) == 0 || approvalsRank(wApprovals) < approvalsRank(defaultValue(wantApprovals, "auto")) {
 				continue
 			}
 			if core.IsReviewRole(role) && (core.RoleIsEdit(at(3), env, cwd) || core.HistoryHasEdit(at(10), env, cwd)) {
@@ -512,13 +514,14 @@ func laneReuseCandidate(f []string, state, role, kind, model, approvals, mcp, wo
 }
 
 func laneApprovalsMatch(f []string, approvals string) bool {
+	approvals = defaultValue(approvals, "auto")
 	held := fieldAt(f, 9)
 	// Preserve legacy lane decisions for missing or unrecognized approval
-	// fields, but they cannot establish the new unsandboxed capability.
-	if approvalsRank(held) == 0 && approvals != "unsandboxed" {
+	// fields, but they cannot establish auto or unsandboxed capability.
+	if approvalsRank(held) == 0 && approvals != "auto" && approvals != "unsandboxed" {
 		return true
 	}
-	return approvalsRank(held) >= approvalsRank(defaultValue(approvals, "ask"))
+	return approvalsRank(held) >= approvalsRank(approvals)
 }
 
 // laneReusePick scans the lane's live workers in roster order and returns the
@@ -801,7 +804,7 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 }
 
 func approvalsOk(value string) bool {
-	return value == "ask" || value == "edits" || value == "full" || value == "unsandboxed"
+	return value == "ask" || value == "edits" || value == "auto" || value == "full" || value == "unsandboxed"
 }
 
 func effortOk(value string) bool {
@@ -1255,7 +1258,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	// DJA-392 fatia 2 R2: the effective MCP choice (inherit|none) is the
 	// row's last field; reopen reads it and passes --mcp <value> to the
 	// respawn, so a worker keeps the MCP it was opened with.
-	core.RosterAppend(sd, []string{o.name, o.pane, kind, o.role, family, boolInt(created), o.cwd, core.NowStamp(platform.Now()), o.model, defaultValue(o.approvals, "ask"), o.role, lane, boolText(burst), native, o.effort, o.mcp})
+	core.RosterAppend(sd, []string{o.name, o.pane, kind, o.role, family, boolInt(created), o.cwd, core.NowStamp(platform.Now()), o.model, defaultValue(o.approvals, "auto"), o.role, lane, boolText(burst), native, o.effort, o.mcp})
 	// A spawn that re-rosters a released pane (spawn --pane on it) retires
 	// the pane's released-panes row.
 	if placement == "given" {
@@ -1376,7 +1379,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			}
 		}
 	}
-	out := jsonjs.O("name", o.name, "pane_id", o.pane, "kind", kind, "role", o.role, "family", family, "created_pane", created, "layout", layoutMode, "placement", placement, "effort", defaultValue(o.effort, "default"), "model", defaultValue(o.model, "default"), "model_spec", modelSpec, "approvals", defaultValue(o.approvals, "ask"), "agent_args", strings.Join(agentArgs, " "), "status", func() string {
+	out := jsonjs.O("name", o.name, "pane_id", o.pane, "kind", kind, "role", o.role, "family", family, "created_pane", created, "layout", layoutMode, "placement", placement, "effort", defaultValue(o.effort, "default"), "model", defaultValue(o.model, "default"), "model_spec", modelSpec, "approvals", defaultValue(o.approvals, "auto"), "agent_args", strings.Join(agentArgs, " "), "status", func() string {
 		if blocked {
 			return "blocked_at_startup"
 		}

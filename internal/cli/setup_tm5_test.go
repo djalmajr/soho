@@ -55,6 +55,8 @@ func runSetupTM5InitGolden(t *testing.T, name string, seedConfig bool) {
 		// rename oracle adapts the herdr-soho → soho generation change.
 		want.Steps[i].Out = testutil.ApplySohoRenameOracle(testutil.ApplyHookOracle(testutil.RewriteSohoName(want.Steps[i].Out))).(string)
 		want.Steps[i].Err = testutil.ApplySohoRenameOracle(testutil.ApplyHookOracle(testutil.RewriteSohoName(want.Steps[i].Err))).(string)
+		want.Steps[i].Out = testutil.RewriteApprovalsAutoDoctor(want.Steps[i].Out)
+		want.Steps[i].Err = testutil.RewriteApprovalsAutoDoctor(want.Steps[i].Err)
 		if strings.Join(want.Steps[i].Args, " ") == "doctor" {
 			out := want.Steps[i].Out
 			if !strings.Contains(out, "ok     inside Herdr (HERDR_ENV=1)\n") {
