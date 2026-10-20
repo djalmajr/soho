@@ -341,3 +341,106 @@ func TestSetupTM7PanesWriteCLI(t *testing.T) {
 		}
 	})
 }
+
+// These expectations were native assertions inside TestSetupTM7ParityGoldens
+// before the output corpus was retired; they do not depend on stored output.
+func TestSetupRetirementRefusalContracts(t *testing.T) {
+	t.Run("probe and plan are exclusive", func(t *testing.T) {
+		f := newSetupTM7Fixture(t)
+		got := runSetupTM7Steps(t, f, []setupTM7Step{setupTM7SetupStep([]string{"setup", "--probe", "--plan"})})[0]
+		if got.RC != 2 || got.Out != "" || got.Err != "PROG: setup: --probe and --plan are exclusive\n" {
+			t.Fatalf("result=%+v", got)
+		}
+	})
+	t.Run("invalid settings refuse before writing the instruction block", func(t *testing.T) {
+		f := newSetupTM7Fixture(t)
+		writeSetupTM7Seed(t, f.Repo, ".claude/settings.json", "{invalid\n")
+		before := setupTM7TreeOf(t, f.Root)
+		got := runSetupTM7Steps(t, f, []setupTM7Step{setupTM7SetupStep([]string{"setup"})})[0]
+		if got.RC != 4 || got.Out != "" || !strings.Contains(got.Err, "settings.json") {
+			t.Fatalf("result=%+v", got)
+		}
+		settings := setupTM7ReadRel(f.Root, "repo/.claude/settings.json")
+		if settings == nil || *settings != "{invalid\n" || setupTM7ReadRel(f.Root, "repo/AGENTS.md") != nil {
+			t.Fatalf("settings=%v; instruction block must remain absent", settings)
+		}
+		if after := setupTM7TreeOf(t, f.Root); !reflect.DeepEqual(before, after) {
+			t.Fatalf("refusal changed files: before=%+v after=%+v", before, after)
+		}
+	})
+}
+
+// runSetupTM7PlanGolden also asserted these effects independently of its
+// stream comparison. Keep every original seed and argv, including errors.
+func TestSetupRetirementPlanEffectsContract(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+		dirs  []string
+		steps []setupTM7Step
+	}{
+		{name: "fresh panes", steps: []setupTM7Step{{Args: []string{"setup", "--plan", "--panes", "4"}}}},
+		{name: "existing panes", files: map[string]string{".agents/soho.conf": "panes=3\n"}, steps: []setupTM7Step{{Args: []string{"setup", "--plan", "--panes", "4"}}}},
+		{name: "invalid lane", steps: []setupTM7Step{{Args: []string{"setup", "--plan", "--panes", "4", "--lane", "build=boguskind"}}}},
+		{name: "lane and set", steps: []setupTM7Step{{Args: []string{"setup", "--plan", "--panes", "4", "--lane", "build=grok:grok-4.7:high", "--set", "max_workers", "5"}}}},
+		{name: "new user file", steps: []setupTM7Step{{Args: []string{"setup", "--plan", "--user-set", "model.pi.worker", "my-provider/my-model"}}}},
+		{name: "existing user file", files: map[string]string{"user/soho/config": "model.pi.worker=other/model\n"}, steps: []setupTM7Step{{Args: []string{"setup", "--plan", "--user-set", "model.pi.worker", "new/model"}}}},
+		{name: "new session file", steps: []setupTM7Step{{Args: []string{"setup", "--plan", "--session-set", "lane.build.kind", "pi"}}}},
+		{name: "deleted planner key", files: map[string]string{".agents/soho.conf": "role.planner.model=fable\n"}, steps: []setupTM7Step{{Args: []string{"setup", "--plan", "--panes", "4"}}}},
+		{name: "invalid values", steps: []setupTM7Step{
+			{Args: []string{"setup", "--plan", "--set", "nope", "1"}},
+			{Args: []string{"setup", "--plan", "--set", "max_workers", "-1"}},
+			{Args: []string{"setup", "--plan", "--panes", "5"}},
+		}},
+		{name: "bare plan", steps: []setupTM7Step{{Args: []string{"setup", "--plan"}}}},
+		{name: "new gitignore entry", files: map[string]string{".gitignore": "*.log\n"}, steps: []setupTM7Step{{Args: []string{"setup", "--plan", "--session-set", "lane.build.kind", "pi"}, Env: map[string]string{"SOHO_DIR": ""}}}},
+		{name: "existing gitignore entry", files: map[string]string{".gitignore": "*.log\n.soho/\n"}, dirs: []string{".soho"}, steps: []setupTM7Step{{Args: []string{"setup", "--plan", "--session-set", "lane.build.kind", "pi"}, Env: map[string]string{"SOHO_DIR": ""}}}},
+		{name: "missing flag values", steps: []setupTM7Step{
+			{Args: []string{"setup", "--plan", "--set", "max_workers"}},
+			{Args: []string{"setup", "--plan", "--lane"}},
+			{Args: []string{"setup", "--plan", "--lane", "--panes", "4"}},
+		}},
+		{name: "invalid hooks", files: map[string]string{".claude/settings.json": "not-json\n"}, steps: []setupTM7Step{{Args: []string{"setup", "--plan", "--panes", "4"}}}},
+		{name: "all config layers", files: map[string]string{".agents/soho.conf": "max_workers=3\n"}, steps: []setupTM7Step{{Args: []string{"setup", "--plan", "--set", "max_workers", "5", "--user-set", "model.pi.worker", "p/m", "--session-set", "lane.build.kind", "pi"}}}},
+		{name: "target with old block", files: map[string]string{"AGENTS.md": "# head\n<!-- herdr-soho:start -->\nold block line\n<!-- herdr-soho:end -->\n# tail\n"}, steps: []setupTM7Step{{Args: []string{"setup", "--plan", "--target", "AGENTS.md"}}}},
+		{name: "no hooks", steps: []setupTM7Step{{Args: []string{"setup", "--plan", "--no-hooks"}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSetupTM7Fixture(t)
+			files := map[string]string{
+				"AGENTS.md":             "# Agent instructions\n",
+				".claude/settings.json": "{\"hooks\":{\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"echo keep-me\"}]}]}}\n",
+			}
+			for rel, content := range tc.files {
+				files[rel] = content
+			}
+			for rel, content := range files {
+				root := f.Repo
+				if strings.HasPrefix(rel, "user/") {
+					root, rel = f.Conf, strings.TrimPrefix(rel, "user/")
+				}
+				writeSetupTM7Seed(t, root, rel, content)
+			}
+			for _, rel := range tc.dirs {
+				if err := os.MkdirAll(filepath.Join(f.Repo, rel), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := setupTM7TreeOf(t, f.Root)
+			runSetupTM7Steps(t, f, tc.steps)
+			if after := setupTM7TreeOf(t, f.Root); !reflect.DeepEqual(before, after) {
+				t.Fatalf("plan changed files: before=%+v after=%+v", before, after)
+			}
+			entries, err := os.ReadDir(f.Tmp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), "soho-plan.") {
+					t.Fatalf("plan temp directory remains: %s", entry.Name())
+				}
+			}
+		})
+	}
+}
