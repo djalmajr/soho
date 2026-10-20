@@ -868,8 +868,9 @@ func TestInstallMoveAsideKeepsAnUnmarkedFile(t *testing.T) {
 }
 
 // A marked backup whose bytes no longer match its marker (the file was
-// replaced) stays with its marker, and so does a marker whose content is
-// not a sha256; the move aside skips both names.
+// replaced) stays under its check name with its marker, and Stranded names
+// it; a marker whose content is not a sha256 leaves its backup at its own
+// name. The move aside skips both names, whose markers stay.
 func TestInstallMoveAsideKeepsABackupWhoseShaDiffers(t *testing.T) {
 	dir := t.TempDir()
 	name := destinationName(runtime.GOOS)
@@ -887,7 +888,8 @@ func TestInstallMoveAsideKeepsABackupWhoseShaDiffers(t *testing.T) {
 	if got.err != nil {
 		t.Fatalf("install: %v", got.err)
 	}
-	assertFile(t, destination+".old", "USER DATA")
+	check := checkName(destination + ".old")
+	assertFile(t, check, "USER DATA")
 	assertFile(t, destination+".old.soho-install", markerFor("older binary"))
 	assertFile(t, destination+".old-1", "older binary")
 	assertFile(t, destination+".old-1.soho-install", "not a digest\n")
@@ -895,7 +897,10 @@ func TestInstallMoveAsideKeepsABackupWhoseShaDiffers(t *testing.T) {
 	if got.res.Previous != destination+".old-2" {
 		t.Fatalf("Previous = %q; want %q", got.res.Previous, destination+".old-2")
 	}
-	assertDirExact(t, dir, name, name+".old", name+".old-1", name+".old-1.soho-install", name+".old-2", name+".old-2.soho-install", name+".old.soho-install")
+	if len(got.res.Stranded) != 1 || got.res.Stranded[0] != check {
+		t.Fatalf("Stranded = %q; want [%q]", got.res.Stranded, check)
+	}
+	assertDirExact(t, dir, name, name+".old-1", name+".old-1.soho-install", name+".old-2", name+".old-2.soho-install", filepath.Base(check), name+".old.soho-install")
 }
 
 // A marker whose backup is gone is removed, and nothing else changes.
@@ -962,9 +967,9 @@ func TestInstallMoveAsideIsNotUsedWhenTheDirectRenameWorks(t *testing.T) {
 
 // A marked .old and .old-1 that cannot be removed (their processes still
 // run: Windows lets the cleanup rename them to their check names, but not
-// remove them) do not fail the install: they are renamed back and stay
-// with their markers, and the destination moves to the first free
-// .old-<n>.
+// remove them) do not fail the install: they stay under their check names
+// with their markers, Stranded names both, and the destination moves to
+// the first free .old-<n>, past the names their markers still hold.
 func TestInstallMoveAsideUsesAFreeSuffixWhenTheOldStays(t *testing.T) {
 	dir := t.TempDir()
 	name := destinationName(runtime.GOOS)
@@ -989,13 +994,17 @@ func TestInstallMoveAsideUsesAFreeSuffixWhenTheOldStays(t *testing.T) {
 		t.Fatalf("install: %v", got.err)
 	}
 	assertFile(t, destination, fakeBinary)
-	assertFile(t, destination+".old", "older binary")
-	assertFile(t, destination+".old-1", "oldest binary")
+	checkOld, checkOld1 := checkName(destination+".old"), checkName(destination+".old-1")
+	assertFile(t, checkOld, "older binary")
+	assertFile(t, checkOld1, "oldest binary")
 	assertFile(t, destination+".old-2", "running binary")
 	if got.res.Previous != destination+".old-2" {
 		t.Fatalf("Previous = %q; want %q", got.res.Previous, destination+".old-2")
 	}
-	assertDirExact(t, dir, name, name+".old", name+".old-1", name+".old-1.soho-install", name+".old-2", name+".old-2.soho-install", name+".old.soho-install")
+	if strings.Join(got.res.Stranded, " ") != checkOld+" "+checkOld1 {
+		t.Fatalf("Stranded = %q; want [%q %q]", got.res.Stranded, checkOld, checkOld1)
+	}
+	assertDirExact(t, dir, name, filepath.Base(checkOld1), name+".old-1.soho-install", name+".old-2", name+".old-2.soho-install", filepath.Base(checkOld), name+".old.soho-install")
 }
 
 // No free name from .old to .old-<maxAsideSuffix> (all held by unmarked
@@ -1173,7 +1182,8 @@ func TestInstallMoveAsideKeepsABackupWhoseMarkerIsALink(t *testing.T) {
 }
 
 // A backup that is a symlink to a file whose sha256 the marker holds is
-// renamed back and kept, with its marker: only a regular file is removed.
+// kept under its check name, with its marker, and Stranded names it: only
+// a regular file is removed.
 func TestInstallMoveAsideKeepsABackupThatIsALink(t *testing.T) {
 	dir := t.TempDir()
 	name := destinationName(runtime.GOOS)
@@ -1189,10 +1199,15 @@ func TestInstallMoveAsideKeepsABackupThatIsALink(t *testing.T) {
 	if got.err != nil {
 		t.Fatalf("install: %v", got.err)
 	}
-	if target, err := os.Readlink(destination + ".old"); err != nil || target != outside {
+	check := checkName(destination + ".old")
+	if target, err := os.Readlink(check); err != nil || target != outside {
 		t.Fatalf("Readlink = %q (err %v); want the link kept on %s", target, err, outside)
 	}
-	assertDirExact(t, dir, name, name+".old", name+".old.soho-install")
+	assertFile(t, outside, "older binary")
+	if len(got.res.Stranded) != 1 || got.res.Stranded[0] != check {
+		t.Fatalf("Stranded = %q; want [%q]", got.res.Stranded, check)
+	}
+	assertDirExact(t, dir, name, filepath.Base(check), name+".old.soho-install")
 }
 
 // The reviewer's cleanup-race probe: a file put at soho.old after the
@@ -1226,13 +1241,15 @@ func TestInstallMoveAsideCleanupRemovesOnlyTheCheckedFile(t *testing.T) {
 }
 
 // A backup whose sha256 does not match its marker is renamed to its check
-// name and back: it ends at its own name with its bytes and its marker,
-// and nothing stays under the check name.
-func TestInstallMoveAsideRenamesAMismatchBack(t *testing.T) {
+// name and left there with its bytes, next to its marker: that rename is
+// the only one the cleanup makes, nothing is renamed back to soho.old, and
+// Stranded names the check name.
+func TestInstallMoveAsideLeavesAMismatchUnderItsCheckName(t *testing.T) {
 	dir := t.TempDir()
 	name := destinationName(runtime.GOOS)
 	destination := filepath.Join(dir, name)
 	backup := destination + ".old"
+	check := checkName(backup)
 	writeFiles(t, dir, map[string]string{name: "previous binary", name + ".old": "USER DATA", name + ".old.soho-install": markerFor("older binary")})
 	var calls []string
 	useReplaceSeams(t, true, func(src, dst string) error {
@@ -1243,42 +1260,46 @@ func TestInstallMoveAsideRenamesAMismatchBack(t *testing.T) {
 	if got.err != nil {
 		t.Fatalf("install: %v", got.err)
 	}
-	check := filepath.Base(checkName(backup))
-	want := []string{name + ".old>" + check, check + ">" + name + ".old"}
-	if len(calls) < 2 || strings.Join(calls[:2], " ") != strings.Join(want, " ") {
-		t.Fatalf("renames %q; want %q first", calls, want)
+	if len(calls) != 2 || calls[0] != name+".old>"+filepath.Base(check) || !strings.HasSuffix(calls[1], ">"+name) {
+		t.Fatalf("renames %q; want %s.old>%s, then the direct temp>%s", calls, name, filepath.Base(check), name)
 	}
-	assertFile(t, backup, "USER DATA")
+	assertFile(t, check, "USER DATA")
 	assertFile(t, backup+".soho-install", markerFor("older binary"))
-	if len(got.res.Stranded) != 0 {
-		t.Fatalf("Stranded = %q; want none", got.res.Stranded)
+	if len(got.res.Stranded) != 1 || got.res.Stranded[0] != check {
+		t.Fatalf("Stranded = %q; want [%q]", got.res.Stranded, check)
 	}
-	assertDirExact(t, dir, name, name+".old", name+".old.soho-install")
+	assertDirExact(t, dir, name, filepath.Base(check), name+".old.soho-install")
 }
 
-// A mismatched backup that cannot be renamed back stays under its check
-// name with its bytes, and Result.Stranded names that path.
-func TestInstallMoveAsideReportsABackupLeftUnderItsCheckName(t *testing.T) {
+// The reviewer's rollback-collision probe: a file put at soho.old while
+// the cleanup checks the renamed backup (right after the rename to the
+// check name) keeps its bytes when that backup does not match; the backup
+// stays under its check name and Stranded names it.
+func TestInstallMoveAsideKeepsAFileThatAppearsDuringTheCheck(t *testing.T) {
 	dir := t.TempDir()
 	name := destinationName(runtime.GOOS)
 	destination := filepath.Join(dir, name)
-	check := checkName(destination + ".old")
-	writeFiles(t, dir, map[string]string{name: "previous binary", name + ".old": "USER DATA", name + ".old.soho-install": markerFor("older binary")})
+	backup := destination + ".old"
+	check := checkName(backup)
+	writeFiles(t, dir, map[string]string{name: "previous binary", name + ".old": "MISMATCHED BACKUP", name + ".old.soho-install": markerFor("older binary")})
 	useReplaceSeams(t, true, func(src, dst string) error {
-		if src == check {
-			return &os.LinkError{Op: "rename", Old: src, New: dst, Err: errors.New("simulated: rename back refused")}
+		err := os.Rename(src, dst)
+		if err == nil && src == backup && dst == check {
+			writeFiles(t, dir, map[string]string{name + ".old": "NEW USER DATA"})
 		}
-		return os.Rename(src, dst)
+		return err
 	}, nil)
 	got := runCore(t, fixtureOptions{installDir: dir})
 	if got.err != nil {
 		t.Fatalf("install: %v", got.err)
 	}
-	assertFile(t, check, "USER DATA")
+	assertFile(t, backup, "NEW USER DATA")
+	assertFile(t, check, "MISMATCHED BACKUP")
+	assertFile(t, backup+".soho-install", markerFor("older binary"))
 	if len(got.res.Stranded) != 1 || got.res.Stranded[0] != check {
 		t.Fatalf("Stranded = %q; want [%q]", got.res.Stranded, check)
 	}
-	assertDirExact(t, dir, name, filepath.Base(check), name+".old.soho-install")
+	assertDirExact(t, dir, name, name+".old", filepath.Base(check), name+".old.soho-install")
 }
 
 // A file already at a backup's check name is never replaced by the

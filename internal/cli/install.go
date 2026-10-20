@@ -256,11 +256,11 @@ func movedAsideLine(res install.Result) string {
 }
 
 // strandedLines are the stdout lines for the earlier backups the cleanup
-// renamed to a check name and could not rename back, one per path.
+// renamed to a check name and left there, one per path.
 func strandedLines(res install.Result) []string {
 	var lines []string
 	for _, path := range res.Stranded {
-		lines = append(lines, fmt.Sprintf("install: an earlier backup could not be renamed back after its check and is at %s", path))
+		lines = append(lines, fmt.Sprintf("install: an earlier backup stays at %s, next to its marker: its bytes did not match the marker, or it could not be removed", path))
 	}
 	return lines
 }

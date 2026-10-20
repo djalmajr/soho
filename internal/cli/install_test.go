@@ -1070,7 +1070,7 @@ func TestInstallStrandedLines(t *testing.T) {
 		t.Fatalf("lines = %q; want none", got)
 	}
 	got := strandedLines(install.Result{Stranded: []string{`C:\bin\soho.exe.old.soho-check-42`}})
-	want := `install: an earlier backup could not be renamed back after its check and is at C:\bin\soho.exe.old.soho-check-42`
+	want := `install: an earlier backup stays at C:\bin\soho.exe.old.soho-check-42, next to its marker: its bytes did not match the marker, or it could not be removed`
 	if len(got) != 1 || got[0] != want {
 		t.Fatalf("lines = %q; want [%q]", got, want)
 	}

@@ -147,8 +147,8 @@ func TestInstallWindowsRemovesARemovableEarlierOld(t *testing.T) {
 }
 
 // A marked .old still running (it cannot be removed) and a running
-// destination: the install keeps the .old with its marker and moves the
-// destination to .old-1.
+// destination: the install leaves the .old under its check name with its
+// marker, names it in Stranded, and moves the destination to .old-1.
 func TestInstallWindowsEarlierOldInUseLeadsToASuffix(t *testing.T) {
 	exe := testBinaryBytes(t)
 	got := runCore(t, fixtureOptions{payload: exe})
@@ -174,13 +174,17 @@ func TestInstallWindowsEarlierOldInUseLeadsToASuffix(t *testing.T) {
 	if err != nil || !bytes.Equal(installed, third) {
 		t.Fatalf("destination not replaced: len=%d err=%v", len(installed), err)
 	}
-	for _, aside := range []string{destination + ".old", destination + ".old-1"} {
+	check := checkName(destination + ".old")
+	if len(last.res.Stranded) != 1 || last.res.Stranded[0] != check {
+		t.Fatalf("Stranded = %q; want [%q]", last.res.Stranded, check)
+	}
+	for _, aside := range []string{check, destination + ".old-1"} {
 		data, err := os.ReadFile(aside)
 		if err != nil || !bytes.Equal(data, exe) {
 			t.Fatalf("%s does not hold a running binary: len=%d err=%v", aside, len(data), err)
 		}
 	}
-	assertDirExact(t, got.installDir, "soho.exe", "soho.exe.old", "soho.exe.old-1", "soho.exe.old-1.soho-install", "soho.exe.old.soho-install")
+	assertDirExact(t, got.installDir, "soho.exe", "soho.exe.old-1", "soho.exe.old-1.soho-install", filepath.Base(check), "soho.exe.old.soho-install")
 }
 
 // The new binary cannot follow the move aside (the second rename fails,

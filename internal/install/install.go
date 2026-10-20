@@ -70,7 +70,9 @@ type Options struct {
 // lets the next install remove that backup; it is empty when the marker
 // could not be written, and the backup then stays until removed by hand.
 // Stranded lists the check names (<backup>.soho-check-<pid>) of earlier
-// backups the cleanup renamed to check them and could not rename back.
+// backups the cleanup renamed to check them and left there, next to their
+// markers: the bytes did not match the marker, or the file could not be
+// removed.
 type Result struct {
 	Artifact       string
 	Destination    string
@@ -191,7 +193,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	previous, marker, stranded, err := replaceDestination(binPath, destination)
 	if err != nil {
 		if len(stranded) > 0 {
-			return Result{}, fmt.Errorf("%w (an earlier backup could not be renamed back after its check and is at %s)", err, strings.Join(stranded, ", "))
+			return Result{}, fmt.Errorf("%w (an earlier backup did not match its marker or could not be removed, and is at %s)", err, strings.Join(stranded, ", "))
 		}
 		return Result{}, err
 	}
@@ -324,7 +326,7 @@ func asideNames(destination string) []string {
 }
 
 // removeEarlierAside removes the backups an earlier install made and
-// returns the check names of those it could not rename back. Only a
+// returns the check names of those it left in place. Only a
 // regular-file marker (Lstat: not a symlink) is read; any other marker
 // authorizes nothing, and the backup and the marker stay, as they do when
 // the marker does not hold a sha256. A marker holding one whose backup is
@@ -333,11 +335,14 @@ func asideNames(destination string) []string {
 // and the renamed file is removed, then the marker, only when it is a
 // regular file whose sha256 is the one the marker holds; a file put at
 // <backup> after the rename is not the one hashed and removed. A renamed
-// file that does not match, or that cannot be removed (its process may
-// still run), is renamed back to <backup>; if that rename fails it stays
-// under the check name, which is returned. A process that already had the
-// backup open for writing can still change it after the hash; that window
-// is left open. No failure here is an error.
+// file that is not a regular file, does not match, or cannot be removed
+// (its process may still run) stays under the check name, next to its
+// marker, and that check name is returned: it is never renamed back, which
+// would overwrite a file put at <backup> meanwhile. The rename to the
+// check name is the only rename here; a file put at the check name between
+// its Lstat and that rename is replaced, a window left open. A process that
+// already had the backup open for writing can still change it after the
+// hash; that window is left open too. No failure here is an error.
 func removeEarlierAside(destination string) []string {
 	var stranded []string
 	for _, backup := range asideNames(destination) {
@@ -369,9 +374,7 @@ func removeEarlierAside(destination string) []string {
 			_ = removeFile(marker)
 			continue
 		}
-		if renameFile(check, backup) != nil {
-			stranded = append(stranded, check)
-		}
+		stranded = append(stranded, check)
 	}
 	return stranded
 }
