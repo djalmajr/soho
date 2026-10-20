@@ -1042,3 +1042,36 @@ func TestInstallCommandVerifyVersionLargeOutputDrains(t *testing.T) {
 		t.Fatalf("requests = %d, want 2", n)
 	}
 }
+
+// The extra stdout line names the destination and where its running copy
+// went, says the next install removes it only when its marker was written
+// (and that it stays otherwise), and is absent when the destination was
+// replaced directly.
+func TestInstallMovedAsideLine(t *testing.T) {
+	if got := movedAsideLine(install.Result{Destination: `C:\bin\soho.exe`}); got != "" {
+		t.Fatalf("direct replacement line = %q; want none", got)
+	}
+	got := movedAsideLine(install.Result{Destination: `C:\bin\soho.exe`, Previous: `C:\bin\soho.exe.old`, PreviousMarker: `C:\bin\soho.exe.old.soho-install`})
+	want := `install: the running C:\bin\soho.exe was moved to C:\bin\soho.exe.old; the next install removes it`
+	if got != want {
+		t.Fatalf("line = %q; want %q", got, want)
+	}
+	got = movedAsideLine(install.Result{Destination: `C:\bin\soho.exe`, Previous: `C:\bin\soho.exe.old`})
+	want = `install: the running C:\bin\soho.exe was moved to C:\bin\soho.exe.old; its install marker could not be written, so it stays and can be deleted by hand once it no longer runs`
+	if got != want {
+		t.Fatalf("line without a marker = %q; want %q", got, want)
+	}
+}
+
+// Each backup left under its check name gets a stdout line naming where
+// it is, and there is none when nothing was left.
+func TestInstallStrandedLines(t *testing.T) {
+	if got := strandedLines(install.Result{}); len(got) != 0 {
+		t.Fatalf("lines = %q; want none", got)
+	}
+	got := strandedLines(install.Result{Stranded: []string{`C:\bin\soho.exe.old.soho-check-42`}})
+	want := `install: an earlier backup stays at C:\bin\soho.exe.old.soho-check-42, next to its marker: its bytes did not match the marker, or it could not be removed`
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("lines = %q; want [%q]", got, want)
+	}
+}

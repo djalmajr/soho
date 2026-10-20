@@ -85,6 +85,12 @@ func cmdInstall(args []string, env platform.Env) int {
 		platform.Die(err.Error(), 1)
 	}
 	fmt.Fprintf(platform.Stdout, "installed %s\n", res.Destination)
+	if line := movedAsideLine(res); line != "" {
+		fmt.Fprintln(platform.Stdout, line)
+	}
+	for _, line := range strandedLines(res) {
+		fmt.Fprintln(platform.Stdout, line)
+	}
 	fmt.Fprintf(platform.Stdout, "sha256 %s\n", res.Digest)
 	fmt.Fprintf(platform.Stdout, "release %s\n", res.ReleaseURL)
 	if !pathContains(env.Get("PATH"), abs) {
@@ -233,4 +239,28 @@ func pathContains(path, dir string) bool {
 		}
 	}
 	return false
+}
+
+// movedAsideLine is the stdout line for an install that moved the running
+// destination aside (Windows), and "" when the destination was replaced
+// directly. The next install removes the backup only when its provenance
+// marker was written.
+func movedAsideLine(res install.Result) string {
+	if res.Previous == "" {
+		return ""
+	}
+	if res.PreviousMarker == "" {
+		return fmt.Sprintf("install: the running %s was moved to %s; its install marker could not be written, so it stays and can be deleted by hand once it no longer runs", res.Destination, res.Previous)
+	}
+	return fmt.Sprintf("install: the running %s was moved to %s; the next install removes it", res.Destination, res.Previous)
+}
+
+// strandedLines are the stdout lines for the earlier backups the cleanup
+// renamed to a check name and left there, one per path.
+func strandedLines(res install.Result) []string {
+	var lines []string
+	for _, path := range res.Stranded {
+		lines = append(lines, fmt.Sprintf("install: an earlier backup stays at %s, next to its marker: its bytes did not match the marker, or it could not be removed", path))
+	}
+	return lines
 }
