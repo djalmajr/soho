@@ -25,8 +25,9 @@ type tm11SpawnStep struct {
 }
 
 type tm11SpawnGolden struct {
-	Files map[string]*string `json:"files"`
-	Steps []tm11SpawnStep    `json:"steps"`
+	Files            map[string]*string `json:"files"`
+	Steps            []tm11SpawnStep    `json:"steps"`
+	truncatedDefault bool
 }
 
 func TestTM11SpawnCommandParity(t *testing.T) {
@@ -153,6 +154,7 @@ func TestTM11SpawnCommandParity(t *testing.T) {
 	})
 	t.Run(`JS: "parity spawn: busy 10, gone recreated, worker cap 8, locked 5, lane kind, lanes=off reuse"`, func(t *testing.T) {
 		golden := tm11RequireSpawnGolden(t, goldens, "lane-states")
+		tm11AdaptTruncatedDefaultRoster(t, &golden)
 		f := newTM11SpawnFixture(t, nil)
 		f.runStepsPreparedChecked(t, golden, func(i int) {
 			status := "idle"
@@ -367,6 +369,9 @@ func (f *tm11SpawnFixture) runStepsPrepared(t *testing.T, golden tm11SpawnGolden
 			}
 			wantLog = testutil.RewriteApprovalsAutoStartLog(wantLog, want.Args)
 		}
+		if golden.truncatedDefault && i == 5 {
+			wantOut, wantErr, wantLog = tm11TruncatedDefaultExpected(t, golden)
+		}
 		if code != want.RC || actualOut != wantOut || actualErr != wantErr || (want.Log != nil && actualLog != wantLog) {
 			t.Fatalf("step %d args=%v\ncode=%d want=%d\nstdout=%q want=%q\nstderr=%q want=%q\nlog=%q want=%q", i, want.Args, code, want.RC, actualOut, wantOut, actualErr, wantErr, actualLog, wantLog)
 		}
@@ -407,6 +412,44 @@ func (f *tm11SpawnFixture) runStepsPrepared(t *testing.T, golden tm11SpawnGolden
 			t.Fatalf("%s=%q want=%q", name, value, *want)
 		}
 	}
+}
+
+// DJA-445 amendment 3 deliberately retires default reuse of an eight-column
+// row. Adapt only lane-states step 5 and its added roster row, preserving the
+// frozen command, input row and all golden bytes. The remaining steps retain
+// their original expectations and the shared oracles above.
+func tm11AdaptTruncatedDefaultRoster(t *testing.T, golden *tm11SpawnGolden) {
+	t.Helper()
+	const oldRow = "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\nimplementer\tp-impl\tgrok\timplementer\txai\t1\t<ROOT>/repo\tT\n"
+	const oldOut = "{\n  \"name\": \"implementer\",\n  \"pane_id\": \"p-impl\",\n  \"kind\": \"grok\",\n  \"role\": \"implementer\",\n  \"family\": \"xai\",\n  \"reused\": true,\n  \"previous_role\": \"implementer\",\n  \"status\": \"ready\"\n}\n"
+	if len(golden.Steps) != 6 || golden.Files["roster"] == nil || *golden.Files["roster"] != oldRow {
+		t.Fatal("DJA-445 truncated-row oracle requires the exact frozen lane-states roster")
+	}
+	step := golden.Steps[5]
+	if strings.Join(step.Args, "\x00") != "spawn\x00implementer" || step.RC != 0 || step.Out != oldOut || step.Err != "PROG: warning: reusing idle worker 'implementer' (grok, implementer); existing session context is retained\n" || step.Log == nil || *step.Log != "agent get implementer\n" {
+		t.Fatal("DJA-445 truncated-row oracle requires the exact frozen default-reuse step")
+	}
+	roster := oldRow + "implementer-2\tp-root\tgrok\timplementer\txai\t1\t<ROOT>/repo\tT\tgrok-4.7\tauto\timplementer\t\t\t\txhigh\tnone\n"
+	golden.Files["roster"] = &roster
+	golden.truncatedDefault = true
+}
+
+func tm11TruncatedDefaultExpected(t *testing.T, golden tm11SpawnGolden) (string, string, string) {
+	t.Helper()
+	// The existing frozen fresh-grok step supplies the unchanged JSON shape,
+	// model and effort. Only name and pane differ in the newly required spawn.
+	fresh := golden.Steps[1].Out
+	if !strings.Contains(fresh, "\"name\": \"build\"") || !strings.Contains(fresh, "\"pane_id\": \"p-new\"") {
+		t.Fatal("DJA-445 truncated-row oracle requires the frozen fresh-grok reference")
+	}
+	out := strings.NewReplacer("\"name\": \"build\"", "\"name\": \"implementer-2\"", "\"pane_id\": \"p-new\"", "\"pane_id\": \"p-root\"").Replace(testutil.RewriteApprovalsAutoSpawnJSON(fresh, nil))
+	errOut := "PROG: spawn: the new worker is 'implementer-2' ('implementer' is already live); dispatch to 'implementer-2'\n" +
+		"PROG: warning: spawn: grok cannot turn MCP servers off per process; 'implementer-2' keeps the user's MCP servers\n" +
+		"PROG: warning: 'implementer-2' and 'implementer' both edit <ROOT>/repo: builds and test runs see each other's changes in progress; give each a git worktree (spawn --cwd <worktree>) to isolate them\n"
+	log := "agent list\nagent list\nagent list\nagent list\npane list\npane list --workspace ws\ntab get t-herd\npane list --workspace ws\ntab get t-herd\n" +
+		"agent start implementer-2 --kind grok --pane p-root --timeout 60000 -- --permission-mode auto --model grok-4.7 --reasoning-effort xhigh\n" +
+		"agent get implementer-2\nagent read implementer-2 --source visible --lines 40\nagent list\npane list --workspace ws\ntab get t-herd\n"
+	return out, errOut, log
 }
 
 // stepOutsOf returns each step's stdout, in order, for the oracle's

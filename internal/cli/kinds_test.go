@@ -82,7 +82,7 @@ func TestKindsCommands(t *testing.T) {
 		platform.Stdout = &out
 		t.Cleanup(func() { platform.Stdout = oldOut })
 		cmdEnv(&core.Config{Entries: map[string]core.ConfigEntry{}}, env, t.TempDir())
-		for _, line := range []string{"soho: abc1234 2026-09-24", "herdr: herdr 1.0", "kind grok: Grok 4", "runtime: go ", "config: layout=split reuse_workers=on approvals=ask"} {
+		for _, line := range []string{"soho: abc1234 2026-09-24", "herdr: herdr 1.0", "kind grok: Grok 4", "runtime: go ", "config: layout=split reuse_workers=on approvals=auto"} {
 			if !strings.Contains(out.String(), line) {
 				t.Fatalf("missing %q in %s", line, out.String())
 			}

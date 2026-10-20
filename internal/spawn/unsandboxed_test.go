@@ -1,13 +1,111 @@
 package spawn
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
+
+func TestSpawnTruncatedRosterApprovalRequests(t *testing.T) {
+	for _, lanes := range []string{"off", "on"} {
+		for _, role := range []string{"worker", "scouter"} {
+			for _, requested := range []string{"", "ask", "edits", "auto", "full", "unsandboxed"} {
+				name := requested
+				if name == "" {
+					name = "default"
+				}
+				t.Run(lanes+"/"+role+"/"+name, func(t *testing.T) {
+					held := "held"
+					if lanes == "on" {
+						held = "build"
+					} // Historical lane rows use the lane name.
+					f := newSpawnFixture(t, append([]fakecli.Rule{idleHerdrRule(held)}, freshSpawnRules()...))
+					configureSpawnFixture(t, &f)
+					for _, r := range []string{"worker", "scouter"} {
+						if err := os.WriteFile(filepath.Join(f.root, "roles", r+".md"), []byte("---\nkind: grok\neffort: high\n---\n"), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					f.env["SOHO_LANES"] = lanes
+					f.env["SOHO_LANE_BUILD_ROLES"] = "worker,scouter"
+					f.env["SOHO_LANE_BUILD_KIND"] = "grok"
+					f.env["SOHO_LANE_BUILD_PANES"] = "2"
+					code, out, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--name", held, "--fresh", "--approvals", "ask"})
+					if code != 0 {
+						t.Fatalf("initial ask: code=%d out=%s stderr=%s", code, out, stderr)
+					}
+					firstStarts := 0
+					for _, call := range calls {
+						if len(call.Argv) > 1 && call.Argv[0] == "agent" && call.Argv[1] == "start" {
+							firstStarts++
+							for _, arg := range call.Argv {
+								if arg == "--permission-mode" || arg == "--always-approve" {
+									t.Fatalf("initial ask args=%q", call.Argv)
+								}
+							}
+						}
+					}
+					row := strings.Split(core.RosterLine(filepath.Join(f.state, "ws"), held), "\t")
+					if firstStarts != 1 || len(row) < 10 || row[9] != "ask" {
+						t.Fatalf("initial starts=%d roster=%q", firstStarts, row)
+					}
+					truncated := strings.Join(row[:8], "\t")
+					if len(strings.Split(truncated, "\t")) != 8 {
+						t.Fatal("fixture must have exactly eight columns")
+					}
+					f.roster(t, truncated)
+					before := len(calls)
+					args := []string{role}
+					if requested != "" {
+						args = append(args, "--approvals", requested)
+					}
+					code, out, stderr, calls = runCmdSpawn(t, f, args)
+					// Off-lane cross-role reuse still requires recorded model/history;
+					// an eight-column row has neither, even for explicit ask.
+					reuse := requested == "ask" && (lanes == "on" || role == "worker")
+					starts := 0
+					for _, call := range calls[before:] {
+						if len(call.Argv) > 1 && call.Argv[0] == "agent" && call.Argv[1] == "start" {
+							starts++
+						}
+					}
+					var result struct {
+						Name, Approvals string
+						Reused          bool
+					}
+					if err := json.Unmarshal([]byte(out), &result); err != nil {
+						t.Fatalf("code=%d JSON=%q stderr=%s: %v", code, out, stderr, err)
+					}
+					wantStarts := 1
+					if reuse {
+						wantStarts = 0
+					}
+					if code != 0 || result.Reused != reuse || starts != wantStarts {
+						t.Fatalf("requested=%q lanes=%s role=%s code=%d reused=%v want=%v starts=%d want=%d out=%s stderr=%s", requested, lanes, role, code, result.Reused, reuse, starts, wantStarts, out, stderr)
+					}
+					if !reuse {
+						mode := requested
+						if mode == "" {
+							mode = "auto"
+						}
+						if result.Approvals != mode {
+							t.Fatalf("new worker mode=%q want=%q out=%s", result.Approvals, mode, out)
+						}
+						newRow := strings.Split(core.RosterLine(filepath.Join(f.state, "ws"), result.Name), "\t")
+						if len(newRow) < 10 || newRow[9] != mode {
+							t.Fatalf("new worker roster=%q want=%s", newRow, mode)
+						}
+					}
+				})
+			}
+		}
+	}
+}
 
 func TestReuseUnsandboxedApprovalRank(t *testing.T) {
 	for _, role := range []string{"implementer", "scouter"} {

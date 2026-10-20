@@ -440,6 +440,11 @@ func FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, want
 			if len(f) >= 9 && wModel != wantModel {
 				continue
 			}
+			// DJA-445: a truncated historical row cannot establish approval
+			// capability. Only an explicit ask request may reuse it.
+			if len(f) < 10 && wantApprovals != "ask" {
+				continue
+			}
 			if len(f) >= 10 && approvalsRank(wApprovals) < approvalsRank(defaultValue(wantApprovals, "auto")) {
 				continue
 			}
@@ -514,6 +519,11 @@ func laneReuseCandidate(f []string, state, role, kind, model, approvals, mcp, wo
 }
 
 func laneApprovalsMatch(f []string, approvals string) bool {
+	// Apply the same historical-row rule to direct, named and alternative
+	// lane reuse; do not infer auto from the absence of column 10.
+	if len(f) < 10 {
+		return approvals == "ask"
+	}
 	approvals = defaultValue(approvals, "auto")
 	held := fieldAt(f, 9)
 	// Preserve legacy lane decisions for missing or unrecognized approval
