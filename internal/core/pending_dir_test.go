@@ -289,3 +289,122 @@ func TestTheFootprintIgnoresARefusedQueueSilently(t *testing.T) {
 		t.Fatalf("copies=%d stderr=%q; want the refused queue ignored, silently", fp.Copies, errOut.String())
 	}
 }
+
+func TestAQueueFileOpenToOthersIsRefusedNotNarrowed(t *testing.T) {
+	skipOwnerOffUnix(t)
+	env := platform.Env{"TMPDIR": t.TempDir(), "PATH": os.Getenv("PATH")}
+	sd := t.TempDir()
+	copyDir := filepath.Join(t.TempDir(), "queued")
+	seedFile(t, filepath.Join(copyDir, "f.bin"), 512)
+	queue, err := QueueCopy(env, "ws", sd, pendingCopy(copyDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := modeOf(t, queue); mode != 0o600 {
+		t.Fatalf("the queue was created with %o; want 0600", mode)
+	}
+	if err := os.Chmod(queue, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	before := readRaw(t, queue)
+	cause := "it is writable by other users, so its lines cannot be trusted; remove it by hand"
+	_, err = IncorporatePendingCopies(sd, "ws", env, acceptCopy)
+	wantRefused(t, err, queue, cause)
+	_, err = QueueCopy(env, "ws", sd, pendingCopy("/x/d"))
+	wantRefused(t, err, queue, cause)
+	if rows := PendingCopiesFor(sd, "ws", env); len(rows) != 0 {
+		t.Fatalf("the footprint read the queue: %v", rows)
+	}
+	if fp := MeasureFootprint(sd, "ws", env); fp.Copies != 0 {
+		t.Fatalf("the footprint counted the queue: %+v", fp)
+	}
+	if _, err := os.Stat(CopiesFile(sd)); !os.IsNotExist(err) {
+		t.Fatalf("the queue reached the registry: %v", err)
+	}
+	if got := readRaw(t, queue); got != before {
+		t.Fatalf("the queue was rewritten: %q -> %q", before, got)
+	}
+	if mode := modeOf(t, queue); mode != 0o666 {
+		t.Fatalf("the queue's mode was changed to %o; it is refused, not narrowed", mode)
+	}
+}
+
+// The incorporation takes the registry lock before the queue's, always.
+func TestIncorporationTakesTheRegistryLockBeforeTheQueueLock(t *testing.T) {
+	env := platform.Env{"TMPDIR": t.TempDir()}
+	sd := t.TempDir()
+	if _, err := QueueCopy(env, "ws", sd, pendingCopy("/x/c")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := QueueProc(env, "ws", sd, ProcRow{Pid: 4242, Started: "s", Name: "n", Owner: "o", Pane: "p", Created: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	queueLock := PendingCopiesFile(env, "ws") + ".lock"
+	procsQueueLock := PendingProcsFile(env, "ws") + ".lock"
+	seen := []string{}
+	pendingLockHook = func(lock string) {
+		// The hook sees the lock files themselves: the registry's is
+		// already held when it is told "registry", and the queue's only
+		// at "queue".
+		held := func(path string) bool { _, err := os.Lstat(path); return err == nil }
+		switch lock {
+		case "registry":
+			if !held(filepath.Join(sd, copiesLockName)) && !held(filepath.Join(sd, procsLockName)) {
+				t.Errorf("the registry lock is not held at %q", lock)
+			}
+			if held(queueLock) || held(procsQueueLock) {
+				t.Errorf("the queue lock was taken before the registry's")
+			}
+		case "queue":
+			if !held(queueLock) && !held(procsQueueLock) {
+				t.Errorf("the queue lock is not held at %q", lock)
+			}
+		}
+		seen = append(seen, lock)
+	}
+	t.Cleanup(func() { pendingLockHook = nil })
+	if res, err := IncorporatePendingCopies(sd, "ws", env, acceptCopy); err != nil || res.Moved != 1 {
+		t.Fatalf("copies: res=%+v err=%v", res, err)
+	}
+	if res, err := IncorporatePendingProcs(sd, "ws", env); err != nil || res.Moved != 1 {
+		t.Fatalf("procs: res=%+v err=%v", res, err)
+	}
+	if strings.Join(seen, ",") != "registry,queue,registry,queue" {
+		t.Fatalf("lock order=%v; want the registry lock, then the queue's, for each queue", seen)
+	}
+}
+
+// The levels are checked from the top: <tmp>/soho before <tmp>/soho/<ws>,
+// on every path that uses the queue.
+func TestTheQueueLevelsAreCheckedParentFirst(t *testing.T) {
+	skipOwnerOffUnix(t)
+	env := platform.Env{"TMPDIR": t.TempDir()}
+	sd := t.TempDir()
+	if err := os.MkdirAll(PendingDir(env, "ws"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := PendingOwnerOf
+	seen := []string{}
+	PendingOwnerOf = func(info fs.FileInfo) (int, bool) {
+		if info.IsDir() {
+			seen = append(seen, info.Name())
+		}
+		return old(info)
+	}
+	t.Cleanup(func() { PendingOwnerOf = old })
+	steps := []struct {
+		name string
+		run  func()
+	}{
+		{"the writer", func() { _, _ = QueueCopy(env, "ws", sd, pendingCopy("/x/c")) }},
+		{"the incorporation", func() { _, _ = IncorporatePendingCopies(sd, "ws", env, acceptCopy) }},
+		{"the footprint", func() { _ = PendingCopiesFor(sd, "ws", env) }},
+	}
+	for _, step := range steps {
+		seen = seen[:0]
+		step.run()
+		if len(seen) < 2 || seen[0] != "soho" || seen[1] != "ws" {
+			t.Fatalf("%s: owner check order=%v; want soho then ws", step.name, seen)
+		}
+	}
+}

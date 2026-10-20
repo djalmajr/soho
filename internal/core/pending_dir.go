@@ -119,8 +119,11 @@ func pendingPrivateLevel(path string, mode pendingDirMode) error {
 }
 
 // readPendingFile reads a queue file that os.Lstat proves to be a regular
-// file of the current user; the file opened must be that same file (a
-// link swapped in after the check is refused), so a link is never read.
+// file of the current user, with no write for the group or the others on
+// Unix (another user could have changed its bytes in place: it is refused,
+// not narrowed, and is removed by hand); the file opened must be that same
+// file (a link swapped in after the check is refused), so a link is never
+// read.
 func readPendingFile(queue string) (string, error) {
 	info, err := os.Lstat(queue)
 	if err != nil {
@@ -131,6 +134,9 @@ func readPendingFile(queue string) (string, error) {
 	}
 	if cause := pendingOwnerRefusal(info); cause != "" {
 		return "", &PendingRefusedError{Path: queue, Cause: cause}
+	}
+	if pendingChecksOwner && info.Mode().Perm()&0o022 != 0 {
+		return "", &PendingRefusedError{Path: queue, Cause: "it is writable by other users, so its lines cannot be trusted; remove it by hand"}
 	}
 	f, err := os.Open(queue)
 	if err != nil {

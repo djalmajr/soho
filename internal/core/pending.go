@@ -33,6 +33,10 @@ const (
 // there to race a queue writer against it.
 var pendingIncorporateHook func(queue string)
 
+// pendingLockHook runs right after an incorporation takes each of its two
+// locks, with "registry" or "queue"; tests record the order.
+var pendingLockHook func(lock string)
+
 // PendingDir is the workspace scratch dir the queues live in.
 func PendingDir(env platform.Env, workspaceID string) string {
 	tmp := env.Get("TMPDIR")
@@ -313,11 +317,17 @@ func incorporatePending(stateDir, queue, header, kind string, lockRegistryOf fun
 		return result, err
 	}
 	defer unlockRegistry()
+	if pendingLockHook != nil {
+		pendingLockHook("registry")
+	}
 	unlockQueue, err := lockRegistry(filepath.Dir(queue), filepath.Base(queue)+".lock", kind)
 	if err != nil {
 		return result, err
 	}
 	defer unlockQueue()
+	if pendingLockHook != nil {
+		pendingLockHook("queue")
+	}
 	lines, err = readPendingLines(queue)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

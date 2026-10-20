@@ -2614,3 +2614,75 @@ func TestARefusedQueueDirectory(t *testing.T) {
 		}
 	})
 }
+
+// TestAQueueOpenToOthersIsNeverTrusted is the review's probe of a queue
+// file of the user with write for the group or the others (DJA-323): its
+// bytes could have been changed by another user, so neither copies nor
+// release takes its lines in, and the copy a line names stays on disk.
+func TestAQueueOpenToOthersIsNeverTrusted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the queue's mode is checked on Unix only")
+	}
+	setup := func(t *testing.T, f *copiesFixture) (string, string, string) {
+		t.Helper()
+		f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+		sd := f.stateDir(t)
+		valuable := filepath.Join(f.tmp, "valuable")
+		if err := os.MkdirAll(valuable, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(valuable, "user-data"), []byte("keep me\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		queue, err := core.QueueCopy(f.env, "ws", sd, core.CopyRow{Path: valuable, Owner: "worker", Pane: "p-worker", Created: core.FrictionISO(platform.Now()), Source: "-", Origin: "mutation-copy"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(queue, 0o666); err != nil {
+			t.Fatal(err)
+		}
+		return valuable, queue, readQueue(t, queue)
+	}
+	refusal := func(queue string) string {
+		return "queue: refusing " + queue + ": it is writable by other users, so its lines cannot be trusted; remove it by hand"
+	}
+
+	t.Run("copies warns, registers nothing and leaves the queue's bytes", func(t *testing.T) {
+		f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON}})
+		_, queue, before := setup(t, f)
+		code, out, errOut := f.run(t, f.env, "copies")
+		want := "copies: the queued copy registrations in " + queue + " were not incorporated (" + refusal(queue) + "); the queue stays and the registry is used as it is\n"
+		if code != 0 || out != "no registered copies\n" || errOut != want {
+			t.Fatalf("copies: code=%d out=%q err=%q; want %q", code, out, errOut, want)
+		}
+		if rows := f.copiesRows(t); len(rows) != 0 {
+			t.Fatalf("registry rows=%#v; want none", rows)
+		}
+		if after := readQueue(t, queue); after != before {
+			t.Fatalf("the queue was rewritten: %q -> %q", before, after)
+		}
+	})
+
+	t.Run("release of the line's owner leaves the copy it names", func(t *testing.T) {
+		f := newCopiesFixture(t, []fakecli.Rule{
+			{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON},
+			{Argv: []string{"pane", "report-metadata", "p-worker", "--source", "soho", "--clear-title"}},
+			{Argv: []string{"pane", "list", "--workspace", "ws"}, Stdout: `{"result":{"panes":[]}}`},
+		})
+		valuable, queue, before := setup(t, f)
+		addReleaseReport(t, filepath.Join(f.state, "ws"), "worker", false)
+		code, out, errOut := f.run(t, f.env, "release", "worker")
+		if code != 0 || strings.Contains(out, "removed copy") || !strings.Contains(errOut, refusal(queue)) {
+			t.Fatalf("release: code=%d out=%q err=%q; want the warning and no removal", code, out, errOut)
+		}
+		if raw, err := os.ReadFile(filepath.Join(valuable, "user-data")); err != nil || string(raw) != "keep me\n" {
+			t.Fatalf("the copy the queue names was touched: %q %v", raw, err)
+		}
+		if rows := f.copiesRows(t); len(rows) != 0 {
+			t.Fatalf("registry rows=%#v; want none", rows)
+		}
+		if after := readQueue(t, queue); after != before {
+			t.Fatalf("the queue was rewritten: %q -> %q", before, after)
+		}
+	})
+}
