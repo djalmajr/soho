@@ -1233,3 +1233,23 @@ func TestSandboxedProcsStayQuietOnAPermissionIncorporation(t *testing.T) {
 		}
 	})
 }
+
+func TestProcsAddWithARefusedQueueDirectory(t *testing.T) {
+	f := newProcsFixture(t)
+	pid := f.sleeper(t)
+	dir := core.PendingDir(f.env, "ws")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	queueOwnedByAnother(t)
+	refuseProcsRegistry(t, nil)
+	code, _, errOut := f.run(t, "procs", "add", strconv.Itoa(pid))
+	want := "; the queue failed too: queue: refusing " + dir + ": it belongs to another user)"
+	if code != 4 || !strings.Contains(errOut, "procs add: could not register pid "+strconv.Itoa(pid)+" (") || !strings.Contains(errOut, want) {
+		t.Fatalf("code=%d err=%q; want exit 4 with the queue refusal", code, errOut)
+	}
+	code, _, errOut = f.run(t, "procs")
+	if code != 0 || !strings.Contains(errOut, "procs: the queued process registrations in "+core.PendingProcsFile(f.env, "ws")+" were not incorporated (queue: refusing "+dir+": it belongs to another user)") {
+		t.Fatalf("procs: code=%d err=%q; want the incorporation warning", code, errOut)
+	}
+}

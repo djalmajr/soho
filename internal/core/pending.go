@@ -56,22 +56,22 @@ func PendingProcsFile(env platform.Env, workspaceID string) string {
 // own lock (never the registry's), and returns the queue path.
 func QueueCopy(env platform.Env, workspaceID, stateDir string, row CopyRow) (string, error) {
 	queue := PendingCopiesFile(env, workspaceID)
-	return queue, appendPending(queue, pendingCopiesHeader, "copies queue", stateDir, row.fields())
+	return queue, appendPending(env, workspaceID, queue, pendingCopiesHeader, "copies queue", stateDir, row.fields())
 }
 
 // QueueProc appends row, for stateDir, to the process queue under the
 // queue's own lock (never the registry's), and returns the queue path.
 func QueueProc(env platform.Env, workspaceID, stateDir string, row ProcRow) (string, error) {
 	queue := PendingProcsFile(env, workspaceID)
-	return queue, appendPending(queue, pendingProcsHeader, "procs queue", stateDir, row.fields())
+	return queue, appendPending(env, workspaceID, queue, pendingProcsHeader, "procs queue", stateDir, row.fields())
 }
 
-func appendPending(queue, header, kind, stateDir string, fields []string) error {
+func appendPending(env platform.Env, workspaceID, queue, header, kind, stateDir string, fields []string) error {
 	if !filepath.IsAbs(stateDir) {
 		return fmt.Errorf("%s: the state dir %q is not absolute", kind, stateDir)
 	}
-	dir := filepath.Dir(queue)
-	if err := os.MkdirAll(dir, 0o777); err != nil {
+	dir, err := pendingQueueDir(env, workspaceID, pendingDirCreate)
+	if err != nil {
 		return err
 	}
 	unlock, err := lockRegistry(dir, filepath.Base(queue)+".lock", kind)
@@ -88,9 +88,9 @@ func appendPending(queue, header, kind, stateDir string, fields []string) error 
 }
 
 // readPendingLines reads a queue's lines, without the header and the empty
-// lines, in file order.
+// lines, in file order, through readPendingFile (never through a link).
 func readPendingLines(queue string) ([]string, error) {
-	raw, err := platform.ReadTextFile(queue)
+	raw, err := readPendingFile(queue)
 	if err != nil {
 		return nil, err
 	}
@@ -104,8 +104,8 @@ func readPendingLines(queue string) ([]string, error) {
 	return out, nil
 }
 
-// writePending rewrites a queue atomically, or removes it when no line is
-// left.
+// writePending rewrites a queue through writePendingFile (a link in its
+// place is replaced, not followed), or removes it when no line is left.
 func writePending(queue, header string, lines []string) error {
 	if len(lines) == 0 {
 		if err := os.Remove(queue); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -113,7 +113,7 @@ func writePending(queue, header string, lines []string) error {
 		}
 		return nil
 	}
-	return platform.AtomicWrite(queue, header+"\n"+strings.Join(lines, "\n")+"\n")
+	return writePendingFile(queue, header+"\n"+strings.Join(lines, "\n")+"\n")
 }
 
 // pendingTarget splits a queue line into its state dir and the registry
@@ -188,6 +188,12 @@ type PendingResult struct {
 // too, and the next incorporation upserts them again).
 func IncorporatePendingCopies(stateDir, workspaceID string, env platform.Env, check func(CopyRow) (CopyRow, string)) (PendingResult, error) {
 	queue := PendingCopiesFile(env, workspaceID)
+	if _, err := pendingQueueDir(env, workspaceID, pendingDirFix); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return PendingResult{Queue: queue}, nil
+		}
+		return PendingResult{Queue: queue}, err
+	}
 	return incorporatePending(stateDir, queue, pendingCopiesHeader, "copies queue", LockCopies, func(mine [][]string) (int, []PendingDrop, error) {
 		accepted := []CopyRow{}
 		dropped := []PendingDrop{}
@@ -236,6 +242,12 @@ func IncorporatePendingCopies(stateDir, workspaceID string, env platform.Env, ch
 // process that has ended is registered too, and gc drops it.
 func IncorporatePendingProcs(stateDir, workspaceID string, env platform.Env) (PendingResult, error) {
 	queue := PendingProcsFile(env, workspaceID)
+	if _, err := pendingQueueDir(env, workspaceID, pendingDirFix); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return PendingResult{Queue: queue}, nil
+		}
+		return PendingResult{Queue: queue}, err
+	}
 	return incorporatePending(stateDir, queue, pendingProcsHeader, "procs queue", LockProcs, func(mine [][]string) (int, []PendingDrop, error) {
 		accepted := []ProcRow{}
 		dropped := []PendingDrop{}
@@ -342,9 +354,13 @@ func incorporatePending(stateDir, queue, header, kind string, lockRegistryOf fun
 }
 
 // PendingCopiesFor reads, without any lock or write, the well-formed copy
-// queue lines for stateDir (the footprint's read-only count).
+// queue lines for stateDir (the footprint's read-only count). A queue
+// whose directory or file is refused reads as no lines, silently.
 func PendingCopiesFor(stateDir, workspaceID string, env platform.Env) []CopyRow {
 	out := []CopyRow{}
+	if _, err := pendingQueueDir(env, workspaceID, pendingDirRead); err != nil {
+		return out
+	}
 	lines, err := readPendingLines(PendingCopiesFile(env, workspaceID))
 	if err != nil {
 		return out
@@ -365,6 +381,9 @@ func PendingCopiesFor(stateDir, workspaceID string, env platform.Env) []CopyRow 
 // queue lines for stateDir (the footprint's read-only count).
 func PendingProcsFor(stateDir, workspaceID string, env platform.Env) []ProcRow {
 	out := []ProcRow{}
+	if _, err := pendingQueueDir(env, workspaceID, pendingDirRead); err != nil {
+		return out
+	}
 	lines, err := readPendingLines(PendingProcsFile(env, workspaceID))
 	if err != nil {
 		return out

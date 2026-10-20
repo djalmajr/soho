@@ -2307,27 +2307,33 @@ func TestCopiesAddQueuesWhenTheStateDirRefusesWrites(t *testing.T) {
 	})
 }
 
-func TestMutationCopyQueuesWhenTheStateDirRefusesWrites(t *testing.T) {
-	setup := func(t *testing.T) (mutationCopyFixture, string, platform.Env, string) {
-		f := newMutationCopyFixture(t)
-		skill := filepath.Join(f.root, "skill")
-		if err := os.MkdirAll(filepath.Join(skill, "roles"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("fixture skill\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		state := filepath.Join(f.root, "state")
-		sd := filepath.Join(state, "ws")
-		if err := os.MkdirAll(sd, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte("# roster\n"+releaseRow("worker", "p-worker", "1", "implementer", false, "/tmp/work")+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		overrides := platform.Env{"SOHO_DIR": state, "SOHO_SKILL_DIR": skill, "HERDR_WORKSPACE_ID": "ws", "HERDR_PANE_ID": "p-worker"}
-		return f, sd, overrides, filepath.Join(f.root, "mcopy")
+// mutationQueueSetup is a mutation-copy fixture with a state dir and a
+// roster that names the pane's worker; it returns the fixture, the state
+// dir, the env overrides and the copy's destination.
+func mutationQueueSetup(t *testing.T) (mutationCopyFixture, string, platform.Env, string) {
+	t.Helper()
+	f := newMutationCopyFixture(t)
+	skill := filepath.Join(f.root, "skill")
+	if err := os.MkdirAll(filepath.Join(skill, "roles"), 0o700); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("fixture skill\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(f.root, "state")
+	sd := filepath.Join(state, "ws")
+	if err := os.MkdirAll(sd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte("# roster\n"+releaseRow("worker", "p-worker", "1", "implementer", false, "/tmp/work")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	overrides := platform.Env{"SOHO_DIR": state, "SOHO_SKILL_DIR": skill, "HERDR_WORKSPACE_ID": "ws", "HERDR_PANE_ID": "p-worker"}
+	return f, sd, overrides, filepath.Join(f.root, "mcopy")
+}
+
+func TestMutationCopyQueuesWhenTheStateDirRefusesWrites(t *testing.T) {
+	setup := mutationQueueSetup
 
 	t.Run("a permission error queues the copy instead of leaving it unregistered", func(t *testing.T) {
 		f, sd, overrides, dest := setup(t)
@@ -2531,6 +2537,78 @@ func TestSandboxedCopiesStayQuietOnAPermissionIncorporation(t *testing.T) {
 		queue := core.PendingCopiesFile(f.env, "ws")
 		code, out, errOut := f.run(t, f.env, "copies")
 		want := "copies: the queued copy registrations in " + queue + " were not incorporated (disk full); the queue stays and the registry is used as it is\n"
+		if code != 0 || out != "no registered copies\n" || errOut != want {
+			t.Fatalf("copies: code=%d out=%q err=%q; want %q", code, out, errOut, want)
+		}
+	})
+}
+
+// queueOwnedByAnother makes the queue's workspace level read as another
+// user's (core.PendingOwnerOf), on Unix, where the owner is checked.
+func queueOwnedByAnother(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the queue's owner is checked on Unix only")
+	}
+	old := core.PendingOwnerOf
+	core.PendingOwnerOf = func(info fs.FileInfo) (int, bool) {
+		if info.Name() == "ws" && info.IsDir() {
+			return os.Getuid() + 1, true
+		}
+		return old(info)
+	}
+	t.Cleanup(func() { core.PendingOwnerOf = old })
+}
+
+func TestARefusedQueueDirectory(t *testing.T) {
+	refusal := func(f *copiesFixture) string {
+		return "queue: refusing " + core.PendingDir(f.env, "ws") + ": it belongs to another user"
+	}
+	prepare := func(t *testing.T, f *copiesFixture) {
+		t.Helper()
+		if err := os.MkdirAll(core.PendingDir(f.env, "ws"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		queueOwnedByAnother(t)
+	}
+
+	t.Run("copies add keeps today's exit 4 with the queue's failure", func(t *testing.T) {
+		f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON}})
+		f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+		copyDir := filepath.Join(f.tmp, "copy")
+		if err := os.MkdirAll(copyDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		prepare(t, f)
+		refuseCopiesRegistry(t, nil)
+		code, _, errOut := f.run(t, f.env, "copies", "add", copyDir)
+		if code != 4 || !strings.Contains(errOut, "copies add: could not register '"+copyDir+"' (") || !strings.Contains(errOut, "; the queue failed too: "+refusal(f)+")") {
+			t.Fatalf("code=%d err=%q; want exit 4 with the queue refusal", code, errOut)
+		}
+	})
+
+	t.Run("mutation-copy says the copy is not registered", func(t *testing.T) {
+		f, _, overrides, dest := mutationQueueSetup(t)
+		dir := core.PendingDir(f.env, "ws")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		queueOwnedByAnother(t)
+		refuseCopiesRegistry(t, nil)
+		code, _, errOut := runMutationCopyCmd(t, f, f.source, overrides, "--source", f.source, "--dest", dest)
+		want := "the queue failed too: queue: refusing " + dir + ": it belongs to another user); remove it yourself when done\n"
+		if code != 0 || !strings.HasPrefix(errOut, "mutation-copy: copy not registered (") || !strings.HasSuffix(errOut, want) {
+			t.Fatalf("code=%d err=%q; want the not-registered warning with the refusal", code, errOut)
+		}
+	})
+
+	t.Run("the incorporation warns and the command goes on with the registry", func(t *testing.T) {
+		f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON}})
+		f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+		prepare(t, f)
+		queue := core.PendingCopiesFile(f.env, "ws")
+		code, out, errOut := f.run(t, f.env, "copies")
+		want := "copies: the queued copy registrations in " + queue + " were not incorporated (" + refusal(f) + "); the queue stays and the registry is used as it is\n"
 		if code != 0 || out != "no registered copies\n" || errOut != want {
 			t.Fatalf("copies: code=%d out=%q err=%q; want %q", code, out, errOut, want)
 		}
