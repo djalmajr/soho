@@ -19,7 +19,7 @@ import (
 
 const (
 	copiesUsage = "usage: soho copies [add <path> [--agent <name>]]"
-	gcUsage     = "usage: soho gc [--yes] [--older-than HOURS] [--include-unregistered]"
+	gcUsage     = "usage: soho gc [--yes] [--older-than HOURS] [--include-unregistered] [--include-unregistered-procs]"
 
 	// copiesTimeLayout is the ISO-8601 UTC format the registry stores in the
 	// created column (core.FrictionISO).
@@ -311,6 +311,98 @@ func gcOrphanProcs(rows []core.ProcRow, sd string, env platform.Env) []core.Proc
 	return out
 }
 
+// gcProjectOrphans is gc's read of the unregistered orphan processes of
+// the project (procs' block). Windows detects none, with no line; a read
+// that failed is a warning on stderr and lists none.
+func gcProjectOrphans(sd string, procRows []core.ProcRow, env platform.Env, cwd string) []projectOrphan {
+	orphans, err := projectOrphans(sd, procRows, env, cwd)
+	if err != nil {
+		if !errors.Is(err, platform.ErrOrphansNotDetected) {
+			_, _ = fmt.Fprintf(platform.Stderr, "gc: could not list the unregistered processes (%v)\n", err)
+		}
+		return nil
+	}
+	return orphans
+}
+
+// gcOrphanWouldStop is the age gate of a stoppable orphan: its start is
+// at least threshold ago.
+func gcOrphanWouldStop(orphan projectOrphan, threshold time.Duration, now time.Time) bool {
+	return orphan.stoppable() && orphan.age(now) >= threshold
+}
+
+func gcOrphansWouldStop(orphans []projectOrphan, threshold time.Duration, now time.Time) bool {
+	for _, orphan := range orphans {
+		if gcOrphanWouldStop(orphan, threshold, now) {
+			return true
+		}
+	}
+	return false
+}
+
+// gcPrintOrphanProcs is the unregistered processes' block without a stop:
+// "would stop <line>" for a stoppable one past --older-than, "listed only
+// <line>" for one in the scratch, the root or a worktree; a stoppable one
+// younger than --older-than is not listed (the orphan copies' rule). The
+// closing hint names the flag that stops them. Nothing to show prints nothing.
+func gcPrintOrphanProcs(orphans []projectOrphan, threshold time.Duration, now time.Time) {
+	lines := []string{}
+	for _, orphan := range orphans {
+		switch {
+		case gcOrphanWouldStop(orphan, threshold, now):
+			lines = append(lines, "would stop "+orphan.line(now))
+		case !orphan.stoppable():
+			lines = append(lines, "listed only "+orphan.line(now))
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintln(platform.Stdout, orphanHeader)
+	for _, line := range lines {
+		_, _ = fmt.Fprintln(platform.Stdout, line)
+	}
+	if gcOrphansWouldStop(orphans, threshold, now) {
+		_, _ = fmt.Fprintln(platform.Stdout, "run 'soho gc --yes --include-unregistered-procs' to stop them")
+	}
+}
+
+// gcStopOrphanProcs is --include-unregistered-procs --yes: each stoppable
+// orphan past --older-than is stopped through core.StopUnregisteredProc,
+// which re-reads the start identity and the cwd (orphanStill) before each
+// signal round and keeps a process that changed; the scratch, root and
+// worktree ones are only listed. It returns how many were stopped.
+func gcStopOrphanProcs(orphans []projectOrphan, threshold time.Duration, now time.Time, env platform.Env) int {
+	header := false
+	stopped := 0
+	for _, orphan := range orphans {
+		listedOnly := !orphan.stoppable()
+		if !listedOnly && !gcOrphanWouldStop(orphan, threshold, now) {
+			continue
+		}
+		if !header {
+			_, _ = fmt.Fprintln(platform.Stdout, orphanHeader)
+			header = true
+		}
+		if listedOnly {
+			_, _ = fmt.Fprintln(platform.Stdout, "listed only "+orphan.line(now))
+			continue
+		}
+		res := core.StopUnregisteredProc(orphan.Pid, orphan.Name, orphanStill(orphan, env), env)
+		if res.Line != "" {
+			_, _ = fmt.Fprintln(platform.Stdout, res.Line)
+		}
+		if res.Err != nil {
+			core.Warn(fmt.Sprintf("gc: could not stop process %d (%v)", orphan.Pid, res.Err), frictionLogPath, "gc")
+			continue
+		}
+		if res.Stopped {
+			stopped++
+		}
+	}
+	return stopped
+}
+
 // copyAge is how long the copy has existed; an unparseable or future created
 // reads as 0, so gc never treats an unknown age as old.
 func copyAge(row core.CopyRow, now time.Time) time.Duration {
@@ -425,9 +517,11 @@ type gcUnregisteredCopy struct {
 // cmdGc lists the orphan copies the registry holds (dry run), or removes the
 // ones at least --older-than hours old. Unregistered mutation copies are
 // always listed in their own block and are only removed with
-// --include-unregistered --yes.
+// --include-unregistered --yes. Unregistered orphan processes of the
+// project are listed in their own block and only stopped with
+// --include-unregistered-procs --yes.
 func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
-	yes, includeUnregistered := false, false
+	yes, includeUnregistered, includeProcs := false, false, false
 	hours := "2"
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
@@ -436,6 +530,8 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			yes = true
 		case "--include-unregistered":
 			includeUnregistered = true
+		case "--include-unregistered-procs":
+			includeProcs = true
 		case "--older-than":
 			if i+1 >= len(argv) || argv[i+1] == "" {
 				return gcUsageError()
@@ -483,6 +579,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		// owned lines are never touched
 	}
 	unregistered := gcUnregistered(env, rows, now, threshold, cwd)
+	orphanProcs := gcProjectOrphans(sd, procRows, env, cwd)
 
 	total := int64(0)
 	for _, cand := range candidates {
@@ -496,8 +593,9 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		orphan := gcOrphanProcs(procRows, sd, env)
 		// Nothing to remove or stop: only the line itself, no total and no
 		// hint (G1).
-		if len(candidates) == 0 && len(unregistered) == 0 && len(orphan) == 0 {
+		if len(candidates) == 0 && len(unregistered) == 0 && len(orphan) == 0 && !gcOrphansWouldStop(orphanProcs, threshold, now) {
 			_, _ = fmt.Fprintln(platform.Stdout, "nothing to remove")
+			gcPrintOrphanProcs(orphanProcs, threshold, now)
 			return 0
 		}
 		if len(candidates) > 0 {
@@ -530,6 +628,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 				_, _ = fmt.Fprintln(platform.Stdout, "run 'soho gc --yes' to stop them")
 			}
 		}
+		gcPrintOrphanProcs(orphanProcs, threshold, now)
 		return 0
 	}
 
@@ -646,13 +745,19 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			}
 		}
 	}
+	orphansStopped := 0
+	if includeProcs {
+		orphansStopped = gcStopOrphanProcs(orphanProcs, threshold, now, env)
+	} else {
+		gcPrintOrphanProcs(orphanProcs, threshold, now)
+	}
 	if removedAny {
 		_, _ = fmt.Fprintf(platform.Stdout, "freed: %s\n", humanSize(freed))
 	}
 	if procsHandled > 0 {
 		_, _ = fmt.Fprintf(platform.Stdout, "process lines handled: %d\n", procsHandled)
 	}
-	if !removedAny && procsHandled == 0 {
+	if !removedAny && procsHandled == 0 && orphansStopped == 0 {
 		// --yes with nothing removed or stopped: the dry run's closing line.
 		_, _ = fmt.Fprintln(platform.Stdout, "nothing to remove")
 	}

@@ -411,6 +411,14 @@ func procAliveStates(pids []int, env Env) map[int]bool {
 // re-reading the creation time through the same handle and calling
 // TerminateProcess only when it still matches.
 func StopProcessTree(pid int, expectedStarted string, env Env) error {
+	return StopProcessTreeGuarded(pid, expectedStarted, env, nil)
+}
+
+// StopProcessTreeGuarded is StopProcessTree with a guard checked before
+// each signal round, the TERM one and the KILL one: when guard reports
+// false the call stops there, sends nothing more and returns
+// ErrStopGuardChanged. A nil guard is StopProcessTree.
+func StopProcessTreeGuarded(pid int, expectedStarted string, env Env, guard func() bool) error {
 	parentOf, err := procParentSnapshotFunc()
 	if err != nil {
 		return err
@@ -474,6 +482,9 @@ func StopProcessTree(pid int, expectedStarted string, env Env) error {
 	if len(targets) == 0 {
 		return nil
 	}
+	if guard != nil && !guard() {
+		return ErrStopGuardChanged
+	}
 	for _, target := range targets {
 		id, liveRead := procReadIdentity(target, env)
 		switch liveRead {
@@ -491,6 +502,9 @@ func StopProcessTree(pid int, expectedStarted string, env Env) error {
 	}
 	if windowsWaitGone(targets, 3*time.Second) {
 		return nil
+	}
+	if guard != nil && !guard() {
+		return ErrStopGuardChanged
 	}
 	for _, target := range targets {
 		id, liveRead := procReadIdentity(target, env)

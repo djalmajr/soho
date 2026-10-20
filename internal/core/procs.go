@@ -161,6 +161,8 @@ type StopProcResult struct {
 	Line    string
 	Dropped bool
 	Err     error
+	// Stopped is set by StopUnregisteredProc when the tree was stopped.
+	Stopped bool
 }
 
 // StopProcRow acts on one registry line at the last moment. A running line
@@ -182,7 +184,7 @@ func StopProcRow(stateDir string, row ProcRow, env platform.Env) StopProcResult 
 		// The read failed: neither a stop nor a drop is claimed.
 		return StopProcResult{Err: fmt.Errorf("process %d is unreadable; not stopped", row.Pid)}
 	case "running":
-		if err := platform.StopProcessTree(row.Pid, row.Started, env); err != nil {
+		if err := platform.StopProcessTreeGuarded(row.Pid, row.Started, env, nil); err != nil {
 			return StopProcResult{Err: err}
 		}
 		line = fmt.Sprintf("stopped process %d (%s)", row.Pid, row.Name)
@@ -192,4 +194,33 @@ func StopProcRow(stateDir string, row ProcRow, env platform.Env) StopProcResult 
 		return StopProcResult{Line: line, Err: err}
 	}
 	return StopProcResult{Line: line, Dropped: true}
+}
+
+// StopUnregisteredProc stops the process tree of a process procs.tsv does
+// not hold, with the signal and the wait of StopProcRow
+// (platform.StopProcessTreeGuarded, the start time read now as the root's
+// expected identity, each member's start time re-read before its signal).
+// still re-checks the caller's listing (the start identity and the cwd of
+// the listed process) and is the guard of every signal round: it runs
+// before the TERM round and again before the KILL round, and when it
+// reports a change nothing more is signalled and the process stays. The
+// listed process's descendants are stopped with it, under the same guard.
+// A process that still matches the listing existed when the start time
+// was read, so that start time is its own. A gone pid is not an error; an
+// unreadable one is, and nothing is signalled.
+func StopUnregisteredProc(pid int, name string, still func() bool, env platform.Env) StopProcResult {
+	started, live := platform.ReadProc(pid, env)
+	switch live {
+	case platform.ProcGone:
+		return StopProcResult{Line: fmt.Sprintf("process %d already gone", pid)}
+	case platform.ProcUnknown:
+		return StopProcResult{Err: fmt.Errorf("process %d is unreadable; not stopped", pid)}
+	}
+	if err := platform.StopProcessTreeGuarded(pid, started, env, still); err != nil {
+		if errors.Is(err, platform.ErrStopGuardChanged) {
+			return StopProcResult{Line: fmt.Sprintf("kept process %d (it changed since the listing)", pid)}
+		}
+		return StopProcResult{Err: err}
+	}
+	return StopProcResult{Line: fmt.Sprintf("stopped process %d (%s)", pid, name), Stopped: true}
 }
