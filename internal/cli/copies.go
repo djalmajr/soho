@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/djalmajr/soho/internal/core"
@@ -29,6 +30,7 @@ const (
 	// gcUnregisteredHeader is the separate output block for mutation copies
 	// that the registry does not know.
 	gcUnregisteredHeader = "unregistered mutation copies (another project or an older version may own them):"
+	gcMeasureWorkers     = 4
 )
 
 // copyRefusal is the single safety check (decision 7) that release, gc and
@@ -963,13 +965,13 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		case "orphan":
 			age := copyAge(row, now)
 			if age >= threshold {
-				candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: age, size: copyDirSize(row.Path)})
+				candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: age})
 			}
 		case "owned":
 			// A live owner's copy is offered only when the owner is idle
 			// and the copy's task and its current one are closed.
 			if seen, ok := gcIdleOwnerCopy(row, sd, env, now, threshold); ok {
-				candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: copyAge(row, now), size: copyDirSize(row.Path), row: row, idle: &seen})
+				candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: copyAge(row, now), row: row, idle: &seen})
 			}
 		}
 		// the other owned lines are never touched
@@ -977,10 +979,23 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	unregistered := gcUnregistered(env, rows, now, threshold, cwd)
 	orphanProcs := gcProjectOrphans(sd, procRows, env, cwd)
 
-	total := int64(0)
-	for _, cand := range candidates {
-		total += cand.size
+	candidatePaths := make([]string, len(candidates))
+	measureCount := len(unregistered)
+	for i, cand := range candidates {
+		if !cand.missing {
+			candidatePaths[i] = cand.path
+			measureCount++
+		}
 	}
+	unregisteredPaths := make([]string, len(unregistered))
+	for i, entry := range unregistered {
+		unregisteredPaths[i] = entry.path
+	}
+	if measureCount >= 20 {
+		_, _ = fmt.Fprintf(platform.Stderr, "gc: measuring the size of %d copies; each line appears as soon as its copy is measured\n", measureCount)
+	}
+
+	total := int64(0)
 	if !yes {
 		// Orphan processes: the running lines whose owner is not a live
 		// roster agent (the copies' rule). Gone and reused lines are not
@@ -995,18 +1010,25 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			return 0
 		}
 		if len(candidates) > 0 {
-			for _, cand := range candidates {
+			gcMeasureCopies(candidatePaths, func(i int, size int64) {
+				cand := candidates[i]
+				cand.size = size
+				total += size
 				if cand.idle != nil {
 					_, _ = fmt.Fprintf(platform.Stdout, "would remove %s  %s  %s  %s  %s\n", cand.path, humanSize(cand.size), cand.owner, humanAge(cand.age), gcIdleOwnerMark)
-					continue
+					return
 				}
 				_, _ = fmt.Fprintf(platform.Stdout, "would remove %s  %s  %s  %s\n", cand.path, humanSize(cand.size), cand.owner, humanAge(cand.age))
-			}
+			})
 			_, _ = fmt.Fprintf(platform.Stdout, "total: %s\n", humanSize(total))
 			_, _ = fmt.Fprintln(platform.Stdout, "run 'soho gc --yes' to remove them")
 		}
 		if len(unregistered) > 0 {
-			gcPrintUnregistered(unregistered, false)
+			_, _ = fmt.Fprintln(platform.Stdout, gcUnregisteredHeader)
+			gcMeasureCopies(unregisteredPaths, func(i int, size int64) {
+				entry := unregistered[i]
+				_, _ = fmt.Fprintf(platform.Stdout, "%s  %s  %s  %s\n", entry.path, humanSize(size), humanAge(entry.age), entry.origin)
+			})
 			if len(candidates) == 0 {
 				// Only unregistered copies: name the flag that actually removes
 				// them, but only when gc may remove at least one of them (this
@@ -1031,6 +1053,11 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		gcPrintOrphanProcs(orphanProcs, threshold, now)
 		return 0
 	}
+
+	// Finish every measurement before deleting anything: nested copy paths
+	// must retain the sizes they had before the destructive phase.
+	gcMeasureCopies(candidatePaths, func(i int, size int64) { candidates[i].size = size })
+	gcMeasureCopies(unregisteredPaths, func(i int, size int64) { unregistered[i].size = size })
 
 	// The lock gates the destructive phase: without it within the timeout
 	// the command exits 4 before deleting anything. The removals then run
@@ -1259,15 +1286,6 @@ func gcPressureThreshold(ctx *core.Config, key string, limit int, env platform.E
 	return limit
 }
 
-// gcPrintUnregistered lists unregistered copies in their own block without
-// acting on them, each with the class of its origin marker.
-func gcPrintUnregistered(entries []gcUnregisteredCopy, _ bool) {
-	_, _ = fmt.Fprintln(platform.Stdout, gcUnregisteredHeader)
-	for _, entry := range entries {
-		_, _ = fmt.Fprintf(platform.Stdout, "%s  %s  %s  %s\n", entry.path, humanSize(entry.size), humanAge(entry.age), entry.origin)
-	}
-}
-
 // unregisteredHasThisProject reports whether at least one unregistered copy
 // may be removed (its marker names the current project).
 func unregisteredHasThisProject(entries []gcUnregisteredCopy) bool {
@@ -1390,7 +1408,7 @@ func gcUnregistered(env platform.Env, rows []core.CopyRow, now time.Time, thresh
 		if age <= threshold {
 			continue
 		}
-		out = append(out, gcUnregisteredCopy{path: path, size: copyDirSize(path), age: age, origin: copyOrigin(path, current)})
+		out = append(out, gcUnregisteredCopy{path: path, age: age, origin: copyOrigin(path, current)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
 	return out
@@ -1454,3 +1472,37 @@ func humanSize(n int64) string { return core.HumanSize(n) }
 // following symlinks: the shared walk moved to core (DirSize) so the
 // footprint measure and the copy measure cannot drift apart.
 func copyDirSize(root string) int64 { return core.DirSize(root) }
+
+// gcCopyDirSize is the measurement seam; other copy consumers keep using
+// copyDirSize directly.
+var gcCopyDirSize = copyDirSize
+
+// gcMeasureCopies walks at most four directories concurrently, delivering
+// sizes in input order on the caller's goroutine as each next result arrives.
+// An empty path represents a missing registry entry and requires no walk.
+func gcMeasureCopies(paths []string, consume func(int, int64)) {
+	jobs := make(chan int, len(paths))
+	results := make([]chan int64, len(paths))
+	for i, path := range paths {
+		results[i] = make(chan int64, 1)
+		if path == "" {
+			results[i] <- 0
+		} else {
+			jobs <- i
+		}
+	}
+	close(jobs)
+	measure := gcCopyDirSize
+	var workers sync.WaitGroup
+	for range min(gcMeasureWorkers, len(jobs)) {
+		workers.Go(func() {
+			for i := range jobs {
+				results[i] <- measure(paths[i])
+			}
+		})
+	}
+	defer workers.Wait()
+	for i := range paths {
+		consume(i, <-results[i])
+	}
+}
