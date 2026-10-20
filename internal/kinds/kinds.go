@@ -209,13 +209,32 @@ func KindApprovalArgs(kind, mode string, warn WarnFunc) ([]string, error) {
 	if mode == "" || mode == "ask" {
 		return nil, nil
 	}
-	if mode != "edits" && mode != "full" {
+	if mode != "edits" && mode != "auto" && mode != "full" && mode != "unsandboxed" {
 		return nil, fmt.Errorf("invalid approvals '%s' (ask|edits|full)", mode)
 	}
 	if warn == nil {
 		warn = DefaultWarn
 	}
+	if mode == "auto" && kind == "gemini" {
+		warn("gemini has no verified auto mode; approvals=auto runs as edits")
+		mode = "edits"
+	}
+	if mode == "unsandboxed" {
+		switch kind {
+		case "codex":
+			return []string{"-s", "danger-full-access", "-a", "never"}, nil
+		case "cursor":
+			return []string{"--trust", "--force", "--approve-mcps", "--sandbox", "disabled"}, nil
+		case "claude":
+		default:
+			warn(fmt.Sprintf("%s has no separate sandbox switch; approvals=unsandboxed runs as full", kind))
+		}
+		mode = "full"
+	}
 	values := map[string][]string{
+		"claude:auto": {"--permission-mode", "auto"}, "grok:auto": {"--permission-mode", "auto"},
+		"codex:auto": {"--approve-for-me"}, "cursor:auto": {"--trust", "--auto-review"},
+		"agy:auto": {"--mode", "auto"}, "opencode:auto": {"--auto"},
 		"claude:edits": {"--permission-mode", "acceptEdits"}, "claude:full": {"--permission-mode", "bypassPermissions", "--settings", `{"enableAllProjectMcpServers":true}`},
 		"codex:edits": {"-s", "workspace-write", "-a", "on-request"}, "codex:full": {"-s", "workspace-write", "-a", "never"},
 		"grok:edits": {"--permission-mode", "acceptEdits"}, "grok:full": {"--permission-mode", "bypassPermissions", "--always-approve"},
@@ -229,7 +248,7 @@ func KindApprovalArgs(kind, mode string, warn WarnFunc) ([]string, error) {
 		return append([]string(nil), args...), nil
 	}
 	switch key {
-	case "pi:full":
+	case "pi:full", "pi:auto":
 		return nil, nil
 	case "pi:edits":
 		warn("pi has no approval prompts (its tools run as-is); approvals=edits is a no-op (restrict tools with --tools/--exclude-tools after --)")

@@ -445,6 +445,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	doctorLaneArgs(ctx, env, s)
 	doctorContextWindow(ctx, env, s)
 	doctorBackgroundPatterns(ctx, env, s)
+	doctorApprovals(ctx, env, s)
 	doctorCodexNetwork(ctx, env, cwd, s)
 	codexenv.DoctorCodexPolicyWarnings(env, platform.Current(), s.Warning)
 	doctorFeedback(ctx, env, s)
@@ -1129,6 +1130,42 @@ func doctorBackgroundPatterns(ctx *core.Config, env platform.Env, s *Say) {
 	}
 }
 
+// doctorApprovals reports effective configuration keys, including environment
+// overrides; a lower layer's unsandboxed value must not produce a warning.
+func doctorApprovals(ctx *core.Config, env platform.Env, s *Say) {
+	keys := map[string]string{"approvals": "approvals"}
+	add := func(key, original string) {
+		if (strings.HasPrefix(key, "role_") || strings.HasPrefix(key, "lane_")) && strings.HasSuffix(key, "_approvals") {
+			if original == "" {
+				prefix, rest, _ := strings.Cut(key, "_")
+				original = prefix + "." + strings.TrimSuffix(rest, "_approvals") + ".approvals"
+			}
+			keys[key] = original
+		}
+	}
+	for key, entry := range ctx.Entries {
+		add(key, entry.Original)
+	}
+	for key := range env {
+		if strings.HasPrefix(key, "SOHO_") {
+			normalized := strings.ToLower(strings.TrimPrefix(key, "SOHO_"))
+			if _, exists := keys[normalized]; !exists {
+				add(normalized, "")
+			}
+		}
+	}
+	ordered := make([]string, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	textutil.SortUTF16(ordered)
+	for _, key := range ordered {
+		if core.Cfg(ctx, key, "", env) == "unsandboxed" {
+			s.Warning(fmt.Sprintf("config: %s=unsandboxed; workers run without a sandbox by the owner's choice", keys[key]))
+		}
+	}
+}
+
 func doctorCodexNetwork(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 	for _, role := range []string{"designer", "inspector"} {
 		res := core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{})
@@ -1136,7 +1173,7 @@ func doctorCodexNetwork(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 			continue
 		}
 		args := spawn.ConfigNativeArgs("codex", res.Lane, role, ctx, env, cwd, nil)
-		if len(dispatch.SandboxNotes("codex", args)) > 1 {
+		if len(dispatch.SandboxNotes("codex", args, res.Approvals)) > 1 {
 			key := "role." + role + ".args"
 			if res.Lane != "" {
 				key = "lane." + res.Lane + ".args"

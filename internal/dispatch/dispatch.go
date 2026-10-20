@@ -183,7 +183,7 @@ const standingRules = "- Only you write this report, once all of the brief is do
 
 const sharedTreeNote = "- Another worker edits this same tree now: run the global checks the brief asks for, but report failures in files you do not own as outside your slice (name the files), not as [partial] items of yours.\n"
 
-func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Config, env platform.Env, kind, args string, shared bool) string {
+func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Config, env platform.Env, kind, args, approvals string, shared bool) string {
 	var out strings.Builder
 	cooperative := cooperativePrompt(agent, report, ctx, env)
 	fmt.Fprintf(&out, "# Role: %s\n\n", core.FmGet(roleFile, "name"))
@@ -203,7 +203,7 @@ func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Con
 	if core.Cfg(ctx, "worker_context", "full", env) == "lean" {
 		out.WriteString("- This brief is self-contained. Do NOT read CLAUDE.md, AGENTS.md, ai-memory rules, wiki pages or other project instruction files unless the brief names them explicitly; the rules that apply are quoted in the brief. Start on the task immediately.\n")
 	}
-	for _, n := range SandboxNotesFor(kind, args, currentPlatform()) {
+	for _, n := range SandboxNotesFor(kind, args, approvals, currentPlatform()) {
 		out.WriteString(n)
 	}
 	fmt.Fprintf(&out, "- Run every `soho` command this prompt names through the launcher at `%s`, not through PATH.\n", platform.LauncherPath(env))
@@ -215,7 +215,7 @@ func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Con
 	return out.String()
 }
 
-func ComposeAmendment(raw, report string, ctx *core.Config, env platform.Env, kind, args string, shared bool, agents ...string) string {
+func ComposeAmendment(raw, report string, ctx *core.Config, env platform.Env, kind, args, approvals string, shared bool, agents ...string) string {
 	var out strings.Builder
 	cooperative := ""
 	if len(agents) != 0 {
@@ -232,7 +232,7 @@ func ComposeAmendment(raw, report string, ctx *core.Config, env platform.Env, ki
 	if cooperative == "" {
 		out.WriteString("- Write the report in one go, as the last action of your work; the orchestrator treats its existence as completion. Do not message the orchestrator to announce it (no `soho send`, no notice): a busy orchestrator leaves the sender waiting, and the report file is the only signal it needs.\n")
 	}
-	for _, n := range SandboxNotesFor(kind, args, currentPlatform()) {
+	for _, n := range SandboxNotesFor(kind, args, approvals, currentPlatform()) {
 		out.WriteString(n)
 	}
 	if shared {

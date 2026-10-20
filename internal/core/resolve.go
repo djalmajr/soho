@@ -167,7 +167,7 @@ func ResolveRoleSettings(role string, ctx *Config, env platform.Env, cwd string,
 			r.Approvals = v
 			r.ApprovalsFrom = fmt.Sprintf("approvals (%s)", CfgSource(ctx, "approvals", env))
 		} else {
-			r.Approvals = "ask"
+			r.Approvals = "auto"
 			r.ApprovalsFrom = "default"
 		}
 	}

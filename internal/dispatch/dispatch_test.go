@@ -285,7 +285,7 @@ func TestDispatchJavaScriptHelperCases(t *testing.T) {
 		if err := os.WriteFile(role, []byte("---\nname: Implementer\n---\n\nRole text.\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		prompt := ComposePrompt(role, "implementer", "worker", full, "/report.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, composeEnv(t), "codex", "", false)
+		prompt := ComposePrompt(role, "implementer", "worker", full, "/report.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, composeEnv(t), "codex", "", "", false)
 		if !strings.HasPrefix(prompt, "# Role: Implementer") || !strings.Contains(prompt, "# Brief\n\n"+full) || !strings.Contains(prompt, "Write your report as Markdown to `/report.md`") {
 			t.Fatalf("composed prompt misses contract: %s", prompt)
 		}
@@ -299,7 +299,7 @@ func TestDispatchJavaScriptHelperCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		env := platform.Env{"SOHO_REPORT_LANGUAGE": "pt-BR", "SOHO_WORKER_CONTEXT": "lean", "SOHO_SKILL_DIR": t.TempDir()}
-		prompt := ComposePrompt(role, "implementer", "worker", full, "/report.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, env, "codex", "", false)
+		prompt := ComposePrompt(role, "implementer", "worker", full, "/report.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, env, "codex", "", "", false)
 		if !strings.Contains(prompt, "- Write the report in pt-BR.\n") || !strings.Contains(prompt, "- This brief is self-contained.") {
 			t.Fatalf("prompt missed language/context: %s", prompt)
 		}
@@ -374,8 +374,8 @@ func TestDispatchRemainingHelperCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
-		brief := ComposePrompt(role, "implementer", "agent", "# Goal\nrun", "/report.md", ctx, composeEnv(t), "codex", "", false)
-		amend := ComposeAmendment("# Amend\nfix", "/report.md", ctx, composeEnv(t), "codex", "", false)
+		brief := ComposePrompt(role, "implementer", "agent", "# Goal\nrun", "/report.md", ctx, composeEnv(t), "codex", "", "", false)
+		amend := ComposeAmendment("# Amend\nfix", "/report.md", ctx, composeEnv(t), "codex", "", "", false)
 		line := "- Only you write this report, once all of the brief is done, including any part you handed to subagents or background tasks; a subagent never writes it. Report every item as it stands in the files, not as a subagent summarized it.\n"
 		for name, prompt := range map[string]string{"brief": brief, "amendment": amend} {
 			if strings.Count(prompt, line) != 1 || strings.Index(prompt, "- Write the report in one go") > strings.Index(prompt, line) || strings.Index(prompt, line) > strings.Index(prompt, "- Nobody watches this terminal") {
@@ -390,7 +390,7 @@ func TestDispatchRemainingHelperCases(t *testing.T) {
 		}
 		ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
 		line := "- Report only the current brief and its explicit amendments; do not import unrelated work from earlier briefs retained in a reused session. Mention prior work only when it directly affects this brief, stating the relationship.\n"
-		for name, prompt := range map[string]string{"brief": ComposePrompt(role, "implementer", "agent", "# Goal\nrun", "/report.md", ctx, composeEnv(t), "codex", "", false), "amendment": ComposeAmendment("# Amend\nfix", "/report.md", ctx, composeEnv(t), "codex", "", false)} {
+		for name, prompt := range map[string]string{"brief": ComposePrompt(role, "implementer", "agent", "# Goal\nrun", "/report.md", ctx, composeEnv(t), "codex", "", "", false), "amendment": ComposeAmendment("# Amend\nfix", "/report.md", ctx, composeEnv(t), "codex", "", "", false)} {
 			if strings.Count(prompt, line) != 1 || strings.Index(prompt, "# Report contract") > strings.Index(prompt, line) || strings.Index(prompt, line) > strings.Index(prompt, "- Command output you put in the report") {
 				t.Errorf("%s report-scope rule ordering/count invalid", name)
 			}
@@ -430,7 +430,7 @@ func TestDispatchRemainingHelperCases(t *testing.T) {
 		}
 		// The configured override is the native test binary; the skill
 		// directory in the env must play no part in the path.
-		p := ComposePrompt(role, "implementer", "worker", "# Goal\nrun", "/report.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{"SOHO_BIN": exe, "SOHO_SKILL_DIR": t.TempDir()}, "codex", "", false)
+		p := ComposePrompt(role, "implementer", "worker", "# Goal\nrun", "/report.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{"SOHO_BIN": exe, "SOHO_SKILL_DIR": t.TempDir()}, "codex", "", "", false)
 		want := "- Run every `soho` command this prompt names through the launcher at `" + resolved + "`, not through PATH.\n"
 		if !strings.Contains(p, want) {
 			t.Fatalf("composed prompt missed the launcher line:\n%s", p)
@@ -472,7 +472,7 @@ func TestDispatchRemainingHelperCases(t *testing.T) {
 							t.Fatalf("composition panicked %#v; want ExitError code 2 naming %q", r, tc.want)
 						}
 					}()
-					prompt = ComposePrompt(role, "implementer", "worker", "# Goal\nrun", "/report.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{"SOHO_BIN": tc.bin}, "codex", "", false)
+					prompt = ComposePrompt(role, "implementer", "worker", "# Goal\nrun", "/report.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{"SOHO_BIN": tc.bin}, "codex", "", "", false)
 				}()
 				_ = prompt
 			})
@@ -485,7 +485,7 @@ func TestDispatchRemainingHelperCases(t *testing.T) {
 // contract now asks for every item to be checked again against the current files.
 func TestComposeAmendmentAsksForAFreshCheck(t *testing.T) {
 	ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
-	amend := ComposeAmendment("# Amend\nfix", "/report.md", ctx, composeEnv(t), "codex", "", false)
+	amend := ComposeAmendment("# Amend\nfix", "/report.md", ctx, composeEnv(t), "codex", "", "", false)
 	want := "- This amendment overrides your current brief where they differ; the rest of that brief still holds.\n" +
 		"- Check every item again against the files as they are now: rerun the checks it needs, and never copy findings, outputs or states from your earlier report.\n"
 	if !strings.Contains(amend, want) {

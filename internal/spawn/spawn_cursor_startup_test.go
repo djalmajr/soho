@@ -289,10 +289,10 @@ func TestSpawnNonCursorWindowsGateOff(t *testing.T) {
 	}
 }
 
-// cursorReuseRow is an 8-column roster line for a cursor worker in the
-// fixture's cwd: it skips the model, approvals and args reuse checks.
+// cursorReuseRow records the default auto capability of a cursor worker in
+// the fixture's cwd, so these tests reach the reused-session startup checks.
 func cursorReuseRow(name, wdir string) string {
-	return strings.Join([]string{name, "p-" + name, "cursor", "implementer", "xai", "1", wdir, "now"}, "\t")
+	return strings.Join([]string{name, "p-" + name, "cursor", "implementer", "xai", "1", wdir, "now", "", "auto"}, "\t")
 }
 
 func cursorReuseFixture(t *testing.T, screen string, failedRead bool) (spawnFixture, []fakecli.Rule) {

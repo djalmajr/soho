@@ -388,7 +388,7 @@ func TestDispatchTM3bSandboxAndSharedTreeCases(t *testing.T) {
 		if err := os.WriteFile(role, []byte("---\nname: Implementer\n---\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		got := dispatch.ComposePrompt(role, "implementer", "build", "brief", "/tmp/report.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{"SOHO_SKILL_DIR": t.TempDir()}, "codex", "", false)
+		got := dispatch.ComposePrompt(role, "implementer", "build", "brief", "/tmp/report.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{"SOHO_SKILL_DIR": t.TempDir()}, "codex", "", "", false)
 		if !strings.Contains(got, "tests that start a local server fail") {
 			t.Fatalf("composed prompt omitted sandbox note: %s", got)
 		}

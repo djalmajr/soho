@@ -162,6 +162,7 @@ func runTM8ConfigGolden(t *testing.T, name string) {
 			*want.Files[i].Content = testutil.RewriteCompactTimeout(*want.Files[i].Content)
 			*want.Files[i].Content = testutil.RewriteBackgroundPatterns(*want.Files[i].Content)
 			*want.Files[i].Content = testutil.RewriteCallerCheck(*want.Files[i].Content)
+			*want.Files[i].Content = testutil.RewriteApprovalsAuto(*want.Files[i].Content)
 		}
 	}
 	for i := range want.Steps {
@@ -172,6 +173,7 @@ func runTM8ConfigGolden(t *testing.T, name string) {
 		want.Steps[i].Out = testutil.RewriteCompactTimeout(want.Steps[i].Out)
 		want.Steps[i].Out = testutil.RewriteBackgroundPatterns(want.Steps[i].Out)
 		want.Steps[i].Out = testutil.RewriteCallerCheck(want.Steps[i].Out)
+		want.Steps[i].Out = testutil.RewriteApprovalsAuto(want.Steps[i].Out)
 		want.Steps[i].Err = testutil.RewriteSohoName(want.Steps[i].Err)
 		want.Steps[i].Err = testutil.RewritePressureRefusal(want.Steps[i].Err)
 		want.Steps[i].Err = testutil.RewritePaneColumns(want.Steps[i].Err)
@@ -179,6 +181,7 @@ func runTM8ConfigGolden(t *testing.T, name string) {
 		want.Steps[i].Err = testutil.RewriteCompactTimeout(want.Steps[i].Err)
 		want.Steps[i].Err = testutil.RewriteBackgroundPatterns(want.Steps[i].Err)
 		want.Steps[i].Err = testutil.RewriteCallerCheck(want.Steps[i].Err)
+		want.Steps[i].Err = testutil.RewriteApprovalsAuto(want.Steps[i].Err)
 	}
 	for i, step := range want.Steps {
 		stepEnv := env.Clone()

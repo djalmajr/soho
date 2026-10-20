@@ -718,7 +718,7 @@ func TestDispatchRemainingCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		line := "- Only you write this report, once all of the brief is done, including any part you handed to subagents or background tasks; a subagent never writes it. Report every item as it stands in the files, not as a subagent summarized it.\n"
-		for _, prompt := range []string{dispatch.ComposePrompt(role, "implementer", "worker", "# Goal\nrun", "/r.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{"SOHO_SKILL_DIR": t.TempDir()}, "codex", "", false), dispatch.ComposeAmendment("# Amend\nchange", "/r.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{}, "codex", "", false)} {
+		for _, prompt := range []string{dispatch.ComposePrompt(role, "implementer", "worker", "# Goal\nrun", "/r.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{"SOHO_SKILL_DIR": t.TempDir()}, "codex", "", "", false), dispatch.ComposeAmendment("# Amend\nchange", "/r.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{}, "codex", "", "", false)} {
 			if strings.Count(prompt, line) != 1 || strings.Index(prompt, "- Write the report in one go") > strings.Index(prompt, line) {
 				t.Fatalf("report writer line missing or misplaced")
 			}
@@ -731,7 +731,7 @@ func TestDispatchRemainingCases(t *testing.T) {
 		if err := os.WriteFile(role, []byte("---\nname: Role\n---\nBody\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		for _, prompt := range []string{dispatch.ComposePrompt(role, "implementer", "worker", "# Goal\nrun", "/r.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{"SOHO_SKILL_DIR": t.TempDir()}, "codex", "", false), dispatch.ComposeAmendment("# Amend\nchange", "/r.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{}, "codex", "", false)} {
+		for _, prompt := range []string{dispatch.ComposePrompt(role, "implementer", "worker", "# Goal\nrun", "/r.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{"SOHO_SKILL_DIR": t.TempDir()}, "codex", "", "", false), dispatch.ComposeAmendment("# Amend\nchange", "/r.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{}, "codex", "", "", false)} {
 			if strings.Count(prompt, line) != 1 || strings.Index(prompt, "# Report contract") > strings.Index(prompt, line) {
 				t.Fatalf("report scope line missing or misplaced")
 			}

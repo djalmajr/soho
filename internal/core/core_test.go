@@ -17,6 +17,21 @@ func TestMain(m *testing.M) {
 	fakecli.RunTests(m)
 }
 
+func TestResolveApprovalConfigFallbackAutoAndExplicitAsk(t *testing.T) {
+	env, cwd := fixture(t)
+	env["SOHO_SKILL_DIR"], env["SOHO_ROLES"], env["SOHO_LANES"] = t.TempDir(), t.TempDir(), "off"
+	ctx := &Config{}
+	got := ResolveRoleSettings("missing", ctx, env, cwd, RoleFlags{})
+	if got.Approvals != "auto" || got.ApprovalsFrom != "default" {
+		t.Fatalf("fallback: %+v", got)
+	}
+	env["SOHO_APPROVALS"] = "ask"
+	got = ResolveRoleSettings("missing", ctx, env, cwd, RoleFlags{})
+	if got.Approvals != "ask" || !strings.Contains(got.ApprovalsFrom, "approvals (") {
+		t.Fatalf("explicit ask: %+v", got)
+	}
+}
+
 func fixture(t *testing.T) (platform.Env, string) {
 	t.Helper()
 	root := t.TempDir()

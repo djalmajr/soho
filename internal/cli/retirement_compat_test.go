@@ -860,6 +860,7 @@ func runRetirementDispatchScenario(t *testing.T, goldens map[string]json.RawMess
 		} else {
 			wantErr = adaptedErr
 		}
+		wantOut = testutil.RewriteApprovalsAutoSpawnJSON(wantOut, step.Args)
 		errOut = f.norm(normalizeParityError(errOut))
 		if code != step.RC || out != wantOut || errOut != wantErr {
 			t.Fatalf("step %d args=%v: code=%d want %d; first stdout diff: %s; stderr=%q want %q",
@@ -875,6 +876,7 @@ func runRetirementDispatchScenario(t *testing.T, goldens map[string]json.RawMess
 			} else {
 				wantRaw = adapted
 			}
+			wantRaw = testutil.RewriteApprovalsAutoStartLog(wantRaw, step.Args)
 			want := []string{}
 			if trimmed := strings.TrimSuffix(wantRaw, "\n"); trimmed != "" {
 				want = strings.Split(trimmed, "\n")
@@ -1400,6 +1402,7 @@ func runRetirementRunWait(t *testing.T, goldens map[string]json.RawMessage) {
 	} else {
 		wantErr = adaptedErr
 	}
+	wantOut = testutil.RewriteApprovalsAutoSpawnJSON(wantOut, step.Args)
 	errOut = f.norm(normalizeParityError(errOut))
 	if code != step.RC || out != wantOut || errOut != wantErr {
 		t.Fatalf("step 0 args=%v: code=%d want %d; first stdout diff: %s; stderr=%q want %q",
@@ -1413,6 +1416,7 @@ func runRetirementRunWait(t *testing.T, goldens map[string]json.RawMessage) {
 		} else {
 			wantRaw = adapted
 		}
+		wantRaw = testutil.RewriteApprovalsAutoStartLog(wantRaw, step.Args)
 		want := strings.Split(strings.TrimSuffix(wantRaw, "\n"), "\n")
 		if got := f.herdrLogLines(t); !reflect.DeepEqual(got, want) {
 			t.Fatalf("herdr call log:\ngot  %v\nwant %v", got, want)
@@ -1447,6 +1451,13 @@ func checkDispatchFinalFiles(t *testing.T, f *retirementFixture, stored retireDi
 				t.Fatalf("DJA-392 R2 roster adaptation for %s: %s", key, adErr)
 			}
 			want = adapted
+			var defaultSpawns []string
+			for _, step := range stored.Steps {
+				if testutil.RewriteApprovalsAutoSpawnJSON(step.Out, step.Args) != step.Out {
+					defaultSpawns = append(defaultSpawns, testutil.McpSpawnedAgents(step.Out)...)
+				}
+			}
+			want = testutil.RewriteApprovalsAutoRoster(want, defaultSpawns)
 		}
 		got, ok := final[key]
 		if !ok {

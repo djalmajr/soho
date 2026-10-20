@@ -18,11 +18,15 @@
 
 `approvals: edits` maps to claude `--permission-mode acceptEdits`, codex `-s workspace-write -a on-request`, grok `--permission-mode acceptEdits`, agy `--mode accept-edits`, cursor `--trust --auto-review`. `pi` and `opencode` have no edits mode: spawn warns, the mode is a no-op (pi) or refused in the mapping (opencode).
 
+`approvals: unsandboxed` is the owner's explicit choice above `full`, never the default. Codex maps it to `-s danger-full-access -a never`; Cursor uses `--trust --force --approve-mcps --sandbox disabled`; Claude keeps the `full` mapping. Grok, agy, gemini, pi and opencode retain their `full` arguments and warn `<kind> has no separate sandbox switch; approvals=unsandboxed runs as full`; that fallback does not establish sandbox removal. `doctor` warns for each effective `approvals`, `role.<role>.approvals` or `lane.<lane>.approvals` key set to `unsandboxed`, identifying the owner's choice. Initial prompts and amendments omit all Codex sandbox notes when roster column 10 records `unsandboxed`; native args appended after the approval mapping can still change the CLI's sandbox.
+
 Not bypassed by the skill (pass after `--` if you accept it): Codex `--dangerously-bypass-hook-trust`; first-visit workspace-trust dialogs.
 
 ## Codex sandbox limits (`-s workspace-write`)
 
-Both `edits` (`-s workspace-write -a on-request`) and `full` (`-s workspace-write -a never`) run the Codex worker in the `workspace-write` sandbox, which allows the repo root, `/tmp` and `$TMPDIR` but:
+`approvals: auto` selects automatic approval review below `full` in the order `ask < edits < auto < full < unsandboxed`: Claude and Grok `--permission-mode auto`, Codex `--approve-for-me`, Cursor `--trust --auto-review`, agy `--mode auto`, OpenCode `--auto`, and no flag for pi. Gemini uses `--mode accept-edits` and warns `gemini has no verified auto mode; approvals=auto runs as edits`. Codex's flag already selects the `workspace-write` sandbox, so Git, network and Windows runtime sandbox notes still apply. `doctor` warns only about `unsandboxed`, not `auto`. The shipped default is `auto`; choose `approvals=ask` explicitly to use the CLI's normal prompts.
+
+`auto` (`--approve-for-me`), `edits` (`-s workspace-write -a on-request`) and `full` (`-s workspace-write -a never`) run the Codex worker in the `workspace-write` sandbox, which allows the repo root, `/tmp` and `$TMPDIR` but:
 
 - **cannot write under `.git`** — `git mv` and `git checkout -- <file>` fail on `.git/index.lock`;
 - **has no network** — binding a local port included: a test that starts a local server fails with `Operation not permitted`;

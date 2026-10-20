@@ -67,6 +67,81 @@ func testSkillDir(t *testing.T) string {
 	return skillDir
 }
 
+func TestApprovalsAutoOracleExactDefaultRow(t *testing.T) {
+	old := "approvals          ask                            defaults"
+	want := "approvals          auto                           defaults"
+	for _, tc := range []struct{ input, output string }{
+		{old, want}, {old + "\n", want + "\n"},
+		{"before\n" + old + "\nafter\n", "before\n" + want + "\nafter\n"},
+		{want, want},
+		{"approvals=ask\n", "approvals=ask\n"},
+		{strings.Replace(old, "defaults", "project", 1), strings.Replace(old, "defaults", "project", 1)},
+		{strings.Replace(old, "defaults", "user", 1), strings.Replace(old, "defaults", "user", 1)},
+		{"prefix " + old, "prefix " + old},
+		{old + " suffix", old + " suffix"},
+		{old + "\r\n", old + "\r\n"},
+		{strings.Replace(old, "ask ", "ask", 1), strings.Replace(old, "ask ", "ask", 1)},
+	} {
+		if got := testutil.RewriteApprovalsAuto(tc.input); got != tc.output {
+			t.Errorf("input=%q got=%q want=%q", tc.input, got, tc.output)
+		}
+	}
+}
+
+func TestApprovalsAutoOracleSpawnBoundaries(t *testing.T) {
+	doctor := "ok     config: layout=split approvals=ask auto_approve=off reuse_workers=on multi_role=on worker_context=full"
+	if got := testutil.RewriteApprovalsAutoDoctor("before\n" + doctor + "\nafter\n"); got != "before\n"+strings.Replace(doctor, "approvals=ask", "approvals=auto", 1)+"\nafter\n" {
+		t.Fatalf("doctor exact row: %q", got)
+	}
+	for _, line := range []string{"prefix " + doctor, doctor + " suffix", strings.Replace(doctor, "layout=split", "layout=tab", 1), doctor + "\r\n"} {
+		if got := testutil.RewriteApprovalsAutoDoctor(line); got != line {
+			t.Fatalf("unrelated doctor row changed: %q", got)
+		}
+	}
+	for _, tc := range []struct{ kind, flag string }{{"codex", "--approve-for-me"}, {"grok", "--permission-mode auto"}, {"agy", "--mode auto"}, {"pi", ""}} {
+		original := "{\n  \"name\": \"fresh\",\n  \"kind\": \"" + tc.kind + "\",\n  \"approvals\": \"ask\",\n  \"agent_args\": \"--model fixed\",\n  \"reused\": false\n}\n"
+		want := strings.Replace(original, `"approvals": "ask"`, `"approvals": "auto"`, 1)
+		if tc.flag != "" {
+			want = strings.Replace(want, `"agent_args": "`, `"agent_args": "`+tc.flag+" ", 1)
+		}
+		trailer := "{\"wait_status\":\"sent\"}\nreport bytes\n"
+		if got := testutil.RewriteApprovalsAutoSpawnJSON(original+trailer, nil); got != want+trailer {
+			t.Fatalf("kind=%s got=%q want=%q", tc.kind, got, want+trailer)
+		}
+		for _, request := range [][]string{{"--approvals", "ask"}, {"--approvals=ask"}, {"--approvals", "full"}} {
+			if got := testutil.RewriteApprovalsAutoSpawnJSON(original, request); got != original {
+				t.Fatalf("explicit request changed: %q", got)
+			}
+		}
+		for _, old := range []string{strings.Replace(original, `"reused": false`, `"reused": true`, 1), strings.Replace(original, `"approvals": "ask"`, `"approvals": "full"`, 1), strings.Replace(original, `"kind": "`+tc.kind+`"`, `"kind": "other"`, 1), "not json\n"} {
+			if got := testutil.RewriteApprovalsAutoSpawnJSON(old, nil); got != old {
+				t.Fatalf("unrelated spawn changed: %q", got)
+			}
+		}
+		log := "agent get seeded\nagent start fresh --kind " + tc.kind + " -- --model fixed\n"
+		wantLog := log
+		if tc.flag != "" {
+			wantLog = strings.Replace(log, " -- --model", " -- "+tc.flag+" --model", 1)
+		}
+		if got := testutil.RewriteApprovalsAutoStartLog(log, nil); got != wantLog {
+			t.Fatalf("log got=%q want=%q", got, wantLog)
+		}
+		if got := testutil.RewriteApprovalsAutoStartLog(log, []string{"--approvals", "ask"}); got != log {
+			t.Fatalf("explicit log changed: %q", got)
+		}
+	}
+	row := "fresh\tp1\tcodex\tworker\topenai\t1\t/work\tnow\tmodel\task\tworker\n"
+	seeded := strings.Replace(row, "fresh", "seeded", 1)
+	legacy := "fresh\tp1\tcodex\tworker\topenai\t1\t/work\tnow\n"
+	want := strings.Replace(row, "\task\t", "\tauto\t", 1) + seeded + legacy
+	if got := testutil.RewriteApprovalsAutoRoster(row+seeded+legacy, []string{"fresh"}); got != want {
+		t.Fatalf("roster got=%q want=%q", got, want)
+	}
+	if got := testutil.RewriteApprovalsAutoRoster(row, nil); got != row {
+		t.Fatal("unselected row changed")
+	}
+}
+
 func TestParityConfigGolden(t *testing.T) {
 	// JS: "parity: config and session command goldens"
 	goldenPath := filepath.Join("..", "testdata", "legacy", "parity-config.json")
@@ -162,6 +237,7 @@ func TestParityConfigGolden(t *testing.T) {
 				wantErr = testutil.RewriteCompactTimeout(wantErr)
 				wantErr = testutil.RewriteBackgroundPatterns(wantErr)
 				wantErr = testutil.RewriteCallerCheck(wantErr)
+				wantErr = testutil.RewriteApprovalsAuto(wantErr)
 				want.Out = testutil.RewriteSohoName(want.Out)
 				want.Out = testutil.RewritePressureRefusal(want.Out)
 				want.Out = testutil.RewritePaneColumns(want.Out)
@@ -169,6 +245,7 @@ func TestParityConfigGolden(t *testing.T) {
 				want.Out = testutil.RewriteCompactTimeout(want.Out)
 				want.Out = testutil.RewriteBackgroundPatterns(want.Out)
 				want.Out = testutil.RewriteCallerCheck(want.Out)
+				want.Out = testutil.RewriteApprovalsAuto(want.Out)
 				if code != want.RC || out != want.Out || errOut != wantErr {
 					t.Fatalf("step %d args=%v\ncode=%d want=%d\nstdout:\n%s\nwant:\n%s\nstderr=%q want=%q", i, want.Args, code, want.RC, out, want.Out, errOut, wantErr)
 				}
@@ -190,6 +267,7 @@ func TestParityConfigGolden(t *testing.T) {
 				wantContent = testutil.RewriteCompactTimeout(wantContent)
 				wantContent = testutil.RewriteBackgroundPatterns(wantContent)
 				wantContent = testutil.RewriteCallerCheck(wantContent)
+				wantContent = testutil.RewriteApprovalsAuto(wantContent)
 				if readErr != nil || string(actual) != wantContent {
 					t.Fatalf("file %s=%q err=%v want=%q", expected.Rel, actual, readErr, wantContent)
 				}

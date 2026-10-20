@@ -306,8 +306,12 @@ func approvalsRank(mode string) int {
 		return 1
 	case "edits":
 		return 2
-	case "full":
+	case "auto":
 		return 3
+	case "full":
+		return 4
+	case "unsandboxed":
+		return 5
 	default:
 		return 0
 	}
@@ -436,11 +440,16 @@ func FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, want
 			if len(f) >= 9 && wModel != wantModel {
 				continue
 			}
-			if len(f) >= 10 && approvalsRank(wApprovals) < approvalsRank(defaultValue(wantApprovals, "ask")) {
+			// DJA-445: a truncated historical row cannot establish approval
+			// capability. Only an explicit ask request may reuse it.
+			if len(f) < 10 && wantApprovals != "ask" {
+				continue
+			}
+			if len(f) >= 10 && approvalsRank(wApprovals) < approvalsRank(defaultValue(wantApprovals, "auto")) {
 				continue
 			}
 		} else {
-			if multi != "on" || len(f) < 11 || wantModel == "" || wModel == "" || wModel != wantModel || wApprovals == "" || approvalsRank(defaultValue(wantApprovals, "ask")) == 0 || approvalsRank(wApprovals) < approvalsRank(defaultValue(wantApprovals, "ask")) {
+			if multi != "on" || len(f) < 11 || wantModel == "" || wModel == "" || wModel != wantModel || wApprovals == "" || approvalsRank(defaultValue(wantApprovals, "auto")) == 0 || approvalsRank(wApprovals) < approvalsRank(defaultValue(wantApprovals, "auto")) {
 				continue
 			}
 			if core.IsReviewRole(role) && (core.RoleIsEdit(at(3), env, cwd) || core.HistoryHasEdit(at(10), env, cwd)) {
@@ -491,7 +500,7 @@ func FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, want
 // pending report, not locked for a review role, and kind, resolved model
 // (roster column 8) and cwd (roster column 6, canonical via
 // dispatch.SamePath) all matching the request.
-func laneReuseCandidate(f []string, state, role, kind, model, mcp, workerCwd, sd string, env platform.Env, cwd string) bool {
+func laneReuseCandidate(f []string, state, role, kind, model, approvals, mcp, workerCwd, sd string, env platform.Env, cwd string) bool {
 	if state != "idle" && state != "done" {
 		return false
 	}
@@ -506,13 +515,29 @@ func laneReuseCandidate(f []string, state, role, kind, model, mcp, workerCwd, sd
 	if core.IsReviewRole(role) && (core.RoleIsEdit(fieldAt(f, 3), env, cwd) || core.HistoryHasEdit(fieldAt(f, 10), env, cwd)) {
 		return false
 	}
-	return fieldAt(f, 2) == kind && fieldAt(f, 8) == model && mcpMatches(f, mcp) && dispatch.SamePath(fieldAt(f, 6), workerCwd, platform.Current())
+	return fieldAt(f, 2) == kind && fieldAt(f, 8) == model && laneApprovalsMatch(f, approvals) && mcpMatches(f, mcp) && dispatch.SamePath(fieldAt(f, 6), workerCwd, platform.Current())
+}
+
+func laneApprovalsMatch(f []string, approvals string) bool {
+	// Apply the same historical-row rule to direct, named and alternative
+	// lane reuse; do not infer auto from the absence of column 10.
+	if len(f) < 10 {
+		return approvals == "ask"
+	}
+	approvals = defaultValue(approvals, "auto")
+	held := fieldAt(f, 9)
+	// Preserve legacy lane decisions for missing or unrecognized approval
+	// fields, but they cannot establish auto or unsandboxed capability.
+	if approvalsRank(held) == 0 && approvals != "auto" && approvals != "unsandboxed" {
+		return true
+	}
+	return approvalsRank(held) >= approvalsRank(approvals)
 }
 
 // laneReusePick scans the lane's live workers in roster order and returns the
 // first idle worker that is a reuse candidate for the request, or "" when no
 // idle worker matches (each mismatched idle then counts as occupied).
-func laneReusePick(sd, lane, role, kind, model, mcp, workerCwd string, env platform.Env, cwd string) string {
+func laneReusePick(sd, lane, role, kind, model, approvals, mcp, workerCwd string, env platform.Env, cwd string) string {
 	for _, row := range core.LaneWorkers(sd, lane) {
 		f := strings.Split(row, "\t")
 		nm := fieldAt(f, 0)
@@ -520,7 +545,7 @@ func laneReusePick(sd, lane, role, kind, model, mcp, workerCwd string, env platf
 			continue
 		}
 		st := herdr.AgentState(nm, env, herdr.Timeout, nil)
-		if laneReuseCandidate(f, st.State, role, kind, model, mcp, workerCwd, sd, env, cwd) {
+		if laneReuseCandidate(f, st.State, role, kind, model, approvals, mcp, workerCwd, sd, env, cwd) {
 			return nm
 		}
 	}
@@ -789,7 +814,7 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 }
 
 func approvalsOk(value string) bool {
-	return value == "ask" || value == "edits" || value == "full"
+	return value == "ask" || value == "edits" || value == "auto" || value == "full" || value == "unsandboxed"
 }
 
 func effortOk(value string) bool {
@@ -955,7 +980,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 					}
 					named = true
 					st := herdr.AgentState(o.name, env, herdr.Timeout, nil)
-					if laneReuseCandidate(rf, st.State, o.role, kind, o.model, o.mcp, o.cwd, sd, env, cwd) {
+					if laneReuseCandidate(rf, st.State, o.role, kind, o.model, o.approvals, o.mcp, o.cwd, sd, env, cwd) {
 						selected = o.name
 					}
 					break
@@ -985,11 +1010,15 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 				// DJA-392: the MCP choice the worker was opened with (roster
 				// column 15) must match too, under the same rule.
 				modelCwdOk := fieldAt(f, 8) == o.model && dispatch.SamePath(fieldAt(f, 6), o.cwd, platform.Current())
-				if !modelCwdOk || !mcpMatches(f, o.mcp) {
-					selected = laneReusePick(sd, lane, o.role, kind, o.model, o.mcp, o.cwd, env, cwd)
+				approvalsOk := laneApprovalsMatch(f, o.approvals)
+				if !modelCwdOk || !approvalsOk || !mcpMatches(f, o.mcp) {
+					selected = laneReusePick(sd, lane, o.role, kind, o.model, o.approvals, o.mcp, o.cwd, env, cwd)
 					if selected == "" {
 						if d.N < d.Capacity {
 							break // the lane has a slot: open a new pane
+						}
+						if !approvalsOk {
+							busyLane(lane, d.Name, "", o.role, ctx, env, cwd)
 						}
 						if !modelCwdOk {
 							core.DieFriction(fmt.Sprintf("spawn: lane '%s' has no idle worker matching kind '%s', model '%s' and cwd '%s' (idle: '%s' runs %s %s in %s); release it or raise the lane's panes", lane, kind, o.model, o.cwd, d.Name, actual, fieldAt(f, 8), fieldAt(f, 6)), 13, "", "")
@@ -1239,7 +1268,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	// DJA-392 fatia 2 R2: the effective MCP choice (inherit|none) is the
 	// row's last field; reopen reads it and passes --mcp <value> to the
 	// respawn, so a worker keeps the MCP it was opened with.
-	core.RosterAppend(sd, []string{o.name, o.pane, kind, o.role, family, boolInt(created), o.cwd, core.NowStamp(platform.Now()), o.model, defaultValue(o.approvals, "ask"), o.role, lane, boolText(burst), native, o.effort, o.mcp})
+	core.RosterAppend(sd, []string{o.name, o.pane, kind, o.role, family, boolInt(created), o.cwd, core.NowStamp(platform.Now()), o.model, defaultValue(o.approvals, "auto"), o.role, lane, boolText(burst), native, o.effort, o.mcp})
 	// A spawn that re-rosters a released pane (spawn --pane on it) retires
 	// the pane's released-panes row.
 	if placement == "given" {
@@ -1360,7 +1389,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			}
 		}
 	}
-	out := jsonjs.O("name", o.name, "pane_id", o.pane, "kind", kind, "role", o.role, "family", family, "created_pane", created, "layout", layoutMode, "placement", placement, "effort", defaultValue(o.effort, "default"), "model", defaultValue(o.model, "default"), "model_spec", modelSpec, "approvals", defaultValue(o.approvals, "ask"), "agent_args", strings.Join(agentArgs, " "), "status", func() string {
+	out := jsonjs.O("name", o.name, "pane_id", o.pane, "kind", kind, "role", o.role, "family", family, "created_pane", created, "layout", layoutMode, "placement", placement, "effort", defaultValue(o.effort, "default"), "model", defaultValue(o.model, "default"), "model_spec", modelSpec, "approvals", defaultValue(o.approvals, "auto"), "agent_args", strings.Join(agentArgs, " "), "status", func() string {
 		if blocked {
 			return "blocked_at_startup"
 		}

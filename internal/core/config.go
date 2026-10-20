@@ -112,7 +112,7 @@ var startupDialogKeys = []string{"hooks_review"}
 var KnownKinds = []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode"}
 var EffortLadder = []string{"low", "medium", "high", "xhigh", "max"}
 
-var dottedKeyRE = regexp.MustCompile(`^(?:role\.[a-z][a-z0-9_-]*\.(?:kind|model|effort|mcp|args)|lane\.[a-z][a-z0-9_-]*\.(?:roles|kind|model|effort|approvals|panes|args|mcp)|model\.[a-z][a-z0-9_.-]+|effort\.[a-z][a-z0-9_-]+|context_window\.[a-z][a-z0-9_-]+|background_patterns\.[a-z][a-z0-9_-]+|args\.[a-z][a-z0-9_-]+|worker_messages\.rules\.[a-z][a-z0-9_]*\.(?:from|to|types|scope|enabled))$`)
+var dottedKeyRE = regexp.MustCompile(`^(?:role\.[a-z][a-z0-9_-]*\.(?:kind|model|effort|approvals|mcp|args)|lane\.[a-z][a-z0-9_-]*\.(?:roles|kind|model|effort|approvals|panes|args|mcp)|model\.[a-z][a-z0-9_.-]+|effort\.[a-z][a-z0-9_-]+|context_window\.[a-z][a-z0-9_-]+|background_patterns\.[a-z][a-z0-9_-]+|args\.[a-z][a-z0-9_-]+|worker_messages\.rules\.[a-z][a-z0-9_]*\.(?:from|to|types|scope|enabled))$`)
 var decimalRE = regexp.MustCompile(`^[0-9]+$`)
 var positiveDecimalRE = regexp.MustCompile(`^[1-9][0-9]*$`)
 
@@ -415,8 +415,8 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return false
 	}
 	switch {
-	case key == "approvals" || strings.HasPrefix(key, "lane.") && strings.HasSuffix(key, ".approvals"):
-		return value == "ask" || value == "edits" || value == "full"
+	case key == "approvals" || (strings.HasPrefix(key, "lane.") || strings.HasPrefix(key, "role.")) && strings.HasSuffix(key, ".approvals"):
+		return value == "ask" || value == "edits" || value == "auto" || value == "full" || value == "unsandboxed"
 	case key == "max_workers" || key == "provider_retries" || key == "provider_retry_delay" || key == "prompt_check_seconds" || key == "prompt_settle_seconds" || key == "stuck_warn_minutes" || key == "pressure_disk_free_percent" || key == "pressure_swap_percent" || key == "pressure_refuse_disk_free_percent" || key == "pressure_refuse_swap_percent" || key == "footprint_warn_gb":
 		return decimalRE.MatchString(value)
 	case key == "multi_role" || key == "reuse_workers" || key == "lanes":

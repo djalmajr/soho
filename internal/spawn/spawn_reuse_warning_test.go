@@ -46,11 +46,11 @@ func assertNoStart(t *testing.T, calls []fakecli.Call) {
 // codex kind; the model column is empty so a flagless spawn matches the
 // session (no kind-mismatch) and the reuse decision is reached.
 func reuseLaneRow(name, wdir string) string {
-	return strings.Join([]string{name, "w0test:p0a", "codex", "reviewer", "openai", "1", wdir, "now", "", "ask", "reviewer", "review", "", ""}, "\t")
+	return strings.Join([]string{name, "w0test:p0a", "codex", "reviewer", "openai", "1", wdir, "now", "", "auto", "reviewer", "review", "", ""}, "\t")
 }
 
 // reuse8Row is an 8-column roster line (the shape the old writers left
-// behind); it skips the model, approvals and args reuse checks.
+// behind); only explicit ask may reuse it, with no model or args recorded.
 func reuse8Row(name, role, wdir string) string {
 	return strings.Join([]string{name, "p-" + name, "grok", role, "xai", "1", wdir, "now"}, "\t")
 }
@@ -124,11 +124,11 @@ func TestSpawnIdleReuseWarningDescribesRetainedContext(t *testing.T) {
 		assertNoStart(t, calls)
 	})
 
-	t.Run("spawn: a non-lane reuse of an idle same-role worker with no prior dispatch warns the retained context", func(t *testing.T) {
+	t.Run("spawn: explicit ask reuses an idle same-role legacy worker and warns the retained context", func(t *testing.T) {
 		f := newSpawnFixture(t, []fakecli.Rule{idleHerdrRule("implementer")})
 		configureSpawnFixture(t, &f)
 		f.roster(t, reuse8Row("implementer", "implementer", f.cwd))
-		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"implementer"})
+		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"implementer", "--approvals", "ask"})
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}

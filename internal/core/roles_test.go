@@ -70,7 +70,7 @@ func TestResolveRoleSettingsLayers(t *testing.T) {
 	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lane.build.roles=implementer,designer,tasker,scouter,researcher,documenter\nlane.build.kind=pi\nlane.build.model=lane-model\nlane.build.effort=medium\nrole.implementer.model=role-model\n")
 	ctx := LoadConfig(env, repo)
 	r := ResolveRoleSettings("implementer", &ctx, env, repo, RoleFlags{})
-	if r.Lane != "build" || r.Kind != "pi" || r.KindFrom != "lane build (project)" || r.ModelSpec != "lane-model" || r.Effort != "medium" || r.Approvals != "ask" {
+	if r.Lane != "build" || r.Kind != "pi" || r.KindFrom != "lane build (project)" || r.ModelSpec != "lane-model" || r.Effort != "medium" || r.Approvals != "auto" {
 		t.Fatalf("settings = %#v", r)
 	}
 	// The role model is configured at the same source rank as the lane kind;

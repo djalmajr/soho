@@ -30,9 +30,10 @@ var currentPlatform = platform.Current
 // SandboxNotesFor returns the Codex sandbox constraints for the worker's
 // opening args on the given host platform: the .git note, the network
 // note when the network is not released, and, on win32 only, the runtime
-// note (issue 60). danger-full-access and the bypass flag lift every note.
-func SandboxNotesFor(kind, agentArgs, goos string) []string {
-	if kind != "codex" {
+// note (issue 60). Unsandboxed approvals, danger-full-access and the bypass
+// flag lift every note.
+func SandboxNotesFor(kind, agentArgs, approvals, goos string) []string {
+	if kind != "codex" || approvals == "unsandboxed" {
 		return nil
 	}
 	args := strings.Fields(agentArgs)
@@ -62,6 +63,10 @@ func SandboxNotesFor(kind, agentArgs, goos string) []string {
 // for the worker's opening args: the .git and network notes only. The
 // doctor's network-decision consumer counts these notes (more than one
 // means the network stays off), so it must not see the Windows note.
-func SandboxNotes(kind, agentArgs string) []string {
-	return SandboxNotesFor(kind, agentArgs, "")
+func SandboxNotes(kind, agentArgs string, approvals ...string) []string {
+	mode := ""
+	if len(approvals) > 0 {
+		mode = approvals[0]
+	}
+	return SandboxNotesFor(kind, agentArgs, mode, "")
 }
