@@ -247,4 +247,31 @@ func TestExplainCommandFootprintLine(t *testing.T) {
 			t.Fatalf("the footprint line must stay out of a footprint-free explain:\n%s", out)
 		}
 	})
+
+	t.Run("a queued copy counts and the queue stays (DJA-323)", func(t *testing.T) {
+		_ = os.RemoveAll(sd)
+		tm6Write(t, filepath.Join(sd, "agents.tsv"), agentsTsvBuild)
+		queue, err := core.QueueCopy(env, env.Get("HERDR_WORKSPACE_ID"), sd, core.CopyRow{Path: copyDir, Owner: "build", Pane: "p1", Created: "2026-01-01T00:00:00Z", Source: "s", Origin: "mutation-copy"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile(queue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code, out, stderr := runIn(t, []string{"explain"}, env, cwd)
+		if code != 0 {
+			t.Fatalf("explain exit=%d stderr=%q", code, stderr)
+		}
+		if !strings.Contains(out, "(copies "+core.HumanSize(copyBytes)+" in 1, ") {
+			t.Fatalf("the queued copy is not counted:\n%s", out)
+		}
+		after, err := os.ReadFile(queue)
+		if err != nil || string(after) != string(before) {
+			t.Fatalf("explain changed the queue: %q -> %q (%v)", before, after, err)
+		}
+		if _, err := os.Stat(filepath.Join(sd, "copies.tsv")); !os.IsNotExist(err) {
+			t.Fatalf("explain wrote the registry: %v", err)
+		}
+	})
 }

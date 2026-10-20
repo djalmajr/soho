@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -34,6 +35,7 @@ func cmdProcs(argv []string, ctx *core.Config, env platform.Env, cwd string) int
 // the pid exists with another start time).
 func procsList(ctx *core.Config, env platform.Env, cwd string) int {
 	sd := core.StateDir(ctx, env, cwd)
+	incorporatePendingProcs("procs", sd, env)
 	rows, err := core.ReadProcs(sd)
 	if err != nil {
 		core.DieFriction(fmt.Sprintf("procs: cannot read the process registry (%v)", err), 4, frictionLogPath, "procs")
@@ -115,6 +117,7 @@ func procsAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) int
 		return refuse("that is the process that invoked soho")
 	}
 	sd := core.StateDir(ctx, env, cwd)
+	incorporatePendingProcs("procs add", sd, env)
 	if agentSeen && core.RosterLine(sd, agent) == "" {
 		core.DieFriction(fmt.Sprintf("procs add: agent '%s' is not in the roster (state dir: %s)", agent, sd), 3, frictionLogPath, "procs")
 	}
@@ -145,7 +148,15 @@ func procsAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) int
 		pane = "-"
 	}
 	row := core.ProcRow{Pid: pid, Started: started, Name: name, Owner: owner, Pane: pane, Created: core.FrictionISO(platform.Now())}
-	if err := core.UpsertProc(sd, row); err != nil {
+	if err := upsertProc(sd, row); err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			queue, queueErr := core.QueueProc(env, filepath.Base(sd), sd, row)
+			if queueErr == nil {
+				pendingQueuedLine("procs add", sd, queue)
+				return 0
+			}
+			err = fmt.Errorf("%v; the queue failed too: %v", err, queueErr)
+		}
 		var locked *core.RegistryLockedError
 		if errors.As(err, &locked) {
 			core.DieFriction(err.Error(), 4, frictionLogPath, "procs")
@@ -154,6 +165,10 @@ func procsAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) int
 	}
 	return 0
 }
+
+// upsertProc is the registry write of procs add; tests swap it to inject
+// the permission error of a sandbox that cannot write the state dir.
+var upsertProc = core.UpsertProc
 
 func procsUsageError() int {
 	_, _ = fmt.Fprintf(platform.Stderr, "soho: %s\n", procsUsage)

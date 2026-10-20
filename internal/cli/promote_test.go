@@ -696,6 +696,29 @@ func TestPromoteRefusesCallerOwnedResources(t *testing.T) {
 		}
 		assertOnlyScopeCalls(t, calls)
 	})
+	t.Run("a queued copy joins the registry and is a refusal (DJA-323)", func(t *testing.T) {
+		f, _ := promoteFixture(t, "sub-orch", "working", promoteVerbRules()...)
+		sd := f.stateDir(t)
+		promoteRoster(t, sd, "sub-orch")
+		copyPath := filepath.Join(f.root, "copies", "c1")
+		if err := os.MkdirAll(copyPath, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		queue, err := core.QueueCopy(f.env, filepath.Base(sd), sd, core.CopyRow{Path: copyPath, Owner: "sub-orch", Pane: "ws:pS", Created: "2026-10-06T00:00:00Z", Source: "-", Origin: "mutation-copy"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		code, _, stderr := runPromote(t, f, f.env)
+		if code != 3 || !strings.Contains(stderr, "caller-owned copies still exist: "+copyPath) {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+		if rows, err := core.ReadCopies(sd); err != nil || len(rows) != 1 || rows[0].Path != copyPath {
+			t.Fatalf("registry rows=%#v err=%v; want the queued copy", rows, err)
+		}
+		if _, err := os.Stat(queue); !os.IsNotExist(err) {
+			t.Fatalf("the queue stays: %v", err)
+		}
+	})
 	t.Run("a proven-missing copy keeps its record and passes", func(t *testing.T) {
 		f, wantTitle := promoteFixture(t, "sub-orch", "working", promoteVerbRules()...)
 		sd := f.stateDir(t)

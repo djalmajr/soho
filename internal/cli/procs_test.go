@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1047,4 +1049,187 @@ func TestProcsHelperImageIsALinkOfThePreparedImage(t *testing.T) {
 			t.Fatalf("lstat after the remove: %v; want not-exist", err)
 		}
 	}
+}
+
+// refuseProcsRegistry swaps the process registry write for the permission
+// error of a sandbox that cannot write the state dir (DJA-323), or for err;
+// the returned function puts the real write back.
+func refuseProcsRegistry(t *testing.T, err error) func() {
+	t.Helper()
+	old := upsertProc
+	upsertProc = func(sd string, _ core.ProcRow) error {
+		if err != nil {
+			return err
+		}
+		return &fs.PathError{Op: "open", Path: filepath.Join(sd, "procs.tsv.lock"), Err: fs.ErrPermission}
+	}
+	restore := func() { upsertProc = old }
+	t.Cleanup(restore)
+	return restore
+}
+
+func TestProcsAddQueuesWhenTheStateDirRefusesWrites(t *testing.T) {
+	queued := func(t *testing.T, f *procsFixture, pid int) string {
+		t.Helper()
+		restore := refuseProcsRegistry(t, nil)
+		code, out, errOut := f.run(t, "procs", "add", strconv.Itoa(pid))
+		restore()
+		queue := core.PendingProcsFile(f.env, "ws")
+		wantLine := "procs add: the state dir " + f.state + " is not writable from here; the registration is queued for the orchestrator in " + queue + "\n"
+		if code != 0 || out != "" || errOut != wantLine {
+			t.Fatalf("code=%d out=%q err=%q; want 0 and the queue line %q", code, out, errOut, wantLine)
+		}
+		if _, err := os.Stat(f.registryPath()); !os.IsNotExist(err) {
+			t.Fatalf("the refused registry was written: %v", err)
+		}
+		return queue
+	}
+
+	t.Run("the full line goes to the queue and procs lists it after", func(t *testing.T) {
+		f := newProcsFixture(t)
+		pid := f.sleeper(t)
+		queue := queued(t, f, pid)
+		started, name, ok := platform.ProcInfo(pid, f.env)
+		if !ok {
+			t.Fatal("the sleeper is not readable")
+		}
+		raw, err := os.ReadFile(queue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+		if len(lines) != 2 || lines[0] != "state_dir\tpid\tstarted\tname\towner\tpane\tcreated" {
+			t.Fatalf("queue=%q; want the header and one line", raw)
+		}
+		fields := strings.Split(lines[1], "\t")
+		if len(fields) != 7 || fields[0] != f.state || fields[1] != strconv.Itoa(pid) || fields[2] != started || fields[3] != name || fields[4] != "worker" || fields[5] != "p-worker" {
+			t.Fatalf("queue line=%q; want the state dir in field 1 and the six registry fields", lines[1])
+		}
+		code, out, errOut := f.run(t, "procs")
+		if code != 0 || errOut != "" || !strings.HasPrefix(out, strconv.Itoa(pid)+"  "+name+"  worker  ") {
+			t.Fatalf("procs: code=%d out=%q err=%q; want the queued process", code, out, errOut)
+		}
+		if rows := f.procsRows(t); len(rows) != 1 || rows[0].Pid != pid || rows[0].Started != started {
+			t.Fatalf("registry rows=%v; want the queued line", rows)
+		}
+		if _, err := os.Stat(queue); !os.IsNotExist(err) {
+			t.Fatalf("the queue is still there: %v", err)
+		}
+	})
+
+	t.Run("release stops the queued process of its owner", func(t *testing.T) {
+		f := newProcsFixture(t)
+		pid := f.sleeper(t)
+		queue := queued(t, f, pid)
+		code, out, _ := f.run(t, "release", "worker")
+		if code != 0 || !strings.Contains(out, "stopped process "+strconv.Itoa(pid)) {
+			t.Fatalf("release: code=%d out=%q; want the queued process stopped", code, out)
+		}
+		if procAlive(t, f.env, pid) {
+			t.Fatal("the queued process survived the release")
+		}
+		if rows := f.procsRows(t); len(rows) != 0 {
+			t.Fatalf("registry rows=%v; want none", rows)
+		}
+		if _, err := os.Stat(queue); !os.IsNotExist(err) {
+			t.Fatalf("the queue is still there: %v", err)
+		}
+	})
+
+	t.Run("an error that is not a permission keeps today's exit 4 and queues nothing", func(t *testing.T) {
+		f := newProcsFixture(t)
+		pid := f.sleeper(t)
+		refuseProcsRegistry(t, errors.New("disk full"))
+		code, _, errOut := f.run(t, "procs", "add", strconv.Itoa(pid))
+		if code != 4 || !strings.Contains(errOut, "procs add: could not register pid "+strconv.Itoa(pid)+" (disk full)") || strings.Contains(errOut, "queued") {
+			t.Fatalf("code=%d err=%q; want today's exit 4 and message", code, errOut)
+		}
+		if _, err := os.Stat(core.PendingProcsFile(f.env, "ws")); !os.IsNotExist(err) {
+			t.Fatalf("a non-permission error wrote the queue: %v", err)
+		}
+	})
+
+	t.Run("a held lock keeps today's exit 4 and queues nothing", func(t *testing.T) {
+		f := newProcsFixture(t)
+		pid := f.sleeper(t)
+		old := core.CopiesLockTimeout
+		core.CopiesLockTimeout = 200 * time.Millisecond
+		t.Cleanup(func() { core.CopiesLockTimeout = old })
+		lock := filepath.Join(f.state, "procs.tsv.lock")
+		if err := os.WriteFile(lock, []byte("1 now\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Remove(lock) })
+		code, _, errOut := f.run(t, "procs", "add", strconv.Itoa(pid))
+		if code != 4 || !strings.Contains(errOut, "procs: registry is locked by another soho") || strings.Contains(errOut, "queued") {
+			t.Fatalf("code=%d err=%q; want today's lock exit 4", code, errOut)
+		}
+		if _, err := os.Stat(core.PendingProcsFile(f.env, "ws")); !os.IsNotExist(err) {
+			t.Fatalf("a held lock wrote the queue: %v", err)
+		}
+	})
+
+	t.Run("a malformed line leaves the queue with a warning and an ended process enters", func(t *testing.T) {
+		f := newProcsFixture(t)
+		gone := f.sleeperGone(t)
+		queue := core.PendingProcsFile(f.env, "ws")
+		if err := os.MkdirAll(filepath.Dir(queue), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		content := "state_dir\tpid\tstarted\tname\towner\tpane\tcreated\n" +
+			f.state + "\tnot-a-pid\tx\tsleep\tworker\tp-worker\t2026-01-01T00:00:00Z\n" +
+			f.state + "\t" + strconv.Itoa(gone) + "\tMon Jan  1 00:00:00 2026\tsleep\tworker\tp-worker\t2026-01-01T00:00:00Z\n"
+		if err := os.WriteFile(queue, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		code, out, errOut := f.run(t, "procs")
+		if code != 0 || !strings.Contains(errOut, "procs: dropped a malformed line from "+queue+": ") || !strings.Contains(out, strconv.Itoa(gone)+"  sleep  worker  ") {
+			t.Fatalf("procs: code=%d out=%q err=%q; want the warning and the ended process listed", code, out, errOut)
+		}
+		if rows := f.procsRows(t); len(rows) != 1 || rows[0].Pid != gone {
+			t.Fatalf("registry rows=%v; want the ended process only", rows)
+		}
+		if _, err := os.Stat(queue); !os.IsNotExist(err) {
+			t.Fatalf("the queue is still there: %v", err)
+		}
+	})
+}
+
+func TestSandboxedProcsStayQuietOnAPermissionIncorporation(t *testing.T) {
+	t.Run("a second procs add prints only the queue line, and procs lists without a warning", func(t *testing.T) {
+		f := newProcsFixture(t)
+		refuseProcsRegistry(t, nil)
+		refuseIncorporation(t, nil)
+		queue := core.PendingProcsFile(f.env, "ws")
+		wantLine := "procs add: the state dir " + f.state + " is not writable from here; the registration is queued for the orchestrator in " + queue + "\n"
+		for _, name := range []string{"first", "second"} {
+			pid := f.sleeper(t)
+			code, out, errOut := f.run(t, "procs", "add", strconv.Itoa(pid))
+			if code != 0 || out != "" || errOut != wantLine {
+				t.Fatalf("%s add: code=%d out=%q err=%q; want 0 and only %q", name, code, out, errOut, wantLine)
+			}
+		}
+		raw, err := os.ReadFile(queue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n"); len(lines) != 3 {
+			t.Fatalf("queue lines=%q; want the header and both processes", lines)
+		}
+		code, out, errOut := f.run(t, "procs")
+		if code != 0 || !strings.HasPrefix(out, "no registered processes\n") || errOut != "" {
+			t.Fatalf("procs: code=%d out=%q err=%q; want the registry as it is, no warning", code, out, errOut)
+		}
+	})
+
+	t.Run("an error that is not a permission keeps the warning", func(t *testing.T) {
+		f := newProcsFixture(t)
+		refuseIncorporation(t, errors.New("disk full"))
+		queue := core.PendingProcsFile(f.env, "ws")
+		code, _, errOut := f.run(t, "procs")
+		want := "procs: the queued process registrations in " + queue + " were not incorporated (disk full); the queue stays and the registry is used as it is\n"
+		if code != 0 || errOut != want {
+			t.Fatalf("procs: code=%d err=%q; want %q", code, errOut, want)
+		}
+	})
 }

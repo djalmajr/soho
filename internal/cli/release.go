@@ -209,6 +209,7 @@ func (releaseDiscardWriter) Write(value []byte) (int, error) { return len(value)
 // line: the release never fails for this (like the copies), and the line
 // stays for gc.
 func releaseProcs(sd, agent string, keepProcs bool, env platform.Env) {
+	incorporatePendingProcs("release", sd, env)
 	if keepProcs {
 		return
 	}
@@ -280,6 +281,7 @@ func collaborationReleaseRefusal(sd, agent, pane string, ctx *core.Config, env p
 // by another soho never fails the release: the copies stay registered,
 // with a warning, and become orphans for gc.
 func releaseCopies(sd, agent string, keepCopies bool, env platform.Env, cwd string) {
+	incorporatePendingCopies("release", sd, env, cwd)
 	if keepCopies {
 		return
 	}

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2126,4 +2128,411 @@ func TestGcRegisteredDiscardStaysOwned(t *testing.T) {
 			}
 		})
 	}
+}
+
+// refuseCopiesRegistry swaps the copy registry write for the permission
+// error a sandbox gives when it cannot write the state dir (DJA-323); the
+// returned function puts the real write back. No directory mode is changed:
+// a chmod does not stop a write on Windows.
+func refuseCopiesRegistry(t *testing.T, err error) func() {
+	t.Helper()
+	old := upsertCopies
+	upsertCopies = func(sd string, _ core.CopyRow) error {
+		if err != nil {
+			return err
+		}
+		return &fs.PathError{Op: "open", Path: filepath.Join(sd, "copies.tsv.lock"), Err: fs.ErrPermission}
+	}
+	restore := func() { upsertCopies = old }
+	t.Cleanup(restore)
+	return restore
+}
+
+func readQueue(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the queue %s: %v", path, err)
+	}
+	return string(raw)
+}
+
+func TestCopiesAddQueuesWhenTheStateDirRefusesWrites(t *testing.T) {
+	queued := func(t *testing.T, f *copiesFixture, env platform.Env) (string, string, string) {
+		t.Helper()
+		sd := f.stateDir(t)
+		copyDir := filepath.Join(f.tmp, "queued-copy")
+		if err := os.MkdirAll(copyDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		restore := refuseCopiesRegistry(t, nil)
+		code, out, errOut := f.run(t, env, "copies", "add", copyDir)
+		restore()
+		queue := core.PendingCopiesFile(f.env, "ws")
+		wantLine := "copies add: the state dir " + sd + " is not writable from here; the registration is queued for the orchestrator in " + queue + "\n"
+		if code != 0 || out != "" || errOut != wantLine {
+			t.Fatalf("code=%d out=%q err=%q; want 0 and the queue line %q", code, out, errOut, wantLine)
+		}
+		if rows := f.copiesRows(t); len(rows) != 0 {
+			t.Fatalf("the refused registry was written: %#v", rows)
+		}
+		return sd, copyDir, queue
+	}
+
+	t.Run("the full line goes to the queue with its state dir, and copies lists it after", func(t *testing.T) {
+		f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON}})
+		f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+		task := filepath.Join(f.root, "reports", "worker.current.md")
+		current := filepath.Join(f.root, "reports", "task-1.md")
+		writeTaskPointer(t, f.stateDir(t), "worker", task, current)
+		sd, copyDir, queue := queued(t, f, f.env)
+		raw := readQueue(t, queue)
+		lines := strings.Split(strings.TrimSuffix(raw, "\n"), "\n")
+		if len(lines) != 2 || lines[0] != "state_dir\tpath\towner\tpane\tcreated\tsource\torigin\ttask\treport" {
+			t.Fatalf("queue=%q; want the header and one line", raw)
+		}
+		fields := strings.Split(lines[1], "\t")
+		if len(fields) != 9 || fields[0] != sd || fields[1] != copyDir || fields[2] != "worker" || fields[3] != "p-worker" || fields[5] != "-" || fields[6] != "add" || fields[7] != task || fields[8] != current {
+			t.Fatalf("queue line=%q; want the state dir in field 1 and the eight registry fields", lines[1])
+		}
+		code, out, errOut := f.run(t, f.env, "copies")
+		if code != 0 || errOut != "" || !strings.HasPrefix(out, copyDir+"  worker  ") || !strings.HasSuffix(out, "  owned\n") {
+			t.Fatalf("copies: code=%d out=%q err=%q; want the queued copy with its owner", code, out, errOut)
+		}
+		rows := f.copiesRows(t)
+		if len(rows) != 1 || rows[0].Path != copyDir || rows[0].Owner != "worker" || rows[0].Task != task || rows[0].Report != current || rows[0].Origin != "add" {
+			t.Fatalf("registry rows=%#v; want the queued line with its owner, task and report", rows)
+		}
+		if _, err := os.Stat(queue); !os.IsNotExist(err) {
+			t.Fatalf("the queue is still there after the incorporation: %v", err)
+		}
+	})
+
+	t.Run("release removes the queued copy of its owner", func(t *testing.T) {
+		f := newCopiesFixture(t, []fakecli.Rule{
+			{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON},
+			{Argv: []string{"pane", "report-metadata", "p-worker", "--source", "soho", "--clear-title"}},
+			{Argv: []string{"pane", "list", "--workspace", "ws"}, Stdout: `{"result":{"panes":[]}}`},
+		})
+		f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+		_, copyDir, queue := queued(t, f, f.env)
+		addReleaseReport(t, filepath.Join(f.state, "ws"), "worker", false)
+		code, out, errOut := f.run(t, f.env, "release", "worker")
+		if code != 0 || !strings.Contains(out, "removed copy "+copyDir+"\n") {
+			t.Fatalf("release: code=%d out=%q err=%q; want the queued copy removed", code, out, errOut)
+		}
+		if _, err := os.Stat(copyDir); !os.IsNotExist(err) {
+			t.Fatalf("the queued copy is still on disk: %v", err)
+		}
+		if rows := f.copiesRows(t); len(rows) != 0 {
+			t.Fatalf("registry rows=%#v; want none", rows)
+		}
+		if _, err := os.Stat(queue); !os.IsNotExist(err) {
+			t.Fatalf("the queue is still there: %v", err)
+		}
+	})
+
+	t.Run("gc offers a queued orphan by today's rules", func(t *testing.T) {
+		f := gcEmptyFixture(t)
+		f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+		env := f.env.Clone()
+		env["HERDR_PANE_ID"] = "p-nobody"
+		_, copyDir, queue := queued(t, f, env)
+		code, out, errOut := f.run(t, f.env, "gc", "--older-than", "0")
+		if code != 0 || errOut != "" || !strings.Contains(out, "would remove "+copyDir+"  0 B  -  ") {
+			t.Fatalf("gc: code=%d out=%q err=%q; want the queued orphan offered", code, out, errOut)
+		}
+		if _, err := os.Stat(queue); !os.IsNotExist(err) {
+			t.Fatalf("the queue is still there: %v", err)
+		}
+	})
+
+	t.Run("an error that is not a permission keeps today's exit 4 and queues nothing", func(t *testing.T) {
+		f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON}})
+		f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+		copyDir := filepath.Join(f.tmp, "copy")
+		if err := os.MkdirAll(copyDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		refuseCopiesRegistry(t, errors.New("disk full"))
+		code, _, errOut := f.run(t, f.env, "copies", "add", copyDir)
+		if code != 4 || !strings.Contains(errOut, "copies add: could not register '"+copyDir+"' (disk full)") || strings.Contains(errOut, "queued") {
+			t.Fatalf("code=%d err=%q; want today's exit 4 and message", code, errOut)
+		}
+		if _, err := os.Stat(core.PendingCopiesFile(f.env, "ws")); !os.IsNotExist(err) {
+			t.Fatalf("a non-permission error wrote the queue: %v", err)
+		}
+	})
+
+	t.Run("a held lock keeps today's exit 4 and queues nothing", func(t *testing.T) {
+		f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON}})
+		f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+		copyDir := filepath.Join(f.tmp, "copy")
+		if err := os.MkdirAll(copyDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		old := core.CopiesLockTimeout
+		core.CopiesLockTimeout = 200 * time.Millisecond
+		t.Cleanup(func() { core.CopiesLockTimeout = old })
+		lock := filepath.Join(f.stateDir(t), "copies.tsv.lock")
+		if err := os.WriteFile(lock, []byte("1 now\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Remove(lock) })
+		code, _, errOut := f.run(t, f.env, "copies", "add", copyDir)
+		if code != 4 || !strings.Contains(errOut, "copies: registry is locked by another soho") || strings.Contains(errOut, "queued") {
+			t.Fatalf("code=%d err=%q; want today's lock exit 4", code, errOut)
+		}
+		if _, err := os.Stat(core.PendingCopiesFile(f.env, "ws")); !os.IsNotExist(err) {
+			t.Fatalf("a held lock wrote the queue: %v", err)
+		}
+	})
+
+	t.Run("without the refusal nothing goes to the queue", func(t *testing.T) {
+		f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON}})
+		f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+		copyDir := filepath.Join(f.tmp, "copy")
+		if err := os.MkdirAll(copyDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if code, out, errOut := f.run(t, f.env, "copies", "add", copyDir); code != 0 || out != "" || errOut != "" {
+			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
+		}
+		if rows := f.copiesRows(t); len(rows) != 1 || rows[0].Path != copyDir {
+			t.Fatalf("registry rows=%#v", rows)
+		}
+		if _, err := os.Stat(core.PendingCopiesFile(f.env, "ws")); !os.IsNotExist(err) {
+			t.Fatalf("the queue was written without a refusal: %v", err)
+		}
+	})
+}
+
+func TestMutationCopyQueuesWhenTheStateDirRefusesWrites(t *testing.T) {
+	setup := func(t *testing.T) (mutationCopyFixture, string, platform.Env, string) {
+		f := newMutationCopyFixture(t)
+		skill := filepath.Join(f.root, "skill")
+		if err := os.MkdirAll(filepath.Join(skill, "roles"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("fixture skill\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		state := filepath.Join(f.root, "state")
+		sd := filepath.Join(state, "ws")
+		if err := os.MkdirAll(sd, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte("# roster\n"+releaseRow("worker", "p-worker", "1", "implementer", false, "/tmp/work")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		overrides := platform.Env{"SOHO_DIR": state, "SOHO_SKILL_DIR": skill, "HERDR_WORKSPACE_ID": "ws", "HERDR_PANE_ID": "p-worker"}
+		return f, sd, overrides, filepath.Join(f.root, "mcopy")
+	}
+
+	t.Run("a permission error queues the copy instead of leaving it unregistered", func(t *testing.T) {
+		f, sd, overrides, dest := setup(t)
+		task := filepath.Join(f.root, "reports", "worker.current.md")
+		current := filepath.Join(f.root, "reports", "task-1.md")
+		writeTaskPointer(t, sd, "worker", task, current)
+		restore := refuseCopiesRegistry(t, nil)
+		code, out, errOut := runMutationCopyCmd(t, f, f.source, overrides, "--source", f.source, "--dest", dest)
+		restore()
+		queue := core.PendingCopiesFile(f.env, "ws")
+		wantLine := "mutation-copy: the state dir " + sd + " is not writable from here; the registration is queued for the orchestrator in " + queue + "\n"
+		if code != 0 || errOut != wantLine {
+			t.Fatalf("code=%d err=%q; want 0 and only the queue line %q", code, errOut, wantLine)
+		}
+		if got := decodedCopy(t, out); got.Copy != dest || got.Source != f.source {
+			t.Fatalf("stdout differs from today: %q", out)
+		}
+		raw := readQueue(t, queue)
+		if !strings.Contains(raw, "\n"+sd+"\t"+dest+"\tworker\tp-worker\t") || !strings.HasSuffix(raw, "\t"+f.source+"\tmutation-copy\t"+task+"\t"+current+"\n") {
+			t.Fatalf("queue=%q; want the full mutation-copy line for %s", raw, sd)
+		}
+		// The orchestrator's next copies command registers it.
+		env := f.env.Clone()
+		for key, value := range overrides {
+			env[key] = value
+		}
+		env["HERDR_ENV"] = "1"
+		code, out, errOut = runIn(t, []string{"copies"}, env, f.source)
+		rows, err := core.ReadCopies(sd)
+		if code != 0 || errOut != "" || !strings.HasPrefix(out, dest+"  worker  ") {
+			t.Fatalf("copies: code=%d out=%q err=%q; want the queued copy listed", code, out, errOut)
+		}
+		if err != nil || len(rows) != 1 || rows[0].Path != dest || rows[0].Owner != "worker" || rows[0].Origin != "mutation-copy" || rows[0].Task != task || rows[0].Report != current {
+			t.Fatalf("registry rows=%#v err=%v; want the queued copy", rows, err)
+		}
+	})
+
+	t.Run("a failed queue still says the copy is not registered", func(t *testing.T) {
+		f, _, overrides, dest := setup(t)
+		refuseCopiesRegistry(t, nil)
+		// The queue's directory cannot be created: its parent is a file.
+		blocker := filepath.Join(f.root, "tmp-file")
+		if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		overrides["TMPDIR"] = blocker
+		code, _, errOut := runMutationCopyCmd(t, f, f.source, overrides, "--source", f.source, "--dest", dest)
+		if code != 0 || !strings.Contains(errOut, "mutation-copy: copy not registered (") || !strings.Contains(errOut, "the queue failed too") || strings.Contains(errOut, "queued for the orchestrator") {
+			t.Fatalf("code=%d err=%q; want the not-registered warning", code, errOut)
+		}
+	})
+
+	t.Run("an error that is not a permission keeps today's warning and queues nothing", func(t *testing.T) {
+		f, _, overrides, dest := setup(t)
+		refuseCopiesRegistry(t, errors.New("disk full"))
+		code, _, errOut := runMutationCopyCmd(t, f, f.source, overrides, "--source", f.source, "--dest", dest)
+		if code != 0 || errOut != "mutation-copy: copy not registered (disk full); remove it yourself when done\n" {
+			t.Fatalf("code=%d err=%q; want today's warning", code, errOut)
+		}
+		if _, err := os.Stat(core.PendingCopiesFile(f.env, "ws")); !os.IsNotExist(err) {
+			t.Fatalf("a non-permission error wrote the queue: %v", err)
+		}
+	})
+}
+
+func TestCopiesQueueLinesThatDoNotEnter(t *testing.T) {
+	f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON}})
+	f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+	sd := f.stateDir(t)
+	good := filepath.Join(f.tmp, "good")
+	if err := os.MkdirAll(good, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(f.tmp, "gone")
+	inside := filepath.Join(f.repo, "inside")
+	if err := os.MkdirAll(inside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(f.state, "other-ws")
+	line := func(dir, path string) string {
+		return dir + "\t" + path + "\tworker\tp-worker\t2026-01-01T00:00:00Z\t-\tadd\t-\t-"
+	}
+	otherLine := line(other, filepath.Join(f.tmp, "theirs"))
+	malformed := sd + "\t" + filepath.Join(f.tmp, "short") + "\tworker"
+	queue := core.PendingCopiesFile(f.env, "ws")
+	if err := os.MkdirAll(filepath.Dir(queue), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	header := "state_dir\tpath\towner\tpane\tcreated\tsource\torigin\ttask\treport\n"
+	content := header + strings.Join([]string{line(sd, good), otherLine, line(sd, gone), line(sd, inside), malformed, "no state dir"}, "\n") + "\n"
+	if err := os.WriteFile(queue, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := f.run(t, f.env, "copies")
+	if code != 0 || !strings.HasPrefix(out, good+"  worker  ") || strings.Count(out, "\n") != 1 {
+		t.Fatalf("copies: code=%d out=%q err=%q; want only the good copy", code, out, errOut)
+	}
+	for _, want := range []string{
+		"copies: dropped the queued copy '" + gone + "' from " + queue + ", not registered: does not exist\n",
+		"copies: dropped the queued copy '" + inside + "' from " + queue + ", not registered: is the project root or inside it\n",
+		"copies: dropped a malformed line from " + queue + ": " + strconv.Quote(strings.TrimPrefix(malformed, sd+"\t")) + "\n",
+		"copies: dropped a malformed line from " + queue + ": \"no state dir\"\n",
+	} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr=%q; want %q", errOut, want)
+		}
+	}
+	rows := f.copiesRows(t)
+	if len(rows) != 1 || rows[0].Path != good {
+		t.Fatalf("registry rows=%#v; want only the good copy", rows)
+	}
+	if raw := readQueue(t, queue); raw != header+otherLine+"\n" {
+		t.Fatalf("queue=%q; want only the other state dir's line, intact", raw)
+	}
+}
+
+func TestCopiesIncorporationFailureKeepsTheQueue(t *testing.T) {
+	f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON}})
+	f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+	sd := f.stateDir(t)
+	copyDir := filepath.Join(f.tmp, "queued")
+	if err := os.MkdirAll(copyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	queue, err := core.QueueCopy(f.env, "ws", sd, core.CopyRow{Path: copyDir, Owner: "worker", Pane: "p-worker", Created: "2026-01-01T00:00:00Z", Source: "-", Origin: "add"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := readQueue(t, queue)
+	old := core.CopiesLockTimeout
+	core.CopiesLockTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { core.CopiesLockTimeout = old })
+	lock := filepath.Join(sd, "copies.tsv.lock")
+	if err := os.WriteFile(lock, []byte("1 now\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(lock) })
+	code, out, errOut := f.run(t, f.env, "copies")
+	if code != 0 || out != "no registered copies\n" || !strings.Contains(errOut, "copies: the queued copy registrations in "+queue+" were not incorporated (copies: registry is locked by another soho") {
+		t.Fatalf("code=%d out=%q err=%q; want the registry as it is and the warning", code, out, errOut)
+	}
+	if after := readQueue(t, queue); after != before {
+		t.Fatalf("the queue changed: %q -> %q", before, after)
+	}
+}
+
+// refuseIncorporation swaps both queue incorporations for err, or for the
+// permission error of a sandbox that cannot take the state dir's registry
+// lock; the queue itself is not touched.
+func refuseIncorporation(t *testing.T, err error) {
+	t.Helper()
+	oldCopies, oldProcs := incorporateCopies, incorporateProcs
+	fail := func(sd string) error {
+		if err != nil {
+			return err
+		}
+		return &fs.PathError{Op: "open", Path: filepath.Join(sd, "copies.tsv.lock"), Err: fs.ErrPermission}
+	}
+	incorporateCopies = func(sd, ws string, env platform.Env, _ func(core.CopyRow) (core.CopyRow, string)) (core.PendingResult, error) {
+		return core.PendingResult{Queue: core.PendingCopiesFile(env, ws)}, fail(sd)
+	}
+	incorporateProcs = func(sd, ws string, env platform.Env) (core.PendingResult, error) {
+		return core.PendingResult{Queue: core.PendingProcsFile(env, ws)}, fail(sd)
+	}
+	t.Cleanup(func() { incorporateCopies, incorporateProcs = oldCopies, oldProcs })
+}
+
+func TestSandboxedCopiesStayQuietOnAPermissionIncorporation(t *testing.T) {
+	t.Run("a second copies add prints only the queue line, and copies lists without a warning", func(t *testing.T) {
+		f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON}})
+		f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+		sd := f.stateDir(t)
+		refuseCopiesRegistry(t, nil)
+		refuseIncorporation(t, nil)
+		queue := core.PendingCopiesFile(f.env, "ws")
+		wantLine := "copies add: the state dir " + sd + " is not writable from here; the registration is queued for the orchestrator in " + queue + "\n"
+		for _, name := range []string{"first", "second"} {
+			copyDir := filepath.Join(f.tmp, name)
+			if err := os.MkdirAll(copyDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			code, out, errOut := f.run(t, f.env, "copies", "add", copyDir)
+			if code != 0 || out != "" || errOut != wantLine {
+				t.Fatalf("%s add: code=%d out=%q err=%q; want 0 and only %q", name, code, out, errOut, wantLine)
+			}
+		}
+		if lines := strings.Split(strings.TrimSuffix(readQueue(t, queue), "\n"), "\n"); len(lines) != 3 {
+			t.Fatalf("queue lines=%q; want the header and both copies", lines)
+		}
+		code, out, errOut := f.run(t, f.env, "copies")
+		if code != 0 || out != "no registered copies\n" || errOut != "" {
+			t.Fatalf("copies: code=%d out=%q err=%q; want the registry as it is, no warning", code, out, errOut)
+		}
+	})
+
+	t.Run("an error that is not a permission keeps the warning", func(t *testing.T) {
+		f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON}})
+		f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+		f.stateDir(t)
+		refuseIncorporation(t, errors.New("disk full"))
+		queue := core.PendingCopiesFile(f.env, "ws")
+		code, out, errOut := f.run(t, f.env, "copies")
+		want := "copies: the queued copy registrations in " + queue + " were not incorporated (disk full); the queue stays and the registry is used as it is\n"
+		if code != 0 || out != "no registered copies\n" || errOut != want {
+			t.Fatalf("copies: code=%d out=%q err=%q; want %q", code, out, errOut, want)
+		}
+	})
 }

@@ -100,14 +100,16 @@ var readRSS = platform.ReadProcessRSS
 //
 //   - copies: the registry lines whose path exists as a directory, counted
 //     and sized with the same walk as the copy measure (a vanished line
-//     counts nothing);
+//     counts nothing), with the copy queue's lines for this state dir
+//     (PendingCopiesFor, read only: the queue stays as it is);
 //   - state: the state dir's bytes, with the registered copies inside it
 //     kept out (such a copy counts once, as a copy); an empty stateDir
 //     measures zero and reads no registry;
 //   - scratch: the bytes of <TMPDIR (or os.TempDir() without TMPDIR)>/
 //     soho/<workspaceID>, the workspace scratch the dispatch writes; an
 //     empty workspaceID measures zero;
-//   - processes: the registry lines that read as running by the same
+//   - processes: the registry lines, with the process queue's lines for
+//     this state dir (read only), that read as running by the same
 //     identity check as `soho procs` (pid plus start time), counted, with
 //     the RSS read now and summed (an unreadable RSS counts as unreadable,
 //     and the process still counts). No process command line is read.
@@ -118,6 +120,20 @@ func MeasureFootprint(stateDir, workspaceID string, env platform.Env) *Footprint
 	}
 	skip := map[string]bool{}
 	if rows, err := ReadCopies(stateDir); err == nil {
+		seen := map[string]bool{}
+		for _, row := range rows {
+			seen[row.Path] = true
+		}
+		// The queued lines for this state dir count too, read only: the
+		// queue is never incorporated here (DJA-323).
+		if workspaceID != "" {
+			for _, row := range PendingCopiesFor(stateDir, workspaceID, env) {
+				if !seen[row.Path] {
+					seen[row.Path] = true
+					rows = append(rows, row)
+				}
+			}
+		}
 		for _, row := range rows {
 			if info, e := os.Stat(row.Path); e != nil || !info.IsDir() {
 				continue
@@ -155,6 +171,18 @@ func MeasureFootprint(stateDir, workspaceID string, env platform.Env) *Footprint
 	}
 	fp.Total = fp.CopiesBytes + fp.StateBytes + fp.ScratchBytes
 	if rows, err := ReadProcs(stateDir); err == nil {
+		seen := map[string]bool{}
+		for _, row := range rows {
+			seen[row.key()] = true
+		}
+		if workspaceID != "" {
+			for _, row := range PendingProcsFor(stateDir, workspaceID, env) {
+				if !seen[row.key()] {
+					seen[row.key()] = true
+					rows = append(rows, row)
+				}
+			}
+		}
 		for _, row := range rows {
 			if ProcRowState(row, env) != "running" {
 				continue

@@ -157,6 +157,10 @@ func cmdPromote(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 	// cross-registry window is reduced, not closed. Working state is not a
 	// refusal (liveStatus is reported,
 	// not branched on).
+	// The queued registrations for this state dir join the registries
+	// before the copy and process preflights read them (DJA-323).
+	incorporatePendingCopies("promote", sd, env, cwd)
+	incorporatePendingProcs("promote", sd, env)
 	if refusal, code := promoteObligations(sd, liveName, pane, env); refusal != "" {
 		platform.Die(refusal, code)
 	}
