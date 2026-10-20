@@ -199,9 +199,15 @@ func TestGcMeasurementStreamsInOrder(t *testing.T) {
 	}
 }
 
+// The limit is proven with barriers, not a stopwatch: four measurements
+// start and stay held, a fifth does not start while they are held, and
+// releasing one lets the fifth in. The timeouts only guard against a hang,
+// so a slow runner cannot fail a correct pool.
 func TestGcMeasurementParallelLimit(t *testing.T) {
 	f, _ := gcStreamFixture(t, 8, 0)
 	var active, peak, calls atomic.Int32
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{}, 8)
 	gcSizeSeam(t, func(string) int64 {
 		n := active.Add(1)
 		defer active.Add(-1)
@@ -211,16 +217,51 @@ func TestGcMeasurementParallelLimit(t *testing.T) {
 			}
 		}
 		calls.Add(1)
-		time.Sleep(100 * time.Millisecond)
+		entered <- struct{}{}
+		<-release
 		return 1
 	})
-	start := time.Now()
-	code, out, errOut := f.run(t, f.env, "gc")
-	elapsed := time.Since(start)
-	if code != 0 || errOut != "" || calls.Load() != 8 || active.Load() != 0 || peak.Load() != 4 || elapsed >= 650*time.Millisecond {
-		t.Fatalf("code=%d calls=%d active=%d peak=%d elapsed=%s GOOS=%s PATH=%q TMPDIR=%q stdout=%q stderr=%q", code, calls.Load(), active.Load(), peak.Load(), elapsed, platform.Current(), f.env.Get("PATH"), f.tmp, out, errOut)
+	out, errOut, done := gcStreamRun(t, f)
+	// A failed check below must not leave measurements held: the cleanup
+	// releases every one before gcStreamRun's cleanup waits for gc.
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	waitEntered := func(what string) {
+		t.Helper()
+		select {
+		case <-entered:
+		case <-time.After(30 * time.Second):
+			t.Fatalf("%s did not start (calls=%d active=%d)", what, calls.Load(), active.Load())
+		}
 	}
-	t.Logf("8 x 100ms measurements: peak=%d elapsed=%s", peak.Load(), elapsed)
+	for i := 1; i <= 4; i++ {
+		waitEntered(fmt.Sprintf("measurement %d", i))
+	}
+	select {
+	case <-entered:
+		t.Fatalf("a fifth measurement started while four were held (active=%d)", active.Load())
+	case <-time.After(200 * time.Millisecond):
+	}
+	if n := active.Load(); n != 4 {
+		t.Fatalf("active=%d while four measurements are held; want 4", n)
+	}
+	release <- struct{}{}
+	waitEntered("the fifth measurement, after one was released")
+	for i := 0; i < 7; i++ {
+		release <- struct{}{}
+	}
+	for i := 6; i <= 8; i++ {
+		waitEntered(fmt.Sprintf("measurement %d", i))
+	}
+	var code int
+	select {
+	case code = <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("gc did not finish after every measurement was released")
+	}
+	if code != 0 || errOut.text() != "" || calls.Load() != 8 || active.Load() != 0 || peak.Load() != 4 {
+		t.Fatalf("code=%d calls=%d active=%d peak=%d GOOS=%s PATH=%q TMPDIR=%q stdout=%q stderr=%q", code, calls.Load(), active.Load(), peak.Load(), platform.Current(), f.env.Get("PATH"), f.tmp, out.text(), errOut.text())
+	}
 }
 
 func TestGcMeasurementWarningThreshold(t *testing.T) {
