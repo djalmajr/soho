@@ -1180,6 +1180,12 @@ type idleGc struct {
 
 func newIdleGc(t *testing.T, rules []fakecli.Rule) *idleGc {
 	t.Helper()
+	return newIdleGcNamed(t, rules, "idle-copy")
+}
+
+// newIdleGcNamed is newIdleGc with the copy named name below TMPDIR.
+func newIdleGcNamed(t *testing.T, rules []fakecli.Rule, name string) *idleGc {
+	t.Helper()
 	f := newCopiesFixture(t, rules)
 	oldDisk, oldSwap := platform.DiskFree, platform.SwapUsage
 	platform.DiskFree = func(string) (int64, int64, bool) {
@@ -1195,7 +1201,7 @@ func newIdleGc(t *testing.T, rules []fakecli.Rule) *idleGc {
 	g := &idleGc{
 		f:       f,
 		sd:      sd,
-		copy:    filepath.Join(f.tmp, "idle-copy"),
+		copy:    filepath.Join(f.tmp, name),
 		task:    filepath.Join(f.root, "reports", "worker.current.md"),
 		report:  filepath.Join(f.root, "reports", "task-1.md"),
 		current: filepath.Join(f.root, "reports", "task-2.md"),
@@ -1945,109 +1951,158 @@ func (g *idleGc) wantKeptBySection(t *testing.T) {
 	}
 }
 
-// A removal that fails after the rename leaves the discard directory, with
-// its kept line, and its registry line gone; the next gc offers the discard
-// and removes it.
-func TestGcIdleOwnerFailedRemovalLeavesTheDiscard(t *testing.T) {
-	g := newIdleGc(t, idleRules("idle"))
-	g.register(t)
-	writeTestOriginMarker(t, g.copy, gitCommonDirOf(t, g.f.repo, g.f.env), g.f.repo)
+// failRemoval makes the removal of the discard fail once: the entry below
+// it cannot be unlinked. It returns the function that lets it succeed.
+func (g *idleGc) failRemoval(t *testing.T) func() {
+	t.Helper()
 	locked := filepath.Join(g.discard(), "sub")
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
 	fail := true
 	g.atRemoval(t, func(string) {
 		if fail {
-			// The entry below cannot be unlinked: the removal fails.
 			_ = os.Chmod(locked, 0o500)
 		}
 	})
-	code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
-	if code != 0 || !strings.HasPrefix(out, gcPressureNone+"\nkept "+g.discard()+" (") || strings.Contains(out, "removed ") {
-		t.Fatalf("code=%d out=%q err=%q; want the discard kept with the error", code, out, errOut)
+	return func() {
+		fail = false
+		if err := os.Chmod(locked, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if rows := g.f.copiesRows(t); len(rows) != 0 {
-		t.Fatalf("registry rows=%#v; want the line dropped", rows)
+}
+
+// ageDiscard sets the discard's mtime.
+func (g *idleGc) ageDiscard(t *testing.T, at time.Time) {
+	t.Helper()
+	if err := os.Chtimes(g.discard(), at, at); err != nil {
+		t.Fatal(err)
 	}
+}
+
+// wantDiscardKept fails unless the discard and its marker are still there.
+func (g *idleGc) wantDiscardKept(t *testing.T) {
+	t.Helper()
 	for _, path := range []string{filepath.Join(g.discard(), "sub", "a.txt"), originMarkerPath(g.discard())} {
 		if _, err := os.Lstat(path); err != nil {
 			t.Fatalf("%s is gone: %v", path, err)
 		}
 	}
-	for _, path := range []string{g.copy, originMarkerPath(g.copy)} {
-		if _, err := os.Lstat(path); !os.IsNotExist(err) {
-			t.Fatalf("%s is still there: %v", path, err)
-		}
-	}
-
-	fail = false
-	if err := os.Chmod(locked, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	code, out, errOut = g.f.run(t, g.f.env, "gc")
-	if code != 0 || !strings.Contains(out, "\nwould remove "+g.discard()+"  10 B  -  ") || !strings.Contains(out, "\ntotal: 10 B\n") || strings.Count(out, g.discard()) != 1 {
-		t.Fatalf("dry run code=%d out=%q err=%q; want the discard offered once", code, out, errOut)
-	}
-	code, out, errOut = g.f.run(t, g.f.env, "gc", "--yes")
-	want := strings.Join([]string{gcPressureNone, "removed " + g.discard() + "  10 B", "freed: 10 B"}, "\n") + "\n"
-	if code != 0 || out != want {
-		t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
-	}
-	for _, path := range []string{g.discard(), originMarkerPath(g.discard())} {
-		if _, err := os.Lstat(path); !os.IsNotExist(err) {
-			t.Fatalf("%s is still there: %v", path, err)
-		}
-	}
 }
 
-// gc removes a discard directory only when its name ends in
-// .soho-gc-<pid>-<n>, it is a directory and not a symlink, and its marker
-// names this project; the others stay where they were listed before.
-func TestGcRecognizesItsDiscardsSafely(t *testing.T) {
-	f := gcEmptyFixture(t)
-	thisProject := gitCommonDirOf(t, f.repo, f.env)
-	old := platform.Now().Add(-3 * time.Hour)
-	mk := func(name string) string {
-		path := filepath.Join(f.tmp, name)
-		writeFileAt(t, filepath.Join(path, "f.txt"), "0123456789", old)
-		if err := os.Chtimes(path, old, old); err != nil {
-			t.Fatal(err)
+// A removal that fails after the rename leaves the discard directory and
+// its marker, and its registry line gone. It has no registry line, so only
+// the block of the unregistered copies offers it again, and only a
+// soho-mutation-* directory below TMPDIR; the kept line says which.
+func TestGcIdleOwnerFailedRemovalLeavesTheDiscard(t *testing.T) {
+	t.Run("a copy the unregistered block does not list: the line says to remove it by hand, and it stays", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		g.register(t)
+		writeTestOriginMarker(t, g.copy, gitCommonDirOf(t, g.f.repo, g.f.env), g.f.repo)
+		succeed := g.failRemoval(t)
+		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
+		if code != 0 || !strings.HasPrefix(out, gcPressureNone+"\nkept "+g.discard()+" (") || !strings.HasSuffix(out, "; not offered again; remove it by hand)\nnothing to remove\n") || strings.Contains(out, "removed ") {
+			t.Fatalf("code=%d out=%q err=%q; want the discard kept, to remove by hand", code, out, errOut)
 		}
-		return path
-	}
-	discard := mk("soho-mutation-a.soho-gc-12-1")
-	writeTestOriginMarker(t, discard, thisProject, f.repo)
-	noMarker := mk("soho-mutation-b.soho-gc-12-1")
-	otherProject := mk("soho-mutation-c.soho-gc-12-1")
-	writeTestOriginMarker(t, otherProject, filepath.Join(f.root, "elsewhere", ".git"), "/elsewhere")
-	wrongName := mk("soho-mutation-d.soho-gc-x-1")
-	writeTestOriginMarker(t, wrongName, thisProject, f.repo)
-	target := filepath.Join(f.root, "outside")
-	writeFileAt(t, filepath.Join(target, "keep.txt"), "keep", old)
-	link := filepath.Join(f.tmp, "soho-mutation-e.soho-gc-12-1")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	writeTestOriginMarker(t, link, thisProject, f.repo)
+		if rows := g.f.copiesRows(t); len(rows) != 0 {
+			t.Fatalf("registry rows=%#v; want the line dropped", rows)
+		}
+		g.wantDiscardKept(t)
+		for _, path := range []string{g.copy, originMarkerPath(g.copy)} {
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatalf("%s is still there: %v", path, err)
+			}
+		}
+		succeed()
+		g.ageDiscard(t, platform.Now().Add(-3*time.Hour))
+		for _, argv := range [][]string{{"gc"}, {"gc", "--yes"}, {"gc", "--yes", "--include-unregistered"}} {
+			code, out, errOut = g.f.run(t, g.f.env, argv...)
+			if code != 0 || strings.Contains(out, g.discard()) {
+				t.Fatalf("%v: code=%d out=%q err=%q; want the discard neither offered nor removed", argv, code, out, errOut)
+			}
+			g.wantDiscardKept(t)
+		}
+	})
 
-	code, out, errOut := f.run(t, f.env, "gc")
-	if code != 0 || !strings.Contains(out, "\nwould remove "+discard+"  10 B  -  ") || strings.Count(out, discard+"  ") != 1 {
-		t.Fatalf("dry run code=%d out=%q err=%q; want the discard offered once", code, out, errOut)
-	}
-	for _, path := range []string{noMarker, otherProject, wrongName, link} {
-		if strings.Contains(out, "would remove "+path) {
-			t.Fatalf("dry run offers %s: %q", path, out)
+	t.Run("a soho-mutation-* copy: the line names gc --include-unregistered, which removes it only past --older-than", func(t *testing.T) {
+		g := newIdleGcNamed(t, idleRules("idle"), "soho-mutation-idle")
+		g.register(t)
+		writeTestOriginMarker(t, g.copy, gitCommonDirOf(t, g.f.repo, g.f.env), g.f.repo)
+		succeed := g.failRemoval(t)
+		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
+		if code != 0 || !strings.HasPrefix(out, gcPressureNone+"\nkept "+g.discard()+" (") || !strings.HasSuffix(out, "; gc --include-unregistered removes it once older than --older-than)\nnothing to remove\n") || strings.Contains(out, "removed ") {
+			t.Fatalf("code=%d out=%q err=%q; want the discard kept, for gc --include-unregistered", code, out, errOut)
 		}
-	}
-	code, out, errOut = f.run(t, f.env, "gc", "--yes")
-	if code != 0 || !strings.Contains(out, "\nremoved "+discard+"  10 B\n") {
-		t.Fatalf("code=%d out=%q err=%q; want the discard removed", code, out, errOut)
-	}
-	if _, err := os.Lstat(discard); !os.IsNotExist(err) {
-		t.Fatalf("the discard is still there: %v", err)
-	}
-	for _, path := range []string{filepath.Join(noMarker, "f.txt"), filepath.Join(otherProject, "f.txt"), filepath.Join(wrongName, "f.txt"), link, filepath.Join(target, "keep.txt")} {
-		if _, err := os.Lstat(path); err != nil {
-			t.Fatalf("%s was removed: %v", path, err)
+		if rows := g.f.copiesRows(t); len(rows) != 0 {
+			t.Fatalf("registry rows=%#v; want the line dropped", rows)
 		}
+		g.wantDiscardKept(t)
+		succeed()
+
+		g.ageDiscard(t, platform.Now().Add(-3*time.Hour))
+		code, out, errOut = g.f.run(t, g.f.env, "gc", "--yes")
+		if code != 0 || !strings.Contains(out, gcUnregisteredHeader+"\n"+g.discard()+"  10 B  3h  ") || strings.Contains(out, "removed ") {
+			t.Fatalf("without --include-unregistered: code=%d out=%q err=%q; want the discard listed apart, kept", code, out, errOut)
+		}
+		g.wantDiscardKept(t)
+
+		g.ageDiscard(t, platform.Now())
+		code, out, errOut = g.f.run(t, g.f.env, "gc", "--yes", "--include-unregistered")
+		if code != 0 || strings.Contains(out, g.discard()) {
+			t.Fatalf("within --older-than: code=%d out=%q err=%q; want the discard neither offered nor removed", code, out, errOut)
+		}
+		g.wantDiscardKept(t)
+
+		g.ageDiscard(t, platform.Now().Add(-3*time.Hour))
+		code, out, errOut = g.f.run(t, g.f.env, "gc", "--yes", "--include-unregistered")
+		want := strings.Join([]string{gcPressureNone, gcUnregisteredHeader, "removed " + g.discard() + "  10 B", "freed: 10 B"}, "\n") + "\n"
+		if code != 0 || out != want {
+			t.Fatalf("past --older-than: code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
+		}
+		for _, path := range []string{g.discard(), originMarkerPath(g.discard())} {
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatalf("%s is still there: %v", path, err)
+			}
+		}
+	})
+}
+
+// The reviewer's probe (review-3-20261019T212602,
+// TestReview392RegisteredDiscardStaysOwned): a discard a worker registered
+// again with copies add, for an open task, is a registered copy of a
+// working owner. No gc removes it, with --include-unregistered either, even
+// past --older-than, and its line stays.
+func TestGcRegisteredDiscardStaysOwned(t *testing.T) {
+	for _, name := range []string{"reused.soho-gc-12-1", "soho-mutation-reused.soho-gc-12-1"} {
+		t.Run(name, func(t *testing.T) {
+			g := newIdleGc(t, idleRules("working"))
+			path := filepath.Join(g.f.tmp, name)
+			writeFileAt(t, filepath.Join(path, "active.txt"), "OPEN TASK", time.Now())
+			writeTestOriginMarker(t, path, gitCommonDirOf(t, g.f.repo, g.f.env), g.f.repo)
+			writeTaskPointer(t, g.sd, "worker", g.task, filepath.Join(g.f.root, "new-open-report.md"))
+			if code, out, errOut := g.f.run(t, g.f.env, "copies", "add", path); code != 0 {
+				t.Fatalf("copies add: code=%d out=%q err=%q", code, out, errOut)
+			}
+			registered := g.f.copiesRows(t)
+			if len(registered) != 1 || registered[0].Owner != "worker" {
+				t.Fatalf("registry rows=%#v; want the worker's line", registered)
+			}
+			// Old enough for the unregistered block's age rule.
+			old := platform.Now().Add(-3 * time.Hour)
+			if err := os.Chtimes(path, old, old); err != nil {
+				t.Fatal(err)
+			}
+			for _, argv := range [][]string{{"gc", "--yes"}, {"gc", "--yes", "--include-unregistered"}} {
+				code, out, errOut := g.f.run(t, g.f.env, argv...)
+				if code != 0 || strings.Contains(out, path) {
+					t.Fatalf("%v: code=%d out=%q err=%q; want the registered copy untouched", argv, code, out, errOut)
+				}
+				if raw, err := os.ReadFile(filepath.Join(path, "active.txt")); err != nil || string(raw) != "OPEN TASK" {
+					t.Fatalf("%v: active.txt=%q err=%v; want it kept", argv, raw, err)
+				}
+				if rows := g.f.copiesRows(t); len(rows) != 1 || rows[0] != registered[0] {
+					t.Fatalf("%v: registry rows=%#v; want %#v", argv, rows, registered)
+				}
+			}
+		})
 	}
 }

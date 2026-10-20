@@ -241,11 +241,6 @@ func openVerifiedParent(resolved string, parentInfo fs.FileInfo) (*os.Root, erro
 	return root, nil
 }
 
-// gcDiscardPattern matches the name gc gives a live owner's copy inside the
-// registry lock, before removing it: <name>.soho-gc-<pid>-<n>, in the
-// copy's own directory.
-var gcDiscardPattern = regexp.MustCompile(`\.soho-gc-[0-9]+-[0-9]+$`)
-
 // gcDiscardNameTries bounds the search for a free discard name.
 const gcDiscardNameTries = 100
 
@@ -574,8 +569,8 @@ var gcIdleSectionHook func(path string)
 // gcDiscardIdleOwnerCopy takes the copy out of the registry under the lock,
 // with file operations only, and the renamed directory is removed after
 // the lock is released. A removal that fails leaves the discard directory,
-// with its kept line; the next gc removes it (gcDiscards). It reports
-// whether the copy was removed.
+// with its kept line (gcDiscardLeft). It reports whether the copy was
+// removed.
 func gcRemoveIdleOwnerCopy(cand gcCandidate, sd string, env platform.Env, cwd string, threshold time.Duration) bool {
 	if !gcIdleOwnerStillClosed(cand.row, *cand.idle, sd, env, platform.Now(), threshold) {
 		_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, gcIdleOwnerChanged)
@@ -587,11 +582,11 @@ func gcRemoveIdleOwnerCopy(cand gcCandidate, sd string, env platform.Env, cwd st
 	}
 	resolved, parentInfo, cause := checkedCopy(discard, env, cwd)
 	if cause != "" {
-		_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", discard, cause)
+		gcDiscardLeft(discard, cause, env, cwd)
 		return false
 	}
 	if err := removeCopy(resolved, parentInfo); err != nil {
-		keptCopyError(discard, err)
+		gcDiscardLeft(discard, copyErrorCause(err), env, cwd)
 		return false
 	}
 	_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", cand.path, humanSize(cand.size))
@@ -644,6 +639,45 @@ func gcDiscardIdleOwnerCopy(cand gcCandidate, sd string, env platform.Env, cwd s
 		core.DieFriction(fmt.Sprintf("gc: cannot update the copy registry (%v)", err), 4, frictionLogPath, "gc")
 	}
 	return discard
+}
+
+// gcDiscardLeft prints the kept line of a discard whose removal failed,
+// with what becomes of it. It has no registry line, so only the block of
+// the unregistered copies (gcUnregistered) can offer it again: a
+// soho-mutation-* directory directly below TMPDIR, removed by
+// --include-unregistered past --older-than when its marker names this
+// project. Any other discard is removed by hand.
+func gcDiscardLeft(discard, cause string, env platform.Env, cwd string) {
+	next := "not offered again; remove it by hand"
+	if gcUnregisteredOffers(discard, env, cwd) {
+		next = "gc --include-unregistered removes it once older than --older-than"
+	}
+	_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s; %s)\n", discard, cause, next)
+}
+
+// gcUnregisteredOffers reports whether gcUnregistered lists path, while it
+// is not registered, as a copy of this project: a soho-mutation-* name
+// directly below TMPDIR (or os.TempDir()) with this project's marker.
+func gcUnregisteredOffers(path string, env platform.Env, cwd string) bool {
+	if !strings.HasPrefix(filepath.Base(path), "soho-mutation-") {
+		return false
+	}
+	tmpDir := env.Get("TMPDIR")
+	if tmpDir == "" {
+		tmpDir = os.TempDir()
+	}
+	dir := filepath.Dir(path)
+	if dir != filepath.Clean(tmpDir) {
+		resolved, err := filepath.EvalSymlinks(tmpDir)
+		if err != nil || dir != resolved {
+			return false
+		}
+	}
+	current := ""
+	if project, err := gitCommonDirResolved(cwd, env); err == nil {
+		current = project
+	}
+	return copyOrigin(path, current) == originThisProject
 }
 
 func nonEmptyFile(path string) bool {
@@ -776,9 +810,6 @@ type gcCandidate struct {
 	missing bool
 	row     core.CopyRow
 	idle    *gcIdleClosed
-	// discard is a directory a gc renamed and could not remove
-	// (gcDiscards): no registry line, removed like a copy.
-	discard bool
 }
 
 // gcUnregisteredCopy is a soho-mutation-* directory below TMPDIR that
@@ -860,7 +891,6 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		}
 		// the other owned lines are never touched
 	}
-	candidates = append(candidates, gcDiscards(env, now, cwd)...)
 	unregistered := gcUnregistered(env, rows, now, threshold, cwd)
 	orphanProcs := gcProjectOrphans(sd, procRows, env, cwd)
 
@@ -952,22 +982,6 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 				removedAny = true
 				freed += cand.size
 			}
-			continue
-		}
-		if cand.discard {
-			// No registry line: only the directory goes.
-			resolved, parentInfo, cause := checkedCopy(cand.path, env, cwd)
-			if cause != "" {
-				_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, cause)
-				continue
-			}
-			if err := removeCopy(resolved, parentInfo); err != nil {
-				keptCopyError(cand.path, err)
-				continue
-			}
-			removedAny = true
-			freed += cand.size
-			_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", cand.path, humanSize(cand.size))
 			continue
 		}
 		resolved, parentInfo, cause := checkedCopy(cand.path, env, cwd)
@@ -1289,64 +1303,11 @@ func gcUnregistered(env platform.Env, rows []core.CopyRow, now time.Time, thresh
 		if resolveErr != nil || registered[resolved] {
 			continue
 		}
-		if isGcDiscard(path, current) {
-			// gcDiscards lists it.
-			continue
-		}
 		age := now.Sub(info.ModTime())
 		if age <= threshold {
 			continue
 		}
 		out = append(out, gcUnregisteredCopy{path: path, size: copyDirSize(path), age: age, origin: copyOrigin(path, current)})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
-	return out
-}
-
-// isGcDiscard reports whether path is a discard directory gc left behind:
-// its name ends in .soho-gc-<pid>-<n> (gcDiscardPattern), it is a
-// directory, not a symlink, and the origin marker beside it names the
-// current project (current, the git common dir of gc's cwd).
-func isGcDiscard(path, current string) bool {
-	if !gcDiscardPattern.MatchString(filepath.Base(path)) {
-		return false
-	}
-	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
-		return false
-	}
-	return copyOrigin(path, current) == originThisProject
-}
-
-// gcDiscards lists the discard directories (isGcDiscard) directly below
-// TMPDIR (or os.TempDir() without TMPDIR), sorted by path, as candidates
-// without an owner or an age limit: gc renamed them out of the registry
-// and its removal failed. A discard without this project's marker, or
-// outside TMPDIR, is not listed.
-func gcDiscards(env platform.Env, now time.Time, cwd string) []gcCandidate {
-	tmpDir := env.Get("TMPDIR")
-	if tmpDir == "" {
-		tmpDir = os.TempDir()
-	}
-	entries, err := os.ReadDir(tmpDir)
-	if err != nil {
-		return nil
-	}
-	current := ""
-	if project, err := gitCommonDirResolved(cwd, env); err == nil {
-		current = project
-	}
-	out := []gcCandidate{}
-	for _, entry := range entries {
-		path := filepath.Join(tmpDir, entry.Name())
-		if !isGcDiscard(path, current) {
-			continue
-		}
-		info, err := os.Lstat(path)
-		if err != nil {
-			continue
-		}
-		out = append(out, gcCandidate{path: path, owner: "-", age: now.Sub(info.ModTime()), size: copyDirSize(path), discard: true})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
 	return out
@@ -1361,11 +1322,15 @@ func gcUsageError() int {
 // "changed after the check" cause when the removal proved the directory
 // moved since the check, the error otherwise.
 func keptCopyError(path string, err error) {
+	_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", path, copyErrorCause(err))
+}
+
+// copyErrorCause is the reason a kept line gives for a failed removal.
+func copyErrorCause(err error) string {
 	if errors.Is(err, errCopyChanged) {
-		_, _ = fmt.Fprintf(platform.Stdout, "kept %s (changed after the check)\n", path)
-		return
+		return "changed after the check"
 	}
-	_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%v)\n", path, err)
+	return err.Error()
 }
 
 func parseGcHours(value string) (int64, error) {
