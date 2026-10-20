@@ -2355,12 +2355,21 @@ func TestMutationCopyQueuesWhenTheStateDirRefusesWrites(t *testing.T) {
 		if !strings.Contains(raw, "\n"+sd+"\t"+dest+"\tworker\tp-worker\t") || !strings.HasSuffix(raw, "\t"+f.source+"\tmutation-copy\t"+task+"\t"+current+"\n") {
 			t.Fatalf("queue=%q; want the full mutation-copy line for %s", raw, sd)
 		}
-		// The orchestrator's next copies command registers it.
+		// The orchestrator's next copies command registers it. It needs a
+		// herdr CLI on PATH: a fake one, ahead of the rest, so the test does
+		// not depend on a real herdr installed on the machine.
 		env := f.env.Clone()
 		for key, value := range overrides {
 			env[key] = value
 		}
 		env["HERDR_ENV"] = "1"
+		fakeDir := t.TempDir()
+		if _, err := fakecli.Install(t, fakeDir, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON}}); err != nil {
+			t.Fatal(err)
+		}
+		env["SOHO_FAKECLI_CONFIG"] = fakeDir
+		env["PATH"] = fakeDir + string(os.PathListSeparator) + env.Get("PATH")
+		env["GORACE"] = fakecli.RaceOptions(env.List())
 		code, out, errOut = runIn(t, []string{"copies"}, env, f.source)
 		rows, err := core.ReadCopies(sd)
 		if code != 0 || errOut != "" || !strings.HasPrefix(out, dest+"  worker  ") {
