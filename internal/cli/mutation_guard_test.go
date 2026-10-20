@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -15,6 +16,22 @@ import (
 	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
+
+func TestMutationGuardCargoExecutableFindsWindowsPath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("cargo.exe lookup through Path requires native Windows")
+	}
+	bin := t.TempDir()
+	if _, err := fakecli.Install(t, bin, "cargo", nil); err != nil {
+		t.Fatal(err)
+	}
+	env := platform.Env{"Path": bin}
+	want := filepath.Join(bin, "cargo.exe")
+	got, ok := cargoExecutable(env)
+	if !ok || got != want {
+		t.Fatalf("Path-only cargo lookup: got=%q ok=%t want=%q env=%v", got, ok, want, env)
+	}
+}
 
 type guardFixture struct {
 	root, source, copy string

@@ -93,7 +93,7 @@ func cmdInstall(args []string, env platform.Env) int {
 	}
 	fmt.Fprintf(platform.Stdout, "sha256 %s\n", res.Digest)
 	fmt.Fprintf(platform.Stdout, "release %s\n", res.ReleaseURL)
-	if !pathContains(env.Get("PATH"), abs) {
+	if !pathContains(platform.PathValue(env), abs) {
 		fmt.Fprintf(platform.Stdout, "PATH: %s is not in PATH; add it to your shell profile (no automatic edits)\n", abs)
 	}
 	if *addToPath {
