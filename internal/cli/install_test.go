@@ -1062,3 +1062,16 @@ func TestInstallMovedAsideLine(t *testing.T) {
 		t.Fatalf("line without a marker = %q; want %q", got, want)
 	}
 }
+
+// Each backup left under its check name gets a stdout line naming where
+// it is, and there is none when nothing was left.
+func TestInstallStrandedLines(t *testing.T) {
+	if got := strandedLines(install.Result{}); len(got) != 0 {
+		t.Fatalf("lines = %q; want none", got)
+	}
+	got := strandedLines(install.Result{Stranded: []string{`C:\bin\soho.exe.old.soho-check-42`}})
+	want := `install: an earlier backup could not be renamed back after its check and is at C:\bin\soho.exe.old.soho-check-42`
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("lines = %q; want [%q]", got, want)
+	}
+}

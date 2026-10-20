@@ -255,3 +255,24 @@ func TestInstallWindowsUnwrittenMarkerStillSucceeds(t *testing.T) {
 	}
 	assertDirExact(t, got.installDir, "soho.exe", "soho.exe.old")
 }
+
+// A user's soho.exe.old.soho-install (not a sha256) with no soho.exe.old
+// takes the .old name when the running destination is moved aside: it
+// keeps its bytes, and the move uses .old-1 with its own marker.
+func TestInstallWindowsExistingMarkerTakesTheName(t *testing.T) {
+	exe := testBinaryBytes(t)
+	got := runCore(t, fixtureOptions{payload: exe})
+	if got.err != nil {
+		t.Fatalf("first install: %v", got.err)
+	}
+	destination := got.res.Destination
+	writeFiles(t, got.installDir, map[string]string{"soho.exe.old.soho-install": "USER DATA"})
+	holdRunning(t, destination)
+	again := runCore(t, fixtureOptions{payload: []byte("static replacement payload v2\n"), installDir: got.installDir})
+	if again.err != nil || again.res.Previous != destination+".old-1" || again.res.PreviousMarker != destination+".old-1.soho-install" {
+		t.Fatalf("install: %v, Previous %q, PreviousMarker %q; want .old-1 and its marker", again.err, again.res.Previous, again.res.PreviousMarker)
+	}
+	assertFile(t, destination+".old.soho-install", "USER DATA")
+	assertFile(t, destination+".old-1.soho-install", sha256Hex(exe)+"\n")
+	assertDirExact(t, got.installDir, "soho.exe", "soho.exe.old-1", "soho.exe.old-1.soho-install", "soho.exe.old.soho-install")
+}

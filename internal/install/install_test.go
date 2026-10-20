@@ -931,7 +931,7 @@ func TestInstallMoveAsideWithoutAMarkerSucceedsAndKeepsTheBackup(t *testing.T) {
 	}
 	assertFile(t, destination+".old", "running binary")
 	assertDirExact(t, dir, name, name+".old")
-	writeFile = os.WriteFile
+	writeFile = writeNewFile
 	again := runCore(t, fixtureOptions{installDir: dir})
 	if again.err != nil {
 		t.Fatalf("next install: %v", again.err)
@@ -961,8 +961,10 @@ func TestInstallMoveAsideIsNotUsedWhenTheDirectRenameWorks(t *testing.T) {
 }
 
 // A marked .old and .old-1 that cannot be removed (their processes still
-// run) do not fail the install: they stay with their markers, and the
-// destination moves to the first free .old-<n>.
+// run: Windows lets the cleanup rename them to their check names, but not
+// remove them) do not fail the install: they are renamed back and stay
+// with their markers, and the destination moves to the first free
+// .old-<n>.
 func TestInstallMoveAsideUsesAFreeSuffixWhenTheOldStays(t *testing.T) {
 	dir := t.TempDir()
 	name := destinationName(runtime.GOOS)
@@ -977,7 +979,7 @@ func TestInstallMoveAsideUsesAFreeSuffixWhenTheOldStays(t *testing.T) {
 	inUse := map[string]bool{destination + ".old": true, destination + ".old-1": true}
 	var calls []string
 	useReplaceSeams(t, true, refusingRename(destination, 1, &calls), func(path string) error {
-		if inUse[path] {
+		if inUse[strings.SplitN(path, asideCheckSuffix, 2)[0]] {
 			return &os.PathError{Op: "remove", Path: path, Err: errors.New("simulated: the file is in use")}
 		}
 		return os.Remove(path)
@@ -1022,6 +1024,279 @@ func TestInstallMoveAsideFailsWhenNoAsideNameIsFree(t *testing.T) {
 	if err != nil || len(entries) != len(files) {
 		t.Fatalf("dir holds %d entries (err %v); want the %d files written", len(entries), err, len(files))
 	}
+}
+
+// symlinkOrSkip makes link point at target, and skips the test where the
+// platform refuses symlinks (Windows without the privilege).
+func symlinkOrSkip(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+}
+
+// checkName is the name the cleanup renames backup to while it checks it.
+func checkName(backup string) string {
+	return fmt.Sprintf("%s%s%d", backup, asideCheckSuffix, os.Getpid())
+}
+
+// The reviewer's dangling-marker probe: a soho.old.soho-install symlink to
+// a path that does not exist takes the .old name, so the move aside uses
+// .old-1, nothing is created at the link's target, and the link stays.
+func TestInstallMoveAsideNeverWritesThroughADanglingMarkerLink(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	outside := filepath.Join(t.TempDir(), "user-file")
+	writeFiles(t, dir, map[string]string{name: "running binary"})
+	symlinkOrSkip(t, outside, destination+".old.soho-install")
+	var calls []string
+	useReplaceSeams(t, true, refusingRename(destination, 1, &calls), nil)
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err != nil {
+		t.Fatalf("install: %v", got.err)
+	}
+	if _, err := os.Lstat(outside); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Lstat(%s) = %v; want nothing written through the link", outside, err)
+	}
+	if got.res.Previous != destination+".old-1" || got.res.PreviousMarker != destination+".old-1.soho-install" {
+		t.Fatalf("Previous = %q, PreviousMarker = %q; want .old-1 and its marker", got.res.Previous, got.res.PreviousMarker)
+	}
+	assertFile(t, destination+".old-1", "running binary")
+	assertFile(t, destination+".old-1.soho-install", markerFor("running binary"))
+	if target, err := os.Readlink(destination + ".old.soho-install"); err != nil || target != outside {
+		t.Fatalf("Readlink = %q (err %v); want the link kept on %s", target, err, outside)
+	}
+	assertDirExact(t, dir, name, name+".old-1", name+".old-1.soho-install", name+".old.soho-install")
+}
+
+// The reviewer's write-only probe: a marker symlink to a user's file that
+// can be written but not read never has that file overwritten.
+func TestInstallMoveAsideKeepsAWriteOnlyMarkerTarget(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	target := filepath.Join(t.TempDir(), "user-file")
+	if err := os.WriteFile(target, []byte("USER DATA"), 0o200); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(target, 0o600) })
+	if _, err := os.ReadFile(target); err == nil {
+		t.Skip("read permission is not enforced here")
+	}
+	writeFiles(t, dir, map[string]string{name: "running binary"})
+	symlinkOrSkip(t, target, destination+".old.soho-install")
+	var calls []string
+	useReplaceSeams(t, true, refusingRename(destination, 1, &calls), nil)
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err != nil {
+		t.Fatalf("install: %v", got.err)
+	}
+	if err := os.Chmod(target, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, target, "USER DATA")
+	if got.res.Previous != destination+".old-1" {
+		t.Fatalf("Previous = %q; want %q", got.res.Previous, destination+".old-1")
+	}
+}
+
+// A user's file named like a marker (soho.old.soho-install, not a sha256)
+// with no soho.old takes the .old name: it keeps its bytes, and the move
+// aside uses .old-1.
+func TestInstallMoveAsideTreatsAnExistingMarkerAsTaken(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	writeFiles(t, dir, map[string]string{name: "running binary", name + ".old.soho-install": "USER DATA"})
+	var calls []string
+	useReplaceSeams(t, true, refusingRename(destination, 1, &calls), nil)
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err != nil {
+		t.Fatalf("install: %v", got.err)
+	}
+	assertFile(t, destination+".old.soho-install", "USER DATA")
+	if got.res.Previous != destination+".old-1" || got.res.PreviousMarker != destination+".old-1.soho-install" {
+		t.Fatalf("Previous = %q, PreviousMarker = %q; want .old-1 and its marker", got.res.Previous, got.res.PreviousMarker)
+	}
+	assertDirExact(t, dir, name, name+".old-1", name+".old-1.soho-install", name+".old.soho-install")
+}
+
+// A marker that appears at the free name between the choice of that name
+// and the marker's creation (a racer's file) is neither overwritten nor
+// removed: the backup stays without a marker.
+func TestInstallMoveAsideNeverOverwritesAMarkerThatAppears(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	writeFiles(t, dir, map[string]string{name: "running binary"})
+	var calls []string
+	refusing := refusingRename(destination, 1, &calls)
+	useReplaceSeams(t, true, func(src, dst string) error {
+		err := refusing(src, dst)
+		if err == nil && src == destination && dst == destination+".old" {
+			writeFiles(t, dir, map[string]string{name + ".old.soho-install": "USER DATA"})
+		}
+		return err
+	}, nil)
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err != nil {
+		t.Fatalf("install: %v", got.err)
+	}
+	assertFile(t, destination+".old.soho-install", "USER DATA")
+	if got.res.Previous != destination+".old" || got.res.PreviousMarker != "" {
+		t.Fatalf("Previous = %q, PreviousMarker = %q; want the .old without a marker", got.res.Previous, got.res.PreviousMarker)
+	}
+	assertDirExact(t, dir, name, name+".old", name+".old.soho-install")
+}
+
+// A marker that is a symlink, even to a file holding the backup's sha256,
+// authorizes nothing: the backup, the link and its target stay.
+func TestInstallMoveAsideKeepsABackupWhoseMarkerIsALink(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	outside := filepath.Join(t.TempDir(), "digest")
+	if err := os.WriteFile(outside, []byte(markerFor("older binary")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeFiles(t, dir, map[string]string{name: "previous binary", name + ".old": "older binary"})
+	symlinkOrSkip(t, outside, destination+".old.soho-install")
+	useReplaceSeams(t, true, nil, nil)
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err != nil {
+		t.Fatalf("install: %v", got.err)
+	}
+	assertFile(t, destination+".old", "older binary")
+	assertFile(t, outside, markerFor("older binary"))
+	assertDirExact(t, dir, name, name+".old", name+".old.soho-install")
+}
+
+// A backup that is a symlink to a file whose sha256 the marker holds is
+// renamed back and kept, with its marker: only a regular file is removed.
+func TestInstallMoveAsideKeepsABackupThatIsALink(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	outside := filepath.Join(t.TempDir(), "older")
+	if err := os.WriteFile(outside, []byte("older binary"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeFiles(t, dir, map[string]string{name: "previous binary", name + ".old.soho-install": markerFor("older binary")})
+	symlinkOrSkip(t, outside, destination+".old")
+	useReplaceSeams(t, true, nil, nil)
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err != nil {
+		t.Fatalf("install: %v", got.err)
+	}
+	if target, err := os.Readlink(destination + ".old"); err != nil || target != outside {
+		t.Fatalf("Readlink = %q (err %v); want the link kept on %s", target, err, outside)
+	}
+	assertDirExact(t, dir, name, name+".old", name+".old.soho-install")
+}
+
+// The reviewer's cleanup-race probe: a file put at soho.old after the
+// cleanup checked the backup and before it removed it is not the file
+// removed. The checked one (under its check name) and the marker go; the
+// new file stays with its bytes.
+func TestInstallMoveAsideCleanupRemovesOnlyTheCheckedFile(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	backup := destination + ".old"
+	writeFiles(t, dir, map[string]string{name: "previous binary", name + ".old": "older binary", name + ".old.soho-install": markerFor("older binary")})
+	var removed []string
+	useReplaceSeams(t, true, nil, func(path string) error {
+		if path == backup || path == checkName(backup) {
+			writeFiles(t, dir, map[string]string{name + ".old": "NEW USER DATA"})
+		}
+		removed = append(removed, filepath.Base(path))
+		return os.Remove(path)
+	})
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err != nil {
+		t.Fatalf("install: %v", got.err)
+	}
+	assertFile(t, backup, "NEW USER DATA")
+	want := []string{filepath.Base(checkName(backup)), name + ".old.soho-install"}
+	if strings.Join(removed, " ") != strings.Join(want, " ") {
+		t.Fatalf("removed %q; want %q", removed, want)
+	}
+	assertDirExact(t, dir, name, name+".old")
+}
+
+// A backup whose sha256 does not match its marker is renamed to its check
+// name and back: it ends at its own name with its bytes and its marker,
+// and nothing stays under the check name.
+func TestInstallMoveAsideRenamesAMismatchBack(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	backup := destination + ".old"
+	writeFiles(t, dir, map[string]string{name: "previous binary", name + ".old": "USER DATA", name + ".old.soho-install": markerFor("older binary")})
+	var calls []string
+	useReplaceSeams(t, true, func(src, dst string) error {
+		calls = append(calls, filepath.Base(src)+">"+filepath.Base(dst))
+		return os.Rename(src, dst)
+	}, nil)
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err != nil {
+		t.Fatalf("install: %v", got.err)
+	}
+	check := filepath.Base(checkName(backup))
+	want := []string{name + ".old>" + check, check + ">" + name + ".old"}
+	if len(calls) < 2 || strings.Join(calls[:2], " ") != strings.Join(want, " ") {
+		t.Fatalf("renames %q; want %q first", calls, want)
+	}
+	assertFile(t, backup, "USER DATA")
+	assertFile(t, backup+".soho-install", markerFor("older binary"))
+	if len(got.res.Stranded) != 0 {
+		t.Fatalf("Stranded = %q; want none", got.res.Stranded)
+	}
+	assertDirExact(t, dir, name, name+".old", name+".old.soho-install")
+}
+
+// A mismatched backup that cannot be renamed back stays under its check
+// name with its bytes, and Result.Stranded names that path.
+func TestInstallMoveAsideReportsABackupLeftUnderItsCheckName(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	check := checkName(destination + ".old")
+	writeFiles(t, dir, map[string]string{name: "previous binary", name + ".old": "USER DATA", name + ".old.soho-install": markerFor("older binary")})
+	useReplaceSeams(t, true, func(src, dst string) error {
+		if src == check {
+			return &os.LinkError{Op: "rename", Old: src, New: dst, Err: errors.New("simulated: rename back refused")}
+		}
+		return os.Rename(src, dst)
+	}, nil)
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err != nil {
+		t.Fatalf("install: %v", got.err)
+	}
+	assertFile(t, check, "USER DATA")
+	if len(got.res.Stranded) != 1 || got.res.Stranded[0] != check {
+		t.Fatalf("Stranded = %q; want [%q]", got.res.Stranded, check)
+	}
+	assertDirExact(t, dir, name, filepath.Base(check), name+".old.soho-install")
+}
+
+// A file already at a backup's check name is never replaced by the
+// cleanup's rename: that backup is skipped and stays with its marker.
+func TestInstallMoveAsideKeepsAFileAtTheCheckName(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	check := checkName(destination + ".old")
+	writeFiles(t, dir, map[string]string{name: "previous binary", name + ".old": "older binary", name + ".old.soho-install": markerFor("older binary"), filepath.Base(check): "USER DATA"})
+	useReplaceSeams(t, true, nil, nil)
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err != nil {
+		t.Fatalf("install: %v", got.err)
+	}
+	assertFile(t, check, "USER DATA")
+	assertFile(t, destination+".old", "older binary")
+	assertDirExact(t, dir, name, name+".old", filepath.Base(check), name+".old.soho-install")
 }
 
 // Off Windows nothing changes: the fallback is off by default, a .old next
