@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -81,13 +82,20 @@ func ForSpecFamily(spec, sd string, env platform.Env, cwd string, ctx *core.Conf
 	if family := kinds.KindFamily(spec); family != "unknown" {
 		return family, nil
 	}
-	tmp := env.Get("TMPDIR")
-	if tmp == "" {
-		tmp = os.TempDir()
+	// The scratch reports dir is read only when its three levels are this
+	// user's private directories (DJA-443): a refused one is skipped with a
+	// warning, a missing one has nothing to read.
+	dirs := []string{filepath.Join(sd, "briefs")}
+	reports, scratchErr := core.PrivateScratchReports(env, core.WorkspaceID(ctx, env, cwd), core.ScratchFix)
+	switch {
+	case scratchErr == nil:
+		dirs = append(dirs, reports)
+	case !errors.Is(scratchErr, os.ErrNotExist):
+		core.Warn(fmt.Sprintf("dispatch: skipped the scratch sidecars of '%s' (%v)", spec, scratchErr), "", "dispatch")
 	}
-	reports := filepath.Join(tmp, "soho", core.WorkspaceID(ctx, env, cwd), "reports")
+	scratchSidecar := map[string]bool{}
 	paths := []string{}
-	for _, dir := range []string{filepath.Join(sd, "briefs"), reports} {
+	for _, dir := range dirs {
 		entries, _ := os.ReadDir(dir)
 		for _, entry := range entries {
 			name := entry.Name()
@@ -95,6 +103,9 @@ func ForSpecFamily(spec, sd string, env platform.Env, cwd string, ctx *core.Conf
 				match := dispatchPairName.FindStringSubmatch(strings.TrimSuffix(name, ".dispatch.json"))
 				if len(match) > 1 && match[1] == spec {
 					paths = append(paths, filepath.Join(dir, name))
+					if dir == reports {
+						scratchSidecar[filepath.Join(dir, name)] = true
+					}
 				}
 			}
 		}
@@ -102,7 +113,19 @@ func ForSpecFamily(spec, sd string, env platform.Env, cwd string, ctx *core.Conf
 	sort.Strings(paths)
 	counts := map[string]int{}
 	for _, path := range paths {
-		raw, err := os.ReadFile(path)
+		var raw []byte
+		var err error
+		if scratchSidecar[path] {
+			// A scratch sidecar is read only as a regular file of this
+			// user, never through a link.
+			raw, err = core.ReadScratchReport(path)
+			var refused *core.ScratchRefusedError
+			if errors.As(err, &refused) {
+				core.Warn(fmt.Sprintf("dispatch: skipped %s (%v)", filepath.Base(path), err), "", "dispatch")
+			}
+		} else {
+			raw, err = os.ReadFile(path)
+		}
 		if err != nil {
 			continue
 		}
@@ -287,7 +310,9 @@ func WriteSidecar(path string, kind, model, effort, submission, arrival, session
 	if content == "" {
 		return fmt.Errorf("sidecar is not JSON serializable")
 	}
-	return platform.AtomicWrite(path, content+"\n")
+	// A fresh O_EXCL temporary renamed over the sidecar: a link in its
+	// place is replaced, never followed (DJA-443).
+	return core.WriteScratchFile(path, content+"\n")
 }
 
 func SamePath(left, right, goos string) bool {

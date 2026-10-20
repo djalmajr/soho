@@ -21,17 +21,17 @@ func skipLinksOnWindows(t *testing.T) {
 
 func skipOwnerOffUnix(t *testing.T) {
 	t.Helper()
-	if !pendingChecksOwner {
+	if !scratchChecksOwner {
 		t.Skip("the owner and the mode are checked on Unix only")
 	}
 }
 
-// ownedByAnother makes PendingOwnerOf report another uid for the files
+// ownedByAnother makes ScratchOwnerOf report another uid for the files
 // whose base name is in names, and the real owner for the others.
 func ownedByAnother(t *testing.T, names ...string) {
 	t.Helper()
-	old := PendingOwnerOf
-	PendingOwnerOf = func(info fs.FileInfo) (int, bool) {
+	old := ScratchOwnerOf
+	ScratchOwnerOf = func(info fs.FileInfo) (int, bool) {
 		for _, name := range names {
 			if info.Name() == name {
 				return os.Getuid() + 1, true
@@ -39,12 +39,12 @@ func ownedByAnother(t *testing.T, names ...string) {
 		}
 		return old(info)
 	}
-	t.Cleanup(func() { PendingOwnerOf = old })
+	t.Cleanup(func() { ScratchOwnerOf = old })
 }
 
 func wantRefused(t *testing.T, err error, path, cause string) {
 	t.Helper()
-	var refused *PendingRefusedError
+	var refused *ScratchRefusedError
 	if !errors.As(err, &refused) || refused.Path != path || refused.Cause != cause {
 		t.Fatalf("err=%v; want the refusal of %s: %s", err, path, cause)
 	}
@@ -183,7 +183,7 @@ func TestALinkInPlaceOfTheQueueIsNeverFollowed(t *testing.T) {
 	setup := func(t *testing.T) (platform.Env, string, string, string, string) {
 		env := platform.Env{"TMPDIR": t.TempDir()}
 		sd := t.TempDir()
-		if _, err := pendingQueueDir(env, "ws", pendingDirCreate); err != nil {
+		if _, err := pendingQueueDir(env, "ws", ScratchCreate); err != nil {
 			t.Fatal(err)
 		}
 		target := filepath.Join(t.TempDir(), "victim.txt")
@@ -270,7 +270,7 @@ func TestTheFootprintIgnoresARefusedQueueSilently(t *testing.T) {
 	sd := t.TempDir()
 	copyDir := filepath.Join(t.TempDir(), "queued")
 	seedFile(t, filepath.Join(copyDir, "f.bin"), 1024)
-	if _, err := pendingQueueDir(env, "ws", pendingDirCreate); err != nil {
+	if _, err := pendingQueueDir(env, "ws", ScratchCreate); err != nil {
 		t.Fatal(err)
 	}
 	target := filepath.Join(t.TempDir(), "elsewhere.tsv")
@@ -383,15 +383,15 @@ func TestTheQueueLevelsAreCheckedParentFirst(t *testing.T) {
 	if err := os.MkdirAll(PendingDir(env, "ws"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	old := PendingOwnerOf
+	old := ScratchOwnerOf
 	seen := []string{}
-	PendingOwnerOf = func(info fs.FileInfo) (int, bool) {
+	ScratchOwnerOf = func(info fs.FileInfo) (int, bool) {
 		if info.IsDir() {
 			seen = append(seen, info.Name())
 		}
 		return old(info)
 	}
-	t.Cleanup(func() { PendingOwnerOf = old })
+	t.Cleanup(func() { ScratchOwnerOf = old })
 	steps := []struct {
 		name string
 		run  func()
@@ -405,6 +405,108 @@ func TestTheQueueLevelsAreCheckedParentFirst(t *testing.T) {
 		step.run()
 		if len(seen) < 2 || seen[0] != "soho" || seen[1] != "ws" {
 			t.Fatalf("%s: owner check order=%v; want soho then ws", step.name, seen)
+		}
+	}
+}
+
+// An own level other users can only read (0o755) is narrowed to 0o700 by
+// the queue writer and by the incorporation; the read-only footprint reads
+// the queue through it and changes nothing (DJA-443, amendment 1).
+func TestAnOwnLevelReadableByOthersIsNarrowedExceptByTheFootprint(t *testing.T) {
+	skipOwnerOffUnix(t)
+	setLevels := func(t *testing.T, env platform.Env, mode os.FileMode) []string {
+		t.Helper()
+		dir := PendingDir(env, "ws")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		levels := []string{filepath.Dir(dir), dir}
+		for _, level := range levels {
+			if err := os.Chmod(level, mode); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return levels
+	}
+	wantModes := func(t *testing.T, levels []string, want os.FileMode) {
+		t.Helper()
+		for _, level := range levels {
+			if mode := modeOf(t, level); mode != want {
+				t.Fatalf("%s mode=%o; want %o", level, mode, want)
+			}
+		}
+	}
+
+	t.Run("the queue writer", func(t *testing.T) {
+		env := platform.Env{"TMPDIR": t.TempDir()}
+		levels := setLevels(t, env, 0o755)
+		if _, err := QueueCopy(env, "ws", t.TempDir(), pendingCopy("/x/c")); err != nil {
+			t.Fatal(err)
+		}
+		wantModes(t, levels, 0o700)
+	})
+
+	t.Run("the incorporation", func(t *testing.T) {
+		env := platform.Env{"TMPDIR": t.TempDir()}
+		sd := t.TempDir()
+		if _, err := QueueCopy(env, "ws", sd, pendingCopy("/x/c")); err != nil {
+			t.Fatal(err)
+		}
+		levels := setLevels(t, env, 0o755)
+		if res, err := IncorporatePendingCopies(sd, "ws", env, acceptCopy); err != nil || res.Moved != 1 {
+			t.Fatalf("res=%+v err=%v", res, err)
+		}
+		wantModes(t, levels, 0o700)
+	})
+
+	t.Run("the footprint reads a 0755 level and changes nothing", func(t *testing.T) {
+		env := platform.Env{"TMPDIR": t.TempDir()}
+		sd := t.TempDir()
+		if _, err := QueueCopy(env, "ws", sd, pendingCopy("/x/c")); err != nil {
+			t.Fatal(err)
+		}
+		levels := setLevels(t, env, 0o755)
+		if rows := PendingCopiesFor(sd, "ws", env); len(rows) != 1 {
+			t.Fatalf("rows=%v; want the queued copy read", rows)
+		}
+		wantModes(t, levels, 0o755)
+	})
+
+	t.Run("the footprint refuses a 0775 level silently and changes nothing", func(t *testing.T) {
+		env := platform.Env{"TMPDIR": t.TempDir()}
+		sd := t.TempDir()
+		if _, err := QueueCopy(env, "ws", sd, pendingCopy("/x/c")); err != nil {
+			t.Fatal(err)
+		}
+		levels := setLevels(t, env, 0o775)
+		if rows := PendingCopiesFor(sd, "ws", env); len(rows) != 0 {
+			t.Fatalf("rows=%v; want the queue ignored", rows)
+		}
+		wantModes(t, levels, 0o775)
+	})
+}
+
+// The reports level follows the same rule in the readers that act: an own
+// 0o755 level is narrowed by ScratchFix.
+func TestTheReportsReadersNarrowAnOwnLevelReadableByOthers(t *testing.T) {
+	skipOwnerOffUnix(t)
+	env := platform.Env{"TMPDIR": t.TempDir()}
+	dir, err := PrivateScratchReports(env, "ws", ScratchCreate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	levels := []string{filepath.Dir(filepath.Dir(dir)), filepath.Dir(dir), dir}
+	for _, level := range levels {
+		if err := os.Chmod(level, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := PrivateScratchReports(env, "ws", ScratchFix); err != nil {
+		t.Fatal(err)
+	}
+	for _, level := range levels {
+		if mode := modeOf(t, level); mode != 0o700 {
+			t.Fatalf("%s mode=%o; want 0700", level, mode)
 		}
 	}
 }

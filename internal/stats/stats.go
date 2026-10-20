@@ -3,6 +3,7 @@ package stats
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -84,6 +85,7 @@ type prompt struct {
 	suffix                                                         int
 	mtime, reportM                                                 float64
 	amendment, hasReport, counted, reuse                           bool
+	scratch                                                        bool // the pair is in the scratch reports dir
 	snapshot                                                       *sidecar
 	minutes                                                        *float64
 	partials                                                       int
@@ -163,10 +165,13 @@ func ParseSince(value string) (time.Time, bool) {
 	return time.Date(parts[0], time.Month(parts[1]), parts[2], parts[3], parts[4], sec, int(ns), zone), true
 }
 
-func collectPairs(sd, tmp string) []prompt {
+func collectPairs(sd, tmp, logFile string) []prompt {
 	out := []prompt{}
 	seen := map[string]bool{}
 	scan := func(dir string, isTmp bool) {
+		if dir == "" {
+			return
+		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			return
@@ -192,6 +197,14 @@ func collectPairs(sd, tmp string) []prompt {
 			seen[key] = true
 			path := filepath.Join(dir, f)
 			st, err := os.Stat(path)
+			if isTmp {
+				// A scratch brief is used only as a regular file of this
+				// user, never through a link.
+				st, err = core.StatScratchReport(path)
+				if refusedScratch(err) {
+					warn("stats: skipped "+f+" ("+err.Error()+")", logFile)
+				}
+			}
 			if err != nil {
 				continue
 			}
@@ -203,7 +216,7 @@ func collectPairs(sd, tmp string) []prompt {
 			if isTmp {
 				report = filepath.Join(dir, base+".md")
 			}
-			out = append(out, prompt{agent: m[1], ts: m[2], suffix: n, path: path, report: report, sidecarPath: filepath.Join(dir, base+".dispatch.json"), mtime: float64(st.ModTime().UnixNano()) / 1e6, counted: true})
+			out = append(out, prompt{agent: m[1], ts: m[2], suffix: n, path: path, report: report, sidecarPath: filepath.Join(dir, base+".dispatch.json"), mtime: float64(st.ModTime().UnixNano()) / 1e6, counted: true, scratch: isTmp})
 		}
 	}
 	scan(filepath.Join(sd, "briefs"), false)
@@ -211,9 +224,32 @@ func collectPairs(sd, tmp string) []prompt {
 	return out
 }
 
+// refusedScratch reports a scratch file the private-scratch check refused.
+func refusedScratch(err error) bool {
+	var refused *core.ScratchRefusedError
+	return errors.As(err, &refused)
+}
+
+// readStatsFile reads a pair file: through core.ReadScratchReport (never a
+// link) for a scratch pair, with a warning when it is refused.
+func readStatsFile(p *prompt, path, logFile string) ([]byte, error) {
+	if !p.scratch {
+		return os.ReadFile(path)
+	}
+	b, err := core.ReadScratchReport(path)
+	if refusedScratch(err) {
+		warn("stats: skipped "+filepath.Base(path)+" ("+err.Error()+")", logFile)
+	}
+	return b, err
+}
+
 func readSidecar(p *prompt, logFile string) {
-	b, e := os.ReadFile(p.sidecarPath)
+	b, e := readStatsFile(p, p.sidecarPath, logFile)
 	if os.IsNotExist(e) {
+		return
+	}
+	if refusedScratch(e) {
+		p.counted = false
 		return
 	}
 	if e != nil {
@@ -269,13 +305,20 @@ func invalidSidecar(p *prompt, logFile string) {
 	warn("stats: "+filepath.Base(p.sidecarPath)+" is not a valid attempt sidecar; the pair is not counted as accepted", logFile)
 }
 func loadMeta(p *prompt, logFile string) {
-	b, _ := platform.ReadTextFile(p.path)
+	raw, _ := readStatsFile(p, p.path, logFile)
+	b := platform.DecodeText(raw)
 	p.amendment = strings.SplitN(b, "\n", 2)[0] == "# Amendment to your current brief"
 	if m := roleRE.FindStringSubmatch(b); m != nil {
 		p.role = m[1]
 	}
 	readSidecar(p, logFile)
 	st, e := os.Stat(p.report)
+	if p.scratch {
+		st, e = core.StatScratchReport(p.report)
+		if refusedScratch(e) {
+			warn("stats: skipped "+filepath.Base(p.report)+" ("+e.Error()+")", logFile)
+		}
+	}
 	if e != nil || st.Size() == 0 {
 		return
 	}
@@ -283,7 +326,8 @@ func loadMeta(p *prompt, logFile string) {
 	p.reportM = float64(st.ModTime().UnixNano()) / 1e6
 	mins := (p.reportM - p.mtime) / 60000
 	p.minutes = &mins
-	report, _ := platform.ReadTextFile(p.report)
+	reportRaw, _ := readStatsFile(p, p.report, logFile)
+	report := platform.DecodeText(reportRaw)
 	p.partials = reportscan.PartialCount(report)
 	p.header = reportscan.ReviewHeader(report)
 }
@@ -447,12 +491,17 @@ func CmdStats(args []string, command CommandContext) int {
 		}
 	}
 	sd := core.StateDir(ctx, env, cwd)
-	tmpRoot := env.Get("TMPDIR")
-	if tmpRoot == "" {
-		tmpRoot = os.TempDir()
+	// The scratch reports dir is read only when its three levels are this
+	// user's private directories (DJA-443): a refused one is skipped with a
+	// warning, a missing one has nothing to read.
+	tmp, scratchErr := core.PrivateScratchReports(env, core.WorkspaceID(ctx, env, cwd), core.ScratchFix)
+	if scratchErr != nil {
+		if !errors.Is(scratchErr, os.ErrNotExist) {
+			warn("stats: skipped the scratch reports dir ("+scratchErr.Error()+")", logFile)
+		}
+		tmp = ""
 	}
-	tmp := filepath.Join(tmpRoot, "soho", core.WorkspaceID(ctx, env, cwd), "reports")
-	pairs := collectPairs(sd, tmp)
+	pairs := collectPairs(sd, tmp, logFile)
 	if len(pairs) == 0 {
 		output("no dispatches recorded under " + filepath.Join(sd, "briefs") + "\n")
 		return 0

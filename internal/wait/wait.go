@@ -1,6 +1,7 @@
 package wait
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -989,12 +990,21 @@ func readQuotaFile(sd, agent string) (string, string) {
 }
 
 func mirrorReport(sd, agent, report string, ctx *core.Config, env platform.Env, cwd string) {
-	tmp := env.Get("TMPDIR")
-	if tmp == "" {
-		tmp = os.TempDir()
-	}
-	dir := filepath.Join(tmp, "soho", core.WorkspaceID(ctx, env, cwd), "reports")
+	ws := core.WorkspaceID(ctx, env, cwd)
+	dir := core.ScratchReportsDir(env, ws)
 	if !strings.HasPrefix(report, dir+string(os.PathSeparator)) {
+		return
+	}
+	// The scratch reports dir is read only when its three levels are
+	// directories private to this user (an own level open to the group or
+	// the others is narrowed; a missing one is nothing to read), and each
+	// file only when it is a regular file of this user, never through a
+	// link (DJA-443). A refusal is said on stderr, never taken for a
+	// missing report.
+	if _, err := core.PrivateScratchReports(env, ws, core.ScratchFix); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			sendWarning("wait: the report of '" + agent + "' was refused and not copied to the state dir (" + err.Error() + ")")
+		}
 		return
 	}
 	base := filepath.Base(report)
@@ -1002,12 +1012,19 @@ func mirrorReport(sd, agent, report string, ctx *core.Config, env platform.Env, 
 	jobs := [][3]string{{report, filepath.Join(sd, "reports", base), ""}, {filepath.Join(filepath.Dir(report), stem+".brief.md"), filepath.Join(sd, "briefs", stem+".md"), ""}, {filepath.Join(filepath.Dir(report), stem+".dispatch.json"), filepath.Join(sd, "briefs", stem+".dispatch.json"), "optional"}}
 	for _, job := range jobs {
 		src, dst := job[0], job[1]
-		if job[2] != "" {
-			if _, err := os.Stat(src); err != nil {
-				continue
-			}
+		data, err := core.ReadScratchReport(src)
+		if job[2] != "" && errors.Is(err, os.ErrNotExist) {
+			continue
 		}
-		data, err := os.ReadFile(src)
+		var refused *core.ScratchRefusedError
+		if errors.As(err, &refused) {
+			if src == report {
+				sendWarning("wait: the report of '" + agent + "' was refused and not copied to the state dir (" + err.Error() + ")")
+			} else {
+				sendWarning("mirror: refused " + filepath.Base(src) + " of '" + agent + "', not copied to the state dir (" + err.Error() + ")")
+			}
+			continue
+		}
 		if err != nil {
 			sendWarning("mirror: could not copy " + filepath.Base(src) + " of '" + agent + "' to the state dir: " + err.Error())
 			continue

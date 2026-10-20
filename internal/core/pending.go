@@ -39,11 +39,7 @@ var pendingLockHook func(lock string)
 
 // PendingDir is the workspace scratch dir the queues live in.
 func PendingDir(env platform.Env, workspaceID string) string {
-	tmp := env.Get("TMPDIR")
-	if tmp == "" {
-		tmp = os.TempDir()
-	}
-	return filepath.Join(tmp, "soho", workspaceID)
+	return ScratchDir(env, workspaceID)
 }
 
 // PendingCopiesFile is the copy queue of the workspace.
@@ -74,7 +70,7 @@ func appendPending(env platform.Env, workspaceID, queue, header, kind, stateDir 
 	if !filepath.IsAbs(stateDir) {
 		return fmt.Errorf("%s: the state dir %q is not absolute", kind, stateDir)
 	}
-	dir, err := pendingQueueDir(env, workspaceID, pendingDirCreate)
+	dir, err := pendingQueueDir(env, workspaceID, ScratchCreate)
 	if err != nil {
 		return err
 	}
@@ -108,7 +104,7 @@ func readPendingLines(queue string) ([]string, error) {
 	return out, nil
 }
 
-// writePending rewrites a queue through writePendingFile (a link in its
+// writePending rewrites a queue through WriteScratchFile (a link in its
 // place is replaced, not followed), or removes it when no line is left.
 func writePending(queue, header string, lines []string) error {
 	if len(lines) == 0 {
@@ -117,7 +113,7 @@ func writePending(queue, header string, lines []string) error {
 		}
 		return nil
 	}
-	return writePendingFile(queue, header+"\n"+strings.Join(lines, "\n")+"\n")
+	return WriteScratchFile(queue, header+"\n"+strings.Join(lines, "\n")+"\n")
 }
 
 // pendingTarget splits a queue line into its state dir and the registry
@@ -192,7 +188,7 @@ type PendingResult struct {
 // too, and the next incorporation upserts them again).
 func IncorporatePendingCopies(stateDir, workspaceID string, env platform.Env, check func(CopyRow) (CopyRow, string)) (PendingResult, error) {
 	queue := PendingCopiesFile(env, workspaceID)
-	if _, err := pendingQueueDir(env, workspaceID, pendingDirFix); err != nil {
+	if _, err := pendingQueueDir(env, workspaceID, ScratchFix); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return PendingResult{Queue: queue}, nil
 		}
@@ -246,7 +242,7 @@ func IncorporatePendingCopies(stateDir, workspaceID string, env platform.Env, ch
 // process that has ended is registered too, and gc drops it.
 func IncorporatePendingProcs(stateDir, workspaceID string, env platform.Env) (PendingResult, error) {
 	queue := PendingProcsFile(env, workspaceID)
-	if _, err := pendingQueueDir(env, workspaceID, pendingDirFix); err != nil {
+	if _, err := pendingQueueDir(env, workspaceID, ScratchFix); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return PendingResult{Queue: queue}, nil
 		}
@@ -368,7 +364,7 @@ func incorporatePending(stateDir, queue, header, kind string, lockRegistryOf fun
 // whose directory or file is refused reads as no lines, silently.
 func PendingCopiesFor(stateDir, workspaceID string, env platform.Env) []CopyRow {
 	out := []CopyRow{}
-	if _, err := pendingQueueDir(env, workspaceID, pendingDirRead); err != nil {
+	if _, err := pendingQueueDir(env, workspaceID, ScratchRead); err != nil {
 		return out
 	}
 	lines, err := readPendingLines(PendingCopiesFile(env, workspaceID))
@@ -391,7 +387,7 @@ func PendingCopiesFor(stateDir, workspaceID string, env platform.Env) []CopyRow 
 // queue lines for stateDir (the footprint's read-only count).
 func PendingProcsFor(stateDir, workspaceID string, env platform.Env) []ProcRow {
 	out := []ProcRow{}
-	if _, err := pendingQueueDir(env, workspaceID, pendingDirRead); err != nil {
+	if _, err := pendingQueueDir(env, workspaceID, ScratchRead); err != nil {
 		return out
 	}
 	lines, err := readPendingLines(PendingProcsFile(env, workspaceID))

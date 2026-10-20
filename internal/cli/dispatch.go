@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -117,6 +118,34 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	if role == "" {
 		role = at(3)
 	}
+	// The report and the composed prompt follow the state dir only when the
+	// worker can reach it: a sandboxed worker writes inside its own cwd, so
+	// with a non-empty worker cwd the files go to the soho scratch dir
+	// whenever sd is not inside that cwd — the caller's project root no
+	// longer decides. Comparing the worker's cwd with the caller's root
+	// routed a worktree caller's report into the main checkout's sd, which
+	// the worker there cannot write (DJA-379).
+	// The scratch reports dir is used only when its three levels are
+	// directories private to this user (created 0o700, an own level open
+	// to the group or the others narrowed; another owner's or a link is
+	// refused), and the files written there never follow a link (DJA-443).
+	// The check of the levels that exist runs here, right after the roster
+	// line (ScratchFix: another owner's level or a link is refused, an own
+	// level is narrowed, nothing is created), so a refusal comes before any
+	// collaboration read, herdr call, compact-marker cleanup or state write.
+	// The missing levels are created later, right before the first write
+	// (ScratchCreate, which checks every level again), so a dispatch refused
+	// in between leaves no scratch tree.
+	workerCwd := at(6)
+	scratch := workerCwd != "" && !dispatch.PathWithin(sd, workerCwd, platform.Current())
+	scratchRefusal := func(err error) {
+		core.DieFriction(fmt.Sprintf("dispatch: the scratch reports dir cannot be used (%v); nothing was sent to '%s'", err, agent), 4, frictionLogPath, "dispatch")
+	}
+	if scratch {
+		if _, err := core.PrivateScratchReports(env, core.WorkspaceID(ctx, env, cwd), core.ScratchFix); err != nil && !errors.Is(err, os.ErrNotExist) {
+			scratchRefusal(err)
+		}
+	}
 	active, stateErr := (collaboration.Store{StateDir: sd}).ActiveFor(at(1))
 	if stateErr != nil {
 		core.DieFriction("dispatch: collaboration state is unreadable: "+stateErr.Error(), 4, frictionLogPath, "dispatch")
@@ -183,7 +212,6 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 			core.DieFriction("dispatch: --for applies to a reviewer dispatch", 2, frictionLogPath, "dispatch")
 		}
 	}
-	workerCwd := at(6)
 	findings := dispatch.BriefLintFindings(brief, ctx, env, dispatch.BriefLintOptions{ReadOnly: !core.RoleIsEdit(role, env, cwd), WorkerCwd: workerCwd, OrchestratorCwd: cwd})
 	if amend {
 		findings = dispatch.BriefLintFindings(brief, ctx, env, dispatch.BriefLintOptions{ReadOnly: !core.RoleIsEdit(role, env, cwd), PathsOnly: true, WorkerCwd: workerCwd, OrchestratorCwd: cwd})
@@ -246,19 +274,15 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	stamp := core.NowStamp(now)
 	reportsDir := filepath.Join(sd, "briefs")
 	reportDir := filepath.Join(sd, "reports")
-	// The report and the composed prompt follow the state dir only when the
-	// worker can reach it: a sandboxed worker writes inside its own cwd, so
-	// with a non-empty worker cwd the files go to the soho scratch dir
-	// whenever sd is not inside that cwd — the caller's project root no
-	// longer decides. Comparing the worker's cwd with the caller's root
-	// routed a worktree caller's report into the main checkout's sd, which
-	// the worker there cannot write (DJA-379).
-	if workerCwd != "" && !dispatch.PathWithin(sd, workerCwd, platform.Current()) {
-		tmp := env.Get("TMPDIR")
-		if tmp == "" {
-			tmp = os.TempDir()
+	// The scratch reports dir was decided, and its existing levels
+	// checked, right after the roster line; the missing ones are created
+	// here (DJA-443).
+	if scratch {
+		dir, err := core.PrivateScratchReports(env, core.WorkspaceID(ctx, env, cwd), core.ScratchCreate)
+		if err != nil {
+			scratchRefusal(err)
 		}
-		reportsDir = filepath.Join(tmp, "soho", core.WorkspaceID(ctx, env, cwd), "reports")
+		reportsDir = dir
 		reportDir = reportsDir
 	}
 	composedAt := func(s string) string {
@@ -402,7 +426,13 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	if amend {
 		prompt = dispatch.ComposeAmendment(briefRaw, report, ctx, env, kind, args, shared, agent)
 	}
-	if err := os.WriteFile(composed, []byte(prompt), 0o666); err != nil {
+	writeComposed := func() error { return os.WriteFile(composed, []byte(prompt), 0o666) }
+	if scratch {
+		// A fresh O_EXCL temporary renamed over the name: a link planted
+		// there is replaced, never followed (DJA-443).
+		writeComposed = func() error { return core.WriteScratchFile(composed, prompt) }
+	}
+	if err := writeComposed(); err != nil {
 		panic(err)
 	}
 	// priorPointer and taskReport stand from before the first sidecar write.
@@ -927,7 +957,9 @@ func addForToSidecar(path string, entries []any, taskReport, briefSHA string) er
 	if len(entries) == 0 && taskReport == "" && briefSHA == "" {
 		return nil
 	}
-	raw, err := os.ReadFile(path)
+	// The sidecar is read and rewritten without following a link
+	// (DJA-443), in the scratch reports dir and in the state dir alike.
+	raw, err := core.ReadScratchReport(path)
 	if err != nil {
 		return err
 	}
@@ -948,7 +980,7 @@ func addForToSidecar(path string, entries []any, taskReport, briefSHA string) er
 	if len(entries) > 0 {
 		obj.Set("for", entries)
 	}
-	return platform.AtomicWrite(path, jsonjs.Stringify(obj)+"\n")
+	return core.WriteScratchFile(path, jsonjs.Stringify(obj)+"\n")
 }
 
 // dispatchForAuthor builds the anonymized --for entry for the sidecar
