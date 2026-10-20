@@ -38,11 +38,11 @@ const nowriteExplainIdle = "soho runs a small team of agents in Herdr panels. Yo
 // lane lines and before the blank line). The copies are fixed-length; the
 // state dir holds absolute temporary paths, so its size (and the total)
 // depends on the machine and is matched by nowriteFootprintSizes.
-const nowriteExplainRunning = "Panels: 4.\nbuild: implementer, grok, model grok-4.7, idle\nreview: not started\nFootprint: <total> on disk (copies 3.0 KB in 2, state <state>, scratch 0 B); no registered process running.\n\nRecommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here.\n"
+const nowriteExplainRunning = "Panels: 4.\nbuild: implementer, grok, model grok-4.7, idle\nreview: not started\nFootprint: <total> logical size (copies 3.0 KB in 2, state <state>, scratch 0 B); no registered process running.\n\nRecommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here.\n"
 
 // nowriteFootprintSizes replaces the machine-dependent total and state sizes
 // of the footprint line with the placeholders nowriteExplainRunning uses.
-var nowriteFootprintSizes = regexp.MustCompile(`Footprint: [0-9.]+ (?:B|KB|MB) on disk \(copies 3\.0 KB in 2, state [0-9.]+ (?:B|KB|MB),`)
+var nowriteFootprintSizes = regexp.MustCompile(`Footprint: [0-9.]+ (?:B|KB|MB) logical size \(copies 3\.0 KB in 2, state [0-9.]+ (?:B|KB|MB),`)
 
 const nowriteGcNoneLine = "resource pressure: none (disk 60% free, swap 30% used)\n"
 
@@ -273,7 +273,7 @@ func TestNowriteReadCommandsWriteNothing(t *testing.T) {
 						t.Fatalf("code=%d want %d; out=%q err=%q", code, c.code, out, errOut)
 					}
 					if c.footprintSizes {
-						out = nowriteFootprintSizes.ReplaceAllString(out, "Footprint: <total> on disk (copies 3.0 KB in 2, state <state>,")
+						out = nowriteFootprintSizes.ReplaceAllString(out, "Footprint: <total> logical size (copies 3.0 KB in 2, state <state>,")
 					}
 					if !c.skipOut && out != c.wantOut {
 						t.Fatalf("stdout:\n got:  %q\nwant: %q", out, c.wantOut)
