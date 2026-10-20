@@ -24,7 +24,7 @@ const backgroundPatternsAnchor = "effort.cursor      xhigh                      
 // prints for the shipped default. The key and the value are longer than their
 // columns, so each is followed by a single space. If the row format or the
 // default drifts, the parity comparison fails on purpose.
-const backgroundPatternsRow = `background_patterns.claude \d+ (shells?|monitors?) still running|· \d+ (shells?|monitors?)( ·|$) defaults`
+const backgroundPatternsRow = `background_patterns.claude \d+ (shells?|monitors?)(, \d+ (shells?|monitors?))* still running|· \d+ (shells?|monitors?)(, \d+ (shells?|monitors?))*( ·|$) defaults`
 
 // DJA-405 intentional contract adaptation: soho config lists
 // background_patterns.claude before effort.cursor; the frozen bytes are

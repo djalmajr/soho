@@ -12,7 +12,7 @@ import (
 
 // shippedBackgroundPatternClaude is the default the skill ships for claude
 // (DJA-405): a still screen counting a background shell or Monitor.
-const shippedBackgroundPatternClaude = `\d+ (shells?|monitors?) still running|· \d+ (shells?|monitors?)( ·|$)`
+const shippedBackgroundPatternClaude = `\d+ (shells?|monitors?)(, \d+ (shells?|monitors?))* still running|· \d+ (shells?|monitors?)(, \d+ (shells?|monitors?))*( ·|$)`
 
 func TestBackgroundPatternShippedDefault(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "skills", "soho", "config.defaults"))
@@ -40,6 +40,9 @@ func TestBackgroundPatternShippedDefault(t *testing.T) {
 		"✻ Cogitated for 40s · done 11:47 AM · 2 monitors still running",
 		"⏵⏵ bypass permissions on · PR #121 · 1 shell",
 		"⏵⏵ bypass permissions on · 2 monitors · ← 1 agent",
+		"done 7:28 PM · 1 shell, 1 monitor still running",
+		"· 1 shell, 1 monitor · ← 3 agents",
+		"⏵⏵ bypass permissions on · 2 shells, 1 monitor",
 	} {
 		if !re.MatchString(line) {
 			t.Errorf("default does not match %q", line)
@@ -50,6 +53,9 @@ func TestBackgroundPatternShippedDefault(t *testing.T) {
 		"⏵⏵ bypass permissions on · PR #121",
 		"I ran 2 monitors and 1 shell in the test",
 		"⏵⏵ bypass permissions on · 1 shellfish",
+		"the server is still running fine",
+		"done 7:28 PM · 1 shell, 1 monitor still",
+		"⏵⏵ bypass permissions on · 1 shell, 1 monitors-ish",
 	} {
 		if re.MatchString(line) {
 			t.Errorf("default matches %q", line)
