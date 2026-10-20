@@ -2,8 +2,8 @@ package layout
 
 // DJA-393: the declared caller-tab columns.
 //
-// pane_columns declares the column shape for the caller's tab (a row count
-// per column, filled left to right, caller first) and pane_overflow decides
+// pane_columns declares a fixed column shape or an adaptive auto shape for
+// the caller's tab, and pane_overflow decides
 // what happens when the declared slots are all full. The empty columns value
 // is today's auto-sized square grid; every consumer of this file falls back
 // to that shape, so the feature degrades to the current behavior when the
@@ -29,7 +29,9 @@ const (
 	// deepest a terminal can show sensibly).
 	MaxDeclaredRows = 9
 	// DefaultPaneOverflow is what pane_overflow resolves to when unset.
-	DefaultPaneOverflow = "last-column"
+	DefaultPaneOverflow = "balance"
+	// DefaultPaneColumnRows is the worker-column height in auto mode.
+	DefaultPaneColumnRows = 3
 )
 
 // declaredColumnsRE is the pane_columns contract: 1 to 6 single-digit row
@@ -53,22 +55,103 @@ func declaredCols(raw string) []int {
 	return cols
 }
 
-// PaneColumns resolves the declared caller-tab shape: the row counts, the
-// overflow mode (last-column is the default) and whether the value was
-// actually declared (a non-empty, valid pane_columns).
+// PaneColumns resolves the declared caller-tab capacity: the row counts, the
+// overflow mode (balance is the default) and whether the value was
+// actually declared (a non-empty, valid pane_columns). Auto reserves up to
+// five worker columns; autoGrid computes their current occupied shape.
 func PaneColumns(ctx *core.Config, env platform.Env) ([]int, string, bool) {
-	cols := declaredCols(core.Cfg(ctx, "pane_columns", "", env))
+	raw := core.Cfg(ctx, "pane_columns", "", env)
+	cols := declaredCols(raw)
+	if raw == "auto" {
+		// This is the capacity declaration, not the current shape. It feeds
+		// spawn's anchor/cap rules; regrid calculates the occupied columns.
+		cols = []int{1}
+		for len(cols) < MaxDeclaredColumns {
+			cols = append(cols, PaneColumnRows(ctx, env))
+		}
+	}
 	overflow := core.Cfg(ctx, "pane_overflow", DefaultPaneOverflow, env)
-	if overflow != "last-column" && overflow != "new-column" && overflow != "tab" {
+	if overflow != "balance" && overflow != "last-column" && overflow != "new-column" && overflow != "tab" {
 		overflow = DefaultPaneOverflow
 	}
 	return cols, overflow, cols != nil
 }
 
+// PaneColumnRows reads the shared 1..9 grammar, falling back to 3 for an
+// invalid file/environment value. It affects layout only in auto mode.
+func PaneColumnRows(ctx *core.Config, env platform.Env) int {
+	raw := core.Cfg(ctx, "pane_column_rows", "3", env)
+	if len(raw) != 1 || raw[0] < '1' || raw[0] > '9' {
+		return DefaultPaneColumnRows
+	}
+	return int(raw[0] - '0')
+}
+
+// autoGrid keeps the caller alone and puts the partial worker column on
+// the left. Above the six-column declaration, existing overflow semantics
+// apply, including tab's no-dropped-cells fallback for an overfull tab.
+func autoGrid(workers, rows int, overflow string) Grid {
+	if rows < 1 || rows > MaxDeclaredRows {
+		rows = DefaultPaneColumnRows
+	}
+	if workers <= 0 {
+		return Grid{Cols: 1, Rows: []int{1}}
+	}
+	columns := min((workers+rows-1)/rows, MaxDeclaredColumns-1)
+	cols := []int{1}
+	for range columns {
+		cols = append(cols, rows)
+	}
+	if workers <= columns*rows {
+		cols[1] = workers - rows*(columns-1)
+	}
+	return DeclaredGrid(cols, overflow, workers+1)
+}
+
+// autoGridPanes reads arrival order from the append-ordered roster, across
+// caller and pulled-back herd tabs. Within each column old workers stay
+// above newer ones; the oldest group occupies the rightmost column. Pane
+// ids changed by pull-back have already been persisted in that same roster.
+func autoGridPanes(ctx *core.Config, env platform.Env, cwd string, panes []string, shape Grid) []string {
+	remaining := map[string]int{}
+	for _, pane := range panes {
+		remaining[pane]++
+	}
+	ordered := make([]string, 0, len(panes))
+	for _, row := range core.RosterRows(core.StateDirPath(ctx, env, cwd)) {
+		fields := strings.Split(row, "\t")
+		if len(fields) > 1 && remaining[fields[1]] > 0 {
+			ordered = append(ordered, fields[1])
+			remaining[fields[1]]--
+		}
+	}
+	for _, pane := range panes {
+		if remaining[pane] > 0 {
+			ordered = append(ordered, pane)
+			remaining[pane]--
+		}
+	}
+	groups := make([][]string, len(shape.Rows)-1)
+	at := 0
+	for c := len(shape.Rows) - 1; c > 0; c-- {
+		groups[c-1] = ordered[at : at+shape.Rows[c]]
+		at += shape.Rows[c]
+	}
+	result := make([]string, 0, len(panes))
+	for _, group := range groups {
+		result = append(result, group...)
+	}
+	return result
+}
+
 // DeclaredGrid builds the grid for n cells under the declared column shape.
 // Cells fill the columns left to right, caller first: each column takes its
 // declared rows until the cells run out, and a column that runs out early is
-// dropped. Under last-column the last column keeps growing beyond its
+// dropped. Balance assigns only excess cells to the least occupied worker
+// column, breaking ties to the right and never growing the caller's column.
+// A single-column declaration opens worker columns to the right with the
+// declared row count, up to six columns including the caller, then balances.
+// Under last-column the last column keeps growing beyond its
 // declared count; under new-column the excess cells open new columns right
 // of the last one, each holding the last declared column's row count (the
 // final new column holds the remainder). Under tab the spawn stops at the
@@ -96,6 +179,24 @@ func DeclaredGrid(cols []int, overflow string, n int) Grid {
 		return Grid{Cols: len(rows), Rows: rows}
 	}
 	switch overflow {
+	case "balance":
+		if len(cols) == 1 {
+			for remaining > 0 && len(rows) < MaxDeclaredColumns {
+				take := min(cols[0], remaining)
+				rows = append(rows, take)
+				remaining -= take
+			}
+		}
+		for remaining > 0 {
+			least := len(rows) - 1
+			for c := len(rows) - 2; c >= 1; c-- {
+				if rows[c] < rows[least] {
+					least = c
+				}
+			}
+			rows[least]++
+			remaining--
+		}
 	case "new-column":
 		// The excess opens new columns right of the last declared one, each
 		// with the last declared column's row count (1,2,2 + 4 excess is
@@ -119,7 +220,7 @@ func DeclaredGrid(cols []int, overflow string, n int) Grid {
 // force. Without a valid declaration the cap is exactly today's SplitCap,
 // and so is an explicit split_max_panes (env or a non-defaults layer,
 // including 0, which keeps today's "a full tab" meaning), read with
-// SplitCap's own grammar and fallback. Otherwise last-column and new-column
+// SplitCap's own grammar and fallback. Otherwise balance, last-column and new-column
 // leave the caller tab uncapped (unlimited is true), and tab caps it at the
 // declared total.
 func SplitCapDeclared(ctx *core.Config, env platform.Env) (int, bool) {
@@ -134,7 +235,7 @@ func SplitCapDeclared(ctx *core.Config, env platform.Env) (int, bool) {
 			total += count
 		}
 		return total, false
-	default: // last-column and new-column: no tab cap.
+	default: // balance, last-column and new-column: no tab cap.
 		return 0, true
 	}
 }
@@ -149,7 +250,7 @@ func SplitCapDeclared(ctx *core.Config, env platform.Env) (int, bool) {
 //     the new worker needs); with more than one row in the first column the
 //     caller stays a candidate as today, and with no worker candidate at
 //     all the caller is split as today.
-//   - under last-column and new-column split_min_pane is ignored (the
+//   - under balance, last-column and new-column split_min_pane is ignored (the
 //     columns absorb the excess); under tab the minimum still overflows and
 //     the full-tab cap is the declared total (the caller still counts).
 //

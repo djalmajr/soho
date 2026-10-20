@@ -39,17 +39,29 @@ split_max_panes=4
 split_min_pane=0.18
 
 # What happens when the caller's tab already holds every slot of pane_columns
-# (the declared column shape for caller + workers). last-column keeps growing
-# the last column, new-column opens a new column right of the last, and tab
-# keeps the excess workers in the herd tabs (the caller tab caps at the
-# declared total).
-pane_overflow=last-column
+# (the declared column shape for caller + workers). balance (the default)
+# with a declared worker column, adds each excess worker to the least occupied worker column, rightmost on
+# ties, never the caller column. Declared slots still fill as before:
+# 1,3,3 + 4 workers is 1,3,1. With 1,2,3, worker counts 6,7,8 give
+# 1,3,3; 1,3,4; 1,4,4. Auto with N=3 and 16 workers gives 1,3,3,3,3,4.
+# Explicit last-column keeps growing the last column, new-column opens a
+# new column right of the last, and tab keeps excess workers in herd tabs
+# (the caller tab caps at the declared total).
+pane_overflow=balance
 
 # The declared column shape for the caller's tab: a row count per column,
 # 1 to 6 columns, each 1 to 9 rows (like 1,2,3), filled left to right with
 # the caller first. Empty (the default) is the current auto-sized grid:
 # columns = ceil(sqrt(n)). The shape is restored by the regrid (regrid=on).
+# Use auto for an adaptive shape: caller alone, oldest workers on the right,
+# new columns opening to their left. With pane_column_rows=3, worker counts
+# 0,1,2,3,4,5,6,7 give 1; 1,1; 1,2; 1,3; 1,1,3; 1,2,3; 1,3,3; 1,1,3,3.
+# The six-column declaration includes the caller; past it pane_overflow
+# applies as above. Explicit split_max_panes still wins over that capacity.
 pane_columns=
+
+# Worker rows per column in auto mode only: 1 to 9, default 3.
+pane_column_rows=3
 
 # Rebuild exact grids after every spawn and release (`regrid`): on | off. In
 # the caller's tab the caller stays top-left in the least crowded column and

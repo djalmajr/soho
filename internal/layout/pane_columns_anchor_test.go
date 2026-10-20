@@ -37,7 +37,8 @@ func TestSplitCapDeclared(t *testing.T) {
 			wantNoCap bool
 		}{
 			{"no key keeps today's default cap", platform.Env{}, 4, false},
-			{"last-column (the default overflow) has no tab cap", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3"}, 0, true},
+			{"balance (the default overflow) has no tab cap", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3"}, 0, true},
+			{"explicit last-column has no tab cap", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_PANE_OVERFLOW": "last-column"}, 0, true},
 			{"new-column has no tab cap", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_PANE_OVERFLOW": "new-column"}, 0, true},
 			{"tab caps at the declared total", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_PANE_OVERFLOW": "tab"}, 6, false},
 			{"a single column tab caps at one", platform.Env{"SOHO_PANE_COLUMNS": "1", "SOHO_PANE_OVERFLOW": "tab"}, 1, false},

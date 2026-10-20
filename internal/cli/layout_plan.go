@@ -156,12 +156,7 @@ func cmdLayoutPlan(args []string, ctx *core.Config, env platform.Env, cwd string
 	if placement == "split" {
 		plan.Anchor, plan.Direction = &anchorID, &direction
 		n := len(plan.Candidates) + 1
-		var g layout.Grid
-		if declared {
-			g = layout.DeclaredGrid(cols, overflow, n)
-		} else {
-			g = layout.GridSizes(n)
-		}
+		g := layout.GridShapeFor(ctx, env, n)
 		rows := make([]any, len(g.Rows))
 		for i, row := range g.Rows {
 			rows[i] = row

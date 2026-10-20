@@ -399,7 +399,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	} else if !paneColumnsSet && cap < 2 {
 		s.Warning(fmt.Sprintf("config: split_max_panes=%d leaves no room next to the caller; every worker will overflow into herd tabs (set 2 or more)", cap))
 	} else if paneColumnsSet {
-		// The declared shape decides the cap: last-column and new-column
+		// The declared shape decides the cap: balance, last-column and new-column
 		// leave the caller tab uncapped (shown as none); tab caps it at the
 		// declared total (an explicit split_max_panes wins and shows the
 		// number).
@@ -409,13 +409,21 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 			capDisplay = strconv.Itoa(displayCap)
 		}
 		// The raw pane_overflow shows, so an invalid value (read as
-		// last-column) is visible.
-		s.Ok(fmt.Sprintf("config: split_max_panes=%s split_min_pane=%g pane_columns=%s pane_overflow=%s", capDisplay, layout.SplitMin(ctx, env), pcsRaw, core.Cfg(ctx, "pane_overflow", layout.DefaultPaneOverflow, env)))
+		// balance) is visible.
+		columnsDisplay := pcsRaw
+		if pcsRaw == "auto" {
+			columnsDisplay += fmt.Sprintf(" pane_column_rows=%d", layout.PaneColumnRows(ctx, env))
+		}
+		s.Ok(fmt.Sprintf("config: split_max_panes=%s split_min_pane=%g pane_columns=%s pane_overflow=%s", capDisplay, layout.SplitMin(ctx, env), columnsDisplay, core.Cfg(ctx, "pane_overflow", layout.DefaultPaneOverflow, env)))
 	} else {
 		s.Ok(fmt.Sprintf("config: split_max_panes=%d split_min_pane=%g", cap, layout.SplitMin(ctx, env)))
 	}
 	if pcsRaw != "" && !paneColumnsSet {
-		s.Warning(fmt.Sprintf("config: pane_columns='%s' must be 1 to 6 comma-separated row counts from 1 to 9, like 1,2,3 (using the default grid)", pcsRaw))
+		s.Warning(fmt.Sprintf("config: pane_columns='%s' must be auto or 1 to 6 comma-separated row counts from 1 to 9, like 1,2,3 (using the default grid)", pcsRaw))
+	}
+	rowsRaw := core.Cfg(ctx, "pane_column_rows", "3", env)
+	if !core.ConfigValueOk("pane_column_rows", rowsRaw, env, cwd) {
+		s.Warning(fmt.Sprintf("config: pane_column_rows='%s' must be a row count from 1 to 9 (using 3 with pane_columns=auto)", rowsRaw))
 	}
 	if paneColumnsSet {
 		if core.Cfg(ctx, "layout", "split", env) == "tab" {
