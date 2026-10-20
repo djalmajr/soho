@@ -904,6 +904,75 @@ type gcUnregisteredCopy struct {
 	origin string
 }
 
+// gcVolumes takes one before sample per device before any copy removal.
+// Only devices with a successful removal are sampled afterward and printed.
+// Unknown devices stay separate and produce a not-measured line.
+type gcVolumes struct {
+	byPath map[string]*gcVolume
+	order  []*gcVolume
+}
+
+type gcVolume struct {
+	removedParent string
+	before, after int64
+	ok            bool
+}
+
+func gcMeasureVolumes(paths []string) *gcVolumes {
+	v := &gcVolumes{byPath: map[string]*gcVolume{}}
+	byDevice := map[string]*gcVolume{}
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		parent := filepath.Dir(path)
+		device, known := platform.DiskDevice(path)
+		volume := byDevice[device]
+		if !known || volume == nil {
+			volume = &gcVolume{}
+			if known {
+				volume.before, _, volume.ok = platform.DiskFree(parent)
+				byDevice[device] = volume
+			}
+			v.order = append(v.order, volume)
+		}
+		v.byPath[path] = volume
+	}
+	return v
+}
+
+func (v *gcVolumes) removed(path string) {
+	if volume := v.byPath[path]; volume != nil && volume.removedParent == "" {
+		volume.removedParent = filepath.Dir(path)
+	}
+}
+
+func (v *gcVolumes) finish() {
+	for _, volume := range v.order {
+		if volume.removedParent != "" {
+			after, _, ok := platform.DiskFree(volume.removedParent)
+			volume.after, volume.ok = after, volume.ok && ok
+		}
+	}
+}
+
+func (v *gcVolumes) print() {
+	for _, volume := range v.order {
+		if volume.removedParent == "" {
+			continue
+		}
+		if !volume.ok {
+			_, _ = fmt.Fprintf(platform.Stdout, "volume free: not measured on %s\n", volume.removedParent)
+			continue
+		}
+		delta, sign := volume.after-volume.before, "+"
+		if delta < 0 {
+			delta, sign = -delta, "-"
+		}
+		_, _ = fmt.Fprintf(platform.Stdout, "volume free: %s -> %s (%s%s) on %s\n", humanSize(volume.before), humanSize(volume.after), sign, humanSize(delta), volume.removedParent)
+	}
+}
+
 // cmdGc lists the orphan copies the registry holds (dry run), or removes the
 // ones at least --older-than hours old. Unregistered mutation copies are
 // always listed in their own block and are only removed with
@@ -1074,6 +1143,15 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	}
 
 	removedLines := map[string]bool{}
+	volumePaths := append([]string{}, candidatePaths...)
+	if includeUnregistered {
+		for _, entry := range unregistered {
+			if entry.origin == originThisProject {
+				volumePaths = append(volumePaths, entry.path)
+			}
+		}
+	}
+	volumes := gcMeasureVolumes(volumePaths)
 	freed := int64(0)
 	removedAny := false
 	procsHandled := 0
@@ -1089,6 +1167,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			// The line's drop runs in a short section under the registry
 			// lock, apart from the batch below.
 			if gcRemoveIdleOwnerCopy(cand, sd, env, cwd, threshold) {
+				volumes.removed(cand.path)
 				removedAny = true
 				freed += cand.size
 			}
@@ -1104,6 +1183,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			continue
 		}
 		removedLines[cand.path] = true
+		volumes.removed(cand.path)
 		removedAny = true
 		freed += cand.size
 		_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", cand.path, humanSize(cand.size))
@@ -1137,6 +1217,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 					continue
 				}
 				removedAny = true
+				volumes.removed(entry.path)
 				freed += entry.size
 				_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", entry.path, humanSize(entry.size))
 			}
@@ -1146,6 +1227,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			}
 		}
 	}
+	volumes.finish()
 	// Processes: stop the running orphan lines (no age limit) and drop the
 	// gone/reused ones, whatever their owner. The lock gates the phase: a
 	// held lock exits 4 before any process is stopped (s92); the stops run
@@ -1188,7 +1270,8 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		gcPrintOrphanProcs(orphanProcs, threshold, now)
 	}
 	if removedAny {
-		_, _ = fmt.Fprintf(platform.Stdout, "freed: %s\n", humanSize(freed))
+		_, _ = fmt.Fprintf(platform.Stdout, "freed: %s (logical size; see volume free below)\n", humanSize(freed))
+		volumes.print()
 	}
 	if procsHandled > 0 {
 		_, _ = fmt.Fprintf(platform.Stdout, "process lines handled: %d\n", procsHandled)

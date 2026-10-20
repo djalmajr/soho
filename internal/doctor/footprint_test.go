@@ -11,7 +11,7 @@ import (
 func TestDoctorFootprintWarningText(t *testing.T) {
 	t.Run("the exact warning at and above the limit", func(t *testing.T) {
 		fp := &core.Footprint{Copies: 2, CopiesBytes: 3 << 30, StateBytes: 1 << 30, ScratchBytes: 1 << 30, Total: 5 << 30}
-		want := "footprint: 5.0 GB on disk (copies 3.0 GB in 2, state 1.0 GB, scratch 1.0 GB) is at or above footprint_warn_gb=5; run 'soho gc' or release idle workers with --close"
+		want := "footprint: 5.0 GB logical size (copies 3.0 GB in 2, state 1.0 GB, scratch 1.0 GB) is at or above footprint_warn_gb=5; run 'soho gc' or release idle workers with --close. This logical size can be much larger than physical space with clones and hard links."
 		if got := doctorFootprintLine(fp, "5"); got != want {
 			t.Fatalf("warning=%q\nwant=%q", got, want)
 		}

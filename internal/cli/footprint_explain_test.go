@@ -37,28 +37,28 @@ func TestExplainFootprintHelper(t *testing.T) {
 func TestExplainFootprintTextAndGate(t *testing.T) {
 	t.Run("the exact line with processes", func(t *testing.T) {
 		fp := &core.Footprint{Copies: 2, CopiesBytes: 3072, StateBytes: 512, ScratchBytes: 128, Total: 3712, Running: 3, RSS: 1 << 30}
-		want := "Footprint: 3.6 KB on disk (copies 3.0 KB in 2, state 512 B, scratch 128 B); 3 registered processes using 1.0 GB of memory."
+		want := "Footprint: 3.6 KB logical size (copies 3.0 KB in 2, state 512 B, scratch 128 B); 3 registered processes using 1.0 GB of memory."
 		if got := explainFootprintText(fp); got != want {
 			t.Fatalf("line=%q\nwant=%q", got, want)
 		}
 	})
 	t.Run("the exact line with an unreadable RSS", func(t *testing.T) {
 		fp := &core.Footprint{Copies: 2, CopiesBytes: 3072, StateBytes: 512, ScratchBytes: 128, Total: 3712, Running: 3, RSS: 1 << 30, Unreadable: 1}
-		want := "Footprint: 3.6 KB on disk (copies 3.0 KB in 2, state 512 B, scratch 128 B); 3 registered processes using 1.0 GB of memory (1 unreadable)."
+		want := "Footprint: 3.6 KB logical size (copies 3.0 KB in 2, state 512 B, scratch 128 B); 3 registered processes using 1.0 GB of memory (1 unreadable)."
 		if got := explainFootprintText(fp); got != want {
 			t.Fatalf("line=%q\nwant=%q", got, want)
 		}
 	})
 	t.Run("the exact line without a running process", func(t *testing.T) {
 		fp := &core.Footprint{Copies: 1, CopiesBytes: 100, StateBytes: 200, ScratchBytes: 300, Total: 600}
-		want := "Footprint: 600 B on disk (copies 100 B in 1, state 200 B, scratch 300 B); no registered process running."
+		want := "Footprint: 600 B logical size (copies 100 B in 1, state 200 B, scratch 300 B); no registered process running."
 		if got := explainFootprintText(fp); got != want {
 			t.Fatalf("line=%q\nwant=%q", got, want)
 		}
 	})
 	t.Run("singular counts keep the same text", func(t *testing.T) {
 		fp := &core.Footprint{Copies: 1, CopiesBytes: 100, StateBytes: 200, ScratchBytes: 300, Total: 600, Running: 1, RSS: 4096}
-		want := "Footprint: 600 B on disk (copies 100 B in 1, state 200 B, scratch 300 B); 1 registered processes using 4.0 KB of memory."
+		want := "Footprint: 600 B logical size (copies 100 B in 1, state 200 B, scratch 300 B); 1 registered processes using 4.0 KB of memory."
 		if got := explainFootprintText(fp); got != want {
 			t.Fatalf("line=%q\nwant=%q", got, want)
 		}
@@ -96,7 +96,7 @@ const agentsTsvBuild = "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tsta
 // fixture): the disk part is deterministic, the RSS is read live.
 func footprintLineWant(stateBytes, copyBytes int64) string {
 	total := stateBytes + copyBytes
-	return "Footprint: " + core.HumanSize(total) + " on disk (copies " + core.HumanSize(copyBytes) + " in 1, state " + core.HumanSize(stateBytes) + ", scratch 0 B); "
+	return "Footprint: " + core.HumanSize(total) + " logical size (copies " + core.HumanSize(copyBytes) + " in 1, state " + core.HumanSize(stateBytes) + ", scratch 0 B); "
 }
 
 func TestExplainCommandFootprintLine(t *testing.T) {

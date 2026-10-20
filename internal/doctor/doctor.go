@@ -493,7 +493,7 @@ func doctorFootprintLine(fp *core.Footprint, raw string) string {
 	if err != nil || !core.FootprintLimitReached(fp.Total, limit) {
 		return ""
 	}
-	return "footprint: " + core.FootprintDiskText(fp) + " is at or above footprint_warn_gb=" + raw + "; run 'soho gc' or release idle workers with --close"
+	return "footprint: " + core.FootprintDiskText(fp) + " is at or above footprint_warn_gb=" + raw + "; run 'soho gc' or release idle workers with --close. This logical size can be much larger than physical space with clones and hard links."
 }
 
 // herdrContextCheck verifies the context HERDR_ENV=1 claims: the inherited
