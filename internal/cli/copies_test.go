@@ -2553,20 +2553,20 @@ func TestSandboxedCopiesStayQuietOnAPermissionIncorporation(t *testing.T) {
 }
 
 // queueOwnedByAnother makes the queue's workspace level read as another
-// user's (core.PendingOwnerOf), on Unix, where the owner is checked.
+// user's (core.ScratchOwnerOf), on Unix, where the owner is checked.
 func queueOwnedByAnother(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the queue's owner is checked on Unix only")
 	}
-	old := core.PendingOwnerOf
-	core.PendingOwnerOf = func(info fs.FileInfo) (int, bool) {
+	old := core.ScratchOwnerOf
+	core.ScratchOwnerOf = func(info fs.FileInfo) (int, bool) {
 		if info.Name() == "ws" && info.IsDir() {
 			return os.Getuid() + 1, true
 		}
 		return old(info)
 	}
-	t.Cleanup(func() { core.PendingOwnerOf = old })
+	t.Cleanup(func() { core.ScratchOwnerOf = old })
 }
 
 func TestARefusedQueueDirectory(t *testing.T) {

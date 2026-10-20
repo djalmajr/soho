@@ -253,13 +253,20 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	// longer decides. Comparing the worker's cwd with the caller's root
 	// routed a worktree caller's report into the main checkout's sd, which
 	// the worker there cannot write (DJA-379).
+	// The scratch reports dir is used only when its three levels are
+	// directories private to this user (created 0o700, an own level open
+	// to the group or the others narrowed; another owner's or a link is
+	// refused before anything is sent), and the files written there never
+	// follow a link (DJA-443).
+	scratch := false
 	if workerCwd != "" && !dispatch.PathWithin(sd, workerCwd, platform.Current()) {
-		tmp := env.Get("TMPDIR")
-		if tmp == "" {
-			tmp = os.TempDir()
+		dir, err := core.PrivateScratchReports(env, core.WorkspaceID(ctx, env, cwd), core.ScratchCreate)
+		if err != nil {
+			core.DieFriction(fmt.Sprintf("dispatch: the scratch reports dir cannot be used (%v); nothing was sent to '%s'", err, agent), 4, frictionLogPath, "dispatch")
 		}
-		reportsDir = filepath.Join(tmp, "soho", core.WorkspaceID(ctx, env, cwd), "reports")
+		reportsDir = dir
 		reportDir = reportsDir
+		scratch = true
 	}
 	composedAt := func(s string) string {
 		ext := ".md"
@@ -402,7 +409,13 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	if amend {
 		prompt = dispatch.ComposeAmendment(briefRaw, report, ctx, env, kind, args, shared, agent)
 	}
-	if err := os.WriteFile(composed, []byte(prompt), 0o666); err != nil {
+	writeComposed := func() error { return os.WriteFile(composed, []byte(prompt), 0o666) }
+	if scratch {
+		// A fresh O_EXCL temporary renamed over the name: a link planted
+		// there is replaced, never followed (DJA-443).
+		writeComposed = func() error { return core.WriteScratchFile(composed, prompt) }
+	}
+	if err := writeComposed(); err != nil {
 		panic(err)
 	}
 	// priorPointer and taskReport stand from before the first sidecar write.
@@ -927,7 +940,9 @@ func addForToSidecar(path string, entries []any, taskReport, briefSHA string) er
 	if len(entries) == 0 && taskReport == "" && briefSHA == "" {
 		return nil
 	}
-	raw, err := os.ReadFile(path)
+	// The sidecar is read and rewritten without following a link
+	// (DJA-443), in the scratch reports dir and in the state dir alike.
+	raw, err := core.ReadScratchReport(path)
 	if err != nil {
 		return err
 	}
@@ -948,7 +963,7 @@ func addForToSidecar(path string, entries []any, taskReport, briefSHA string) er
 	if len(entries) > 0 {
 		obj.Set("for", entries)
 	}
-	return platform.AtomicWrite(path, jsonjs.Stringify(obj)+"\n")
+	return core.WriteScratchFile(path, jsonjs.Stringify(obj)+"\n")
 }
 
 // dispatchForAuthor builds the anonymized --for entry for the sidecar

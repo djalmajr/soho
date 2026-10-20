@@ -7,9 +7,9 @@ import (
 	"syscall"
 )
 
-// pendingChecksOwner: on Unix the queue levels and file must be the
+// scratchChecksOwner: on Unix the queue levels and file must be the
 // current user's, with no write for the group or the others.
-const pendingChecksOwner = true
+const scratchChecksOwner = true
 
 func fileOwnerUID(info fs.FileInfo) (int, bool) {
 	st, ok := info.Sys().(*syscall.Stat_t)
