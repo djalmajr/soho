@@ -20,7 +20,7 @@ func TestPaneColumnsValueValidation(t *testing.T) {
 		// The empty value is valid in the value validation (it is the
 		// default grid); `config set` still refuses it through the generic
 		// empty-value guard, as for every key.
-		valid := []string{"", "1", "9", "1,2,3", "1,2,2", "1,1,2", "9,9,9,9,9,9"}
+		valid := []string{"", "auto", "1", "9", "1,2,3", "1,2,2", "1,1,2", "9,9,9,9,9,9"}
 		for _, value := range valid {
 			if !core.ConfigValueOk("pane_columns", value, platform.Env{}, "") {
 				t.Fatalf("pane_columns=%q must be accepted", value)
@@ -90,7 +90,7 @@ func TestPaneColumnsConfigSet(t *testing.T) {
 				t.Fatalf("error=%#v, want exit %d and a message starting %q", recovered, wantCode, wantMsgPrefix)
 			}
 		}
-		for _, value := range []string{"1,2,3", "1", "9"} {
+		for _, value := range []string{"1,2,3", "1", "9", "auto"} {
 			old := platform.Stdout
 			var stdout strings.Builder
 			platform.Stdout = &stdout
@@ -135,4 +135,67 @@ func TestPaneColumnsConfigSet(t *testing.T) {
 			t.Fatalf("pane_columns= in the file must resolve to empty, got %q", got)
 		}
 	})
+}
+
+func TestAutoPaneColumnsConfigLayers(t *testing.T) {
+	root, home, skill, configHome, state := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	env := platform.Env{"HOME": home, "USERPROFILE": home, "XDG_CONFIG_HOME": configHome, "TMPDIR": t.TempDir(), "PATH": t.TempDir(), "SOHO_SKILL_DIR": skill, "SOHO_DIR": state, "HERDR_WORKSPACE_ID": "ws"}
+	if err := os.WriteFile(filepath.Join(skill, "config.defaults"), []byte("pane_columns=\npane_column_rows=3\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := platform.Stdout
+	var output strings.Builder
+	platform.Stdout = &output
+	t.Cleanup(func() { platform.Stdout = old })
+	for _, layer := range []struct{ name, rows, path string }{
+		{"user", "1", platform.UserConfigPath(platform.Current(), env)},
+		{"project", "2", filepath.Join(root, ".agents", "soho.conf")},
+		{"session", "3", filepath.Join(state, "ws", "session.conf")},
+	} {
+		set := func(key, value string) {
+			t.Helper()
+			if layer.name == "session" {
+				core.CmdSessionSet([]string{key, value}, nil, env, root)
+			} else {
+				args := []string{key, value}
+				if layer.name == "user" {
+					args = append(args, "--user")
+				}
+				core.CmdConfigSet(args, nil, env, root)
+			}
+		}
+		set("pane_columns", "auto")
+		set("pane_column_rows", layer.rows)
+		ctx := core.LoadConfig(env, root)
+		if core.Cfg(&ctx, "pane_columns", "", env) != "auto" || core.Cfg(&ctx, "pane_column_rows", "", env) != layer.rows || core.CfgSource(&ctx, "pane_column_rows", env) != layer.name {
+			t.Fatalf("layer=%s config=%+v", layer.name, ctx)
+		}
+		for _, invalid := range []string{"0", "10", "x", "03", "-1"} {
+			before, err := os.ReadFile(layer.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var recovered any
+			func() { defer func() { recovered = recover() }(); set("pane_column_rows", invalid) }()
+			msg := "config set: invalid value '" + invalid + "' for pane_column_rows"
+			if layer.name == "session" {
+				msg = "session set: invalid value '" + invalid + "' for pane_column_rows"
+			}
+			if exit, ok := recovered.(*platform.ExitError); !ok || exit.Code != 2 || exit.Msg != msg {
+				t.Fatalf("layer=%s value=%q got=%#v want=%q", layer.name, invalid, recovered, msg)
+			}
+			after, err := os.ReadFile(layer.path)
+			if err != nil || string(before) != string(after) {
+				t.Fatalf("invalid write changed layer=%s file=%q err=%v", layer.name, after, err)
+			}
+		}
+	}
+	if !core.ConfigKeyOk("pane_column_rows") {
+		t.Fatal("pane_column_rows must be a known scalar key")
+	}
+	ctx := core.LoadConfig(env, root)
+	env["SOHO_PANE_COLUMN_ROWS"] = "9"
+	if core.Cfg(&ctx, "pane_column_rows", "", env) != "9" || core.CfgSource(&ctx, "pane_column_rows", env) != "env" {
+		t.Fatal("environment must override all file layers")
+	}
 }

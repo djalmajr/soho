@@ -339,6 +339,9 @@ func gridShapeFor(ctx *core.Config, env platform.Env, n int) Grid {
 	if !declared {
 		return GridSizes(n)
 	}
+	if core.Cfg(ctx, "pane_columns", "", env) == "auto" {
+		return autoGrid(n-1, PaneColumnRows(ctx, env), overflow)
+	}
 	return DeclaredGrid(cols, overflow, n)
 }
 
@@ -393,11 +396,14 @@ func CmdRegrid(_ []string, ctx *core.Config, env platform.Env, cwd string) int {
 		}
 		live = herdr.PaneList(env, ws)
 		if len(panes) >= 1 {
+			shape := gridShapeFor(ctx, env, len(panes)+1)
+			if core.Cfg(ctx, "pane_columns", "", env) == "auto" {
+				panes = autoGridPanes(ctx, env, cwd, panes, shape)
+			}
 			parked, park, ok := parkPanesTracked(dir, panes, env)
 			if !ok {
 				dieRegrid(ctx, env, cwd, fmt.Sprintf("regrid: could not park the workers of tab %s in a temporary tab", callerTab))
 			}
-			shape := gridShapeFor(ctx, env, len(parked)+1)
 			changes, moved, ok := gridApplyShape(ctx, callerTab, append([]string{callerPane}, parked...), shape, env, cwd)
 			if !ok {
 				_, stillParked := whereAfterFailedGrid(parked, nil, changes, moved)

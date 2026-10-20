@@ -2,8 +2,8 @@ package layout
 
 // DJA-393: the declared caller-tab columns.
 //
-// pane_columns declares the column shape for the caller's tab (a row count
-// per column, filled left to right, caller first) and pane_overflow decides
+// pane_columns declares a fixed column shape or an adaptive auto shape for
+// the caller's tab, and pane_overflow decides
 // what happens when the declared slots are all full. The empty columns value
 // is today's auto-sized square grid; every consumer of this file falls back
 // to that shape, so the feature degrades to the current behavior when the
@@ -30,6 +30,8 @@ const (
 	MaxDeclaredRows = 9
 	// DefaultPaneOverflow is what pane_overflow resolves to when unset.
 	DefaultPaneOverflow = "last-column"
+	// DefaultPaneColumnRows is the worker-column height in auto mode.
+	DefaultPaneColumnRows = 3
 )
 
 // declaredColumnsRE is the pane_columns contract: 1 to 6 single-digit row
@@ -53,16 +55,93 @@ func declaredCols(raw string) []int {
 	return cols
 }
 
-// PaneColumns resolves the declared caller-tab shape: the row counts, the
+// PaneColumns resolves the declared caller-tab capacity: the row counts, the
 // overflow mode (last-column is the default) and whether the value was
-// actually declared (a non-empty, valid pane_columns).
+// actually declared (a non-empty, valid pane_columns). Auto reserves up to
+// five worker columns; autoGrid computes their current occupied shape.
 func PaneColumns(ctx *core.Config, env platform.Env) ([]int, string, bool) {
-	cols := declaredCols(core.Cfg(ctx, "pane_columns", "", env))
+	raw := core.Cfg(ctx, "pane_columns", "", env)
+	cols := declaredCols(raw)
+	if raw == "auto" {
+		// This is the capacity declaration, not the current shape. It feeds
+		// spawn's anchor/cap rules; regrid calculates the occupied columns.
+		cols = []int{1}
+		for len(cols) < MaxDeclaredColumns {
+			cols = append(cols, PaneColumnRows(ctx, env))
+		}
+	}
 	overflow := core.Cfg(ctx, "pane_overflow", DefaultPaneOverflow, env)
 	if overflow != "last-column" && overflow != "new-column" && overflow != "tab" {
 		overflow = DefaultPaneOverflow
 	}
 	return cols, overflow, cols != nil
+}
+
+// PaneColumnRows reads the shared 1..9 grammar, falling back to 3 for an
+// invalid file/environment value. It affects layout only in auto mode.
+func PaneColumnRows(ctx *core.Config, env platform.Env) int {
+	raw := core.Cfg(ctx, "pane_column_rows", "3", env)
+	if len(raw) != 1 || raw[0] < '1' || raw[0] > '9' {
+		return DefaultPaneColumnRows
+	}
+	return int(raw[0] - '0')
+}
+
+// autoGrid keeps the caller alone and puts the partial worker column on
+// the left. Above the six-column declaration, existing overflow semantics
+// apply, including tab's no-dropped-cells fallback for an overfull tab.
+func autoGrid(workers, rows int, overflow string) Grid {
+	if rows < 1 || rows > MaxDeclaredRows {
+		rows = DefaultPaneColumnRows
+	}
+	if workers <= 0 {
+		return Grid{Cols: 1, Rows: []int{1}}
+	}
+	columns := min((workers+rows-1)/rows, MaxDeclaredColumns-1)
+	cols := []int{1}
+	for range columns {
+		cols = append(cols, rows)
+	}
+	if workers <= columns*rows {
+		cols[1] = workers - rows*(columns-1)
+	}
+	return DeclaredGrid(cols, overflow, workers+1)
+}
+
+// autoGridPanes reads arrival order from the append-ordered roster, across
+// caller and pulled-back herd tabs. Within each column old workers stay
+// above newer ones; the oldest group occupies the rightmost column. Pane
+// ids changed by pull-back have already been persisted in that same roster.
+func autoGridPanes(ctx *core.Config, env platform.Env, cwd string, panes []string, shape Grid) []string {
+	remaining := map[string]int{}
+	for _, pane := range panes {
+		remaining[pane]++
+	}
+	ordered := make([]string, 0, len(panes))
+	for _, row := range core.RosterRows(core.StateDirPath(ctx, env, cwd)) {
+		fields := strings.Split(row, "\t")
+		if len(fields) > 1 && remaining[fields[1]] > 0 {
+			ordered = append(ordered, fields[1])
+			remaining[fields[1]]--
+		}
+	}
+	for _, pane := range panes {
+		if remaining[pane] > 0 {
+			ordered = append(ordered, pane)
+			remaining[pane]--
+		}
+	}
+	groups := make([][]string, len(shape.Rows)-1)
+	at := 0
+	for c := len(shape.Rows) - 1; c > 0; c-- {
+		groups[c-1] = ordered[at : at+shape.Rows[c]]
+		at += shape.Rows[c]
+	}
+	result := make([]string, 0, len(panes))
+	for _, group := range groups {
+		result = append(result, group...)
+	}
+	return result
 }
 
 // DeclaredGrid builds the grid for n cells under the declared column shape.
