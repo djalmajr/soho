@@ -438,7 +438,7 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 	case key == "pane_column_rows":
 		return len(value) == 1 && value[0] >= '1' && value[0] <= '9'
 	case key == "pane_overflow":
-		return value == "last-column" || value == "new-column" || value == "tab"
+		return value == "balance" || value == "last-column" || value == "new-column" || value == "tab"
 	case key == "pane_mode":
 		return value == "strict" || value == "flex"
 	case key == "flex_extra":

@@ -34,7 +34,7 @@ func paneColumnsDoctor(t *testing.T, entries map[string]string) string {
 func TestDoctorPaneColumnsLineAndWarnings(t *testing.T) {
 	t.Run(`the config line gains the declared columns and the uncapped cap reads none`, func(t *testing.T) {
 		got := paneColumnsDoctor(t, map[string]string{"pane_columns": "1,2,3"})
-		want := "ok     config: split_max_panes=none split_min_pane=0.18 pane_columns=1,2,3 pane_overflow=last-column"
+		want := "ok     config: split_max_panes=none split_min_pane=0.18 pane_columns=1,2,3 pane_overflow=balance"
 		if !strings.Contains(got, want) {
 			t.Fatalf("the uncapped line is missing:\n%s", got)
 		}
@@ -46,7 +46,7 @@ func TestDoctorPaneColumnsLineAndWarnings(t *testing.T) {
 			t.Fatalf("the tab-cap line is missing:\n%s", got)
 		}
 	})
-	t.Run(`an invalid pane_overflow shows raw in the line and is read as last-column`, func(t *testing.T) {
+	t.Run(`an invalid pane_overflow shows raw in the line and is read as balance`, func(t *testing.T) {
 		got := paneColumnsDoctor(t, map[string]string{"pane_columns": "1,2", "pane_overflow": "side"})
 		want := "ok     config: split_max_panes=none split_min_pane=0.18 pane_columns=1,2 pane_overflow=side"
 		if !strings.Contains(got, want) {
@@ -55,7 +55,7 @@ func TestDoctorPaneColumnsLineAndWarnings(t *testing.T) {
 	})
 	t.Run(`an explicit split_max_panes wins in the line too`, func(t *testing.T) {
 		got := paneColumnsDoctor(t, map[string]string{"pane_columns": "1,2,3", "split_max_panes": "9"})
-		want := "ok     config: split_max_panes=9 split_min_pane=0.18 pane_columns=1,2,3 pane_overflow=last-column"
+		want := "ok     config: split_max_panes=9 split_min_pane=0.18 pane_columns=1,2,3 pane_overflow=balance"
 		if !strings.Contains(got, want) {
 			t.Fatalf("the explicit-cap line is missing:\n%s", got)
 		}
@@ -132,5 +132,14 @@ func TestDoctorAutoPaneColumns(t *testing.T) {
 				t.Fatalf("value=%q invalid=%v output=%s", value, invalid, out)
 			}
 		})
+	}
+}
+
+func TestDoctorPaneOverflowBalance(t *testing.T) {
+	for _, mode := range []string{"balance", "last-column", "new-column", "tab"} {
+		out := paneColumnsDoctor(t, map[string]string{"pane_columns": "1,2,3", "pane_overflow": mode})
+		if !strings.Contains(out, "pane_columns=1,2,3 pane_overflow="+mode) || strings.Contains(out, "pane_overflow='") {
+			t.Fatalf("mode=%s doctor=%s", mode, out)
+		}
 	}
 }

@@ -2,10 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -14,6 +17,111 @@ import (
 	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
+
+func TestLayoutPlanPaneColumnsNextSpawn(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		workers    int
+		want       []int
+	}{
+		{"auto-0", "auto", 0, []int{1, 1}},
+		{"auto-1", "auto", 1, []int{1, 2}},
+		{"auto-2", "auto", 2, []int{1, 3}},
+		{"auto-3", "auto", 3, []int{1, 1, 3}},
+		{"auto-5", "auto", 5, []int{1, 3, 3}},
+		{"auto-6", "auto", 6, []int{1, 1, 3, 3}},
+		{"list-control", "1,3,3", 3, []int{1, 3, 1}},
+		{"empty-control", "", 3, []int{1, 2, 2}},
+		{"balance-overflow", "1,2,3", 5, []int{1, 3, 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			panes := []string{`{"pane_id":"C","rect":{"width":60,"height":90}}`}
+			ids := []string{}
+			for i, id := range []string{"A", "B", "D", "E", "F", "G"}[:tc.workers] {
+				ids = append(ids, id)
+				panes = append(panes, fmt.Sprintf(`{"pane_id":%q,"rect":{"x":%d,"y":%d,"width":60,"height":30}}`, id, 60*(1+i/3), 30*(i%3)))
+			}
+			file := filepath.Join(dir, "layout.json")
+			raw := fmt.Sprintf(`{"result":{"layout":{"area":{"width":%d,"height":90},"panes":[%s]}}}`, 60*(1+(tc.workers+2)/3), strings.Join(panes, ","))
+			if err := os.WriteFile(file, []byte(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			env := layoutPlanEnv(t)
+			env["PATH"], env["TMPDIR"] = t.TempDir(), dir
+			env["SOHO_PANE_COLUMNS"], env["SOHO_PANE_COLUMN_ROWS"] = tc.mode, "3"
+			if tc.mode == "" {
+				env["SOHO_SPLIT_MAX_PANES"] = "6"
+			}
+			ctx := core.LoadConfig(env, dir)
+			old := platform.Stdout
+			var out bytes.Buffer
+			platform.Stdout = &out
+			defer func() { platform.Stdout = old }()
+			code := cmdLayoutPlan([]string{"--layout", file, "--me", "C", "--mine", strings.Join(ids, " ")}, &ctx, env, dir)
+			var got struct {
+				Placement string
+				Cap       *int
+				Grid      struct {
+					Cells, Cols int
+					Rows        []int `json:"rows_per_col"`
+				}
+			}
+			if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("mode=%q current_workers=%d code=%d output=%s", tc.mode, tc.workers, code, out.String())
+			if code != 0 || got.Placement != "split" || got.Grid.Cells != tc.workers+2 || got.Grid.Cols != len(tc.want) || !reflect.DeepEqual(got.Grid.Rows, tc.want) {
+				t.Fatalf("next-spawn plan=%s; want split, cells=%d rows=%v", out.String(), tc.workers+2, tc.want)
+			}
+			if tc.mode != "" && got.Cap != nil {
+				t.Fatalf("uncapped declared plan cap=%d", *got.Cap)
+			}
+		})
+	}
+}
+
+func TestPaneOverflowConfigBalance(t *testing.T) {
+	env, cwd := commandFixture(t)
+	env["USERPROFILE"], env["TMPDIR"], env["PATH"] = env["HOME"], t.TempDir(), t.TempDir()
+	for _, tc := range []struct {
+		source string
+		args   []string
+	}{{"defaults", nil}, {"project", []string{"config", "set", "pane_overflow", "balance"}}} {
+		if tc.args != nil {
+			code, out, errOut := runIn(t, tc.args, env, cwd)
+			if code != 0 || errOut != "" || !strings.Contains(out, "set pane_overflow=balance in ") {
+				t.Fatalf("config set: code=%d out=%q stderr=%q", code, out, errOut)
+			}
+		}
+		code, out, errOut := runIn(t, []string{"config"}, env, cwd)
+		found := false
+		for _, line := range strings.Split(out, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 3 && fields[0] == "pane_overflow" {
+				found = true
+				if fields[1] != "balance" || fields[2] != tc.source {
+					t.Fatalf("config row=%q want balance %s", line, tc.source)
+				}
+			}
+		}
+		if code != 0 || errOut != "" || !found {
+			t.Fatalf("config: code=%d out=%q stderr=%q", code, out, errOut)
+		}
+	}
+	file := filepath.Join(cwd, ".agents", "soho.conf")
+	before, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"BALANCE", "balance ", "side"} {
+		code, _, _ := runIn(t, []string{"config", "set", "pane_overflow", value}, env, cwd)
+		after, err := os.ReadFile(file)
+		if code != 2 || err != nil || !bytes.Equal(before, after) {
+			t.Fatalf("invalid overflow=%q code=%d file=%q err=%v", value, code, after, err)
+		}
+	}
+}
 
 // layoutPlanEnv is the Env the layout-plan tests load config with: the
 // skill directory plus HOME, USERPROFILE, XDG_CONFIG_HOME and APPDATA each

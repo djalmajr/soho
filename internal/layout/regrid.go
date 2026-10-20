@@ -331,10 +331,11 @@ func relabelHerdTabs(relabel func(), ctx *core.Config, env platform.Env, cwd str
 
 func canPullBack(workerCount, cap int) bool { return workerCount+1 < cap }
 
-// gridShapeFor is the caller tab's shape: the declared columns when they
-// are in effect (non-empty, valid pane_columns), otherwise today's square
-// grid. The herd tabs always keep the square grid.
-func gridShapeFor(ctx *core.Config, env platform.Env, n int) Grid {
+// GridShapeFor computes the caller tab's occupied shape for n panes, including
+// the caller. Auto keeps the partial worker column on the left; fixed lists
+// use their declared shape, and empty or invalid values use the square grid.
+// PaneColumns separately supplies the capacity used by spawn's anchor/cap rules.
+func GridShapeFor(ctx *core.Config, env platform.Env, n int) Grid {
 	cols, overflow, declared := PaneColumns(ctx, env)
 	if !declared {
 		return GridSizes(n)
@@ -365,7 +366,7 @@ func CmdRegrid(_ []string, ctx *core.Config, env platform.Env, cwd string) int {
 		cap, unlimited := SplitCapDeclared(ctx, env)
 		if unlimited {
 			// canPullBack compares with <; the uncapped declared overflow
-			// (last-column, new-column) pulls every worker back.
+			// (balance, last-column, new-column) pulls every worker back.
 			cap = 1 << 30
 		}
 	outer:
@@ -396,7 +397,7 @@ func CmdRegrid(_ []string, ctx *core.Config, env platform.Env, cwd string) int {
 		}
 		live = herdr.PaneList(env, ws)
 		if len(panes) >= 1 {
-			shape := gridShapeFor(ctx, env, len(panes)+1)
+			shape := GridShapeFor(ctx, env, len(panes)+1)
 			if core.Cfg(ctx, "pane_columns", "", env) == "auto" {
 				panes = autoGridPanes(ctx, env, cwd, panes, shape)
 			}

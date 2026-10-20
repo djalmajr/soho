@@ -40,6 +40,121 @@ func shapeOf(t *testing.T, cols, overflow string, n int) Grid {
 	return DeclaredGrid(columnsOf(cols), overflow, n)
 }
 
+func TestPaneOverflowBalanceExamples(t *testing.T) {
+	for _, tc := range []struct {
+		mode    string
+		workers int
+		want    []int
+	}{
+		{"1,2,3", 6, []int{1, 3, 3}},
+		{"1,2,3", 7, []int{1, 3, 4}},
+		{"1,2,3", 8, []int{1, 4, 4}},
+		{"1,3,3", 4, []int{1, 3, 1}},
+		{"2,2", 4, []int{2, 3}},
+		{"auto", 16, []int{1, 3, 3, 3, 3, 4}},
+		{"3", 2, []int{3}},
+		{"3", 3, []int{3, 1}},
+		{"3", 4, []int{3, 2}},
+		{"3", 5, []int{3, 3}},
+		{"3", 6, []int{3, 3, 1}},
+		{"3", 17, []int{3, 3, 3, 3, 3, 3}},
+		{"3", 18, []int{3, 3, 3, 3, 3, 4}},
+	} {
+		t.Run(tc.mode+"/"+strconv.Itoa(tc.workers), func(t *testing.T) {
+			for _, overflow := range []string{"", "balance"} {
+				env := platform.Env{"SOHO_PANE_COLUMNS": tc.mode, "SOHO_PANE_COLUMN_ROWS": "3"}
+				if overflow != "" {
+					env["SOHO_PANE_OVERFLOW"] = overflow
+				}
+				ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
+				got := GridShapeFor(ctx, env, tc.workers+1)
+				if got.Cols != len(tc.want) || !reflect.DeepEqual(got.Rows, tc.want) {
+					t.Fatalf("overflow=%q shape=%+v want=%v", overflow, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestPaneOverflowBalanceProperty(t *testing.T) {
+	autoBeforeCap := [][]int{{1}, {1, 1}, {1, 2}, {1, 3}, {1, 1, 3}, {1, 2, 3}, {1, 3, 3}, {1, 1, 3, 3}, {1, 2, 3, 3}, {1, 3, 3, 3}, {1, 1, 3, 3, 3}, {1, 2, 3, 3, 3}, {1, 3, 3, 3, 3}, {1, 1, 3, 3, 3, 3}, {1, 2, 3, 3, 3, 3}, {1, 3, 3, 3, 3, 3}}
+	for _, mode := range []string{"1,2,3", "1,3,3", "2,2", "auto", "1", "2", "3", "4", "5", "6", "7", "8", "9"} {
+		t.Run(mode, func(t *testing.T) {
+			cols := []int{1, 3, 3, 3, 3, 3}
+			if mode != "auto" {
+				cols = columnsOf(mode)
+			}
+			capacity := 0
+			for _, n := range cols {
+				capacity += n
+			}
+			ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
+			env := platform.Env{"SOHO_PANE_COLUMNS": mode, "SOHO_PANE_COLUMN_ROWS": "3", "SOHO_PANE_OVERFLOW": "balance"}
+			lastWorker := 30
+			if len(cols) == 1 {
+				lastWorker = max(lastWorker, 6*cols[0]+5)
+			}
+			for workers := 0; workers <= lastWorker; workers++ {
+				got := GridShapeFor(ctx, env, workers+1)
+				total := 0
+				for _, n := range got.Rows {
+					total += n
+				}
+				if total != workers+1 || got.Cols != len(got.Rows) {
+					t.Fatalf("workers=%d invalid shape=%+v", workers, got)
+				}
+				if got.Cols > 6 || got.Rows[0] > cols[0] {
+					t.Fatalf("workers=%d exceeded column/caller bounds: cols=%v got=%+v", workers, cols, got)
+				}
+				if workers+1 <= capacity {
+					want := DeclaredGrid(cols, "last-column", workers+1).Rows
+					if mode == "auto" {
+						want = autoBeforeCap[workers]
+					}
+					if !reflect.DeepEqual(got.Rows, want) {
+						t.Fatalf("workers=%d changed declared fill: got=%v want=%v", workers, got.Rows, want)
+					}
+					continue
+				}
+				previous := GridShapeFor(ctx, env, workers).Rows
+				openWorkerColumn := len(cols) == 1 && len(previous) < 6
+				for c := 1; c < len(previous); c++ {
+					if previous[c] < cols[0] {
+						openWorkerColumn = false
+					}
+				}
+				if openWorkerColumn {
+					if len(got.Rows) != len(previous)+1 || !reflect.DeepEqual(got.Rows[:len(previous)], previous) || got.Rows[len(previous)] != 1 {
+						t.Fatalf("workers=%d must open one worker column to the right: %v -> %v", workers, previous, got.Rows)
+					}
+					continue
+				}
+				if len(got.Rows) != len(previous) || got.Rows[0] != previous[0] {
+					t.Fatalf("workers=%d caller/columns changed: before=%v after=%v", workers, previous, got.Rows)
+				}
+				changed := -1
+				for c := range previous {
+					if got.Rows[c] == previous[c] {
+						continue
+					}
+					if changed != -1 || got.Rows[c] != previous[c]+1 {
+						t.Fatalf("workers=%d not one addition: %v -> %v", workers, previous, got.Rows)
+					}
+					changed = c
+				}
+				if changed < 1 {
+					t.Fatalf("workers=%d no worker column grew: %v -> %v", workers, previous, got.Rows)
+				}
+				for c := 1; c < len(previous); c++ {
+					if previous[c] < previous[changed] || previous[c] == previous[changed] && c > changed {
+						t.Fatalf("workers=%d selected col=%d despite emptier/rightmost col=%d: %v -> %v", workers, changed, c, previous, got.Rows)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestDeclaredGridShapeTable(t *testing.T) {
 	t.Run(`declared shape: 1,2,3, 1,2,2 and 1,1,2 for n 0 to 9 in all three overflow modes`, func(t *testing.T) {
 		// The slots fill left to right, top to bottom; columns without a pane
@@ -157,15 +272,15 @@ func TestDeclaredGridShapeTable(t *testing.T) {
 			t.Fatal("an invalid pane_columns resolved instead of falling back to the default grid")
 		}
 		cols, overflow, ok := PaneColumns(ctx, platform.Env{"SOHO_PANE_COLUMNS": "1,2,3"})
-		if !ok || !reflect.DeepEqual(cols, []int{1, 2, 3}) || overflow != "last-column" {
-			t.Fatalf("valid pane_columns: cols=%v overflow=%q ok=%v, want [1 2 3] last-column", cols, overflow, ok)
+		if !ok || !reflect.DeepEqual(cols, []int{1, 2, 3}) || overflow != "balance" {
+			t.Fatalf("valid pane_columns: cols=%v overflow=%q ok=%v, want [1 2 3] balance", cols, overflow, ok)
 		}
 		if _, overflow, _ = PaneColumns(ctx, platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_PANE_OVERFLOW": "tab"}); overflow != "tab" {
 			t.Fatalf("overflow=%q, want tab", overflow)
 		}
-		// An invalid pane_overflow falls back to the default last-column.
-		if _, overflow, _ = PaneColumns(ctx, platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_PANE_OVERFLOW": "side"}); overflow != "last-column" {
-			t.Fatalf("invalid overflow must fall back to last-column, got %q", overflow)
+		// An invalid pane_overflow falls back to the default balance.
+		if _, overflow, _ = PaneColumns(ctx, platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_PANE_OVERFLOW": "side"}); overflow != "balance" {
+			t.Fatalf("invalid overflow must fall back to balance, got %q", overflow)
 		}
 	})
 }

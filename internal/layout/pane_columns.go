@@ -29,7 +29,7 @@ const (
 	// deepest a terminal can show sensibly).
 	MaxDeclaredRows = 9
 	// DefaultPaneOverflow is what pane_overflow resolves to when unset.
-	DefaultPaneOverflow = "last-column"
+	DefaultPaneOverflow = "balance"
 	// DefaultPaneColumnRows is the worker-column height in auto mode.
 	DefaultPaneColumnRows = 3
 )
@@ -56,7 +56,7 @@ func declaredCols(raw string) []int {
 }
 
 // PaneColumns resolves the declared caller-tab capacity: the row counts, the
-// overflow mode (last-column is the default) and whether the value was
+// overflow mode (balance is the default) and whether the value was
 // actually declared (a non-empty, valid pane_columns). Auto reserves up to
 // five worker columns; autoGrid computes their current occupied shape.
 func PaneColumns(ctx *core.Config, env platform.Env) ([]int, string, bool) {
@@ -71,7 +71,7 @@ func PaneColumns(ctx *core.Config, env platform.Env) ([]int, string, bool) {
 		}
 	}
 	overflow := core.Cfg(ctx, "pane_overflow", DefaultPaneOverflow, env)
-	if overflow != "last-column" && overflow != "new-column" && overflow != "tab" {
+	if overflow != "balance" && overflow != "last-column" && overflow != "new-column" && overflow != "tab" {
 		overflow = DefaultPaneOverflow
 	}
 	return cols, overflow, cols != nil
@@ -147,7 +147,11 @@ func autoGridPanes(ctx *core.Config, env platform.Env, cwd string, panes []strin
 // DeclaredGrid builds the grid for n cells under the declared column shape.
 // Cells fill the columns left to right, caller first: each column takes its
 // declared rows until the cells run out, and a column that runs out early is
-// dropped. Under last-column the last column keeps growing beyond its
+// dropped. Balance assigns only excess cells to the least occupied worker
+// column, breaking ties to the right and never growing the caller's column.
+// A single-column declaration opens worker columns to the right with the
+// declared row count, up to six columns including the caller, then balances.
+// Under last-column the last column keeps growing beyond its
 // declared count; under new-column the excess cells open new columns right
 // of the last one, each holding the last declared column's row count (the
 // final new column holds the remainder). Under tab the spawn stops at the
@@ -175,6 +179,24 @@ func DeclaredGrid(cols []int, overflow string, n int) Grid {
 		return Grid{Cols: len(rows), Rows: rows}
 	}
 	switch overflow {
+	case "balance":
+		if len(cols) == 1 {
+			for remaining > 0 && len(rows) < MaxDeclaredColumns {
+				take := min(cols[0], remaining)
+				rows = append(rows, take)
+				remaining -= take
+			}
+		}
+		for remaining > 0 {
+			least := len(rows) - 1
+			for c := len(rows) - 2; c >= 1; c-- {
+				if rows[c] < rows[least] {
+					least = c
+				}
+			}
+			rows[least]++
+			remaining--
+		}
 	case "new-column":
 		// The excess opens new columns right of the last declared one, each
 		// with the last declared column's row count (1,2,2 + 4 excess is
@@ -198,7 +220,7 @@ func DeclaredGrid(cols []int, overflow string, n int) Grid {
 // force. Without a valid declaration the cap is exactly today's SplitCap,
 // and so is an explicit split_max_panes (env or a non-defaults layer,
 // including 0, which keeps today's "a full tab" meaning), read with
-// SplitCap's own grammar and fallback. Otherwise last-column and new-column
+// SplitCap's own grammar and fallback. Otherwise balance, last-column and new-column
 // leave the caller tab uncapped (unlimited is true), and tab caps it at the
 // declared total.
 func SplitCapDeclared(ctx *core.Config, env platform.Env) (int, bool) {
@@ -213,7 +235,7 @@ func SplitCapDeclared(ctx *core.Config, env platform.Env) (int, bool) {
 			total += count
 		}
 		return total, false
-	default: // last-column and new-column: no tab cap.
+	default: // balance, last-column and new-column: no tab cap.
 		return 0, true
 	}
 }
@@ -228,7 +250,7 @@ func SplitCapDeclared(ctx *core.Config, env platform.Env) (int, bool) {
 //     the new worker needs); with more than one row in the first column the
 //     caller stays a candidate as today, and with no worker candidate at
 //     all the caller is split as today.
-//   - under last-column and new-column split_min_pane is ignored (the
+//   - under balance, last-column and new-column split_min_pane is ignored (the
 //     columns absorb the excess); under tab the minimum still overflows and
 //     the full-tab cap is the declared total (the caller still counts).
 //

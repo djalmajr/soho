@@ -33,13 +33,13 @@ func TestPaneColumnsValueValidation(t *testing.T) {
 			}
 		}
 	})
-	t.Run(`pane_overflow: the three modes and nothing else`, func(t *testing.T) {
-		for _, value := range []string{"last-column", "new-column", "tab"} {
+	t.Run(`pane_overflow: the four modes and nothing else`, func(t *testing.T) {
+		for _, value := range []string{"balance", "last-column", "new-column", "tab"} {
 			if !core.ConfigValueOk("pane_overflow", value, platform.Env{}, "") {
 				t.Fatalf("pane_overflow=%q must be accepted", value)
 			}
 		}
-		for _, value := range []string{"", "side", "LAST-COLUMN", "tab ", "last column"} {
+		for _, value := range []string{"", "side", "BALANCE", "balance ", "LAST-COLUMN", "tab ", "last column"} {
 			if core.ConfigValueOk("pane_overflow", value, platform.Env{}, "") {
 				t.Fatalf("pane_overflow=%q must be refused", value)
 			}

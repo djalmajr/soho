@@ -399,7 +399,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	} else if !paneColumnsSet && cap < 2 {
 		s.Warning(fmt.Sprintf("config: split_max_panes=%d leaves no room next to the caller; every worker will overflow into herd tabs (set 2 or more)", cap))
 	} else if paneColumnsSet {
-		// The declared shape decides the cap: last-column and new-column
+		// The declared shape decides the cap: balance, last-column and new-column
 		// leave the caller tab uncapped (shown as none); tab caps it at the
 		// declared total (an explicit split_max_panes wins and shows the
 		// number).
@@ -409,7 +409,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 			capDisplay = strconv.Itoa(displayCap)
 		}
 		// The raw pane_overflow shows, so an invalid value (read as
-		// last-column) is visible.
+		// balance) is visible.
 		columnsDisplay := pcsRaw
 		if pcsRaw == "auto" {
 			columnsDisplay += fmt.Sprintf(" pane_column_rows=%d", layout.PaneColumnRows(ctx, env))
