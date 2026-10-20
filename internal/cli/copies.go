@@ -194,25 +194,11 @@ func removeCopy(resolved string, parentInfo fs.FileInfo) error {
 func removeVerifiedCopy(resolved string, parentInfo fs.FileInfo) error {
 	parent := filepath.Dir(resolved)
 	base := filepath.Base(resolved)
-	root, err := os.OpenRoot(parent)
+	root, err := openVerifiedParent(resolved, parentInfo)
 	if err != nil {
-		return errCopyChanged
+		return err
 	}
 	defer root.Close()
-	// The opened parent's identity comes from a handle too (see statByHandle).
-	dir, err := root.Open(".")
-	if err != nil {
-		return errCopyChanged
-	}
-	opened, err := dir.Stat()
-	_ = dir.Close()
-	if err != nil || !os.SameFile(opened, parentInfo) {
-		return errCopyChanged
-	}
-	entry, err := root.Lstat(base)
-	if err != nil || entry.Mode()&fs.ModeSymlink != 0 || !entry.IsDir() {
-		return errCopyChanged
-	}
 	if err := root.RemoveAll(base); err != nil {
 		return err
 	}
@@ -224,6 +210,74 @@ func removeVerifiedCopy(resolved string, parentInfo fs.FileInfo) error {
 		_ = root.Remove(marker)
 	}
 	return nil
+}
+
+// openVerifiedParent opens a descriptor of the copy's parent (os.OpenRoot)
+// and proves it is the same file (os.SameFile) as the parent the check
+// validated and the copy inside it is a directory, not a symlink; a failed
+// proof returns errCopyChanged.
+func openVerifiedParent(resolved string, parentInfo fs.FileInfo) (*os.Root, error) {
+	root, err := os.OpenRoot(filepath.Dir(resolved))
+	if err != nil {
+		return nil, errCopyChanged
+	}
+	// The opened parent's identity comes from a handle too (see statByHandle).
+	dir, err := root.Open(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, errCopyChanged
+	}
+	opened, err := dir.Stat()
+	_ = dir.Close()
+	if err != nil || !os.SameFile(opened, parentInfo) {
+		_ = root.Close()
+		return nil, errCopyChanged
+	}
+	entry, err := root.Lstat(filepath.Base(resolved))
+	if err != nil || entry.Mode()&fs.ModeSymlink != 0 || !entry.IsDir() {
+		_ = root.Close()
+		return nil, errCopyChanged
+	}
+	return root, nil
+}
+
+// gcDiscardPattern matches the name gc gives a live owner's copy inside the
+// registry lock, before removing it: <name>.soho-gc-<pid>-<n>, in the
+// copy's own directory.
+var gcDiscardPattern = regexp.MustCompile(`\.soho-gc-[0-9]+-[0-9]+$`)
+
+// gcDiscardNameTries bounds the search for a free discard name.
+const gcDiscardNameTries = 100
+
+// renameToDiscard renames the verified copy, through the descriptor of its
+// validated parent, to the first free <name>.soho-gc-<pid>-<n> beside it
+// (the name and its marker's name both free), and its origin marker, when
+// it is a regular file, to the discard's marker (best effort). It returns
+// the discard's path.
+func renameToDiscard(resolved string, parentInfo fs.FileInfo) (string, error) {
+	root, err := openVerifiedParent(resolved, parentInfo)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	base := filepath.Base(resolved)
+	for n := 1; n <= gcDiscardNameTries; n++ {
+		name := fmt.Sprintf("%s.soho-gc-%d-%d", base, os.Getpid(), n)
+		if _, err := root.Lstat(name); !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if _, err := root.Lstat(originMarkerPath(name)); !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err := root.Rename(base, name); err != nil {
+			return "", err
+		}
+		if info, err := root.Lstat(originMarkerPath(base)); err == nil && info.Mode().IsRegular() {
+			_ = root.Rename(originMarkerPath(base), originMarkerPath(name))
+		}
+		return filepath.Join(filepath.Dir(resolved), name), nil
+	}
+	return "", errors.New("no free discard name")
 }
 
 // rosterAgentForPane returns the roster name whose pane is pane, or "".
@@ -508,14 +562,53 @@ func gcCurrentCopyLine(sd, path string) (core.CopyRow, bool) {
 	return core.CopyRow{}, false
 }
 
+// gcIdleSectionHook runs right after gcDiscardIdleOwnerCopy takes the
+// registry lock; tests change the owner's task or the copy there, or try
+// the lock, to prove what the section reads and that it holds the lock.
+var gcIdleSectionHook func(path string)
+
 // gcRemoveIdleOwnerCopy removes the copy of a live, idle owner that gc
-// offered, holding the copies.tsv lock (core.LockCopies, the lock copies
-// add takes through UpsertCopies) from the check to the line's drop: the
-// line copies.tsv holds now must be the one gc listed, then the owner's
-// state and task pointer are re-read; any change keeps the copy. A copies
-// add of the same path waits for the section to end. It reports whether
-// the copy was removed.
+// offered. The slow re-reads run first, outside the registry lock: the
+// idle rule again (herdr's state for the owner, the reports and the walk of
+// the copy's tree), which must give what gc saw at the listing. Then
+// gcDiscardIdleOwnerCopy takes the copy out of the registry under the lock,
+// with file operations only, and the renamed directory is removed after
+// the lock is released. A removal that fails leaves the discard directory,
+// with its kept line; the next gc removes it (gcDiscards). It reports
+// whether the copy was removed.
 func gcRemoveIdleOwnerCopy(cand gcCandidate, sd string, env platform.Env, cwd string, threshold time.Duration) bool {
+	if !gcIdleOwnerStillClosed(cand.row, *cand.idle, sd, env, platform.Now(), threshold) {
+		_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, gcIdleOwnerChanged)
+		return false
+	}
+	discard := gcDiscardIdleOwnerCopy(cand, sd, env, cwd)
+	if discard == "" {
+		return false
+	}
+	resolved, parentInfo, cause := checkedCopy(discard, env, cwd)
+	if cause != "" {
+		_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", discard, cause)
+		return false
+	}
+	if err := removeCopy(resolved, parentInfo); err != nil {
+		keptCopyError(discard, err)
+		return false
+	}
+	_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", cand.path, humanSize(cand.size))
+	return true
+}
+
+// gcDiscardIdleOwnerCopy is the section under the copies.tsv lock
+// (core.LockCopies, the lock copies add takes through UpsertCopies), file
+// operations only, in this order: the line copies.tsv holds now must be the
+// one gc listed; the owner's task pointer (task_report and current) must
+// still be what gc saw, with a non-empty current report; the copy, checked
+// again (decision 7), is renamed beside itself to a discard name
+// (renameToDiscard); and its line leaves the registry. Any change keeps the
+// copy and its line. A copies add of the same path waits for the section,
+// then finds no directory. It returns the discard's path, or "" when the
+// copy stays.
+func gcDiscardIdleOwnerCopy(cand gcCandidate, sd string, env platform.Env, cwd string) string {
 	unlock, err := core.LockCopies(sd)
 	if err != nil {
 		var locked *core.CopiesLockedError
@@ -525,25 +618,32 @@ func gcRemoveIdleOwnerCopy(cand gcCandidate, sd string, env platform.Env, cwd st
 		core.DieFriction(fmt.Sprintf("gc: could not take the copy registry lock (%v)", err), 4, frictionLogPath, "gc")
 	}
 	defer unlock()
+	if gcIdleSectionHook != nil {
+		gcIdleSectionHook(cand.path)
+	}
 	current, ok := gcCurrentCopyLine(sd, cand.path)
-	if !ok || !sameCopyLine(current, cand.row) || !gcIdleOwnerStillClosed(current, *cand.idle, sd, env, platform.Now(), threshold) {
+	if !ok || !sameCopyLine(current, cand.row) {
 		_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, gcIdleOwnerChanged)
-		return false
+		return ""
+	}
+	if task, report := copyTaskColumns(sd, cand.row.Owner); task != cand.idle.task || report != cand.idle.current || !nonEmptyFile(report) {
+		_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, gcIdleOwnerChanged)
+		return ""
 	}
 	resolved, parentInfo, cause := checkedCopy(cand.path, env, cwd)
 	if cause != "" {
 		_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, cause)
-		return false
+		return ""
 	}
-	if err := removeCopy(resolved, parentInfo); err != nil {
+	discard, err := renameToDiscard(resolved, parentInfo)
+	if err != nil {
 		keptCopyError(cand.path, err)
-		return false
+		return ""
 	}
 	if err := core.DropCopiesLinesHeld(sd, map[string]bool{cand.path: true}); err != nil {
 		core.DieFriction(fmt.Sprintf("gc: cannot update the copy registry (%v)", err), 4, frictionLogPath, "gc")
 	}
-	_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", cand.path, humanSize(cand.size))
-	return true
+	return discard
 }
 
 func nonEmptyFile(path string) bool {
@@ -676,6 +776,9 @@ type gcCandidate struct {
 	missing bool
 	row     core.CopyRow
 	idle    *gcIdleClosed
+	// discard is a directory a gc renamed and could not remove
+	// (gcDiscards): no registry line, removed like a copy.
+	discard bool
 }
 
 // gcUnregisteredCopy is a soho-mutation-* directory below TMPDIR that
@@ -757,6 +860,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		}
 		// the other owned lines are never touched
 	}
+	candidates = append(candidates, gcDiscards(env, now, cwd)...)
 	unregistered := gcUnregistered(env, rows, now, threshold, cwd)
 	orphanProcs := gcProjectOrphans(sd, procRows, env, cwd)
 
@@ -842,12 +946,28 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			continue
 		}
 		if cand.idle != nil {
-			// The check, the removal and the line's drop run in one section
-			// under the registry lock, apart from the batch below.
+			// The line's drop runs in a short section under the registry
+			// lock, apart from the batch below.
 			if gcRemoveIdleOwnerCopy(cand, sd, env, cwd, threshold) {
 				removedAny = true
 				freed += cand.size
 			}
+			continue
+		}
+		if cand.discard {
+			// No registry line: only the directory goes.
+			resolved, parentInfo, cause := checkedCopy(cand.path, env, cwd)
+			if cause != "" {
+				_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, cause)
+				continue
+			}
+			if err := removeCopy(resolved, parentInfo); err != nil {
+				keptCopyError(cand.path, err)
+				continue
+			}
+			removedAny = true
+			freed += cand.size
+			_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", cand.path, humanSize(cand.size))
 			continue
 		}
 		resolved, parentInfo, cause := checkedCopy(cand.path, env, cwd)
@@ -1169,11 +1289,64 @@ func gcUnregistered(env platform.Env, rows []core.CopyRow, now time.Time, thresh
 		if resolveErr != nil || registered[resolved] {
 			continue
 		}
+		if isGcDiscard(path, current) {
+			// gcDiscards lists it.
+			continue
+		}
 		age := now.Sub(info.ModTime())
 		if age <= threshold {
 			continue
 		}
 		out = append(out, gcUnregisteredCopy{path: path, size: copyDirSize(path), age: age, origin: copyOrigin(path, current)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
+	return out
+}
+
+// isGcDiscard reports whether path is a discard directory gc left behind:
+// its name ends in .soho-gc-<pid>-<n> (gcDiscardPattern), it is a
+// directory, not a symlink, and the origin marker beside it names the
+// current project (current, the git common dir of gc's cwd).
+func isGcDiscard(path, current string) bool {
+	if !gcDiscardPattern.MatchString(filepath.Base(path)) {
+		return false
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
+		return false
+	}
+	return copyOrigin(path, current) == originThisProject
+}
+
+// gcDiscards lists the discard directories (isGcDiscard) directly below
+// TMPDIR (or os.TempDir() without TMPDIR), sorted by path, as candidates
+// without an owner or an age limit: gc renamed them out of the registry
+// and its removal failed. A discard without this project's marker, or
+// outside TMPDIR, is not listed.
+func gcDiscards(env platform.Env, now time.Time, cwd string) []gcCandidate {
+	tmpDir := env.Get("TMPDIR")
+	if tmpDir == "" {
+		tmpDir = os.TempDir()
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		return nil
+	}
+	current := ""
+	if project, err := gitCommonDirResolved(cwd, env); err == nil {
+		current = project
+	}
+	out := []gcCandidate{}
+	for _, entry := range entries {
+		path := filepath.Join(tmpDir, entry.Name())
+		if !isGcDiscard(path, current) {
+			continue
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			continue
+		}
+		out = append(out, gcCandidate{path: path, owner: "-", age: now.Sub(info.ModTime()), size: copyDirSize(path), discard: true})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
 	return out

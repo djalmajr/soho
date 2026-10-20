@@ -1572,7 +1572,7 @@ func (g *idleGc) pauseAtAgentGet(t *testing.T, call int, action func() error) <-
 }
 
 // gc --yes asks herdr about this line three times: the live check (1) and
-// the idle rule (2) at the listing, then the re-read (3) inside the locked
+// the idle rule (2) at the listing, then the re-read (3) before the locked
 // removal section.
 func TestGcIdleOwnerCopyReadsTheCurrentLine(t *testing.T) {
 	// The reviewer's probe (review-3-20261019T203439, TestReview392ReRegistrationDuringGc):
@@ -1662,26 +1662,29 @@ func TestGcIdleOwnerCopyReadsTheCurrentLine(t *testing.T) {
 }
 
 // The removal section holds the copies.tsv lock: a registration of the same
-// path (UpsertCopies, what copies add runs) cannot take it while gc re-reads
-// the owner, and one that waits goes in after gc dropped the old line, so
-// gc never drops it.
+// path (UpsertCopies, what copies add runs) cannot take it inside the
+// section, and one that waits goes in after gc dropped the old line, so gc
+// never drops it.
 func TestGcIdleOwnerRemovalHoldsTheRegistryLock(t *testing.T) {
 	old := core.CopiesLockTimeout
 	core.CopiesLockTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { core.CopiesLockTimeout = old })
-	g := newIdleGc(t, nil)
+	g := newIdleGc(t, idleRules("idle"))
 	g.register(t)
 	fresh := g.row
 	fresh.Created = core.FrictionISO(platform.Now())
 	waited := make(chan error, 1)
-	done := g.pauseAtAgentGet(t, 3, func() error {
-		// Inside the section (the re-read is waiting on the gate): the lock
-		// is held, so a registration gives up with the lock error.
+	done := make(chan error, 1)
+	g.inSection(t, func(string) {
+		// Inside the section: the lock is held, so a registration gives up
+		// with the lock error.
 		err := core.UpsertCopies(g.sd, fresh)
 		var locked *core.CopiesLockedError
 		if !errors.As(err, &locked) {
-			return fmt.Errorf("UpsertCopies inside gc's section returned %v; want the registry lock error", err)
+			done <- fmt.Errorf("UpsertCopies inside gc's section returned %v; want the registry lock error", err)
+			return
 		}
+		done <- nil
 		// A registration that keeps trying goes in once gc is done.
 		go func() {
 			deadline := time.Now().Add(20 * time.Second)
@@ -1693,11 +1696,15 @@ func TestGcIdleOwnerRemovalHoldsTheRegistryLock(t *testing.T) {
 				}
 			}
 		}()
-		return nil
 	})
 	code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatalf("gc never reached the locked section: code=%d out=%q err=%q", code, out, errOut)
 	}
 	if err := <-waited; err != nil {
 		t.Fatalf("the waiting registration failed: %v", err)
@@ -1708,5 +1715,339 @@ func TestGcIdleOwnerRemovalHoldsTheRegistryLock(t *testing.T) {
 	}
 	if rows := g.f.copiesRows(t); len(rows) != 1 || rows[0] != fresh {
 		t.Fatalf("registry rows=%#v; want only the registration that waited, %#v", rows, fresh)
+	}
+}
+
+// inSection sets gcIdleSectionHook for the test: fn runs right after the
+// removal section takes the registry lock.
+func (g *idleGc) inSection(t *testing.T, fn func(path string)) {
+	t.Helper()
+	old := gcIdleSectionHook
+	gcIdleSectionHook = fn
+	t.Cleanup(func() { gcIdleSectionHook = old })
+}
+
+// atRemoval sets removeCopyHook for the test: fn runs right before the
+// directory's removal.
+func (g *idleGc) atRemoval(t *testing.T, fn func(path string)) {
+	t.Helper()
+	old := removeCopyHook
+	removeCopyHook = fn
+	t.Cleanup(func() { removeCopyHook = old })
+}
+
+// lockHeld reports whether copies.tsv.lock exists.
+func (g *idleGc) lockHeld() bool {
+	_, err := os.Lstat(filepath.Join(g.sd, "copies.tsv.lock"))
+	return err == nil
+}
+
+// agentGets counts the "agent get worker" calls the fake herdr received.
+func (g *idleGc) agentGets(t *testing.T) int {
+	t.Helper()
+	calls, err := fakecli.ReadCallsForConfig(filepath.Join(g.f.env["SOHO_FAKECLI_CONFIG"], "herdr.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(callsTo(calls, "agent", "get", "worker"))
+}
+
+// setAgentRules rewrites this fixture's fake herdr rules, keeping its calls.
+func (g *idleGc) setAgentRules(t *testing.T, rules []fakecli.Rule) {
+	t.Helper()
+	cfg := filepath.Join(g.f.env["SOHO_FAKECLI_CONFIG"], "herdr.json")
+	raw, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var script map[string]any
+	if err := json.Unmarshal(raw, &script); err != nil {
+		t.Fatal(err)
+	}
+	script["rules"] = rules
+	if raw, err = json.Marshal(script); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// discard is the name this gc process gives the copy first.
+func (g *idleGc) discard() string {
+	return fmt.Sprintf("%s.soho-gc-%d-1", g.copy, os.Getpid())
+}
+
+// The reviewer's probe (review-3-20261019T210329,
+// TestReview392LongRemovalKeepsFreshRegistration) paused gc inside the
+// locked section until the lock was 61 s old, and a registration then took
+// it over. The slow steps now run outside the lock: a pause there leaves no
+// lock to age, before the section (the herdr re-read) or after it (the
+// removal of the renamed directory).
+func TestGcIdleOwnerLongPauseStaysOutsideTheLock(t *testing.T) {
+	t.Run("a long pause before the lock: a registration for an open task goes in, the copy stays", func(t *testing.T) {
+		old := core.CopiesLockTimeout
+		core.CopiesLockTimeout = 300 * time.Millisecond
+		t.Cleanup(func() { core.CopiesLockTimeout = old })
+		g := newIdleGc(t, nil)
+		g.register(t)
+		fresh := g.row
+		fresh.Created = core.FrictionISO(platform.Now())
+		fresh.Task, fresh.Report = filepath.Join(g.f.root, "open.current.md"), filepath.Join(g.f.root, "open.report.md")
+		done := g.pauseAtAgentGet(t, 3, func() error {
+			if g.lockHeld() {
+				return errors.New("the registry lock is held during the herdr re-read")
+			}
+			return core.UpsertCopies(g.sd, fresh)
+		})
+		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "nothing to remove"}, "\n") + "\n"
+		if code != 0 || out != want {
+			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
+		}
+		if _, err := os.Stat(filepath.Join(g.copy, "sub", "a.txt")); err != nil {
+			t.Fatalf("the re-registered copy was removed: %v", err)
+		}
+		if rows := g.f.copiesRows(t); len(rows) != 1 || rows[0] != fresh {
+			t.Fatalf("registry rows=%#v; want only the new line %#v", rows, fresh)
+		}
+	})
+	t.Run("a long pause after the rename: the copy is gone, the registration stays", func(t *testing.T) {
+		old := core.CopiesLockTimeout
+		core.CopiesLockTimeout = 300 * time.Millisecond
+		t.Cleanup(func() { core.CopiesLockTimeout = old })
+		g := newIdleGc(t, idleRules("idle"))
+		g.register(t)
+		fresh := g.row
+		fresh.Created = core.FrictionISO(platform.Now())
+		fresh.Task, fresh.Report = filepath.Join(g.f.root, "open.current.md"), filepath.Join(g.f.root, "open.report.md")
+		problems := []string{}
+		g.atRemoval(t, func(path string) {
+			if g.lockHeld() {
+				problems = append(problems, "the registry lock is held during the removal")
+			}
+			if path != g.discard() {
+				problems = append(problems, "removing "+path+", not the discard "+g.discard())
+			}
+			if _, err := os.Lstat(g.copy); !os.IsNotExist(err) {
+				problems = append(problems, fmt.Sprintf("the copy's path is still there before the removal: %v", err))
+			}
+			if err := core.UpsertCopies(g.sd, fresh); err != nil {
+				problems = append(problems, fmt.Sprintf("registration during the removal: %v", err))
+			}
+		})
+		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
+		if len(problems) > 0 {
+			t.Fatal(strings.Join(problems, "; "))
+		}
+		want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B"}, "\n") + "\n"
+		if code != 0 || out != want {
+			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
+		}
+		for _, path := range []string{g.copy, g.discard()} {
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatalf("%s is still there: %v", path, err)
+			}
+		}
+		if rows := g.f.copiesRows(t); len(rows) != 1 || rows[0] != fresh {
+			t.Fatalf("registry rows=%#v; want only the registration made after the rename, %#v", rows, fresh)
+		}
+	})
+}
+
+// The locked section runs file operations only: no herdr call and no walk
+// of the copy's tree (both ran before it), the line and the task pointer
+// re-read, the rename and the line's drop.
+func TestGcIdleOwnerLockedSectionRunsFileOperationsOnly(t *testing.T) {
+	t.Run("no herdr call and no tree walk under the lock: removed", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		g.register(t)
+		var sectionAt, removalAt time.Time
+		sectionGets, removalGets := -1, -1
+		problems := []string{}
+		g.inSection(t, func(string) {
+			sectionAt = time.Now()
+			sectionGets = g.agentGets(t)
+			// A herdr call from here on answers working, and a walk from
+			// here on finds a fresh file: either one would keep the copy.
+			g.setAgentRules(t, idleRules("working"))
+			now := time.Now()
+			if err := os.Chtimes(filepath.Join(g.copy, "sub", "a.txt"), now, now); err != nil {
+				problems = append(problems, err.Error())
+			}
+		})
+		g.atRemoval(t, func(string) {
+			removalAt = time.Now()
+			removalGets = g.agentGets(t)
+			if g.lockHeld() {
+				problems = append(problems, "the registry lock is held during the removal")
+			}
+		})
+		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
+		if len(problems) > 0 {
+			t.Fatal(strings.Join(problems, "; "))
+		}
+		want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B"}, "\n") + "\n"
+		if code != 0 || out != want {
+			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
+		}
+		if sectionGets != 3 || removalGets != sectionGets {
+			t.Fatalf("agent get calls: %d when the section started, %d at the removal; want 3 and 3 (live check, rule, re-read, none under the lock)", sectionGets, removalGets)
+		}
+		// From the lock taken to the removal of the renamed directory: the
+		// section and the discard's check, an upper bound of the section.
+		section := removalAt.Sub(sectionAt)
+		t.Logf("locked section (lock taken to removal start): %s", section)
+		if section <= 0 || section > 2*time.Second {
+			t.Fatalf("locked section took %s; want a few milliseconds", section)
+		}
+	})
+	t.Run("the task pointer moves under the lock: kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		g.register(t)
+		g.inSection(t, func(string) {
+			writeTaskPointer(t, g.sd, "worker", filepath.Join(g.f.root, "open.current.md"), filepath.Join(g.f.root, "open.report.md"))
+		})
+		g.wantKeptBySection(t)
+	})
+	t.Run("the current report is emptied under the lock: kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("idle"))
+		g.register(t)
+		g.inSection(t, func(string) {
+			if err := os.WriteFile(g.current, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		})
+		g.wantKeptBySection(t)
+	})
+}
+
+// wantKeptBySection runs gc --yes and wants the copy, its line and no
+// discard left.
+func (g *idleGc) wantKeptBySection(t *testing.T) {
+	t.Helper()
+	code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
+	want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "nothing to remove"}, "\n") + "\n"
+	if code != 0 || out != want {
+		t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
+	}
+	if _, err := os.Stat(filepath.Join(g.copy, "sub", "a.txt")); err != nil {
+		t.Fatalf("the copy was touched: %v", err)
+	}
+	if _, err := os.Lstat(g.discard()); !os.IsNotExist(err) {
+		t.Fatalf("a discard was made: %v", err)
+	}
+	if rows := g.f.copiesRows(t); len(rows) != 1 || rows[0] != g.row {
+		t.Fatalf("registry rows=%#v; want the line kept as it was", rows)
+	}
+}
+
+// A removal that fails after the rename leaves the discard directory, with
+// its kept line, and its registry line gone; the next gc offers the discard
+// and removes it.
+func TestGcIdleOwnerFailedRemovalLeavesTheDiscard(t *testing.T) {
+	g := newIdleGc(t, idleRules("idle"))
+	g.register(t)
+	writeTestOriginMarker(t, g.copy, gitCommonDirOf(t, g.f.repo, g.f.env), g.f.repo)
+	locked := filepath.Join(g.discard(), "sub")
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	fail := true
+	g.atRemoval(t, func(string) {
+		if fail {
+			// The entry below cannot be unlinked: the removal fails.
+			_ = os.Chmod(locked, 0o500)
+		}
+	})
+	code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
+	if code != 0 || !strings.HasPrefix(out, gcPressureNone+"\nkept "+g.discard()+" (") || strings.Contains(out, "removed ") {
+		t.Fatalf("code=%d out=%q err=%q; want the discard kept with the error", code, out, errOut)
+	}
+	if rows := g.f.copiesRows(t); len(rows) != 0 {
+		t.Fatalf("registry rows=%#v; want the line dropped", rows)
+	}
+	for _, path := range []string{filepath.Join(g.discard(), "sub", "a.txt"), originMarkerPath(g.discard())} {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("%s is gone: %v", path, err)
+		}
+	}
+	for _, path := range []string{g.copy, originMarkerPath(g.copy)} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s is still there: %v", path, err)
+		}
+	}
+
+	fail = false
+	if err := os.Chmod(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut = g.f.run(t, g.f.env, "gc")
+	if code != 0 || !strings.Contains(out, "\nwould remove "+g.discard()+"  10 B  -  ") || !strings.Contains(out, "\ntotal: 10 B\n") || strings.Count(out, g.discard()) != 1 {
+		t.Fatalf("dry run code=%d out=%q err=%q; want the discard offered once", code, out, errOut)
+	}
+	code, out, errOut = g.f.run(t, g.f.env, "gc", "--yes")
+	want := strings.Join([]string{gcPressureNone, "removed " + g.discard() + "  10 B", "freed: 10 B"}, "\n") + "\n"
+	if code != 0 || out != want {
+		t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
+	}
+	for _, path := range []string{g.discard(), originMarkerPath(g.discard())} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s is still there: %v", path, err)
+		}
+	}
+}
+
+// gc removes a discard directory only when its name ends in
+// .soho-gc-<pid>-<n>, it is a directory and not a symlink, and its marker
+// names this project; the others stay where they were listed before.
+func TestGcRecognizesItsDiscardsSafely(t *testing.T) {
+	f := gcEmptyFixture(t)
+	thisProject := gitCommonDirOf(t, f.repo, f.env)
+	old := platform.Now().Add(-3 * time.Hour)
+	mk := func(name string) string {
+		path := filepath.Join(f.tmp, name)
+		writeFileAt(t, filepath.Join(path, "f.txt"), "0123456789", old)
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	discard := mk("soho-mutation-a.soho-gc-12-1")
+	writeTestOriginMarker(t, discard, thisProject, f.repo)
+	noMarker := mk("soho-mutation-b.soho-gc-12-1")
+	otherProject := mk("soho-mutation-c.soho-gc-12-1")
+	writeTestOriginMarker(t, otherProject, filepath.Join(f.root, "elsewhere", ".git"), "/elsewhere")
+	wrongName := mk("soho-mutation-d.soho-gc-x-1")
+	writeTestOriginMarker(t, wrongName, thisProject, f.repo)
+	target := filepath.Join(f.root, "outside")
+	writeFileAt(t, filepath.Join(target, "keep.txt"), "keep", old)
+	link := filepath.Join(f.tmp, "soho-mutation-e.soho-gc-12-1")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	writeTestOriginMarker(t, link, thisProject, f.repo)
+
+	code, out, errOut := f.run(t, f.env, "gc")
+	if code != 0 || !strings.Contains(out, "\nwould remove "+discard+"  10 B  -  ") || strings.Count(out, discard+"  ") != 1 {
+		t.Fatalf("dry run code=%d out=%q err=%q; want the discard offered once", code, out, errOut)
+	}
+	for _, path := range []string{noMarker, otherProject, wrongName, link} {
+		if strings.Contains(out, "would remove "+path) {
+			t.Fatalf("dry run offers %s: %q", path, out)
+		}
+	}
+	code, out, errOut = f.run(t, f.env, "gc", "--yes")
+	if code != 0 || !strings.Contains(out, "\nremoved "+discard+"  10 B\n") {
+		t.Fatalf("code=%d out=%q err=%q; want the discard removed", code, out, errOut)
+	}
+	if _, err := os.Lstat(discard); !os.IsNotExist(err) {
+		t.Fatalf("the discard is still there: %v", err)
+	}
+	for _, path := range []string{filepath.Join(noMarker, "f.txt"), filepath.Join(otherProject, "f.txt"), filepath.Join(wrongName, "f.txt"), link, filepath.Join(target, "keep.txt")} {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("%s was removed: %v", path, err)
+		}
 	}
 }
