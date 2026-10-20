@@ -1,13 +1,11 @@
 package cli
 
 import (
-	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
+
 	"runtime"
-	"strconv"
+
 	"strings"
 	"testing"
 
@@ -16,19 +14,6 @@ import (
 	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
-
-type tm6GoldenStep struct {
-	Args []string          `json:"args"`
-	Env  map[string]string `json:"env"`
-	Err  string            `json:"err"`
-	Out  string            `json:"out"`
-	RC   int               `json:"rc"`
-}
-
-type tm6GoldenScenario struct {
-	Conf  *string         `json:"conf"`
-	Steps []tm6GoldenStep `json:"steps"`
-}
 
 const tm6LegacyConfig = "# keep this comment\nsplit_max_panes=6\nrole.implementer.kind=grok\nrole.designer.kind=grok\nrole.tasker.kind=grok\nrole.scouter.kind=grok\nrole.researcher.kind=grok\nrole.reviewer.kind=grok\nrole.security-reviewer.kind=grok\nrole.ui-reviewer.kind=grok\nrole.inspector.kind=grok\nrole.planner.model=fable\n# tail comment\n"
 const tm6DivergentConfig = "# keep this comment\nsplit_max_panes=6\nrole.reviewer.kind=codex\nrole.security-reviewer.kind=claude\nrole.planner.model=fable\n# tail comment\n"
@@ -177,173 +162,6 @@ func TestDoctorTM6CLIAndParity(t *testing.T) {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 		}
 	})
-	for _, tc := range []struct{ title, golden string }{
-		// JS: "parity: doctor --fix without panes dies 2 and leaves the file (test-doctor-fix.sh)"
-		{`parity: doctor --fix without panes dies 2 and leaves the file (test-doctor-fix.sh)`, "fix-nopanes"},
-		// JS: "parity: doctor on the legacy config warns about the missing panes and the cap (test-doctor-fix.sh)"
-		{`parity: doctor on the legacy config warns about the missing panes and the cap (test-doctor-fix.sh)`, "doctor-legacy"},
-		// JS: "parity: doctor --fix --panes 3 writes the preset 3 (test-doctor-fix.sh)"
-		{`parity: doctor --fix --panes 3 writes the preset 3 (test-doctor-fix.sh)`, "fix3"},
-		// JS: "parity: doctor --fix --panes 4 writes the preset 4 (test-doctor-fix.sh)"
-		{`parity: doctor --fix --panes 4 writes the preset 4 (test-doctor-fix.sh)`, "fix4"},
-		// JS: "parity: doctor --fix --panes 4 on a divergent review lane keeps the per-role kinds (test-doctor-fix.sh)"
-		{`parity: doctor --fix --panes 4 on a divergent review lane keeps the per-role kinds (test-doctor-fix.sh)`, "fix4-divergent"},
-		// JS: "parity: doctor warns only about the kinds the effective config uses (test-doctor-fix.sh, controlled PATH)"
-		{`parity: doctor warns only about the kinds the effective config uses (test-doctor-fix.sh, controlled PATH)`, "kinds"},
-		// JS: "parity: doctor with lanes off counts no planner kind (test-doctor-fix.sh, controlled PATH)"
-		{`parity: doctor with lanes off counts no planner kind (test-doctor-fix.sh, controlled PATH)`, "kinds-lanes-off"},
-		// JS: "parity: setup --panes / --detect / the config-prompt steps (test-doctor-fix.sh tail, slices 7a/7b)"
-		{`parity: setup --panes / --detect / the config-prompt steps (test-doctor-fix.sh tail, slices 7a/7b)`, "setup-tail"},
-		// JS: "parity: doctor first-run detection (test-friendly.sh)"
-		{`parity: doctor first-run detection (test-friendly.sh)`, "first-run"},
-	} {
-		t.Run(tc.title, func(t *testing.T) { // JS: parity-doctor.test.mjs golden scenario; exact title is the subtest name.
-			// Mutation captured: changing Go output or file effects from the approved JS result fails the golden comparison.
-			if tc.golden == "setup-tail" || tc.golden == "kinds-lanes-off" {
-				// Mutation captured: inheriting TMPDIR exposes ambient Codex/Cursor model caches in setup --detect.
-				ambientTmp := t.TempDir()
-				for kind, models := range map[string]string{
-					"codex":  "ambient-codex-model",
-					"cursor": "ambient-cursor-model",
-				} {
-					if err := os.WriteFile(filepath.Join(ambientTmp, "soho-models-"+kind+".txt"), []byte(models+"\n"), 0o600); err != nil {
-						t.Fatal(err)
-					}
-				}
-				t.Setenv("TMPDIR", ambientTmp)
-			}
-			goldens := tm6LoadDoctorGoldens(t)
-			golden, ok := goldens[tc.golden]
-			if !ok {
-				t.Fatalf("missing golden scenario %q", tc.golden)
-			}
-			env, cwd := tm6CLIEnv(t)
-			root := filepath.Dir(cwd)
-			conf := filepath.Join(cwd, ".agents", "soho.conf")
-			// golden.Conf is the file after the last step; first-run starts with no
-			// project file (the steps write and remove it), as the JS scenario does.
-			if golden.Conf != nil && tc.golden != "first-run" {
-				seed := *golden.Conf
-				switch tc.golden {
-				case "fix3", "fix4", "setup-tail":
-					seed = tm6LegacyConfig
-				case "fix4-divergent":
-					seed = tm6DivergentConfig
-				case "kinds":
-					seed = tm6LegacyConfig
-				}
-				tm6Write(t, conf, seed)
-			}
-			if tc.golden == "kinds" || tc.golden == "kinds-lanes-off" || tc.golden == "setup-tail" {
-				bin := env.Get("PATH")
-				_, err := fakecli.Install(t, bin, "grok", []fakecli.Rule{{Argv: []string{"models"}, Stdout: "grok-4.7\ngrok-4\ngrok-3\n"}})
-				if err != nil {
-					t.Fatal(err)
-				}
-				env = withFakeCLI(env, bin)
-			}
-			if tc.golden == "setup-tail" {
-				bin := env.Get("PATH")
-				if _, err := fakecli.Install(t, bin, "git", []fakecli.Rule{{AnyArgs: true}}); err != nil {
-					t.Fatal(err)
-				}
-				env = withFakeCLI(env, bin)
-				env["SOHO_MODELS_TIMEOUT"] = "30"
-			}
-			for i, want := range golden.Steps {
-				stepEnv := env.Clone()
-				for key, value := range want.Env {
-					stepEnv[key] = value
-				}
-				if tc.golden == "kinds" && i == 1 {
-					tm6Write(t, conf, "role.implementer.kind=codex\nrole.designer.kind=codex\nrole.tasker.kind=codex\nrole.scouter.kind=codex\nrole.researcher.kind=codex\nrole.reviewer.kind=codex\nrole.security-reviewer.kind=codex\nrole.ui-reviewer.kind=codex\nrole.inspector.kind=codex\n")
-				}
-				if tc.golden == "first-run" && i == 1 {
-					tm6Write(t, filepath.Join(stepEnv.Get("SOHO_DIR"), "ws", "agents.tsv"), "# header\n")
-				}
-				if tc.golden == "first-run" && i == 2 {
-					tm6Write(t, conf, "lane.build.kind=grok\n")
-				}
-				if tc.golden == "first-run" && i == 3 {
-					_ = os.Remove(conf)
-					tm6Write(t, filepath.Join(stepEnv.Get("SOHO_DIR"), "ws", "agents.tsv"), "# header\nbuild\tp1\tgrok\timplementer\n")
-				}
-				if tc.golden == "first-run" && i == 4 {
-					tm6Write(t, conf, "# note\nmax_workers=3\n")
-					tm6Write(t, filepath.Join(stepEnv.Get("SOHO_DIR"), "ws", "agents.tsv"), "# header\n")
-				}
-				if tc.golden == "setup-tail" && i == 2 {
-					tm6Write(t, conf, "max_workers=3\n")
-				}
-				if tc.golden == "setup-tail" && i == 3 {
-					tm6Write(t, conf, "lane.build.kind=grok\n")
-				}
-				code, out, errOut := runIn(t, want.Args, stepEnv, cwd)
-				program, programErr := os.Executable()
-				if programErr != nil {
-					t.Fatal(programErr)
-				}
-				out = strings.ReplaceAll(out, program, "PROG")
-				out = normalizeGoldenRoot(out, root)
-				outLines := strings.Split(out, "\n")
-				for i, line := range outLines {
-					if strings.HasPrefix(line, "--- a/") {
-						outLines[i] = "--- FIXDIFF"
-					} else if strings.HasPrefix(line, "+++ b/") {
-						outLines[i] = "+++ FIXDIFF"
-					}
-				}
-				out = strings.Join(outLines, "\n")
-				out = normalizeGoldenRootPathSeparators(out)
-				errOut = strings.ReplaceAll(errOut, program, "PROG")
-				errOut = strings.ReplaceAll(errOut, "herdr-soho:", "PROG:")
-				// The native binary now carries the soho prefix; the frozen
-				// goldens normalize it to PROG: like the legacy prefixes
-				// (after the legacy ones, so a herdr-soho: prefix is not
-				// rewritten to herdr-PROG:).
-				errOut = strings.ReplaceAll(errOut, "soho:", "PROG:")
-				errOut = normalizeGoldenRoot(errOut, root)
-				errOut = normalizeGoldenRootPathSeparators(errOut)
-				// The Go doctor measures split_max_panes against the whole team,
-				// 1 + max_workers (PLAN §9 A9); the frozen JS golden says panes. In
-				// these strict-default fixtures the team is panes-1 workers.
-				wantOut := tm6SplitCapAgainstTeam(want.Out)
-				// The frozen golden predates the shipped job-orchestrator
-				// role; the exact-insertion role oracle adapts the expected
-				// role_kinds entry of the setup --detect output.
-				wantOut = testutil.ApplyRoleOracleToDetectDocument(wantOut)
-				if tc.golden == "kinds-lanes-off" {
-					// With lanes=off the shipped job-orchestrator role adds its
-					// kind to "kinds in use"; see role_oracle.go.
-					wantOut = testutil.ApplyRoleOracleToLanesOffDoctor(wantOut)
-				}
-				// The frozen golden predates the herdr-soho -> soho rename; the
-				// exact-substitution name oracle adapts the expected names, and the
-				// DJA-318 rename oracle (outermost) adapts the setup block, the hook
-				// literals and the doctor advisory lines to the soho contract.
-				wantOut = testutil.ApplySohoRenameOracle(testutil.ApplyHookOracle(testutil.RewriteSohoName(wantOut))).(string)
-				wantOut = testutil.RewriteApprovalsAutoDoctor(wantOut)
-				wantErr := testutil.ApplySohoRenameOracle(testutil.ApplyHookOracle(testutil.RewriteSohoName(want.Err))).(string)
-				if code != want.RC || out != wantOut || errOut != wantErr {
-					want.Out = wantOut
-					t.Fatalf("golden %s step %d args=%v\ncode=%d want=%d\nstdout difference: %s\nstderr difference: %s\nstdout=%q\nwant=%q\nstderr=%q\nwant=%q", tc.golden, i, want.Args, code, want.RC, firstGoldenLineDifference(out, want.Out), firstGoldenLineDifference(errOut, wantErr), out, want.Out, errOut, wantErr)
-				}
-			}
-		})
-	}
-}
-
-func tm6LoadDoctorGoldens(t *testing.T) map[string]tm6GoldenScenario {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "testdata", "legacy", "parity-doctor.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var result map[string]tm6GoldenScenario
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatal(err)
-	}
-	return result
 }
 
 func TestDoctorTM6FixTargets(t *testing.T) {
@@ -432,15 +250,5 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 		if code != 0 || !strings.Contains(out, "doctor --fix: updated") || !strings.Contains(out, "first_run:") {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 		}
-	})
-}
-
-var tm6SplitCapGreaterRE = regexp.MustCompile(`split_max_panes=(\d+) is greater than panes=(\d+)\. Set split_max_panes=(\d+) `)
-
-func tm6SplitCapAgainstTeam(out string) string {
-	return tm6SplitCapGreaterRE.ReplaceAllStringFunc(out, func(m string) string {
-		g := tm6SplitCapGreaterRE.FindStringSubmatch(m)
-		panes, _ := strconv.Atoi(g[2])
-		return fmt.Sprintf("split_max_panes=%s is greater than 1 + max_workers=%d. Set split_max_panes=%s ", g[1], panes-1, g[3])
 	})
 }

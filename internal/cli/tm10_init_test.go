@@ -11,12 +11,12 @@ import (
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
-func TestTM10InitGoldenMirrors(t *testing.T) {
+func TestTM10InitContracts(t *testing.T) {
 	t.Run(`JS: "init: first_run true — doctor on stderr only, the JSON context on stdout, no rename"`, func(t *testing.T) {
-		runSetupTM5InitGolden(t, "init-first", false)
+		runSetupTM5InitContract(t, false)
 	})
 	t.Run(`JS: "init: first_run false with a project config that makes the team choice"`, func(t *testing.T) {
-		runSetupTM5InitGolden(t, "init-config", true)
+		runSetupTM5InitContract(t, true)
 	})
 	t.Run(`JS: "init: first_run false with a roster row and no config (comments and max_workers do not count)"`, func(t *testing.T) {
 		seed := func(repo, state string, roster string) {

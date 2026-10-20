@@ -1568,7 +1568,7 @@ func TestSendAmendmentCases(t *testing.T) {
 		rand.Reader = bytes.NewReader([]byte{1, 2, 3, 4})
 		defer func() { rand.Reader = oldReader }()
 		prompt := peer.PeerHeader("local/-", "-", "-", "-", id) + "\n\n> hi\n" + peer.PeerEndLine(id)
-		screen, err := os.ReadFile(filepath.Join("..", "testdata", "legacy", "fixtures", "cursor-trust-answered.txt"))
+		screen, err := os.ReadFile(filepath.Join("testdata", "cursor-trust-answered.txt"))
 		if err != nil {
 			t.Fatal(err)
 		}

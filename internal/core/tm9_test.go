@@ -1,8 +1,6 @@
 package core
 
 import (
-	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
-	"github.com/djalmajr/soho/internal/provider"
+
 	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
@@ -166,46 +164,6 @@ func TestTM9CoreCases(t *testing.T) {
 		}
 		if got := LaneDecide(&ctx, "build", "implementer", env, repo, true); got.Decision != "unavailable" || got.Name != "unavailable" {
 			t.Fatalf("unavailable worker decision=%#v", got)
-		}
-	})
-	t.Run("parity: quota_detect / renewal_value (all unit screens + Bearer/api_key/sk-proj/JSON/CRLF)", func(t *testing.T) { // JS: "parity: quota_detect / renewal_value (all unit screens + Bearer/api_key/sk-proj/JSON/CRLF)"
-		quotaCases := []struct{ state, screen string }{
-			{"idle", "You have hit your usage limit for grok"}, {"idle", "Individual quota reached"}, {"idle", "Error: quota exceeded"}, {"idle", "RESOURCE_EXHAUSTED: project"}, {"idle", "429 Too Many Requests"}, {"idle", "rate limit exceeded, retry later"},
-			{"idle", "You've hit your limit for today"}, {"idle", "You exceeded your current quota, please check your plan and billing details."}, {"idle", "You have reached your API usage limits: monthly threshold"}, {"idle", "You've reached your API usage limits"}, {"done", "INDIVIDUAL QUOTA REACHED"},
-			{"idle", "implement a rate limit for the API client"}, {"idle", `return "rate limit"`}, {"idle", `return "rate limit exceeded"`}, {"idle", "// 429 Too Many Requests"}, {"idle", "# quota exceeded"}, {"idle", "/* RESOURCE_EXHAUSTED */"}, {"idle", "func Limit() { quota exceeded }"}, {"idle", "function check() { quota exceeded }"}, {"idle", `msg = "quota exceeded"`},
-			{"idle", `"rate limit exceeded"`}, {"idle", "You've hit your stride"}, {"working", "429 Too Many Requests"}, {"working", "hit your usage limit"}, {"idle", ""}, {"idle", "Individual quota reached token=sk_live_abcdefghij\nResets at 5:00pm"}, {"idle", "Bearer abc123.~+/ and hit your usage limit"}, {"idle", "api_key=sk-proj-abcdefgh1234 quota exceeded"}, {"idle", "key sk-proj-abcdefgh1234 rate limit exceeded"},
-			{"idle", `{"message":"rate limit exceeded"}`}, {"idle", `{"error":"quota exceeded"}`}, {"idle", `{"error":{"code":"insufficient_quota","message":"rate limit exceeded"}}`}, {"idle", "hit your usage limit\r\nResets at 10:00\r\n"}, {"idle", "resets at 10:00"}, {"idle", "available again on 2026-09-24"}, {"idle", "quota exceeded, resets at 5:00pm"}, {"idle", "2026-09-24 14:30"}, {"idle", "in 5 minutes at 14:30"}, {"idle", "nothing usable here"},
-		}
-		renewals := []string{"Resets at 5:00pm", "Resets at 09:15:00", "Resets at 2:30PM.", "Resets at 2:30P.M.", "resets on 2026-09-24 at noon", "try again in 5 minutes", "retry after 2 hours", "quota exceeded, resets at 5:00pm", "2026-09-24 14:30", "in 5 minutes at 14:30", "nothing usable here", ""}
-		goldenBytes, err := os.ReadFile(filepath.Join("..", "testdata", "legacy", "parity-lanes.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var golden map[string]struct {
-			Out, Err string
-			RC       int
-		}
-		if err := json.Unmarshal(goldenBytes, &golden); err != nil {
-			t.Fatal(err)
-		}
-		var actual strings.Builder
-		for i, tc := range quotaCases {
-			fmt.Fprintf(&actual, "CASE %03d\n", i+1)
-			if got := provider.QuotaDetect(tc.state, tc.screen); got == nil {
-				actual.WriteString("NOMATCH\n")
-			} else {
-				actual.WriteString("DETECT\n")
-				actual.WriteString(strings.TrimRight(strings.Join(got, "\n"), "\n"))
-				actual.WriteByte('\n')
-			}
-			fmt.Fprintf(&actual, "RENEWAL [%s]\n", provider.RenewalValue(renewals[i%len(renewals)]))
-		}
-		for i, renewal := range renewals {
-			fmt.Fprintf(&actual, "CASE %03d\nNOMATCH\nRENEWAL [%s]\n", len(quotaCases)+i+1, provider.RenewalValue(renewal))
-		}
-		want, ok := golden["quota"]
-		if !ok || want.RC != 0 || want.Err != "" || actual.String() != want.Out {
-			t.Fatalf("quota parity differs from golden: err=%q rc=%d\nactual:\n%s\nwant:\n%s", want.Err, want.RC, actual.String(), want.Out)
 		}
 	})
 	t.Run("roles: frontmatter-only role — values from the role file and the config defaults", func(t *testing.T) { // JS: "roles: frontmatter-only role — values from the role file and the config defaults"

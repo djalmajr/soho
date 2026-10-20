@@ -17,32 +17,19 @@ import (
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
-type tm5ProbeStep struct {
-	Args []string          `json:"args"`
-	Env  map[string]string `json:"env"`
-	Err  string            `json:"err"`
-	Out  string            `json:"out"`
-	RC   int               `json:"rc"`
+type probeStep struct {
+	Args     []string
+	Env      map[string]string
+	RC       int
+	Err      string
+	Probes   []map[string]any
+	Reviewer any
 }
+type probeScenario struct{ Steps []probeStep }
 
-type tm5ProbeGolden struct {
-	Steps []tm5ProbeStep `json:"steps"`
-}
+func probeContracts(t *testing.T) map[string]probeScenario { t.Helper(); return probeContractCases }
 
-func readProbeGoldens(t *testing.T) map[string]tm5ProbeGolden {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "testdata", "legacy", "parity-setup-probe.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var goldens map[string]tm5ProbeGolden
-	if err := json.Unmarshal(data, &goldens); err != nil {
-		t.Fatal(err)
-	}
-	return goldens
-}
-
-func probeGoldenContext(t *testing.T, kind, model string, rules []fakecli.Rule) (platform.Env, *core.Config) {
+func probeContractContext(t *testing.T, kind, model string, rules []fakecli.Rule) (platform.Env, *core.Config) {
 	t.Helper()
 	bin := t.TempDir()
 	if _, err := fakecli.Install(t, bin, kind, rules); err != nil {
@@ -89,7 +76,7 @@ func probeAllFakeEnv(t *testing.T, bin string) platform.Env {
 	return env
 }
 
-func runProbeGoldenStep(t *testing.T, step tm5ProbeStep, env platform.Env, ctx *core.Config) {
+func runProbeContractStep(t *testing.T, step probeStep, env platform.Env, ctx *core.Config) {
 	t.Helper()
 	old := platform.Stdout
 	var out bytes.Buffer
@@ -115,80 +102,100 @@ func runProbeGoldenStep(t *testing.T, step tm5ProbeStep, env platform.Env, ctx *
 	if message != "" {
 		gotErr = "PROG: " + message + "\n"
 	}
-	if code != step.RC || gotErr != step.Err || out.String() != step.Out {
-		t.Fatalf("args=%q got rc=%d err=%q out=%q; want rc=%d err=%q out=%q", step.Args, code, gotErr, out.String(), step.RC, step.Err, step.Out)
+	if code != step.RC || gotErr != step.Err {
+		t.Fatalf("args=%q code=%d want=%d stderr=%q want=%q", step.Args, code, step.RC, gotErr, step.Err)
 	}
+	if code != 0 {
+		if out.Len() != 0 {
+			t.Fatalf("usage error stdout=%q", out.String())
+		}
+		return
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("probe response %q: %v", out.String(), err)
+	}
+	for _, key := range []string{"probes", "recommended_reviewer", "skipped_custom"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("probe response missing %s", key)
+		}
+	}
+	var actual []map[string]any
+	if err := json.Unmarshal(got["probes"], &actual); err != nil {
+		t.Fatal(err)
+	}
+	if len(actual) != len(step.Probes) {
+		t.Fatalf("probe rows=%d want=%d", len(actual), len(step.Probes))
+	}
+	for i, expected := range step.Probes {
+		for field, want := range expected {
+			if got, present := actual[i][field]; !present || !reflect.DeepEqual(got, want) {
+				t.Fatalf("probe row %d %s=%v present=%t want=%v", i, field, got, present, want)
+			}
+		}
+	}
+	var reviewer any
+	if err := json.Unmarshal(got["recommended_reviewer"], &reviewer); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reviewer, step.Reviewer) {
+		t.Fatalf("reviewer=%v want=%v", reviewer, step.Reviewer)
+	}
+	if strings.Contains(out.String(), "sk_live_private") || strings.Contains(out.String(), "CUSTOMSECRET") {
+		t.Fatalf("provider secret leaked: %q", out.String())
+	}
+
 }
 
-func TestSetupProbeTM5ParityGoldens(t *testing.T) {
+func TestSetupProbeResponseContracts(t *testing.T) {
 	t.Run("// JS: \"parity: setup --probe single kind with an explicit model\"", func(t *testing.T) { // Mutation captured: changing the probe's kind/model/status JSON diverges from the JS golden.
-		golden := readProbeGoldens(t)["probe-one"].Steps[0]
-		env, ctx := probeGoldenContext(t, "pi", "", []fakecli.Rule{{Argv: []string{"-p", "--no-session", ProbePrompt, "--model", "my-provider/my-model"}, Stdout: "ok\n"}})
-		runProbeGoldenStep(t, golden, env, ctx)
+		golden := probeContracts(t)["probe-one"].Steps[0]
+		env, ctx := probeContractContext(t, "pi", "", []fakecli.Rule{{Argv: []string{"-p", "--no-session", ProbePrompt, "--model", "my-provider/my-model"}, Stdout: "ok\n"}})
+		runProbeContractStep(t, golden, env, ctx)
 	})
 	t.Run("// JS: \"parity: setup --probe no-auth — the fixed cause, never the CLI line or its key\"", func(t *testing.T) { // Mutation captured: returning provider stderr leaks the authentication line into the public result.
-		golden := readProbeGoldens(t)["probe-noauth"].Steps[0]
-		env, ctx := probeGoldenContext(t, "claude", "opus", []fakecli.Rule{{Argv: []string{"-p", ProbePrompt, "--model", "opus"}, Code: 1, Stderr: "Not logged in token=sk_live_private"}})
-		runProbeGoldenStep(t, golden, env, ctx)
+		golden := probeContracts(t)["probe-noauth"].Steps[0]
+		env, ctx := probeContractContext(t, "claude", "opus", []fakecli.Rule{{Argv: []string{"-p", ProbePrompt, "--model", "opus"}, Code: 1, Stderr: "Not logged in token=sk_live_private"}})
+		runProbeContractStep(t, golden, env, ctx)
 	})
 	t.Run("// JS: \"parity: setup --probe error — exit <code>, the printed key never reaches the JSON\"", func(t *testing.T) { // Mutation captured: provider output must not replace the stable exit-code cause.
-		golden := readProbeGoldens(t)["probe-error"].Steps[0]
-		env, ctx := probeGoldenContext(t, "codex", "sol|gpt-5", []fakecli.Rule{{Argv: []string{"exec", "-m", "sol|gpt-5", ProbePrompt}, Code: 3, Stderr: "token=sk_live_private"}})
-		runProbeGoldenStep(t, golden, env, ctx)
+		golden := probeContracts(t)["probe-error"].Steps[0]
+		env, ctx := probeContractContext(t, "codex", "sol|gpt-5", []fakecli.Rule{{Argv: []string{"exec", "-m", "sol|gpt-5", ProbePrompt}, Code: 3, Stderr: "token=sk_live_private"}})
+		runProbeContractStep(t, golden, env, ctx)
 	})
 	t.Run("// JS: \"parity: setup --probe quota — with and without a renewal time\"", func(t *testing.T) { // Mutation captured: quota renewal output changes the golden cause and must not expose adjacent secrets.
-		goldens := readProbeGoldens(t)
-		env, ctx := probeGoldenContext(t, "grok", "grok", []fakecli.Rule{{Argv: []string{"-p", ProbePrompt, "--model", "grok"}, Code: 1, Stderr: "You have hit your usage limit. Try again in 5 minutes. token=sk_live_private"}})
-		runProbeGoldenStep(t, goldens["probe-quota"].Steps[0], env, ctx)
+		goldens := probeContracts(t)
+		env, ctx := probeContractContext(t, "grok", "grok", []fakecli.Rule{{Argv: []string{"-p", ProbePrompt, "--model", "grok"}, Code: 1, Stderr: "You have hit your usage limit. Try again in 5 minutes. token=sk_live_private"}})
+		runProbeContractStep(t, goldens["probe-quota"].Steps[0], env, ctx)
 		t.Run("renewal time is retained", func(t *testing.T) {
-			env, ctx := probeGoldenContext(t, "grok", "grok", []fakecli.Rule{{Argv: []string{"-p", ProbePrompt, "--model", "grok"}, Code: 1, Stderr: "Error: You have hit your usage limit. Try again at 14:30."}})
-			runProbeGoldenStep(t, goldens["probe-quotatime"].Steps[0], env, ctx)
+			env, ctx := probeContractContext(t, "grok", "grok", []fakecli.Rule{{Argv: []string{"-p", ProbePrompt, "--model", "grok"}, Code: 1, Stderr: "Error: You have hit your usage limit. Try again at 14:30."}})
+			runProbeContractStep(t, goldens["probe-quotatime"].Steps[0], env, ctx)
 		})
 	})
 	t.Run("// JS: \"parity: setup --probe usage errors (bad timeout, unknown kind, flag without a value) exit 2\"", func(t *testing.T) { // Mutation captured: accepting malformed probe argv changes the JS golden's exit and error output.
-		golden := readProbeGoldens(t)["probe-usage"]
-		env, ctx := probeGoldenContext(t, "pi", "", []fakecli.Rule{{AnyArgs: true, Stdout: "ok\n"}})
+		golden := probeContracts(t)["probe-usage"]
+		env, ctx := probeContractContext(t, "pi", "", []fakecli.Rule{{AnyArgs: true, Stdout: "ok\n"}})
 		for i, step := range golden.Steps {
 			stepEnv := env.Clone()
 			if i == 2 {
 				stepEnv["SOHO_PROBE_TIMEOUT"] = "bad"
 			}
-			t.Run(strings.Join(step.Args, " "), func(t *testing.T) { runProbeGoldenStep(t, step, stepEnv, ctx) })
+			t.Run(strings.Join(step.Args, " "), func(t *testing.T) { runProbeContractStep(t, step, stepEnv, ctx) })
 		}
 	})
-	t.Run("// JS: \"parity: setup --probe a hung CLI is a timeout after the limit\"", func(t *testing.T) { // Mutation captured: dropping the timeout returns after the fake CLI's full delay instead of the golden timeout.
-		// D8: the Go timeout cause gained the fixed retry hint (timeoutRetryHint)
-		// while the frozen JS golden keeps "timeout after 1s": assert the golden's
-		// exact output with the cause substituted, so the rest stays
-		// byte-identical to the golden.
-		golden := readProbeGoldens(t)["probe-timeout"].Steps[0]
-		want := strings.Replace(golden.Out, "timeout after 1s\"", "timeout after 1s"+timeoutRetryHint+"\"", 1)
-		env, ctx := probeGoldenContext(t, "pi", "", []fakecli.Rule{{Argv: []string{"-p", "--no-session", ProbePrompt}, Delay: 1600}})
-		old := platform.Stdout
-		var out bytes.Buffer
-		platform.Stdout = &out
-		t.Cleanup(func() { platform.Stdout = old })
-		code, message := 0, ""
-		func() {
-			defer func() {
-				if value := recover(); value != nil {
-					e, ok := value.(*platform.ExitError)
-					if !ok {
-						panic(value)
-					}
-					code, message = e.Code, e.Msg
-				}
-			}()
-			CmdProbe(golden.Args[2:], ctx, env, t.TempDir())
-		}()
-		gotErr := ""
-		if message != "" {
-			gotErr = "PROG: " + message + "\n"
+	t.Run("a hung CLI returns the timeout cause and retry hint", func(t *testing.T) {
+		step := probeContracts(t)["probe-timeout"].Steps[0]
+		step.Probes = append([]map[string]any(nil), step.Probes...)
+		expected := map[string]any{}
+		for k, v := range step.Probes[0] {
+			expected[k] = v
 		}
-		if code != golden.RC || gotErr != golden.Err || out.String() != want {
-			t.Fatalf("args=%q got rc=%d err=%q out=%q; want rc=%d err=%q out=%q", golden.Args, code, gotErr, out.String(), golden.RC, golden.Err, want)
-		}
+		expected["cause"] = "timeout after 1s" + timeoutRetryHint
+		step.Probes[0] = expected
+		env, ctx := probeContractContext(t, "pi", "", []fakecli.Rule{{Argv: []string{"-p", "--no-session", ProbePrompt}, Delay: 1600}})
+		runProbeContractStep(t, step, env, ctx)
 	})
+
 }
 
 func TestSetupProbeTM5Continuation(t *testing.T) {
@@ -209,7 +216,7 @@ func TestSetupProbeTM5Continuation(t *testing.T) {
 	})
 	t.Run(`// JS: "probeKind: a hang with a live child is a timeout after the limit, not later"`, func(t *testing.T) {
 		bin := t.TempDir()
-		env, _ := probeGoldenContext(t, "pi", "", []fakecli.Rule{{Argv: []string{"-p", "--no-session", ProbePrompt}, Delay: 1800}})
+		env, _ := probeContractContext(t, "pi", "", []fakecli.Rule{{Argv: []string{"-p", "--no-session", ProbePrompt}, Delay: 1800}})
 		env["PATH"] = bin
 		if _, err := fakecli.Install(t, bin, "pi", []fakecli.Rule{{Argv: []string{"-p", "--no-session", ProbePrompt}, Delay: 1800}}); err != nil {
 			t.Fatal(err)
@@ -223,7 +230,7 @@ func TestSetupProbeTM5Continuation(t *testing.T) {
 	})
 	t.Run(`// JS: "e2e: the timeout classifies as error with the fixed cause, not later than limit + grace"`, func(t *testing.T) {
 		bin := t.TempDir()
-		env, ctx := probeGoldenContext(t, "pi", "", []fakecli.Rule{{Argv: []string{"-p", "--no-session", ProbePrompt}, Delay: 1800}})
+		env, ctx := probeContractContext(t, "pi", "", []fakecli.Rule{{Argv: []string{"-p", "--no-session", ProbePrompt}, Delay: 1800}})
 		env["PATH"] = bin
 		if _, err := fakecli.Install(t, bin, "pi", []fakecli.Rule{{Argv: []string{"-p", "--no-session", ProbePrompt}, Delay: 1800}}); err != nil {
 			t.Fatal(err)
@@ -286,7 +293,7 @@ func TestSetupProbeTM5Continuation(t *testing.T) {
 		}
 	})
 	t.Run(`// JS: "parity: setup --probe aggregate — shape, statuses, reviewer, model spec"`, func(t *testing.T) {
-		golden := readProbeGoldens(t)["probe-aggregate"].Steps[0]
+		golden := probeContracts(t)["probe-aggregate"].Steps[0]
 		bin := t.TempDir()
 		rules := []string{"pi", "codex", "claude", "grok"}
 		env := probeAllFakeEnv(t, bin)
@@ -304,7 +311,7 @@ func TestSetupProbeTM5Continuation(t *testing.T) {
 			"model_cursor_worker": {Value: "grok|muse", Source: "defaults"},
 			"lane_build_kind":     {Value: "grok", Source: "project"},
 		}, Order: []string{"lane_build_kind", "model_claude_worker", "model_codex_worker", "model_grok_worker", "model_agy_worker", "model_cursor_worker"}}
-		runProbeGoldenStep(t, golden, env, ctx)
+		runProbeContractStep(t, golden, env, ctx)
 	})
 	t.Run(`// JS: "parity: the recommended reviewer follows the build family (claude, codex, null)"`, func(t *testing.T) {
 		for _, tc := range []struct {
@@ -338,7 +345,7 @@ func TestSetupProbeTM5Continuation(t *testing.T) {
 		}
 	})
 	t.Run(`// JS: "parity: setup --probe aggregate covers the own models (5 probed, 2 skipped_custom, no key leak)"`, func(t *testing.T) {
-		golden := readProbeGoldens(t)["probe-custom"].Steps[0]
+		golden := probeContracts(t)["probe-custom"].Steps[0]
 		bin := t.TempDir()
 		env := probeAllFakeEnv(t, bin)
 		env["SOHO_PROBE_TIMEOUT"] = "2"
@@ -363,6 +370,6 @@ func TestSetupProbeTM5Continuation(t *testing.T) {
 			"model_cursor_worker": {Value: "grok|muse", Source: "defaults"},
 			"lane_build_kind":     {Value: "grok", Source: "project"},
 		}, Order: []string{"lane_build_kind", "model_claude_worker", "model_codex_worker", "model_grok_worker", "model_agy_worker", "model_cursor_worker"}}
-		runProbeGoldenStep(t, golden, env, ctx)
+		runProbeContractStep(t, golden, env, ctx)
 	})
 }

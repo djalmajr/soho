@@ -268,7 +268,7 @@ Use a verified native release binary, or build an explicitly selected checkout w
 
 - Use Go 1.25 or newer. Run the focused package/test named by the brief while editing, then gofmt, `go vet ./...`, `go test ./...` and `go test -race ./...` after integration.
 - Native fixtures must use isolated HOME/config/cache/temp roots and executable Go fakes; external runtime availability must not hide missing coverage behind a skip.
-- Frozen JSON under `internal/testdata/legacy` preserves historical compatibility oracle bytes. Document a narrow intentional adaptation; do not regenerate expected values from the implementation merely to obtain a pass.
+- Assert exit codes, machine-readable fields, table columns, error messages and side effects directly. Document intentional contract changes; do not generate whole expected command output from the implementation merely to obtain a pass.
 - Native platform evidence is required for affected process, locking, installation and terminal contracts. Cross-compilation and headless checks cannot establish native terminal behavior.
 
 ## Two edit agents in one tree: one worktree per worker (or per branch)

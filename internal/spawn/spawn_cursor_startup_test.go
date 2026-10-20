@@ -24,7 +24,7 @@ import (
 // dialog (cursor-agent 2026.10.01 on Windows, herdr 0.9.1).
 func cursorNativeTrustScreen(t *testing.T) string {
 	t.Helper()
-	b, err := os.ReadFile("../testdata/legacy/fixtures/cursor-trust.txt")
+	b, err := os.ReadFile("testdata/cursor-trust.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +415,7 @@ func TestSpawnCursorWindowsWrappedLaunchAndNarrowTrust(t *testing.T) {
 }
 
 func TestSpawnCursorWindowsClippedTrustRefusesReadiness(t *testing.T) {
-	b, err := os.ReadFile("../testdata/legacy/fixtures/cursor-trust-clipped.txt")
+	b, err := os.ReadFile("testdata/cursor-trust-clipped.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func TestSpawnCursorWindowsClippedTrustRefusesReadiness(t *testing.T) {
 
 func TestSpawnCursorWindowsReuseClippedTrustRefuses(t *testing.T) {
 	setStartupPlatform(t, "win32")
-	b, err := os.ReadFile("../testdata/legacy/fixtures/cursor-trust-clipped.txt")
+	b, err := os.ReadFile("testdata/cursor-trust-clipped.txt")
 	if err != nil {
 		t.Fatal(err)
 	}

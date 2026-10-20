@@ -25,7 +25,7 @@ import (
 // cursorTrustScreen is the verified cursor Workspace Trust Required dialog.
 func cursorTrustScreen(t *testing.T) string {
 	t.Helper()
-	b, err := os.ReadFile("../testdata/legacy/fixtures/cursor-trust.txt")
+	b, err := os.ReadFile("testdata/cursor-trust.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestDispatchCursorWindowsSafeScreenBecomesUnverifiedNoInput(t *testing.T) {
 
 func TestDispatchCursorWindowsClippedTrustRefusesNoInput(t *testing.T) {
 	setDispatchPlatform(t, "win32")
-	b, err := os.ReadFile("../testdata/legacy/fixtures/cursor-trust-clipped.txt")
+	b, err := os.ReadFile("testdata/cursor-trust-clipped.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
