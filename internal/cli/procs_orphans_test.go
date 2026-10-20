@@ -323,6 +323,9 @@ func TestOrphanWithinComparesByComponent(t *testing.T) {
 // that holds it, or not at all; the valid copy stays a stoppable copy.
 func TestOrphanCopyLinesMustPassTheCopyCheck(t *testing.T) {
 	o := newOrphanScopeFixture(t)
+	// The copy check reads the home from USERPROFILE on Windows
+	// (mutationCopyHome): point it at the fixture's HOME there too.
+	o.env["USERPROFILE"] = o.env.Get("HOME")
 	// A valid copy, registered, then replaced by a symlink to an outside
 	// directory: the line stays in copies.tsv.
 	link := orphanResolvedDir(t, filepath.Join(filepath.Dir(o.copy), "copy-link"))
