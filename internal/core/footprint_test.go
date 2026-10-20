@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -209,11 +210,11 @@ func TestMeasureFootprintUnreadableRSS(t *testing.T) {
 func TestFootprintDiskText(t *testing.T) {
 	t.Run("the disk part, plural and singular", func(t *testing.T) {
 		fp := &Footprint{Copies: 2, CopiesBytes: 3072, StateBytes: 512, ScratchBytes: 0, Total: 3584}
-		if got := FootprintDiskText(fp); got != "3.5 KB on disk (copies 3.0 KB in 2, state 512 B, scratch 0 B)" {
+		if got := FootprintDiskText(fp); got != "3.5 KB logical size (copies 3.0 KB in 2, state 512 B, scratch 0 B)" {
 			t.Fatalf("disk text=%q", got)
 		}
 		fp1 := &Footprint{Copies: 1, CopiesBytes: 100, StateBytes: 200, ScratchBytes: 300, Total: 600}
-		if got := FootprintDiskText(fp1); got != "600 B on disk (copies 100 B in 1, state 200 B, scratch 300 B)" {
+		if got := FootprintDiskText(fp1); got != "600 B logical size (copies 100 B in 1, state 200 B, scratch 300 B)" {
 			t.Fatalf("singular disk text=%q", got)
 		}
 	})
@@ -248,6 +249,30 @@ func TestDirSizeWalksRegularFilesOnly(t *testing.T) {
 	}
 	if got := DirSize(filepath.Join(root, "missing")); got != 0 {
 		t.Fatalf("DirSize(missing)=%d, want 0", got)
+	}
+}
+
+func TestDirSizeHardlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows keeps the existing logical size behavior")
+	}
+	root := t.TempDir()
+	original := filepath.Join(root, "original")
+	seedFile(t, original, 1<<20)
+	for _, name := range []string{"link-a", "link-b", "link-c"} {
+		if err := os.Link(original, filepath.Join(root, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if got := DirSize(root); got != 1<<20 {
+			t.Fatalf("measurement %d: got=%d want=%d for one inode with four names", i, got, 1<<20)
+		}
+	}
+	// Equal bytes in another inode must still count.
+	seedFile(t, filepath.Join(root, "independent"), 1<<20)
+	if got := DirSize(root); got != 2<<20 {
+		t.Fatalf("independent inode: got=%d want=%d", got, 2<<20)
 	}
 }
 

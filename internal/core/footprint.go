@@ -30,15 +30,24 @@ type Footprint struct {
 
 // DirSize walks a directory and sums the sizes of its regular files
 // without following symlinks (an unreadable entry is simply not counted).
+// On Unix, multiply linked inodes count once per walk, by device and inode.
+// Sizes are logical: APFS clones may still share physical blocks.
 // A missing root reads as zero. The walk is shared by the copy-size
 // measure of internal/cli and by the footprint measure.
 func DirSize(root string) int64 {
 	var total int64
+	seen := map[[2]uint64]bool{}
 	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil || entry.Type()&fs.ModeSymlink != 0 || !entry.Type().IsRegular() {
 			return nil
 		}
 		if info, infoErr := entry.Info(); infoErr == nil {
+			if key, linked := platform.HardlinkIdentity(info); linked {
+				if seen[key] {
+					return nil
+				}
+				seen[key] = true
+			}
 			total += info.Size()
 		}
 		return nil
@@ -81,11 +90,11 @@ func FootprintLimitReached(total, limitGB int64) bool {
 }
 
 // FootprintDiskText formats the on-disk part of a footprint in the shared
-// human sizes: "<total> on disk (copies <copies> in <n>, state <state>,
+// human sizes: "<total> logical size (copies <copies> in <n>, state <state>,
 // scratch <scratch>)". The explain line and the doctor warning build on it
 // so the sizes are formatted in exactly one place.
 func FootprintDiskText(fp *Footprint) string {
-	return HumanSize(fp.Total) + " on disk (copies " + HumanSize(fp.CopiesBytes) + " in " +
+	return HumanSize(fp.Total) + " logical size (copies " + HumanSize(fp.CopiesBytes) + " in " +
 		strconv.Itoa(fp.Copies) + ", state " + HumanSize(fp.StateBytes) + ", scratch " +
 		HumanSize(fp.ScratchBytes) + ")"
 }

@@ -270,7 +270,7 @@ func TestGcUnregisteredOrigin(t *testing.T) {
 			"kept " + bare + " (no origin marker)\n" +
 			"kept " + other + " (another project: /nonexistent/other)\n" +
 			"removed " + own + "  40 B\n" +
-			"freed: 40 B\n"
+			"freed: 40 B (logical size; see volume free below)\n" + gcUnchangedVolume(own) + "\n"
 		if out != want {
 			t.Fatalf("stdout:\n got:  %q\nwant: %q", out, want)
 		}

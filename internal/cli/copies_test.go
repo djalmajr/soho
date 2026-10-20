@@ -711,7 +711,7 @@ func TestGc(t *testing.T) {
 			"removed " + l.missing + "  0 B",
 			gcUnregisteredHeader,
 			l.unreg + "  40 B  3h  no origin marker",
-			"freed: 25 B",
+			"freed: 25 B (logical size; see volume free below)", gcUnchangedVolume(l.oldOrphan),
 		}, "\n") + "\n"
 		if out != want {
 			t.Fatalf("stdout=%q; want\n%s", out, want)
@@ -774,7 +774,7 @@ func TestGc(t *testing.T) {
 			gcUnregisteredHeader,
 			"removed " + l.unreg + "  40 B",
 			"kept " + link + " (is a symlink)",
-			"freed: 40 B",
+			"freed: 40 B (logical size; see volume free below)", gcUnchangedVolume(l.unreg),
 		}, "\n") + "\n"
 		if out != want {
 			t.Fatalf("stdout=%q; want\n%s", out, want)
@@ -1271,7 +1271,7 @@ func TestGcIdleOwnerCopies(t *testing.T) {
 		g.register(t)
 		g.wantOffered(t)
 		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
-		want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B"}, "\n") + "\n"
+		want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B (logical size; see volume free below)", gcUnchangedVolume(g.copy)}, "\n") + "\n"
 		if code != 0 || out != want {
 			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
 		}
@@ -1659,7 +1659,7 @@ func TestGcIdleOwnerCopyReadsTheCurrentLine(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-		want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B"}, "\n") + "\n"
+		want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B (logical size; see volume free below)", gcUnchangedVolume(g.copy)}, "\n") + "\n"
 		if code != 0 || out != want {
 			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
 		}
@@ -1717,7 +1717,7 @@ func TestGcIdleOwnerRemovalHoldsTheRegistryLock(t *testing.T) {
 	if err := <-waited; err != nil {
 		t.Fatalf("the waiting registration failed: %v", err)
 	}
-	want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B"}, "\n") + "\n"
+	want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B (logical size; see volume free below)", gcUnchangedVolume(g.copy)}, "\n") + "\n"
 	if code != 0 || out != want {
 		t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
 	}
@@ -1851,7 +1851,7 @@ func TestGcIdleOwnerLongPauseStaysOutsideTheLock(t *testing.T) {
 		if len(problems) > 0 {
 			t.Fatal(strings.Join(problems, "; "))
 		}
-		want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B"}, "\n") + "\n"
+		want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B (logical size; see volume free below)", gcUnchangedVolume(g.copy)}, "\n") + "\n"
 		if code != 0 || out != want {
 			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
 		}
@@ -1898,7 +1898,7 @@ func TestGcIdleOwnerLockedSectionRunsFileOperationsOnly(t *testing.T) {
 		if len(problems) > 0 {
 			t.Fatal(strings.Join(problems, "; "))
 		}
-		want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B"}, "\n") + "\n"
+		want := strings.Join([]string{gcPressureNone, "removed " + g.copy + "  10 B", "freed: 10 B (logical size; see volume free below)", gcUnchangedVolume(g.copy)}, "\n") + "\n"
 		if code != 0 || out != want {
 			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
 		}
@@ -2077,7 +2077,7 @@ func TestGcIdleOwnerFailedRemovalLeavesTheDiscard(t *testing.T) {
 
 		g.ageDiscard(t, platform.Now().Add(-3*time.Hour))
 		code, out, errOut = g.f.run(t, g.f.env, "gc", "--yes", "--include-unregistered")
-		want := strings.Join([]string{gcPressureNone, gcUnregisteredHeader, "removed " + g.discard() + "  10 B", "freed: 10 B"}, "\n") + "\n"
+		want := strings.Join([]string{gcPressureNone, gcUnregisteredHeader, "removed " + g.discard() + "  10 B", "freed: 10 B (logical size; see volume free below)", gcUnchangedVolume(g.copy)}, "\n") + "\n"
 		if code != 0 || out != want {
 			t.Fatalf("past --older-than: code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
 		}

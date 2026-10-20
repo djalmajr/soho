@@ -344,7 +344,7 @@ func TestGcYesStreamsAfterEachRemoval(t *testing.T) {
 	for _, path := range paths[1:] {
 		want += "removed " + path + "  7 B\n"
 	}
-	want += "freed: 21 B\n"
+	want += "freed: 21 B (logical size; see volume free below)\n" + gcUnchangedVolume(paths[0]) + "\n"
 	if got := out.text(); got != want || len(f.copiesRows(t)) != 0 {
 		t.Fatalf("stdout=%q want=%q registry=%#v", got, want, f.copiesRows(t))
 	}
