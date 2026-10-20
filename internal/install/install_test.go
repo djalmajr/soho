@@ -701,3 +701,246 @@ func TestInstallCancellationCleansUpTempFiles(t *testing.T) {
 		assertDirAbsent(t, installDir)
 	})
 }
+
+// useReplaceSeams sets the replacement seams for one test and restores the
+// defaults in its cleanup (the package's tests do not run in parallel). A
+// nil rename or remove keeps os.Rename or os.Remove.
+func useReplaceSeams(t *testing.T, moveAside bool, rename func(string, string) error, remove func(string) error) {
+	t.Helper()
+	savedMoveAside, savedRename, savedRemove := moveAsideOnRefusal, renameFile, removeFile
+	t.Cleanup(func() { moveAsideOnRefusal, renameFile, removeFile = savedMoveAside, savedRename, savedRemove })
+	moveAsideOnRefusal = moveAside
+	if rename != nil {
+		renameFile = rename
+	}
+	if remove != nil {
+		removeFile = remove
+	}
+}
+
+// refusingRename is os.Rename except for the renames of an install temp
+// file (.soho.*) onto destination: the first `refusals` of them fail as a
+// running Windows executable makes them fail (a negative count refuses
+// every one). calls records every rename as "src-base>dst-base", in order.
+func refusingRename(destination string, refusals int, calls *[]string) func(string, string) error {
+	return func(src, dst string) error {
+		*calls = append(*calls, filepath.Base(src)+">"+filepath.Base(dst))
+		if dst == destination && strings.HasPrefix(filepath.Base(src), ".soho.") && refusals != 0 {
+			refusals--
+			return &os.LinkError{Op: "rename", Old: src, New: dst, Err: errors.New("simulated: the file is in use")}
+		}
+		return os.Rename(src, dst)
+	}
+}
+
+// writeFiles creates each name in dir with its content.
+func writeFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// assertFile fails unless path holds exactly want.
+func assertFile(t *testing.T, path, want string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != want {
+		t.Fatalf("%s = %q (err %v); want %q", path, got, err, want)
+	}
+}
+
+// A refused direct rename with the fallback on (what Windows does for a
+// running destination): the destination moves to .old, the verified bytes
+// take its place, and Result.Previous names the .old. The order of the
+// renames is the contract: direct try, move aside, then the new binary.
+func TestInstallMoveAsideReplacesARefusedDestination(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	writeFiles(t, dir, map[string]string{name: "running binary"})
+	var calls []string
+	useReplaceSeams(t, true, refusingRename(destination, 1, &calls), nil)
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err != nil {
+		t.Fatalf("install: %v", got.err)
+	}
+	assertFile(t, destination, fakeBinary)
+	assertFile(t, destination+".old", "running binary")
+	if got.res.Previous != destination+".old" {
+		t.Fatalf("Previous = %q; want %q", got.res.Previous, destination+".old")
+	}
+	if len(calls) != 3 || !strings.HasSuffix(calls[0], ">"+name) || calls[1] != name+">"+name+".old" || !strings.HasSuffix(calls[2], ">"+name) || calls[0] != calls[2] {
+		t.Fatalf("renames = %v; want temp>%s, %s>%s.old, temp>%s", calls, name, name, name, name)
+	}
+	assertDirExact(t, dir, name, name+".old")
+}
+
+// When the new binary cannot be renamed onto the destination even after
+// the move aside, the move aside is undone: the old destination is back
+// with its bytes, no .old is left, the error surfaces, and the temp files
+// are removed.
+func TestInstallMoveAsideUndoesWhenTheSecondRenameFails(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	writeFiles(t, dir, map[string]string{name: "running binary"})
+	var calls []string
+	useReplaceSeams(t, true, refusingRename(destination, -1, &calls), nil)
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err == nil || !strings.Contains(got.err.Error(), "after moving it aside") {
+		t.Fatalf("install err = %v; want the second rename's failure", got.err)
+	}
+	assertFile(t, destination, "running binary")
+	if len(calls) != 4 || calls[3] != name+".old>"+name {
+		t.Fatalf("renames = %v; want the last one to undo the move aside (%s.old>%s)", calls, name, name)
+	}
+	assertDirExact(t, dir, name)
+}
+
+// A .old (and a .old-<n>) left by an earlier install is removed at the
+// start of the replacement, also when the direct rename then succeeds;
+// that direct rename creates no .old and leaves Previous empty.
+func TestInstallMoveAsideRemovesAnEarlierOld(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	writeFiles(t, dir, map[string]string{name: "previous binary", name + ".old": "older binary", name + ".old-2": "oldest binary"})
+	useReplaceSeams(t, true, nil, nil)
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err != nil {
+		t.Fatalf("install: %v", got.err)
+	}
+	assertFile(t, destination, fakeBinary)
+	if got.res.Previous != "" {
+		t.Fatalf("Previous = %q; want empty after a direct rename", got.res.Previous)
+	}
+	assertDirExact(t, dir, name)
+}
+
+// A destination the direct rename replaces (not running) is never moved
+// aside, with the fallback on: one rename, no .old, Previous empty.
+func TestInstallMoveAsideIsNotUsedWhenTheDirectRenameWorks(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	writeFiles(t, dir, map[string]string{name: "previous binary"})
+	var calls []string
+	useReplaceSeams(t, true, refusingRename(destination, 0, &calls), nil)
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err != nil {
+		t.Fatalf("install: %v", got.err)
+	}
+	assertFile(t, destination, fakeBinary)
+	if got.res.Previous != "" || len(calls) != 1 {
+		t.Fatalf("Previous = %q, renames = %v; want one direct rename", got.res.Previous, calls)
+	}
+	assertDirExact(t, dir, name)
+}
+
+// An earlier .old that cannot be removed (its process still runs) does not
+// fail the install: the destination moves to the first free .old-<n>, and
+// the earlier .old and .old-1 keep their bytes.
+func TestInstallMoveAsideUsesAFreeSuffixWhenTheOldStays(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	writeFiles(t, dir, map[string]string{name: "running binary", name + ".old": "older binary", name + ".old-1": "oldest binary"})
+	inUse := map[string]bool{destination + ".old": true, destination + ".old-1": true}
+	var calls []string
+	useReplaceSeams(t, true, refusingRename(destination, 1, &calls), func(path string) error {
+		if inUse[path] {
+			return &os.PathError{Op: "remove", Path: path, Err: errors.New("simulated: the file is in use")}
+		}
+		return os.Remove(path)
+	})
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err != nil {
+		t.Fatalf("install: %v", got.err)
+	}
+	assertFile(t, destination, fakeBinary)
+	assertFile(t, destination+".old", "older binary")
+	assertFile(t, destination+".old-1", "oldest binary")
+	assertFile(t, destination+".old-2", "running binary")
+	if got.res.Previous != destination+".old-2" {
+		t.Fatalf("Previous = %q; want %q", got.res.Previous, destination+".old-2")
+	}
+	assertDirExact(t, dir, name, name+".old", name+".old-1", name+".old-2")
+}
+
+// No free .old-<n> up to maxAsideSuffix: the install fails, the
+// destination keeps its bytes and nothing new is created.
+func TestInstallMoveAsideFailsWhenNoAsideNameIsFree(t *testing.T) {
+	dir := t.TempDir()
+	name := destinationName(runtime.GOOS)
+	destination := filepath.Join(dir, name)
+	files := map[string]string{name: "running binary", name + ".old": "x"}
+	for n := 1; n <= maxAsideSuffix; n++ {
+		files[fmt.Sprintf("%s.old-%d", name, n)] = "x"
+	}
+	writeFiles(t, dir, files)
+	var calls []string
+	useReplaceSeams(t, true, refusingRename(destination, 1, &calls), func(string) error { return errors.New("simulated: in use") })
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err == nil || !strings.Contains(got.err.Error(), "no free name") {
+		t.Fatalf("install err = %v; want no free name", got.err)
+	}
+	assertFile(t, destination, "running binary")
+	if len(calls) != 1 {
+		t.Fatalf("renames = %v; want only the refused direct one", calls)
+	}
+	assertNoTempFiles(t, dir)
+}
+
+// Off Windows nothing changes: the fallback is off by default, a .old next
+// to the destination is neither removed nor created, and a refused rename
+// is the error it always was, with no move aside.
+func TestInstallOffWindowsNeverMovesAside(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fallback is on by default on Windows")
+	}
+	if moveAsideOnRefusal {
+		t.Fatal("moveAsideOnRefusal is on off Windows")
+	}
+	t.Run("a direct replace keeps an unrelated .old", func(t *testing.T) {
+		dir := t.TempDir()
+		name := destinationName(runtime.GOOS)
+		writeFiles(t, dir, map[string]string{name: "previous binary", name + ".old": "user file"})
+		got := runCore(t, fixtureOptions{installDir: dir})
+		if got.err != nil || got.res.Previous != "" {
+			t.Fatalf("install: %v, Previous %q", got.err, got.res.Previous)
+		}
+		assertFile(t, filepath.Join(dir, name+".old"), "user file")
+		assertDirExact(t, dir, name, name+".old")
+	})
+	t.Run("a refused rename fails without a move aside", func(t *testing.T) {
+		dir := t.TempDir()
+		name := destinationName(runtime.GOOS)
+		destination := filepath.Join(dir, name)
+		writeFiles(t, dir, map[string]string{name: "previous binary"})
+		var calls []string
+		useReplaceSeams(t, false, refusingRename(destination, 1, &calls), nil)
+		got := runCore(t, fixtureOptions{installDir: dir})
+		if got.err == nil || len(calls) != 1 {
+			t.Fatalf("install err = %v, renames = %v; want the refused rename's error only", got.err, calls)
+		}
+		assertFile(t, destination, "previous binary")
+		assertDirExact(t, dir, name)
+	})
+}
+
+// A refused rename with no destination is not a running binary: the error
+// surfaces and nothing is moved aside.
+func TestInstallMoveAsideNeedsAnExistingDestination(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, destinationName(runtime.GOOS))
+	var calls []string
+	useReplaceSeams(t, true, refusingRename(destination, 1, &calls), nil)
+	got := runCore(t, fixtureOptions{installDir: dir})
+	if got.err == nil || len(calls) != 1 {
+		t.Fatalf("install err = %v, renames = %v; want the refused rename's error only", got.err, calls)
+	}
+	assertDirExact(t, dir)
+}

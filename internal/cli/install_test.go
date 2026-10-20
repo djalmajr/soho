@@ -1042,3 +1042,16 @@ func TestInstallCommandVerifyVersionLargeOutputDrains(t *testing.T) {
 		t.Fatalf("requests = %d, want 2", n)
 	}
 }
+
+// The extra stdout line names the destination and where its running copy
+// went, and is absent when the destination was replaced directly.
+func TestInstallMovedAsideLine(t *testing.T) {
+	if got := movedAsideLine(install.Result{Destination: `C:\bin\soho.exe`}); got != "" {
+		t.Fatalf("direct replacement line = %q; want none", got)
+	}
+	got := movedAsideLine(install.Result{Destination: `C:\bin\soho.exe`, Previous: `C:\bin\soho.exe.old`})
+	want := `install: the running C:\bin\soho.exe was moved to C:\bin\soho.exe.old; the next install removes it`
+	if got != want {
+		t.Fatalf("line = %q; want %q", got, want)
+	}
+}

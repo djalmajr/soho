@@ -85,6 +85,9 @@ func cmdInstall(args []string, env platform.Env) int {
 		platform.Die(err.Error(), 1)
 	}
 	fmt.Fprintf(platform.Stdout, "installed %s\n", res.Destination)
+	if line := movedAsideLine(res); line != "" {
+		fmt.Fprintln(platform.Stdout, line)
+	}
 	fmt.Fprintf(platform.Stdout, "sha256 %s\n", res.Digest)
 	fmt.Fprintf(platform.Stdout, "release %s\n", res.ReleaseURL)
 	if !pathContains(env.Get("PATH"), abs) {
@@ -233,4 +236,14 @@ func pathContains(path, dir string) bool {
 		}
 	}
 	return false
+}
+
+// movedAsideLine is the stdout line for an install that moved the running
+// destination aside (Windows), and "" when the destination was replaced
+// directly.
+func movedAsideLine(res install.Result) string {
+	if res.Previous == "" {
+		return ""
+	}
+	return fmt.Sprintf("install: the running %s was moved to %s; the next install removes it", res.Destination, res.Previous)
 }
