@@ -530,6 +530,27 @@ func TestInstallCommandDestIsAFileRefusesPortably(t *testing.T) {
 // TestInstallCommandPATHAdviceIsConditional checks that the PATH note is
 // printed only when the install directory is not already on PATH.
 func TestInstallCommandPATHAdviceIsConditional(t *testing.T) {
+	t.Run("Windows Path variable contains install directory", func(t *testing.T) {
+		if runtime.GOOS != "windows" {
+			t.Skip("the Windows Path variable lookup requires native Windows")
+		}
+		payload := []byte("fixture binary\n")
+		srv, reqs := hermeticReleaseServer(t, installFixtureTag, runtime.GOOS, runtime.GOARCH, payload)
+		dir := filepath.Join(t.TempDir(), "bin")
+		env := installTestEnv(t, t.TempDir())
+		env["USERPROFILE"], env["TMPDIR"] = env["HOME"], t.TempDir()
+		delete(env, "PATH")
+		env["Path"] = dir
+		env["SOHO_RELEASE_BASE"] = srv.URL + "/releases"
+		code, out, errOut := runInstallCLI(t, env, "--version", installFixtureTag, "--dir", dir)
+		if code != 0 || errOut != "" || strings.Contains(out, "is not in PATH") {
+			t.Fatalf("Path-only install: code=%d stdout=%q stderr=%q env=%v", code, out, errOut, env)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, installBinaryName()))
+		if err != nil || !bytes.Equal(got, payload) || atomic.LoadInt32(reqs) != 2 {
+			t.Fatalf("install bytes=%q err=%v requests=%d", got, err, atomic.LoadInt32(reqs))
+		}
+	})
 	payload := []byte("fixture binary\n")
 	srv, reqs := hermeticReleaseServer(t, installFixtureTag, runtime.GOOS, runtime.GOARCH, payload)
 	dir := filepath.Join(t.TempDir(), "bin")

@@ -311,7 +311,7 @@ func cargoTargetInsideSource(copyPath, sourcePath string, env platform.Env) stri
 }
 
 func cargoExecutable(env platform.Env) (string, bool) {
-	pathValue := env.Get("PATH")
+	pathValue := platform.PathValue(env)
 	if pathValue == "" {
 		return "", false
 	}
