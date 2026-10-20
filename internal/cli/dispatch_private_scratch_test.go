@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -305,4 +306,149 @@ func TestDispatchReplacesALinkInPlaceOfItsScratchFiles(t *testing.T) {
 	if raw, _ := os.ReadFile(stem + ".brief.md"); !strings.Contains(string(raw), "run the slice") {
 		t.Fatalf("composed brief=%q", raw)
 	}
+}
+
+// herdrCalls reads every call the fake herdr logged; a log that was never
+// created is no call (the fake's config must exist).
+func (f *scratchDispatchFixture) herdrCalls(t *testing.T) []fakecli.Call {
+	t.Helper()
+	config := filepath.Join(f.env.Get("SOHO_FAKECLI_CONFIG"), "herdr.json")
+	if _, err := os.Stat(config); err != nil {
+		t.Fatalf("the fake herdr's config is missing: %v", err)
+	}
+	calls, err := fakecli.ReadCallsForConfig(config)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return calls
+}
+
+// stateSnapshot lists every path below the state root with its size.
+func stateSnapshot(t *testing.T, root string) map[string]int64 {
+	t.Helper()
+	out := map[string]int64{}
+	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		size := int64(-1)
+		if info, infoErr := entry.Info(); infoErr == nil && !entry.IsDir() {
+			size = info.Size()
+		}
+		out[path] = size
+		return nil
+	})
+	return out
+}
+
+// The scratch check runs right after the roster line (DJA-443, amendment
+// 2): a refused scratch exits 4 before the compact-phase check removes a
+// foreign pane's marker, before any herdr call and before any write in the
+// state dir.
+func TestDispatchScratchRefusalComesBeforeAnyEffect(t *testing.T) {
+	refused := func(t *testing.T, refuse func(f *scratchDispatchFixture)) {
+		t.Helper()
+		f := newScratchDispatchFixture(t)
+		sd := filepath.Join(f.state, "ws")
+		marker := core.CompactPendingPath(sd, "worker")
+		if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		body := `{"version":1,"token":"t","pane":"another-pane","brief":"b","pid":1,"started":"s","created_at":"2026-10-20T00:00:00Z"}`
+		if err := os.WriteFile(marker, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// cli.Run resolves the friction log through core.StateDir before
+		// any command, which creates briefs, reports and wait when they are
+		// missing: that common step is not the dispatch's, so the dirs exist
+		// before the snapshot.
+		for _, name := range []string{"briefs", "reports", "wait"} {
+			if err := os.MkdirAll(filepath.Join(sd, name), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		refuse(f)
+		before := stateSnapshot(t, f.state)
+		code, _, _, stderr := f.dispatch(t)
+		if code != 4 || !strings.Contains(stderr, "dispatch: the scratch reports dir cannot be used (reports: refusing "+f.reportsDir()+": ") {
+			t.Fatalf("code=%d stderr=%q; want the scratch refusal with exit 4", code, stderr)
+		}
+		if raw, err := os.ReadFile(marker); err != nil || string(raw) != body {
+			t.Fatalf("the foreign pane's compact marker was touched: %q %v", raw, err)
+		}
+		if calls := f.herdrCalls(t); len(calls) != 0 {
+			t.Fatalf("herdr was called before the refusal: %+v", calls)
+		}
+		// cli.Run records the refusal itself in friction.log after the exit
+		// (every command's error is recorded there): that line is the only
+		// change allowed, and it must be this refusal.
+		friction := filepath.Join(sd, "friction.log")
+		if raw, err := os.ReadFile(friction); err == nil {
+			lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+			if len(lines) != 1 || !strings.Contains(lines[0], "the scratch reports dir cannot be used") {
+				t.Fatalf("friction.log=%q; want only the refusal's record", raw)
+			}
+		}
+		after := stateSnapshot(t, f.state)
+		delete(after, friction)
+		for path, size := range after {
+			if old, ok := before[path]; !ok || old != size {
+				t.Fatalf("the state dir changed at %s (size %d, before %d, present %v)", path, size, old, ok)
+			}
+		}
+		if len(after) != len(before) {
+			t.Fatalf("the state dir lost entries: before %v after %v", before, after)
+		}
+	}
+
+	t.Run("a reports level of another owner", func(t *testing.T) {
+		skipScratchOwnerOffUnix(t)
+		refused(t, func(f *scratchDispatchFixture) {
+			if err := os.MkdirAll(f.reportsDir(), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			scratchOwnedByAnother(t, "reports")
+		})
+	})
+
+	t.Run("a link in place of the reports level", func(t *testing.T) {
+		skipScratchLinksOnWindows(t)
+		refused(t, func(f *scratchDispatchFixture) {
+			if err := os.MkdirAll(filepath.Dir(f.reportsDir()), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			elsewhere := filepath.Join(f.root, "elsewhere")
+			if err := os.MkdirAll(elsewhere, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(elsewhere, f.reportsDir()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+
+	// The control: the same fixture without a refusal calls herdr and
+	// clears the foreign marker, so the reads above can see both.
+	t.Run("control: an accepted scratch reaches herdr and the marker check", func(t *testing.T) {
+		f := newScratchDispatchFixture(t)
+		marker := core.CompactPendingPath(filepath.Join(f.state, "ws"), "worker")
+		if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(marker, []byte(`{"version":1,"token":"t","pane":"another-pane","brief":"b","pid":1,"started":"s","created_at":"2026-10-20T00:00:00Z"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code, _, _, stderr := f.dispatch(t); code != 0 {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+		if len(f.herdrCalls(t)) == 0 {
+			t.Fatal("the control dispatch logged no herdr call: the log reader sees nothing")
+		}
+		if _, err := os.Lstat(marker); !os.IsNotExist(err) {
+			t.Fatalf("the control dispatch kept the foreign marker: %v", err)
+		}
+	})
 }
