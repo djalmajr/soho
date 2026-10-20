@@ -85,6 +85,11 @@ func TestGcVolumeFree(t *testing.T) {
 				if strings.Contains(out, "volume free:") || len(calls) != 0 {
 					t.Fatalf("unexpected volume sample or output: calls=%v out=%q", calls, out)
 				}
+				// A missing line alone leaves nothing on disk: the freed
+				// line says so and points at no volume line.
+				if tc.missing && (!strings.Contains(out, "freed: 0 B (the copies were already gone from disk)\n") || strings.Contains(out, "see volume free below")) {
+					t.Fatalf("freed line for a missing entry only: %q", out)
+				}
 				return
 			}
 			count := tc.devices

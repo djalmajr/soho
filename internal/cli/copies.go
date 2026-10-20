@@ -956,6 +956,17 @@ func (v *gcVolumes) finish() {
 	}
 }
 
+// printsAny reports whether print writes a line: some copy left the disk
+// of a sampled (or unknown) device.
+func (v *gcVolumes) printsAny() bool {
+	for _, volume := range v.order {
+		if volume.removedParent != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (v *gcVolumes) print() {
 	for _, volume := range v.order {
 		if volume.removedParent == "" {
@@ -1270,8 +1281,14 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		gcPrintOrphanProcs(orphanProcs, threshold, now)
 	}
 	if removedAny {
-		_, _ = fmt.Fprintf(platform.Stdout, "freed: %s (logical size; see volume free below)\n", humanSize(freed))
-		volumes.print()
+		if volumes.printsAny() {
+			_, _ = fmt.Fprintf(platform.Stdout, "freed: %s (logical size; see volume free below)\n", humanSize(freed))
+			volumes.print()
+		} else {
+			// Only registry lines whose copies were already gone: no
+			// volume line follows, so none is promised.
+			_, _ = fmt.Fprintf(platform.Stdout, "freed: %s (the copies were already gone from disk)\n", humanSize(freed))
+		}
 	}
 	if procsHandled > 0 {
 		_, _ = fmt.Fprintf(platform.Stdout, "process lines handled: %d\n", procsHandled)
