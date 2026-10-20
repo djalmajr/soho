@@ -98,9 +98,13 @@ func compactProof(kind string) string {
 var compactCodexGaugeRE = regexp.MustCompile(`Context (\d+)% used`)
 
 // compactCodexFooterRE matches the context gauge of the codex footer:
-// `Context 49% used · 475K window`. Only a line that also names the window
-// counts: during a compaction the footer reads `Context 0% used` without it.
+// `Context 49% used · 475K window`, including a zero gauge with a window.
 var compactCodexFooterRE = regexp.MustCompile(`Context (\d{1,3})% used\s*\x{B7}\s*\d+(?:\.\d+)?[KM] window`)
+
+// compactCodexTruncatedFooterRE accepts a footer clipped after `used` or
+// after the separator and a Unicode ellipsis. A clipped zero is not a reading:
+// the footer also loses its window while a compaction is still running.
+var compactCodexTruncatedFooterRE = regexp.MustCompile(`Context (\d{1,3})% used(?:\s*\x{B7}\s*\x{2026})?\s*$`)
 
 // compactCodexFooterLines is how many non-empty lines, counted from the
 // bottom of the screen, are looked at: the composer line and the footer
@@ -117,8 +121,8 @@ const compactCodexFooterMinBefore = 10
 // that starts with `›`) within the last compactCodexFooterLines non-empty
 // lines; nothing above the composer is read, and without a composer there is
 // no reading. The first line from the bottom with a gauge decides alone: with
-// the window and N from 0 to 100 it gives N, otherwise (the footer during a
-// compaction has no window) there is no reading and the search does not go on.
+// the window and N from 0 to 100 it gives N; a clipped footer gives N only
+// from 1 to 100. Otherwise there is no reading and the search does not go on.
 func compactCodexContext(screen string) (int, bool) {
 	lines := compactLines(screen)
 	var tail []string
@@ -141,11 +145,15 @@ func compactCodexContext(screen string) (int, bool) {
 			continue
 		}
 		m := compactCodexFooterRE.FindStringSubmatch(line)
+		truncated := m == nil
+		if truncated {
+			m = compactCodexTruncatedFooterRE.FindStringSubmatch(line)
+		}
 		if m == nil {
 			return 0, false
 		}
 		n, err := strconv.Atoi(m[1])
-		if err != nil || n > 100 {
+		if err != nil || n > 100 || (truncated && n == 0) {
 			return 0, false
 		}
 		return n, true

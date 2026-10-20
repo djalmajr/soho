@@ -20,6 +20,7 @@ const (
 	codexFooterCompacting  = "  GPT-6.1-Sol medium · Context 0% used · weekly 76% left · main\n"
 	codexScrolledIndicator = "  New activity · ↓ Back to bottom · esc\n"
 	codexScrolledLast      = "  New activity · enter/esc latest · ? shortcuts      ⚠ 4 warnings · f2 to view\n"
+	codexTruncatedAfter3   = "› Ask Codex to do anything\n\n  GPT-6.1-Sol high · Context 3% used · …\n  New activity · enter/esc latest   ⚠ 1\n"
 )
 
 // codexScrolled is a scrolled codex screen: a piece of the history, the
@@ -294,6 +295,18 @@ func TestCompactCodexContextRead(t *testing.T) {
 		want   int
 		ok     bool
 	}{
+		{"the narrow pane screen", codexTruncatedAfter3, 3, true},
+		{"the narrow pane at zero is still compacting", strings.Replace(codexTruncatedAfter3, "3%", "0%", 1), 0, false},
+		{"the footer cut immediately after used", "› Ask Codex\n  Sol · Context 3% used\n", 3, true},
+		{"zero cut immediately after used is still compacting", "› Ask Codex\n  Sol · Context 0% used\n", 0, false},
+		{"a positive truncated upper bound", "› Ask Codex\n  Sol · Context 100% used · …\n", 100, true},
+		{"a truncated out-of-range value", "› Ask Codex\n  Sol · Context 101% used · …\n", 0, false},
+		{"an incomplete truncated separator", "› Ask Codex\n  Sol · Context 3% used ·\n", 0, false},
+		{"ASCII dots are not the clipped footer", "› Ask Codex\n  Sol · Context 3% used · ...\n", 0, false},
+		{"a windowless nonzero footer with other text", "› Ask Codex\n  Sol · Context 3% used · weekly 76% left\n", 0, false},
+		{"another line below new activity", codexTruncatedAfter3 + "  ? shortcuts\n", 3, true},
+		{"the truncated gauge above the composer is not read", "  Sol · Context 3% used · …\n› Ask Codex\n  New activity · enter/esc latest\n", 0, false},
+		{"zero with the complete window remains valid", "› Ask Codex\n  Sol · Context 0% used · 475K window\n", 0, true},
 		{"the footer", codexScrolled(codexFooterBefore49), 49, true},
 		{"megabyte window", "› Ask Codex\n  Sol · Context 7% used · 1M window · main\n", 7, true},
 		{"a decimal window", "› Ask Codex\n  Sol · Context 7% used · 1.5M window · main\n", 7, true},
@@ -321,6 +334,69 @@ func TestCompactCodexContextRead(t *testing.T) {
 				t.Fatalf("compactCodexContext = (%d, %v) want (%d, %v): %q", got, ok, c.want, c.ok, c.screen)
 			}
 		})
+	}
+}
+
+func TestCompactCodexTruncatedContextDropped(t *testing.T) {
+	before := strings.Replace(codexTruncatedAfter3, "3%", "45%", 1)
+	base, ok := compactCodexContext(before)
+	if !ok || base != 45 {
+		t.Fatalf("base=(%d,%t), want (45,true); screen=%q", base, ok, before)
+	}
+	if !compactCodexContextDropped(base, codexTruncatedAfter3) {
+		t.Fatalf("45 to 3 must prove a drop: %q", codexTruncatedAfter3)
+	}
+	if compactCodexContextDropped(base, strings.Replace(codexTruncatedAfter3, "3%", "0%", 1)) || compactCodexContextDropped(base, before) {
+		t.Fatal("a compacting footer or an unchanged gauge must not prove a drop")
+	}
+}
+
+func TestCompactCodexTruncatedFooterDropCompacted(t *testing.T) {
+	fakeFastClock(t, time.Second)
+	f := newCompactFixture(t, "codex", []fakecli.Rule{
+		{Argv: []string{"agent", "get", "worker"}, Call: 1, Stdout: compactStateJSON("idle", 1)},
+		{Argv: []string{"agent", "get", "worker"}, Call: 2, Stdout: compactStateJSON("working", 2)},
+		{Argv: []string{"agent", "get", "worker"}, Call: 3, Stdout: compactStateJSON("idle", 3)},
+		{Argv: []string{"pane", "send-text", "p1", "/compact"}, Stdout: `{"result":{}}`},
+		{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
+		{Argv: compactReadArgv("worker"), Call: 1, Stdout: strings.Replace(codexTruncatedAfter3, "3%", "45%", 1)},
+		{Argv: compactReadArgv("worker"), Call: 2, Stdout: strings.Replace(codexTruncatedAfter3, "3%", "0%", 1)},
+		{Argv: compactReadArgv("worker"), Stdout: codexTruncatedAfter3},
+	})
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "600000")
+	if code != 0 || errText != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errText)
+	}
+	value := compactJSON(t, out)
+	if value["agent"] != "worker" || value["kind"] != "codex" || value["status"] != "compacted" {
+		t.Fatalf("compact result=%v", value)
+	}
+	if elapsed, ok := value["elapsed_ms"].(float64); !ok || elapsed >= 600000 {
+		t.Fatalf("elapsed_ms=%v must be below 600000: %v", value["elapsed_ms"], value)
+	}
+	calls := f.calls(t)
+	if reads := countArgv(calls, compactReadArgv("worker")); reads != 3 {
+		t.Fatalf("visible reads=%d want 3 (base, compacting, proof); calls=%#v", reads, calls)
+	}
+	if gets := countArgv(calls, []string{"agent", "get", "worker"}); gets != 3 {
+		t.Fatalf("agent gets=%d want 3 (pre-send, liveness, idle); calls=%#v", gets, calls)
+	}
+	for _, call := range calls {
+		if len(call.Argv) >= 2 && call.Argv[0] == "pane" {
+			switch call.Argv[1] {
+			case "send-text":
+				if strings.Join(call.Argv, "\x00") != "pane\x00send-text\x00p1\x00/compact" {
+					t.Fatalf("unexpected pane text: %q", call.Argv)
+				}
+			case "send-keys":
+				if strings.Join(call.Argv, "\x00") != "pane\x00send-keys\x00p1\x00Enter" {
+					t.Fatalf("unexpected navigation key: %q", call.Argv)
+				}
+			}
+		}
+	}
+	if countArgv(calls, []string{"pane", "send-text", "p1", "/compact"}) != 1 || countArgv(calls, []string{"pane", "send-keys", "p1", "Enter"}) != 1 {
+		t.Fatalf("the compact command must be sent exactly once: %#v", calls)
 	}
 }
 
