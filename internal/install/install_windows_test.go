@@ -6,7 +6,9 @@
 // that replacement succeeds with static payloads, and that a destination
 // held open by a running process, which MoveFileEx refuses to replace, is
 // moved to <destination>.old (or .old-<n>) so the new bytes take its
-// place, with the move undone when the new binary cannot follow. No Go toolchain is needed at test time: the fixture is the
+// place, with the move undone when the new binary cannot follow. Each
+// backup gets a <backup>.soho-install marker with its sha256, and a later
+// install removes only the backups whose marker matches. No Go toolchain is needed at test time: the fixture is the
 // re-executed native test binary itself (its own bytes are the installed
 // artifact), not a program built by the test. The generic tests in
 // install_test.go also run on Windows for the shared contracts.
@@ -120,17 +122,19 @@ func TestInstallWindowsRunningDestinationIsMovedAside(t *testing.T) {
 	if err != nil || !bytes.Equal(moved, exe) {
 		t.Fatalf("%s.old does not hold the running binary: len=%d err=%v", destination, len(moved), err)
 	}
-	if again.res.Previous != destination+".old" {
-		t.Fatalf("Previous = %q; want %q", again.res.Previous, destination+".old")
+	if again.res.Previous != destination+".old" || again.res.PreviousMarker != destination+".old.soho-install" {
+		t.Fatalf("Previous = %q, PreviousMarker = %q; want %q and its marker", again.res.Previous, again.res.PreviousMarker, destination+".old")
 	}
-	assertDirExact(t, got.installDir, "soho.exe", "soho.exe.old")
+	assertFile(t, destination+".old.soho-install", sha256Hex(exe)+"\n")
+	assertDirExact(t, got.installDir, "soho.exe", "soho.exe.old", "soho.exe.old.soho-install")
 }
 
-// A .old an earlier install left, whose process has ended, is removed by
-// the next install, which then replaces the destination directly.
+// A .old an earlier install left and marked, whose process has ended, is
+// removed with its marker by the next install, which then replaces the
+// destination directly.
 func TestInstallWindowsRemovesARemovableEarlierOld(t *testing.T) {
 	dir := t.TempDir()
-	writeFiles(t, dir, map[string]string{"soho.exe": "previous binary", "soho.exe.old": "older binary"})
+	writeFiles(t, dir, map[string]string{"soho.exe": "previous binary", "soho.exe.old": "older binary", "soho.exe.old.soho-install": markerFor("older binary")})
 	got := runCore(t, fixtureOptions{installDir: dir})
 	if got.err != nil {
 		t.Fatalf("install: %v", got.err)
@@ -142,8 +146,9 @@ func TestInstallWindowsRemovesARemovableEarlierOld(t *testing.T) {
 	assertDirExact(t, dir, "soho.exe")
 }
 
-// A .old still running (it cannot be removed) and a running destination:
-// the install keeps the .old and moves the destination to .old-1.
+// A marked .old still running (it cannot be removed) and a running
+// destination: the install keeps the .old with its marker and moves the
+// destination to .old-1.
 func TestInstallWindowsEarlierOldInUseLeadsToASuffix(t *testing.T) {
 	exe := testBinaryBytes(t)
 	got := runCore(t, fixtureOptions{payload: exe})
@@ -175,7 +180,7 @@ func TestInstallWindowsEarlierOldInUseLeadsToASuffix(t *testing.T) {
 			t.Fatalf("%s does not hold a running binary: len=%d err=%v", aside, len(data), err)
 		}
 	}
-	assertDirExact(t, got.installDir, "soho.exe", "soho.exe.old", "soho.exe.old-1")
+	assertDirExact(t, got.installDir, "soho.exe", "soho.exe.old", "soho.exe.old-1", "soho.exe.old-1.soho-install", "soho.exe.old.soho-install")
 }
 
 // The new binary cannot follow the move aside (the second rename fails,
@@ -209,4 +214,44 @@ func TestInstallWindowsSecondRenameFailureRestoresTheDestination(t *testing.T) {
 		t.Fatalf("running destination changed: len=%d err=%v", len(installed), err)
 	}
 	assertDirExact(t, got.installDir, "soho.exe")
+}
+
+// A user's soho.exe.old-7 without a marker survives an install that moves
+// the running destination aside: it keeps its bytes, and the move takes
+// the free .old.
+func TestInstallWindowsKeepsAnUnmarkedUserFile(t *testing.T) {
+	exe := testBinaryBytes(t)
+	got := runCore(t, fixtureOptions{payload: exe})
+	if got.err != nil {
+		t.Fatalf("first install: %v", got.err)
+	}
+	destination := got.res.Destination
+	writeFiles(t, got.installDir, map[string]string{"soho.exe.old-7": "USER DATA"})
+	holdRunning(t, destination)
+	again := runCore(t, fixtureOptions{payload: []byte("static replacement payload v2\n"), installDir: got.installDir})
+	if again.err != nil || again.res.Previous != destination+".old" {
+		t.Fatalf("install: %v, Previous %q; want the running binary at .old", again.err, again.res.Previous)
+	}
+	assertFile(t, destination+".old-7", "USER DATA")
+	assertDirExact(t, got.installDir, "soho.exe", "soho.exe.old", "soho.exe.old-7", "soho.exe.old.soho-install")
+}
+
+// A marker that cannot be written (simulated by the write seam) does not
+// fail the install of a running destination: the backup stays without a
+// marker and Result.PreviousMarker is empty.
+func TestInstallWindowsUnwrittenMarkerStillSucceeds(t *testing.T) {
+	exe := testBinaryBytes(t)
+	got := runCore(t, fixtureOptions{payload: exe})
+	if got.err != nil {
+		t.Fatalf("first install: %v", got.err)
+	}
+	destination := got.res.Destination
+	holdRunning(t, destination)
+	useReplaceSeams(t, true, nil, nil)
+	writeFile = func(string, []byte, os.FileMode) error { return errors.New("simulated: marker not written") }
+	again := runCore(t, fixtureOptions{payload: []byte("static replacement payload v2\n"), installDir: got.installDir})
+	if again.err != nil || again.res.Previous != destination+".old" || again.res.PreviousMarker != "" {
+		t.Fatalf("install: %v, Previous %q, PreviousMarker %q; want the .old without a marker", again.err, again.res.Previous, again.res.PreviousMarker)
+	}
+	assertDirExact(t, got.installDir, "soho.exe", "soho.exe.old")
 }

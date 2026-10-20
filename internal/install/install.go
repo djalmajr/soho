@@ -64,13 +64,17 @@ type Options struct {
 // Destination is the freshly installed soho binary (what SOHO_BIN points
 // at). Previous is where the running destination was moved on Windows
 // when it could not be replaced directly (<destination>.old or
-// <destination>.old-<n>), and empty otherwise.
+// <destination>.old-<n>), and empty otherwise. PreviousMarker is the
+// provenance marker written next to it (<Previous>.soho-install), which
+// lets the next install remove that backup; it is empty when the marker
+// could not be written, and the backup then stays until removed by hand.
 type Result struct {
-	Artifact    string
-	Destination string
-	Digest      string
-	Previous    string
-	ReleaseURL  string
+	Artifact       string
+	Destination    string
+	Digest         string
+	Previous       string
+	PreviousMarker string
+	ReleaseURL     string
 }
 
 // supportedOS mirrors the platforms the old installers accepted, in
@@ -180,105 +184,148 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 			return Result{}, fmt.Errorf("install: setting executable mode: %w", err)
 		}
 	}
-	previous, err := replaceDestination(binPath, destination)
+	previous, marker, err := replaceDestination(binPath, destination)
 	if err != nil {
 		return Result{}, err
 	}
 	return Result{
-		Artifact:    artifact,
-		Destination: destination,
-		Digest:      digest,
-		Previous:    previous,
-		ReleaseURL:  releaseURL,
+		Artifact:       artifact,
+		Destination:    destination,
+		Digest:         digest,
+		Previous:       previous,
+		PreviousMarker: marker,
+		ReleaseURL:     releaseURL,
 	}, nil
 }
 
 // Seams for the replacement step: moveAsideOnRefusal turns on the Windows
 // fallback (tests turn it on elsewhere to exercise it portably), and
-// renameFile and removeFile are os.Rename and os.Remove except in tests
-// that simulate a refusal.
+// renameFile, removeFile and writeFile are os.Rename, os.Remove and
+// os.WriteFile except in tests that simulate a refusal.
 var (
 	moveAsideOnRefusal = runtime.GOOS == "windows"
 	renameFile         = os.Rename
 	removeFile         = os.Remove
+	writeFile          = os.WriteFile
 )
 
-// maxAsideSuffix bounds the <destination>.old-<n> names tried when an
-// earlier <destination>.old cannot be removed.
+// maxAsideSuffix bounds the <destination>.old-<n> names tried when
+// <destination>.old is taken.
 const maxAsideSuffix = 100
 
+// asideMarkerSuffix names the provenance marker of a backup:
+// <backup>.soho-install holds the sha256 of the bytes the install moved to
+// <backup>. Only a backup whose marker matches its bytes is removed later.
+const asideMarkerSuffix = ".soho-install"
+
 // replaceDestination renames the verified binPath onto destination and
-// returns the path the previous destination was moved to, or "" when the
-// direct rename replaced it.
+// returns the path the previous destination was moved to and the path of
+// that backup's marker, both "" when the direct rename replaced it; the
+// marker is "" also when it could not be written.
 //
 // Same-directory rename: one atomic operation on POSIX, and the only step
 // off Windows. On Windows os.Rename is MoveFileEx with
 // MOVEFILE_REPLACE_EXISTING (see internal/syscall/windows.Rename), which
 // replaces a normal destination but is refused for an executable that is
 // running (for example, the soho.exe running this install). Windows still
-// lets a running executable be renamed, so when the direct rename fails and
-// the destination exists, the destination is moved to <destination>.old
-// (or the first free <destination>.old-<n> when an earlier .old cannot be
-// removed), then binPath is renamed onto destination; if that second
-// rename fails, the first one is undone and the error is returned, so the
-// old destination stays in place. A <destination>.old left by an earlier
-// install (and any <destination>.old-<n>) is removed at the start, before
-// the direct rename; a failure to remove it is not an error.
-func replaceDestination(binPath, destination string) (string, error) {
+// lets a running executable be read and renamed, so when the direct rename
+// fails and the destination exists, the sha256 of the destination is read,
+// the destination is moved to the first free name among <destination>.old
+// and <destination>.old-<n>, then binPath is renamed onto destination; if
+// that second rename fails, the first one is undone and the error is
+// returned, so the old destination stays in place. Once the new binary is
+// in place, <backup>.soho-install is written with the sha256 read before
+// the move; a failure to read or write it is not an error, and leaves a
+// backup that no later install removes. Backups an earlier install marked
+// are removed at the start, before the direct rename (see
+// removeEarlierAside); a failure to remove one is not an error.
+func replaceDestination(binPath, destination string) (string, string, error) {
 	if !moveAsideOnRefusal {
 		if err := renameFile(binPath, destination); err != nil {
-			return "", fmt.Errorf("install: replacing %s: %w", destination, err)
+			return "", "", fmt.Errorf("install: replacing %s: %w", destination, err)
 		}
-		return "", nil
+		return "", "", nil
 	}
 	removeEarlierAside(destination)
 	err := renameFile(binPath, destination)
 	if err == nil {
-		return "", nil
+		return "", "", nil
 	}
 	if _, statErr := os.Lstat(destination); statErr != nil {
-		return "", fmt.Errorf("install: replacing %s: %w", destination, err)
+		return "", "", fmt.Errorf("install: replacing %s: %w", destination, err)
 	}
 	aside, asideErr := freeAsidePath(destination)
 	if asideErr != nil {
-		return "", fmt.Errorf("install: replacing %s: %w (%v)", destination, err, asideErr)
+		return "", "", fmt.Errorf("install: replacing %s: %w (%v)", destination, err, asideErr)
 	}
+	previousDigest, digestErr := sha256File(destination)
 	if moveErr := renameFile(destination, aside); moveErr != nil {
-		return "", fmt.Errorf("install: replacing %s: %w (moving it to %s: %v)", destination, err, aside, moveErr)
+		return "", "", fmt.Errorf("install: replacing %s: %w (moving it to %s: %v)", destination, err, aside, moveErr)
 	}
 	if err := renameFile(binPath, destination); err != nil {
 		if undoErr := renameFile(aside, destination); undoErr != nil {
-			return "", fmt.Errorf("install: replacing %s: %w (the previous binary is at %s: %v)", destination, err, aside, undoErr)
+			return "", "", fmt.Errorf("install: replacing %s: %w (the previous binary is at %s: %v)", destination, err, aside, undoErr)
 		}
-		return "", fmt.Errorf("install: replacing %s after moving it aside: %w", destination, err)
+		return "", "", fmt.Errorf("install: replacing %s after moving it aside: %w", destination, err)
 	}
-	return aside, nil
+	if digestErr != nil {
+		return aside, "", nil
+	}
+	marker := aside + asideMarkerSuffix
+	if err := writeFile(marker, []byte(previousDigest+"\n"), 0o644); err != nil {
+		_ = removeFile(marker)
+		return aside, "", nil
+	}
+	return aside, marker, nil
 }
 
-// removeEarlierAside tries to remove the <destination>.old and the
-// <destination>.old-<n> an earlier install left; one that cannot be
-// removed (its process may still run) stays, and is not an error.
-func removeEarlierAside(destination string) {
-	_ = removeFile(destination + ".old")
+// asideNames lists the backup names of destination: <destination>.old,
+// then <destination>.old-1 to <destination>.old-<maxAsideSuffix>.
+func asideNames(destination string) []string {
+	names := []string{destination + ".old"}
 	for n := 1; n <= maxAsideSuffix; n++ {
-		_ = removeFile(fmt.Sprintf("%s.old-%d", destination, n))
+		names = append(names, fmt.Sprintf("%s.old-%d", destination, n))
+	}
+	return names
+}
+
+// removeEarlierAside removes the backups an earlier install made: a
+// backup is removed, then its marker, only when <backup>.soho-install
+// holds the sha256 of the backup's current bytes. A backup without a
+// marker, with a marker that does not match, or that cannot be removed
+// (its process may still run) stays with its marker; a marker whose
+// backup is gone is removed. No failure here is an error.
+func removeEarlierAside(destination string) {
+	for _, backup := range asideNames(destination) {
+		marker := backup + asideMarkerSuffix
+		data, err := os.ReadFile(marker)
+		if err != nil {
+			continue
+		}
+		if _, err := os.Lstat(backup); errors.Is(err, os.ErrNotExist) {
+			_ = removeFile(marker)
+			continue
+		}
+		want := strings.ToLower(strings.TrimSpace(string(data)))
+		got, err := sha256File(backup)
+		if err != nil || !isHex64(want) || got != want {
+			continue
+		}
+		if removeFile(backup) == nil {
+			_ = removeFile(marker)
+		}
 	}
 }
 
-// freeAsidePath returns <destination>.old when no such file exists,
-// otherwise the first <destination>.old-<n> (n from 1 to maxAsideSuffix)
-// that does not exist.
+// freeAsidePath returns the first backup name (see asideNames) that does
+// not exist; a name held by any file, a user's included, is skipped.
 func freeAsidePath(destination string) (string, error) {
-	candidate := destination + ".old"
-	for n := 1; ; n++ {
+	for _, candidate := range asideNames(destination) {
 		if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
 			return candidate, nil
 		}
-		if n > maxAsideSuffix {
-			return "", fmt.Errorf("no free name from %s.old-1 to %s.old-%d", destination, destination, maxAsideSuffix)
-		}
-		candidate = fmt.Sprintf("%s.old-%d", destination, n)
 	}
+	return "", fmt.Errorf("no free name from %s.old to %s.old-%d", destination, destination, maxAsideSuffix)
 }
 
 // installDest joins the install directory with the binary's file name for

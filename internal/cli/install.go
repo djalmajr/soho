@@ -240,10 +240,14 @@ func pathContains(path, dir string) bool {
 
 // movedAsideLine is the stdout line for an install that moved the running
 // destination aside (Windows), and "" when the destination was replaced
-// directly.
+// directly. The next install removes the backup only when its provenance
+// marker was written.
 func movedAsideLine(res install.Result) string {
 	if res.Previous == "" {
 		return ""
+	}
+	if res.PreviousMarker == "" {
+		return fmt.Sprintf("install: the running %s was moved to %s; its install marker could not be written, so it stays and can be deleted by hand once it no longer runs", res.Destination, res.Previous)
 	}
 	return fmt.Sprintf("install: the running %s was moved to %s; the next install removes it", res.Destination, res.Previous)
 }
