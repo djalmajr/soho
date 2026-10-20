@@ -1952,20 +1952,41 @@ func (g *idleGc) wantKeptBySection(t *testing.T) {
 }
 
 // failRemoval makes the removal of the discard fail once: the entry below
-// it cannot be unlinked. It returns the function that lets it succeed.
+// it cannot be unlinked. A read-only directory does that on Unix; on
+// Windows, where a directory's mode does not, a handle held open on the
+// file does (Go opens files without FILE_SHARE_DELETE). It returns the
+// function that lets it succeed.
 func (g *idleGc) failRemoval(t *testing.T) func() {
 	t.Helper()
 	locked := filepath.Join(g.discard(), "sub")
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	var held *os.File
+	release := func() error {
+		if held != nil {
+			_ = held.Close()
+			held = nil
+		}
+		return os.Chmod(locked, 0o700)
+	}
+	t.Cleanup(func() { _ = release() })
 	fail := true
 	g.atRemoval(t, func(string) {
-		if fail {
-			_ = os.Chmod(locked, 0o500)
+		if !fail {
+			return
 		}
+		if runtime.GOOS != "windows" {
+			_ = os.Chmod(locked, 0o500)
+			return
+		}
+		f, err := os.Open(filepath.Join(locked, "a.txt"))
+		if err != nil {
+			t.Errorf("hold the file open: %v", err)
+			return
+		}
+		held = f
 	})
 	return func() {
 		fail = false
-		if err := os.Chmod(locked, 0o700); err != nil {
+		if err := release(); err != nil {
 			t.Fatal(err)
 		}
 	}
