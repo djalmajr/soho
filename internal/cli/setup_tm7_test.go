@@ -342,7 +342,7 @@ func TestSetupTM7PanesWriteCLI(t *testing.T) {
 	})
 }
 
-// These expectations were native assertions inside TestSetupTM7ParityGoldens
+// These expectations were native assertions inside the retired setup parity test
 // before the output corpus was retired; they do not depend on stored output.
 func TestSetupRetirementRefusalContracts(t *testing.T) {
 	t.Run("probe and plan are exclusive", func(t *testing.T) {
