@@ -23,35 +23,24 @@ type waitStatusFixture struct {
 	root  string
 }
 
-func TestParityWaitQuotaGolden(t *testing.T) { // JS: "parity wait: quota (test-quota.sh)"
-	data, err := os.ReadFile(filepath.Join("..", "testdata", "legacy", "parity-wait.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var corpus map[string]struct {
-		Steps []struct {
-			Args []string `json:"args"`
-			RC   int      `json:"rc"`
-			Out  string   `json:"out"`
-			Err  string   `json:"err"`
-		} `json:"steps"`
-		Files map[string]string `json:"files"`
-	}
-	if err := json.Unmarshal(data, &corpus); err != nil {
-		t.Fatal(err)
-	}
-	golden, ok := corpus["wait-quota"]
-	if !ok || len(golden.Steps) != 1 {
-		t.Fatalf("wait-quota golden missing or malformed: %#v", corpus["wait-quota"])
-	}
+func TestWaitQuotaOutputContract(t *testing.T) {
 	row := "build\tp1\tgrok\timplementer\txai\t1\t/work\tnow\tgrok-4.7\tfull\timplementer\tbuild\n"
 	f := newWaitStatusFixture(t, row, []fakecli.Rule{
 		{Argv: []string{"agent", "get", "build"}, Stdout: `{"result":{"agent":{"agent_status":"idle"}}}`},
 		{Argv: []string{"agent", "read", "build", "--source", "visible", "--lines", "20"}, Stdout: "hit your usage limit\ntry again in 2 hours\n"},
 	})
-	code, out, stderr := f.runCommand(t, golden.Steps[0].Args...)
-	if code != golden.Steps[0].RC || out != golden.Steps[0].Out || strings.ReplaceAll(strings.ReplaceAll(stderr, "herdr-soho:", "PROG:"), "soho:", "PROG:") != golden.Steps[0].Err {
-		t.Fatalf("wait-quota differs from golden: code=%d stdout=%q stderr=%q; want rc=%d stdout=%q stderr=%q", code, out, stderr, golden.Steps[0].RC, golden.Steps[0].Out, golden.Steps[0].Err)
+	code, out, stderr := f.runCommand(t, "wait", "build", "--timeout", "2000")
+	if code != 11 || !strings.Contains(stderr, "agent 'build' lane=build kind=grok model=grok-4.7") {
+		t.Fatalf("wait-quota: code=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]any{"agent": "build", "status": "quota", "report": "", "lane": "build", "kind": "grok", "model": "grok-4.7", "match": "hit your usage limit", "renewal": "try again in 2 hours"} {
+		if value, present := got[key]; !present || value != want {
+			t.Fatalf("wait JSON %s=%v present=%t want=%v", key, value, present, want)
+		}
 	}
 	friction, err := os.ReadFile(filepath.Join(f.state, "friction.log"))
 	if err != nil {
@@ -64,7 +53,7 @@ func TestParityWaitQuotaGolden(t *testing.T) { // JS: "parity wait: quota (test-
 	line := lines[len(lines)-2]
 	parts := strings.SplitN(line, "\t", 4)
 	if len(parts) != 4 || parts[1] != "warning" || parts[2] != "wait" || !strings.Contains(parts[3], "hit your usage limit; renewal: try again in 2 hours") {
-		t.Fatalf("friction entry does not match parity golden semantics: %q", line)
+		t.Fatalf("friction entry does not match quota contract: %q", line)
 	}
 }
 

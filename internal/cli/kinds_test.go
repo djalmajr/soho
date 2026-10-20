@@ -72,6 +72,13 @@ func TestKindsCommands(t *testing.T) {
 			t.Fatalf("code=%d stderr=%q", code, stderr.String())
 		}
 	})
+	t.Run("model with a kind but no spec exits 1 with an empty stdout and the spec diagnostic", func(t *testing.T) {
+		env, cwd := commandFixture(t)
+		code, out, stderr := runIn(t, []string{"model", "grok"}, env, cwd)
+		if code != 1 || out != "" || stderr != "soho: 2: spec\n" {
+			t.Fatalf("code=%d stdout=%q stderr=%q; want 1, empty stdout and the spec diagnostic", code, out, stderr)
+		}
+	})
 	t.Run("env reports versions installed kinds runtime and effective config", func(t *testing.T) { // JS: "env: lines in the bash order (version, herdr, os, runtime, kinds, config)"
 		env := commandFakeEnv(t, map[string][]fakecli.Rule{"git": {{Argv: []string{"-C", filepath.Join(os.TempDir(), "skill"), "log", "-1", "--format=%h %cs"}, Stdout: "abc1234 2026-09-24\n"}}, "herdr": {{Argv: []string{"--version"}, Stdout: "herdr 1.0\n"}}, "grok": {{Argv: []string{"--version"}, Stdout: "Grok 4\nbuild\n"}}})
 		// Control SkillDir separately for the git argv contract.

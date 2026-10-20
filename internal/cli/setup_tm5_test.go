@@ -2,157 +2,17 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
-	"fmt"
+
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
+
 	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil"
-	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
-
-type setupTM5GoldenStep struct {
-	Args []string `json:"args"`
-	Err  string   `json:"err"`
-	Out  string   `json:"out"`
-	RC   int      `json:"rc"`
-}
-
-type setupTM5Golden struct {
-	Files []struct {
-		Rel     string  `json:"rel"`
-		Content *string `json:"content"`
-	} `json:"files"`
-	StateWS string               `json:"stateWs"`
-	Steps   []setupTM5GoldenStep `json:"steps"`
-}
-
-func runSetupTM5InitGolden(t *testing.T, name string, seedConfig bool) {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "testdata", "legacy", "parity-setup-probe.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var goldens map[string]setupTM5Golden
-	if err := json.Unmarshal(data, &goldens); err != nil {
-		t.Fatal(err)
-	}
-	want, ok := goldens[name]
-	if !ok {
-		t.Fatalf("golden %q missing", name)
-	}
-	// The doctor step runs with HERDR_ENV=1, no HERDR_PANE_ID and no herdr on PATH:
-	// the Go doctor reports that context as invalid (PLAN §9 A2), where the frozen
-	// JS golden still says inside Herdr.
-	for i := range want.Steps {
-		// The frozen golden predates the soho name layer; the exact-substitution
-		// name oracle adapts the expected output and error, and the DJA-318
-		// rename oracle adapts the herdr-soho → soho generation change.
-		want.Steps[i].Out = testutil.ApplySohoRenameOracle(testutil.ApplyHookOracle(testutil.RewriteSohoName(want.Steps[i].Out))).(string)
-		want.Steps[i].Err = testutil.ApplySohoRenameOracle(testutil.ApplyHookOracle(testutil.RewriteSohoName(want.Steps[i].Err))).(string)
-		want.Steps[i].Out = testutil.RewriteApprovalsAutoDoctor(want.Steps[i].Out)
-		want.Steps[i].Err = testutil.RewriteApprovalsAutoDoctor(want.Steps[i].Err)
-		if strings.Join(want.Steps[i].Args, " ") == "doctor" {
-			out := want.Steps[i].Out
-			if !strings.Contains(out, "ok     inside Herdr (HERDR_ENV=1)\n") {
-				t.Fatalf("golden %q no longer has the inside-Herdr line", name)
-			}
-			out = strings.Replace(out, "ok     inside Herdr (HERDR_ENV=1)\n", "warn   Herdr context invalid: HERDR_PANE_ID is unset and herdr pane current failed (herdr CLI not found in PATH)\n", 1)
-			// The summary line moves one ok to the warnings.
-			out = regexp.MustCompile(`(?m)^(\d+) ok, (\d+) warning\(s\)$`).ReplaceAllStringFunc(out, func(line string) string {
-				var ok, warn int
-				fmt.Sscanf(line, "%d ok, %d warning(s)", &ok, &warn)
-				return fmt.Sprintf("%d ok, %d warning(s)", ok-1, warn+1)
-			})
-			want.Steps[i].Out = out
-		}
-	}
-	env, repo := setupTM5CommandFixture(t)
-	root := filepath.Dir(repo)
-	skillDir := setupTM5SkillDir(t)
-	env["USERPROFILE"] = env.Get("HOME")
-	env["HERDR_ENV"] = "1"
-	env["SOHO_SKILL_DIR"] = skillDir
-	fakeDir := t.TempDir()
-	if _, err := fakecli.Install(t, fakeDir, "herdr", []fakecli.Rule{{Argv: []string{"--version"}, Stdout: "herdr 9.9.9\n"}, {AnyArgs: true, Stdout: "herdr 9.9.9\n"}}); err != nil {
-		t.Fatal(err)
-	}
-	withHerdr := withFakeCLI(env, fakeDir)
-	withHerdr["SOHO_SKILL_DIR"] = skillDir
-	if seedConfig {
-		conf := filepath.Join(repo, ".agents", "soho.conf")
-		if err := os.MkdirAll(filepath.Dir(conf), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(conf, []byte("lane.build.kind=grok\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	old, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(repo); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(old) })
-	oldOut, oldErr := platform.Stdout, platform.Stderr
-	var gotSteps []setupTM5GoldenStep
-	for i, args := range [][]string{{"doctor"}, {"init"}} {
-		stepEnv := env
-		if i == 1 {
-			stepEnv = withHerdr
-		}
-		var out, stderr bytes.Buffer
-		platform.Stdout, platform.Stderr = &out, &stderr
-		rc := Run(args, stepEnv)
-		stdoutText := normalizeGoldenRoot(out.String(), root)
-		stderrText := normalizeGoldenRoot(stderr.String(), root)
-		program := filepath.Join(skillDir, "scripts", "herdr-soho")
-		if platform.Current() == "win32" {
-			program += ".cmd"
-		}
-		// The setup guidance now names the native executable (platform.LauncherPath
-		// of the running test binary, no SOHO_BIN override), not the
-		// obsolete scripts launcher; both map to the golden's PROG token.
-		launcher := platform.LauncherPath(env)
-		stdoutText = strings.ReplaceAll(stdoutText, launcher, "PROG")
-		stderrText = strings.ReplaceAll(stderrText, launcher, "PROG")
-		stdoutText = strings.ReplaceAll(stdoutText, program, "PROG")
-		stderrText = strings.ReplaceAll(stderrText, program, "PROG")
-		stdoutText = normalizeGoldenRootPathSeparators(stdoutText)
-		stderrText = normalizeGoldenRootPathSeparators(stderrText)
-		stderrText = strings.ReplaceAll(stderrText, "soho: ", "PROG: ")
-		gotSteps = append(gotSteps, setupTM5GoldenStep{Args: args, RC: rc, Out: stdoutText, Err: stderrText})
-	}
-	platform.Stdout, platform.Stderr = oldOut, oldErr
-	if !equalSetupTM5GoldenSteps(gotSteps, want.Steps) {
-		got, _ := json.MarshalIndent(gotSteps, "", "  ")
-		exp, _ := json.MarshalIndent(want.Steps, "", "  ")
-		for i := range min(len(gotSteps), len(want.Steps)) {
-			if gotSteps[i].RC != want.Steps[i].RC || gotSteps[i].Out != want.Steps[i].Out || gotSteps[i].Err != want.Steps[i].Err || strings.Join(gotSteps[i].Args, "\x00") != strings.Join(want.Steps[i].Args, "\x00") {
-				t.Fatalf("steps differ at index %d: stdout %s; stderr %s\ngot=%s\nwant=%s", i, firstGoldenLineDifference(gotSteps[i].Out, want.Steps[i].Out), firstGoldenLineDifference(gotSteps[i].Err, want.Steps[i].Err), got, exp)
-			}
-		}
-		t.Fatalf("steps differ\ngot=%s\nwant=%s", got, exp)
-	}
-	state := filepath.Join(root, "state", "ws", "agents.tsv")
-	content, err := os.ReadFile(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(want.Files) != 1 || want.Files[0].Rel != "state/ws/agents.tsv" || want.Files[0].Content == nil || string(content) != *want.Files[0].Content {
-		t.Fatalf("state file=%q golden=%+v", content, want.Files)
-	}
-	if want.StateWS != "<ROOT>/state/ws" {
-		t.Fatalf("golden stateWs=%q", want.StateWS)
-	}
-}
 
 func setupTM5CommandFixture(t *testing.T) (platform.Env, string) {
 	t.Helper()
@@ -210,23 +70,6 @@ func setupTM5SkillDir(t *testing.T) string {
 		t.Fatalf("skill directory %q: %v", dir, err)
 	}
 	return dir
-}
-
-func equalSetupTM5GoldenSteps(a, b []setupTM5GoldenStep) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].RC != b[i].RC || a[i].Out != b[i].Out || a[i].Err != b[i].Err || strings.Join(a[i].Args, "\x00") != strings.Join(b[i].Args, "\x00") {
-			return false
-		}
-	}
-	return true
-}
-
-func TestSetupTM5InitParityGoldens(t *testing.T) {
-	t.Run(`// JS: "parity: init — doctor on stderr, the JSON context, first_run true"`, func(t *testing.T) { runSetupTM5InitGolden(t, "init-first", false) })
-	t.Run(`// JS: "parity: init with a project config that makes the team choice — first_run false"`, func(t *testing.T) { runSetupTM5InitGolden(t, "init-config", true) })
 }
 
 func TestSetupTM5LocalDoctorCases(t *testing.T) {

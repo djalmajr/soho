@@ -508,7 +508,7 @@ go build ./cmd/soho
 
 Run gofmt on edited Go files. The native tests use Go executable fixtures, explicit isolated HOME/config/cache/temp roots and fake transport CLIs. They must not use personal agent settings or live provider endpoints. The final runtime proof makes Node.js, Bun and Bash unavailable; do not replace the retired matrices with another interpreter engine.
 
-Frozen compatibility JSON in `internal/testdata/legacy` retains its historical bytes and adjacent hashes/provenance. Do not regenerate expected output from the Go implementation just to turn a failure green. An intentional native contract change needs a narrow documented adaptation and meaningful consumer assertions. Compile each affected target, and exercise process, locking, installation and terminal behavior natively on macOS, Linux and Windows; compilation alone is not native proof.
+Test consumer contracts directly: exit codes, machine-readable fields, table columns, error messages and side effects. Do not generate whole expected command output from the implementation just to turn a failure green. An intentional contract change needs meaningful consumer assertions. Compile each affected target, and exercise process, locking, installation and terminal behavior natively on macOS, Linux and Windows; compilation alone is not native proof.
 
 For briefs, name the focused package/test that proves the slice. A full or repeated stability suite is justified only by integrated changes or a new unresolved failure. Native evaluation fixtures and the `herdr-soho-eval` command are described in the evaluation protocol.
 

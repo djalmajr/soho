@@ -160,6 +160,48 @@ func TestApplyLaneFileCreatesConfigWithDefaultFileMode(t *testing.T) {
 	}
 }
 
+// TestApplyLaneFileGolden used these seeds and checked for leftover temp files
+// independently of the historical output/file comparison.
+func TestApplyLaneFileRetirementTempContract(t *testing.T) {
+	seeds := []struct{ name, panes, file string }{
+		{"empty", "4", ""},
+		{"preset3-to-4", "4", "lane.build.roles=implementer,designer,tasker\nlane.read.roles=scouter,researcher,reviewer,security-reviewer,ui-reviewer,inspector\n"},
+		{"preset4-to-3", "3", "lane.build.roles=implementer,designer,tasker\nlane.explore.roles=scouter,researcher\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector\n"},
+		{"custom", "4", "lane.ops.roles=implementer,tasker\n"},
+		{"unanimous-kind", "4", "role.implementer.kind=grok\nrole.designer.kind=grok\nrole.tasker.kind=grok\n"},
+		{"divergent-kind", "4", "role.implementer.kind=grok\nrole.designer.kind=agy\n"},
+		{"planner-keys", "4", "role.planner.kind=codex\nrole.planner.model=gpt-5\nrole.implementer.kind=grok\nrole.designer.kind=grok\nrole.tasker.kind=grok\n"},
+		{"existing-lane-kind", "4", "lane.build.kind=codex\nrole.implementer.kind=grok\nrole.designer.kind=grok\nrole.tasker.kind=grok\n"},
+		{"unanimous-model", "4", "lane.build.kind=agy\nrole.implementer.model=m1\nrole.designer.model=m1\nrole.tasker.model=m1\n"},
+		{"custom-space-roles", "4", "lane.x.roles=implementer designer\nrole.implementer.kind=grok\nrole.designer.kind=grok\n"},
+	}
+	for _, sc := range seeds {
+		t.Run(sc.name, func(t *testing.T) {
+			env, repo := fixture(t)
+			env["USERPROFILE"] = env.Get("HOME")
+			env["TMPDIR"] = t.TempDir()
+			dest := filepath.Join(filepath.Dir(repo), "dest", "herdr-soho.conf")
+			if sc.file != "" {
+				write(t, dest, sc.file)
+			} else if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			ApplyLaneFile(dest, sc.panes, env, repo)
+			for _, dir := range []string{filepath.Dir(dest), env.Get("TMPDIR")} {
+				entries, err := os.ReadDir(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, entry := range entries {
+					if strings.HasPrefix(entry.Name(), "soho-conf.") || (strings.HasPrefix(entry.Name(), ".soho.conf.") && strings.HasSuffix(entry.Name(), ".tmp")) {
+						t.Fatalf("temporary file remains: %s", filepath.Join(dir, entry.Name()))
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestReviewLaneLocksAnEditor(t *testing.T) {
 	// JS: "laneDecide: full lane (busy, --fresh candidate, locked), pending-report, reuse by name"
 	// Mutation captured: removing the edit-history lock would incorrectly allow a reviewer to reuse a worker that wrote code.

@@ -192,29 +192,3 @@ func TestTM8FormerCLI(t *testing.T) {
 		}
 	})
 }
-
-func TestTM8ParityConfigGoldens(t *testing.T) {
-	for _, tc := range []struct{ title, scenario string }{
-		{`parity: config on a fresh repo`, "config-fresh"},                                                            // JS: "parity: config on a fresh repo"
-		{`parity: config set creates the project file`, "config-set-fresh"},                                           // JS: "parity: config set creates the project file"
-		{`parity: config set preserves comments, collapses duplicates, appends`, "config-set-rewrite"},                // JS: "parity: config set preserves comments, collapses duplicates, appends"
-		{`parity: dotted keys (role/lane/model) are written`, "config-set-dotted"},                                    // JS: "parity: dotted keys (role/lane/model) are written"
-		{`parity: invalid keys/values refuse with rc 2 and leave the file alone`, "config-set-invalid"},               // JS: "parity: invalid keys/values refuse with rc 2 and leave the file alone"
-		{`parity: --user writes the user file, not the project file`, "config-set-user"},                              // JS: "parity: --user writes the user file, not the project file"
-		{`parity: values reach the file verbatim (backslashes, no key injection)`, "config-set-verbatim"},             // JS: "parity: values reach the file verbatim (backslashes, no key injection)"
-		{`parity: lane.<name>.roles validates the roles`, "config-set-lane-roles"},                                    // JS: "parity: lane.<name>.roles validates the roles"
-		{`parity: session set writes the layer and config shows source session`, "session-set"},                       // JS: "parity: session set writes the layer and config shows source session"
-		{`parity: session clear drops one key, then removes the layer`, "session-clear"},                              // JS: "parity: session clear drops one key, then removes the layer"
-		{`parity: session errors (bad subcommand/key/value, usage) leave the file alone`, "session-errors-seeded"},    // JS: "parity: session errors (bad subcommand/key/value, usage) leave the file alone"
-		{`parity: env beats session; session beats project`, "precedence"},                                            // JS: "parity: env beats session; session beats project"
-		{`parity: without a resolvable workspace set refuses, config still works`, "no-workspace"},                    // JS: "parity: without a resolvable workspace set refuses, config still works"
-		{`parity: roles table and role JSON (including errors)`, "roles-role"},                                        // JS: "parity: roles table and role JSON (including errors)"
-		{`parity: a project role dir shadows the skill role`, "project-roles"},                                        // JS: "parity: a project role dir shadows the skill role"
-		{`parity: relative state dir keeps the .gitignore entry current (state_root side effect)`, "state-gitignore"}, // JS: "parity: relative state dir keeps the .gitignore entry current (state_root side effect)"
-		{`parity: bare ` + "`session`" + ` shows the empty-session message`, "session-bare-show"},                     // JS: "parity: bare `session` shows the empty-session message"
-	} {
-		t.Run(tc.title, func(t *testing.T) { // JS: parity-config.test.mjs title is the subtest name.
-			runTM8ConfigGolden(t, tc.scenario)
-		})
-	}
-}

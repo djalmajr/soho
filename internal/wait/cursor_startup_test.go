@@ -22,7 +22,7 @@ import (
 // waitTrustScreen is the verified cursor Workspace Trust Required dialog.
 func waitTrustScreen(t *testing.T) string {
 	t.Helper()
-	b, err := os.ReadFile("../testdata/legacy/fixtures/cursor-trust.txt")
+	b, err := os.ReadFile("testdata/cursor-trust.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestWaitNonCursorWindowsDialogKeepsFlow(t *testing.T) {
 }
 
 func TestWaitCursorWindowsClippedTrustNoInput(t *testing.T) {
-	b, err := os.ReadFile("../testdata/legacy/fixtures/cursor-trust-clipped.txt")
+	b, err := os.ReadFile("testdata/cursor-trust-clipped.txt")
 	if err != nil {
 		t.Fatal(err)
 	}

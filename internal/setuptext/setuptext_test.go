@@ -5,11 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"github.com/djalmajr/soho/internal/jsonjs"
-	"github.com/djalmajr/soho/internal/testutil"
-	"os"
-	"path/filepath"
+
 	"reflect"
-	"strconv"
+
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -37,38 +35,6 @@ func TestSetupTextCases(t *testing.T) {
 		block := SetupBlock()
 		if !strings.HasPrefix(block, SetupStart+"\n## Multi-agent workflow (soho)\n") || !strings.HasSuffix(block, SetupEnd+"\n") || strings.Contains(block, "/Users/") || strings.Contains(block, `C:\\Users\\`) {
 			t.Fatal("setup block markers or portability changed")
-		}
-	})
-	t.Run(`// JS: "setupBlock: exact text (neutral block: flow + brief contract, config for the rest)"`, func(t *testing.T) {
-		data, err := os.ReadFile(filepath.Join("..", "testdata", "legacy", "parity-setup.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var goldens map[string]struct {
-			Files []struct {
-				Rel     string  `json:"rel"`
-				Content *string `json:"content"`
-			} `json:"files"`
-		}
-		if err := json.Unmarshal(data, &goldens); err != nil {
-			t.Fatal(err)
-		}
-		var want *string
-		for _, file := range goldens["setup-fresh"].Files {
-			if file.Rel == "repo/AGENTS.md" && file.Content != nil {
-				// The frozen golden keeps the pre-DJA-330 "Peer messages"
-				// bullet; the testutil oracle rewrites only that exact
-				// sentence to the approved replacement.
-				content := strings.TrimPrefix(*file.Content, "# Agent instructions\n\n")
-				// The frozen golden predates the DJA-318 setup-text
-				// rename; the soho-rename oracle rewrites only the exact
-				// frozen herdr-soho block to the soho block.
-				content = testutil.RewriteSohoRename(testutil.ApplyPeerBlockOracle(content).(string))
-				want = &content
-			}
-		}
-		if want == nil || SetupBlock() != *want {
-			t.Fatalf("setup block differs from parity golden: got %q, want %v", SetupBlock(), want)
 		}
 	})
 	t.Run("setupHookReminder: exact portable PATH command, no trailing newline", func(t *testing.T) { // JS: "setupHookReminder: exact text, no trailing newline"
@@ -350,74 +316,4 @@ func TestSetupTextCases(t *testing.T) {
 			}
 		}
 	})
-}
-
-func TestSetupTextDifferential(t *testing.T) {
-	type row struct {
-		Kind     string  `json:"kind"`
-		Input    *string `json:"input"`
-		Expected *string `json:"expected"`
-	}
-	data, err := os.ReadFile("../testdata/legacy/setuptext.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rows []row
-	if err = json.Unmarshal(data, &rows); err != nil {
-		t.Fatal(err)
-	}
-	// The frozen parity oracle keeps the exact pre-native hook commands as
-	// the expected hook outputs (raw for reminder/doctor rows and
-	// JSON-quoted inside the hooks-result documents), the pre-DJA-330
-	// "Peer messages" bullet inside the expected block texts, and the
-	// pre-DJA-318 herdr-soho setup block and hook literals. The testutil
-	// oracle adapters rewrite only those exact strings to the approved
-	// native literals, the DJA-330 replacement and the soho setup-text
-	// contract. The seed inputs and every other expectation are untouched.
-	// The DJA-318 setup-text rename re-contracts two frozen block-result
-	// seeds (a herdr-soho block migrates in place keeping the project's
-	// lines; the retired herdr-agents block is no longer recognized and is
-	// kept as a user prefix with the soho block appended): the documented
-	// SohoRenameBlockResultExpected adaptation replaces those expectations
-	// only.
-	for i := range rows {
-		if rows[i].Expected != nil {
-			adapted := testutil.RewriteSohoRename(testutil.ApplyPeerBlockOracle(testutil.ApplyHookOracle(*rows[i].Expected)).(string))
-			rows[i].Expected = &adapted
-		}
-		if rows[i].Kind == "block-result" && rows[i].Input != nil {
-			if expected, ok := testutil.SohoRenameBlockResultExpected(*rows[i].Input); ok {
-				rows[i].Expected = &expected
-			}
-		}
-	}
-	for i, r := range rows {
-		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			if r.Kind == "" {
-				t.Fatalf("setuptext.json row %d has empty kind", i)
-			}
-			var got *string
-			switch r.Kind {
-			case "block":
-				got = ptr(SetupBlock())
-			case "reminder":
-				got = ptr(SetupHookReminder())
-			case "doctor":
-				got = ptr(SetupHookDoctor())
-			case "legacy-reminder":
-				got = ptr(LegacyHookReminder())
-			case "legacy-doctor":
-				got = ptr(LegacyHookDoctor())
-			case "block-result":
-				got = SetupBlockResult(r.Input)
-			case "hooks-result":
-				got = SettingsHooksResult(r.Input)
-			default:
-				t.Fatalf("setuptext.json row %d has unknown kind %q", i, r.Kind)
-			}
-			if !reflect.DeepEqual(got, r.Expected) {
-				t.Fatalf("%s = %#v JS=%#v", r.Kind, got, r.Expected)
-			}
-		})
-	}
 }

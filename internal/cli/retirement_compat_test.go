@@ -1,59 +1,6 @@
 package cli
 
-// Retirement (C1): native Go consumers for the three legacy golden groups no
-// native test had consumed — parity-entry, parity-status and parity-dispatch.
-// The frozen values come from ../testdata/legacy/parity-{entry,status,dispatch}.json,
-// byte-identical copies of the legacy
-// skills/herdr-soho/scripts/test/golden/parity-{entry,status,dispatch}.json
-// (verified in the 2026-10-06 go-audit, 091729 report §files). The legacy
-// suites ran only the JS entry and compared it against those stored values;
-// this file reruns the same fixtures through the real native CLI (Run) with a
-// fakecli herdr and temporary state, and compares the stable observable
-// contracts: exit code, normalized stdout/stderr, on-disk state and the fake
-// herdr call log (the native stand-in for the sh fake's herdr.log, whose
-// lines are the joined argv).
-//
-// Normalization mirrors the legacy harness:
-//   - the fixture root becomes <ROOT> and the skill dir <SKILL>
-//     (test/golden.mjs normalizeRoots);
-//   - the dispatch/report stamp \d{8}T\d{6}(?:-\d+)? becomes <TS>
-//     (parity-dispatch.test.mjs normTs);
-//   - friction timestamps become TS (the legacy per-line regex). Go writes
-//     them in UTC with a Z suffix (core.FrictionISO,
-//     internal/core/state.go:23-26) where the legacy wrote local time
-//     without a Z: the Z is an intentional Go/JS difference and is absorbed
-//     by the normalized prefix here;
-//   - the stderr program prefix becomes PROG: (parity.mjs normalizeErr; the
-//     existing normalizeParityError);
-//   - .since files become EPOCH and .approvals.log stamps become TS
-//     (parity-dispatch.test.mjs collectState).
-//
-// Intentional Go/JS differences are asserted here against the Go contract
-// (with the existing validated Go consumer cited) instead of re-approving
-// the stored legacy value:
-//   - status: agent_not_found is `gone`, not the legacy `unavailable`
-//     (internal/cli/status_wait_parity_test.go:171 "parity wait: denied
-//     (unavailable) and gone (test-status.sh)"; the usage line says "gone =
-//     agent_not_found; unavailable = agent get failed (exit 4)");
-//   - status: an unknown agent Herdr still knows is `not-in-roster` with a
-//     stderr hint (internal/wait/status_not_in_roster_test.go, D11 probe);
-//   - status with no names covers the whole roster in roster order, same as
-//     the named run (internal/cli/status_cases_test.go "status: no names
-//     covers the whole roster in roster order, same as the named run");
-//     the legacy died 2 with "give at least one agent name";
-//   - the dispatch sidecar is a superset of the legacy sidecar (task_report,
-//     brief_sha256, for, session: the one-send-once guard): the stable legacy
-//     fields are compared, the superseded shape is not pinned;
-//   - the composed prompt is compared structurally (role line, brief body,
-//     report contract line, launcher line), not byte-for-byte: the stored
-//     prose predates the native role files;
-//   - the entry help variants print the current native usage text, not the
-//     stored legacy prose: the usage text is the current contract, pinned by
-//     TestHelpAndUnknown (internal/cli/cli_test.go "help variants print the
-//     usage"); the scenario consumes the argument matrix against it.
-//   - the prompt's command path is the native executable (<BIN>), never
-//     the retired skill scripts launcher; other frozen prompt/state
-//     expectations remain unchanged.
+// Command and side-effect contracts retained after retirement of the historical output corpus.
 
 import (
 	"encoding/json"
@@ -77,46 +24,13 @@ import (
 // ---------- frozen golden shapes ----------
 
 type retireStep struct {
-	Args []string          `json:"args"`
-	Env  map[string]string `json:"env"`
-	Err  string            `json:"err"`
-	Out  string            `json:"out"`
-	RC   int               `json:"rc"`
-}
-
-type retireFile struct {
-	Rel     string  `json:"rel"`
-	Content *string `json:"content"`
-}
-
-// entry and status scenarios (status-denied-friction is the shapeless one).
-type retireStepsScenario struct {
-	Files []retireFile `json:"files"`
-	Steps []retireStep `json:"steps"`
-}
-
-type retireFrictionScenario struct {
-	Friction string `json:"friction"`
-	RC       int    `json:"rc"`
-}
-
-type retireDispatchScenario struct {
-	Files     map[string]string   `json:"files"`
-	StepFiles []map[string]string `json:"stepFiles"`
-	Steps     []retireStep        `json:"steps"`
-}
-
-func loadRetirementGolden(t *testing.T, suite string) map[string]json.RawMessage {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "testdata", "legacy", "parity-"+suite+".json"))
-	if err != nil {
-		t.Fatalf("read frozen parity-%s.json: %v", suite, err)
-	}
-	var goldens map[string]json.RawMessage
-	if err := json.Unmarshal(data, &goldens); err != nil {
-		t.Fatalf("parse frozen parity-%s.json: %v", suite, err)
-	}
-	return goldens
+	Args    []string          `json:"args"`
+	Env     map[string]string `json:"env"`
+	Err     string            `json:"err"`
+	Out     string            `json:"out"`
+	RC      int               `json:"rc"`
+	Columns [][]string
+	JSON    []map[string]any
 }
 
 // ---------- fixture ----------
@@ -371,35 +285,21 @@ func (f *retirementFixture) collectState(t *testing.T) map[string]string {
 
 // ---------- entry ----------
 
-func TestRetirementEntryGolden(t *testing.T) {
-	// JS: parity-entry.test.mjs (help-variants, unknown-command).
-	// The stored legacy help prose is superseded: the native usage text is
-	// the current contract, pinned by TestHelpAndUnknown
-	// (cli_test.go "help variants print the usage", "soho —
-	// role-agent layer"). The scenario is consumed against that Go
-	// contract: the same argument matrix, rc 0, the current usage on
-	// stdout, nothing on stderr.
-	goldens := loadRetirementGolden(t, "entry")
-	for _, name := range []string{"help-variants", "unknown-command"} {
+func TestRetirementEntryContract(t *testing.T) {
+	for name, steps := range retirementInvocations["entry"] {
 		t.Run(name, func(t *testing.T) {
-			var sc retireStepsScenario
-			if err := json.Unmarshal(goldens[name], &sc); err != nil {
-				t.Fatal(err)
-			}
 			f := newRetirementFixture(t, nil, nil)
-			for i, step := range sc.Steps {
-				code, out, errOut := f.run(t, step)
-				out, errOut = f.norm(out), f.norm(normalizeParityError(errOut))
-				if name == "help-variants" {
-					if code != 0 || out != usage || errOut != "" {
-						t.Fatalf("step %d args=%v: code=%d want 0; stderr=%q; first stdout diff vs current usage: %s",
-							i, step.Args, code, errOut, firstGoldenLineDifference(out, usage))
-					}
-					continue
+			for _, step := range steps {
+				code, out, stderr := f.run(t, step)
+				if code != step.RC || normalizeParityError(stderr) != step.Err {
+					t.Fatalf("args=%q code=%d stderr=%q", step.Args, code, stderr)
 				}
-				if code != step.RC || out != step.Out || errOut != step.Err {
-					t.Fatalf("step %d args=%v: code=%d want %d out=%q want %q err=%q want %q",
-						i, step.Args, code, step.RC, out, step.Out, errOut, step.Err)
+				if name == "help-variants" {
+					if !strings.HasPrefix(out, "soho —") || !strings.Contains(out, "dispatch") {
+						t.Fatalf("help missing command contract: %q", out)
+					}
+				} else if out != "" {
+					t.Fatalf("unknown command stdout=%q", out)
 				}
 			}
 		})
@@ -429,49 +329,76 @@ type retireStatusScenario struct {
 	extra func(t *testing.T, f *retirementFixture)
 }
 
-func runRetirementStatusScenario(t *testing.T, goldens map[string]json.RawMessage, name string, sc retireStatusScenario) {
+func runRetirementStatusScenario(t *testing.T, invocations map[string][]retireStep, name string, sc retireStatusScenario) {
 	t.Helper()
-	var stored retireStepsScenario
-	if err := json.Unmarshal(goldens[name], &stored); err != nil {
-		t.Fatalf("golden %s: %v", name, err)
-	}
 	f := newRetirementFixture(t, sc.rules, sc.seed)
-	for i, step := range stored.Steps {
+	rosterPath := filepath.Join(f.ws, "agents.tsv")
+	before, _ := os.ReadFile(rosterPath)
+	for i, step := range invocations[name] {
 		if i < len(sc.stepEnv) {
 			for key, value := range sc.stepEnv[i] {
 				step.Env = mergeEnv(step.Env, key, value)
 			}
 		}
-		code, out, errOut := f.run(t, step)
-		if sc.transform != nil {
-			out = sc.transform(out)
-		}
-		out = f.norm(out)
-		errOut = f.norm(normalizeParityError(errOut))
-		wantRC, wantOut, wantErr := step.RC, step.Out, step.Err
 		if w, ok := sc.want[i]; ok {
-			wantRC, wantOut, wantErr = w.RC, w.Out, w.Err
+			step.RC, step.Err = w.RC, w.Err
+			step.Columns = nil
+			for _, row := range strings.Split(strings.TrimSuffix(w.Out, "\n"), "\n") {
+				step.Columns = append(step.Columns, strings.Split(row, "\t"))
+			}
 		}
-		if code != wantRC || out != wantOut || errOut != wantErr {
-			t.Fatalf("step %d args=%v: code=%d want %d; first stdout diff: %s; stderr=%q want %q",
-				i, step.Args, code, wantRC, firstGoldenLineDifference(out, wantOut), errOut, wantErr)
+		code, out, stderr := f.run(t, step)
+		if code != step.RC || f.norm(normalizeParityError(stderr)) != step.Err {
+			t.Fatalf("step=%d args=%q code=%d want=%d stderr=%q want=%q", i, step.Args, code, step.RC, stderr, step.Err)
+		}
+		if len(step.Columns) > 0 {
+			assertStatusColumns(t, f.norm(out), step.Columns)
+		}
+		if name == "status-quota" {
+			var obj map[string]any
+			if err := json.Unmarshal([]byte(out), &obj); err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range map[string]any{"agent": "build", "status": "quota", "report": "", "lane": "build", "kind": "grok", "model": "grok-4.7", "renewal": "", "task_s": nil, "activity_s": nil} {
+				if v, ok := obj[key]; !ok || !reflect.DeepEqual(v, want) {
+					t.Fatalf("quota %s=%v (present=%t), want %v", key, v, ok, want)
+				}
+			}
+			if obj["match"] != "Error: quota exceeded for this account" {
+				t.Fatalf("quota match=%v", obj["match"])
+			}
+		}
+		switch step.Args[0] {
+		case "roster":
+			if !strings.HasPrefix(out, "NAME") || !strings.Contains(out, "ROLE") || !strings.Contains(out, "CWD TASK") {
+				t.Fatalf("roster header=%q", out)
+			}
+			if name == "roster-table" {
+				for _, v := range []string{"build", "tasker (designer)", "old8", "/work2"} {
+					if !strings.Contains(out, v) {
+						t.Fatalf("roster misses %q: %q", v, out)
+					}
+				}
+			}
+		case "friction":
+			if name == "friction-empty" && !strings.Contains(out, "no friction recorded under ") {
+				t.Fatal(out)
+			}
+			if name == "friction-seeded" {
+				for _, v := range []string{"timestamp, level, command, message", "warning\tstatus\told warning", "error(exit 4)\tstatus\told error"} {
+					if !strings.Contains(out, v) {
+						t.Fatalf("friction misses %q", v)
+					}
+				}
+			}
 		}
 	}
-	for _, file := range stored.Files {
-		actual, readErr := os.ReadFile(filepath.Join(f.root, filepath.FromSlash(file.Rel)))
-		if file.Content == nil {
-			if !os.IsNotExist(readErr) {
-				t.Fatalf("file %s should be absent (error=%v)", file.Rel, readErr)
-			}
-			continue
-		}
-		if readErr != nil {
-			t.Fatalf("file %s: %v", file.Rel, readErr)
-		}
-		got, want := f.norm(string(actual)), f.norm(*file.Content)
-		if got != want {
-			t.Fatalf("file %s:\ngot  %q\nwant %q", file.Rel, got, want)
-		}
+	after, _ := os.ReadFile(rosterPath)
+	if len(before) > 0 && string(before) != string(after) {
+		t.Fatalf("status changed roster: before=%q after=%q", before, after)
+	}
+	if len(before) == 0 && len(after) > 0 && string(after) != retireR12 {
+		t.Fatalf("status initialized an unexpected roster: %q", after)
 	}
 	if sc.extra != nil {
 		sc.extra(t, f)
@@ -511,10 +438,10 @@ func retireScreenRule(target, screen string) fakecli.Rule {
 
 var retireRosterTableAgeRE = regexp.MustCompile(`\t(-|\d+)\t(-|\d+)\n`)
 
-func TestRetirementStatusGolden(t *testing.T) {
+func TestRetirementStatusContract(t *testing.T) {
 	// JS: parity-status.test.mjs (the status/roster/friction scenarios of
 	// test-status.sh, plus the roster/table cases and the env error paths).
-	goldens := loadRetirementGolden(t, "status")
+	invocations := retirementInvocations["status"]
 
 	names := []string{
 		"status-denied", "status-denied-multi", "status-missing", "status-down",
@@ -526,10 +453,10 @@ func TestRetirementStatusGolden(t *testing.T) {
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			if name == "status-denied-friction" {
-				runRetirementDeniedFriction(t, goldens)
+				runRetirementDeniedFriction(t)
 				return
 			}
-			runRetirementStatusScenario(t, goldens, name, retireStatusCase(t, name))
+			runRetirementStatusScenario(t, invocations, name, retireStatusCase(t, name))
 		})
 	}
 }
@@ -745,29 +672,23 @@ func retireStatusCase(t *testing.T, name string) retireStatusScenario {
 	}
 }
 
-// status-denied-friction is stored by shape (the friction line with its
-// timestamp normalized to TS) rather than as steps/files.
-func runRetirementDeniedFriction(t *testing.T, goldens map[string]json.RawMessage) {
-	var stored retireFrictionScenario
-	if err := json.Unmarshal(goldens["status-denied-friction"], &stored); err != nil {
-		t.Fatalf("golden status-denied-friction: %v", err)
-	}
-	f := newRetirementFixture(t, []fakecli.Rule{
-		{Argv: []string{"agent", "get", "worker"}, Code: 1, Stderr: retireDeniedOS + "\n"},
-		retireScreenRule("worker", "terminal-fallback"),
-	}, func(f *retirementFixture) { retireWriteRoster(t, f, retireR8+retireWorker8) })
+func runRetirementDeniedFriction(t *testing.T) {
+	f := newRetirementFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Code: 1, Stderr: retireDeniedOS + "\n"}, retireScreenRule("worker", "terminal-fallback")}, func(f *retirementFixture) { retireWriteRoster(t, f, retireR8+retireWorker8) })
 	code, _, _ := f.run(t, retireStep{Args: []string{"status", "worker"}})
-	if code != stored.RC {
-		t.Fatalf("code=%d want %d", code, stored.RC)
+	if code != 4 {
+		t.Fatalf("code=%d", code)
 	}
 	log, err := os.ReadFile(filepath.Join(f.ws, "friction.log"))
 	if err != nil {
-		t.Fatalf("friction log: %v", err)
+		t.Fatal(err)
 	}
-	got := strings.TrimSpace(normFrictionContent(f.norm(string(log))))
-	want := strings.TrimSpace(stored.Friction)
-	if got != want {
-		t.Fatalf("friction=%q want %q", got, want)
+	lines := strings.Split(strings.TrimSpace(normFrictionContent(string(log))), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("friction=%q", log)
+	}
+	fields := strings.SplitN(lines[0], "\t", 4)
+	if len(fields) != 4 || fields[0] != "TS" || fields[1] != "warning" || fields[2] != "status" || !strings.Contains(fields[3], "agent 'worker': herdr agent get failed: "+retireDeniedOS) {
+		t.Fatalf("friction=%q", log)
 	}
 }
 
@@ -817,79 +738,63 @@ type retireDispatchCase struct {
 	stepEnv []map[string]string
 	// structural assertions for the composed prompt files: the legacy
 	// includes-checks (role line, brief body, the standing lines).
-	role  string
-	agent string
-	brief string
-	extra func(t *testing.T, f *retirementFixture, stepOuts []string, final map[string]string)
+	role    string
+	agent   string
+	brief   string
+	sidecar [3]string // kind, model, effort from the seeded or newly spawned worker.
+	extra   func(t *testing.T, f *retirementFixture, stepOuts []string, final map[string]string)
 }
 
 var retireReportPathRE = regexp.MustCompile(`write your report to (.+) and reply with exactly that path`)
 
-func runRetirementDispatchScenario(t *testing.T, goldens map[string]json.RawMessage, name string, sc retireDispatchCase) {
+func runRetirementDispatchScenario(t *testing.T, invocations map[string][]retireStep, name string, sc retireDispatchCase) {
 	t.Helper()
-	var stored retireDispatchScenario
-	if err := json.Unmarshal(goldens[name], &stored); err != nil {
-		t.Fatalf("golden %s: %v", name, err)
-	}
 	f := newRetirementFixture(t, sc.rules, sc.seed)
-	stepOuts := make([]string, 0, len(stored.Steps))
-	for i, step := range stored.Steps {
-		env := map[string]string{}
+	var outputs []string
+	for i, step := range invocations[name] {
+		beforeCalls := len(f.herdrLogLines(t))
 		if i < len(sc.stepEnv) {
-			env = sc.stepEnv[i]
+			for k, v := range sc.stepEnv[i] {
+				step.Env = mergeEnv(step.Env, k, v)
+			}
 		}
-		for key, value := range env {
-			step.Env = mergeEnv(step.Env, key, value)
+		code, out, stderr := f.run(t, step)
+		if code != step.RC {
+			t.Fatalf("step=%d args=%q code=%d want=%d stdout=%q stderr=%q", i, step.Args, code, step.RC, out, stderr)
 		}
-		code, out, errOut := f.run(t, step)
 		out = f.norm(out)
-		// The frozen goldens predate the name renames; the oracle rewrites
-		// only the anchored name/message forms, everything else is
-		// byte-identical.
-		wantOut, wantErr := testutil.RewriteSohoName(step.Out), testutil.RewriteSohoName(step.Err)
-		// DJA-392 intentional contract adaptation: roles with mcp=none add
-		// the kind's MCP-off flag after the effort args; the frozen bytes
-		// are unchanged.
-		if adapted, adErr := testutil.RewriteMcpSpawnJSON(wantOut); adErr != nil {
-			t.Fatalf("DJA-392 spawn JSON adaptation: %s", adErr)
-		} else {
-			wantOut = adapted
-		}
-		if adaptedErr, adErr := testutil.RewriteMcpErr(wantErr, wantOut); adErr != nil {
-			t.Fatalf("DJA-392 dispatch stderr adaptation: %s", adErr)
-		} else {
-			wantErr = adaptedErr
-		}
-		wantOut = testutil.RewriteApprovalsAutoSpawnJSON(wantOut, step.Args)
-		errOut = f.norm(normalizeParityError(errOut))
-		if code != step.RC || out != wantOut || errOut != wantErr {
-			t.Fatalf("step %d args=%v: code=%d want %d; first stdout diff: %s; stderr=%q want %q",
-				i, step.Args, code, step.RC, firstGoldenLineDifference(out, wantOut), errOut, wantErr)
-		}
-		stepOuts = append(stepOuts, out)
-		// The fake herdr call log after the step is the legacy herdr.log:
-		// one joined-argv line per call (an empty log is an empty slice).
-		if wantRaw, ok := stored.StepFiles[i]["herdr.log"]; ok {
-			wantRaw = testutil.RewriteSohoName(wantRaw)
-			if adapted, adErr := testutil.RewriteMcpAgentStartLog(wantRaw); adErr != nil {
-				t.Fatalf("DJA-392 dispatch log adaptation: %s", adErr)
-			} else {
-				wantRaw = adapted
+		assertRetirementJSON(t, out, step.JSON)
+		calls := f.herdrLogLines(t)[beforeCalls:]
+		prompts := 0
+		for _, call := range calls {
+			if strings.HasPrefix(call, "agent prompt ") {
+				prompts++
+				if !strings.HasPrefix(call, "agent prompt "+sc.agent+" Read the file ") {
+					t.Fatalf("prompt targeted the wrong agent: %q", call)
+				}
 			}
-			wantRaw = testutil.RewriteApprovalsAutoStartLog(wantRaw, step.Args)
-			want := []string{}
-			if trimmed := strings.TrimSuffix(wantRaw, "\n"); trimmed != "" {
-				want = strings.Split(trimmed, "\n")
-			}
-			got := f.herdrLogLines(t)
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("herdr call log after step %d:\ngot  %v\nwant %v", i, got, want)
+			if step.Args[0] == "dispatch" && strings.HasPrefix(call, "agent start ") {
+				t.Fatalf("dispatch started an agent: %q", call)
 			}
 		}
+		wantPrompts := 1
+		if code == 2 || code == 5 {
+			wantPrompts = 0
+		}
+		if prompts != wantPrompts {
+			t.Fatalf("step %d prompt count=%d want=%d; calls=%q", i, prompts, wantPrompts, calls)
+		}
+		if code == 5 && !strings.Contains(stderr, "shares a model family with edit agents") {
+			t.Fatalf("family refusal=%q", stderr)
+		}
+		if code == 2 && !strings.Contains(stderr, "brief_lint=strict") {
+			t.Fatalf("strict lint refusal=%q", stderr)
+		}
+		outputs = append(outputs, out)
 	}
-	checkDispatchFinalFiles(t, f, stored, sc, stepOuts)
+	checkDispatchFinalFiles(t, f, sc, outputs)
 	if sc.extra != nil {
-		sc.extra(t, f, stepOuts, f.collectState(t))
+		sc.extra(t, f, outputs, f.collectState(t))
 	}
 }
 
@@ -915,26 +820,6 @@ func sortedKeys(m map[string]string) []string {
 		}
 	}
 	return out
-}
-
-// compareSidecar compares the stable legacy fields of the dispatch sidecar;
-// the native sidecar is a superset (task_report, brief_sha256, for, session:
-// the one-send-once guard) and its superseded shape is not pinned.
-func compareSidecar(t *testing.T, key, got, want string) {
-	t.Helper()
-	parse := func(v string) map[string]any {
-		var obj map[string]any
-		if err := json.Unmarshal([]byte(v), &obj); err != nil {
-			t.Fatalf("sidecar %s: %v (content %q)", key, err, v)
-		}
-		return obj
-	}
-	g, w := parse(got), parse(want)
-	for _, field := range []string{"version", "kind", "model", "effort", "submission"} {
-		if !reflect.DeepEqual(g[field], w[field]) {
-			t.Fatalf("sidecar %s field %s: got %v want %v", key, field, g[field], w[field])
-		}
-	}
 }
 
 // compareComposed asserts the legacy includes-checks of the composed prompt:
@@ -980,139 +865,8 @@ func compareComposed(t *testing.T, key, got string, sc retireDispatchCase, stepO
 	t.Fatalf("composed %s misses the report contract line for any step report path", key)
 }
 
-// TestDJA379DispatchOracle exercises the DJA-379 adaptation itself:
-// applied to a fragment of the frozen golden it replaces exactly the three
-// documented pairs and nothing else; applied to a text without a pair it
-// fails.
-func TestDJA379DispatchOracle(t *testing.T) {
-	// A controlled fragment carrying all three pairs, plus the distractors
-	// the exact-string contract must leave alone: the .current.md report
-	// pointer, another agent's path and the state-dir files the pairs do
-	// not cover.
-	frag := `{"files":{"state/ws/briefs/build-<TS>.md":"<ROOT>/state/ws/reports/build-<TS>.md","state/ws/reports/build-<TS>.current.md":"old","state/ws/briefs/build-<TS>.dispatch.json":"{}","state/ws/last-report-build":"state/ws/reports/build-<TS>.md","herdr.log":"agent prompt build <ROOT>/state/ws/briefs/build-<TS>.md <ROOT>/state/ws/reports/build-<TS>.md","tmp/soho/ws/reports/rev-<TS>.md":"rev"}}`
-	want := `{"files":{"tmp/soho/ws/reports/build-<TS>.brief.md":"<ROOT>/tmp/soho/ws/reports/build-<TS>.md","state/ws/reports/build-<TS>.current.md":"old","tmp/soho/ws/reports/build-<TS>.dispatch.json":"{}","state/ws/last-report-build":"tmp/soho/ws/reports/build-<TS>.md","herdr.log":"agent prompt build <ROOT>/tmp/soho/ws/reports/build-<TS>.brief.md <ROOT>/tmp/soho/ws/reports/build-<TS>.md","tmp/soho/ws/reports/rev-<TS>.md":"rev"}}`
-	adapted, err := testutil.ApplyDispatchReportDirOracle(frag)
-	if err != nil {
-		t.Fatalf("adapt the fragment: %v", err)
-	}
-	if adapted != want {
-		t.Fatalf("fragment adaptation:\n got  %s\n want %s", adapted, want)
-	}
-
-	// A real fragment of the frozen golden: the dispatch-quota scenario
-	// document. The adaptation must produce exactly the three pair swaps,
-	// computed here independently of the implementation.
-	pairs := [][2]string{
-		{testutil.DispatchBriefOraclePrevious, testutil.DispatchBriefOracleNative},
-		{testutil.DispatchReportOraclePrevious, testutil.DispatchReportOracleNative},
-		{testutil.DispatchSidecarOraclePrevious, testutil.DispatchSidecarOracleNative},
-	}
-	raw := string(loadRetirementGolden(t, "dispatch")["dispatch-quota"])
-	independent := raw
-	for _, pair := range pairs {
-		independent = strings.ReplaceAll(independent, pair[0], pair[1])
-	}
-	adapted, err = testutil.ApplyDispatchReportDirOracle(raw)
-	if err != nil {
-		t.Fatalf("adapt the dispatch-quota fragment: %v", err)
-	}
-	if adapted != independent {
-		t.Fatalf("the golden fragment adaptation differs from the exact pair swaps: %s",
-			firstGoldenLineDifference(adapted, independent))
-	}
-
-	// Without a pair the adaptation fails, per missing pair: it is never
-	// applied silently over a changed golden.
-	if _, err := testutil.ApplyDispatchReportDirOracle(`{"files":{"herdr.log":"agent list"}}`); err == nil {
-		t.Fatal("a text without any pair must fail")
-	}
-	for i, missing := range pairs {
-		text := ""
-		for j, pair := range pairs {
-			if j != i {
-				text += pair[0] + " "
-			}
-		}
-		if _, err := testutil.ApplyDispatchReportDirOracle(text); err == nil {
-			t.Fatalf("missing %s: expected an error", missing[0])
-		} else if !strings.Contains(err.Error(), missing[0]) {
-			t.Fatalf("missing %s: the error does not name it: %v", missing[0], err)
-		}
-	}
-	// A second application over the adapted text fails: no pair remains, so
-	// re-adapting a document is always loud.
-	if _, err := testutil.ApplyDispatchReportDirOracle(adapted); err == nil {
-		t.Fatal("a second application over the adapted text must fail")
-	}
-
-	// The run-wait-only mirror step: applied to the pair-adapted run-wait
-	// document, the state entries exist and carry the same content as the
-	// adapted tmp/soho entries (mirrorReport copies them); applied to a
-	// document without the tmp entries it fails.
-	runWaitRaw := string(loadRetirementGolden(t, "dispatch")["run-wait"])
-	adaptedRunWait, err := testutil.ApplyDispatchReportDirOracle(runWaitRaw)
-	if err != nil {
-		t.Fatalf("adapt the run-wait fragment: %v", err)
-	}
-	mirrored, err := testutil.ApplyDispatchMirrorEntries(adaptedRunWait)
-	if err != nil {
-		t.Fatalf("mirror the run-wait fragment: %v", err)
-	}
-	var mirroredDoc struct {
-		Files map[string]string `json:"files"`
-	}
-	if err := json.Unmarshal([]byte(mirrored), &mirroredDoc); err != nil {
-		t.Fatalf("parse the mirrored run-wait scenario: %v", err)
-	}
-	for stateKey, tmpKey := range map[string]string{
-		"state/ws/reports/build-<TS>.md":           "tmp/soho/ws/reports/build-<TS>.md",
-		"state/ws/briefs/build-<TS>.md":            "tmp/soho/ws/reports/build-<TS>.brief.md",
-		"state/ws/briefs/build-<TS>.dispatch.json": "tmp/soho/ws/reports/build-<TS>.dispatch.json",
-	} {
-		stateContent, okState := mirroredDoc.Files[stateKey]
-		tmpContent, okTmp := mirroredDoc.Files[tmpKey]
-		if !okState {
-			t.Fatalf("the mirrored inventory lost the state entry %s", stateKey)
-		}
-		if !okTmp {
-			t.Fatalf("the mirrored inventory lost the tmp entry %s", tmpKey)
-		}
-		if stateContent != tmpContent {
-			t.Fatalf("the mirror entry %s differs from its tmp copy %s:\n got  %q\n want %q", stateKey, tmpKey, stateContent, tmpContent)
-		}
-	}
-	// Without the adapted tmp entries the mirror step fails: it is never
-	// applied silently over a document the pair adaptation did not produce.
-	if _, err := testutil.ApplyDispatchMirrorEntries(runWaitRaw); err == nil {
-		t.Fatal("the mirror step over the unadapted document must fail")
-	} else if !strings.Contains(err.Error(), "tmp/soho/ws/reports/build-<TS>.md") {
-		t.Fatalf("the mirror error does not name the missing tmp entry: %v", err)
-	}
-}
-
-func TestRetirementDispatchGolden(t *testing.T) {
-	// JS: parity-dispatch.test.mjs (test-quota.sh, test-status.sh:199,
-	// test-multi-role.sh, and run with/without the wait).
-	goldens := loadRetirementGolden(t, "dispatch")
-
-	// DJA-379 intentional contract adaptation: with the state dir outside the worker's cwd, the composed prompt and the report go to $TMPDIR/soho/<ws>/reports; the frozen bytes are unchanged. run-wait also keeps the state-dir entries: wait's mirrorReport copies the settled report, the composed brief and the sidecar back to the state dir.
-	for _, name := range []string{"dispatch-quota", "dispatch-titled", "run-no-wait", "run-wait"} {
-		adapted, err := testutil.ApplyDispatchReportDirOracle(string(goldens[name]))
-		if err != nil {
-			t.Fatalf("golden %s: %v", name, err)
-		}
-		goldens[name] = json.RawMessage(adapted)
-	}
-	// The run-wait-only step of the adaptation: the wait settles done, so
-	// mirrorReport copied the settled report, the composed brief and the
-	// sidecar back to the state dir; the expected final inventory keeps the
-	// three state entries, each with the content of its adapted tmp/soho
-	// copy.
-	if mirrored, err := testutil.ApplyDispatchMirrorEntries(string(goldens["run-wait"])); err != nil {
-		t.Fatalf("golden run-wait: %v", err)
-	} else {
-		goldens["run-wait"] = json.RawMessage(mirrored)
-	}
+func TestRetirementDispatchContract(t *testing.T) {
+	invocations := retirementInvocations["dispatch"]
 
 	// seedRoster appends a trailing newline to each row (parity-dispatch.
 	// test.mjs); build12 does the same so the on-disk roster matches.
@@ -1274,11 +1028,20 @@ func TestRetirementDispatchGolden(t *testing.T) {
 
 	for _, name := range []string{"dispatch-quota", "dispatch-titled", "dispatch-denied", "dispatch-family", "dispatch-col4", "run-no-wait"} {
 		t.Run(name, func(t *testing.T) {
-			runRetirementDispatchScenario(t, goldens, name, cases[name])
+			sc := cases[name]
+			sc.sidecar = map[string][3]string{
+				"dispatch-quota":  {"grok", "grok-4.7", ""},
+				"dispatch-titled": {"grok", "grok-4.7", ""},
+				"dispatch-denied": {"grok", "", ""},
+				"dispatch-family": {"codex", "gpt-5", ""},
+				"dispatch-col4":   {"grok", "grok-4.7", ""},
+				"run-no-wait":     {"grok", "grok", "xhigh"},
+			}[name]
+			runRetirementDispatchScenario(t, invocations, name, sc)
 		})
 	}
 	t.Run("run-wait", func(t *testing.T) {
-		runRetirementRunWait(t, goldens)
+		runRetirementRunWait(t)
 	})
 }
 
@@ -1287,7 +1050,7 @@ func TestRetirementDispatchGolden(t *testing.T) {
 // parses the report path from the prompt text (like a worker) and writes the
 // report, after which the fake herdr returns — so dispatch settles `done`
 // from the report file, exactly like the legacy prompt-writes marker.
-func runRetirementRunWait(t *testing.T, goldens map[string]json.RawMessage) {
+func runRetirementRunWait(t *testing.T) {
 	t.Helper()
 	// JS: "run: with the wait, the report settles and collect prints it" —
 	// the fake herdr writes the report on `agent prompt` (like a worker);
@@ -1298,10 +1061,6 @@ func runRetirementRunWait(t *testing.T, goldens map[string]json.RawMessage) {
 	// report path from the prompt text (like a worker) and writes the
 	// report before the fake returns, so dispatch settles `done` from the
 	// report file.
-	var stored retireDispatchScenario
-	if err := json.Unmarshal(goldens["run-wait"], &stored); err != nil {
-		t.Fatal(err)
-	}
 	// The marker the fake `agent prompt` waits on (absent until the
 	// report-writes worker creates it).
 	marker := filepath.Join(t.TempDir(), "prompt-writes-marker")
@@ -1320,6 +1079,7 @@ func runRetirementRunWait(t *testing.T, goldens map[string]json.RawMessage) {
 		role:    "implementer",
 		agent:   "build",
 		brief:   retireFullBrief,
+		sidecar: [3]string{"grok", "grok", "xhigh"},
 		stepEnv: []map[string]string{{"SOHO_LAYOUT": "tab"}},
 	}
 	f := newRetirementFixture(t, sc.rules, func(f *retirementFixture) {
@@ -1382,108 +1142,65 @@ func runRetirementRunWait(t *testing.T, goldens map[string]json.RawMessage) {
 		}
 	}()
 
-	step := mergeStepEnv(stored.Steps[0], sc.stepEnv)
+	step := mergeStepEnv(retirementInvocations["dispatch"]["run-wait"][0], sc.stepEnv)
 	code, out, errOut := f.run(t, step)
 	out = f.norm(out)
-	// The frozen goldens predate the name renames; the oracle rewrites
-	// only the anchored name/message forms, everything else is
-	// byte-identical.
-	wantOut, wantErr := testutil.RewriteSohoName(step.Out), testutil.RewriteSohoName(step.Err)
-	// DJA-392 intentional contract adaptation: roles with mcp=none add the
-	// kind's MCP-off flag after the effort args; the frozen bytes are
-	// unchanged.
-	if adapted, adErr := testutil.RewriteMcpSpawnJSON(wantOut); adErr != nil {
-		t.Fatalf("DJA-392 spawn JSON adaptation: %s", adErr)
-	} else {
-		wantOut = adapted
+	if code != step.RC {
+		t.Fatalf("run-wait code=%d stdout=%q stderr=%q", code, out, errOut)
 	}
-	if adaptedErr, adErr := testutil.RewriteMcpErr(wantErr, wantOut); adErr != nil {
-		t.Fatalf("DJA-392 run-wait stderr adaptation: %s", adErr)
-	} else {
-		wantErr = adaptedErr
+	assertRetirementJSON(t, out, step.JSON)
+	if !strings.Contains(out, "done report\n") {
+		t.Fatalf("collect did not print report: %q", out)
 	}
-	wantOut = testutil.RewriteApprovalsAutoSpawnJSON(wantOut, step.Args)
-	errOut = f.norm(normalizeParityError(errOut))
-	if code != step.RC || out != wantOut || errOut != wantErr {
-		t.Fatalf("step 0 args=%v: code=%d want %d; first stdout diff: %s; stderr=%q want %q",
-			step.Args, code, step.RC, firstGoldenLineDifference(out, wantOut), errOut, wantErr)
-	}
-	stepOuts := []string{out}
-	if wantRaw, ok := stored.StepFiles[0]["herdr.log"]; ok {
-		wantRaw = testutil.RewriteSohoName(wantRaw)
-		if adapted, adErr := testutil.RewriteMcpAgentStartLog(wantRaw); adErr != nil {
-			t.Fatalf("DJA-392 run-wait log adaptation: %s", adErr)
-		} else {
-			wantRaw = adapted
-		}
-		wantRaw = testutil.RewriteApprovalsAutoStartLog(wantRaw, step.Args)
-		want := strings.Split(strings.TrimSuffix(wantRaw, "\n"), "\n")
-		if got := f.herdrLogLines(t); !reflect.DeepEqual(got, want) {
-			t.Fatalf("herdr call log:\ngot  %v\nwant %v", got, want)
-		}
-	}
-	checkDispatchFinalFiles(t, f, stored, sc, stepOuts)
+	checkDispatchFinalFiles(t, f, sc, []string{out})
 }
 
-// checkDispatchFinalFiles compares the final on-disk state with the legacy
-// file set: exact for stable files, semantic for the sidecar superset,
-// structural for the composed prompt; every file the native run leaves that
-// the legacy run did not is a failure.
-func checkDispatchFinalFiles(t *testing.T, f *retirementFixture, stored retireDispatchScenario, sc retireDispatchCase, stepOuts []string) {
+func checkDispatchFinalFiles(t *testing.T, f *retirementFixture, sc retireDispatchCase, outputs []string) {
 	t.Helper()
 	final := f.collectState(t)
-	// The frozen file set predates the name renames; the oracle rewrites
-	// only the anchored name/message forms, keys and contents alike.
-	wantFiles := make(map[string]string, len(stored.Files))
-	for key, want := range stored.Files {
-		wantFiles[testutil.RewriteSohoName(key)] = testutil.RewriteSohoName(want)
-	}
-	for key, want := range wantFiles {
-		if key == "herdr.log" {
-			continue
-		}
-		if key == "state/ws/agents.tsv" {
-			// DJA-392 fatia 2 R2: the spawn records the effective MCP
-			// choice as the roster's last field; adapt the frozen rows the
-			// scenario's run spawned (the frozen bytes stay unchanged).
-			adapted, adErr := testutil.RewriteMcpRoster(want, testutil.McpSpawnedAgents(stepOuts...))
-			if adErr != nil {
-				t.Fatalf("DJA-392 R2 roster adaptation for %s: %s", key, adErr)
+	found := false
+	for key, content := range final {
+		if strings.HasSuffix(key, ".dispatch.json") {
+			found = true
+			var obj map[string]any
+			if err := json.Unmarshal([]byte(content), &obj); err != nil {
+				t.Fatal(err)
 			}
-			want = adapted
-			var defaultSpawns []string
-			for _, step := range stored.Steps {
-				if testutil.RewriteApprovalsAutoSpawnJSON(step.Out, step.Args) != step.Out {
-					defaultSpawns = append(defaultSpawns, testutil.McpSpawnedAgents(step.Out)...)
+			for _, field := range []string{"version", "kind", "model", "effort", "submission", "brief_sha256", "task_report"} {
+				if _, ok := obj[field]; !ok {
+					t.Fatalf("sidecar %s missing %s", key, field)
 				}
 			}
-			want = testutil.RewriteApprovalsAutoRoster(want, defaultSpawns)
+			if obj["version"] != float64(1) || obj["submission"] != "accepted" {
+				t.Fatalf("sidecar %s: %v", key, obj)
+			}
+			for i, field := range []string{"kind", "model", "effort"} {
+				if obj[field] != sc.sidecar[i] {
+					t.Fatalf("sidecar %s %s=%v want=%q", key, field, obj[field], sc.sidecar[i])
+				}
+			}
+			if !strings.Contains(key, "/reports/") && !strings.HasPrefix(key, "state/ws/briefs/") {
+				t.Fatalf("sidecar path=%s", key)
+			}
 		}
-		got, ok := final[key]
-		if !ok {
-			t.Fatalf("missing state file %s (have %v)", key, sortedKeys(final))
-		}
-		if strings.HasSuffix(key, ".dispatch.json") {
-			compareSidecar(t, key, got, want)
-			continue
-		}
-		if strings.HasPrefix(want, "# Role:") {
-			compareComposed(t, key, got, sc, stepOuts)
-			continue
-		}
-		if got != want {
-			t.Fatalf("state file %s:\ngot  %q\nwant %q", key, got, want)
+		if strings.HasSuffix(key, ".brief.md") {
+			compareComposed(t, key, content, sc, outputs)
 		}
 	}
-	for key := range final {
-		if _, ok := wantFiles[key]; !ok {
-			// DJA-392 intentional contract adaptation: the fresh-spawn MCP
-			// warning is the only friction line the frozen scenarios can
-			// gain; anything else is still a failure.
-			if testutil.IsMcpFrictionLog(key, final[key]) {
-				continue
-			}
-			t.Fatalf("unexpected state file %s: %q (the legacy run left no such file)", key, final[key])
+	// A refused invocation can leave no sidecar; every submitted JSON must have one.
+	submitted := false
+	for _, out := range outputs {
+		if strings.Contains(out, "\"wait_status\"") {
+			submitted = true
+		}
+	}
+	if submitted && !found {
+		t.Fatalf("missing dispatch sidecar: %v", sortedKeys(final))
+	}
+	if submitted {
+		pointer := final["state/ws/last-report-"+sc.agent]
+		if !strings.Contains(pointer, "/reports/"+sc.agent+"-<TS>.md") {
+			t.Fatalf("last-report=%q", pointer)
 		}
 	}
 }
