@@ -114,12 +114,13 @@ flex_roles=reviewer,documenter
 # lane.build.kind=
 # lane.build.model=
 # lane.build.effort=
-# lane.build.approvals=
+# lane.build.approvals=      (ask | edits | full | unsandboxed)
+# unsandboxed is the owner's explicit choice; doctor warns about this key.
 
 # One idle worker may also take a different role: on (default) | off. `lanes=off`
 # is what uses this. With lanes on, a lane reuses only its own pane.
 # Same role is preferred. Cross-role reuse needs the same kind, cwd and
-# resolved model, and approvals at least the request (ask < edits < full).
+# resolved model, and approvals at least the request (ask < edits < full < unsandboxed).
 # A worker that has held an edit role (implementer, designer, tasker, or
 # any role with mode: edit) is never reused as reviewer, security-reviewer,
 # ui-reviewer or inspector. off keeps same-role reuse only. The script
@@ -148,7 +149,8 @@ brief_lint_aliases=Expected result=Aceite,Owned files=Arquivos próprios|Arquivo
 # Example: brief_lint_placeholders=MY_SLOT
 brief_lint_placeholders=
 
-# Default approvals for roles that do not set one: ask | edits | full.
+# Default approvals for roles that do not set one: ask | edits | full | unsandboxed.
+# unsandboxed is the owner's explicit choice to run without a sandbox where mapped; doctor warns about this key, role.<role>.approvals and lane.<lane>.approvals.
 approvals=ask
 
 # When a worker blocks on an approval dialog (tools, edits, MCP), answer it with

@@ -301,9 +301,12 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	if err := os.MkdirAll(filepath.Dir(composed), 0o777); err != nil {
 		panic(err)
 	}
-	model, effort, args, lane, session := "", "", "", "", ""
+	model, effort, args, lane, session, approvals := "", "", "", "", "", ""
 	if len(cols) > 8 {
 		model = cols[8]
+	}
+	if len(cols) > 9 {
+		approvals = cols[9]
 	}
 	if len(cols) > 7 {
 		session = cols[7]
@@ -422,9 +425,9 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	if live := safeLiveAgents(env); len(live) > 0 {
 		shared = sharedTreeEditor(core.RosterRows(sd), live, agent, workerCwd, env, cwd)
 	}
-	prompt := dispatch.ComposePrompt(roleFile, role, agent, briefRaw, report, ctx, env, kind, args, shared)
+	prompt := dispatch.ComposePrompt(roleFile, role, agent, briefRaw, report, ctx, env, kind, args, approvals, shared)
 	if amend {
-		prompt = dispatch.ComposeAmendment(briefRaw, report, ctx, env, kind, args, shared, agent)
+		prompt = dispatch.ComposeAmendment(briefRaw, report, ctx, env, kind, args, approvals, shared, agent)
 	}
 	writeComposed := func() error { return os.WriteFile(composed, []byte(prompt), 0o666) }
 	if scratch {

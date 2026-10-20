@@ -308,6 +308,8 @@ func approvalsRank(mode string) int {
 		return 2
 	case "full":
 		return 3
+	case "unsandboxed":
+		return 4
 	default:
 		return 0
 	}
@@ -491,7 +493,7 @@ func FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, want
 // pending report, not locked for a review role, and kind, resolved model
 // (roster column 8) and cwd (roster column 6, canonical via
 // dispatch.SamePath) all matching the request.
-func laneReuseCandidate(f []string, state, role, kind, model, mcp, workerCwd, sd string, env platform.Env, cwd string) bool {
+func laneReuseCandidate(f []string, state, role, kind, model, approvals, mcp, workerCwd, sd string, env platform.Env, cwd string) bool {
 	if state != "idle" && state != "done" {
 		return false
 	}
@@ -506,13 +508,23 @@ func laneReuseCandidate(f []string, state, role, kind, model, mcp, workerCwd, sd
 	if core.IsReviewRole(role) && (core.RoleIsEdit(fieldAt(f, 3), env, cwd) || core.HistoryHasEdit(fieldAt(f, 10), env, cwd)) {
 		return false
 	}
-	return fieldAt(f, 2) == kind && fieldAt(f, 8) == model && mcpMatches(f, mcp) && dispatch.SamePath(fieldAt(f, 6), workerCwd, platform.Current())
+	return fieldAt(f, 2) == kind && fieldAt(f, 8) == model && laneApprovalsMatch(f, approvals) && mcpMatches(f, mcp) && dispatch.SamePath(fieldAt(f, 6), workerCwd, platform.Current())
+}
+
+func laneApprovalsMatch(f []string, approvals string) bool {
+	held := fieldAt(f, 9)
+	// Preserve legacy lane decisions for missing or unrecognized approval
+	// fields, but they cannot establish the new unsandboxed capability.
+	if approvalsRank(held) == 0 && approvals != "unsandboxed" {
+		return true
+	}
+	return approvalsRank(held) >= approvalsRank(defaultValue(approvals, "ask"))
 }
 
 // laneReusePick scans the lane's live workers in roster order and returns the
 // first idle worker that is a reuse candidate for the request, or "" when no
 // idle worker matches (each mismatched idle then counts as occupied).
-func laneReusePick(sd, lane, role, kind, model, mcp, workerCwd string, env platform.Env, cwd string) string {
+func laneReusePick(sd, lane, role, kind, model, approvals, mcp, workerCwd string, env platform.Env, cwd string) string {
 	for _, row := range core.LaneWorkers(sd, lane) {
 		f := strings.Split(row, "\t")
 		nm := fieldAt(f, 0)
@@ -520,7 +532,7 @@ func laneReusePick(sd, lane, role, kind, model, mcp, workerCwd string, env platf
 			continue
 		}
 		st := herdr.AgentState(nm, env, herdr.Timeout, nil)
-		if laneReuseCandidate(f, st.State, role, kind, model, mcp, workerCwd, sd, env, cwd) {
+		if laneReuseCandidate(f, st.State, role, kind, model, approvals, mcp, workerCwd, sd, env, cwd) {
 			return nm
 		}
 	}
@@ -789,7 +801,7 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 }
 
 func approvalsOk(value string) bool {
-	return value == "ask" || value == "edits" || value == "full"
+	return value == "ask" || value == "edits" || value == "full" || value == "unsandboxed"
 }
 
 func effortOk(value string) bool {
@@ -955,7 +967,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 					}
 					named = true
 					st := herdr.AgentState(o.name, env, herdr.Timeout, nil)
-					if laneReuseCandidate(rf, st.State, o.role, kind, o.model, o.mcp, o.cwd, sd, env, cwd) {
+					if laneReuseCandidate(rf, st.State, o.role, kind, o.model, o.approvals, o.mcp, o.cwd, sd, env, cwd) {
 						selected = o.name
 					}
 					break
@@ -985,11 +997,15 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 				// DJA-392: the MCP choice the worker was opened with (roster
 				// column 15) must match too, under the same rule.
 				modelCwdOk := fieldAt(f, 8) == o.model && dispatch.SamePath(fieldAt(f, 6), o.cwd, platform.Current())
-				if !modelCwdOk || !mcpMatches(f, o.mcp) {
-					selected = laneReusePick(sd, lane, o.role, kind, o.model, o.mcp, o.cwd, env, cwd)
+				approvalsOk := laneApprovalsMatch(f, o.approvals)
+				if !modelCwdOk || !approvalsOk || !mcpMatches(f, o.mcp) {
+					selected = laneReusePick(sd, lane, o.role, kind, o.model, o.approvals, o.mcp, o.cwd, env, cwd)
 					if selected == "" {
 						if d.N < d.Capacity {
 							break // the lane has a slot: open a new pane
+						}
+						if !approvalsOk {
+							busyLane(lane, d.Name, "", o.role, ctx, env, cwd)
 						}
 						if !modelCwdOk {
 							core.DieFriction(fmt.Sprintf("spawn: lane '%s' has no idle worker matching kind '%s', model '%s' and cwd '%s' (idle: '%s' runs %s %s in %s); release it or raise the lane's panes", lane, kind, o.model, o.cwd, d.Name, actual, fieldAt(f, 8), fieldAt(f, 6)), 13, "", "")

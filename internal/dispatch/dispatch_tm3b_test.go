@@ -14,13 +14,13 @@ func TestDispatchTM3bAmendmentContract(t *testing.T) {
 	// JS: "composeAmendment: the report_language line, in order, only when set"
 	t.Run("composeAmendment: the report_language line, in order, only when set", func(t *testing.T) {
 		ctx.Entries["report_language"] = core.ConfigEntry{Value: "pt-BR"}
-		got := ComposeAmendment("# Amend\n\nDo X.\n", "/tmp/report.md", ctx, nil, "codex", "", false)
+		got := ComposeAmendment("# Amend\n\nDo X.\n", "/tmp/report.md", ctx, nil, "codex", "", "", false)
 		lang := "- Write the report in pt-BR.\n"
 		if strings.Count(got, lang) != 1 || strings.Index(got, lang) < strings.Index(got, "Write your report as Markdown") || strings.Index(got, lang) > strings.Index(got, "Write the report in one go") {
 			t.Fatalf("report_language line missing or out of order:\n%s", got)
 		}
 		ctx.Entries = map[string]core.ConfigEntry{}
-		plain := ComposeAmendment("# Amend\n", "/tmp/report.md", ctx, nil, "codex", "", false)
+		plain := ComposeAmendment("# Amend\n", "/tmp/report.md", ctx, nil, "codex", "", "", false)
 		if strings.Contains(plain, "Write the report in pt-BR") {
 			t.Fatalf("unset report_language leaked into contract:\n%s", plain)
 		}
@@ -55,7 +55,7 @@ func TestDispatchTM3bPromptContracts(t *testing.T) {
 		if err := os.WriteFile(role, []byte("---\nname: Implementer\n---\nRole body.\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		got := ComposePrompt(role, "implementer", "build", "# Goal\nDo it.\n", "/tmp/report.md", ctx, composeEnv(t), "codex", "", false)
+		got := ComposePrompt(role, "implementer", "build", "# Goal\nDo it.\n", "/tmp/report.md", ctx, composeEnv(t), "codex", "", "", false)
 		for _, part := range []string{"# Role: Implementer\n", "# Brief\n\n# Goal\nDo it.\n", "Write your report as Markdown to `/tmp/report.md`", "Command output you put in the report is pasted from the run"} {
 			if !strings.Contains(got, part) {
 				t.Errorf("composed prompt lacks %q", part)
@@ -68,7 +68,7 @@ func TestDispatchTM3bPromptContracts(t *testing.T) {
 		if err := os.WriteFile(role, []byte("---\nname: Codex\n---\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		got := ComposePrompt(role, "implementer", "build", "brief", "/tmp/report.md", ctx, composeEnv(t), "codex", "", false)
+		got := ComposePrompt(role, "implementer", "build", "brief", "/tmp/report.md", ctx, composeEnv(t), "codex", "", "", false)
 		if !strings.Contains(got, "tests that start a local server fail with \"Operation not permitted\"") || !strings.Contains(got, "Still write the integration tests the brief asks for") {
 			t.Fatalf("Codex sandbox note missing its local-network guidance:\n%s", got)
 		}

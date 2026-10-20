@@ -209,11 +209,23 @@ func KindApprovalArgs(kind, mode string, warn WarnFunc) ([]string, error) {
 	if mode == "" || mode == "ask" {
 		return nil, nil
 	}
-	if mode != "edits" && mode != "full" {
+	if mode != "edits" && mode != "full" && mode != "unsandboxed" {
 		return nil, fmt.Errorf("invalid approvals '%s' (ask|edits|full)", mode)
 	}
 	if warn == nil {
 		warn = DefaultWarn
+	}
+	if mode == "unsandboxed" {
+		switch kind {
+		case "codex":
+			return []string{"-s", "danger-full-access", "-a", "never"}, nil
+		case "cursor":
+			return []string{"--trust", "--force", "--approve-mcps", "--sandbox", "disabled"}, nil
+		case "claude":
+		default:
+			warn(fmt.Sprintf("%s has no separate sandbox switch; approvals=unsandboxed runs as full", kind))
+		}
+		mode = "full"
 	}
 	values := map[string][]string{
 		"claude:edits": {"--permission-mode", "acceptEdits"}, "claude:full": {"--permission-mode", "bypassPermissions", "--settings", `{"enableAllProjectMcpServers":true}`},

@@ -18,6 +18,8 @@
 
 `approvals: edits` maps to claude `--permission-mode acceptEdits`, codex `-s workspace-write -a on-request`, grok `--permission-mode acceptEdits`, agy `--mode accept-edits`, cursor `--trust --auto-review`. `pi` and `opencode` have no edits mode: spawn warns, the mode is a no-op (pi) or refused in the mapping (opencode).
 
+`approvals: unsandboxed` is the owner's explicit choice above `full`, never the default. Codex maps it to `-s danger-full-access -a never`; Cursor uses `--trust --force --approve-mcps --sandbox disabled`; Claude keeps the `full` mapping. Grok, agy, gemini, pi and opencode retain their `full` arguments and warn `<kind> has no separate sandbox switch; approvals=unsandboxed runs as full`; that fallback does not establish sandbox removal. `doctor` warns for each effective `approvals`, `role.<role>.approvals` or `lane.<lane>.approvals` key set to `unsandboxed`, identifying the owner's choice. Initial prompts and amendments omit all Codex sandbox notes when roster column 10 records `unsandboxed`; native args appended after the approval mapping can still change the CLI's sandbox.
+
 Not bypassed by the skill (pass after `--` if you accept it): Codex `--dangerously-bypass-hook-trust`; first-visit workspace-trust dialogs.
 
 ## Codex sandbox limits (`-s workspace-write`)
