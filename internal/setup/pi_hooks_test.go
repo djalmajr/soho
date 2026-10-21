@@ -69,7 +69,7 @@ func TestSetupPiPlanNoHooksAndLocal(t *testing.T) {
 		t.Run(arg, func(t *testing.T) {
 			root, env, ctx := codexSetupFixture(t)
 			code, out, warning := runSetupWrite([]string{arg}, ctx, env, root)
-			if code != 0 || (arg != "--no-hooks" && !strings.Contains(out, "# would write "+piFile(root)+": input extension (pi)")) {
+			if code != 0 || (arg != "--no-hooks" && !strings.Contains(out, "# would write "+root+"/.pi/extensions/soho-inbound.ts: input extension (pi)")) {
 				t.Fatalf("code=%d out=%s warning=%s", code, out, warning)
 			}
 			if _, err := os.Stat(piFile(root)); !os.IsNotExist(err) {
