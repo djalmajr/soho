@@ -138,6 +138,10 @@ func PrepareEvent(store Store, request EventRequest) (PreparedEvent, error) {
 	return PreparedEvent{Assignment: updated, Event: event, Fresh: true}, nil
 }
 
+// finalizeBeforeUpdateHook lets tests interleave an external transition after
+// Finalize's read and validation, before its generation-checked write.
+var finalizeBeforeUpdateHook func(id string)
+
 func (s Store) Finalize(id, verdict string) (Assignment, error) {
 	a, err := s.Read(id)
 	if err != nil {
@@ -165,6 +169,9 @@ func (s Store) Finalize(id, verdict string) (Assignment, error) {
 				return a, errors.New("round evidence changed or disappeared; cannot accept this review")
 			}
 		}
+	}
+	if finalizeBeforeUpdateHook != nil {
+		finalizeBeforeUpdateHook(id)
 	}
 	return s.Update(id, a.Generation, func(current *Assignment) error { current.Phase, current.Verdict = Finished, verdict; return nil })
 }
