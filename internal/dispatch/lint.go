@@ -298,7 +298,11 @@ func briefFenceMask(lines []string) []bool {
 }
 
 // EmptyCodeLines reports 1-based lines with an exact double-backtick run
-// outside fenced code blocks.
+// outside fenced code blocks that does not open a double-backtick code span.
+// Such a span exists to hold a backtick, so two runs on a line pair into one
+// only when the text between them holds a backtick: the residue of commands
+// an unquoted heredoc ran has none, even when two of them sit around a word,
+// and is still reported.
 func EmptyCodeLines(body string) []int {
 	lines := strings.Split(body, "\n")
 	mask := briefFenceMask(lines)
@@ -307,11 +311,22 @@ func EmptyCodeLines(body string) []int {
 		if mask[i] {
 			continue
 		}
-		for _, loc := range emptyBacktickRun.FindAllStringIndex(line, -1) {
-			if loc[1]-loc[0] == 2 {
-				out = append(out, i+1)
-				break
+		runs := emptyBacktickRun.FindAllStringIndex(line, -1)
+		for r := 0; r < len(runs); r++ {
+			loc := runs[r]
+			if loc[1]-loc[0] != 2 {
+				continue
 			}
+			next := r + 1
+			for next < len(runs) && runs[next][1]-runs[next][0] != 2 {
+				next++
+			}
+			if next < len(runs) && strings.Contains(line[loc[1]:runs[next][0]], "`") {
+				r = next
+				continue
+			}
+			out = append(out, i+1)
+			break
 		}
 	}
 	return out
