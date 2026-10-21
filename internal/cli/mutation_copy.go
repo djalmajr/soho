@@ -269,10 +269,13 @@ func registerMutationCopy(env platform.Env, source, dest string) {
 		return
 	}
 	ctx := core.LoadConfig(env, cwd)
-	sd, err := core.StateDirResolved(&ctx, env, cwd)
-	if err != nil {
-		mutationCopyNotRegistered(err.Error())
-		return
+	sd := registryDestination(env)
+	if sd == "" {
+		sd, err = core.StateDirResolved(&ctx, env, cwd)
+		if err != nil {
+			mutationCopyNotRegistered(err.Error())
+			return
+		}
 	}
 	pane := env.Get("HERDR_PANE_ID")
 	owner := rosterAgentForPane(sd, pane)

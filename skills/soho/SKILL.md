@@ -191,6 +191,8 @@ Plain `key=value` files, read in this order, each layer overriding only the keys
 
 ## Commands
 
+When `spawn`, `run`, or `reopen` creates a worker pane, it passes the orchestrator's complete absolute workspace state directory through `--env SOHO_REGISTRY_DIR=...` on `pane split` or `tab create`. Only `mutation-copy`, `copies add`, and `procs add` use this hint: when it is absolute and names an existing directory, they register resources and read their owner from its roster, including the same destination in the permission-denied registration queue; otherwise they silently use their usual state resolution. They check the directory when registering, without reserving it against later filesystem changes. Configuration, session lookup, and other commands do not use the hint. Existing `--pane` targets and idle workers keep their creation environment; a worker opened before this version needs `release --close` followed by a new `spawn` to receive it.
+
 All mechanics go through the native `soho` binary, which uses Herdr for transport. Its embedded resources provide roles and defaults when no explicit or installed skill tree exists. No Node.js, Bun or Bash engine is required.
 
 ```text

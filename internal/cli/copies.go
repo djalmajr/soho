@@ -835,7 +835,10 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		_, _ = fmt.Fprintf(platform.Stderr, "copies add: refusing '%s': not an existing directory\n", path)
 		return 2
 	}
-	sd := core.StateDir(ctx, env, cwd)
+	sd := registryDestination(env)
+	if sd == "" {
+		sd = core.StateDir(ctx, env, cwd)
+	}
 	incorporatePendingCopies("copies add", sd, env, cwd)
 	pane := env.Get("HERDR_PANE_ID")
 	owner := "-"

@@ -1190,6 +1190,10 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		Warn("--tab-label ignored: --pane places the worker in a given pane", ctx, env, "spawn")
 	}
 	if o.pane == "" {
+		// Pin only resource registrations, without changing the worker's
+		// configuration or session lookup when its cwd is another project.
+		paneEnv := env.Clone()
+		paneEnv["SOHO_REGISTRY_DIR"] = sd
 		if lane != "" {
 			// The M1 idle-other-kind scan and the released-orphan scan share
 			// the live read the name check just made; a named spawn (o.name
@@ -1223,7 +1227,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			if layoutMode != "tab" && o.tabLabel == "" {
 				Warn(fmt.Sprintf("caller tab has no room for another pane (%s); placing '%s' in a herd tab", autoDir, o.name), ctx, env, "spawn")
 			}
-			t := layout.HerdTabPane(ctx, o.cwd, o.tabLabel, o.role, env, cwd)
+			t := layout.HerdTabPane(ctx, o.cwd, o.tabLabel, o.role, paneEnv, cwd)
 			o.pane = t.Pane
 			created = true
 			o.direction = ""
@@ -1240,7 +1244,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			if ratio == "" {
 				ratio = "0.5"
 			}
-			s := herdr.PaneSplit(anchor, o.direction, o.cwd, env, &ratio)
+			s := herdr.PaneSplit(anchor, o.direction, o.cwd, paneEnv, &ratio)
 			if !s.Ok {
 				core.DieFriction("pane split failed", 4, "", "")
 			}
