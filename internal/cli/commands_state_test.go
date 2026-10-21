@@ -28,6 +28,20 @@ func TestMain(m *testing.M) {
 	platform.SwapUsage = func(platform.Env) (int64, int64, bool) { return 0, 100, true }
 	managedCLIHelperMain()
 	fakecli.Main()
+	fakecli.GuardSuiteRun()
+	// These test helpers keep their caller's cwd and environment. Managed
+	// CLI and init-based fakes have already dispatched before this point.
+	for _, key := range []string{
+		procsHelperRoleEnv,            // TestProcFixtureHelper runs native process roles.
+		explainFootprintHelperRoleEnv, // TestExplainFootprintHelper stands in for a worker.
+		compactPhaseLivenessChildEnv,  // TestCompactPhaseLivenessChild sleeps, then exits.
+		f11CompactPhaseChildEnv,       // TestF11CompactPhaseChild is killed during dispatch.
+	} {
+		if os.Getenv(key) != "" {
+			fakecli.RunTests(m)
+			return
+		}
+	}
 	packageDir, packageDirErr = os.Getwd()
 	if packageDirErr != nil {
 		fmt.Fprintln(os.Stderr, packageDirErr)

@@ -2,10 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil"
@@ -13,6 +16,83 @@ import (
 )
 
 var fixtureIsolationRoot string
+
+func TestFixtureIsolationAuxiliaryProcesses(t *testing.T) {
+	for _, name := range []string{"proc helper", "fake without config"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			for _, dir := range []string{"cwd", "home", "conf", "tmp"} {
+				if err := os.Mkdir(filepath.Join(root, dir), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			values := map[string]string{
+				"HOME": filepath.Join(root, "home"), "USERPROFILE": filepath.Join(root, "home"),
+				"XDG_CONFIG_HOME": filepath.Join(root, "conf"), "PATH": filepath.Join(root, "cwd"),
+				"TMPDIR": filepath.Join(root, "tmp"), "TMP": filepath.Join(root, "tmp"),
+				"TEMP": filepath.Join(root, "tmp"), "GOTMPDIR": filepath.Join(root, "tmp"),
+			}
+			executable := os.Args[0]
+			args := []string{"-test.run=^TestProcFixtureHelper$", "-test.count=1"}
+			wantExit := 1
+			if name == "proc helper" {
+				values[procsHelperRoleEnv] = "tree"
+				values[procsHelperArg1Env] = filepath.Join(root, "missing-child")
+				values[procsHelperArg2Env] = filepath.Join(root, "pid")
+			} else {
+				suffix := ""
+				if strings.EqualFold(filepath.Ext(os.Args[0]), ".exe") {
+					suffix = ".exe"
+				}
+				executable = filepath.Join(root, "fake-command"+suffix)
+				if err := os.Link(os.Args[0], executable); err != nil {
+					image, err := os.ReadFile(os.Args[0])
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(executable, image, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				args, wantExit = nil, 126
+			}
+			// Select exactly one helper, without inheriting another fake's mode.
+			env := []string{}
+			for _, item := range os.Environ() {
+				key, _, _ := strings.Cut(item, "=")
+				key = strings.ToUpper(key)
+				if _, replaced := values[key]; replaced || strings.HasPrefix(key, "HERDR_") || strings.HasPrefix(key, "SOHO_") || strings.HasPrefix(key, "CLI_MANAGED_") || key == compactPhaseLivenessChildEnv || key == f11CompactPhaseChildEnv {
+					continue
+				}
+				env = append(env, item)
+			}
+			for key, value := range values {
+				env = append(env, key+"="+value)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, executable, args...)
+			cmd.Dir, cmd.Env = filepath.Join(root, "cwd"), env
+			var output bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &output, &output
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			err := cmd.Wait()
+			exit := cmd.ProcessState.ExitCode()
+			if ctx.Err() != nil || exit != wantExit {
+				t.Errorf("pid=%d argv=%q cwd=%q tmp=%q exit=%d want=%d wait=%v context=%v output=%s", cmd.Process.Pid, cmd.Args, cmd.Dir, values["TMPDIR"], exit, wantExit, err, ctx.Err(), output.String())
+			}
+			roots, err := filepath.Glob(filepath.Join(values["TMPDIR"], "soho-cli-suite-*"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(roots) != 0 {
+				t.Errorf("pid=%d exit=%d left suite roots=%q; argv=%q cwd=%q output=%s", cmd.Process.Pid, exit, roots, cmd.Args, cmd.Dir, output.String())
+			}
+		})
+	}
+}
 
 // isolatedUserEnv preserves explicit fixture paths and fills absent user paths
 // from the process environment isolated by TestMain.
