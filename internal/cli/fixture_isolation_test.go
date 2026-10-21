@@ -45,8 +45,9 @@ func TestFixtureIsolationAuxiliaryProcesses(t *testing.T) {
 					suffix = ".exe"
 				}
 				executable = filepath.Join(root, "fake-command"+suffix)
-				if err := os.Link(os.Args[0], executable); err != nil {
-					image, err := os.ReadFile(os.Args[0])
+				binary := testBinaryFile(t)
+				if err := os.Link(binary, executable); err != nil {
+					image, err := os.ReadFile(binary)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -104,7 +105,7 @@ func TestFixtureIsolationRelativeBinary(t *testing.T) {
 	if strings.EqualFold(filepath.Ext(os.Args[0]), ".exe") {
 		name += ".exe"
 	}
-	image, err := os.ReadFile(os.Args[0])
+	image, err := os.ReadFile(testBinaryFile(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,6 +119,18 @@ func TestFixtureIsolationRelativeBinary(t *testing.T) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("relative binary %s in %s: %v (context %v)\n%s", name, dir, err, ctx.Err(), output)
 	}
+}
+
+// testBinaryFile is this test binary's file. os.Args[0] runs it, but a bare
+// name found in PATH is not a file in the isolated cwd: read the image from
+// the executable's own path instead.
+func testBinaryFile(t *testing.T) string {
+	t.Helper()
+	path, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // isolatedUserEnv preserves explicit fixture paths and fills absent user paths
