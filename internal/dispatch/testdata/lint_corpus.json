@@ -56,9 +56,7 @@
   {
     "path": "testdata/plan-briefs/b4-brief-lint.md",
     "mode": "warn",
-    "warnings": [
-      "brief testdata/plan-briefs/b4-brief-lint.md line 59 has empty inline code (``): a shell heredoc without quotes may have run the backticks"
-    ],
+    "warnings": [],
     "missingMessage": ""
   },
   {
@@ -72,7 +70,6 @@
     "mode": "warn",
     "warnings": [
       "brief testdata/plan-briefs/b4b-fix-r12.md line 30 has empty inline code (``): a shell heredoc without quotes may have run the backticks",
-      "brief testdata/plan-briefs/b4b-fix-r12.md line 31 has empty inline code (``): a shell heredoc without quotes may have run the backticks",
       "brief testdata/plan-briefs/b4b-fix-r12.md line 32 has empty inline code (``): a shell heredoc without quotes may have run the backticks"
     ],
     "missingMessage": ""
@@ -530,9 +527,7 @@
   {
     "path": "testdata/plan-briefs/r-b4-review.md",
     "mode": "warn",
-    "warnings": [
-      "brief testdata/plan-briefs/r-b4-review.md line 22 has empty inline code (``): a shell heredoc without quotes may have run the backticks"
-    ],
+    "warnings": [],
     "missingMessage": "brief testdata/plan-briefs/r-b4-review.md is missing sections: [Owned files] — workers without owned files collide"
   },
   {

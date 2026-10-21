@@ -297,8 +297,8 @@ func briefFenceMask(lines []string) []bool {
 	return mask
 }
 
-// EmptyCodeLines reports 1-based lines with an exact double-backtick run
-// outside fenced code blocks.
+// EmptyCodeLines reports 1-based lines with an unpaired or whitespace-only
+// double-backtick run outside fenced code blocks.
 func EmptyCodeLines(body string) []int {
 	lines := strings.Split(body, "\n")
 	mask := briefFenceMask(lines)
@@ -307,11 +307,22 @@ func EmptyCodeLines(body string) []int {
 		if mask[i] {
 			continue
 		}
-		for _, loc := range emptyBacktickRun.FindAllStringIndex(line, -1) {
-			if loc[1]-loc[0] == 2 {
-				out = append(out, i+1)
-				break
+		runs := emptyBacktickRun.FindAllStringIndex(line, -1)
+		for r := 0; r < len(runs); r++ {
+			loc := runs[r]
+			if loc[1]-loc[0] != 2 {
+				continue
 			}
+			next := r + 1
+			for next < len(runs) && runs[next][1]-runs[next][0] != 2 {
+				next++
+			}
+			if next < len(runs) && strings.Trim(line[loc[1]:runs[next][0]], " \t") != "" {
+				r = next
+				continue
+			}
+			out = append(out, i+1)
+			break
 		}
 	}
 	return out

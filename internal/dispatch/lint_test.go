@@ -212,6 +212,46 @@ func TestEmptyCodeLines(t *testing.T) {
 	})
 }
 
+func TestEmptyCodeLinesDoubleBacktickSpans(t *testing.T) {
+	for _, tc := range []struct {
+		name, line string
+		empty      bool
+	}{
+		{name: "table-code-span", line: "| ``Worktree: `/a` (b)`` | x |"},
+		{name: "reported-table-row", line: "| ``Worktree: `/a/b/.worktrees/x` (branch y)`` | `/a/b/.worktrees/x` |"},
+		{name: "heredoc-empty", line: "run `` now", empty: true},
+		{name: "spaces-only", line: "a ``   `` b", empty: true},
+		{name: "tabs-only", line: "a `` \t `` b", empty: true},
+		{name: "valid-then-unclosed", line: "use ``x`` and `` then", empty: true},
+		{name: "single-code-span", line: "plain `code` here"},
+		{name: "multiple-valid-spans", line: "use ``x`` and ``y``"},
+		{name: "valid-then-whitespace", line: "use ``x`` and `` \t ``", empty: true},
+		{name: "whitespace-before-valid", line: "``   `` and ``ok``", empty: true},
+		{name: "other-runs-inside-span", line: "use ``one ` two ``` three``"},
+		{name: "longer-inline-runs", line: "use ```x``` and ````y````"},
+		{name: "non-ascii-content", line: "use ``\u00a0``"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// One result per line, numbered from one; a second line cannot
+			// close the double-backtick run on the preceding line.
+			got := EmptyCodeLines("prefix\n" + tc.line + "\nsuffix")
+			if tc.empty {
+				if len(got) != 1 || got[0] != 2 {
+					t.Fatalf("EmptyCodeLines(%q) = %v, want [2]", tc.line, got)
+				}
+			} else if len(got) != 0 {
+				t.Fatalf("EmptyCodeLines(%q) = %v, want no lines", tc.line, got)
+			}
+		})
+	}
+	t.Run("cross-line-pair", func(t *testing.T) {
+		got := EmptyCodeLines("prefix\n``x\nother``\nsuffix")
+		if len(got) != 2 || got[0] != 2 || got[1] != 3 {
+			t.Fatalf("cross-line double backticks = %v, want [2 3]", got)
+		}
+	})
+}
+
 func TestBriefLintFindingsModesAndWarnings(t *testing.T) {
 	t.Run("// JS: \"lint: emits dispatch warnings unchanged and creates no state\"", func(t *testing.T) {
 		file := filepath.Join(t.TempDir(), "brief.md")
