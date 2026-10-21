@@ -45,15 +45,14 @@ func TestFixtureIsolationAuxiliaryProcesses(t *testing.T) {
 					suffix = ".exe"
 				}
 				executable = filepath.Join(root, "fake-command"+suffix)
-				binary := testBinaryFile(t)
-				if err := os.Link(binary, executable); err != nil {
-					image, err := os.ReadFile(binary)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if err := os.WriteFile(executable, image, 0o700); err != nil {
-						t.Fatal(err)
-					}
+				// A copy, never a hard link: on Windows a link to the
+				// running test binary cannot be removed by TempDir's cleanup.
+				image, err := os.ReadFile(testBinaryFile(t))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(executable, image, 0o700); err != nil {
+					t.Fatal(err)
 				}
 				args, wantExit = nil, 126
 			}
