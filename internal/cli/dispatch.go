@@ -423,7 +423,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	}
 	shared := false
 	if live := safeLiveAgents(env); len(live) > 0 {
-		shared = sharedTreeEditor(core.RosterRows(sd), live, agent, workerCwd, env, cwd)
+		shared = sharedTreeEditor(core.RosterRows(sd), live, agent, workerCwd, env, cwd, sharedTreeBriefs{body: briefRaw, stateDir: sd})
 	}
 	prompt := dispatch.ComposePrompt(roleFile, role, agent, briefRaw, report, ctx, env, kind, args, approvals, shared)
 	if amend {
@@ -1426,6 +1426,7 @@ func warnOwnedOverlap(brief, role, agent, sd string, ctx *core.Config, env platf
 	if len(mine) == 0 {
 		return
 	}
+	mineTree, _ := effectiveBriefTree(body, workerCwd)
 	for _, row := range core.RosterRows(sd) {
 		cols := strings.Split(row, "\t")
 		if len(cols) == 0 || cols[0] == "" || cols[0] == agent {
@@ -1437,9 +1438,6 @@ func warnOwnedOverlap(brief, role, agent, sd string, ctx *core.Config, env platf
 			}
 			return ""
 		}
-		if !dispatch.SamePath(at(6), workerCwd, platform.Current()) {
-			continue
-		}
 		report := core.LastReport(sd, cols[0])
 		if report == "" || nonEmpty(report) {
 			continue
@@ -1448,7 +1446,12 @@ func warnOwnedOverlap(brief, role, agent, sd string, ctx *core.Config, env platf
 		if pending == "" {
 			continue
 		}
-		theirs := ownedPaths(pendingBriefSection(pending), aliases)
+		pendingBody := pendingBriefSection(pending)
+		peerTree, _ := effectiveBriefTree(pendingBody, at(6))
+		if !dispatch.SamePath(peerTree, mineTree, platform.Current()) {
+			continue
+		}
+		theirs := ownedPaths(pendingBody, aliases)
 		hits := []string{}
 		for _, p := range mine {
 			for _, q := range theirs {
@@ -2037,7 +2040,23 @@ func pathsCross(a, b string) bool {
 	}
 	return false
 }
-func sharedTreeEditor(rows []string, live []any, self, selfCwd string, env platform.Env, cwd string) bool {
+func effectiveBriefTree(body, workerCwd string) (string, bool) {
+	if tree := dispatch.DeclaredWorktree(body); tree != "" {
+		return tree, true
+	}
+	return workerCwd, false
+}
+
+type sharedTreeBriefs struct {
+	body, stateDir string
+}
+
+func sharedTreeEditor(rows []string, live []any, self, selfCwd string, env platform.Env, cwd string, briefs ...sharedTreeBriefs) bool {
+	var brief sharedTreeBriefs
+	if len(briefs) > 0 {
+		brief = briefs[0]
+	}
+	selfCwd, selfDeclared := effectiveBriefTree(brief.body, selfCwd)
 	if selfCwd == "" {
 		return false
 	}
@@ -2049,7 +2068,21 @@ func sharedTreeEditor(rows []string, live []any, self, selfCwd string, env platf
 			}
 			return ""
 		}
-		if at(0) == "" || at(0) == self || at(6) != selfCwd || !core.RoleIsEdit(at(3), env, cwd) {
+		if at(0) == "" || at(0) == self || !core.RoleIsEdit(at(3), env, cwd) {
+			continue
+		}
+		otherCwd, otherDeclared := at(6), false
+		if brief.stateDir != "" {
+			report := core.LastReport(brief.stateDir, at(0))
+			otherCwd, otherDeclared = effectiveBriefTree(pendingBriefSection(pendingBriefPath(report)), otherCwd)
+		}
+		// Preserve the historical literal roster comparison when neither
+		// brief declares a tree; declared paths use the shared path rules.
+		sameTree := otherCwd == selfCwd
+		if selfDeclared || otherDeclared {
+			sameTree = dispatch.SamePath(otherCwd, selfCwd, platform.Current())
+		}
+		if !sameTree {
 			continue
 		}
 		for _, entry := range live {

@@ -315,6 +315,34 @@ func WriteSidecar(path string, kind, model, effort, submission, arrival, session
 	return core.WriteScratchFile(path, content+"\n")
 }
 
+// DeclaredWorktree returns the absolute path in the first Worktree: line
+// outside fenced code blocks. An invalid first declaration has no tree.
+func DeclaredWorktree(body string) string {
+	lines := strings.Split(body, "\n")
+	fenced := briefFenceMask(lines)
+	for i, line := range lines {
+		if fenced[i] || !strings.HasPrefix(line, "Worktree:") {
+			continue
+		}
+		value := strings.TrimPrefix(line, "Worktree:")
+		tree := ""
+		if _, rest, quoted := strings.Cut(value, "`"); quoted {
+			var closed bool
+			tree, _, closed = strings.Cut(rest, "`")
+			if !closed {
+				return ""
+			}
+		} else if fields := strings.Fields(value); len(fields) > 0 {
+			tree = fields[0]
+		}
+		if filepath.IsAbs(tree) {
+			return tree
+		}
+		return ""
+	}
+	return ""
+}
+
 func SamePath(left, right, goos string) bool {
 	if goos == "win32" {
 		left, right = strings.ToLower(path.Clean(strings.ReplaceAll(left, `\`, "/"))), strings.ToLower(path.Clean(strings.ReplaceAll(right, `\`, "/")))
