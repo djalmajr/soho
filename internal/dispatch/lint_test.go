@@ -224,12 +224,14 @@ func TestEmptyCodeLinesDoubleBacktickSpans(t *testing.T) {
 		{name: "tabs-only", line: "a `` \t `` b", empty: true},
 		{name: "valid-then-unclosed", line: "use ``x`` and `` then", empty: true},
 		{name: "single-code-span", line: "plain `code` here"},
-		{name: "multiple-valid-spans", line: "use ``x`` and ``y``"},
+		{name: "multiple-valid-spans", line: "use ``a `x` b`` and ``c `y` d``"},
+		{name: "heredoc-two-residues", line: "cp `` foo `` bar", empty: true},
+		{name: "double-span-without-backtick", line: "use ``x``", empty: true},
 		{name: "valid-then-whitespace", line: "use ``x`` and `` \t ``", empty: true},
 		{name: "whitespace-before-valid", line: "``   `` and ``ok``", empty: true},
 		{name: "other-runs-inside-span", line: "use ``one ` two ``` three``"},
 		{name: "longer-inline-runs", line: "use ```x``` and ````y````"},
-		{name: "non-ascii-content", line: "use ``\u00a0``"},
+		{name: "non-ascii-content", line: "use ``\u00a0`x`\u00a0``"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// One result per line, numbered from one; a second line cannot
