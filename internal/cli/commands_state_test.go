@@ -47,6 +47,15 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, packageDirErr)
 		os.Exit(1)
 	}
+	// Tests re-run this binary through os.Args[0]: a relative path (a binary
+	// run as ./cli.test) would stop resolving once the suite leaves the
+	// package directory, so make it absolute first. A bare name is looked up
+	// in PATH and stays as it is.
+	if !filepath.IsAbs(os.Args[0]) && strings.ContainsAny(os.Args[0], `/\`) {
+		if abs, err := filepath.Abs(os.Args[0]); err == nil {
+			os.Args[0] = abs
+		}
+	}
 	root, err := os.MkdirTemp("", "soho-cli-suite-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

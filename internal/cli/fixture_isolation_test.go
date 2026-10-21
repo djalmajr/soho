@@ -94,6 +94,32 @@ func TestFixtureIsolationAuxiliaryProcesses(t *testing.T) {
 	}
 }
 
+// TestFixtureIsolationRelativeBinary runs a copy of this test binary through
+// a relative path, as `./cli.test` would be: TestMain leaves the package
+// directory, so the tests that re-run os.Args[0] only find the binary when
+// TestMain made that path absolute first.
+func TestFixtureIsolationRelativeBinary(t *testing.T) {
+	dir := t.TempDir()
+	name := "cli-relative.test"
+	if strings.EqualFold(filepath.Ext(os.Args[0]), ".exe") {
+		name += ".exe"
+	}
+	image, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), image, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "."+string(filepath.Separator)+name, "-test.run=^TestFixtureIsolationAuxiliaryProcesses$", "-test.count=1")
+	cmd.Dir = dir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("relative binary %s in %s: %v (context %v)\n%s", name, dir, err, ctx.Err(), output)
+	}
+}
+
 // isolatedUserEnv preserves explicit fixture paths and fills absent user paths
 // from the process environment isolated by TestMain.
 func isolatedUserEnv(env platform.Env) platform.Env {
