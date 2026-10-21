@@ -51,11 +51,9 @@ func newOwnFix(t *testing.T, underRoot bool) *ownFix {
 			t.Fatal(err)
 		}
 	}
-	// t.Chdir moves the process away from the package directory that
-	// newJobFix's relative SOHO_SKILL_DIR resolves against, so the
-	// fixture pins the skill directory to an absolute path for the
-	// chdir'd runs.
-	skillDir, err := filepath.Abs(filepath.Join("..", "..", "skills", "soho"))
+	// Resolve the skill from the captured package directory even when
+	// t.Chdir moves these runs into a fixture checkout.
+	skillDir, err := filepath.Abs(filepath.Join(packageDir, "..", "..", "skills", "soho"))
 	if err != nil {
 		t.Fatal(err)
 	}

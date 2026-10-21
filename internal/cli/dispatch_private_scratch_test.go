@@ -28,10 +28,6 @@ type scratchDispatchFixture struct {
 
 func newScratchDispatchFixture(t *testing.T) *scratchDispatchFixture {
 	t.Helper()
-	packageDir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
 	skillDir, err := filepath.Abs(filepath.Join(packageDir, "..", "..", "skills", "soho"))
 	if err != nil {
 		t.Fatal(err)

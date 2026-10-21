@@ -45,24 +45,12 @@ func commandFixture(t *testing.T) (platform.Env, string) {
 	}, repo
 }
 
-// packageDir is the working directory the test binary started in.
-var packageDir, packageDirErr = os.Getwd()
-
 func testSkillDir(t *testing.T) string {
 	t.Helper()
-	_, file, _, _ := runtime.Caller(0)
-	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	skillDir := filepath.Join(root, "skills", "soho")
-	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err == nil {
-		return skillDir
-	}
-	// Built elsewhere (the Windows round), the source path does not exist:
-	// fall back to the package directory the test binary started in, which
-	// a test that changed directory no longer has as its cwd.
 	if packageDirErr != nil {
 		t.Fatal(packageDirErr)
 	}
-	skillDir = filepath.Clean(filepath.Join(packageDir, "..", "..", "skills", "soho"))
+	skillDir := filepath.Clean(filepath.Join(packageDir, "..", "..", "skills", "soho"))
 	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err != nil {
 		t.Fatalf("skill directory %q: %v", skillDir, err)
 	}

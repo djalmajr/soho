@@ -13,7 +13,7 @@ import (
 func TestLintCommandReadOnlyAndExitModes(t *testing.T) {
 	t.Run("// JS: \"lint: supports read-only roles, modes, and the defined error exits\"", func(t *testing.T) {
 		root := t.TempDir()
-		skillDir, err := filepath.Abs(filepath.Join("..", "..", "skills", "soho"))
+		skillDir, err := filepath.Abs(filepath.Join(packageDir, "..", "..", "skills", "soho"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -99,7 +99,7 @@ func TestLintCommandReadOnlyAndExitModes(t *testing.T) {
 func TestLintCommandUsageAndErrors(t *testing.T) {
 	t.Run("// JS: \"lint: supports read-only roles, modes, and the defined error exits\"", func(t *testing.T) {
 		root := t.TempDir()
-		skillDir, err := filepath.Abs(filepath.Join("..", "..", "skills", "soho"))
+		skillDir, err := filepath.Abs(filepath.Join(packageDir, "..", "..", "skills", "soho"))
 		if err != nil {
 			t.Fatal(err)
 		}

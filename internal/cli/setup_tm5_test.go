@@ -62,7 +62,7 @@ func setupTM5CommandFixture(t *testing.T) (platform.Env, string) {
 
 func setupTM5SkillDir(t *testing.T) string {
 	t.Helper()
-	dir, err := filepath.Abs(filepath.Join("..", "..", "skills", "soho"))
+	dir, err := filepath.Abs(filepath.Join(packageDir, "..", "..", "skills", "soho"))
 	if err != nil {
 		t.Fatal(err)
 	}

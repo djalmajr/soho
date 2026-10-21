@@ -47,7 +47,7 @@ func TestDispatchNoWaitWritesPromptAndTaskState(t *testing.T) {
 	if _, err := fakecli.Install(t, bin, "herdr", calls); err != nil {
 		t.Fatal(err)
 	}
-	env := platform.Env{"PATH": bin, "SOHO_FAKECLI_CONFIG": bin, "HERDR_ENV": "1", "SOHO_DIR": state, "HERDR_WORKSPACE_ID": "ws", "SOHO_ROLES": roles, "SOHO_SKILL_DIR": "../../skills/soho", "SOHO_PROMPT_CHECK_SECONDS": "0", "SOHO_PROMPT_SETTLE_SECONDS": "0", "SOHO_BRIEF_LINT": "off", "TMPDIR": root}
+	env := noWaitDispatchEnv(t, bin, state, roles, root)
 	// A race-instrumented fake child otherwise pauses for one second on
 	// exit; the harness sets only GORACE and leaves the rest of the env as built.
 	env["GORACE"] = fakecli.RaceOptions(env.List())
@@ -256,4 +256,9 @@ func TestDispatchForAmendPortedCases(t *testing.T) {
 		}()
 		h.run(t, "author", h.brief, "--amend", "--for", "reviewer", "--no-wait")
 	})
+}
+
+func noWaitDispatchEnv(t *testing.T, bin, state, roles, root string) platform.Env {
+	t.Helper()
+	return isolatedUserEnv(platform.Env{"PATH": bin, "SOHO_FAKECLI_CONFIG": bin, "HERDR_ENV": "1", "SOHO_DIR": state, "HERDR_WORKSPACE_ID": "ws", "SOHO_ROLES": roles, "SOHO_SKILL_DIR": testSkillDir(t), "SOHO_PROMPT_CHECK_SECONDS": "0", "SOHO_PROMPT_SETTLE_SECONDS": "0", "SOHO_BRIEF_LINT": "off", "TMPDIR": root})
 }

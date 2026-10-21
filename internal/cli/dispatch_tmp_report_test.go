@@ -16,10 +16,6 @@ import (
 // settles done by reading that same report path (the old $TMPDIR/herdr-soho
 // scratch name is gone).
 func TestDispatchTmpSohoReportIsReadByWait(t *testing.T) {
-	packageDir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
 	skillDir, err := filepath.Abs(filepath.Join(packageDir, "..", "..", "skills", "soho"))
 	if err != nil {
 		t.Fatal(err)

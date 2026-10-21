@@ -385,7 +385,7 @@ func TestDispatchCursorWindowsSafeScreenBecomesUnverifiedNoInput(t *testing.T) {
 
 func TestDispatchCursorWindowsClippedTrustRefusesNoInput(t *testing.T) {
 	setDispatchPlatform(t, "win32")
-	b, err := os.ReadFile("testdata/cursor-trust-clipped.txt")
+	b, err := os.ReadFile(filepath.Join(packageDir, "testdata", "cursor-trust-clipped.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -82,7 +82,7 @@ func newCompactPhaseDispatchFixture(t *testing.T, root string, clockStep time.Du
 		stateDir: filepath.Join(state, "ws"),
 		bin:      bin,
 		brief:    brief,
-		env: platform.Env{
+		env: isolatedUserEnv(platform.Env{
 			"PATH":                         bin + string(os.PathListSeparator) + "/usr/bin:/bin",
 			"SOHO_FAKECLI_CONFIG":          bin,
 			"HERDR_ENV":                    "1",
@@ -98,7 +98,7 @@ func newCompactPhaseDispatchFixture(t *testing.T, root string, clockStep time.Du
 			"TMPDIR":                       root,
 			"HOME":                         filepath.Join(root, "home"),
 			"HERDR_SOCKET_PATH":            filepath.Join(root, "missing.sock"),
-		},
+		}),
 	}
 	// A race-instrumented fake child otherwise pauses for one second on
 	// exit; the fixture sets only GORACE and leaves the rest of the env as built.
@@ -833,7 +833,7 @@ func newCompactPhaseStatusFixture(t *testing.T, withStaleReport bool) *compactPh
 		stateDir:  filepath.Join(state, "ws"),
 		briefPath: briefPath,
 		ctx:       &core.Config{Entries: map[string]core.ConfigEntry{}},
-		env: platform.Env{
+		env: isolatedUserEnv(platform.Env{
 			"PATH":                bin + string(os.PathListSeparator) + "/usr/bin:/bin",
 			"HERDR_ENV":           "1",
 			"SOHO_DIR":            state,
@@ -841,7 +841,7 @@ func newCompactPhaseStatusFixture(t *testing.T, withStaleReport bool) *compactPh
 			"HERDR_SOCKET_PATH":   filepath.Join(root, "none.sock"),
 			"SOHO_FAKECLI_CONFIG": bin,
 			"SOHO_SKILL_DIR":      skill,
-		},
+		}),
 		cwd: cwd,
 	}
 	if !withStaleReport {

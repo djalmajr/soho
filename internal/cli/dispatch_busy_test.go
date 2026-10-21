@@ -78,14 +78,14 @@ func newBusyDispatchFixture(t *testing.T) *busyDispatchFixture {
 		bin:        bin,
 		brief:      brief,
 		openReport: filepath.Join(state, "ws", "reports", "worker-20261003T100000.md"),
-		env: platform.Env{
+		env: isolatedUserEnv(platform.Env{
 			"PATH":                       bin,
 			"SOHO_FAKECLI_CONFIG":        bin,
 			"HERDR_ENV":                  "1",
 			"SOHO_DIR":                   state,
 			"HERDR_WORKSPACE_ID":         "ws",
 			"SOHO_ROLES":                 roles,
-			"SOHO_SKILL_DIR":             "../../skills/soho",
+			"SOHO_SKILL_DIR":             testSkillDir(t),
 			"SOHO_PROMPT_CHECK_SECONDS":  "1",
 			"SOHO_PROMPT_SETTLE_SECONDS": "0",
 			"SOHO_BRIEF_LINT":            "off",
@@ -93,7 +93,7 @@ func newBusyDispatchFixture(t *testing.T) *busyDispatchFixture {
 			"TMPDIR":                     root,
 			"HOME":                       filepath.Join(root, "home"),
 			"HERDR_SOCKET_PATH":          filepath.Join(root, "missing.sock"),
-		},
+		}),
 	}
 	// A race-instrumented fake child otherwise pauses for one second on
 	// exit; the fixture sets only GORACE and leaves the rest of the env as built.

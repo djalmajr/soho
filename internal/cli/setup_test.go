@@ -17,7 +17,7 @@ func TestSetupReadFlagRouting(t *testing.T) {
 	var out, errOut bytes.Buffer
 	platform.Stdout, platform.Stderr = &out, &errOut
 	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
-	env := platform.Env{"PATH": t.TempDir(), "HOME": t.TempDir(), "SOHO_SKILL_DIR": t.TempDir()}
+	env := setupReadFlagEnv(t)
 	code := Run([]string{"setup", "--probe", "--invalid"}, env)
 	if code != 2 || out.Len() != 0 || errOut.String() != "soho: setup --probe: unknown option '--invalid'\n" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
@@ -77,7 +77,7 @@ func TestSetupWriteRejectsSetBeforeAnyWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(oldCwd) })
-	skill, err := filepath.Abs(filepath.Join(oldCwd, "..", "..", "skills", "soho"))
+	skill, err := filepath.Abs(filepath.Join(packageDir, "..", "..", "skills", "soho"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,4 +96,9 @@ func TestSetupWriteRejectsSetBeforeAnyWrites(t *testing.T) {
 			t.Errorf("write-mode refusal left %s: %v", file, err)
 		}
 	}
+}
+
+func setupReadFlagEnv(t *testing.T) platform.Env {
+	t.Helper()
+	return isolatedUserEnv(platform.Env{"PATH": t.TempDir(), "HOME": t.TempDir(), "SOHO_SKILL_DIR": t.TempDir()})
 }

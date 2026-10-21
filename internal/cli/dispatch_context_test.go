@@ -90,7 +90,7 @@ func runContextWarnDispatch(t *testing.T, kind, screen string, amend bool, envEx
 	if _, err := fakecli.Install(t, bin, "herdr", calls); err != nil {
 		t.Fatal(err)
 	}
-	env := platform.Env{"PATH": bin, "SOHO_FAKECLI_CONFIG": bin, "HERDR_ENV": "1", "SOHO_DIR": state, "HERDR_WORKSPACE_ID": "ws", "SOHO_ROLES": roles, "SOHO_SKILL_DIR": "../../skills/soho", "SOHO_PROMPT_CHECK_SECONDS": "0", "SOHO_PROMPT_SETTLE_SECONDS": "0", "SOHO_BRIEF_LINT": "off", "TMPDIR": root}
+	env := contextWarnDispatchEnv(t, bin, state, roles, root)
 	for k, v := range envExtra {
 		env[k] = v
 	}
@@ -194,4 +194,9 @@ func TestDispatchContextWarn(t *testing.T) {
 			t.Fatalf("the amendment was not sent: %s", out)
 		}
 	})
+}
+
+func contextWarnDispatchEnv(t *testing.T, bin, state, roles, root string) platform.Env {
+	t.Helper()
+	return isolatedUserEnv(platform.Env{"PATH": bin, "SOHO_FAKECLI_CONFIG": bin, "HERDR_ENV": "1", "SOHO_DIR": state, "HERDR_WORKSPACE_ID": "ws", "SOHO_ROLES": roles, "SOHO_SKILL_DIR": testSkillDir(t), "SOHO_PROMPT_CHECK_SECONDS": "0", "SOHO_PROMPT_SETTLE_SECONDS": "0", "SOHO_BRIEF_LINT": "off", "TMPDIR": root})
 }
