@@ -76,7 +76,7 @@ func TestSendArrivalBusyR2ComposerSequence(t *testing.T) {
 	if code != 15 || out != "" {
 		t.Fatalf("must refuse sent with the marker still in the composer: code=%d out=%q stderr=%q", code, out, stderr)
 	}
-	want := "soho: send: windows/w0test:p0a did not confirm taking the message (agent_prompt_stalled: stalled); delivery is uncertain: no proof within the 0.001s window; read its pane for #29a25864 or a reply before sending again; screen saved to " + filepath.Join(f.dir, "state", "ws-test", "wait", "send-29a25864.screen") + "\n"
+	want := "soho: send: windows/w0test:p0a did not confirm taking the message (agent_prompt_stalled: stalled); delivery is uncertain: no proof within the 0.001s window; read its pane (herdr --machine windows agent read w0test:p0a --source visible) for #29a25864 or a reply before sending again; screen saved to " + filepath.Join(f.dir, "state", "ws-test", "wait", "send-29a25864.screen") + "\n"
 	if stderr != want {
 		t.Fatalf("the refusal keeps today's stalled 15: %q", stderr)
 	}

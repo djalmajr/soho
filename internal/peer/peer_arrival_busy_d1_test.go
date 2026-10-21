@@ -330,7 +330,7 @@ func TestSendArrivalBusyClaudeTranscript(t *testing.T) {
 		f.env["CLAUDE_CONFIG_DIR"] = t.TempDir() // present, but a remote target never resolves a transcript
 		f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "20"
 		code, _, stderr := f.run([]string{"send", "windows/w0test:p0a", "--now", "hello"})
-		want := "soho: send: windows/w0test:p0a did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane for #01020304 or a reply before sending again\n"
+		want := "soho: send: windows/w0test:p0a did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane (herdr --machine windows agent read w0test:p0a --source visible) for #01020304 or a reply before sending again\n"
 		if code != 15 || stderr != want {
 			t.Fatalf("a remote target keeps today's outcome without the busy warning: code=%d stderr=%q", code, stderr)
 		}

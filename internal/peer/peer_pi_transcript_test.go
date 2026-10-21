@@ -369,7 +369,7 @@ func TestSendRemotePiTranscriptNotArmed(t *testing.T) {
 	code, _, stderr := f.run([]string{"send", "windows/w3:p1", "hello"})
 	// Today's result for a remote send with no sign in its own state or
 	// screen: not 0 on the planted local session.
-	want := "soho: send: windows/w3:p1 did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane for #01020304 or a reply before sending again\n"
+	want := "soho: send: windows/w3:p1 did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane (herdr --machine windows agent read w3:p1 --source visible) for #01020304 or a reply before sending again\n"
 	if code != 15 || stderr != want {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
 	}

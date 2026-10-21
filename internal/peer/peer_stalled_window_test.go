@@ -187,7 +187,7 @@ func TestSendStalledWindowUnproved(t *testing.T) {
 	f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
 	screenPath := filepath.Join(f.dir, "state", "ws-test", "wait", "send-"+d15WindowID+".screen")
 	code, out, stderr := f.run([]string{"send", d15Pane, "hello"})
-	want := "soho: send: " + d15Pane + " did not confirm taking the message (agent_prompt_stalled: stalled); delivery is uncertain: no proof within the 0.001s window; read its pane for #01020304 or a reply before sending again; screen saved to " + screenPath + "\n"
+	want := "soho: send: " + d15Pane + " did not confirm taking the message (agent_prompt_stalled: stalled); delivery is uncertain: no proof within the 0.001s window; read its pane (herdr --machine windows agent read w0test:p0a --source visible) for #01020304 or a reply before sending again; screen saved to " + screenPath + "\n"
 	if code != 15 || out != "" || stderr != want {
 		t.Fatalf("the unproved window keeps the 15 and cites the saved screen: code=%d out=%q stderr=%q", code, out, stderr)
 	}

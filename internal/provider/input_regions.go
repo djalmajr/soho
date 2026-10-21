@@ -223,19 +223,25 @@ func codexComposerLine(lines []string) (int, bool) {
 }
 
 // isClaudeBorderLine reports whether the line is one of Claude Code's
-// input-box borders: composed only of '─' (U+2500), whitespace allowed
-// around it. A line that carries any other rune is not a border.
+// input-box borders, ignoring surrounding whitespace: only '─' (U+2500),
+// or a labeled line starting with '──', ending with '─', with at least
+// half of its runes being '─'. Claude's trailing border may be one rune.
 func isClaudeBorderLine(line string) bool {
 	content := strings.TrimFunc(line, isJSWhitespace)
 	if content == "" {
 		return false
 	}
-	for _, r := range content {
-		if r != '─' {
-			return false
+	runes := []rune(content)
+	border := 0
+	for _, r := range runes {
+		if r == '─' {
+			border++
 		}
 	}
-	return true
+	if border == len(runes) {
+		return true
+	}
+	return border*2 >= len(runes) && strings.HasPrefix(content, "──") && strings.HasSuffix(content, "─")
 }
 
 // claudeBoxBounds finds the claude input-box border lines within the last 12

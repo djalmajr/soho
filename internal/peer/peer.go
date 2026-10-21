@@ -85,6 +85,15 @@ type resolvedTarget struct {
 	Seq       string
 }
 
+// readPaneHint preserves the local advice and names the visible read command
+// for a remote target, where the invoking shell's default machine differs.
+func readPaneHint(t resolvedTarget) string {
+	if t.Machine == sessionref.LocalMachine || t.Machine == "" {
+		return "read its pane"
+	}
+	return fmt.Sprintf("read its pane (herdr --machine %s agent read %s --source visible)", t.Machine, t.TargetArg)
+}
+
 // transcriptProof is the session-transcript delivery proof for a local target
 // that writes every taken message as a user line in a local transcript file
 // (a Claude Code session transcript, a pi session file): the pre-send count
@@ -1110,7 +1119,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			// approval: never suggest typing over it.
 			hint := "(--now sends it without waiting; the target's CLI decides whether to queue it)"
 			if status == "blocked" {
-				hint = "(it may be showing a dialog or waiting for an approval: read its pane before sending anything)"
+				hint = fmt.Sprintf("(it may be showing a dialog or waiting for an approval: %s before sending anything)", readPaneHint(t))
 			}
 			platform.Die(fmt.Sprintf("send: %s is still %s after %ss; nothing was sent %s", t.RefShown, status, numberSeconds(timeoutMS), hint), 17)
 		} else {
@@ -1521,7 +1530,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 				// nothing, as the Enter of the ok path does.
 				if isDialogScreen(vis, t.Kind, "idle") {
 					log(senderRef, t.RefShown, "dialog")
-					platform.Die(fmt.Sprintf("send: %s is showing a dialog after the message was typed; press nothing and read its pane", t.RefShown), 17)
+					platform.Die(fmt.Sprintf("send: %s is showing a dialog after the message was typed; press nothing and %s", t.RefShown, readPaneHint(t)), 17)
 				}
 				// The key transport reports whether the Enter actually landed
 				// (herdr send-keys exited 0); a failed send is never claimed as
@@ -1537,7 +1546,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 				if !entered {
 					cause = "the last read showed it in its input box, but the Enter did not send"
 				}
-				platform.Die(stalledExitMessage(fmt.Sprintf("send: %s did not confirm taking the message: %s; delivery is uncertain; read its pane for #%s or a reply before sending again", t.RefShown, cause, id)), 15)
+				platform.Die(stalledExitMessage(fmt.Sprintf("send: %s did not confirm taking the message: %s; delivery is uncertain; %s for #%s or a reply before sending again", t.RefShown, cause, readPaneHint(t), id)), 15)
 			}
 			// The marker is not in the input box (or the screen could not be
 			// read), yet the prompt can have been taken anyway: a taken codex
@@ -1565,14 +1574,14 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			// sit in the target's composer, so the message says delivery is
 			// uncertain and names the reconciliation (the marker or a reply),
 			// never that the message was not delivered.
-			msg := fmt.Sprintf("send: %s did not confirm taking the message (%s); delivery is uncertain; read its pane for #%s or a reply before sending again", t.RefShown, cause, id)
+			msg := fmt.Sprintf("send: %s did not confirm taking the message (%s); delivery is uncertain; %s for #%s or a reply before sending again", t.RefShown, cause, readPaneHint(t), id)
 			// Only the stalled exits record the screen: agent_blocked and
 			// timeout keep today's message untouched.
 			if p.Code == "agent_prompt_stalled" {
 				// The proof window ran and ended without proof: say so, in
 				// seconds. The cause keeps Herdr's own "within ... ms" text,
 				// which is part of the cause.
-				msg = fmt.Sprintf("send: %s did not confirm taking the message (%s); delivery is uncertain: no proof within the %ss window; read its pane for #%s or a reply before sending again", t.RefShown, cause, numberSeconds(windowMS), id)
+				msg = fmt.Sprintf("send: %s did not confirm taking the message (%s); delivery is uncertain: no proof within the %ss window; %s for #%s or a reply before sending again", t.RefShown, cause, numberSeconds(windowMS), readPaneHint(t), id)
 				msg = stalledExitMessage(msg)
 			}
 			platform.Die(msg, 15)
@@ -1668,7 +1677,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		if cause == "" {
 			cause = "read failed"
 		}
-		platform.Die(fmt.Sprintf("send: could not confirm that %s took the message (%s); read its pane before sending again", t.RefShown, cause), 15)
+		platform.Die(fmt.Sprintf("send: could not confirm that %s took the message (%s); %s before sending again", t.RefShown, cause, readPaneHint(t)), 15)
 	}
 	preEnterVis, readErr := readAfter("visible", 0, HerdrCallTimeoutMS)
 	if readErr == "" && (steeringQueued(preEnterVis, id) || claudeQueued(preEnterVis, id) || (t.Kind == "codex" && codexQueued(preEnterVis, id))) {
@@ -1682,7 +1691,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	}
 	if readErr != "" {
 		log(senderRef, t.RefShown, "unverified")
-		platform.Die(fmt.Sprintf("send: could not confirm that %s took the message (%s); read its pane before sending again", t.RefShown, readErr), 15)
+		platform.Die(fmt.Sprintf("send: could not confirm that %s took the message (%s); %s before sending again", t.RefShown, readErr, readPaneHint(t)), 15)
 	}
 	preEnterGet := agentGet(t.Machine, t.TargetArg, env, HerdrCallTimeoutMS)
 	if !preEnterGet.OK {
@@ -1691,16 +1700,16 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		if cause == "" {
 			cause = "status read failed"
 		}
-		platform.Die(fmt.Sprintf("send: could not confirm that %s took the message (%s); read its pane before sending again", t.RefShown, cause), 15)
+		platform.Die(fmt.Sprintf("send: could not confirm that %s took the message (%s); %s before sending again", t.RefShown, cause, readPaneHint(t)), 15)
 	}
 	if isDialogScreen(preEnterVis, t.Kind, preEnterGet.Status) {
 		log(senderRef, t.RefShown, "dialog")
-		platform.Die(fmt.Sprintf("send: %s is showing a dialog after the message was typed; press nothing and read its pane", t.RefShown), 17)
+		platform.Die(fmt.Sprintf("send: %s is showing a dialog after the message was typed; press nothing and %s", t.RefShown, readPaneHint(t)), 17)
 	}
 	idInBox := idInInputBox(t.Kind, preEnterVis, id)
 	if !idInBox {
 		log(senderRef, t.RefShown, "lost")
-		platform.Die(fmt.Sprintf("send: %s did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane for #%s or a reply before sending again", t.RefShown, id), 15)
+		platform.Die(fmt.Sprintf("send: %s did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; %s for #%s or a reply before sending again", t.RefShown, readPaneHint(t), id), 15)
 	}
 	// The key transport reports whether the Enter actually landed (herdr
 	// send-keys exited 0); a failed send is never claimed as pressed, and no
@@ -1718,14 +1727,14 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		if cause == "" {
 			cause = "read failed"
 		}
-		platform.Die(fmt.Sprintf("send: could not confirm that %s took the message (%s); read its pane before sending again", t.RefShown, cause), 15)
+		platform.Die(fmt.Sprintf("send: could not confirm that %s took the message (%s); %s before sending again", t.RefShown, cause, readPaneHint(t)), 15)
 	}
 	log(senderRef, t.RefShown, "lost")
 	lostCause := "no sign of it in its state or screen"
 	if !entered {
 		lostCause = "the Enter did not send and there is no sign of it in its state or screen"
 	}
-	platform.Die(fmt.Sprintf("send: %s did not confirm taking the message (%s); delivery is uncertain; read its pane for #%s or a reply before sending again", t.RefShown, lostCause, id), 15)
+	platform.Die(fmt.Sprintf("send: %s did not confirm taking the message (%s); delivery is uncertain; %s for #%s or a reply before sending again", t.RefShown, lostCause, readPaneHint(t), id), 15)
 	return 15
 }
 
