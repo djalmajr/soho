@@ -19,6 +19,7 @@ func TestDeclaredWorktree(t *testing.T) {
 		{name: "native-bare", body: "Worktree: " + other + " (branch y)", want: other},
 		{name: "backtick-fence", body: "```md\nWorktree: `" + other + "`\n```\nWorktree: `" + abs + "`", want: abs},
 		{name: "tilde-fence", body: "~~~md\nWorktree: `" + other + "`\n~~~"},
+		{name: "fence-closed-with-tab", body: "```md\nWorktree: `" + other + "`\n```\t\nWorktree: `" + abs + "`", want: abs},
 		{name: "first-declaration", body: "Worktree: `" + abs + "`\nWorktree: `" + other + "`", want: abs},
 		{name: "invalid-first-declaration", body: "Worktree: relative\nWorktree: `" + abs + "`"},
 		{name: "quoted-relative", body: "Worktree: `.worktrees/x` (branch y)"},

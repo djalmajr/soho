@@ -266,7 +266,7 @@ func lintHeading(line string) (string, int, bool) {
 // briefFenceMask reports, for each line, whether it belongs to a fenced code
 // block: a fence line (three or more ` or ~, up to three leading spaces) or a
 // line inside one. A fence closes only with the same character, at least as
-// many marks, and nothing after but spaces.
+// many marks, and nothing after but spaces or tabs.
 func briefFenceMask(lines []string) []bool {
 	mask := make([]bool, len(lines))
 	inFence := false
@@ -285,7 +285,7 @@ func briefFenceMask(lines []string) []bool {
 			if end-indent >= 3 {
 				if !inFence {
 					inFence, fenceChar, fenceLen = true, line[indent], end-indent
-				} else if line[indent] == fenceChar && end-indent >= fenceLen && strings.Trim(line[end:], " \r") == "" {
+				} else if line[indent] == fenceChar && end-indent >= fenceLen && strings.Trim(line[end:], " \t\r") == "" {
 					inFence = false
 				}
 				mask[i] = true
