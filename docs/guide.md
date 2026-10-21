@@ -126,7 +126,7 @@ The target project decides whether it accepts peer messages: `inbound=off` in th
 
 ### Signed peer messages
 
-The `[soho:peer]` header is text typed into a pane, and anyone who reaches the target's Herdr can type one that looks the same. So `send` signs each message, and the receiver's Claude Code or Codex hook installed by `soho setup` checks the signature before the agent sees the prompt.
+The `[soho:peer]` header is text typed into a pane, and anyone who reaches the target's Herdr can type one that looks the same. So `send` signs each message, and the receiver's Claude Code hook, Codex hook or pi extension installed by `soho setup` checks the signature before the agent sees the prompt.
 
 **Signature.** `send` adds `; from <label>; sig v1:<32 hex>` to the end of the `Sender:` line (a local message has only `; sig v1:<32 hex>`): an HMAC-SHA256 with a key shared by the pair of machines, over the whole message from the opening line to the closing line (CRLF and trailing blanks aside), cut to 16 bytes. A signed message always has a `Sender:` line.
 
@@ -144,8 +144,12 @@ The `[soho:peer]` header is text typed into a pane, and anyone who reaches the t
 
 **Rollout.** Create the keys and copy them, set `inbound_allow`, run with `inbound_auth=warn` and read `peer-inbound.tsv` and `soho doctor`, then switch to `enforce`. `doctor` warns, with `inbound_auth` other than `off`, about an allowed label that is not a valid name or has no key file, a key file that is not valid or is not 0600 (on Windows it says the permission is not checked), a missing `local.key` (local messages go out unsigned and `enforce` refuses them), and a project whose `.claude/settings.json` has neither `soho hook reminder` nor `soho hook inbound` under `UserPromptSubmit`; with `enforce` it also names each live roster agent whose kind is unsupported or whose Codex UserPromptSubmit entry is missing (run `soho setup`). With the default configuration its output does not change. After `soho setup`, Codex checks peer messages through the project's `.codex/hooks.json` (`UserPromptSubmit` → `soho hook inbound --codex`). The project and its `.codex/` layer must be trusted by Codex for project hooks to load. New or changed hooks show `Hooks need review` once for that configuration; `hooks_review=trust` (the default) approves the owner's configured hooks on workers. No hook-trust bypass flag is installed.
 
+After `soho setup`, pi checks peer messages with the managed `.pi/extensions/soho-inbound.ts` input extension and `soho hook inbound --pi`. It checks every input source containing `[soho:peer]`, without a shell, and consumes blocked input before it reaches the model; ordinary input runs no helper. A missing, unsuccessful or timed-out helper warns and continues without checking; the deadline is ten seconds. Setup updates only files carrying its first-line ownership marker, preserves unmarked files with a warning, and respects `--plan`, `--no-hooks` and `--local`. Doctor checks the exact installed extension content; it cannot detect project trust. Pi loads project extensions only after trust is granted: approve the project interactively and use `/trust` to save the decision before starting workers. Declining trust skips the extension; in print/JSON/RPC modes an unresolved default `ask` also skips protected resources. Spawn is unchanged and does not add an approval override. Sources: Pi 1.3.0 `docs/security.md:29-55,61-79`, `docs/configuration.md:3,34`, and `docs/extensions.md:46-50`.
+
+Pi displays a blocked input as `Error: [soho:peer-refused] #<id> ...`. `send` recognizes this line, including an optional leading `›`, and exits 18 with `send: <target> refused the message (<result>); it did not reach the model`. Quoted lines and another message's id do not count; the receiver's input needs no clearing.
+
 **Limits.**
-- Claude Code and Codex check after `soho setup`; pi, opencode and the other kinds remain uncovered, and `doctor` names unprotected live agents.
+- Claude Code, Codex and pi check after `soho setup`; opencode and the other kinds remain uncovered, and `doctor` names unprotected live agents.
 - Whoever has SSH and Herdr on the target types what they like: a signature stops forged text, not a person with the pane.
 - Every agent on a machine reads that machine's key files.
 - The `local` key only protects against whoever cannot read this user's files on this machine: a remote process that reads them reads the key too.

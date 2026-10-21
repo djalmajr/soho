@@ -153,6 +153,8 @@ func doctorUnprotectedAgents(ctx *core.Config, env platform.Env, cwd string, s *
 	}
 	codexHooks, codexReadError := platform.ReadTextFile(filepath.Join(platform.ProjectRoot(env, cwd), ".codex", "hooks.json"))
 	codexProtected := codexReadError == nil && setuptext.CodexHooksProtected(codexHooks)
+	piExtension, piReadError := platform.ReadTextFile(filepath.Join(platform.ProjectRoot(env, cwd), ".pi", "extensions", "soho-inbound.ts"))
+	piProtected := piReadError == nil && setuptext.PiInboundProtected(piExtension)
 	var lines []string
 	func() {
 		defer func() {
@@ -181,6 +183,10 @@ func doctorUnprotectedAgents(ctx *core.Config, env platform.Env, cwd string, s *
 					if f[2] == "codex" {
 						if !codexProtected {
 							lines = append(lines, fmt.Sprintf("%s (codex) is not protected: no 'soho hook inbound --codex' in UserPromptSubmit (run 'soho setup')", f[0]))
+						}
+					} else if f[2] == "pi" {
+						if !piProtected {
+							lines = append(lines, fmt.Sprintf("%s (pi) is not protected: no inbound hook for pi yet (run 'soho setup')", f[0]))
 						}
 					} else if f[2] != "claude" {
 						lines = append(lines, fmt.Sprintf("%s (%s) is not protected: no inbound hook for %s yet", f[0], f[2], f[2]))

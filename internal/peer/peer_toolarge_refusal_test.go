@@ -95,6 +95,63 @@ func requireNoTooLargeRefusal(t *testing.T, code int, stderr string, f *fixture)
 	}
 }
 
+func TestSendPiTooLargeRefusal(t *testing.T) {
+	line := " Error: " + peerauth.TooLargeLine
+	for _, tc := range []struct {
+		name                  string
+		before, after, recent string
+		stalled, composer     bool
+		refused               bool
+	}{
+		{"consumed", "", line, line, true, false, true},
+		{"stalled-composer", "", line, line, true, true, true},
+		{"composer-error", "", "› Error: " + peerauth.TooLargeLine, line, true, false, true},
+		{"recent-only", "", "done", line, false, false, true},
+		{"already-visible", line, line, line, true, true, false},
+		{"new-count", line, line + "\n" + line, line + "\n" + line, true, true, true},
+		{"quoted", "", ">" + line, ">" + line, true, true, false},
+		{"error-quoted", "", "Error: > " + peerauth.TooLargeLine, "Error: > " + peerauth.TooLargeLine, true, true, false},
+		{"other-prefix", "", "Warning: " + peerauth.TooLargeLine, "Warning: " + peerauth.TooLargeLine, true, true, false},
+		{"bare", "", peerauth.TooLargeLine, peerauth.TooLargeLine, true, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, prompt := stalledID(t)
+			composer := ""
+			if tc.composer {
+				composer = prompt
+			}
+			rules := tooLargeRules(prompt, tc.stalled, piSendScreen(tc.before, ""), piSendScreen(tc.after, composer), tc.recent)
+			for i := range rules {
+				if len(rules[i].Argv) >= 2 && rules[i].Argv[0] == "agent" && rules[i].Argv[1] == "get" {
+					seq := "1"
+					if rules[i].Call == 0 && !tc.stalled {
+						seq = "2"
+					}
+					rules[i].Stdout = agentJSONKind("pi", "done", seq)
+				}
+			}
+			f := newFixture(t, rules)
+			f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
+			code, out, stderr := f.run([]string{"send", "w0test:p0a", "hello"})
+			if !tc.refused {
+				requireNoTooLargeRefusal(t, code, stderr, f)
+				return
+			}
+			const want = "soho: send: local/w0test:p0a refused the message (prompt-too-large); it did not reach the model\n"
+			if code != 18 || out != "" || stderr != want {
+				t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+			}
+			if enters := countSendKeyEnters(t, f); enters != 0 {
+				t.Fatalf("a refused pi message got %d extra Enter", enters)
+			}
+			log := peerMessagesLog(t, f)
+			if strings.Contains(log, "\tsent\t") || !strings.Contains(log, "\trefused\t") {
+				t.Fatalf("peer-messages.tsv = %q", log)
+			}
+		})
+	}
+}
+
 func TestSendReadsTheTooLargeRefusal(t *testing.T) {
 	_, prompt := stalledID(t)
 	clean := tooLargeScreen("", "")
