@@ -25,7 +25,10 @@ import (
 // cursorTrustScreen is the verified cursor Workspace Trust Required dialog.
 func cursorTrustScreen(t *testing.T) string {
 	t.Helper()
-	b, err := os.ReadFile("testdata/cursor-trust.txt")
+	if packageDirErr != nil {
+		t.Fatal(packageDirErr)
+	}
+	b, err := os.ReadFile(filepath.Join(packageDir, "testdata", "cursor-trust.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}

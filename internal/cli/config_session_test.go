@@ -36,8 +36,11 @@ func commandFixture(t *testing.T) (platform.Env, string) {
 		t.Fatalf("git init: %s: %v", output, err)
 	}
 	skillDir := testSkillDir(t)
+	// Run resolves configuration from the process cwd. Keep it inside this
+	// fixture, including when an earlier command cached the real Git roots.
+	t.Chdir(repo)
 	return platform.Env{
-		"HOME": home, "XDG_CONFIG_HOME": conf, "SOHO_DIR": state,
+		"HOME": home, "USERPROFILE": home, "XDG_CONFIG_HOME": conf, "SOHO_DIR": state, "TMPDIR": root,
 		"SOHO_SKILL_DIR": skillDir, "HERDR_WORKSPACE_ID": "ws", "PATH": os.Getenv("PATH"),
 	}, repo
 }
