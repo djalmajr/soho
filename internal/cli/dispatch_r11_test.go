@@ -431,9 +431,15 @@ func newR11Fixture(t *testing.T, tc r11Case) *r11Fixture {
 		fakecli.Rule{Argv: []string{"agent", "get", "worker"}, Call: 2, Stdout: stateAfterPrompt},
 		fakecli.Rule{Argv: []string{"agent", "get", "worker"}, Call: 3, Stdout: stateAfterArrival},
 	)
+	reportReady := ""
+	if tc.report {
+		// The prompt returns only after its report exists. A delay cannot
+		// coordinate this writer with dispatch's deliberately fast fake clock.
+		reportReady = filepath.Join(root, "report-ready")
+	}
 	rules = append(rules,
 		fakecli.Rule{Argv: []string{"agent", "get", "worker"}, ArgvPrefix: true, Stdout: statePost},
-		fakecli.Rule{Argv: []string{"agent", "prompt", "worker"}, ArgvPrefix: true, Stdout: "{\"result\":{\"submitted\":true}}", Delay: boolInt(tc.report) * 100},
+		fakecli.Rule{Argv: []string{"agent", "prompt", "worker"}, ArgvPrefix: true, Stdout: "{\"result\":{\"submitted\":true}}", WaitFile: reportReady},
 		fakecli.Rule{Argv: []string{"agent", "send-keys", "worker", "enter"}, ArgvPrefix: true},
 		fakecli.Rule{Argv: []string{"pane", "title"}, ArgvPrefix: true, Code: 1},
 	)
@@ -475,10 +481,28 @@ func (f *r11Fixture) installReportWriter(t *testing.T) {
 	t.Helper()
 	// The generated report path is parsed from the dispatched prompt so the
 	// fixture writes exactly the report selected by dispatch, including suffixes.
+	stop, done := make(chan struct{}), make(chan struct{})
+	var writeErr error
+	t.Cleanup(func() {
+		close(stop)
+		<-done
+		if writeErr != nil {
+			t.Errorf("report writer: %v", writeErr)
+		}
+	})
 	go func() {
+		defer close(done)
+		// Release even on a write error: the assertions and cleanup report it
+		// without waiting for the fake CLI's deadlock watchdog.
+		defer func() {
+			if err := os.WriteFile(filepath.Join(f.root, "report-ready"), nil, 0o600); err != nil && writeErr == nil {
+				writeErr = err
+			}
+		}()
 		log := filepath.Join(f.bin, "herdr.calls.jsonl")
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
 			calls, _ := fakecli.ReadCalls(log)
 			for _, call := range calls {
 				if len(call.Argv) < 4 || call.Argv[0] != "agent" || call.Argv[1] != "prompt" {
@@ -494,10 +518,14 @@ func (f *r11Fixture) installReportWriter(t *testing.T) {
 				if !ok {
 					continue
 				}
-				_ = os.WriteFile(path, []byte("# Report\n\ndone.\n"), 0o600)
+				writeErr = os.WriteFile(path, []byte("# Report\n\ndone.\n"), 0o600)
 				return
 			}
-			time.Sleep(time.Millisecond)
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
 		}
 	}()
 }

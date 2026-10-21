@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/collaboration"
-	"github.com/djalmajr/soho/internal/platform"
 )
 
 // errCollabTestCrash is the scripted crash marker of the settlement crash
@@ -1987,9 +1986,9 @@ func TestSuperviseCollabEnumerationFailureKeepsSnapshot(t *testing.T) {
 // finalize: when the first call fails with a generation conflict and the
 // retry succeeds, the outcome stays partial (the class recorded before
 // the termination) with phase finished, finalized_by_supervisor and no
-// cause. The first call conflicts genuinely: an external actor bumps the
-// generation between the supervisor's read and its write (held under the
-// stores write lock). The test catches the mutation "remove
+// cause. The first attempt injects a genuine Store.Update generation conflict:
+// an external actor advances the record after a stale read. The retry uses
+// Store.Finalize without a hook. The test catches the mutation "remove
 // finalized = true from the retry branch": without it the successful
 // retry would not claim the finalize.
 func TestSuperviseCollabFinalizeConflictRetryIsSupervisorFinalized(t *testing.T) {
@@ -2007,43 +2006,30 @@ func TestSuperviseCollabFinalizeConflictRetryIsSupervisorFinalized(t *testing.T)
 	team.rosterRows = collabRoster("impl-1", "rev-1")
 	report := writeOrchestratorReport(t, "# report\n\n- [done] item\n")
 	team.statusScript = []fakeStatus{{State: "working"}, {State: "done", Report: report}}
-	// The conflict: the hook holds the store's write lock (so the
-	// supervisor's finalize write blocks on it), and an external actor
-	// bumps the generation between the supervisor's read and its write.
-	collabFinalizePreWriteHook = func(_ string) {
-		defer func() { collabFinalizePreWriteHook = nil }()
-		lock := filepath.Join(ws, "collaboration", "state.lock")
-		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err != nil {
-			t.Errorf("hook lock: %v", err)
-			return
+	// Do not hold state.lock while waiting for the supervisor: a descheduled
+	// actor could outlive both lock-acquisition budgets. Instead interleave a
+	// real external update inside the stale-read/write window synchronously.
+	attempts := 0
+	t.Cleanup(func() { collabFinalizeFirstAttemptHook = nil })
+	collabFinalizeFirstAttemptHook = func(gotID string) error {
+		attempts++
+		if gotID != id {
+			t.Fatalf("finalize id = %q, want %q", gotID, id)
 		}
-		_ = f.Close()
-		go func() {
-			// Let the supervisor's read pass, then bump the generation
-			// (a direct write: the actor is outside the store's API).
-			time.Sleep(100 * time.Millisecond)
-			a, err := cstore.Read(id)
-			if err != nil {
-				t.Errorf("hook read: %v", err)
-				return
-			}
-			a.Generation++
-			raw, err := json.MarshalIndent(a, "", "  ")
-			if err != nil {
-				t.Errorf("hook marshal: %v", err)
-				return
-			}
-			// The real record file (the store's layout): the bump must be
-			// what the store's next read observes.
-			if err := platform.AtomicWrite(filepath.Join(ws, "collaboration", id, "assignment.json"), string(raw)); err != nil {
-				t.Errorf("hook write: %v", err)
-			}
-			// Release the lock after the supervisor's first write side
-			// has observed the conflict.
-			time.Sleep(100 * time.Millisecond)
-			_ = os.Remove(lock)
-		}()
+		stale := collabDisk(t, cstore, id)
+		if _, err := cstore.Stop(id); err != nil {
+			t.Fatalf("external update: %v", err)
+		}
+		// The external generation has advanced; the stale write must fail
+		// before applying its change, just as Store.Finalize's Update does.
+		_, err := cstore.Update(id, stale.Generation, func(*collaboration.Assignment) error {
+			t.Fatal("stale finalize change ran despite the generation conflict")
+			return nil
+		})
+		if err == nil || err.Error() != "collaboration generation changed; inspect status before retrying" {
+			t.Fatalf("first finalize conflict = %v", err)
+		}
+		return err
 	}
 	if queued, err := store.RequestCancel("job-1", 60); !queued || err != nil {
 		t.Fatal(err)
@@ -2054,6 +2040,9 @@ func TestSuperviseCollabFinalizeConflictRetryIsSupervisorFinalized(t *testing.T)
 	}
 	if exit != ExitCanceled {
 		t.Fatalf("exit = %d, want %d", exit, ExitCanceled)
+	}
+	if attempts != 1 {
+		t.Fatalf("injected first attempts = %d, want 1", attempts)
 	}
 	// The external bump and the retried supervisor finalize each advanced
 	// the generation once: the record stands two generations past the
