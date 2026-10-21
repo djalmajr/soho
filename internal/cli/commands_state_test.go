@@ -16,6 +16,10 @@ import (
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
+// packageDir is the directory supplied by go test, before suite isolation.
+var packageDir string
+var packageDirErr error
+
 func TestMain(m *testing.M) {
 	// CLI fixtures must not depend on this host's disk/swap pressure. Tests
 	// of the warning override these existing hooks explicitly and restore
@@ -23,7 +27,78 @@ func TestMain(m *testing.M) {
 	platform.DiskFree = func(string) (int64, int64, bool) { return 50, 100, true }
 	platform.SwapUsage = func(platform.Env) (int64, int64, bool) { return 0, 100, true }
 	managedCLIHelperMain()
-	fakecli.RunTests(m)
+	fakecli.Main()
+	fakecli.GuardSuiteRun()
+	// These test helpers keep their caller's cwd and environment. Managed
+	// CLI and init-based fakes have already dispatched before this point.
+	for _, key := range []string{
+		procsHelperRoleEnv,            // TestProcFixtureHelper runs native process roles.
+		explainFootprintHelperRoleEnv, // TestExplainFootprintHelper stands in for a worker.
+		compactPhaseLivenessChildEnv,  // TestCompactPhaseLivenessChild sleeps, then exits.
+		f11CompactPhaseChildEnv,       // TestF11CompactPhaseChild is killed during dispatch.
+	} {
+		if os.Getenv(key) != "" {
+			fakecli.RunTests(m)
+			return
+		}
+	}
+	packageDir, packageDirErr = os.Getwd()
+	if packageDirErr != nil {
+		fmt.Fprintln(os.Stderr, packageDirErr)
+		os.Exit(1)
+	}
+	// Tests re-run this binary through os.Args[0]: a relative path (a binary
+	// run as ./cli.test) would stop resolving once the suite leaves the
+	// package directory, so make it absolute first. A bare name is looked up
+	// in PATH and stays as it is.
+	if !filepath.IsAbs(os.Args[0]) && strings.ContainsAny(os.Args[0], `/\`) {
+		if abs, err := filepath.Abs(os.Args[0]); err == nil {
+			os.Args[0] = abs
+		}
+	}
+	root, err := os.MkdirTemp("", "soho-cli-suite-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	fixtureIsolationRoot = root
+	cleanup := func() {
+		if err := os.Chdir(packageDir); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		if err := os.RemoveAll(root); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+	}
+	for _, name := range []string{"cwd", "home", "conf", "tmp"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o700); err != nil {
+			cleanup()
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+	for key, value := range map[string]string{
+		"HOME": filepath.Join(root, "home"), "USERPROFILE": filepath.Join(root, "home"),
+		"XDG_CONFIG_HOME": filepath.Join(root, "conf"),
+		"TMPDIR":          filepath.Join(root, "tmp"), "TMP": filepath.Join(root, "tmp"), "TEMP": filepath.Join(root, "tmp"),
+		// Go 1.27's testing.TempDir prefers GOTMPDIR over os.TempDir.
+		"GOTMPDIR": filepath.Join(root, "tmp"),
+	} {
+		if err := os.Setenv(key, value); err != nil {
+			cleanup()
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+	if err := os.Chdir(filepath.Join(root, "cwd")); err != nil {
+		cleanup()
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fakecli.RunTests(m, cleanup)
 }
 
 func TestStateCommandParity(t *testing.T) {

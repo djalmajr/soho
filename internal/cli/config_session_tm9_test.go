@@ -284,6 +284,9 @@ func TestTM9ParentTitleSubtests(t *testing.T) {
 		tc := tc
 		t.Run(tc.title, func(t *testing.T) {
 			cmd := exec.Command(os.Args[0], "-test.run", "^"+tc.test+"$")
+			// The child's TestMain takes its cwd as the package directory:
+			// start it there, not in this suite's isolated cwd.
+			cmd.Dir = packageDir
 			// The child re-runs the race-instrumented test binary and would
 			// otherwise pause for one second on exit; set only GORACE.
 			childEnv := os.Environ()

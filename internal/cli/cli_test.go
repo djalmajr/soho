@@ -210,7 +210,7 @@ func TestNowriteAndFormerEnv(t *testing.T) {
 		var stderr bytes.Buffer
 		oldErr = platform.Stderr
 		platform.Stderr = &stderr
-		got := Run(args, platform.Env{"SOHO_NOWRITE": "1"})
+		got := Run(args, nowriteRoutingEnv())
 		platform.Stderr = oldErr
 		if got != 2 || !strings.Contains(stderr.String(), "extra argument") {
 			t.Errorf("NOWRITE args=%v code=%d stderr=%q", args, got, stderr.String())
@@ -224,4 +224,8 @@ func TestNowriteAndFormerEnv(t *testing.T) {
 	if got != 0 || stderr.String() != "" {
 		t.Errorf("former NOWRITE code=%d stderr=%q", got, stderr.String())
 	}
+}
+
+func nowriteRoutingEnv() platform.Env {
+	return isolatedUserEnv(platform.Env{"SOHO_NOWRITE": "1"})
 }

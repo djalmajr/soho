@@ -100,12 +100,15 @@ func waitForFile(path string, timeout time.Duration) error {
 
 // RunTests handles fake CLI re-execution, runs the package tests, and cleans up
 // a lazily prepared Windows binary after the package finishes.
-func RunTests(m *testing.M) {
+func RunTests(m *testing.M, after ...func()) {
 	Main()
 	GuardSuiteRun()
 	code := m.Run()
 	if preparedBinary != "" {
 		_ = os.RemoveAll(filepath.Dir(preparedBinary))
+	}
+	for _, callback := range after {
+		callback()
 	}
 	os.Exit(code)
 }

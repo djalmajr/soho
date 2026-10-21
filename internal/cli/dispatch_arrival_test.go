@@ -34,11 +34,14 @@ func newDispatchArrivalFixture(t *testing.T, initialMode string, initialSeq, nex
 	}
 	recent = strings.ReplaceAll(recent, "$ROOT", root)
 	state, roles, bin := filepath.Join(root, "state"), filepath.Join(root, "roles"), filepath.Join(root, "bin")
-	for _, dir := range []string{filepath.Join(state, "ws", "wait"), filepath.Join(state, "ws", "briefs"), filepath.Join(state, "ws", "reports"), roles, bin} {
+	for _, dir := range []string{filepath.Join(state, "ws", "wait"), filepath.Join(state, "ws", "briefs"), filepath.Join(state, "ws", "reports"), roles, bin, filepath.Join(root, "home"), filepath.Join(root, "conf")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// Run reads its configuration using os.Getwd, not the fixture's state
+	// path. A unique cwd also keeps the package's Git-root cache hermetic.
+	t.Chdir(root)
 	if err := os.WriteFile(filepath.Join(roles, "implementer.md"), []byte("---\nname: Implementer\nmode: edit\n---\nRole body.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +90,8 @@ func newDispatchArrivalFixture(t *testing.T, initialMode string, initialSeq, nex
 		}
 	}
 	env["HERDR_ENV"], env["SOHO_DIR"], env["HERDR_WORKSPACE_ID"] = "1", state, "ws"
-	env["SOHO_ROLES"], env["SOHO_SKILL_DIR"] = roles, "../../skills/soho"
+	env["SOHO_ROLES"], env["SOHO_SKILL_DIR"] = roles, testSkillDir(t)
+	env["HOME"], env["USERPROFILE"], env["XDG_CONFIG_HOME"] = filepath.Join(root, "home"), filepath.Join(root, "home"), filepath.Join(root, "conf")
 	env["SOHO_PROMPT_CHECK_SECONDS"], env["SOHO_PROMPT_SETTLE_SECONDS"] = "1", settle
 	env["SOHO_BRIEF_LINT"], env["TMPDIR"] = "off", root
 	env["HERDR_SOCKET_PATH"] = filepath.Join(root, "missing.sock")

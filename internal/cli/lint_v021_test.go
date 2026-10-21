@@ -22,7 +22,7 @@ const placeholderLintBrief = "# Goal\nDo the slice.\n# Expected result\nDone.\n#
 func lintV021Fixture(t *testing.T, briefBody string) (root, brief string, env platform.Env) {
 	t.Helper()
 	root = t.TempDir()
-	skillDir, err := filepath.Abs(filepath.Join("..", "..", "skills", "soho"))
+	skillDir, err := filepath.Abs(filepath.Join(packageDir, "..", "..", "skills", "soho"))
 	if err != nil {
 		t.Fatal(err)
 	}

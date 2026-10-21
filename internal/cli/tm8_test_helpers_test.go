@@ -41,14 +41,7 @@ func tm8CommandFixture(t *testing.T) (platform.Env, string) {
 			t.Fatal(err)
 		}
 	}
-	packageDir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	skillDir, err := filepath.Abs(filepath.Join(packageDir, "..", "..", "skills", "soho"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	skillDir := testSkillDir(t)
 	clean = withFakeCLI(clean, bin)
 	clean["HOME"] = filepath.Join(root, "home")
 	clean["USERPROFILE"] = clean["HOME"]

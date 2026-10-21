@@ -216,11 +216,14 @@ func TestDispatchRemainingCases(t *testing.T) {
 		}
 		relative := "dispatch_remaining_test.go"
 		outside := filepath.Join(cwd, relative)
+		if err := os.WriteFile(outside, []byte("fixture source\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		brief := "# Goal\nrun\n# Expected result\nok\n# Owned files\nnone\n# Forbidden\nno commit or push\n# Report\ndone\n\nRead `" + relative + "`.\n"
 		if err := os.WriteFile(f.brief, []byte(brief), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		roster := "worker\tw0test:p0a\tcodex\timplementer\topenai\t0\t/tmp\tnow\tgpt-5\ttask\timplementer\n"
+		roster := "worker\tw0test:p0a\tcodex\timplementer\topenai\t0\t" + t.TempDir() + "\tnow\tgpt-5\ttask\timplementer\n"
 		if err := os.WriteFile(filepath.Join(f.state, "ws", "agents.tsv"), []byte(roster), 0o600); err != nil {
 			t.Fatal(err)
 		}

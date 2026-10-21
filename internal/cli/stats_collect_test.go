@@ -407,7 +407,7 @@ func TestStatsPortedCases(t *testing.T) {
 		amend := filepath.Join(f.briefs, "alice-20260928T120001.md")
 		_ = os.WriteFile(amend, []byte("# Amendment to your current brief\n"), 0o600)
 		_ = os.WriteFile(filepath.Join(f.reports, "alice-20260928T120001.md"), []byte("amended report\n"), 0o600)
-		fixtureBytes, err := os.ReadFile("../../internal/stats/testdata/stats.json")
+		fixtureBytes, err := os.ReadFile(filepath.Join(packageDir, "..", "stats", "testdata", "stats.json"))
 		if err != nil {
 			t.Fatal(err)
 		}

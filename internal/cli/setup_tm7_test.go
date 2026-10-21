@@ -157,7 +157,7 @@ func setupTM7SetupStep(args []string) setupTM7Step { return setupTM7Step{Args: a
 
 func setupTM7SkillDir(t *testing.T) string {
 	t.Helper()
-	dir, err := filepath.Abs(filepath.Join("..", "..", "skills", "soho"))
+	dir, err := filepath.Abs(filepath.Join(packageDir, "..", "..", "skills", "soho"))
 	if err != nil {
 		t.Fatal(err)
 	}
