@@ -116,7 +116,10 @@ func procsAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) int
 	if parent := platform.ParentPID(); parent > 0 && pid == parent {
 		return refuse("that is the process that invoked soho")
 	}
-	sd := core.StateDir(ctx, env, cwd)
+	sd := registryDestination(env)
+	if sd == "" {
+		sd = core.StateDir(ctx, env, cwd)
+	}
 	incorporatePendingProcs("procs add", sd, env)
 	if agentSeen && core.RosterLine(sd, agent) == "" {
 		core.DieFriction(fmt.Sprintf("procs add: agent '%s' is not in the roster (state dir: %s)", agent, sd), 3, frictionLogPath, "procs")

@@ -401,7 +401,11 @@ func TabRename(tab, label string, env platform.Env) bool {
 	return ok(run([]string{"tab", "rename", tab, label}, env))
 }
 func TabCreate(env platform.Env, ws, cwd, label string) TabCreateResult {
-	r := run([]string{"tab", "create", "--workspace", ws, "--cwd", cwd, "--label", label, "--no-focus"}, env)
+	args := []string{"tab", "create", "--workspace", ws, "--cwd", cwd, "--label", label, "--no-focus"}
+	if registryDir := env.Get("SOHO_REGISTRY_DIR"); registryDir != "" {
+		args = append(args, "--env", "SOHO_REGISTRY_DIR="+registryDir)
+	}
+	r := run(args, env)
 	v := parsed(r.Stdout)
 	return TabCreateResult{ok(r), str(get(v, "result", "tab", "tab_id")), str(get(v, "result", "root_pane", "pane_id"))}
 }
@@ -409,6 +413,9 @@ func PaneSplit(anchor, direction, cwd string, env platform.Env, ratio *string) P
 	args := []string{"pane", "split", anchor, "--direction", direction, "--cwd", cwd, "--no-focus"}
 	if ratio != nil {
 		args = append(args, "--ratio", *ratio)
+	}
+	if registryDir := env.Get("SOHO_REGISTRY_DIR"); registryDir != "" {
+		args = append(args, "--env", "SOHO_REGISTRY_DIR="+registryDir)
 	}
 	r := run(args, env)
 	return PaneSplitResult{ok(r), str(get(parsed(r.Stdout), "result", "pane", "pane_id"))}

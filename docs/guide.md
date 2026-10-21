@@ -307,6 +307,8 @@ The `dispatch` JSON is one line with `wait_status` first (`dispatch … | tail -
 
 ## Reusing workers
 
+When `spawn`, `run`, or `reopen` creates a worker pane, it passes the orchestrator's complete absolute workspace state directory through `--env SOHO_REGISTRY_DIR=...` on `pane split` or `tab create`. Only `mutation-copy`, `copies add`, and `procs add` use this hint: when it is absolute and names an existing directory, they register resources and read their owner from its roster, including the same destination in the permission-denied registration queue; otherwise they silently use their usual state resolution. They check the directory when registering, without reserving it against later filesystem changes. Configuration, session lookup, and other commands do not use the hint. Existing `--pane` targets and idle workers keep their creation environment; a worker opened before this version needs `release --close` followed by a new `spawn` to receive it.
+
 `reuse_workers=on` (the default, or `spawn --reuse`) hands back an idle worker whose last report is already written instead of opening a new pane. With lanes on (the default) the lane's idle worker is reused even when the next brief is another role of the same lane; a lane never mixes CLIs (a kind mismatch exits 13: `release --close` it and set `lane.<name>.kind`). Cheaper and keeps the worker's context; before an unrelated slice, compact or clear the reused session (see "One agent name is one growing session" under "Good to know") rather than passing `--fresh`, which opens another pane.
 
 On non-Windows systems, `spawn --pane` and launch retries send a best-effort raw Ctrl+U before `agent start`, while the first start in a pane newly created by `spawn` or `reopen` sends no clearing text.
