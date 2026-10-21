@@ -217,11 +217,10 @@ func sortedKeys(m map[string]CollaborationOutcome) []string {
 // the Stop write; it is where a concurrent generation bump interleaves.
 var collabSettlePreWriteHook func(id string)
 
-// collabFinalizePreWriteHook is the test seam of the settlement window of
-// the state-based rejection: called with the collaboration id right before
-// the supervisor's first Store.Finalize; it is where a concurrent
-// generation bump interleaves between the store's own read and write.
-var collabFinalizePreWriteHook func(id string)
+// collabFinalizeFirstAttemptHook replaces only the first finalize attempt in
+// tests. It lets a stale-generation store update interleave deterministically;
+// the retry always uses Store.Finalize. A nil hook uses Store.Finalize for both.
+var collabFinalizeFirstAttemptHook func(id string) error
 
 // collabStore returns the collaboration store of the job's own workspace
 // state dir, or nil when the recorded workspace is missing or not one
@@ -829,10 +828,13 @@ func (s *Supervisor) settleCollaborations(outcomes []CollaborationOutcome) []Col
 		// conflict; the store refuses it outside awaiting-orchestrator
 		// and escalated, and the supervisor only ever asks it to reject.
 		if cause == "" && phase != "" && phase != collaboration.Finished {
-			if collabFinalizePreWriteHook != nil {
-				collabFinalizePreWriteHook(o.ID)
+			var err error
+			if collabFinalizeFirstAttemptHook != nil {
+				err = collabFinalizeFirstAttemptHook(o.ID)
+			} else {
+				_, err = store.Finalize(o.ID, collabVerdictReject)
 			}
-			if _, err := store.Finalize(o.ID, collabVerdictReject); err != nil {
+			if err != nil {
 				fresh, rerr := store.Read(o.ID)
 				if rerr != nil {
 					cause, phase = rerr.Error(), ""
