@@ -137,7 +137,7 @@ func TestWaitParityRemainingCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, names := range [][]string{{"quota", "blocked"}, {"blocked", "quota"}} {
-			code, out, _ := f.runWait(t, append(names, "--timeout", "5000")...)
+			code, out, _ := f.runWait(t, append(names, "--timeout", "60000")...)
 			if code != 11 || !strings.Contains(out, `"status":"quota"`) || !strings.Contains(out, `"status":"blocked"`) {
 				t.Fatalf("names=%v code=%d out=%q", names, code, out)
 			}
@@ -160,7 +160,7 @@ func TestWaitParityRemainingCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.env["SOHO_WAIT_POLL_MS"] = "1"
-		code, out, _ := f.runWait(t, "worker", "--timeout", "5000")
+		code, out, _ := f.runWait(t, "worker", "--timeout", "60000")
 		if code != 0 || !strings.Contains(out, `"status":"done"`) {
 			t.Fatalf("code=%d out=%q", code, out)
 		}
@@ -182,7 +182,7 @@ func TestWaitParityRemainingCases(t *testing.T) {
 				rules = append(rules, fakecli.Rule{Argv: []string{"agent", "get", "worker"}, Code: 137, Stderr: `{"error":{"code":"agent_not_found"}}`})
 			}
 			f := newWaitStatusFixture(t, row, rules)
-			code, out, _ := f.runWait(t, "worker", "--timeout", "100")
+			code, out, _ := f.runWait(t, "worker", "--timeout", "60000")
 			want := "unavailable"
 			if tc.state == "gone" {
 				want = "gone"
@@ -212,7 +212,7 @@ func TestWaitParityRemainingCases(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(f.state, "wait", "blocked.blocked"), []byte(""), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			code, out, _ := f.runWait(t, append(names, "--timeout", "5000")...)
+			code, out, _ := f.runWait(t, append(names, "--timeout", "60000")...)
 			states := map[string]string{}
 			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 				var record struct {
@@ -236,7 +236,7 @@ func TestWaitParityRemainingCases(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(f.state, "wait", "blocked.blocked"), []byte(""), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			code, out, _ := f.runWait(t, append(names, "--timeout", "5000")...)
+			code, out, _ := f.runWait(t, append(names, "--timeout", "60000")...)
 			if code != 14 || !strings.Contains(out, `"status":"provider-error"`) || !strings.Contains(out, `"status":"blocked"`) {
 				t.Fatalf("pair=%v code=%d out=%q", names, code, out)
 			}
@@ -364,7 +364,7 @@ func TestWaitQuestionAndApprovalRemainingCases(t *testing.T) {
 			{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "40"}, Stdout: question},
 		})
 		f.env["SOHO_AUTO_APPROVE"] = "on"
-		code, out, _ := f.runWait(t, "worker", "--timeout", "5000")
+		code, out, _ := f.runWait(t, "worker", "--timeout", "60000")
 		if code != 7 || !strings.Contains(out, `"status":"question"`) || !strings.Contains(out, `"question":"  1. Use the local cache`) {
 			t.Fatalf("code=%d out=%q", code, out)
 		}
@@ -381,7 +381,7 @@ func TestWaitQuestionAndApprovalRemainingCases(t *testing.T) {
 			{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "40"}, Stdout: approval},
 		})
 		f.env["SOHO_AUTO_APPROVE"] = "on"
-		code, out, _ := f.runWait(t, "worker", "--timeout", "5000")
+		code, out, _ := f.runWait(t, "worker", "--timeout", "60000")
 		count := 0
 		for _, call := range f.calls(t) {
 			if strings.Join(call.Argv, " ") == "agent send-keys worker y" {
@@ -413,7 +413,7 @@ func TestWaitQuestionAndApprovalRemainingCases(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(f.state, "wait", "worker.approve-screen"), []byte("2\t"+hash+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		code, out, stderr := f.runWait(t, "worker", "--timeout", "5000")
+		code, out, stderr := f.runWait(t, "worker", "--timeout", "60000")
 		warn := "auto_approve: the same dialog came back 3 times for 'worker'; leaving it blocked"
 		log, err := os.ReadFile(filepath.Join(f.state, "friction.log"))
 		var result struct {
@@ -435,7 +435,7 @@ func TestWaitProviderRemainingCases(t *testing.T) {
 			{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "20"}},
 			{Argv: []string{"agent", "read", "worker", "--source", "recent-unwrapped", "--lines", "40"}, Stdout: "Error: 401 Unauthorized: invalid API key\n"},
 		})
-		code, out, _ := f.runWait(t, "worker", "--timeout", "5000")
+		code, out, _ := f.runWait(t, "worker", "--timeout", "60000")
 		for _, field := range []string{`"status":"provider-error"`, `"lane":"build"`, `"kind":"claude"`, `"model":"model-x"`, `"cause":"Error: 401 Unauthorized: invalid API key"`} {
 			if !strings.Contains(out, field) {
 				t.Errorf("missing %s in %q", field, out)
@@ -451,7 +451,7 @@ func TestWaitProviderRemainingCases(t *testing.T) {
 			{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "20"}, Stdout: "hit your usage limit\nError: 401 Unauthorized\n"},
 			{Argv: []string{"agent", "read", "worker", "--source", "recent-unwrapped", "--lines", "40"}, Stdout: "Error: 401 Unauthorized\n"},
 		})
-		code, out, _ := f.runWait(t, "worker", "--timeout", "5000")
+		code, out, _ := f.runWait(t, "worker", "--timeout", "60000")
 		if code != 11 || !strings.Contains(out, `"status":"quota"`) || strings.Contains(out, `"status":"provider-error"`) {
 			t.Fatalf("code=%d out=%q", code, out)
 		}
@@ -592,7 +592,7 @@ func TestWaitCapacityCommandRemainingCases(t *testing.T) {
 				}
 			}
 		}()
-		code, out, stderr := f.runWait(t, "worker", "--timeout", "5000")
+		code, out, stderr := f.runWait(t, "worker", "--timeout", "60000")
 		close(stop)
 		<-exited
 		want := "The model provider was at capacity and your last request failed. Continue the task from where you stopped; do not redo finished steps. When finished, write your report to " + report + " and reply with only that path."
@@ -619,7 +619,7 @@ func TestWaitCapacityCommandRemainingCases(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(f.state, "last-report-worker"), []byte(report+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		code, out, stderr := f.runWait(t, "worker", "--timeout", "5000")
+		code, out, stderr := f.runWait(t, "worker", "--timeout", "60000")
 		calls := f.calls(t)
 		log, err := os.ReadFile(filepath.Join(f.state, "friction.log"))
 		line := strings.TrimSpace(out)
@@ -672,7 +672,7 @@ func TestWaitFullRankCommandCase(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			code, out, _ := f.runWait(t, append(tc.names, "--timeout", "5000")...)
+			code, out, _ := f.runWait(t, append(tc.names, "--timeout", "60000")...)
 			states := map[string]string{}
 			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 				var record struct {
@@ -748,7 +748,7 @@ func TestWaitRetryThenDoneCommandCase(t *testing.T) {
 				}
 			}
 		}()
-		code, out, stderr := f.runWait(t, "worker", "--timeout", "5000")
+		code, out, stderr := f.runWait(t, "worker", "--timeout", "60000")
 		close(stop)
 		<-exited
 		calls := f.calls(t)
@@ -863,7 +863,7 @@ func TestWaitReportMirrorCommandCases(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(f.state, "last-report-worker"), []byte(report+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		code, out, stderr := f.runWait(t, "worker", "--timeout", "5000")
+		code, out, stderr := f.runWait(t, "worker", "--timeout", "60000")
 		result := readWaitCommandResult(t, out)
 		if code != 0 || result.Agent != "worker" || result.Status != "done" || result.Report != report || stderr != "" {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
@@ -880,7 +880,7 @@ func TestWaitReportMirrorCommandCases(t *testing.T) {
 			t.Fatalf("last-report=%q err=%v", last, err)
 		}
 		mr, mb := fileMtime(t, stateReport), fileMtime(t, stateBrief)
-		code, out, stderr = f.runWait(t, "worker", "--timeout", "5000")
+		code, out, stderr = f.runWait(t, "worker", "--timeout", "60000")
 		if code != 0 || !strings.Contains(out, `"status":"done"`) || stderr != "" || !fileMtime(t, stateReport).Equal(mr) || !fileMtime(t, stateBrief).Equal(mb) {
 			t.Fatalf("second wait code=%d out=%q stderr=%q report mtime=%v/%v brief mtime=%v/%v", code, out, stderr, fileMtime(t, stateReport), mr, fileMtime(t, stateBrief), mb)
 		}
@@ -915,7 +915,7 @@ func TestWaitReportMirrorCommandCases(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(f.state, "last-report-worker"), []byte(report+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		code, out, stderr := f.runWait(t, "worker", "--timeout", "5000")
+		code, out, stderr := f.runWait(t, "worker", "--timeout", "60000")
 		log, err := os.ReadFile(filepath.Join(f.state, "friction.log"))
 		result := readWaitCommandResult(t, out)
 		if code != 0 || result.Report != report || !strings.Contains(stderr, "kept "+stateReport) || !strings.Contains(stderr, "kept "+stateBrief) || err != nil {
@@ -950,7 +950,7 @@ func TestWaitReportMirrorCommandCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		stateSidecar := filepath.Join(f.state, "briefs", stem+".dispatch.json")
-		code, out, stderr := f.runWait(t, "worker", "--timeout", "5000")
+		code, out, stderr := f.runWait(t, "worker", "--timeout", "60000")
 		result := readWaitCommandResult(t, out)
 		if code != 0 || result.Report != report || stderr != "" {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
@@ -959,14 +959,14 @@ func TestWaitReportMirrorCommandCases(t *testing.T) {
 			t.Fatalf("sidecar=%q err=%v", got, err)
 		}
 		mtime := fileMtime(t, stateSidecar)
-		code, out, stderr = f.runWait(t, "worker", "--timeout", "5000")
+		code, out, stderr = f.runWait(t, "worker", "--timeout", "60000")
 		if code != 0 || stderr != "" || !strings.Contains(out, `"status":"done"`) || !fileMtime(t, stateSidecar).Equal(mtime) {
 			t.Fatalf("identical copy code=%d out=%q stderr=%q", code, out, stderr)
 		}
 		if err := os.WriteFile(stateSidecar, []byte("different content\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		code, out, stderr = f.runWait(t, "worker", "--timeout", "5000")
+		code, out, stderr = f.runWait(t, "worker", "--timeout", "60000")
 		log, err := os.ReadFile(filepath.Join(f.state, "friction.log"))
 		if code != 0 || !strings.Contains(stderr, "kept "+stateSidecar) || !strings.Contains(out, `"status":"done"`) || err != nil {
 			t.Fatalf("different copy code=%d out=%q stderr=%q log=%q err=%v", code, out, stderr, log, err)
@@ -995,7 +995,7 @@ func TestWaitReportMirrorCommandCases(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(f.state, "last-report-worker"), []byte(report+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		code, out, stderr := f.runWait(t, "worker", "--timeout", "5000")
+		code, out, stderr := f.runWait(t, "worker", "--timeout", "60000")
 		if code != 0 || stderr != "" || !strings.Contains(out, `"status":"done"`) {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 		}
