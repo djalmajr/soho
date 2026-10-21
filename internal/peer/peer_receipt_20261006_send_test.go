@@ -151,7 +151,7 @@ func TestReceiptQuotedPayloadIsNotProof(t *testing.T) {
 	f := newFixture(t, rules)
 	f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
 	code, out, stderr := f.run([]string{"send", d15Pane, "hello"})
-	want := "soho: send: " + d15Pane + " did not confirm taking the message (agent_prompt_stalled: stalled); delivery is uncertain: no proof within the 0.001s window; read its pane for #" + d15WindowID + " or a reply before sending again; screen saved to " + filepath.Join(f.dir, "state", "ws-test", "wait", "send-"+d15WindowID+".screen") + "\n"
+	want := "soho: send: " + d15Pane + " did not confirm taking the message (agent_prompt_stalled: stalled); delivery is uncertain: no proof within the 0.001s window; read its pane (herdr --machine windows agent read w0test:p0a --source visible) for #" + d15WindowID + " or a reply before sending again; screen saved to " + filepath.Join(f.dir, "state", "ws-test", "wait", "send-"+d15WindowID+".screen") + "\n"
 	if code != 15 || out != "" || stderr != want {
 		t.Fatalf("a quoted payload is not receipt proof: code=%d out=%q stderr=%q want %q", code, out, stderr, want)
 	}
