@@ -309,6 +309,8 @@ The `dispatch` JSON is one line with `wait_status` first (`dispatch … | tail -
 
 `reuse_workers=on` (the default, or `spawn --reuse`) hands back an idle worker whose last report is already written instead of opening a new pane. With lanes on (the default) the lane's idle worker is reused even when the next brief is another role of the same lane; a lane never mixes CLIs (a kind mismatch exits 13: `release --close` it and set `lane.<name>.kind`). Cheaper and keeps the worker's context; before an unrelated slice, compact or clear the reused session (see "One agent name is one growing session" under "Good to know") rather than passing `--fresh`, which opens another pane.
 
+On non-Windows systems, `spawn --pane` and launch retries send a best-effort raw Ctrl+U before `agent start`, while the first start in a pane newly created by `spawn` or `reopen` sends no clearing text.
+
 ## Feeding improvements back
 
 When the skill itself causes friction, the orchestrator files an issue on `feedback_repo` (the skill's own repository) using `templates/issue.md`, with the scenario, the exact error, the environment (`soho env`) and the effective config. `feedback=ask|on|off` decides whether it asks first.

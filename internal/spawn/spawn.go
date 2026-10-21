@@ -1613,6 +1613,11 @@ func mismatchSimple(name, lane, actual, want string, ctx *core.Config, env platf
 
 func startAgent(o spawnOptions, kind string, env platform.Env, created bool, args []string) bool {
 	for tries := 0; ; tries++ {
+		if startup.CurrentPlatform() != "win32" && (!created || tries > 0) {
+			// Send the raw character as text: a key event can still be
+			// encoded by a departing agent's kitty keyboard mode.
+			_ = platform.RunCli("herdr", []string{"pane", "send-text", o.pane, "\x15"}, platform.RunOptions{Env: env, TimeoutMs: int(herdr.Timeout / time.Millisecond)})
+		}
 		argv := []string{"agent", "start", o.name, "--kind", kind, "--pane", o.pane, "--timeout", o.timeout}
 		if len(args) > 0 {
 			argv = append(argv, "--")
