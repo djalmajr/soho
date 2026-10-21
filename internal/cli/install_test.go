@@ -805,11 +805,22 @@ func nativeArtifactServer(t *testing.T, rules []fakecli.Rule, captureEnv []strin
 	return srv, reqs, binDir, artifact
 }
 
+// allowVerifyVersionStartup keeps the cold start of a newly installed native
+// fake out of tests of its exit/output contract. Timeout behavior keeps its
+// own test and the production timeout is restored even on an assertion failure.
+func allowVerifyVersionStartup(t *testing.T) {
+	t.Helper()
+	old := verifyVersionTimeout
+	verifyVersionTimeout = 60 * time.Second
+	t.Cleanup(func() { verifyVersionTimeout = old })
+}
+
 // TestInstallCommandVerifyVersionOptIn proves the opt-in probe: the
 // installed native binary's --version runs exactly once under the explicit
 // env clone, its bounded output is printed, and the verified binary stays
 // in place.
 func TestInstallCommandVerifyVersionOptIn(t *testing.T) {
+	allowVerifyVersionStartup(t)
 	srv, reqs, binDir, artifact := nativeArtifactServer(t, []fakecli.Rule{
 		{Argv: []string{"--version"}, Stdout: "herdr-soho v1.2.3-fixture\n"},
 	}, []string{"SOHO_BIN"})
@@ -868,6 +879,7 @@ func TestInstallCommandVerifyVersionNotRunByDefault(t *testing.T) {
 // TestInstallCommandVerifyVersionNonZeroExitKeepsBinary proves a nonzero
 // probe exit propagates clearly and the verified binary is not deleted.
 func TestInstallCommandVerifyVersionNonZeroExitKeepsBinary(t *testing.T) {
+	allowVerifyVersionStartup(t)
 	srv, _, binDir, artifact := nativeArtifactServer(t, []fakecli.Rule{
 		{Argv: []string{"--version"}, Code: 3, Stderr: "fixture probe failure\n"},
 	}, nil)
@@ -1032,9 +1044,7 @@ func TestInstallCommandVerifyVersionLargeOutputDrains(t *testing.T) {
 	// The probe's deadline also covers the start of the freshly installed
 	// binary (a new exe on Windows): widen it so the runner's speed does
 	// not decide the test; a pipe that stops draining still fails it.
-	oldTimeout := verifyVersionTimeout
-	verifyVersionTimeout = 60 * time.Second
-	t.Cleanup(func() { verifyVersionTimeout = oldTimeout })
+	allowVerifyVersionStartup(t)
 	flood := "herdr-soho v1.2.3-big\n" + strings.Repeat("X", 2_000_000) + "\n"
 	srv, reqs, binDir, _ := nativeArtifactServer(t, []fakecli.Rule{
 		{Argv: []string{"--version"}, Stdout: flood},

@@ -148,13 +148,14 @@ func TestSuperviseWakeNoteRunsHookOnce(t *testing.T) {
 	}
 }
 
-// TestSuperviseWakeBlockingHookNeverDelaysLoop: a hook that blocks (a 5 s
-// fake delay bounded by the 2 s per-attempt timeout) never delays the
-// watch loop: the ticks keep running while the hook is in flight, and the
-// drain happens on the terminal wait, not in the loop.
+// TestSuperviseWakeBlockingHookNeverDelaysLoop: three ticks finish while the
+// hook is held on an unopened file gate. The gate opens only after Run (or
+// the safety deadline on a regression); cleanup releases and joins the worker.
 func TestSuperviseWakeBlockingHookNeverDelaysLoop(t *testing.T) {
-	store, jobDir, clock, team, _, env := wakeSupFixture(t,
-		[]fakecli.Rule{{AnyArgs: true, Delay: 5000}},
+	requireNoLeakedGoroutines(t)
+	gate := filepath.Join(t.TempDir(), "release")
+	store, jobDir, clock, team, fakeDir, env := wakeSupFixture(t,
+		[]fakecli.Rule{{AnyArgs: true, WaitFile: gate, Code: 7}},
 		fakecli.InstallOptions{CaptureEnv: wakeEnvKeys})
 	if _, err := store.Note("job-1", EventIn{Tipo: "question", Resumo: "needs a decision"}); err != nil {
 		t.Fatal(err)
@@ -164,16 +165,51 @@ func TestSuperviseWakeBlockingHookNeverDelaysLoop(t *testing.T) {
 	clock.stop = errors.New("stop the watch loop")
 	var friction []string
 	sup := supSupervisor(store, clock, team, &friction)
-	sup.Wake = &WakeHook{Cmd: "wakehook", JobID: "job-1", Env: env, Timeout: 2 * time.Second, Delays: []time.Duration{}}
+	env["FAKECLI_WAIT_FILE_TIMEOUT_MS"] = "120000"
+	sup.Wake = &WakeHook{Cmd: "wakehook", JobID: "job-1", Env: env, Timeout: 2 * time.Minute, Delays: []time.Duration{}}
 	sup.Wake.Friction = func(msg string) { friction = append(friction, msg) }
-
-	// Pay the fixture's re-exec cost in setup, outside the timed window:
-	// the 1 s bound below measures the watch loop while the hook is in
-	// flight, not the hook child's first execution (the warmPrepared
-	// principle; the warm-up runs its own fake in its own directory, so
-	// the test's call log and rules are untouched).
-	warmWakeImage(t, env)
-	start := time.Now()
+	// Make the hook's entry observable before the remaining loop turns:
+	// a fast loop must not pass merely because the worker has not started.
+	clock.onSleep = func() {
+		if clock.sleeps == 1 {
+			waitHookEntered(t, fakeDir, 2)
+		}
+	}
+	finished, safetyDone, safetyExpired := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	gateError := make(chan error, 1)
+	go func() {
+		defer close(safetyDone)
+		timer := time.NewTimer(30 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-finished:
+		case <-timer.C:
+			close(safetyExpired)
+			gateError <- os.WriteFile(gate, nil, 0o600)
+		}
+	}()
+	finishSafety := func() {
+		select {
+		case <-finished:
+		default:
+			close(finished)
+		}
+		<-safetyDone
+	}
+	stopped := false
+	drain := func() {
+		if !stopped && sup.wakeDone != nil {
+			stopped = true
+			sup.stopWake(0) // release precedes this join; the child also has a deadline
+		}
+	}
+	t.Cleanup(func() {
+		finishSafety()
+		if err := os.WriteFile(gate, nil, 0o600); err != nil {
+			t.Errorf("release hook during cleanup: %v", err)
+		}
+		drain()
+	})
 	func() {
 		defer func() {
 			r := recover()
@@ -189,28 +225,35 @@ func TestSuperviseWakeBlockingHookNeverDelaysLoop(t *testing.T) {
 			t.Errorf("Run: %v", err)
 		}
 	}()
-	elapsed := time.Since(start)
-	// Three ticks while the 5 s hook is still in flight: the loop ran them
-	// in under a second, so it never waited for the hook.
+	finishSafety()
+	select {
+	case <-safetyExpired:
+		t.Fatalf("Run waited for the held hook; safety deadline released it (gate write: %v)", <-gateError)
+	default:
+	}
+	if _, err := os.Stat(gate); !os.IsNotExist(err) {
+		t.Fatalf("hook gate opened before Run completed: %v", err)
+	}
+	waitHookEntered(t, fakeDir, 2)
+	// The hook has entered and cannot finish until the gate exists.
 	if team.statusCalls != 3 {
 		t.Fatalf("status calls = %d, want 3 (the ticks kept running)", team.statusCalls)
-	}
-	if elapsed >= 1*time.Second {
-		t.Fatalf("the loop took %s, want under 1s while the 5s hook is in flight", elapsed)
 	}
 	// The worker is still in the first hook attempt: the cursor has not
 	// advanced past the question.
 	if seq, ok := wakeSeqValue(t, jobDir); ok && seq == "2" {
 		t.Fatal("the cursor advanced past the question while the hook is still in flight")
 	}
-	// The terminal wait drains the worker: the attempt times out at 2 s,
-	// the cursor advances past the question (the last processed seq is 3,
-	// worker_spawned), and the failure is friction, not a failed job.
-	sup.stopWake(10 * time.Second)
+	// Releasing the gate makes the hook fail deterministically with exit 7;
+	// draining still advances the cursor and records friction, not job failure.
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	drain()
 	if seq, ok := wakeSeqValue(t, jobDir); !ok || seq != "3" {
 		t.Fatalf("wake.seq = %q ok=%v, want 3 after the drain", seq, ok)
 	}
-	wantFriction(t, friction, "job: wake hook failed for job-1:2 after 1 attempts (timeout)")
+	wantFriction(t, friction, "job: wake hook failed for job-1:2 after 1 attempts (exit 7)")
 	if st := supState(t, store); st.Status != StatusRunning {
 		t.Fatalf("state = %+v, want still running (a failing hook never fails the job)", st)
 	}
