@@ -1,5 +1,7 @@
 # Herdr kinds and model families
 
+After `soho setup`, Codex checks peer messages through the project's `.codex/hooks.json` (`UserPromptSubmit` → `soho hook inbound --codex`). The project and its `.codex/` layer must be trusted by Codex for project hooks to load. New or changed hooks show `Hooks need review` once for that configuration; `hooks_review=trust` (the default) approves the owner's configured hooks on workers. No hook-trust bypass flag is installed.
+
 `herdr agent start --kind <kind>` launches the agent CLI with that name. Run `herdr agent` to list the kinds your installed Herdr supports. The family column is what the reviewer-vs-implementer rule compares.
 
 | Kind | Executable | Family | Effort ceiling | Effort flag | Model flag | `approvals: full` | MCP off flag |

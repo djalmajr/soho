@@ -289,7 +289,7 @@ func TestDoctorInboundEnforceNamesUnprotectedAgents(t *testing.T) {
 	var out strings.Builder
 	s := &Say{Out: &out}
 	doctorUnprotectedAgents(&ctx, env, root, s)
-	want := "warn   review (codex) is not protected: no inbound hook for codex yet\nwarn   plan (pi) is not protected: no inbound hook for pi yet\n"
+	want := "warn   review (codex) is not protected: no 'soho hook inbound --codex' in UserPromptSubmit (run 'soho setup')\nwarn   plan (pi) is not protected: no inbound hook for pi yet\n"
 	if out.String() != want {
 		t.Fatalf("output = %q\nwant     %q", out.String(), want)
 	}
@@ -357,4 +357,54 @@ func TestDoctorInboundCorruptReplayCache(t *testing.T) {
 			t.Fatalf("warning with inbound_auth=off: %q", got)
 		}
 	})
+}
+
+func TestDoctorCodexInboundHook(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw string
+		protected bool
+	}{
+		{"missing", "", false}, {"empty", `{"hooks":{}}`, false}, {"wrong event", `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`, false},
+		{"without flag", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound"}]}]}}`, false},
+		{"wrong type", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"prompt","command":"soho hook inbound --codex"}]}]}}`, false},
+		{"installed", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`, true},
+		{"async true", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex","async":true}]}]}}`, false},
+		{"async false", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex","async":false}]}]}}`, true},
+		{"async null", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex","async":null}]}]}}`, false},
+		{"async string", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex","async":"false"}]}]}}`, false},
+		{"async number", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex","async":0}]}]}}`, false},
+		{"async array", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex","async":[]}]}]}}`, false},
+		{"async object", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex","async":{}}]}]}}`, false},
+		{"numeric-command", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":7}]}]}}`, false},
+		{"bad-row-before-protected", `{"hooks":{"UserPromptSubmit":[7,{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`, false},
+		{"bad-row-after-protected", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]},7]}}`, false},
+		{"bad-command-before-protected", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":7},{"type":"command","command":"soho hook inbound --codex"}]}]}}`, false},
+		{"bad-command-after-protected", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex"},{"command":7}]}]}}`, false},
+		{"bad-command-true", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":true},{"type":"command","command":"soho hook inbound --codex"}]}]}}`, false},
+		{"bad-command-array", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":[]},{"type":"command","command":"soho hook inbound --codex"}]}]}}`, false},
+		{"bad-command-object", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":{}},{"type":"command","command":"soho hook inbound --codex"}]}]}}`, false},
+		{"null-row-before-protected", `{"hooks":{"UserPromptSubmit":[null,{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newInboundDoctor(t)
+			d.env["HERDR_ENV"], d.env["HERDR_WORKSPACE_ID"], d.env["SOHO_FAKECLI_CONFIG"] = "1", "ws", d.env["PATH"]
+			d.write(filepath.Join(d.env["SOHO_DIR"], "ws", "agents.tsv"), "review\tp2\tcodex\treviewer\n", 0600)
+			if _, e := fakecli.Install(t, d.env["PATH"], "herdr", []fakecli.Rule{{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"review","pane_id":"p2"}]}}`}}); e != nil {
+				t.Fatal(e)
+			}
+			if tc.raw != "" {
+				d.write(filepath.Join(d.cwd, ".codex", "hooks.json"), tc.raw, 0600)
+			}
+			ctx := core.Config{Entries: map[string]core.ConfigEntry{}}
+			var out strings.Builder
+			doctorUnprotectedAgents(&ctx, d.env, d.cwd, &Say{Out: &out})
+			has := strings.Contains(out.String(), "review (codex) is not protected")
+			if has == tc.protected {
+				t.Fatalf("protected=%v warnings=%s", tc.protected, out.String())
+			}
+			if has && !strings.HasSuffix(strings.TrimSpace(out.String()), "(run 'soho setup')") {
+				t.Fatalf("no setup advice: %s", out.String())
+			}
+		})
+	}
 }

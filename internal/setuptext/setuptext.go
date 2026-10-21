@@ -1,6 +1,8 @@
 package setuptext
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -33,13 +35,16 @@ const previousHookDoctorText = "sh -c '[ \"${HERDR_ENV:-}\" = 1 ] || exit 0; for
 const legacyHookReminderText = "herdr-soho hook reminder"
 const legacyHookDoctorText = "herdr-soho hook doctor"
 
-func SetupBlock() string           { return setupBlockText }
-func SetupHookReminder() string    { return setupHookReminderText }
-func SetupHookDoctor() string      { return setupHookDoctorText }
-func PreviousHookReminder() string { return previousHookReminderText }
-func PreviousHookDoctor() string   { return previousHookDoctorText }
-func LegacyHookReminder() string   { return legacyHookReminderText }
-func LegacyHookDoctor() string     { return legacyHookDoctorText }
+func SetupBlock() string        { return setupBlockText }
+func SetupHookReminder() string { return setupHookReminderText }
+func SetupHookDoctor() string   { return setupHookDoctorText }
+
+// SetupHookCodexInbound is the project hook command Codex accepts.
+func SetupHookCodexInbound() string { return "soho hook inbound --codex" }
+func PreviousHookReminder() string  { return previousHookReminderText }
+func PreviousHookDoctor() string    { return previousHookDoctorText }
+func LegacyHookReminder() string    { return legacyHookReminderText }
+func LegacyHookDoctor() string      { return legacyHookDoctorText }
 
 // SetupBlockResult returns the post-write text, or nil when an incomplete marked block must be refused.
 func SetupBlockResult(content *string) *string {
@@ -152,6 +157,224 @@ func upgradePeerBullet(content string) string {
 
 // SettingsHooksResult merges the generated hooks and returns jq-compatible indented JSON, or nil on invalid input.
 func SettingsHooksResult(content *string) *string {
+	return settingsHooksResult(content)
+}
+
+// CodexHooksResult preserves foreign JSON values, numeric lexemes and object key order.
+// Only the objects receiving new members and the prompt array need to be decoded.
+func CodexHooksResult(content *string) *string {
+	document := codexObject{}
+	if content != nil {
+		var ok bool
+		document, ok = codexObjectParse([]byte(*content))
+		if !ok {
+			return nil
+		}
+	}
+	hooks, rows, valid := codexDocumentHooks(document)
+	if !valid {
+		return nil
+	}
+	if codexRowsProtected(rows) {
+		return content
+	}
+	command, _ := json.Marshal(SetupHookCodexInbound())
+	rows = append(rows, json.RawMessage(`{"hooks":[{"type":"command","command":`+string(command)+`}]}`))
+	mergedRows, err := json.Marshal(rows)
+	if err != nil {
+		return nil
+	}
+	hooks.set("UserPromptSubmit", mergedRows)
+	document.set("hooks", hooks.encode())
+	var result bytes.Buffer
+	if json.Indent(&result, document.encode(), "", "  ") != nil {
+		return nil
+	}
+	result.WriteByte('\n')
+	text := result.String()
+	return &text
+}
+
+// codexDocumentHooks validates every UserPromptSubmit row and command before
+// either consumer may recognize protection. Its compatibility rules match putHook.
+func codexDocumentHooks(document codexObject) (codexObject, []json.RawMessage, bool) {
+	hooksRaw, exists := document.get("hooks")
+	hooks := codexObject{}
+	if exists && string(hooksRaw) != "null" {
+		var ok bool
+		hooks, ok = codexObjectParse(hooksRaw)
+		if !ok {
+			return hooks, nil, false
+		}
+	}
+	rowsRaw, exists := hooks.get("UserPromptSubmit")
+	var rows []json.RawMessage
+	if exists && string(rowsRaw) != "null" && string(rowsRaw) != "false" {
+		if json.Unmarshal(rowsRaw, &rows) != nil {
+			return hooks, rows, false
+		}
+	}
+	for _, row := range rows {
+		if string(row) == "null" {
+			continue
+		}
+		object, ok := codexObjectParse(row)
+		if !ok {
+			return hooks, rows, false
+		}
+		list, exists := object.get("hooks")
+		if exists && string(list) != "null" && string(list) != "false" {
+			var entries []json.RawMessage
+			if json.Unmarshal(list, &entries) != nil {
+				return hooks, rows, false
+			}
+			for _, entry := range entries {
+				hook, ok := codexObjectParse(entry)
+				if !ok {
+					continue
+				}
+				commandRaw, exists := hook.get("command")
+				if !exists || string(commandRaw) == "null" || string(commandRaw) == "false" {
+					continue
+				}
+				var command string
+				if json.Unmarshal(commandRaw, &command) != nil {
+					return hooks, rows, false
+				}
+			}
+		}
+	}
+	return hooks, rows, true
+}
+
+// CodexHooksProtected is shared with doctor: only a synchronous exact command can block.
+func CodexHooksProtected(content string) bool {
+	document, ok := codexObjectParse([]byte(content))
+	if !ok {
+		return false
+	}
+	_, rows, valid := codexDocumentHooks(document)
+	return valid && codexRowsProtected(rows)
+}
+
+func codexRowsProtected(rows []json.RawMessage) bool {
+	for _, row := range rows {
+		object, ok := codexObjectParse(row)
+		if !ok {
+			continue
+		}
+		list, _ := object.get("hooks")
+		var entries []json.RawMessage
+		if json.Unmarshal(list, &entries) != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if codexBlockingHook(entry) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func codexBlockingHook(raw json.RawMessage) bool {
+	object, ok := codexObjectParse(raw)
+	if !ok {
+		return false
+	}
+	typeRaw, _ := object.get("type")
+	commandRaw, _ := object.get("command")
+	var kind, command string
+	if json.Unmarshal(typeRaw, &kind) != nil || json.Unmarshal(commandRaw, &command) != nil {
+		return false
+	}
+	asyncRaw, hasAsync := object.get("async")
+	var async any
+	if hasAsync && json.Unmarshal(asyncRaw, &async) != nil {
+		return false
+	}
+	return kind == "command" && command == SetupHookCodexInbound() && (!hasAsync || isFalse(async))
+}
+
+// Raw member values keep nested objects and number literals out of float64/maps.
+type codexMember struct {
+	key    string
+	rawKey json.RawMessage
+	value  json.RawMessage
+}
+
+type codexObject []codexMember
+
+func codexObjectParse(raw []byte) (codexObject, bool) {
+	if !json.Valid(raw) {
+		return nil, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return nil, false
+	}
+	var object codexObject
+	for decoder.More() {
+		keyStart := decoder.InputOffset()
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, false
+		}
+		key, ok := token.(string)
+		if !ok {
+			return nil, false
+		}
+		rawKey := bytes.TrimLeft(raw[keyStart:decoder.InputOffset()], ", \t\r\n")
+		var value json.RawMessage
+		if decoder.Decode(&value) != nil {
+			return nil, false
+		}
+		object = append(object, codexMember{key: key, rawKey: rawKey, value: value})
+	}
+	return object, true
+}
+
+func (object codexObject) get(key string) (json.RawMessage, bool) {
+	// Match JSON's existing last-member-wins interpretation, preserving all members on write.
+	for i := len(object) - 1; i >= 0; i-- {
+		if object[i].key == key {
+			return object[i].value, true
+		}
+	}
+	return nil, false
+}
+
+func (object *codexObject) set(key string, value json.RawMessage) {
+	for i := len(*object) - 1; i >= 0; i-- {
+		if (*object)[i].key == key {
+			(*object)[i].value = value
+			return
+		}
+	}
+	*object = append(*object, codexMember{key: key, value: value})
+}
+
+func (object codexObject) encode() []byte {
+	var out bytes.Buffer
+	out.WriteByte('{')
+	for i, member := range object {
+		if i > 0 {
+			out.WriteByte(',')
+		}
+		key := member.rawKey
+		if key == nil {
+			key, _ = json.Marshal(member.key)
+		}
+		out.Write(key)
+		out.WriteByte(':')
+		out.Write(member.value)
+	}
+	out.WriteByte('}')
+	return out.Bytes()
+}
+
+func settingsHooksResult(content *string) *string {
 	var document *jsonjs.Object
 	if content == nil || strings.TrimFunc(*content, isJSWhitespace) == "" {
 		document = jsonjs.O()

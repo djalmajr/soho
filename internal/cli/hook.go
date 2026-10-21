@@ -28,11 +28,12 @@ var hookStdin io.Reader = os.Stdin
 // `inbound` first check the peer messages of a UserPromptSubmit prompt
 // (peerauth) and may block it; the reminder itself stays Herdr-only.
 func cmdHook(args []string, env platform.Env, cwd string) int {
-	if len(args) != 1 || (args[0] != "reminder" && args[0] != "doctor" && args[0] != "inbound") {
-		platform.Die("usage: hook reminder|doctor|inbound", 2)
+	codex := len(args) == 2 && args[1] == "--codex"
+	if (len(args) != 1 && !codex) || (args[0] != "reminder" && args[0] != "doctor" && args[0] != "inbound") {
+		platform.Die("usage: hook reminder|doctor|inbound [--codex]", 2)
 	}
 	if args[0] != "doctor" {
-		if hookInbound(env, cwd) {
+		if hookInbound(env, cwd, codex) {
 			return 0
 		}
 		if args[0] == "reminder" && env.Get("HERDR_ENV") == "1" {
@@ -98,13 +99,13 @@ type hookBlock struct {
 // policy decides (hookTooLarge). A stdin of up to that size that is not the
 // JSON of a UserPromptSubmit does not come from a prompt: it passes, with a
 // line in the friction log.
-func hookInbound(env platform.Env, cwd string) bool {
+func hookInbound(env platform.Env, cwd string, codex bool) bool {
 	input, tooLarge, read := readHookInput()
 	if !read {
 		return false
 	}
 	if tooLarge {
-		return hookTooLarge(env, cwd)
+		return hookTooLarge(env, cwd, codex)
 	}
 	target := cwd
 	if project := env.Get("CLAUDE_PROJECT_DIR"); project != "" {
@@ -152,7 +153,7 @@ func hookInbound(env platform.Env, cwd string) bool {
 		hookFriction(readEnv, target, fmt.Sprintf("hook inbound: refused peer message #%s (%s)", v.Header.ID, v.Result))
 	}
 	if outcome.Block {
-		writeHookBlock(outcome.Reason())
+		writeHookBlock(outcome, codex)
 		return true
 	}
 	if outcome.Mode == peerauth.ModeWarn {
@@ -168,7 +169,7 @@ func hookInbound(env platform.Env, cwd string) bool {
 // exit 0), in warn it passes with a context line and in off it passes as a
 // stdin that is not a prompt always did, with its friction line. It reads the
 // user's policy and nothing else.
-func hookTooLarge(env platform.Env, cwd string) bool {
+func hookTooLarge(env platform.Env, cwd string, codex bool) bool {
 	target := cwd
 	if project := env.Get("CLAUDE_PROJECT_DIR"); project != "" {
 		target = project
@@ -184,7 +185,7 @@ func hookTooLarge(env platform.Env, cwd string) bool {
 	})
 	switch {
 	case outcome.Block:
-		writeHookBlock(outcome.Reason())
+		writeHookBlock(outcome, codex)
 		return true
 	case outcome.Mode == peerauth.ModeWarn:
 		fmt.Fprintln(platform.Stdout, peerauth.TooLargeWarn)
@@ -196,14 +197,18 @@ func hookTooLarge(env platform.Env, cwd string) bool {
 
 // writeHookBlock prints the decision that blocks a prompt: exit 0 and this
 // JSON, never exit 2, which would echo the whole refused text back.
-func writeHookBlock(reason string) {
+func writeHookBlock(outcome peerauth.Outcome, codex bool) {
 	var block hookBlock
-	block.Decision, block.Reason = "block", reason
+	block.Decision, block.Reason = "block", outcome.Reason()
 	block.Specific.HookEventName, block.Specific.SuppressOriginalPrompt = "UserPromptSubmit", true
+	var output any = block
+	if codex {
+		output = map[string]string{"decision": "block", "reason": outcome.CodexReason()}
+	}
 	var line bytes.Buffer
 	encoder := json.NewEncoder(&line)
 	encoder.SetEscapeHTML(false)
-	_ = encoder.Encode(block)
+	_ = encoder.Encode(output)
 	_, _ = platform.Stdout.Write(line.Bytes())
 }
 

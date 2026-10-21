@@ -109,6 +109,25 @@ func writeHooksSection(root string, env platform.Env) {
 	settings := filepath.Join(root, ".claude", "settings.json")
 	setupWriteHooks(settings)
 	_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder, SessionStart doctor)\n", settings)
+	codex := filepath.Join(root, ".codex", "hooks.json")
+	var content *string
+	if raw, err := platform.ReadTextFile(codex); err == nil {
+		content = &raw
+	} else if !os.IsNotExist(err) {
+		core.Warn("could not read hooks from "+codex+"; file left untouched", "", "setup")
+		return
+	}
+	if merged := setuptext.CodexHooksResult(content); merged == nil {
+		core.Warn("could not merge hooks into "+codex+"; file left untouched", "", "setup")
+	} else {
+		if err := os.MkdirAll(filepath.Dir(codex), 0o755); err != nil {
+			platform.DieFriction("could not merge hooks into "+codex, 4)
+		}
+		if err := platform.AtomicWrite(codex, *merged); err != nil {
+			platform.DieFriction("could not merge hooks into "+codex, 4)
+		}
+		_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit inbound, codex)\n", codex)
+	}
 	// The generated hooks are the portable PATH commands 'soho hook
 	// reminder' / 'soho hook doctor': they resolve the native binary
 	// through PATH at hook time. Check that PATH with the shared platform
@@ -135,6 +154,9 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	}
 	if wantPlan {
 		CmdPlan(withoutSetupArg(args, "--plan"), ctx, env, cwd)
+		if !containsSetupArg(args, "--no-hooks") {
+			_, _ = fmt.Fprintf(platform.Stdout, "# would merge into %s/.codex/hooks.json: UserPromptSubmit hook (codex)\n", platform.ProjectRoot(env, cwd))
+		}
 		return
 	}
 	if wantProbe {
@@ -264,6 +286,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 		if hooks {
 			_, _ = fmt.Fprintf(platform.Stdout, "\n# would merge into %s/.claude/settings.json: UserPromptSubmit + SessionStart hooks\n", root)
+			_, _ = fmt.Fprintf(platform.Stdout, "# would merge into %s/.codex/hooks.json: UserPromptSubmit hook (codex)\n", root)
 		}
 		if modeLocal {
 			if plan := planLocalExcludes(root, ctx, env, cwd, "setup"); plan != nil && plan.path != "" {
@@ -299,7 +322,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		} else {
 			_, _ = fmt.Fprintf(platform.Stdout, "state dir outside the repository: %s (no repository Git exclusion is needed)\n", stateShown)
 		}
-		_, _ = fmt.Fprintln(platform.Stdout, "note: only Claude Code reads CLAUDE.local.md and runs the hooks; Codex, Grok, Cursor and agy need a separate local instruction route.")
+		_, _ = fmt.Fprintln(platform.Stdout, "note: Claude Code reads CLAUDE.local.md; Claude Code and Codex run the hooks. Codex, Grok, Cursor and agy need a separate local instruction route.")
 		promptConfigNotice(conf, true)
 		return
 	}
@@ -318,8 +341,17 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	}
 	writeCanonicalStateIgnore(ctx, env, cwd)
 	_, _ = fmt.Fprintf(platform.Stdout, "state dir ignored: %s/\n", core.StateDirSetting(ctx, env, cwd))
-	_, _ = fmt.Fprintln(platform.Stdout, "note: Codex, Grok, Cursor and agy read the instruction file; only Claude Code runs the hooks.")
+	_, _ = fmt.Fprintln(platform.Stdout, "note: Claude Code and Codex run the hooks; Grok, Cursor and agy only read the instruction file.")
 	promptConfigNotice(conf, false)
+}
+
+func containsSetupArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }
 
 func withoutSetupArg(args []string, remove string) []string {

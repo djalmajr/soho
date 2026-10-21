@@ -556,3 +556,32 @@ func TestSendRefusalFromRecentHistoryAndTranscript(t *testing.T) {
 		}
 	})
 }
+
+func TestSendCodexHookRefusal(t *testing.T) {
+	for _, prefix := range []string{"  └ ", "  └ > "} {
+		t.Run(prefix, func(t *testing.T) {
+			_, prompt := stalledID(t)
+			screen := "• Blocked by hook\n" + prefix + "[soho:peer-refused] #" + signID + " refused-not-allowed\n"
+			rules := refusalRules(prompt, screen)
+			for i := range rules {
+				if len(rules[i].Argv) > 1 && rules[i].Argv[0] == "agent" && rules[i].Argv[1] == "get" {
+					rules[i].Stdout = agentJSONKind("codex", "idle", "1")
+				}
+			}
+			f := newFixture(t, rules)
+			f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
+			code, out, stderr := f.run([]string{"send", "w0test:p0a", "hello"})
+			if prefix == "  └ " {
+				want := "soho: send: local/w0test:p0a refused the message (refused-not-allowed); it did not reach the model\n"
+				if code != 18 || out != "" || stderr != want {
+					t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+				}
+				if n := countSendKeyEnters(t, f); n != 0 {
+					t.Fatalf("refusal sent %d Enter", n)
+				}
+			} else if code == 18 {
+				t.Fatalf("quoted refusal rejected send: %s", stderr)
+			}
+		})
+	}
+}

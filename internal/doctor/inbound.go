@@ -146,11 +146,13 @@ func userPromptSubmitProtected(file string) bool {
 }
 
 // doctorUnprotectedAgents warns about each live agent of the roster that is
-// not a Claude Code: only its hook checks peer messages in this version.
+// not protected by this project's supported inbound hooks.
 func doctorUnprotectedAgents(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 	if env.Get("HERDR_ENV") != "1" {
 		return
 	}
+	codexHooks, codexReadError := platform.ReadTextFile(filepath.Join(platform.ProjectRoot(env, cwd), ".codex", "hooks.json"))
+	codexProtected := codexReadError == nil && setuptext.CodexHooksProtected(codexHooks)
 	var lines []string
 	func() {
 		defer func() {
@@ -176,7 +178,11 @@ func doctorUnprotectedAgents(ctx *core.Config, env platform.Env, cwd string, s *
 				pane, _ := object.Get("pane_id")
 				if name == f[0] && (f[1] == "" || pane == f[1]) {
 					seen[f[0]] = true
-					if f[2] != "claude" {
+					if f[2] == "codex" {
+						if !codexProtected {
+							lines = append(lines, fmt.Sprintf("%s (codex) is not protected: no 'soho hook inbound --codex' in UserPromptSubmit (run 'soho setup')", f[0]))
+						}
+					} else if f[2] != "claude" {
 						lines = append(lines, fmt.Sprintf("%s (%s) is not protected: no inbound hook for %s yet", f[0], f[2], f[2]))
 					}
 					break
