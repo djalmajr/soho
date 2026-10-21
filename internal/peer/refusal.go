@@ -27,11 +27,7 @@ const maxTranscriptScan = 8 << 20
 // is not hex. result is the refusal's name ("refused" when the line names
 // none). Another message's id is not this refusal.
 func refusalLineIn(line, id string) (result string, ok bool) {
-	norm := NormalizeScreen(line)
-	if strings.HasPrefix(norm, ">") {
-		return "", false
-	}
-	rest := strings.TrimPrefix(norm, "›")
+	rest := refusalText(line)
 	open := strings.ReplaceAll(peerauth.RefusalMarker, " ", "") + id
 	if !strings.HasPrefix(rest, open) {
 		return "", false
@@ -120,11 +116,15 @@ func refusalInValue(v any, id string) (string, bool) {
 // cannot name the message (it never parsed it), so the line has no id and
 // stands for no message in particular.
 func tooLargeLine(line string) bool {
+	return strings.HasPrefix(refusalText(line), strings.ReplaceAll(peerauth.TooLargeLine, " ", ""))
+}
+
+func refusalText(line string) string {
 	norm := NormalizeScreen(line)
 	if strings.HasPrefix(norm, ">") {
-		return false
+		return ""
 	}
-	return strings.HasPrefix(strings.TrimPrefix(norm, "›"), strings.ReplaceAll(peerauth.TooLargeLine, " ", ""))
+	return strings.TrimPrefix(strings.TrimPrefix(norm, "›"), "Error:")
 }
 
 // countTooLarge is how many lines of a screen or a recent read are the

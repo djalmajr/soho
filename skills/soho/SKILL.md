@@ -202,7 +202,7 @@ soho title "<objective>"                     # this pane's title: `orchestrator:
 soho title --clear                           # clear this pane's title
 soho doctor [--fix --panes 2|3|4] [--user|--session]   # advisory check (`first_run: true|false`); --fix normalizes the project, user or session file
 soho explain                                 # plain text: what is running (with the team's footprint line when copies or registered processes are due), or how to start
-soho setup [--target FILE] [--no-hooks]      # AGENTS.md block + Claude Code and Codex hooks (idempotent)
+soho setup [--target FILE] [--no-hooks]      # AGENTS.md block + Claude Code, Codex and pi peer checks (idempotent)
 soho setup --detect                          # JSON: installed kinds, summaries, models (incl. custom providers), recommended reviewer; writes nothing
 soho setup --probe [--kind K --model M]      # JSON: ready|no-auth|quota|error per kind/model + own pi/opencode models (≤5 per kind; rest in skipped_custom); no panes
 soho setup --plan …                          # diff -u per file (config files: key before → after) of what setup/--set/--user-set/--session-set would write; writes nothing
@@ -410,10 +410,10 @@ quotes may have run the backticks
 The trigger above is only read when a prompt looks like a delegation request. "Configure X, see how repos A and B do it" does not look like one, and the orchestrator will read A and B itself. Run once per project:
 
 ```text
-soho setup                      # block in AGENTS.md (or a non-symlink CLAUDE.md) + Claude Code and Codex hooks
+soho setup                      # block in AGENTS.md (or a non-symlink CLAUDE.md) + Claude Code, Codex and pi peer checks
 soho setup --target CLAUDE.md   # when CLAUDE.md is the canonical file
 soho setup --plan --local       # preview the local block, hooks and git exclusion
-soho setup --local              # for a third-party fork: local block + Claude Code and Codex hooks
+soho setup --local              # for a third-party fork: local block + Claude Code, Codex and pi peer checks
 soho setup --local --no-hooks   # keep the fork's Claude settings file untouched
 soho setup --no-hooks           # instruction block only
 ```
@@ -422,7 +422,9 @@ Like ai-memory's routing snippet, `setup` writes the delegation rules between `<
 
 After `soho setup`, Codex checks peer messages through the project's `.codex/hooks.json` (`UserPromptSubmit` → `soho hook inbound --codex`). The project and its `.codex/` layer must be trusted by Codex for project hooks to load. New or changed hooks show `Hooks need review` once for that configuration; `hooks_review=trust` (the default) approves the owner's configured hooks on workers. No hook-trust bypass flag is installed.
 
-For a fork whose tracked instructions belong to an upstream, `setup --local` puts the block in root `CLAUDE.local.md` and keeps that file and the state directory out of Git through the repository's local `info/exclude`. It leaves `AGENTS.md`, `CLAUDE.md` and the tracked `.gitignore` alone, while writing the Claude Code and Codex hooks unless `--no-hooks` is given. `doctor` accepts the local block. The hooks go to `.claude/settings.json` and `.codex/hooks.json`; local setup neither excludes those files nor checks whether the fork tracks them. Use `--no-hooks` when those files must remain untouched. Repeat `--local` on later setup calls, or, after the first local setup, run `session set setup_target local` for this Herdr workspace. A project config can hold that key only if the fork already ignores the config file. `CLAUDE.local.md` is read by Claude Code; other harnesses need their own local instruction route. Run this before the first `init` when the state directory is not already ignored; `init` can otherwise add it to the tracked `.gitignore`.
+After `soho setup`, pi checks peer messages with the managed `.pi/extensions/soho-inbound.ts` input extension and `soho hook inbound --pi`. It checks every input source containing `[soho:peer]`, without a shell, and consumes blocked input before it reaches the model; ordinary input runs no helper. A missing, unsuccessful or timed-out helper warns and continues without checking; the deadline is ten seconds. Setup updates only files carrying its first-line ownership marker, preserves unmarked files with a warning, and respects `--plan`, `--no-hooks` and `--local`. Doctor checks the exact installed extension content; it cannot detect project trust. Pi loads project extensions only after trust is granted: approve the project interactively and use `/trust` to save the decision before starting workers. Declining trust skips the extension; in print/JSON/RPC modes an unresolved default `ask` also skips protected resources. Spawn is unchanged and does not add an approval override. Sources: Pi 1.3.0 `docs/security.md:29-55,61-79`, `docs/configuration.md:3,34`, and `docs/extensions.md:46-50`.
+
+For a fork whose tracked instructions belong to an upstream, `setup --local` puts the block in root `CLAUDE.local.md` and keeps that file and the state directory out of Git through the repository's local `info/exclude`. It leaves `AGENTS.md`, `CLAUDE.md` and the tracked `.gitignore` alone, while writing the Claude Code, Codex and pi peer checks unless `--no-hooks` is given. `doctor` accepts the local block. The hooks go to `.claude/settings.json` and `.codex/hooks.json`, and the pi extension to `.pi/extensions/soho-inbound.ts`; local setup neither excludes those files nor checks whether the fork tracks them. Use `--no-hooks` when those files must remain untouched. Repeat `--local` on later setup calls, or, after the first local setup, run `session set setup_target local` for this Herdr workspace. A project config can hold that key only if the fork already ignores the config file. `CLAUDE.local.md` is read by Claude Code; other harnesses need their own local instruction route. Run this before the first `init` when the state directory is not already ignored; `init` can otherwise add it to the tracked `.gitignore`.
 
 ## Setup: guided configuration
 

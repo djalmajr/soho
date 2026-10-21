@@ -11,6 +11,7 @@ import (
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/peerauth"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/setuptext"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -289,7 +290,7 @@ func TestDoctorInboundEnforceNamesUnprotectedAgents(t *testing.T) {
 	var out strings.Builder
 	s := &Say{Out: &out}
 	doctorUnprotectedAgents(&ctx, env, root, s)
-	want := "warn   review (codex) is not protected: no 'soho hook inbound --codex' in UserPromptSubmit (run 'soho setup')\nwarn   plan (pi) is not protected: no inbound hook for pi yet\n"
+	want := "warn   review (codex) is not protected: no 'soho hook inbound --codex' in UserPromptSubmit (run 'soho setup')\nwarn   plan (pi) is not protected: no inbound hook for pi yet (run 'soho setup')\n"
 	if out.String() != want {
 		t.Fatalf("output = %q\nwant     %q", out.String(), want)
 	}
@@ -404,6 +405,37 @@ func TestDoctorCodexInboundHook(t *testing.T) {
 			}
 			if has && !strings.HasSuffix(strings.TrimSpace(out.String()), "(run 'soho setup')") {
 				t.Fatalf("no setup advice: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestDoctorPiInboundExtension(t *testing.T) {
+	for _, tc := range []struct {
+		name, content string
+		protected     bool
+	}{
+		{"missing", "", false},
+		{"installed", setuptext.PiInboundExtension(), true},
+		{"marked-different", setuptext.PiInboundMarker + "\nold content\n", false},
+		{"unmarked", "export default function () {}\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newInboundDoctor(t)
+			d.env["HERDR_ENV"], d.env["HERDR_WORKSPACE_ID"], d.env["SOHO_FAKECLI_CONFIG"] = "1", "ws", d.env["PATH"]
+			d.write(filepath.Join(d.env["SOHO_DIR"], "ws", "agents.tsv"), "review\tp2\tpi\treviewer\n", 0600)
+			if _, err := fakecli.Install(t, d.env["PATH"], "herdr", []fakecli.Rule{{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"review","pane_id":"p2"}]}}`}}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.name != "missing" {
+				d.write(filepath.Join(d.cwd, ".pi", "extensions", "soho-inbound.ts"), tc.content, 0600)
+			}
+			var out strings.Builder
+			ctx := core.Config{Entries: map[string]core.ConfigEntry{}}
+			doctorUnprotectedAgents(&ctx, d.env, d.cwd, &Say{Out: &out})
+			warned := strings.Contains(out.String(), "review (pi) is not protected")
+			if warned == tc.protected || (warned && !strings.HasSuffix(strings.TrimSpace(out.String()), "(run 'soho setup')")) {
+				t.Fatalf("protected=%v output=%s", tc.protected, out.String())
 			}
 		})
 	}

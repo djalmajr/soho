@@ -109,6 +109,7 @@ func writeHooksSection(root string, env platform.Env) {
 	settings := filepath.Join(root, ".claude", "settings.json")
 	setupWriteHooks(settings)
 	_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder, SessionStart doctor)\n", settings)
+	writePiInboundExtension(root)
 	codex := filepath.Join(root, ".codex", "hooks.json")
 	var content *string
 	if raw, err := platform.ReadTextFile(codex); err == nil {
@@ -139,6 +140,31 @@ func writeHooksSection(root string, env platform.Env) {
 	}
 }
 
+func writePiInboundExtension(root string) {
+	file := filepath.Join(root, ".pi", "extensions", "soho-inbound.ts")
+	var content *string
+	if raw, err := platform.ReadTextFile(file); err == nil {
+		content = &raw
+	} else if !os.IsNotExist(err) {
+		core.Warn("could not read extension from "+file+"; file left untouched", "", "setup")
+		return
+	}
+	next := setuptext.PiInboundResult(content)
+	if next == nil {
+		core.Warn("could not install extension into "+file+"; file has no soho marker and was left untouched", "", "setup")
+		return
+	}
+	if content == nil || *content != *next {
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			platform.DieFriction("could not install extension into "+file, 4)
+		}
+		if err := platform.AtomicWrite(file, *next); err != nil {
+			platform.DieFriction("could not install extension into "+file, 4)
+		}
+	}
+	_, _ = fmt.Fprintf(platform.Stdout, "extension ready: %s (input inbound, pi)\n", file)
+}
+
 // BuildVersion is the version the CLI was built with ("dev" outside a
 // release). The plugin migration installs the soho plugin at this tag.
 var BuildVersion = "dev"
@@ -156,6 +182,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		CmdPlan(withoutSetupArg(args, "--plan"), ctx, env, cwd)
 		if !containsSetupArg(args, "--no-hooks") {
 			_, _ = fmt.Fprintf(platform.Stdout, "# would merge into %s/.codex/hooks.json: UserPromptSubmit hook (codex)\n", platform.ProjectRoot(env, cwd))
+			_, _ = fmt.Fprintf(platform.Stdout, "# would write %s/.pi/extensions/soho-inbound.ts: input extension (pi)\n", platform.ProjectRoot(env, cwd))
 		}
 		return
 	}
@@ -287,6 +314,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		if hooks {
 			_, _ = fmt.Fprintf(platform.Stdout, "\n# would merge into %s/.claude/settings.json: UserPromptSubmit + SessionStart hooks\n", root)
 			_, _ = fmt.Fprintf(platform.Stdout, "# would merge into %s/.codex/hooks.json: UserPromptSubmit hook (codex)\n", root)
+			_, _ = fmt.Fprintf(platform.Stdout, "# would write %s/.pi/extensions/soho-inbound.ts: input extension (pi)\n", root)
 		}
 		if modeLocal {
 			if plan := planLocalExcludes(root, ctx, env, cwd, "setup"); plan != nil && plan.path != "" {
@@ -322,7 +350,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		} else {
 			_, _ = fmt.Fprintf(platform.Stdout, "state dir outside the repository: %s (no repository Git exclusion is needed)\n", stateShown)
 		}
-		_, _ = fmt.Fprintln(platform.Stdout, "note: Claude Code reads CLAUDE.local.md; Claude Code and Codex run the hooks. Codex, Grok, Cursor and agy need a separate local instruction route.")
+		_, _ = fmt.Fprintln(platform.Stdout, "note: Claude Code reads CLAUDE.local.md; Claude Code, Codex and pi run the peer checks. Codex, pi, Grok, Cursor and agy need a separate local instruction route.")
 		promptConfigNotice(conf, true)
 		return
 	}
@@ -341,7 +369,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	}
 	writeCanonicalStateIgnore(ctx, env, cwd)
 	_, _ = fmt.Fprintf(platform.Stdout, "state dir ignored: %s/\n", core.StateDirSetting(ctx, env, cwd))
-	_, _ = fmt.Fprintln(platform.Stdout, "note: Claude Code and Codex run the hooks; Grok, Cursor and agy only read the instruction file.")
+	_, _ = fmt.Fprintln(platform.Stdout, "note: Claude Code, Codex and pi run the peer checks; Grok, Cursor and agy only read the instruction file.")
 	promptConfigNotice(conf, false)
 }
 

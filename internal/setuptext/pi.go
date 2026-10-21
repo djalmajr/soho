@@ -1,0 +1,99 @@
+package setuptext
+
+import "strings"
+
+const PiInboundMarker = "// soho: inbound peer check (managed by soho setup)"
+
+// PiInboundExtension uses JavaScript-compatible TypeScript: Pi loads it directly.
+func PiInboundExtension() string { return piInboundText }
+
+func PiInboundManaged(content string) bool {
+	line, _, _ := strings.Cut(content, "\n")
+	return strings.TrimSuffix(line, "\r") == PiInboundMarker
+}
+
+func PiInboundResult(content *string) *string {
+	if content != nil && !PiInboundManaged(*content) {
+		return nil
+	}
+	text := PiInboundExtension()
+	return &text
+}
+
+func PiInboundProtected(content string) bool {
+	return content == PiInboundExtension()
+}
+
+const piInboundText = PiInboundMarker + `
+import { spawn } from "node:child_process";
+
+const timeoutMS = 10000;
+
+function checkPeer(text) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn("soho", ["hook", "inbound", "--pi"], {
+        shell: false,
+        stdio: ["pipe", "pipe", "ignore"],
+      });
+    } catch (error) {
+      resolve({ error: error.code || "spawn failed" });
+      return;
+    }
+    let output = "";
+    let settled = false;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMS);
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    child.on("error", (error) => finish({ error: error.code || "spawn failed" }));
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.on("close", (code) => {
+      if (timedOut) finish({ error: "timeout" });
+      else if (code !== 0) finish({ error: "exit " + (code ?? "signal") });
+      else finish({ output });
+    });
+    child.stdin.on("error", () => {});
+    child.stdin.end(JSON.stringify({
+      hook_event_name: "UserPromptSubmit",
+      prompt: text,
+      cwd: process.cwd(),
+    }));
+  });
+}
+
+export default function (pi) {
+  pi.on("input", async (event, ctx) => {
+    if (typeof event.text !== "string" || !event.text.includes("[soho:peer]")) {
+      return { action: "continue" };
+    }
+    const result = await checkPeer(event.text);
+    let decision;
+    if (!result.error && result.output.trim() !== "") {
+      try { decision = JSON.parse(result.output); }
+      catch {}
+      if (!decision || typeof decision !== "object" || Array.isArray(decision)) {
+        result.error = "unreadable output";
+      }
+    }
+    if (result.error) {
+      ctx.ui.notify("soho: peer check did not run (" + result.error + "); the message was not checked", "warning");
+      return { action: "continue" };
+    }
+    if (decision && decision.decision === "block" && typeof decision.reason === "string") {
+      ctx.ui.notify(decision.reason, "error");
+      return { action: "handled" };
+    }
+    return { action: "continue" };
+  });
+}
+`

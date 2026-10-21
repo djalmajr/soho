@@ -345,7 +345,7 @@ func TestSendReadsTheReceiversRefusal(t *testing.T) {
 		f := newFixture(t, refusalRules(prompt, "old turn output\n"+refusal(signID, "refused-not-allowed")))
 		f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
 		code, out, stderr := f.run([]string{"send", "w0test:p0a", "hello"})
-		want := "soho: send: local/w0test:p0a refused the message (refused-not-allowed); the refused text stays in its input until someone clears it\n"
+		want := "soho: send: local/w0test:p0a refused the message (refused-not-allowed); it did not reach the model\n"
 		if code != 18 || out != "" || stderr != want {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 		}
@@ -575,6 +575,34 @@ func TestSendCodexHookRefusal(t *testing.T) {
 				want := "soho: send: local/w0test:p0a refused the message (refused-not-allowed); it did not reach the model\n"
 				if code != 18 || out != "" || stderr != want {
 					t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+				}
+				if n := countSendKeyEnters(t, f); n != 0 {
+					t.Fatalf("refusal sent %d Enter", n)
+				}
+			} else if code == 18 {
+				t.Fatalf("quoted refusal rejected send: %s", stderr)
+			}
+		})
+	}
+}
+
+func TestSendPiHookRefusal(t *testing.T) {
+	for _, prefix := range []string{" Error: ", " Error: > ", " > Error: ", ""} {
+		t.Run(prefix, func(t *testing.T) {
+			_, prompt := stalledID(t)
+			rules := refusalRules(prompt, prefix+"[soho:peer-refused] #"+signID+" refused-not-allowed\n")
+			for i := range rules {
+				if len(rules[i].Argv) > 1 && rules[i].Argv[0] == "agent" && rules[i].Argv[1] == "get" {
+					rules[i].Stdout = agentJSONKind("pi", "idle", "1")
+				}
+			}
+			f := newFixture(t, rules)
+			f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
+			code, out, stderr := f.run([]string{"send", "w0test:p0a", "hello"})
+			if prefix == " Error: " || prefix == "" {
+				want := "soho: send: local/w0test:p0a refused the message (refused-not-allowed); it did not reach the model\n"
+				if code != 18 || out != "" || stderr != want {
+					t.Fatalf("code=%d out=%q stderr=%q want=%q", code, out, stderr, want)
 				}
 				if n := countSendKeyEnters(t, f); n != 0 {
 					t.Fatalf("refusal sent %d Enter", n)

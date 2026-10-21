@@ -28,9 +28,9 @@ var hookStdin io.Reader = os.Stdin
 // `inbound` first check the peer messages of a UserPromptSubmit prompt
 // (peerauth) and may block it; the reminder itself stays Herdr-only.
 func cmdHook(args []string, env platform.Env, cwd string) int {
-	codex := len(args) == 2 && args[1] == "--codex"
+	codex := len(args) == 2 && (args[1] == "--codex" || args[1] == "--pi")
 	if (len(args) != 1 && !codex) || (args[0] != "reminder" && args[0] != "doctor" && args[0] != "inbound") {
-		platform.Die("usage: hook reminder|doctor|inbound [--codex]", 2)
+		platform.Die("usage: hook reminder|doctor|inbound [--codex|--pi]", 2)
 	}
 	if args[0] != "doctor" {
 		if hookInbound(env, cwd, codex) {

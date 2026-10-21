@@ -1306,7 +1306,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	// refused text stays in the target's input until someone clears it.
 	refuse := func(result string) {
 		log(senderRef, t.RefShown, "refused")
-		if t.Kind == "codex" {
+		if t.Kind == "codex" || t.Kind == "pi" {
 			platform.Die(fmt.Sprintf("send: %s refused the message (%s); it did not reach the model", t.RefShown, result), 18)
 		}
 		platform.Die(fmt.Sprintf("send: %s refused the message (%s); the refused text stays in its input until someone clears it", t.RefShown, result), 18)
