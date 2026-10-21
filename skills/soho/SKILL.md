@@ -202,7 +202,7 @@ soho title "<objective>"                     # this pane's title: `orchestrator:
 soho title --clear                           # clear this pane's title
 soho doctor [--fix --panes 2|3|4] [--user|--session]   # advisory check (`first_run: true|false`); --fix normalizes the project, user or session file
 soho explain                                 # plain text: what is running (with the team's footprint line when copies or registered processes are due), or how to start
-soho setup [--target FILE] [--no-hooks]      # AGENTS.md block + Claude hooks (idempotent)
+soho setup [--target FILE] [--no-hooks]      # AGENTS.md block + Claude Code and Codex hooks (idempotent)
 soho setup --detect                          # JSON: installed kinds, summaries, models (incl. custom providers), recommended reviewer; writes nothing
 soho setup --probe [--kind K --model M]      # JSON: ready|no-auth|quota|error per kind/model + own pi/opencode models (≤5 per kind; rest in skipped_custom); no panes
 soho setup --plan …                          # diff -u per file (config files: key before → after) of what setup/--set/--user-set/--session-set would write; writes nothing
@@ -410,17 +410,19 @@ quotes may have run the backticks
 The trigger above is only read when a prompt looks like a delegation request. "Configure X, see how repos A and B do it" does not look like one, and the orchestrator will read A and B itself. Run once per project:
 
 ```text
-soho setup                      # block in AGENTS.md (or a non-symlink CLAUDE.md) + Claude hooks
+soho setup                      # block in AGENTS.md (or a non-symlink CLAUDE.md) + Claude Code and Codex hooks
 soho setup --target CLAUDE.md   # when CLAUDE.md is the canonical file
 soho setup --plan --local       # preview the local block, hooks and git exclusion
-soho setup --local              # for a third-party fork: local block + Claude hooks
+soho setup --local              # for a third-party fork: local block + Claude Code and Codex hooks
 soho setup --local --no-hooks   # keep the fork's Claude settings file untouched
 soho setup --no-hooks           # instruction block only
 ```
 
 Like ai-memory's routing snippet, `setup` writes the delegation rules between `<!-- soho:start -->` / `<!-- soho:end -->` markers in the project instruction file and merges the native commands `soho hook reminder` (UserPromptSubmit) and `soho hook doctor` (SessionStart) into Claude settings. Native hooks are silent outside Herdr; the doctor hook uses the explicit Claude project directory and emits advisory warnings only. Setup recognizes and replaces the legacy herdr-soho hooks — the pre-rename `herdr-soho hook reminder` / `herdr-soho hook doctor` commands and the historical shell hooks — as inert migration data, preserving unrelated commands.
 
-For a fork whose tracked instructions belong to an upstream, `setup --local` puts the block in root `CLAUDE.local.md` and keeps that file and the state directory out of Git through the repository's local `info/exclude`. It leaves `AGENTS.md`, `CLAUDE.md` and the tracked `.gitignore` alone, while writing the Claude hooks unless `--no-hooks` is given. `doctor` accepts the local block. The hooks go to `.claude/settings.json`; local setup neither excludes that file nor checks whether the fork tracks it. Use `--no-hooks` when that file must remain untouched. Repeat `--local` on later setup calls, or, after the first local setup, run `session set setup_target local` for this Herdr workspace. A project config can hold that key only if the fork already ignores the config file. `CLAUDE.local.md` is read by Claude Code; other harnesses need their own local instruction route. Run this before the first `init` when the state directory is not already ignored; `init` can otherwise add it to the tracked `.gitignore`.
+After `soho setup`, Codex checks peer messages through the project's `.codex/hooks.json` (`UserPromptSubmit` → `soho hook inbound --codex`). The project and its `.codex/` layer must be trusted by Codex for project hooks to load. New or changed hooks show `Hooks need review` once for that configuration; `hooks_review=trust` (the default) approves the owner's configured hooks on workers. No hook-trust bypass flag is installed.
+
+For a fork whose tracked instructions belong to an upstream, `setup --local` puts the block in root `CLAUDE.local.md` and keeps that file and the state directory out of Git through the repository's local `info/exclude`. It leaves `AGENTS.md`, `CLAUDE.md` and the tracked `.gitignore` alone, while writing the Claude Code and Codex hooks unless `--no-hooks` is given. `doctor` accepts the local block. The hooks go to `.claude/settings.json` and `.codex/hooks.json`; local setup neither excludes those files nor checks whether the fork tracks them. Use `--no-hooks` when those files must remain untouched. Repeat `--local` on later setup calls, or, after the first local setup, run `session set setup_target local` for this Herdr workspace. A project config can hold that key only if the fork already ignores the config file. `CLAUDE.local.md` is read by Claude Code; other harnesses need their own local instruction route. Run this before the first `init` when the state directory is not already ignored; `init` can otherwise add it to the tracked `.gitignore`.
 
 ## Setup: guided configuration
 

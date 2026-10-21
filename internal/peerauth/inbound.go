@@ -196,6 +196,15 @@ func (o Outcome) Reason() string {
 	return strings.Join(append(lines, ReasonTail), "\n")
 }
 
+// CodexReason keeps the refusal lines and describes Codex's blocked delivery.
+func (o Outcome) CodexReason() string {
+	const tail = "The message did not reach the model; nothing needs clearing."
+	if o.TooLarge {
+		return o.Reason() + "\n" + tail
+	}
+	return strings.TrimSuffix(o.Reason(), ReasonTail) + tail
+}
+
 // Refused lists the verdicts that are not accepted.
 func (o Outcome) Refused() []Verdict {
 	var out []Verdict
