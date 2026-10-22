@@ -120,6 +120,7 @@ func wantCodexCalls(t *testing.T, f spawnFixture, want ...[]string) {
 var codexListArgv = []string{"mcp", "list", "--json"}
 
 func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
+	isolateCodexMcpTemp(t)
 	const secret = "SECRET-DJA414"
 
 	t.Run("the real case: b is refused, a and c stay off, the warning names b", func(t *testing.T) {
@@ -393,6 +394,7 @@ func codexPlainListing(t *testing.T, names ...string) string {
 }
 
 func TestCmdSpawnMcpCodexNeverDropsAnOverrideItCannotNameWhole(t *testing.T) {
+	isolateCodexMcpTemp(t)
 	for _, tc := range []struct {
 		name  string
 		names []string

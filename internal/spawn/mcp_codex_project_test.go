@@ -52,6 +52,7 @@ func realPath(t *testing.T, path string) string {
 }
 
 func TestCmdSpawnMcpCodexKeepsTheProjectsOwnServersOn(t *testing.T) {
+	isolateCodexMcpTemp(t)
 	const secret = "SECRET-DJA418"
 
 	t.Run("the Cinzel case: p1 and p2 are the project's own, only a is turned off and checked", func(t *testing.T) {
