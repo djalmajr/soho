@@ -159,6 +159,12 @@ func TestDispatchUsageErrorsPortedCases(t *testing.T) {
 		{name: "unknown option", args: []string{"worker", f.brief, "--not-an-option"}, code: 2, stderr: "soho: dispatch: unknown option --not-an-option\n"},
 		{name: "missing file", args: []string{"worker", filepath.Join(f.root, "missing.md")}, code: 2, stderr: "soho: brief not found: " + filepath.Join(f.root, "missing.md") + "\n"},
 		{name: "unknown agent", args: []string{"other", f.brief}, code: 3, stderr: "soho: agent 'other' is not in this skill's roster (spawn it first, or pass a name you spawned)\n"},
+		// DJA-473: options may come before the agent and the brief.
+		{name: "option before the positionals", args: []string{"--for", "anthropic", "other", f.brief}, code: 3, stderr: "soho: agent 'other' is not in this skill's roster (spawn it first, or pass a name you spawned)\n"},
+		{name: "option between the positionals", args: []string{"other", "--timeout", "90s", f.brief}, code: 3, stderr: "soho: agent 'other' is not in this skill's roster (spawn it first, or pass a name you spawned)\n"},
+		{name: "unknown option before the positionals", args: []string{"--not-an-option", "worker", f.brief}, code: 2, stderr: "soho: dispatch: unknown option --not-an-option\n"},
+		{name: "a third positional", args: []string{"worker", f.brief, "extra"}, code: 2, stderr: "soho: dispatch: unexpected argument extra (usage: dispatch <agent> <brief.md> [options])\n"},
+		{name: "only options", args: []string{"--no-wait"}, code: 1, stderr: "soho: 1: agent\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, out, stderr := f.run(t, tc.args...)
