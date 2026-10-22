@@ -55,20 +55,26 @@ function checkPeer(text) {
       clearTimeout(timer);
       resolve(result);
     };
-    child.on("error", (error) => finish({ error: error.code || "spawn failed" }));
+    child.on("error", (error) =>
+      finish({ error: error.code || "spawn failed" }),
+    );
     child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+    });
     child.on("close", (code) => {
       if (timedOut) finish({ error: "timeout" });
       else if (code !== 0) finish({ error: "exit " + (code ?? "signal") });
       else finish({ output });
     });
     child.stdin.on("error", () => {});
-    child.stdin.end(JSON.stringify({
-      hook_event_name: "UserPromptSubmit",
-      prompt: text,
-      cwd: process.cwd(),
-    }));
+    child.stdin.end(
+      JSON.stringify({
+        hook_event_name: "UserPromptSubmit",
+        prompt: text,
+        cwd: process.cwd(),
+      }),
+    );
   });
 }
 
@@ -80,17 +86,31 @@ export default function (pi) {
     const result = await checkPeer(event.text);
     let decision: { decision?: unknown; reason?: unknown } | undefined;
     if (!result.error && result.output.trim() !== "") {
-      try { decision = JSON.parse(result.output); }
-      catch {}
-      if (!decision || typeof decision !== "object" || Array.isArray(decision)) {
+      try {
+        decision = JSON.parse(result.output);
+      } catch {}
+      if (
+        !decision ||
+        typeof decision !== "object" ||
+        Array.isArray(decision)
+      ) {
         result.error = "unreadable output";
       }
     }
     if (result.error) {
-      ctx.ui.notify("soho: peer check did not run (" + result.error + "); the message was not checked", "warning");
+      ctx.ui.notify(
+        "soho: peer check did not run (" +
+          result.error +
+          "); the message was not checked",
+        "warning",
+      );
       return { action: "continue" };
     }
-    if (decision && decision.decision === "block" && typeof decision.reason === "string") {
+    if (
+      decision &&
+      decision.decision === "block" &&
+      typeof decision.reason === "string"
+    ) {
       ctx.ui.notify(decision.reason, "error");
       return { action: "handled" };
     }
