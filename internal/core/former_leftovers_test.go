@@ -100,6 +100,168 @@ func TestLegacyLeftovers(t *testing.T) {
 		}
 	})
 
+	t.Run("former state dir with an empty current one: setup can still move it", func(t *testing.T) {
+		env, cwd := formerNamesEnv(t)
+		for _, dir := range []string{".herdr-soho", ".soho"} {
+			if err := os.MkdirAll(filepath.Join(cwd, dir), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got := LegacyLeftovers(env, cwd, platform.Current())
+		want := []string{
+			"former state dir " + filepath.Join(cwd, ".herdr-soho") + " is no longer used: run 'soho setup' to move it to " + filepath.Join(cwd, ".soho") + " once no worker is live",
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("leftovers = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("former state dir beside a current one in use: remove it, setup would keep it", func(t *testing.T) {
+		env, cwd := formerNamesEnv(t)
+		if err := os.MkdirAll(filepath.Join(cwd, ".herdr-soho", "w9"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(cwd, ".soho", "w7"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		got := LegacyLeftovers(env, cwd, platform.Current())
+		old := filepath.Join(cwd, ".herdr-soho")
+		want := []string{
+			"former state dir " + old + " is no longer used and " + filepath.Join(cwd, ".soho") + " already exists: remove " + old + " once its reports are no longer needed",
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("leftovers = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("former state dir the state dir is pinned to: in use, nothing", func(t *testing.T) {
+		env, cwd := formerNamesEnv(t)
+		old := filepath.Join(cwd, ".herdr-soho")
+		if err := os.MkdirAll(filepath.Join(old, "w9"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(cwd, ".soho", "w7"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		env["SOHO_DIR"] = old
+		got := LegacyLeftovers(env, cwd, platform.Current())
+		if len(got) != 0 {
+			t.Fatalf("leftovers = %v, want none (the pinned state dir is in use)", got)
+		}
+	})
+
+	t.Run("former state dir the state dir is pinned inside: in use, nothing", func(t *testing.T) {
+		env, cwd := formerNamesEnv(t)
+		old := filepath.Join(cwd, ".herdr-soho")
+		if err := os.MkdirAll(filepath.Join(old, "active-state", "w9"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		env["SOHO_DIR"] = filepath.Join(old, "active-state")
+		got := LegacyLeftovers(env, cwd, platform.Current())
+		if len(got) != 0 {
+			t.Fatalf("leftovers = %v, want none (the pinned state dir lives inside the former one)", got)
+		}
+	})
+
+	t.Run("former state dir a linked pin resolves inside: in use, nothing", func(t *testing.T) {
+		env, cwd := formerNamesEnv(t)
+		old := filepath.Join(cwd, ".herdr-soho")
+		if err := os.MkdirAll(filepath.Join(old, "active-state", "w9"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(cwd, "state-link")
+		if err := os.Symlink(filepath.Join(old, "active-state"), link); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		for _, pin := range []string{link, filepath.Join(link, "not-yet")} {
+			env["SOHO_DIR"] = pin
+			got := LegacyLeftovers(env, cwd, platform.Current())
+			if len(got) != 0 {
+				t.Fatalf("SOHO_DIR=%s: leftovers = %v, want none (the pin resolves inside the former dir)", pin, got)
+			}
+		}
+	})
+
+	t.Run("former state dir that is itself a link to the pinned state: an alias, nothing", func(t *testing.T) {
+		env, cwd := formerNamesEnv(t)
+		target := filepath.Join(cwd, "state")
+		if err := os.MkdirAll(filepath.Join(target, "w9"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		old := filepath.Join(cwd, ".herdr-soho")
+		if err := os.Symlink(target, old); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		other := filepath.Join(cwd, "other-link")
+		if err := os.Symlink(old, other); err != nil {
+			t.Fatal(err)
+		}
+		// The pin names the target directly, or reaches it through the
+		// former link: removing that link would cut the second one off.
+		for _, pin := range []string{target, other} {
+			env["SOHO_DIR"] = pin
+			got := LegacyLeftovers(env, cwd, platform.Current())
+			if len(got) != 0 {
+				t.Fatalf("SOHO_DIR=%s: leftovers = %v, want none (the former dir is an alias of the state dir)", pin, got)
+			}
+		}
+	})
+
+	t.Run("former state dir beside a sibling pin that only shares its prefix: kept, as setup says", func(t *testing.T) {
+		env, cwd := formerNamesEnv(t)
+		old := filepath.Join(cwd, ".herdr-soho")
+		if err := os.MkdirAll(old, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		pinned := filepath.Join(cwd, ".herdr-soho-state")
+		env["SOHO_DIR"] = pinned
+		got := LegacyLeftovers(env, cwd, platform.Current())
+		want := []string{
+			"former state dir " + old + " is kept: the state dir is set to " + pinned,
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("leftovers = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("former state dir with the state dir pinned elsewhere: kept, as setup says", func(t *testing.T) {
+		env, cwd := formerNamesEnv(t)
+		old := filepath.Join(cwd, ".herdr-soho")
+		if err := os.MkdirAll(old, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		pinned := filepath.Join(cwd, "state")
+		env["SOHO_DIR"] = pinned
+		got := LegacyLeftovers(env, cwd, platform.Current())
+		want := []string{
+			"former state dir " + old + " is kept: the state dir is set to " + pinned,
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("leftovers = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("former state dir beside a linked current one: kept, no removal advice", func(t *testing.T) {
+		env, cwd := formerNamesEnv(t)
+		old := filepath.Join(cwd, ".herdr-soho")
+		if err := os.MkdirAll(filepath.Join(old, "w9"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(cwd, "elsewhere")
+		if err := os.MkdirAll(filepath.Join(target, "w7"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		current := filepath.Join(cwd, ".soho")
+		if err := os.Symlink(target, current); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		got := LegacyLeftovers(env, cwd, platform.Current())
+		want := []string{"former state dir " + old + " is kept: " + current + " already exists"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("leftovers = %v, want %v", got, want)
+		}
+	})
+
 	t.Run("former herdr-agents user config dir with content", func(t *testing.T) {
 		env, cwd := formerNamesEnv(t)
 		agentsDir := filepath.Join(filepath.Dir(filepath.Dir(LegacyUserConfigPath(platform.Current(), env))), "herdr-agents")
