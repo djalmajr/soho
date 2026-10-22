@@ -56,7 +56,27 @@ func LegacyLeftovers(env platform.Env, cwd, platformName string) []string {
 		out = append(out, fmt.Sprintf("former project config %s is no longer read: run 'soho setup' to move it to %s", LegacyProjectConfigPath(root), filepath.Join(root, ".agents", "soho.conf")))
 	}
 	if isDir(LegacyStatePath(root)) {
-		out = append(out, fmt.Sprintf("former state dir %s is no longer used: run 'soho setup' to move it to %s once no worker is live", LegacyStatePath(root), filepath.Join(root, ".soho")))
+		current := filepath.Join(root, ".soho")
+		ctx := LoadConfig(env, cwd)
+		effective := StateRootPath(&ctx, env, cwd)
+		// setup moves the former dir only onto an absent or empty one and
+		// never when the state dir is pinned; in those cases it keeps the
+		// former one, so say what setup says instead of sending the user to
+		// it. Removal is advised only when both dirs are real directories
+		// and nothing is pinned: a pin or a link may still reach the state
+		// through the former dir. A former dir the state dir resolves into
+		// is in use: no warning.
+		switch {
+		case stateWithinFormer(LegacyStatePath(root), effective):
+		case StateDirExplicitlyPinned(&ctx, env):
+			out = append(out, fmt.Sprintf("former state dir %s is kept: the state dir is set to %s", LegacyStatePath(root), effective))
+		case dirHasContent(current) && realDir(current) && realDir(LegacyStatePath(root)):
+			out = append(out, fmt.Sprintf("former state dir %s is no longer used and %s already exists: remove %s once its reports are no longer needed", LegacyStatePath(root), current, LegacyStatePath(root)))
+		case dirHasContent(current):
+			out = append(out, fmt.Sprintf("former state dir %s is kept: %s already exists", LegacyStatePath(root), current))
+		default:
+			out = append(out, fmt.Sprintf("former state dir %s is no longer used: run 'soho setup' to move it to %s once no worker is live", LegacyStatePath(root), current))
+		}
 	}
 	formerUserDir := filepath.Dir(LegacyUserConfigPath(platformName, env))
 	for _, dir := range []string{formerUserDir, filepath.Join(filepath.Dir(formerUserDir), "herdr-agents")} {
@@ -81,4 +101,50 @@ func LegacyLeftovers(env platform.Env, cwd, platformName string) []string {
 func dirHasContent(dir string) bool {
 	entries, err := os.ReadDir(dir)
 	return err == nil && len(entries) > 0
+}
+
+// stateWithinFormer reports whether the effective state dir is the former
+// dir or lies under it, either as written or once symlinks are resolved: a
+// pin reached through a link still lives in the former tree, and a former
+// dir that is a link to the state dir is an alias of it, not a leftover.
+func stateWithinFormer(former, effective string) bool {
+	if pathWithinOrSame(former, effective) {
+		return true
+	}
+	return pathWithinOrSame(resolveExisting(former), resolveExisting(effective))
+}
+
+// resolveExisting resolves the symlinks of the longest existing prefix of
+// p and keeps the rest as written, so a state dir not created yet still
+// resolves through a linked parent.
+func resolveExisting(p string) string {
+	p = filepath.Clean(p)
+	rest := ""
+	for {
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Join(real, rest)
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return filepath.Join(p, rest)
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
+}
+
+// pathWithinOrSame reports whether candidate is dir itself or lies under it,
+// compared lexically after cleaning.
+func pathWithinOrSame(dir, candidate string) bool {
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(candidate))
+	if err != nil || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// realDir reports a directory that is not a symlink.
+func realDir(p string) bool {
+	info, err := os.Lstat(p)
+	return err == nil && info.IsDir()
 }
