@@ -11,9 +11,78 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/setuptext"
 )
 
 const localInstructionFile = "CLAUDE.local.md"
+
+const codexHookRel = ".codex/hooks.json"
+const piInboundRel = ".pi/extensions/soho-inbound.ts"
+
+func hasCompleteSetupBlock(text string) bool {
+	currentStarted, legacyStarted := false, false
+	for _, line := range strings.Split(text, "\n") {
+		if (currentStarted && strings.Contains(line, setuptext.SetupEnd)) || (legacyStarted && strings.Contains(line, setuptext.LegacySetupEnd)) {
+			return true
+		}
+		currentStarted = currentStarted || strings.Contains(line, setuptext.SetupStart)
+		legacyStarted = legacyStarted || strings.Contains(line, setuptext.LegacySetupStart)
+	}
+	return false
+}
+
+func refuseImplicitCanonicalSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
+	if containsSetupArg(args, "--local") || containsSetupArg(args, "--target") || core.Cfg(ctx, "setup_target", "canonical", env) == "local" {
+		return
+	}
+	root := platform.ProjectRoot(env, cwd)
+	text, err := platform.ReadTextFile(localTarget(root))
+	if err != nil || !hasCompleteSetupBlock(text) {
+		return
+	}
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+		file := filepath.Join(root, name)
+		info, err := os.Stat(file)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if text, err := platform.ReadTextFile(file); err == nil && hasCompleteSetupBlock(text) {
+			return
+		}
+	}
+	platform.DieFriction("setup: this project keeps the soho block in CLAUDE.local.md; run 'setup --local', 'setup --target <file>', or 'session set setup_target local' (no files were changed)", 2)
+}
+
+func untrackedLocalHooks(root string, rels []string, env platform.Env) []string {
+	var untracked []string
+	for _, rel := range rels {
+		if _, tracked := gitOutput(env, root, "ls-files", "--error-unmatch", "--", rel); !tracked {
+			untracked = append(untracked, rel)
+		}
+	}
+	return untracked
+}
+
+// Preview only hooks the writers can install or confirm. Excludes are applied
+// after successful writes, using the writers' actual results instead.
+func localHookRels(root string, env platform.Env) []string {
+	var rels []string
+	for _, hook := range []struct {
+		rel   string
+		merge func(*string) *string
+	}{{codexHookRel, setuptext.CodexHooksResult}, {piInboundRel, setuptext.PiInboundResult}} {
+		var content *string
+		if raw, err := platform.ReadTextFile(filepath.Join(root, filepath.FromSlash(hook.rel))); err == nil {
+			content = &raw
+		} else if !os.IsNotExist(err) {
+			continue
+		}
+		if hook.merge(content) != nil {
+			rels = append(rels, hook.rel)
+		}
+	}
+	return untrackedLocalHooks(root, rels, env)
+}
 
 func resolveSetupMode(local bool, target string, ctx *core.Config, env platform.Env, cmd string) bool {
 	if local && target != "" {

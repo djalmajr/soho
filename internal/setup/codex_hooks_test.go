@@ -323,7 +323,9 @@ func TestSetupCodexPlanNoHooksAndLocal(t *testing.T) {
 		}
 		code, _, msg = runSetupWrite([]string{"--local"}, ctx, env, root)
 		after, e := os.ReadFile(exclude)
-		if code != 0 || e != nil || string(before) != string(after) || codexHookCount(t, codexFile(root)) != 1 {
+		// DJA-462 adds exactly the two untracked hooks to the local excludes.
+		want := string(before) + "/.pi/extensions/soho-inbound.ts\n/.codex/hooks.json\n"
+		if code != 0 || e != nil || want != string(after) || codexHookCount(t, codexFile(root)) != 1 {
 			t.Fatalf("code=%d exclude=%s err=%v msg=%s", code, after, e, msg)
 		}
 		if _, e := os.Stat(filepath.Join(root, ".gitignore")); !os.IsNotExist(e) {
