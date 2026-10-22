@@ -19,6 +19,7 @@ import (
 	"github.com/djalmajr/soho/internal/provider"
 	"github.com/djalmajr/soho/internal/reportscan"
 	"github.com/djalmajr/soho/internal/spawn/codexhooks"
+	"github.com/djalmajr/soho/internal/spawn/cursorapproval"
 	"github.com/djalmajr/soho/internal/startup"
 	"github.com/djalmajr/soho/internal/taskreport"
 )
@@ -195,6 +196,20 @@ func promptWindow(ctx *core.Config, env platform.Env) int64 {
 
 func sendWarning(message string) { core.Warn(message, frictionLogFile, "wait") }
 
+// A fresh full visible read is required after reads that may fall back to
+// visible, and immediately before a wait consumer sends input to Cursor.
+func cursorMCPBlocked(sd, agent string, env platform.Env) bool {
+	if rosterKind(sd, agent) != "cursor" {
+		return false
+	}
+	screen, ok := herdr.AgentReadOK(env, agent, "visible", nil)
+	if ok && cursorapproval.CursorMCPApproval(screen) {
+		sendWarning(fmt.Sprintf("agent '%s' requires approval of MCP servers; no input is sent — the operator must answer in the pane", agent))
+		return true
+	}
+	return false
+}
+
 func TryAutoApprove(sd, agent string, ctx *core.Config, env platform.Env) bool {
 	if core.Cfg(ctx, "auto_approve", "off", env) != "on" {
 		return false
@@ -223,6 +238,9 @@ func TryAutoApprove(sd, agent string, ctx *core.Config, env platform.Env) bool {
 	kind := ""
 	if len(line) > 2 {
 		kind = line[2]
+	}
+	if cursorMCPBlocked(sd, agent, env) {
+		return false
 	}
 	key := "enter"
 	if kind == "codex" {
@@ -257,6 +275,9 @@ func retryNotReceived(sd, agent, marker string, ctx *core.Config, env platform.E
 	}
 	now := platform.Now().Unix()
 	screen := herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40))
+	if cursorMCPBlocked(sd, agent, env) {
+		return "blocked"
+	}
 	// The retry Enter needs the same composer proof as the dispatch: a
 	// recognized composer (the roster kind) holding the stored composed
 	// path, and no known trust/approval/question UI. A missing
@@ -345,8 +366,12 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 	// demanded and ordinary in-progress output is never inferred away.
 	probeKind := field(strings.Split(core.RosterLine(sd, agent), "\t"), 2)
 	if startup.Enabled(probeKind) {
-		cursorScreen, cursorScreenOK := herdr.AgentReadOK(env, agent, "visible", intPtr(40))
-		if ev := startup.Evaluate(probeKind, startup.CurrentPlatform(), st.State, cursorScreen, cursorScreenOK); ev.Verdict == startup.VerdictBlocked || ev.Reason == startup.ReasonScreenIncomplete {
+		cursorScreen, cursorScreenOK := herdr.AgentReadOK(env, agent, "visible", nil)
+		if ev := cursorapproval.Evaluate(probeKind, st.State, cursorScreen, cursorScreenOK); ev.Verdict == startup.VerdictBlocked || ev.Reason == startup.ReasonScreenIncomplete {
+			if ev.Reason == "mcp-approval" {
+				sendWarning(fmt.Sprintf("agent '%s' requires approval of MCP servers; no input is sent — the operator must answer in the pane", agent))
+				return "blocked"
+			}
 			sendWarning(fmt.Sprintf("agent '%s' is on the cursor workspace trust dialog; no approval key is sent — read the pane and answer it yourself (herdr agent send-keys %s <keys>)", agent, agent))
 			return "blocked"
 		}
@@ -533,6 +558,9 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 			}
 			report := core.LastReport(sd, agent)
 			prompt := fmt.Sprintf("The model provider was at capacity and your last request failed. Continue the task from where you stopped; do not redo finished steps. When finished, write your report to %s and reply with only that path.", report)
+			if cursorMCPBlocked(sd, agent, env) {
+				return "blocked"
+			}
 			sent := herdr.AgentPrompt(agent, prompt, env)
 			if !sent.Ok {
 				sendWarning("provider capacity: failed to send the continue to '" + agent + "': " + sent.Raw + "; acting as exhausted")
@@ -552,6 +580,9 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 	}
 	if queuedPending {
 		recent := herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40))
+		if cursorMCPBlocked(sd, agent, env) {
+			return "blocked"
+		}
 		promptPath := QueuedPromptPath(queuedText, sd, agent)
 		// The queued retry Enter needs the same composer proof as the
 		// dispatch: a recognized composer holding the stored path, and no

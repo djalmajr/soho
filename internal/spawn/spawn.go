@@ -596,6 +596,8 @@ func fieldAt(values []string, i int) string {
 func warnStartupBlocked(name, kind, state string, ev startup.Evaluation, ctx *core.Config, env platform.Env) {
 	what := "the startup is unverified"
 	switch {
+	case ev.Reason == "mcp-approval":
+		what = "Cursor requires approval of MCP servers; the operator must answer in the pane"
 	case ev.Verdict == startup.VerdictBlocked:
 		what = "it is showing the workspace trust dialog"
 	case ev.Reason == startup.ReasonEmptyScreen:
@@ -629,8 +631,8 @@ func gateReuse(name, role, kind string, ctx *core.Config, env platform.Env, cwd 
 		return
 	}
 	st := herdr.AgentState(name, env, herdr.Timeout, nil)
-	screen, screenOK := herdr.AgentReadOK(env, name, "visible", intPtr(40))
-	ev := startup.Evaluate(kind, startup.CurrentPlatform(), st.State, screen, screenOK)
+	screen, screenOK := herdr.AgentReadOK(env, name, "visible", nil)
+	ev := EvaluateCursorStartup(kind, st.State, screen, screenOK)
 	if !ev.Refuses() {
 		return
 	}
@@ -639,7 +641,7 @@ func gateReuse(name, role, kind string, ctx *core.Config, env platform.Env, cwd 
 	out.Set("startup_evidence", jsonjs.O(startup.FieldState, st.State, startup.FieldReason, ev.Reason, startup.FieldSource, ev.Source))
 	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.StringifyIndent(out, 2))
 	warnStartupBlocked(name, kind, st.State, ev, ctx, env)
-	_, _ = fmt.Fprint(platform.Stdout, herdr.AgentRead(env, name, "visible", intPtr(40)))
+	_, _ = fmt.Fprint(platform.Stdout, herdr.AgentRead(env, name, "visible", nil))
 	platform.Die("", 7)
 }
 
@@ -1371,9 +1373,9 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		if screen == "" {
 			// The window never saw a non-empty screen: one fresh read tells
 			// an empty screen (the TUI did not draw) from a failed read.
-			screen, screenOK = herdr.AgentReadOK(env, o.name, "visible", intPtr(40))
+			screen, screenOK = herdr.AgentReadOK(env, o.name, "visible", nil)
 		}
-		cursorGateEv = startup.Evaluate(kind, startup.CurrentPlatform(), lastState, screen, screenOK)
+		cursorGateEv = EvaluateCursorStartup(kind, lastState, screen, screenOK)
 		cursorGate = true
 		if cursorGateEv.Refuses() {
 			warnStartupBlocked(o.name, kind, lastState, cursorGateEv, ctx, env)
@@ -1441,7 +1443,11 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			// the start; the generic line names the other startup dialogs.
 			Warn(fmt.Sprintf("agent '%s' is blocked during startup (update prompt, login, trust dialog…). Screen follows; ask the user before answering it, then: herdr agent send-keys %s <keys>; herdr agent wait %s --timeout 60000", o.name, o.name, o.name), ctx, env, "spawn")
 		}
-		_, _ = fmt.Fprint(platform.Stdout, herdr.AgentRead(env, o.name, "visible", intPtr(40)))
+		lines := intPtr(40)
+		if kind == "cursor" {
+			lines = nil
+		}
+		_, _ = fmt.Fprint(platform.Stdout, herdr.AgentRead(env, o.name, "visible", lines))
 		platform.Die("", 7)
 	}
 }
@@ -1778,7 +1784,11 @@ func checkStartWindow(o spawnOptions, kind string, env platform.Env, created boo
 		for {
 			st := herdr.AgentState(o.name, env, herdr.Timeout, nil)
 			lastState = st.State
-			screen := herdr.AgentRead(env, o.name, "visible", intPtr(40))
+			lines := intPtr(40)
+			if kind == "cursor" {
+				lines = nil
+			}
+			screen := herdr.AgentRead(env, o.name, "visible", lines)
 			if screen != "" {
 				lastScreen = screen
 			}

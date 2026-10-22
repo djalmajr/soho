@@ -42,6 +42,80 @@ const cursorLaunchOnlyScreen = "PS C:\\Users\\dev\\pinar> cursor-agent --trust -
 // cursorTUIScreen is a normal, non-brittle visible UI.
 const cursorTUIScreen = "cursor ready\n❯ booting\n"
 
+func TestDispatchCursorMCPApprovalBlocked(t *testing.T) {
+	for _, flag := range []string{"", "--resend", "--amend", "--compact"} {
+		t.Run("flag="+flag, func(t *testing.T) {
+			f := newCursorDispatchFixture(t, "cursor", "MCP Server Approval Required\nproject server list\n[a] Approve all   [c] Continue   [q] Quit\n", "0", false)
+			if flag == "--amend" {
+				if err := os.WriteFile(filepath.Join(f.state, "ws", "last-report-worker"), []byte("prior report\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dispatchAssertRefusal(t, f, "mcp-approval", "idle", "approval of MCP servers", flag)
+			calls := dispatchCalls(t, f)
+			prompts, keys := 0, 0
+			for _, call := range calls {
+				if len(call.Argv) >= 2 && call.Argv[0] == "agent" {
+					switch call.Argv[1] {
+					case "prompt":
+						prompts++
+					case "send-keys":
+						keys++
+					}
+				}
+			}
+			if prompts != 0 || keys != 0 {
+				t.Fatalf("agent prompt=%d send-keys=%d; calls=%#v", prompts, keys, calls)
+			}
+			dispatchAssertNoTaskArtifacts(t, f, flag == "--amend")
+		})
+	}
+}
+
+func TestDispatchCursorMCPApprovalHistoryDelivers(t *testing.T) {
+	for _, screen := range []string{
+		cursorTUIScreen,
+		"MCP Server Approval Required\n",
+		"[a] Approve all   [c] Continue   [q] Quit\n",
+		"MCP Server Approval Required\n[a] Approve all   [c] Continue   [q] Quit\n" + cursorTUIScreen,
+		"MCP Server Approval Required\n" + cursorTUIScreen,
+		"[a] Approve all   [c] Continue   [q] Quit\n" + cursorTUIScreen,
+	} {
+		f := newCursorDispatchFixture(t, "cursor", screen, "0", false)
+		f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
+		code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
+		if code != 0 || !strings.Contains(out, `"wait_status":"submitted"`) {
+			t.Fatalf("screen=%q exit=%d stdout=%q stderr=%q", screen, code, out, errText)
+		}
+		prompts := 0
+		for _, call := range dispatchCalls(t, f) {
+			if len(call.Argv) >= 2 && call.Argv[0] == "agent" && call.Argv[1] == "prompt" {
+				prompts++
+			}
+		}
+		if prompts != 1 {
+			t.Fatalf("screen=%q agent prompt=%d, want 1", screen, prompts)
+		}
+	}
+}
+
+func TestDispatchCursorMCPApprovalLandsBeforeInput(t *testing.T) {
+	read := []string{"agent", "read", "worker", "--source", "visible"}
+	// A safe first read and approval on all subsequent reads exercise
+	// the recheck after the task is claimed.
+	rules := []fakecli.Rule{
+		{Argv: read, ArgvPrefix: true, Call: 1, Stdout: cursorTUIScreen},
+		{Argv: read, ArgvPrefix: true, Stdout: "MCP Server Approval Required\n[a] Approve all\n"},
+	}
+	f := newDispatchArrivalFixture(t, "idle", 1, 1, "", "0", rules...)
+	roster := "worker\tw0test:p0a\tcursor\timplementer\tunknown\t0\t\tnow\t\ttask\timplementer\t\t\t\thigh\n"
+	if err := os.WriteFile(filepath.Join(f.state, "ws", "agents.tsv"), []byte(roster), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dispatchAssertRefusal(t, f, "mcp-approval", "idle", "approval of MCP servers", "")
+	dispatchAssertNoTaskArtifactsButBriefs(t, f)
+}
+
 // setDispatchPlatform points the shared gate at a simulated platform for
 // the duration of the test (the production code uses platform.Current).
 func setDispatchPlatform(t *testing.T, goos string) {

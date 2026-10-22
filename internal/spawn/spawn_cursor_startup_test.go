@@ -38,6 +38,32 @@ const cursorHistoricalLaunchScreen = "PS C:\\Users\\dev\\pinar> cursor-agent --t
 
 const cursorIdleState = `{"result":{"agent":{"agent_status":"idle"}}}`
 
+func TestSpawnCursorMCPApprovalBlocked(t *testing.T) {
+	for _, option := range []string{"[a] Approve all", "[c] Continue", "[q] Quit"} {
+		t.Run(option, func(t *testing.T) {
+			screen := "MCP Server Approval Required\nproject server list\n" + option + "\n"
+			f := newSpawnFixture(t, append(cursorFreshRules(screen, false), freshSpawnRules()...))
+			configureSpawnFixture(t, &f)
+			code, out, errText, calls := runCmdSpawn(t, f, []string{"implementer", "--kind", "cursor"})
+			if code != 7 || !strings.Contains(out, `"status": "blocked_at_startup"`) || !strings.Contains(errText, "approval of MCP servers") {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, errText)
+			}
+			assertCursorSpawnEvidence(t, out, "idle", "mcp-approval")
+			assertNoInputIntoTheDialog(t, calls)
+		})
+	}
+}
+
+func TestSpawnCursorMCPApprovalHistoryReady(t *testing.T) {
+	screen := "MCP Server Approval Required\n[a] Approve all   [c] Continue   [q] Quit\n" + "cursor ready\n❯ \n"
+	f := newSpawnFixture(t, append(cursorFreshRules(screen, false), freshSpawnRules()...))
+	configureSpawnFixture(t, &f)
+	code, out, errText, _ := runCmdSpawn(t, f, []string{"implementer", "--kind", "cursor"})
+	if code != 0 || !strings.Contains(out, `"status": "ready"`) {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, errText)
+	}
+}
+
 // setStartupPlatform points the shared gate at a simulated platform for
 // the duration of the test (the production code uses platform.Current).
 func setStartupPlatform(t *testing.T, goos string) {
@@ -52,7 +78,7 @@ func setStartupPlatform(t *testing.T, goos string) {
 // failure), the state probes report idle, and the rest of the spawn's
 // calls take the fresh-spawn defaults.
 func cursorFreshRules(screen string, failedRead bool) []fakecli.Rule {
-	readRule := fakecli.Rule{Argv: grokScreenRead("implementer"), Stdout: screen}
+	readRule := fakecli.Rule{Argv: []string{"agent", "read", "implementer", "--source", "visible"}, Stdout: screen}
 	if failedRead {
 		readRule.Stdout = ""
 		readRule.Code = 1
@@ -81,7 +107,7 @@ func assertNoInputIntoTheDialog(t *testing.T, calls []fakecli.Call) {
 // visibleReadCount counts the pane's visible screen reads in the call log.
 func visibleReadCount(calls []fakecli.Call) int {
 	n := 0
-	want := strings.Join(grokScreenRead("implementer"), "\x00")
+	want := strings.Join([]string{"agent", "read", "implementer", "--source", "visible"}, "\x00")
 	for _, call := range calls {
 		if strings.Join(call.Argv, "\x00") == want {
 			n++
@@ -201,9 +227,9 @@ func TestSpawnCursorWindowsDelayedDrawBecomesReady(t *testing.T) {
 	// observed evidence — exactly two visible reads prove the retry.
 	setStartupPlatform(t, "win32")
 	rules := []fakecli.Rule{
-		{Argv: grokScreenRead("implementer"), Call: 1, Stdout: cursorHistoricalLaunchScreen},
-		{Argv: grokScreenRead("implementer"), Call: 2, Stdout: "cursor ready\n❯ booting\n"},
-		{Argv: grokScreenRead("implementer"), Stdout: "cursor ready\n❯ booting\n"},
+		{Argv: []string{"agent", "read", "implementer", "--source", "visible"}, Call: 1, Stdout: cursorHistoricalLaunchScreen},
+		{Argv: []string{"agent", "read", "implementer", "--source", "visible"}, Call: 2, Stdout: "cursor ready\n❯ booting\n"},
+		{Argv: []string{"agent", "read", "implementer", "--source", "visible"}, Stdout: "cursor ready\n❯ booting\n"},
 		{Argv: []string{"agent", "get", "implementer"}, Stdout: cursorIdleState},
 	}
 	f := newSpawnFixture(t, append(rules, freshSpawnRules()...))
@@ -295,17 +321,17 @@ func cursorReuseRow(name, wdir string) string {
 	return strings.Join([]string{name, "p-" + name, "cursor", "implementer", "xai", "1", wdir, "now", "", "auto", "implementer", "", "", "", "xhigh"}, "\t")
 }
 
-func cursorReuseFixture(t *testing.T, screen string, failedRead bool) (spawnFixture, []fakecli.Rule) {
-	readRule := fakecli.Rule{Argv: grokScreenRead("implementer"), Stdout: screen}
+func cursorReuseFixture(t *testing.T, screen string, failedRead bool, extra ...fakecli.Rule) (spawnFixture, []fakecli.Rule) {
+	readRule := fakecli.Rule{Argv: []string{"agent", "read", "implementer", "--source", "visible"}, Stdout: screen}
 	if failedRead {
 		readRule.Stdout = ""
 		readRule.Code = 1
 		readRule.Stderr = `{"error":{"code":"read_failed","message":"the fake read failed"}}`
 	}
-	rules := []fakecli.Rule{
+	rules := append(extra, []fakecli.Rule{
 		{Argv: []string{"agent", "get", "implementer"}, Stdout: cursorIdleState},
 		readRule,
-	}
+	}...)
 	rules = append(rules, freshSpawnRules()...)
 	f := newSpawnFixture(t, rules)
 	configureSpawnFixture(t, &f)
