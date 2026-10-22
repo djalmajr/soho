@@ -33,19 +33,43 @@ var dispatchWaitFor = waitpkg.WaitFor
 var writeDispatchSidecar = dispatch.WriteSidecar
 
 func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
-	if len(argv) < 1 || argv[0] == "" {
+	// The agent and the brief are the first two arguments that are neither
+	// an option nor an option's value, so options may come before them.
+	// --cwd is refused below, but its value is still skipped here so the
+	// refusal names spawn instead of an unexpected argument.
+	var positional, options []string
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		switch {
+		case a == "--role" || a == "--timeout" || a == "--for" || a == "--cwd":
+			options = append(options, a)
+			if i+1 < len(argv) {
+				i++
+				options = append(options, argv[i])
+			}
+		case len(a) > 1 && strings.HasPrefix(a, "-"):
+			options = append(options, a)
+		default:
+			positional = append(positional, a)
+		}
+	}
+	if len(positional) < 1 || positional[0] == "" {
 		fmt.Fprintln(platform.Stderr, "soho: 1: agent")
 		return 1
 	}
-	if len(argv) < 2 || argv[1] == "" {
+	if len(positional) < 2 || positional[1] == "" {
 		fmt.Fprintln(platform.Stderr, "soho: 2: brief.md")
 		return 1
 	}
-	agent, brief := argv[0], argv[1]
+	if len(positional) > 2 {
+		core.DieFriction("dispatch: unexpected argument "+positional[2]+" (usage: dispatch <agent> <brief.md> [options])", 2, frictionLogPath, "dispatch")
+	}
+	agent, brief := positional[0], positional[1]
 	role, timeoutRaw := "", ""
 	noWait, allow, amend, compact, resend, queue := false, false, false, false, false, false
 	var forValue *string
-	for i := 2; i < len(argv); i++ {
+	argv = options
+	for i := 0; i < len(argv); i++ {
 		a := argv[i]
 		switch a {
 		case "--role", "--timeout", "--for":
