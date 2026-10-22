@@ -3,11 +3,36 @@ package spawn
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
 )
+
+// The inherited temp directory can be beneath the real user's Codex config.
+// Use the system temp base before t.TempDir creates any fixture directories;
+// another child of the inherited directory would retain the same ancestors.
+func isolateCodexMcpTemp(t *testing.T) {
+	t.Helper()
+	// t.TempDir uses GOTMPDIR first, so it must not point at the inherited
+	// directory either.
+	t.Setenv("GOTMPDIR", "")
+	t.Setenv("TMPDIR", "")
+	if runtime.GOOS == "windows" {
+		root := os.Getenv("SystemRoot")
+		if root == "" {
+			t.Fatal("SystemRoot is required to locate a system temporary directory outside the user profile")
+		}
+		base := filepath.Join(root, "Temp")
+		t.Setenv("TMP", base)
+		t.Setenv("TEMP", base)
+	}
+	tmp := t.TempDir()
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(key, tmp)
+	}
+}
 
 // mkConfig creates dir/.codex/config.toml (empty: only its existence counts).
 func mkConfig(t *testing.T, dir string) {
@@ -33,6 +58,7 @@ func mkDir(t *testing.T, dir string) string {
 // process below it. codex's own home (CODEX_HOME, or ~/.codex) is the user
 // layer, read anyway, and does not count.
 func TestCodexProjectAbove(t *testing.T) {
+	isolateCodexMcpTemp(t)
 	root := t.TempDir()
 	home := mkDir(t, filepath.Join(root, "home"))
 	mkConfig(t, home) // ~/.codex/config.toml: the user layer
@@ -118,6 +144,7 @@ func TestCmdSpawnMcpCodexNeutralListingRefusesATempDirInsideAProject(t *testing.
 // capitalization on a case-insensitive filesystem, or a symlink, still names
 // the user layer.
 func TestCodexProjectAboveKnowsTheHomeByIdentity(t *testing.T) {
+	isolateCodexMcpTemp(t)
 	root := t.TempDir()
 	home := mkDir(t, filepath.Join(root, "Home"))
 	mkConfig(t, home)

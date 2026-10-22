@@ -148,6 +148,7 @@ func TestCmdSpawnMcpPerRoleTranslation(t *testing.T) {
 }
 
 func TestCmdSpawnMcpArgvPosition(t *testing.T) {
+	isolateCodexMcpTemp(t)
 	mk := func(t *testing.T) spawnFixture {
 		t.Helper()
 		f := newSpawnFixture(t, freshSpawnRules())

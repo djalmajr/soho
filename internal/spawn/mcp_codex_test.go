@@ -62,6 +62,7 @@ func stdErrCount(stderr, line string) int {
 }
 
 func TestCmdSpawnMcpCodexPerServerTranslation(t *testing.T) {
+	isolateCodexMcpTemp(t)
 	listing := `[
   {"name":"alpha","enabled":true,"transport":{"command":"/opt/alpha --api-key SECRET-1"}},
   {"name":"beta","enabled":true,"transport":{"url":"http://design.internal:8080"}},
