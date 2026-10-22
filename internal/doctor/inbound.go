@@ -155,6 +155,10 @@ func doctorUnprotectedAgents(ctx *core.Config, env platform.Env, cwd string, s *
 	codexProtected := codexReadError == nil && setuptext.CodexHooksProtected(codexHooks)
 	piExtension, piReadError := platform.ReadTextFile(filepath.Join(platform.ProjectRoot(env, cwd), ".pi", "extensions", "soho-inbound.ts"))
 	piProtected := piReadError == nil && setuptext.PiInboundProtected(piExtension)
+	// A managed extension that differs from this soho's text (an older
+	// release wrote it, or it was edited) is reported as such, not as a
+	// missing hook: setup rewrites it either way.
+	piStale := !piProtected && piReadError == nil && setuptext.PiInboundManaged(piExtension)
 	var lines []string
 	func() {
 		defer func() {
@@ -185,7 +189,9 @@ func doctorUnprotectedAgents(ctx *core.Config, env platform.Env, cwd string, s *
 							lines = append(lines, fmt.Sprintf("%s (codex) is not protected: no 'soho hook inbound --codex' in UserPromptSubmit (run 'soho setup')", f[0]))
 						}
 					} else if f[2] == "pi" {
-						if !piProtected {
+						if piStale {
+							lines = append(lines, fmt.Sprintf("%s (pi) may not be protected: .pi/extensions/soho-inbound.ts differs from this soho's inbound extension (run 'soho setup')", f[0]))
+						} else if !piProtected {
 							lines = append(lines, fmt.Sprintf("%s (pi) is not protected: no inbound hook for pi yet (run 'soho setup')", f[0]))
 						}
 					} else if f[2] != "claude" {

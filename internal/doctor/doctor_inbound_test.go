@@ -294,6 +294,32 @@ func TestDoctorInboundEnforceNamesUnprotectedAgents(t *testing.T) {
 	if out.String() != want {
 		t.Fatalf("output = %q\nwant     %q", out.String(), want)
 	}
+	// A managed extension from an older release is named as out of date,
+	// not as a missing hook; the current text clears the warning.
+	extension := filepath.Join(root, ".pi", "extensions", "soho-inbound.ts")
+	if err := os.MkdirAll(filepath.Dir(extension), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extension, []byte(setuptext.PiInboundMarker+"\n// an older release's text\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	doctorUnprotectedAgents(&ctx, env, root, s)
+	staleWant := "warn   review (codex) is not protected: no 'soho hook inbound --codex' in UserPromptSubmit (run 'soho setup')\nwarn   plan (pi) may not be protected: .pi/extensions/soho-inbound.ts differs from this soho's inbound extension (run 'soho setup')\n"
+	if out.String() != staleWant {
+		t.Fatalf("stale output = %q\nwant           %q", out.String(), staleWant)
+	}
+	if err := os.WriteFile(extension, []byte(setuptext.PiInboundExtension()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	doctorUnprotectedAgents(&ctx, env, root, s)
+	if want := "warn   review (codex) is not protected: no 'soho hook inbound --codex' in UserPromptSubmit (run 'soho setup')\n"; out.String() != want {
+		t.Fatalf("current output = %q\nwant             %q", out.String(), want)
+	}
+	if err := os.Remove(extension); err != nil {
+		t.Fatal(err)
+	}
 	// Outside Herdr, or without herdr, it says nothing and does not crash.
 	out.Reset()
 	delete(env, "HERDR_ENV")
@@ -433,7 +459,7 @@ func TestDoctorPiInboundExtension(t *testing.T) {
 			var out strings.Builder
 			ctx := core.Config{Entries: map[string]core.ConfigEntry{}}
 			doctorUnprotectedAgents(&ctx, d.env, d.cwd, &Say{Out: &out})
-			warned := strings.Contains(out.String(), "review (pi) is not protected")
+			warned := strings.Contains(out.String(), "review (pi) ")
 			if warned == tc.protected || (warned && !strings.HasSuffix(strings.TrimSpace(out.String()), "(run 'soho setup')")) {
 				t.Fatalf("protected=%v output=%s", tc.protected, out.String())
 			}
