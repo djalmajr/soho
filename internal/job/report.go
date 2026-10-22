@@ -109,7 +109,7 @@ type Teste struct {
 	Resultado string `json:"resultado"`
 }
 
-// Revisao is the review verdict of another model family. Severity is
+// Revisao is the review verdict. Severity is
 // formatted exactly "P0 a, P1 b, P2 c, P3 d".
 type Revisao struct {
 	Verdict  string `json:"verdict"`

@@ -94,10 +94,6 @@ func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd strin
 		if !core.RoleIsEdit(author.Role, env, author.Cwd) || !core.IsReviewRole(reviewer.Role) {
 			return fail(errors.New("start requires an edit author and a review worker"))
 		}
-		if author.Family == reviewer.Family {
-			fmt.Fprintln(platform.Stderr, "soho: collaborate: reviewer must use another model family")
-			return 5
-		}
 		root := platform.StateProjectRoot(env, cwd)
 		if platform.StateProjectRoot(env, author.Cwd) != root || platform.StateProjectRoot(env, reviewer.Cwd) != root {
 			return fail(errors.New("participants belong to another logical repository"))

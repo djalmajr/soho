@@ -74,10 +74,10 @@ var retirementInvocations = map[string]map[string][]retireStep{
 			{Args: []string{"dispatch", "worker", "brief.md", "--timeout", "2000"}, RC: 4, JSON: []map[string]interface{}{{"agent": "worker", "kind": "grok", "role": "implementer", "wait_status": "unavailable"}}},
 		},
 		"dispatch-family": {
-			{Args: []string{"dispatch", "rev", "brief.md", "--no-wait"}, RC: 5, JSON: []map[string]interface{}{}},
-			{Args: []string{"dispatch", "rev", "brief.md", "--allow-same-family", "--no-wait"}, RC: 0, JSON: []map[string]interface{}{{"agent": "rev", "kind": "codex", "role": "reviewer", "wait_status": "submitted"}}},
+			{Args: []string{"dispatch", "rev", "brief.md", "--resend", "--no-wait"}, RC: 0, JSON: []map[string]interface{}{{"agent": "rev", "kind": "codex", "role": "reviewer", "wait_status": "submitted"}}},
+			{Args: []string{"dispatch", "rev", "brief.md", "--resend", "--no-wait"}, RC: 0, JSON: []map[string]interface{}{{"agent": "rev", "kind": "codex", "role": "reviewer", "wait_status": "submitted"}}},
 			{Args: []string{"dispatch", "rev", "brief.md", "--no-wait"}, RC: 2, JSON: []map[string]interface{}{}},
-			{Args: []string{"dispatch", "rev", "full.md", "--allow-same-family", "--no-wait"}, RC: 0, JSON: []map[string]interface{}{{"agent": "rev", "kind": "codex", "role": "reviewer", "wait_status": "submitted"}}},
+			{Args: []string{"dispatch", "rev", "full.md", "--no-wait"}, RC: 0, JSON: []map[string]interface{}{{"agent": "rev", "kind": "codex", "role": "reviewer", "wait_status": "submitted"}}},
 		},
 		"dispatch-quota": {
 			{Args: []string{"dispatch", "build", "brief.md", "--timeout", "5000"}, RC: 11, JSON: []map[string]interface{}{{"agent": "build", "kind": "grok", "lane": "build", "model": "grok-4.7", "role": "implementer", "wait_status": "quota"}}},

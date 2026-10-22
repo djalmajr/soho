@@ -1,7 +1,6 @@
 package setup
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -88,7 +87,7 @@ func TestSetupReadCommands(t *testing.T) {
 	t.Run("// JS: \"detect document reports source layers and stable kind order\"", func(t *testing.T) {
 		ctx := &core.Config{Entries: map[string]core.ConfigEntry{}, Order: []string{}}
 		doc := DetectJSON(ctx, platform.Env{"PATH": "", "SOHO_SKILL_DIR": t.TempDir()}, ".")
-		if !strings.Contains(doc, `"recommended_reviewer": null`) || !strings.Contains(doc, `"kind": "claude"`) {
+		if strings.Contains(doc, `"recommended_reviewer"`) || !strings.Contains(doc, `"kind": "claude"`) {
 			t.Fatal(doc)
 		}
 	})
@@ -142,38 +141,6 @@ func TestSetupReadCommands(t *testing.T) {
 	})
 	// Mutation captured: matching the build family recommends the wrong reviewer kind.
 	// JS: "recommendReviewerJson: ready reviewer must use another family"
-	t.Run("// JS: \"recommendReviewerJson: ready reviewer must use another family\"", func(t *testing.T) {
-		bin := t.TempDir()
-		for _, entry := range []struct {
-			name string
-			argv []string
-		}{{"claude", []string{"-p", ProbePrompt}}, {"codex", []string{"exec", ProbePrompt}}} {
-			if _, err := fakecli.Install(t, bin, entry.name, []fakecli.Rule{{Argv: entry.argv}}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		env := fakeEnv(t, bin)
-		ctx := &core.Config{Entries: map[string]core.ConfigEntry{"lane_build_kind": {Value: "claude", Source: "project"}}, Order: []string{"lane_build_kind"}}
-		var out bytes.Buffer
-		previous := platform.Stdout
-		platform.Stdout = &out
-		defer func() { platform.Stdout = previous }()
-		CmdProbe(nil, ctx, env, os.TempDir())
-		parsed, err := jsonjs.Parse(out.Bytes())
-		if err != nil {
-			t.Fatal(err)
-		}
-		doc := parsed.(*jsonjs.Object)
-		reviewerValue, ok := doc.Get("recommended_reviewer")
-		if !ok || reviewerValue == nil {
-			t.Fatalf("probe JSON=%s", out.String())
-		}
-		reviewer := reviewerValue.(*jsonjs.Object)
-		kindValue, _ := reviewer.Get("kind")
-		if kindValue != "codex" {
-			t.Fatalf("reviewer kind=%v JSON=%s", kindValue, out.String())
-		}
-	})
 }
 
 func TestDetectRoleConfigKeyNormalizesDotsAndDashes(t *testing.T) {
@@ -261,7 +228,7 @@ func TestSetupDetectJavaScriptCases(t *testing.T) {
 		ctx := &core.Config{Entries: map[string]core.ConfigEntry{}, Order: []string{}}
 		env := platform.Env{"PATH": "", "SOHO_SKILL_DIR": filepath.Join("..", "..", "skills", "soho")}
 		got := DetectJSON(ctx, env, t.TempDir())
-		if strings.Index(got, `"kinds"`) > strings.Index(got, `"recommended_reviewer"`) || strings.Index(got, `"recommended_reviewer"`) > strings.Index(got, `"config"`) || !strings.Contains(got, `"panes"`) || !strings.Contains(got, `"value": "4"`) || !strings.Contains(got, `"effective_lanes"`) || !strings.Contains(got, `"presets"`) {
+		if strings.Index(got, `"kinds"`) > strings.Index(got, `"config"`) || strings.Contains(got, `"recommended_reviewer"`) || !strings.Contains(got, `"panes"`) || !strings.Contains(got, `"value": "4"`) || !strings.Contains(got, `"effective_lanes"`) || !strings.Contains(got, `"presets"`) {
 			t.Fatalf("detect JSON shape/order=%s", got)
 		}
 	})

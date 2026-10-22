@@ -115,7 +115,7 @@ func runProbeContractStep(t *testing.T, step probeStep, env platform.Env, ctx *c
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("probe response %q: %v", out.String(), err)
 	}
-	for _, key := range []string{"probes", "recommended_reviewer", "skipped_custom"} {
+	for _, key := range []string{"probes", "skipped_custom"} {
 		if _, ok := got[key]; !ok {
 			t.Fatalf("probe response missing %s", key)
 		}
@@ -134,12 +134,8 @@ func runProbeContractStep(t *testing.T, step probeStep, env platform.Env, ctx *c
 			}
 		}
 	}
-	var reviewer any
-	if err := json.Unmarshal(got["recommended_reviewer"], &reviewer); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(reviewer, step.Reviewer) {
-		t.Fatalf("reviewer=%v want=%v", reviewer, step.Reviewer)
+	if _, present := got["recommended_reviewer"]; present {
+		t.Fatal("retired reviewer recommendation is present")
 	}
 	if strings.Contains(out.String(), "sk_live_private") || strings.Contains(out.String(), "CUSTOMSECRET") {
 		t.Fatalf("provider secret leaked: %q", out.String())
@@ -312,37 +308,6 @@ func TestSetupProbeTM5Continuation(t *testing.T) {
 			"lane_build_kind":     {Value: "grok", Source: "project"},
 		}, Order: []string{"lane_build_kind", "model_claude_worker", "model_codex_worker", "model_grok_worker", "model_agy_worker", "model_cursor_worker"}}
 		runProbeContractStep(t, golden, env, ctx)
-	})
-	t.Run(`// JS: "parity: the recommended reviewer follows the build family (claude, codex, null)"`, func(t *testing.T) {
-		for _, tc := range []struct {
-			build, want string
-			kinds       []string
-		}{{"claude", "codex", []string{"claude", "codex"}}, {"codex", "claude", []string{"claude", "codex"}}, {"grok", "", []string{"pi", "grok"}}} {
-			bin := t.TempDir()
-			env := probeAllFakeEnv(t, bin)
-			for _, kind := range tc.kinds {
-				if _, err := fakecli.Install(t, bin, kind, []fakecli.Rule{{AnyArgs: true, Stdout: "ok\n"}}); err != nil {
-					t.Fatal(err)
-				}
-			}
-			ctx := &core.Config{Entries: map[string]core.ConfigEntry{"lane_build_kind": {Value: tc.build, Source: "project"}}, Order: []string{"lane_build_kind"}}
-			old := platform.Stdout
-			var out bytes.Buffer
-			platform.Stdout = &out
-			CmdProbe(nil, ctx, env, t.TempDir())
-			platform.Stdout = old
-			var got struct {
-				Reviewer *struct {
-					Kind string `json:"kind"`
-				} `json:"recommended_reviewer"`
-			}
-			if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-				t.Fatal(err)
-			}
-			if tc.want == "" && got.Reviewer != nil || tc.want != "" && (got.Reviewer == nil || got.Reviewer.Kind != tc.want) {
-				t.Errorf("build=%s reviewer=%+v", tc.build, got.Reviewer)
-			}
-		}
 	})
 	t.Run(`// JS: "parity: setup --probe aggregate covers the own models (5 probed, 2 skipped_custom, no key leak)"`, func(t *testing.T) {
 		golden := probeContracts(t)["probe-custom"].Steps[0]

@@ -15,14 +15,18 @@ import (
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
-func collaborationFixture(t *testing.T, uncertain bool) (*copiesFixture, string) {
+func collaborationFixture(t *testing.T, uncertain bool, sameFamily ...bool) (*copiesFixture, string) {
 	t.Helper()
 	f := newCopiesFixture(t, nil)
 	jsonAgent := func(name, pane, kind string) string {
 		return fmt.Sprintf(`{"result":{"agent":{"name":%q,"pane_id":%q,"agent":%q,"workspace_id":"ws","cwd":%q,"agent_status":"working","agent_session":{"kind":"id","value":%q}}}}`, name, pane, kind, f.repo, name+"-session")
 	}
+	reviewerKind, reviewerModel, reviewerFamily := "claude", "claude-opus-5-5", "anthropic"
+	if len(sameFamily) > 0 && sameFamily[0] {
+		reviewerKind, reviewerModel, reviewerFamily = "codex", "gpt-5.4", "openai"
+	}
 	rules := []fakecli.Rule{}
-	for _, agent := range []struct{ name, pane, kind string }{{"author", "ws:p1", "codex"}, {"reviewer", "ws:p2", "claude"}, {"orchestrator", "ws:p0", "codex"}} {
+	for _, agent := range []struct{ name, pane, kind string }{{"author", "ws:p1", "codex"}, {"reviewer", "ws:p2", reviewerKind}, {"orchestrator", "ws:p0", "codex"}} {
 		for _, id := range []string{agent.name, agent.pane} {
 			rules = append(rules, fakecli.Rule{Argv: []string{"agent", "get", id}, Stdout: jsonAgent(agent.name, agent.pane, agent.kind)})
 		}
@@ -43,7 +47,7 @@ func collaborationFixture(t *testing.T, uncertain bool) (*copiesFixture, string)
 	ctx := core.LoadConfig(f.env, f.repo)
 	sd := core.StateDir(&ctx, f.env, f.repo)
 	core.RosterAppend(sd, []string{"author", "ws:p1", "codex", "implementer", "openai", "0", f.repo, "author-start", "gpt-5.4", "ask", "implementer", "build"})
-	core.RosterAppend(sd, []string{"reviewer", "ws:p2", "claude", "reviewer", "anthropic", "0", f.repo, "reviewer-start", "claude-opus-5-5", "ask", "reviewer", "review"})
+	core.RosterAppend(sd, []string{"reviewer", "ws:p2", reviewerKind, "reviewer", reviewerFamily, "0", f.repo, "reviewer-start", reviewerModel, "ask", "reviewer", "review"})
 	policy := "worker_messages=policy\nworker_messages.rules.request.from=role:implementer\nworker_messages.rules.request.to=role:reviewer\nworker_messages.rules.request.types=review.ready,review.question\nworker_messages.rules.request.scope=assignment\nworker_messages.rules.feedback.from=role:reviewer\nworker_messages.rules.feedback.to=role:implementer\nworker_messages.rules.feedback.types=review.finding,review.result,review.question\nworker_messages.rules.feedback.scope=assignment\n"
 	if err := os.WriteFile(core.SessionConfPath(&ctx, f.env, f.repo), []byte(policy), 0600); err != nil {
 		t.Fatal(err)
@@ -217,5 +221,13 @@ func TestCollaborateCLIFinalRoundFindingsAreDeliveredBeforeEscalation(t *testing
 	last := a.Events[len(a.Events)-1]
 	if a.Phase != collaboration.Escalated || last.Delivery != "submitted" {
 		t.Fatalf("final findings not delivered: %+v", a)
+	}
+}
+
+func TestCollaborateCLIAcceptsSameModelFamily(t *testing.T) {
+	f, brief := collaborationFixture(t, false, true)
+	a := startCollaboration(t, f, brief)
+	if a.Author.Family != "openai" || a.Reviewer.Family != "openai" {
+		t.Fatalf("families: %+v %+v", a.Author, a.Reviewer)
 	}
 }

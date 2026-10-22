@@ -1,177 +1,17 @@
 package dispatch
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/jsonjs"
-	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
 )
-
-var forFamilies = map[string]bool{"anthropic": true, "openai": true, "xai": true, "google": true, "alibaba": true}
-var dispatchPairName = regexp.MustCompile(`^(.+)-(\d{8}T\d{6})(-\d+)?$`)
-
-func FamilyConflicts(sd, family string, env platform.Env, cwd string) []string {
-	if family == "" || family == "unknown" {
-		return nil
-	}
-	out := []string{}
-	for _, row := range core.RosterRows(sd) {
-		f := strings.Split(row, "\t")
-		at := func(i int) string {
-			if i < len(f) {
-				return f[i]
-			}
-			return ""
-		}
-		if at(0) == "" || at(4) != family {
-			continue
-		}
-		history := at(10)
-		if at(3) == "documenter" {
-			docOnly := true
-			for _, role := range strings.Split(history, ",") {
-				if strings.TrimSpace(role) != "" && strings.TrimSpace(role) != "documenter" {
-					docOnly = false
-				}
-			}
-			if docOnly {
-				continue
-			}
-		}
-		if core.RoleIsEdit(at(3), env, cwd) || core.HistoryHasEdit(history, env, cwd) {
-			out = append(out, fmt.Sprintf("%s (%s)", at(0), at(2)))
-		}
-	}
-	return out
-}
-
-func ForSpecFamily(spec, sd string, env platform.Env, cwd string, ctx *core.Config) (string, error) {
-	for _, row := range core.RosterRows(sd) {
-		f := strings.Split(row, "\t")
-		if len(f) > 0 && f[0] == spec {
-			family := ""
-			if len(f) > 4 {
-				family = f[4]
-			}
-			if family != "" && family != "unknown" {
-				return family, nil
-			}
-			kind, model := "", ""
-			if len(f) > 2 {
-				kind = f[2]
-			}
-			if len(f) > 8 {
-				model = f[8]
-			}
-			return kinds.AgentFamily(kind, model), nil
-		}
-	}
-	if forFamilies[spec] {
-		return spec, nil
-	}
-	if family := kinds.KindFamily(spec); family != "unknown" {
-		return family, nil
-	}
-	// The scratch reports dir is read only when its three levels are this
-	// user's private directories (DJA-443): a refused one is skipped with a
-	// warning, a missing one has nothing to read.
-	dirs := []string{filepath.Join(sd, "briefs")}
-	reports, scratchErr := core.PrivateScratchReports(env, core.WorkspaceID(ctx, env, cwd), core.ScratchFix)
-	switch {
-	case scratchErr == nil:
-		dirs = append(dirs, reports)
-	case !errors.Is(scratchErr, os.ErrNotExist):
-		core.Warn(fmt.Sprintf("dispatch: skipped the scratch sidecars of '%s' (%v)", spec, scratchErr), "", "dispatch")
-	}
-	scratchSidecar := map[string]bool{}
-	paths := []string{}
-	for _, dir := range dirs {
-		entries, _ := os.ReadDir(dir)
-		for _, entry := range entries {
-			name := entry.Name()
-			if strings.HasSuffix(name, ".dispatch.json") {
-				match := dispatchPairName.FindStringSubmatch(strings.TrimSuffix(name, ".dispatch.json"))
-				if len(match) > 1 && match[1] == spec {
-					paths = append(paths, filepath.Join(dir, name))
-					if dir == reports {
-						scratchSidecar[filepath.Join(dir, name)] = true
-					}
-				}
-			}
-		}
-	}
-	sort.Strings(paths)
-	counts := map[string]int{}
-	for _, path := range paths {
-		var raw []byte
-		var err error
-		if scratchSidecar[path] {
-			// A scratch sidecar is read only as a regular file of this
-			// user, never through a link.
-			raw, err = core.ReadScratchReport(path)
-			var refused *core.ScratchRefusedError
-			if errors.As(err, &refused) {
-				core.Warn(fmt.Sprintf("dispatch: skipped %s (%v)", filepath.Base(path), err), "", "dispatch")
-			}
-		} else {
-			raw, err = os.ReadFile(path)
-		}
-		if err != nil {
-			continue
-		}
-		v, err := jsonjs.Parse(raw)
-		if err != nil {
-			continue
-		}
-		obj, ok := v.(*jsonjs.Object)
-		if !ok {
-			continue
-		}
-		submission, _ := obj.Get("submission")
-		if submission != "accepted" {
-			continue
-		}
-		kind, _ := obj.Get("kind")
-		model, _ := obj.Get("model")
-		fam := kinds.AgentFamily(fmt.Sprint(kind), fmt.Sprint(model))
-		counts[fam]++
-	}
-	if len(counts) == 0 {
-		// Nothing above matched: last, the spec as a model name or id, with
-		// the same family rule the spawn check records for pi/opencode/cursor.
-		if fam := kinds.AgentFamily("", spec); fam != "unknown" {
-			return fam, nil
-		}
-		return "", fmt.Errorf("dispatch: --for '%s': not an agent in the roster, a family (anthropic|openai|xai|google|alibaba), a kind with a fixed family, or an agent with an accepted dispatch recorded in this workspace; pass a family (for example --for alibaba for a Qwen model) or the worker's name", spec)
-	}
-	if len(counts) == 1 {
-		for fam := range counts {
-			if fam != "unknown" {
-				return fam, nil
-			}
-		}
-	}
-	families := make([]string, 0, len(counts))
-	for fam := range counts {
-		families = append(families, fam)
-	}
-	sort.Strings(families)
-	detail := []string{}
-	for _, fam := range families {
-		detail = append(detail, fmt.Sprintf("%s ×%d", fam, counts[fam]))
-	}
-	return "", fmt.Errorf("dispatch: --for '%s': the recorded dispatches of this released agent do not agree on one known model family (%s); pass the family instead (anthropic|openai|xai|google|alibaba)", spec, strings.Join(detail, ", "))
-}
 
 const standingRules = "- Only you write this report, once all of the brief is done, including any part you handed to subagents or background tasks; a subagent never writes it. Report every item as it stands in the files, not as a subagent summarized it.\n" +
 	"- Report only the current brief and its explicit amendments; do not import unrelated work from earlier briefs retained in a reused session. Mention prior work only when it directly affects this brief, stating the relationship.\n" +

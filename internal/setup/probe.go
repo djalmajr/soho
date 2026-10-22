@@ -201,7 +201,6 @@ func CmdProbe(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 	}
 	probes := make([]any, 0, len(pairs))
-	eligible := make([]string, 0)
 	for _, p := range pairs {
 		timeout := probeKindDefaultTimeout(p.k)
 		if envTimeout > 0 {
@@ -212,38 +211,9 @@ func CmdProbe(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 		result := probeOne(ctx, p.k, p.m, p.s, timeout, env, cwd)
 		probes = append(probes, jsonjs.O("kind", result.Kind, "model", result.Model, "status", result.Status, "cause", result.Cause, "source", result.Source))
-		if result.Status == "ready" {
-			eligible = append(eligible, result.Kind+"\x00"+result.Model)
-		}
-	}
-	buildKind := core.LaneAttr(ctx, "build", "kind", nil, env)
-	if buildKind == "" {
-		buildKind = core.ResolvedRoleKind("implementer", ctx, env, cwd)
-	}
-	buildModel := core.LaneAttr(ctx, "build", "model", nil, env)
-	if buildModel == "" {
-		buildModel = core.Cfg(ctx, "role_implementer_model", "", env)
-	}
-	family := kinds.AgentFamily(buildKind, buildModel)
-	byKind := map[string]string{}
-	for _, e := range eligible {
-		p := strings.SplitN(e, "\x00", 2)
-		byKind[p[0]] = p[1]
-	}
-	var rec any
-	for _, k := range []string{"codex", "claude", "grok", "agy", "gemini", "cursor", "pi", "opencode"} {
-		m, ok := byKind[k]
-		if !ok {
-			continue
-		}
-		f := kinds.AgentFamily(k, m)
-		if f != "unknown" && f != family {
-			rec = jsonjs.O("kind", k, "family", f, "model", m)
-			break
-		}
 	}
 	if skipped == nil {
 		skipped = []any{}
 	}
-	_, _ = io.WriteString(platform.Stdout, jsonjs.StringifyIndent(jsonjs.O("probes", probes, "recommended_reviewer", rec, "skipped_custom", skipped), 2)+"\n")
+	_, _ = io.WriteString(platform.Stdout, jsonjs.StringifyIndent(jsonjs.O("probes", probes, "skipped_custom", skipped), 2)+"\n")
 }

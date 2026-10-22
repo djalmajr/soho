@@ -399,68 +399,6 @@ func TestDispatchRemainingCases(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	t.Run(`JS: "dispatch: the family check (strict 5, warn and --allow-same-family continue, off silent)"`, func(t *testing.T) {
-		f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
-		roster := "worker\tw0test:p0b\tcodex\treviewer\topenai\t0\t\tnow\tgpt-5\ttask\treviewer\nex\tw0test:p0a\tcodex\timplementer\topenai\t0\t\tnow\tgpt-5\ttask\timplementer\n"
-		if err := os.WriteFile(filepath.Join(f.state, "ws", "agents.tsv"), []byte(roster), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
-		code, _, errText := f.run(t, "worker", f.brief, "--no-wait")
-		if code != 5 || !strings.Contains(errText, "shares a model family") {
-			t.Fatalf("strict code=%d stderr=%q", code, errText)
-		}
-		f.env["SOHO_FAMILY_CHECK"] = "warn"
-		code, _, errText = f.run(t, "worker", f.brief, "--no-wait")
-		if code != 0 || !strings.Contains(errText, "shares model family") {
-			t.Fatalf("warn code=%d stderr=%q", code, errText)
-		}
-		f.env["SOHO_FAMILY_CHECK"] = "off"
-		code, _, errText = f.run(t, "worker", f.brief, "--no-wait")
-		if code != 0 || strings.Contains(errText, "shares model family") {
-			t.Fatalf("off code=%d stderr=%q", code, errText)
-		}
-	})
-	t.Run(`JS: "dispatch: --for compares the reviewer with the slice author(s) (pass, strict 5, warn, the dies 2)"`, func(t *testing.T) {
-		f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
-		role := filepath.Join(f.root, "roles", "reviewer.md")
-		if err := os.WriteFile(role, []byte("---\nname: Reviewer\nmode: review\n---\nReview.\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		roster := "worker\tw0test:p0b\tcodex\treviewer\topenai\t0\t\tnow\tgpt-5\ttask\treviewer\n"
-		if err := os.WriteFile(filepath.Join(f.state, "ws", "agents.tsv"), []byte(roster), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
-		code, _, errText := f.run(t, "worker", f.brief, "--for", "openai", "--no-wait")
-		if code != 5 || !strings.Contains(errText, "slice's author") {
-			t.Fatalf("strict code=%d stderr=%q", code, errText)
-		}
-		code, _, errText = f.run(t, "worker", f.brief, "--for", "openai", "--allow-same-family", "--no-wait")
-		if code != 0 || !strings.Contains(errText, "shares model family") {
-			t.Fatalf("allow code=%d stderr=%q", code, errText)
-		}
-		code, _, errText = f.run(t, "worker", f.brief, "--for", "openai", "--role", "implementer", "--no-wait")
-		if code != 2 || !strings.Contains(errText, "applies to a reviewer dispatch") {
-			t.Fatalf("role validation code=%d stderr=%q", code, errText)
-		}
-	})
-	t.Run(`JS: "dispatch: --for with an unknown-family author falls back to the global scan (never accepts more)"`, func(t *testing.T) {
-		f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
-		role := filepath.Join(f.root, "roles", "reviewer.md")
-		if err := os.WriteFile(role, []byte("---\nname: Reviewer\nmode: review\n---\nReview.\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		roster := "worker\tw0test:p0b\tcodex\treviewer\topenai\t0\t\tnow\tgpt-5\ttask\treviewer\nex\tw0test:p0a\tcodex\timplementer\topenai\t0\t\tnow\tgpt-5\ttask\timplementer\nunknown\tw0test:p0c\tmystery\timplementer\tunknown\t0\t\tnow\t\ttask\timplementer\n"
-		if err := os.WriteFile(filepath.Join(f.state, "ws", "agents.tsv"), []byte(roster), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
-		code, _, errText := f.run(t, "worker", f.brief, "--for", "unknown", "--no-wait")
-		if code != 5 || !strings.Contains(errText, "checked against every edit agent") || !strings.Contains(errText, "ex (codex)") {
-			t.Fatalf("code=%d stderr=%q", code, errText)
-		}
-	})
 	t.Run(`JS: "dispatch: the default timeout is the role timeout scaled by the effort"`, func(t *testing.T) {
 		f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
 		role := filepath.Join(f.root, "roles", "slow.md")
@@ -635,7 +573,6 @@ func TestDispatchRemainingCases(t *testing.T) {
 			}
 		}
 		f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
-		f.env["SOHO_FAMILY_CHECK"] = "off"
 		code, _, _ := f.run(t, "worker", f.brief, "--no-wait")
 		for _, name := range []string{"worker.not-received", "worker.enter-retry"} {
 			if _, err := os.Stat(filepath.Join(waitDir, name)); !os.IsNotExist(err) {
@@ -833,7 +770,6 @@ func TestDispatchRemainingCases(t *testing.T) {
 	t.Run(`JS: "dispatch: warn mode — an edit role without Owned files warns, a read-only role does not"`, func(t *testing.T) {
 		f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
 		f.env["SOHO_BRIEF_LINT"] = "warn"
-		f.env["SOHO_FAMILY_CHECK"] = "off"
 		if err := os.WriteFile(filepath.Join(f.root, "roles", "reviewer.md"), []byte("---\nname: Reviewer\nmode: review\n---\nReview.\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -882,4 +818,69 @@ func splitRunArgsResult(args []string) (spawnArgs, dispatchArgs []string, panick
 	defer func() { panicked = recover() != nil }()
 	spawnArgs, dispatchArgs, _ = splitRunArgs(args)
 	return
+}
+
+func TestDispatchReviewerFamilyIsMetadata(t *testing.T) {
+	for _, role := range []string{"reviewer", "security-reviewer"} {
+		t.Run(role, func(t *testing.T) {
+			f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
+			fakeDir := t.TempDir()
+			if _, err := fakecli.Install(t, fakeDir, "herdr", []fakecli.Rule{
+				{Argv: []string{"agent", "list"}, ArgvPrefix: true, Stdout: `{"result":{"agents":[{"name":"ex","pane_id":"w0test:p0a","agent":"codex","agent_status":"working"}]}}`},
+				{Argv: []string{"agent", "get", "ex"}, Stdout: `{"result":{"agent":{"name":"ex","pane_id":"w0test:p0a","agent":"codex","agent_status":"working"}}}`},
+				{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"name":"worker","pane_id":"w0test:p0b","agent":"codex","agent_status":"idle"}}}`},
+				{Argv: []string{"agent", "prompt", "worker"}, ArgvPrefix: true, Stdout: `{"result":{"submitted":true}}`},
+				{Argv: []string{"pane", "title"}, ArgvPrefix: true},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			f.bin = fakeDir
+			f.env["SOHO_FAKECLI_CONFIG"] = fakeDir
+			f.env["PATH"] = fakeDir + string(os.PathListSeparator) + f.env.Get("PATH")
+			if err := os.WriteFile(filepath.Join(f.root, "roles", role+".md"), []byte("---\nmode: review\n---\nReview.\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			roster := "worker\tw0test:p0b\tcodex\t" + role + "\topenai\t0\t\tnow\tgpt-5\ttask\t" + role + "\nex\tw0test:p0a\tcodex\timplementer\topenai\t0\t\tnow\tgpt-5\ttask\timplementer\n"
+			if err := os.WriteFile(filepath.Join(f.state, "ws", "agents.tsv"), []byte(roster), 0600); err != nil {
+				t.Fatal(err)
+			}
+			f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
+			code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
+			if code != 0 || !strings.Contains(out, `"wait_status":"submitted"`) || strings.Contains(strings.ToLower(stderr), "family") {
+				t.Fatalf("code=%d out=%s stderr=%s", code, out, stderr)
+			}
+			calls := readArrivalCalls(t, f)
+			sent := false
+			for _, call := range calls {
+				if len(call.Argv) > 1 && call.Argv[0] == "agent" && call.Argv[1] == "prompt" {
+					sent = true
+				}
+			}
+			if !sent {
+				t.Fatalf("no prompt submitted: %v", calls)
+			}
+		})
+	}
+}
+
+func TestDispatchRetiredOptionsAreUnknown(t *testing.T) {
+	for _, args := range [][]string{{"--allow-" + "same-family"}, {"--for", "openai"}} {
+		t.Run(args[0], func(t *testing.T) {
+			f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
+			code, out, stderr := f.run(t, append([]string{"worker", f.brief}, args...)...)
+			if code != 2 || out != "" || !strings.Contains(stderr, "unknown option "+args[0]) {
+				t.Fatalf("code=%d out=%s stderr=%s", code, out, stderr)
+			}
+		})
+	}
+}
+
+func TestRetiredFamilyConfigKeyIsUnknown(t *testing.T) {
+	f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
+	key := "family_" + "check"
+	code, out, stderr := runArrivalCommand(t, f, "config", "set", key, "off")
+	if code != 2 || out != "" || !strings.Contains(stderr, "unknown key '"+key+"'") {
+		t.Fatalf("code=%d out=%s stderr=%s", code, out, stderr)
+	}
 }

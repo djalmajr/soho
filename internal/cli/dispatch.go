@@ -17,7 +17,6 @@ import (
 	"github.com/djalmajr/soho/internal/dispatch"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
-	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/provider"
 	"github.com/djalmajr/soho/internal/spawn"
@@ -41,13 +40,16 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
 		switch {
-		case a == "--role" || a == "--timeout" || a == "--for" || a == "--cwd":
+		case a == "--role" || a == "--timeout" || a == "--cwd":
 			options = append(options, a)
 			if i+1 < len(argv) {
 				i++
 				options = append(options, argv[i])
 			}
 		case len(a) > 1 && strings.HasPrefix(a, "-"):
+			if !containsWord("--no-wait --amend --compact --resend --queue", a) {
+				core.DieFriction("dispatch: unknown option "+a, 2, frictionLogPath, "dispatch")
+			}
 			options = append(options, a)
 		default:
 			positional = append(positional, a)
@@ -66,13 +68,12 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	}
 	agent, brief := positional[0], positional[1]
 	role, timeoutRaw := "", ""
-	noWait, allow, amend, compact, resend, queue := false, false, false, false, false, false
-	var forValue *string
+	noWait, amend, compact, resend, queue := false, false, false, false, false
 	argv = options
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
 		switch a {
-		case "--role", "--timeout", "--for":
+		case "--role", "--timeout":
 			if i+1 >= len(argv) {
 				core.DieFriction("dispatch: "+a+" expects a value", 2, frictionLogPath, "dispatch")
 			}
@@ -91,13 +92,9 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 				if core.IsPlainTimeoutMS(v) {
 					core.WarnShortTimeout("dispatch", frictionLogPath, int64(parseTimeout(v)))
 				}
-			case "--for":
-				forValue = &v
 			}
 		case "--no-wait":
 			noWait = true
-		case "--allow-same-family":
-			allow = true
 		case "--amend":
 			amend = true
 		case "--compact":
@@ -188,7 +185,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 			core.DieFriction("dispatch: "+err.Error(), 4, frictionLogPath, "dispatch")
 		}
 	}
-	kind, family := at(2), at(4)
+	kind := at(2)
 	roleFile := core.RoleFile(role, env, cwd)
 	if roleFile == "" {
 		core.DieFriction(fmt.Sprintf("unknown role '%s' (run: soho roles)", role), 3, frictionLogPath, "dispatch")
@@ -214,28 +211,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 		}
 	}
 	core.CompactPhaseCheck(sd, agent, at(1), env)
-	forAuthors, forUnknown := []string{}, []string{}
-	var forEntries []any
-	if forValue != nil {
-		for _, spec := range strings.Split(*forValue, ",") {
-			spec = strings.TrimSpace(spec)
-			fam, err := dispatch.ForSpecFamily(spec, sd, env, cwd, ctx)
-			if err != nil {
-				core.DieFriction(err.Error(), 2, frictionLogPath, "dispatch")
-			}
-			if fam != "" && fam != "unknown" {
-				forAuthors = append(forAuthors, spec+" ("+fam+")")
-			} else {
-				forUnknown = append(forUnknown, spec)
-			}
-			// The sidecar's "for" array carries the anonymized author (issue
-			// #39, part 2): the metrics line copies it, the name never does.
-			forEntries = append(forEntries, dispatchForAuthor(spec, sd, fam))
-		}
-		if !containsWord(core.ReviewRoles, role) {
-			core.DieFriction("dispatch: --for applies to a reviewer dispatch", 2, frictionLogPath, "dispatch")
-		}
-	}
+
 	findings := dispatch.BriefLintFindings(brief, ctx, env, dispatch.BriefLintOptions{ReadOnly: !core.RoleIsEdit(role, env, cwd), WorkerCwd: workerCwd, OrchestratorCwd: cwd})
 	if amend {
 		findings = dispatch.BriefLintFindings(brief, ctx, env, dispatch.BriefLintOptions{ReadOnly: !core.RoleIsEdit(role, env, cwd), PathsOnly: true, WorkerCwd: workerCwd, OrchestratorCwd: cwd})
@@ -256,39 +232,6 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	}
 	if timeoutRaw == "" {
 		timeoutRaw = strconv.FormatInt(core.RoleTimeoutMs(role, ctx, env, cwd), 10)
-	}
-	familyCheck := core.Cfg(ctx, "family_check", "strict", env)
-	if !amend && containsWord(core.ReviewRoles, role) && familyCheck != "off" {
-		authorHit := false
-		for _, a := range forAuthors {
-			if strings.HasSuffix(a, " ("+family+")") {
-				authorHit = true
-			}
-		}
-		var scan []string
-		if forValue == nil || len(forUnknown) > 0 {
-			scan = dispatch.FamilyConflicts(sd, family, env, cwd)
-		}
-		for _, spec := range forUnknown {
-			core.Warn(fmt.Sprintf("dispatch: --for '%s': the author's family is unknown; checked against every edit agent instead", spec), frictionLogPath, "dispatch")
-		}
-		if authorHit || len(scan) > 0 {
-			if allow || familyCheck == "warn" {
-				who := strings.Join(scan, " ")
-				if authorHit {
-					who = strings.Join(forAuthors, ", ")
-				}
-				core.Warn(fmt.Sprintf("reviewer '%s' shares model family '%s' with: %s", agent, family, who), frictionLogPath, "dispatch")
-			} else if authorHit {
-				core.DieFriction(fmt.Sprintf("reviewer '%s' (%s, %s) shares a model family with the slice's author(s): %s. Spawn the reviewer with another --kind, pass --allow-same-family, or set family_check=warn.", agent, kind, family, strings.Join(forAuthors, ", ")), 5, frictionLogPath, "dispatch")
-			} else {
-				hint := "Pass --for <author> when the slice was written by another family"
-				if forValue != nil {
-					hint = "Name the author's family with --for <family> (anthropic|openai|xai|google|alibaba) to narrow the check"
-				}
-				core.DieFriction(fmt.Sprintf("reviewer '%s' (%s, %s) shares a model family with edit agents: %s. %s, spawn the reviewer with another --kind, pass --allow-same-family, or set family_check=warn.", agent, kind, family, strings.Join(scan, " "), hint), 5, frictionLogPath, "dispatch")
-			}
-		}
 	}
 	if !amend {
 		warnOwnedOverlap(brief, role, agent, sd, ctx, env, cwd, workerCwd)
@@ -441,7 +384,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	// amendment).
 	priorPointer := taskreport.ReadTaskReportPointer(sd, agent)
 	taskReport := taskReportAfterDispatch(sd, report, amend, priorPointer)
-	if err := writeDispatchSidecarFor(forEntries, sidecar, kind, model, effort, taskReport, briefSHA, "attempted", "", session); err != nil {
+	if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "attempted", "", session); err != nil {
 		return writeDispatchError(agent, role, kind, composed, report, taskReport, "couldn't write the attempt sidecar: "+sanitizeDispatchCause(err.Error()), 4,
 			fmt.Sprintf("could not write the attempt sidecar %s: %s", sidecar, sanitizeDispatchCause(err.Error())))
 	}
@@ -642,13 +585,13 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 				}
 			}
 		}
-		if err := writeDispatchSidecarFor(forEntries, sidecar, kind, model, effort, restoredReport, briefSHA, "failed", "", session); err != nil {
+		if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, restoredReport, briefSHA, "failed", "", session); err != nil {
 			core.Warn(fmt.Sprintf("could not record the failed submission in the attempt sidecar %s: %s", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 		}
 		return writeDispatchError(agent, role, kind, composed, report, taskReport, p.Raw, 4,
 			"prompt submission failed; inspect with: herdr agent get "+agent+" && herdr agent read "+agent+". Do not resend blindly.")
 	}
-	if err := writeDispatchSidecarFor(forEntries, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session); err != nil {
+	if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session); err != nil {
 		core.Warn(fmt.Sprintf("could not record the accepted submission in the attempt sidecar %s: %s; the prompt went out", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 	}
 	status, resent, enterSent := "submitted", false, false
@@ -680,22 +623,22 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 				if ui := provider.DialogUI(kind, screen); ui != "" {
 					// A known trust/approval/question UI is up: the Enter would
 					// be its input — no key, delivery not-received.
-					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, wasWorking, "its "+ui+" dialog")
+					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "its "+ui+" dialog")
 				}
 				if herdr.AgentSendKeys(agent, "enter", env) {
 					enterSent = true
 					core.Warn(fmt.Sprintf("prompt to '%s' sat in the input box; sent Enter", agent), frictionLogPath, "dispatch")
 					if !waitDispatchArrival(window, env, arrived) {
-						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, wasWorking, "an Enter on the text left in its input box")
+						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an Enter on the text left in its input box")
 					}
 				} else {
 					// The send-key call failed: the input is failed and
 					// unverified — do not claim the Enter sent.
 					core.Warn(fmt.Sprintf("prompt to '%s' sat in the input box; its Enter failed", agent), frictionLogPath, "dispatch")
-					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, wasWorking, "a failed Enter on the text left in its input box")
+					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "a failed Enter on the text left in its input box")
 				}
 			} else if staleAuthBlock(agent, env, H0, preSeq, enterSent, resent) {
-				return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, wasWorking, "its block on a provider auth error")
+				return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "its block on a provider auth error")
 			} else {
 				// The text can land in the composer between the first arrival
 				// check and this retry: re-read the actual input region right
@@ -714,17 +657,17 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 					// and no repeated prompt — keep the delivery uncertain and
 					// leave the pane to be read; the wait phase owns the dialog
 					// (question result or the opt-in auto-approve).
-					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, wasWorking, "its "+ui+" dialog")
+					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "its "+ui+" dialog")
 				}
 				if resendState.State == "blocked" && !(preSeq != "" && seqString(resendState.Seq) != "" && preSeq != seqString(resendState.Seq)) {
 					// A blocked target is on a dialog the screen rules could
 					// not name: it takes no Enter from here and no repeated
 					// prompt — end not-received and leave the pane to be read.
-					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, wasWorking, "its block on a dialog")
+					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "its block on a dialog")
 				}
 				region, recognized := provider.ComposerRegion(kind, resendScreen)
 				if !resendScreenOK {
-					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, wasWorking, "an unreadable input region")
+					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an unreadable input region")
 				}
 				if nonEmpty(report) || transcriptArrival() || ((resendState.State == "working" || resendState.State == "blocked") && preSeq != "" && seqString(resendState.Seq) != "" && preSeq != seqString(resendState.Seq)) {
 					// Receipt can arrive between the deadline and this final read.
@@ -737,13 +680,13 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 						enterSent = true
 						core.Warn(fmt.Sprintf("prompt to '%s' reached its input after the arrival check; sent Enter without resending", agent), frictionLogPath, "dispatch")
 						if !waitDispatchArrival(window, env, arrived) {
-							return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, wasWorking, "an Enter on the text left in its input box")
+							return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an Enter on the text left in its input box")
 						}
 					} else {
 						// The send-key call failed: the input is failed and
 						// unverified — do not claim the Enter sent.
 						core.Warn(fmt.Sprintf("prompt to '%s' reached its input after the arrival check; its Enter failed", agent), frictionLogPath, "dispatch")
-						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, wasWorking, "a failed Enter on the text left in its input box")
+						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "a failed Enter on the text left in its input box")
 					}
 				} else if provider.ScreenShowsPath(resendScreen, composed) || !recognized || !dispatchComposerEmpty(kind, region) || (resendState.State != "idle" && resendState.State != "done") {
 					// This path is visible on the screen but outside the
@@ -751,23 +694,23 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 					// unrelated composer, or on a screen whose input region is
 					// not recognized: the delivery is uncertain. No Enter and
 					// no repeated text; read the pane instead.
-					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, wasWorking, "an unconfirmed input region")
+					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an unconfirmed input region")
 				} else {
 					// Repeating text requires a readable, recognized empty
 					// composer and no trace in the readable recent screen.
 					// Failed or clipped reads never prove nondelivery.
 					recent, recentOK := herdr.AgentReadOK(env, agent, "recent-unwrapped", intPtr(40))
 					if !recentOK || provider.ScreenShowsPath(recent, composed) {
-						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, wasWorking, "an unconfirmed recent screen")
+						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an unconfirmed recent screen")
 					}
 					core.Warn(fmt.Sprintf("prompt to '%s' did not arrive; sending it once more", agent), frictionLogPath, "dispatch")
 					if herdr.AgentPrompt(agent, text, env).Ok {
 						resent = true
 						if !waitDispatchArrivalExtra(window, env, arrived, transcriptArrival) {
-							return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, wasWorking, "one resend")
+							return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "one resend")
 						}
 					} else {
-						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, wasWorking, "one resend")
+						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "one resend")
 					}
 				}
 			}
@@ -789,18 +732,18 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 				// The text was typed: the CLI may run it when the turn ends. Record the
 				// new task before leaving so status, wait and the pane show it.
 				recordDispatchTask(sd, agent, role, brief, amend, env)
-				return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, forEntries, env, true, whyWorkingNoEvidence)
+				return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, true, whyWorkingNoEvidence)
 			}
 			if !ok {
 				// A target that was already working may have taken the prompt without
 				// showing it (a codex right after spawn --fresh): the blocking dispatch
 				// records the marker and the warning as --no-wait does, then waits for
 				// the report the way soho wait would, which reads that marker.
-				markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA, forEntries, env, true)
+				markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA, env, true)
 				warnNotReceived(agent, whyWorkingNoEvidence, true, true)
 			} else if st := herdr.AgentState(agent, env, herdr.Timeout, nil); !(nonEmpty(report) || ((st.State == "working" || st.State == "blocked") && preSeq != "" && seqString(st.Seq) != "" && preSeq != seqString(st.Seq))) {
 				status = "queued"
-				if err := writeDispatchSidecarFor(forEntries, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "queued", session); err != nil {
+				if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "queued", session); err != nil {
 					core.Warn(fmt.Sprintf("could not record the queued arrival in the attempt sidecar %s: %s; the dispatch result stands", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 				}
 				seq := seqString(st.Seq)
@@ -963,25 +906,19 @@ func compactPhaseDispatch(opts compactPhaseDispatchOptions) int {
 	return code
 }
 
-// writeDispatchSidecar writes the attempt sidecar and, when the dispatch
-// resolved --for authors, adds their anonymized "for" array so the metrics
-// line can carry it (issue #39, part 2). It also sets the durable task_report
-// and brief_sha256 fields (s72). The sidecar is rewritten in place on every
-// submission update, so those go on at every write.
-func writeDispatchSidecarFor(entries []any, path, kind, model, effort, taskReport, briefSHA, submission, arrival, session string) error {
+// writeDispatchSidecarWithTask records the attempt and its durable task report
+// and brief hash on every submission update.
+func writeDispatchSidecarWithTask(path, kind, model, effort, taskReport, briefSHA, submission, arrival, session string) error {
 	if err := writeDispatchSidecar(path, kind, model, effort, submission, arrival, session); err != nil {
 		return err
 	}
-	return addForToSidecar(path, entries, taskReport, briefSHA)
+	return addTaskToSidecar(path, taskReport, briefSHA)
 }
 
-// addForToSidecar re-writes the sidecar dispatch.WriteSidecar just wrote with
-// the "for" array set: the wait's metrics line copies it to the review line
-// and the author names stay out of both. It also sets the durable
-// task_report and brief_sha256 fields when present, so every sidecar rewrite
-// carries them; an old sidecar without them stays valid.
-func addForToSidecar(path string, entries []any, taskReport, briefSHA string) error {
-	if len(entries) == 0 && taskReport == "" && briefSHA == "" {
+// addTaskToSidecar preserves the durable task report and brief hash on the
+// sidecar just written by dispatch.WriteSidecar.
+func addTaskToSidecar(path string, taskReport, briefSHA string) error {
+	if taskReport == "" && briefSHA == "" {
 		return nil
 	}
 	// The sidecar is read and rewritten without following a link
@@ -1004,50 +941,9 @@ func addForToSidecar(path string, entries []any, taskReport, briefSHA string) er
 	if briefSHA != "" {
 		obj.Set("brief_sha256", briefSHA)
 	}
-	if len(entries) > 0 {
-		obj.Set("for", entries)
-	}
 	return core.WriteScratchFile(path, jsonjs.Stringify(obj)+"\n")
 }
 
-// dispatchForAuthor builds the anonymized --for entry for the sidecar
-// (issue #39, part 2): a roster agent carries its kind/model/effort/family
-// columns, only the non-empty ones, in that order; a kind with a fixed
-// family carries kind and family; a family or a released agent carries the
-// family the dispatch resolved for the spec. The author's name never
-// appears.
-func dispatchForAuthor(spec, sd, family string) *jsonjs.Object {
-	if line := core.RosterLine(sd, spec); line != "" {
-		cols := strings.Split(line, "\t")
-		at := func(i int) string {
-			if i < len(cols) {
-				return cols[i]
-			}
-			return ""
-		}
-		entry := jsonjs.O()
-		if v := at(2); v != "" {
-			entry.Set("kind", v)
-		}
-		if v := at(8); v != "" {
-			entry.Set("model", v)
-		}
-		if v := at(14); v != "" {
-			entry.Set("effort", v)
-		}
-		if v := at(4); v != "" {
-			entry.Set("family", v)
-		}
-		return entry
-	}
-	if fam := kinds.KindFamily(spec); fam != "unknown" {
-		return jsonjs.O("kind", spec, "family", fam)
-	}
-	if family != "" && family != "unknown" {
-		return jsonjs.O("family", family)
-	}
-	return jsonjs.O()
-}
 func nonEmpty(path string) bool { st, e := os.Stat(path); return e == nil && st.Size() > 0 }
 func seqString(value any) string {
 	if value == nil {
@@ -1290,9 +1186,9 @@ func recordDispatchTask(sd, agent, role, brief string, amend bool, env platform.
 	core.PaneTaskTitle(sd, agent, &title, env)
 }
 
-func dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA string, forEntries []any, env platform.Env, wasWorking bool, why string) int {
+func dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA string, env platform.Env, wasWorking bool, why string) int {
 	_ = lane
-	markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA, forEntries, env, wasWorking)
+	markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA, env, wasWorking)
 	obj := jsonjs.O("wait_status", "not-received", "agent", agent, "role", role, "kind", kind, "composed_prompt", composed, "report", report, "task_report", taskReport, "report_exists", nonEmpty(report))
 	fmt.Fprintln(platform.Stdout, jsonjs.Stringify(obj))
 	warnNotReceived(agent, why, wasWorking, false)
@@ -1301,8 +1197,8 @@ func dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, si
 
 // markNotReceived records the not-received arrival in the attempt sidecar and
 // writes wait/<agent>.not-received, which the next wait reads.
-func markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA string, forEntries []any, env platform.Env, wasWorking bool) {
-	if err := writeDispatchSidecarFor(forEntries, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "not-received", session); err != nil {
+func markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA string, env platform.Env, wasWorking bool) {
+	if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "not-received", session); err != nil {
 		core.Warn(fmt.Sprintf("could not record the not-received arrival in the attempt sidecar %s: %s; the dispatch result stands", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 	}
 	seq := seqString(herdr.AgentState(agent, env, herdr.Timeout, nil).Seq)
@@ -2300,8 +2196,6 @@ func splitRunArgs(argv []string) ([]string, []string, bool) {
 			}
 			dispatchArgs = append(dispatchArgs, a, argv[i+1])
 			i++
-		case "--allow-same-family":
-			dispatchArgs = append(dispatchArgs, a)
 		case "--no-wait":
 			dispatchArgs = append(dispatchArgs, a)
 			noWait = true

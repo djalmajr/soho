@@ -27,7 +27,7 @@ Achados ancorados em `arquivo:linha`, com execução, antes do push.
 - #10: `--for <nome>` de agente fora do roster resolve pela família dos
   sidecars `.dispatch.json` aceitos no workspace (nome exato antes do
   timestamp); nenhum aceito ou famílias divergentes/`unknown` → exit 2 com
-  as mensagens do código; roster vivo vence; `family_check` inalterado.
+  Preserve code diagnostics and live-roster precedence; other configuration is unchanged.
 
 ## O que verificar
 

@@ -42,27 +42,6 @@ func Detect(ctx *core.Config, env platform.Env, cwd string) *jsonjs.Object {
 		}
 		kindRows = append(kindRows, jsonjs.O("kind", k, "executable", exe, "installed", installed, "family", kinds.KindFamilyDisplay(k), "effort_ceiling", kinds.KindEffortCeiling(k), "models", stringValues(models), "summary", kinds.KindSummary(k), "custom_models", own))
 	}
-	buildKind := core.LaneAttr(ctx, "build", "kind", nil, env)
-	if buildKind == "" {
-		buildKind = core.ResolvedRoleKind("implementer", ctx, env, cwd)
-	}
-	buildModel := core.LaneAttr(ctx, "build", "model", nil, env)
-	if buildModel == "" {
-		buildModel = core.Cfg(ctx, "role_implementer_model", "", env)
-	}
-	buildFamily := kinds.AgentFamily(buildKind, buildModel)
-	var reviewer any
-	for _, candidate := range []string{"codex", "claude", "grok", "agy", "gemini", "cursor", "pi", "opencode"} {
-		_, ok := platform.FindExecutable(kinds.KindExe(candidate), env, platform.Current())
-		if !ok {
-			continue
-		}
-		fam := kinds.AgentFamily(candidate, "")
-		if fam != "unknown" && fam != buildFamily {
-			reviewer = jsonjs.O("kind", candidate, "family", fam, "model", "")
-			break
-		}
-	}
 	roles := detectRoles(ctx, env, cwd)
 	worker := make([]any, 0, len(kinds.KnownKinds))
 	for _, k := range kinds.KnownKinds {
@@ -83,7 +62,7 @@ func Detect(ctx *core.Config, env platform.Env, cwd string) *jsonjs.Object {
 		presets.Set(p, rows)
 	}
 	config := jsonjs.O("max_workers", cfgEntry(ctx, "max_workers", "3", env), "multi_role", cfgEntry(ctx, "multi_role", "on", env), "reuse_workers", cfgEntry(ctx, "reuse_workers", "on", env), "panes", cfgEntry(ctx, "panes", "4", env), "lanes", cfgEntry(ctx, "lanes", "on", env), "effective_lanes", effective, "presets", presets, "role_kinds", roles, "worker_models", worker)
-	return jsonjs.O("kinds", kindRows, "recommended_reviewer", reviewer, "config", config)
+	return jsonjs.O("kinds", kindRows, "config", config)
 }
 
 func DetectJSON(ctx *core.Config, env platform.Env, cwd string) string {

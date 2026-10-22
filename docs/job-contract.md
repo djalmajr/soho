@@ -257,7 +257,7 @@ State lives in `<checkout>/.soho/jobs/<id>/`: `state.json` (atomic write: temp f
 }
 ```
 
-- `done`: every item `[done]` or `[skipped]` with a reason, the acceptance checks pass, the review (from another model family) passes when code changed, and `sincronizado` is true. When the job orchestrator completed but a collaboration was still partial after the graceful closure, the job is still `done` (exit 0) and says so explicitly: `partial: true` and the collaboration IDs in `partial_collaborations`, with the detail in `colaboracoes`. A dispatcher must read those fields; `done` alone does not mean every collaboration finished.
+- `done`: every item `[done]` or `[skipped]` with a reason, the acceptance checks pass, the review passes when code changed, and `sincronizado` is true. When the job orchestrator completed but a collaboration was still partial after the graceful closure, the job is still `done` (exit 0) and says so explicitly: `partial: true` and the collaboration IDs in `partial_collaborations`, with the detail in `colaboracoes`. A dispatcher must read those fields; `done` alone does not mean every collaboration finished.
 - `failed`: partial items with no pending decision, a failed check or review, or a job orchestrator that settled without a report or disappeared.
 - `blocked`: an unresolved question, dialog, quota or provider error; the question goes in `perguntas`.
 - `memoria.global` holds suggestions that may apply beyond this repository; `memoria.projeto` holds notes that apply only to it. The job never writes them anywhere else; the dispatcher routes them.

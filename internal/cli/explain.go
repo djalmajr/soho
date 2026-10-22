@@ -259,7 +259,7 @@ func explainRecommendation(ctx *core.Config, env platform.Env) []string {
 	p := core.PanesValue(ctx, env)
 	switch p {
 	case "2":
-		out = append(out, "Recommendation: 2 panels - one writes code (research included) and the review happens here, from another model family. The lightest choice. 3 panels add a reviewer panel.")
+		out = append(out, "Recommendation: 2 panels - one writes code (research included) and the review happens here. The lightest choice. 3 panels add a reviewer panel.")
 	case "3":
 		out = append(out, "Recommendation: 3 panels - one writes code (research included) and one reviews. Lighter on quota. 4 panels add a second writer; with 2 panels the review happens here.")
 	default:

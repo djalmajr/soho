@@ -368,6 +368,11 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 			}
 		}
 	}
+	for _, layer := range ctx.Layers {
+		if _, present := layer.Entries["family_check"]; present {
+			s.Warning(fmt.Sprintf("config: family_check is retired (%s); delete the family_check line from %s", layer.Source, layer.File))
+		}
+	}
 	if projectConfig := core.ProjectConfigFileUsed(env, cwd); projectConfig == "" {
 		s.Ok("project config: none")
 	} else {

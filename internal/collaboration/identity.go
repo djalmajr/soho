@@ -57,9 +57,6 @@ func ResolveParticipant(stateDir, name string, env platform.Env, contexts ...con
 		return Participant{}, errors.New("participant working directory changed")
 	}
 	family := kinds.AgentFamily(row[2], row[8])
-	if family == "unknown" || (row[4] != "" && row[4] != family) {
-		return Participant{}, errors.New("participant model family cannot be verified")
-	}
 	return Participant{Name: name, Pane: row[1], Kind: row[2], Role: row[3], Family: family, Started: row[7], Model: row[8], Lane: row[11], Session: Hash([]byte(ag.Session.Kind + "\x00" + ag.Session.Value)), Cwd: cwd}, nil
 }
 

@@ -91,7 +91,7 @@ symlink: **nenhum symlink**, só arquivos regulares e `rename`.
   - famílias diferentes, ou alguma `unknown` → `DieError` exit 2:
     `dispatch: --for '<spec>': the recorded dispatches of this released agent do not agree on one known model family (<fam> ×<n>, …); pass the family instead (anthropic|openai|xai|google)`
     (lista ordenada por nome da família; `unknown` conta como família).
-- `family_check`, `--allow-same-family` e o resto da checagem não mudam.
+- Other configuration and dispatch options remain unchanged.
 
 ## Expected result
 
