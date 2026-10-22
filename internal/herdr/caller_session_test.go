@@ -20,9 +20,11 @@ import (
 // that runs the tests never reaches it, and the Claude directory is a
 // temporary CLAUDE_CONFIG_DIR with synthetic transcripts.
 
+// sessShell is the pane's scripted shell pid, kept off this process's own pid.
+var sessShell = fakePID(4000)
+
 const (
 	sessPane   = "w1:p9"
-	sessShell  = 4000
 	sessOwn    = "66bf36b5-9b48-4b58-88a3-5da128ff288b" // S
 	sessPaneA  = "d630d58c-2c56-4147-9bdb-206cba98b68e" // A
 	sessMid    = "11111111-1111-4111-8111-111111111111" // B
@@ -47,7 +49,7 @@ func sessionEnv(t *testing.T, own string, rules ...fakecli.Rule) platform.Env {
 	t.Helper()
 	ResetCallerCheck()
 	rules = append([]fakecli.Rule{processInfoRule(sessPane, sessShell)}, rules...)
-	env := callerCheckFixture(t, rules, map[int]int{selfPID(): 3000, 3000: 1})
+	env := callerCheckFixture(t, rules, map[int]int{selfPID(): fakePID(3000), fakePID(3000): 1})
 	env["HERDR_PANE_ID"] = sessPane
 	env["CLAUDE_CONFIG_DIR"] = t.TempDir()
 	delete(env, "CLAUDE_CODE_SESSION_ID")
@@ -350,7 +352,7 @@ func TestCheckCallerPaneSession(t *testing.T) {
 		ResetCallerCheck()
 		env := callerCheckFixture(t,
 			[]fakecli.Rule{{Argv: []string{"pane", "process-info", "--pane", sessPane}, Code: 1}, paneGetRule(sessPane, "claude", "id", sessOwn)},
-			map[int]int{selfPID(): 3000, 3000: 1})
+			map[int]int{selfPID(): fakePID(3000), fakePID(3000): 1})
 		env["HERDR_PANE_ID"] = sessPane
 		env["CLAUDE_CODE_SESSION_ID"] = sessOwn
 		if got := CheckCallerPane(env); got.State != CallerUnknown {
