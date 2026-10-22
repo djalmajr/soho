@@ -152,19 +152,89 @@ func (f *compactPhaseDispatchFixture) runAsync(t *testing.T, args ...string) <-c
 		out  string
 		err  string
 	}, 1)
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		// Async callers gate the fake herdr on this fixture file.
+		// Release it even when Fatal prevented the test from doing so.
+		if err := os.WriteFile(filepath.Join(f.root, "release"), []byte("go\n"), 0o600); err != nil {
+			t.Errorf("release async compact dispatch during cleanup: %v", err)
+		}
+		timer := time.NewTimer(60 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+			t.Error("async compact dispatch did not finish within 60s during cleanup; platform writers may still be in use")
+		}
+	})
 	go func() {
-		oldOut, oldErr := platform.Stdout, platform.Stderr
-		var out, stderr bytes.Buffer
-		platform.Stdout, platform.Stderr = &out, &stderr
-		code := Run(append([]string{"dispatch"}, args...), f.env)
-		platform.Stdout, platform.Stderr = oldOut, oldErr
+		defer close(done)
+		code, out, stderr := f.run(t, args...)
 		result <- struct {
 			code int
 			out  string
 			err  string
-		}{code, out.String(), stderr.String()}
+		}{code, out, stderr}
 	}()
 	return result
+}
+
+func TestCompactPhaseRunAsyncCleanup(t *testing.T) {
+	for _, consume := range []bool{false, true} {
+		name := "unread-result"
+		if consume {
+			name = "consumed-result"
+		}
+		oldOut, oldErr := platform.Stdout, platform.Stderr
+		var result <-chan struct {
+			code int
+			out  string
+			err  string
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newCompactPhaseDispatchFixture(t, "", 500*time.Millisecond)
+			release := filepath.Join(f.root, "release")
+			f.install(t, []fakecli.Rule{
+				{Argv: []string{"agent", "list"}, ArgvPrefix: true, Stdout: `{"result":{"agents":[]}}`},
+				{Argv: []string{"agent", "prompt", "worker"}, ArgvPrefix: true, WaitFile: release, Stdout: `{"result":{"sent":true}}`},
+				{Argv: []string{"pane", "title"}, ArgvPrefix: true, Code: 1},
+			})
+			result = f.runAsync(t, "worker", f.brief, "--no-wait")
+			deadline := time.Now().Add(60 * time.Second)
+			for countArgvPrefix(f.calls(t), []string{"agent", "prompt"}) == 0 {
+				if time.Now().After(deadline) {
+					t.Fatal("async dispatch never reached the fixture's release gate")
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			if consume {
+				if err := os.WriteFile(release, []byte("go\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if res := <-result; res.code != 0 {
+					t.Fatalf("code=%d out=%q err=%q", res.code, res.out, res.err)
+				}
+			}
+		})
+		if platform.Stdout != oldOut || platform.Stderr != oldErr {
+			t.Fatal("async cleanup did not restore the platform writers before the subtest ended")
+		}
+		if !consume {
+			select {
+			case res := <-result:
+				if res.code != 0 {
+					t.Fatalf("code=%d out=%q err=%q", res.code, res.out, res.err)
+				}
+			default:
+				t.Fatal("async cleanup returned before publishing the unread result")
+			}
+		}
+	}
 }
 
 // compactPhaseWaitForMarker polls until the marker stands (the phase claimed
