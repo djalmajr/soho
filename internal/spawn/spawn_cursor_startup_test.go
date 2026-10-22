@@ -292,7 +292,7 @@ func TestSpawnNonCursorWindowsGateOff(t *testing.T) {
 // cursorReuseRow records the default auto capability of a cursor worker in
 // the fixture's cwd, so these tests reach the reused-session startup checks.
 func cursorReuseRow(name, wdir string) string {
-	return strings.Join([]string{name, "p-" + name, "cursor", "implementer", "xai", "1", wdir, "now", "", "auto"}, "\t")
+	return strings.Join([]string{name, "p-" + name, "cursor", "implementer", "xai", "1", wdir, "now", "", "auto", "implementer", "", "", "", "xhigh"}, "\t")
 }
 
 func cursorReuseFixture(t *testing.T, screen string, failedRead bool) (spawnFixture, []fakecli.Rule) {

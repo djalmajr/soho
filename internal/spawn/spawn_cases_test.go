@@ -46,6 +46,7 @@ func newSpawnFixture(t *testing.T, rules []fakecli.Rule) spawnFixture {
 	}
 	f.env["HOME"] = root
 	f.env["USERPROFILE"] = root
+	f.env["XDG_CONFIG_HOME"] = root
 	f.env["SOHO_DIR"] = f.state
 	f.env["HERDR_WORKSPACE_ID"] = "ws"
 	f.env["SOHO_SKILL_DIR"] = filepath.Join(root, "skill")
@@ -174,7 +175,8 @@ func TestFindReusableJavaScriptCases(t *testing.T) {
 		// JS: "findReusable: a frontmatter mode: edit role cannot become inspector"
 		{js: "findReusable: a frontmatter mode: edit role cannot become inspector", rows: []string{spawnRosterRow("worker", "editor", "grok-4.7", "full", "")}, rules: []fakecli.Rule{idleHerdrRule("worker")}, role: "inspector", model: "grok-4.7", approvals: "ask"},
 		// JS: "findReusable: old 8-column lines are only reused for the same role"
-		{js: "findReusable: old 8-column lines are only reused for the same role", rows: []string{"old\tp-old\tgrok\timplementer\txai\t1\t/tmp/work\tnow"}, rules: []fakecli.Rule{idleHerdrRule("old")}, role: "implementer", model: "", approvals: "ask", want: "old"},
+		// DJA-483 supersedes the legacy expectation: no opening effort, no reuse.
+		{js: "findReusable: old 8-column lines are only reused for the same role", rows: []string{"old\tp-old\tgrok\timplementer\txai\t1\t/tmp/work\tnow"}, rules: []fakecli.Rule{idleHerdrRule("old")}, role: "implementer", model: "", approvals: "ask"},
 		// JS: "findReusable: multi_role=off refuses another role, still reuses the same role"
 		{js: "findReusable: multi_role=off refuses another role, still reuses the same role", rows: []string{spawnRosterRow("worker", "implementer", "grok-4.7", "full", "")}, rules: []fakecli.Rule{idleHerdrRule("worker")}, role: "scouter", model: "grok-4.7", approvals: "ask"},
 		// JS: "findReusable: the roster column 14 (the args the worker opened with) gates reuse"
@@ -220,7 +222,7 @@ func TestFindReusableJavaScriptCases(t *testing.T) {
 			if tc.js == "findReusable: a different cwd or kind is not reused" {
 				f.roster(t, strings.Replace(tc.rows[0], "grok", "claude", 1))
 			}
-			got, unavailable, blocked := FindReusable(tc.role, "grok", "/tmp/work", "", tc.model, tc.approvals, f.ctx, f.env, f.cwd)
+			got, unavailable, blocked := FindReusable(tc.role, "grok", "/tmp/work", "", tc.model, tc.approvals, "high", f.ctx, f.env, f.cwd)
 			switch tc.want {
 			case "!blocked":
 				if got != "" || !blocked || unavailable == "" {
@@ -236,31 +238,31 @@ func TestFindReusableJavaScriptCases(t *testing.T) {
 				}
 			}
 			if tc.js == "findReusable: approvals — below never, equal and above yes, unknown request never" {
-				if got, _, _ := FindReusable(tc.role, "grok", "/tmp/work", "", tc.model, "ask", f.ctx, f.env, f.cwd); got != "ask" {
+				if got, _, _ := FindReusable(tc.role, "grok", "/tmp/work", "", tc.model, "ask", "high", f.ctx, f.env, f.cwd); got != "ask" {
 					t.Fatalf("equal approval candidate=%q, want ask", got)
 				}
 				f.roster(t, spawnRosterRow("full", "scouter", "grok-4.7", "full", ""))
-				if got, _, _ := FindReusable(tc.role, "grok", "/tmp/work", "", tc.model, "ask", f.ctx, f.env, f.cwd); got != "full" {
+				if got, _, _ := FindReusable(tc.role, "grok", "/tmp/work", "", tc.model, "ask", "high", f.ctx, f.env, f.cwd); got != "full" {
 					t.Fatalf("higher approval candidate=%q, want full", got)
 				}
-				if got, _, _ := FindReusable(tc.role, "grok", "/tmp/work", "", tc.model, "FULL", f.ctx, f.env, f.cwd); got != "" {
+				if got, _, _ := FindReusable(tc.role, "grok", "/tmp/work", "", tc.model, "FULL", "high", f.ctx, f.env, f.cwd); got != "" {
 					t.Fatalf("unknown requested approval reused %q", got)
 				}
 			}
 			if tc.js == "findReusable: old 8-column lines are only reused for the same role" {
-				if got, _, _ := FindReusable("scouter", "grok", "/tmp/work", "", "", "ask", f.ctx, f.env, f.cwd); got != "" {
+				if got, _, _ := FindReusable("scouter", "grok", "/tmp/work", "", "", "ask", "high", f.ctx, f.env, f.cwd); got != "" {
 					t.Fatalf("cross-role reused old 8-column row %q", got)
 				}
 			}
 			if tc.js == "findReusable: multi_role=off refuses another role, still reuses the same role" {
 				f.roster(t, spawnRosterRow("worker", "scouter", "grok-4.7", "full", ""))
-				if got, _, _ := FindReusable("scouter", "grok", "/tmp/work", "", "grok-4.7", "ask", f.ctx, f.env, f.cwd); got != "worker" {
+				if got, _, _ := FindReusable("scouter", "grok", "/tmp/work", "", "grok-4.7", "ask", "high", f.ctx, f.env, f.cwd); got != "worker" {
 					t.Fatalf("same-role reuse with multi_role=off got=%q", got)
 				}
 			}
 			if tc.js == "findReusable: a different cwd or kind is not reused" {
 				f.roster(t, strings.Join([]string{"worker", "p-worker", "grok", "scouter", "xai", "1", "/elsewhere", "now", "grok-4.7", "full", "scouter", "", "", "", "high"}, "\t"))
-				if got, _, _ := FindReusable("scouter", "grok", "/tmp/work", "", "grok-4.7", "ask", f.ctx, f.env, f.cwd); got != "" {
+				if got, _, _ := FindReusable("scouter", "grok", "/tmp/work", "", "grok-4.7", "ask", "high", f.ctx, f.env, f.cwd); got != "" {
 					t.Fatalf("different cwd reused %q", got)
 				}
 			}
@@ -273,13 +275,13 @@ func TestFindReusableJavaScriptCases(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(f.state, "ws", "last-report-worker"), []byte(report+"\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
-				if got, _, _ := FindReusable("scouter", "grok", "/tmp/work", "", "grok-4.7", "ask", f.ctx, f.env, f.cwd); got != "" {
+				if got, _, _ := FindReusable("scouter", "grok", "/tmp/work", "", "grok-4.7", "ask", "high", f.ctx, f.env, f.cwd); got != "" {
 					t.Fatalf("empty report reused %q", got)
 				}
 				if err := os.WriteFile(report, []byte("done\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
-				if got, _, _ := FindReusable("scouter", "grok", "/tmp/work", "", "grok-4.7", "ask", f.ctx, f.env, f.cwd); got != "worker" {
+				if got, _, _ := FindReusable("scouter", "grok", "/tmp/work", "", "grok-4.7", "ask", "high", f.ctx, f.env, f.cwd); got != "worker" {
 					t.Fatalf("non-empty report not reusable: %q", got)
 				}
 			}
