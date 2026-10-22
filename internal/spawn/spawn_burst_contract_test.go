@@ -397,7 +397,7 @@ func TestSpawnBurstContract(t *testing.T) {
 		// explicit so the reuse gates line up with the request.
 		f := burstFixture(t, []burstLive{{"docs", "p-docs", "idle"}})
 		burstConfig(&f, "pane_mode", "flex")
-		f.roster(t, strings.Join([]string{"docs", "p-docs", "grok", "documenter", "xai", "1", f.cwd, "now", "", "full", "documenter", "docs", "burst", "", ""}, "\t"))
+		f.roster(t, strings.Join([]string{"docs", "p-docs", "grok", "documenter", "xai", "1", f.cwd, "now", "", "full", "documenter", "docs", "burst", "", "high"}, "\t"))
 		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"documenter", "--kind", "grok"})
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)

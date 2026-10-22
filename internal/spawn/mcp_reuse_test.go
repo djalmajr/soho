@@ -12,10 +12,10 @@ import (
 // (roster column 15) to match the request; a row written before that column
 // carries no choice and matches any request, as reopen treats it.
 
-// mcpLaneRow is a12Row with the effort (column 14) and MCP (column 15)
-// columns; an empty mcp leaves the row at 15 columns.
+// mcpLaneRow is a12Row with the MCP (column 15)
+// column; an empty mcp leaves the row at 15 columns.
 func mcpLaneRow(name, model, wdir, mcp string) string {
-	row := a12Row(name, "grok", model, wdir) + "\thigh"
+	row := a12Row(name, "grok", model, wdir)
 	if mcp != "" {
 		row += "\t" + mcp
 	}
@@ -99,7 +99,7 @@ func TestFindReusableMcp(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSpawnFixture(t, []fakecli.Rule{idleHerdrRule("worker")})
 			f.roster(t, row(tc.rowMcp))
-			got, _, blocked := FindReusableMcp("worker", "grok", "/tmp/work", "", "grok-4.7", "ask", tc.want, f.ctx, f.env, f.cwd)
+			got, _, blocked := FindReusableMcp("worker", "grok", "/tmp/work", "", "grok-4.7", "ask", tc.want, "high", f.ctx, f.env, f.cwd)
 			if got != tc.reused || blocked {
 				t.Fatalf("FindReusableMcp = %q blocked=%v, want %q", got, blocked, tc.reused)
 			}
@@ -108,7 +108,7 @@ func TestFindReusableMcp(t *testing.T) {
 	t.Run("FindReusable ignores the MCP choice", func(t *testing.T) {
 		f := newSpawnFixture(t, []fakecli.Rule{idleHerdrRule("worker")})
 		f.roster(t, row("inherit"))
-		if got, _, _ := FindReusable("worker", "grok", "/tmp/work", "", "grok-4.7", "ask", f.ctx, f.env, f.cwd); got != "worker" {
+		if got, _, _ := FindReusable("worker", "grok", "/tmp/work", "", "grok-4.7", "ask", "high", f.ctx, f.env, f.cwd); got != "worker" {
 			t.Fatalf("FindReusable = %q, want worker", got)
 		}
 	})

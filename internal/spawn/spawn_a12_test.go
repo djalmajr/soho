@@ -13,11 +13,11 @@ import (
 // A12: reuse respects kind, resolved model and cwd; --name never swaps the
 // names of live lane workers.
 
-// a12Row is a 14-column roster line for a build-lane worker: name, pane,
+// a12Row is a 15-column roster line for a build-lane worker: name, pane,
 // kind, role, family, created, cwd, stamp, model, approvals, roles, lane,
-// burst, args.
+// burst, args, effort.
 func a12Row(name, kind, model, wdir string) string {
-	return strings.Join([]string{name, "p-" + name, kind, "worker", "xai", "1", wdir, "now", model, "ask", "worker", "build", "", ""}, "\t")
+	return strings.Join([]string{name, "p-" + name, kind, "worker", "xai", "1", wdir, "now", model, "ask", "worker", "build", "", "", "high"}, "\t")
 }
 
 func a12Fixture(t *testing.T, rules []fakecli.Rule, panes string) spawnFixture {
@@ -34,6 +34,69 @@ func a12Fixture(t *testing.T, rules []fakecli.Rule, panes string) spawnFixture {
 		f.ctx.Order = []string{"lane_build_roles", "lane_build_kind"}
 	}
 	return f
+}
+
+func TestSpawnLaneReuseRequiresRecordedEffort(t *testing.T) {
+	for _, tc := range []struct {
+		name, effort, requestedName string
+		legacy, alternative         bool
+		wantName                    string
+		wantCode                    int
+	}{
+		{name: "direct equal", effort: "high", wantName: "old"},
+		{name: "direct different", effort: "medium", wantName: "build"},
+		{name: "direct missing", legacy: true, wantName: "build"},
+		{name: "named equal", effort: "high", requestedName: "old", wantName: "old"},
+		{name: "named different", effort: "medium", requestedName: "old", wantCode: 10},
+		{name: "named missing", legacy: true, requestedName: "old", wantCode: 10},
+		{name: "alternative equal", effort: "medium", alternative: true, wantName: "right"},
+		{name: "alternative different", effort: "medium", alternative: true, wantName: "build"},
+		{name: "alternative missing", legacy: true, alternative: true, wantName: "build"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := a12Fixture(t, append([]fakecli.Rule{idleHerdrRule("old"), idleHerdrRule("right")}, freshSpawnRules()...), "3")
+			row := strings.Split(a12Row("old", "grok", "grok-4.7", f.cwd), "\t")
+			row[14] = tc.effort
+			if tc.legacy {
+				row = row[:14]
+			}
+			rows := []string{strings.Join(row, "\t")}
+			if tc.alternative {
+				right := append([]string(nil), row...)
+				right[0], right[1] = "right", "p-right"
+				if tc.name == "alternative equal" {
+					right[14] = "high"
+				}
+				rows = append(rows, strings.Join(right, "\t"))
+			}
+			f.roster(t, rows...)
+			args := []string{"worker", "--model", "grok-4.7"}
+			if tc.requestedName != "" {
+				args = append(args, "--name", tc.requestedName)
+			}
+			code, stdout, stderr, calls := runCmdSpawn(t, f, args)
+			if code != tc.wantCode {
+				t.Fatalf("exit=%d want=%d stdout=%s stderr=%s", code, tc.wantCode, stdout, stderr)
+			}
+			if code != 0 {
+				assertNoStart(t, calls)
+				return
+			}
+			if !strings.Contains(stdout, `"name": "`+tc.wantName+`"`) {
+				t.Fatalf("want name=%s stdout=%s", tc.wantName, stdout)
+			}
+			if tc.wantName == "build" {
+				if strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"created_pane": true`) {
+					t.Fatalf("wanted fresh worker: %s", stdout)
+				}
+			} else {
+				if !strings.Contains(stdout, `"reused": true`) {
+					t.Fatalf("wanted reuse: %s", stdout)
+				}
+				assertNoStart(t, calls)
+			}
+		})
+	}
 }
 
 func TestSpawnA12ReuseRespectsModelAndCwd(t *testing.T) {

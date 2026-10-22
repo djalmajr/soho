@@ -220,7 +220,7 @@ func TestChangedNativeArgsDeclineOtherwiseReusableWorker(t *testing.T) {
 	if err := os.MkdirAll(ws, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	row := strings.Join([]string{"worker", "p1", "grok", "worker", "xai", "1", cwd, "T", "", "ask", "worker", "", "", "--old-arg"}, "\t") + "\n"
+	row := strings.Join([]string{"worker", "p1", "grok", "worker", "xai", "1", cwd, "T", "", "ask", "worker", "", "", "--old-arg", "high"}, "\t") + "\n"
 	if err := os.WriteFile(filepath.Join(ws, "agents.tsv"), []byte(row), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestChangedNativeArgsDeclineOtherwiseReusableWorker(t *testing.T) {
 	}
 	env := platform.Env{"PATH": bin, "SOHO_FAKECLI_CONFIG": bin, "SOHO_DIR": state, "HERDR_WORKSPACE_ID": "ws", "SOHO_ROLES": roles, "SOHO_SKILL_DIR": skill, "SOHO_ROLE_WORKER_ARGS": "--new-arg"}
 	ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
-	name, unavailable, blocked := FindReusable("worker", "grok", cwd, "", "", "ask", ctx, env, cwd)
+	name, unavailable, blocked := FindReusable("worker", "grok", cwd, "", "", "ask", "high", ctx, env, cwd)
 	if name != "" || unavailable != "" || blocked {
 		t.Fatalf("reused worker with stale native args: name=%q unavailable=%q blocked=%v", name, unavailable, blocked)
 	}

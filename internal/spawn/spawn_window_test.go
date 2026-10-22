@@ -216,12 +216,12 @@ func TestSpawnRetryAndUpdateJavaScriptCases(t *testing.T) {
 }
 
 func TestSpawnRemainingReuseJavaScriptCases(t *testing.T) {
-	t.Run("spawn: lanes=off reuses an idle worker of the same role (8-column row, --name given)", func(t *testing.T) {
-		// JS: "spawn: lanes=off reuses an idle worker of the same role (8-column row, --name given)"
+	t.Run("spawn: lanes=off refuses an idle same-role worker without recorded effort (--name given)", func(t *testing.T) {
+		// JS: "spawn: lanes=off refuses an idle same-role worker without recorded effort (--name given)"
 		f := newSpawnFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"agent_status":"idle"}}}`}})
 		f.roster(t, "worker\tw0test:p0a\tgrok\tworker\txai\t1\t/tmp/work\tnow")
-		name, unavailable, blocked := FindReusable("worker", "grok", "/tmp/work", "worker", "", "ask", f.ctx, f.env, f.cwd)
-		if name != "worker" || unavailable != "" || blocked {
+		name, unavailable, blocked := FindReusable("worker", "grok", "/tmp/work", "worker", "", "ask", "high", f.ctx, f.env, f.cwd)
+		if name != "" || unavailable != "" || blocked {
 			t.Fatalf("name=%q unavailable=%q blocked=%v", name, unavailable, blocked)
 		}
 	})
@@ -230,7 +230,7 @@ func TestSpawnRemainingReuseJavaScriptCases(t *testing.T) {
 		// JS: "spawn: lanes=off — the same role on another recorded model spawns a new worker"
 		f := newSpawnFixture(t, []fakecli.Rule{idleHerdrRule("worker")})
 		f.roster(t, spawnRosterRow("worker", "worker", "grok-4", "full", ""))
-		name, _, blocked := FindReusable("worker", "grok", "/tmp/work", "", "grok-4.7", "ask", f.ctx, f.env, f.cwd)
+		name, _, blocked := FindReusable("worker", "grok", "/tmp/work", "", "grok-4.7", "ask", "high", f.ctx, f.env, f.cwd)
 		if name != "" || blocked {
 			t.Fatalf("mismatched model reused: name=%q blocked=%v", name, blocked)
 		}
@@ -268,14 +268,14 @@ func TestSpawnRemainingReuseJavaScriptCases(t *testing.T) {
 		// JS: "spawn: lanes=off — a worker opened with different native args is not reused; equal args are"
 		f := newSpawnFixture(t, []fakecli.Rule{idleHerdrRule("worker")})
 		f.roster(t, spawnRosterRow("worker", "implementer", "grok-4.7", "full", "--role"))
-		if got, _, _ := FindReusable("worker", "grok", "/tmp/work", "", "grok-4.7", "ask", f.ctx, f.env, f.cwd); got != "" {
+		if got, _, _ := FindReusable("worker", "grok", "/tmp/work", "", "grok-4.7", "ask", "high", f.ctx, f.env, f.cwd); got != "" {
 			t.Fatalf("different native args reused %q", got)
 		}
 		f.ctx.Entries["role_worker_args"] = core.ConfigEntry{Value: "--role", Source: "project"}
 		if err := os.WriteFile(filepath.Join(f.root, "roles", "worker.md"), []byte("---\nkind: grok\n---\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if got, _, _ := FindReusable("worker", "grok", "/tmp/work", "", "grok-4.7", "ask", f.ctx, f.env, f.cwd); got != "worker" {
+		if got, _, _ := FindReusable("worker", "grok", "/tmp/work", "", "grok-4.7", "ask", "high", f.ctx, f.env, f.cwd); got != "worker" {
 			t.Fatalf("equal native args not reused: %q", got)
 		}
 	})
@@ -430,7 +430,7 @@ func TestSpawnSessionAfterSpawnJavaScriptCases(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.roster(t, spawnRosterRow("worker", "worker", "grok-4.7", "ask", ""))
-			if got, _, _ := FindReusable("worker", "grok", "/tmp/work", "", "grok-4.7", "ask", f.ctx, f.env, f.cwd); got != "" {
+			if got, _, _ := FindReusable("worker", "grok", "/tmp/work", "", "grok-4.7", "ask", "high", f.ctx, f.env, f.cwd); got != "" {
 				t.Fatalf("same-role worker reused: %q", got)
 			}
 		})
@@ -442,7 +442,7 @@ func TestSpawnSessionAfterSpawnJavaScriptCases(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.roster(t, spawnRosterRow("worker", "implementer", "grok-4.7", "full", ""))
-			if got, _, _ := FindReusable("worker", "grok", "/tmp/work", "", "grok-4.7", "ask", f.ctx, f.env, f.cwd); got != "" {
+			if got, _, _ := FindReusable("worker", "grok", "/tmp/work", "", "grok-4.7", "ask", "high", f.ctx, f.env, f.cwd); got != "" {
 				t.Fatalf("cross-role worker reused: %q", got)
 			}
 		})
@@ -456,7 +456,7 @@ func TestSpawnSessionAfterSpawnJavaScriptCases(t *testing.T) {
 			f.ctx.Entries["lane_build_model"] = core.ConfigEntry{Value: "grok-4.7", Source: "project"}
 			f.ctx.Entries["lane_build_args"] = core.ConfigEntry{Value: "--new", Source: "session"}
 			f.ctx.Order = []string{"lane_build_roles", "lane_build_kind", "lane_build_model", "lane_build_args"}
-			f.roster(t, strings.Join([]string{"build", "p-build", "grok", "worker", "xai", "1", f.cwd, "now", "grok-4.7", "ask", "worker", "build", "", ""}, "\t"))
+			f.roster(t, strings.Join([]string{"build", "p-build", "grok", "worker", "xai", "1", f.cwd, "now", "grok-4.7", "ask", "worker", "build", "", "", "high"}, "\t"))
 			code, stdout, _, calls := runCmdSpawn(t, f, []string{"worker"})
 			if code != 13 || !strings.Contains(stdout, `"status":"kind-mismatch"`) {
 				t.Fatalf("exit=%d stdout=%q calls=%#v", code, stdout, calls)

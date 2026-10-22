@@ -42,15 +42,15 @@ func assertNoStart(t *testing.T, calls []fakecli.Call) {
 	}
 }
 
-// reuseLaneRow is a 14-column roster line for a review-lane worker on the
+// reuseLaneRow is a 15-column roster line for a review-lane worker on the
 // codex kind; the model column is empty so a flagless spawn matches the
 // session (no kind-mismatch) and the reuse decision is reached.
 func reuseLaneRow(name, wdir string) string {
-	return strings.Join([]string{name, "w0test:p0a", "codex", "reviewer", "openai", "1", wdir, "now", "", "auto", "reviewer", "review", "", ""}, "\t")
+	return strings.Join([]string{name, "w0test:p0a", "codex", "reviewer", "openai", "1", wdir, "now", "", "auto", "reviewer", "review", "", "", "high"}, "\t")
 }
 
-// reuse8Row is an 8-column roster line (the shape the old writers left
-// behind); only explicit ask may reuse it, with no model or args recorded.
+// reuse8Row is an 8-column roster line left by historical writers.
+// It cannot establish the opening effort and must not be reused.
 func reuse8Row(name, role, wdir string) string {
 	return strings.Join([]string{name, "p-" + name, "grok", role, "xai", "1", wdir, "now"}, "\t")
 }
@@ -124,20 +124,17 @@ func TestSpawnIdleReuseWarningDescribesRetainedContext(t *testing.T) {
 		assertNoStart(t, calls)
 	})
 
-	t.Run("spawn: explicit ask reuses an idle same-role legacy worker and warns the retained context", func(t *testing.T) {
-		f := newSpawnFixture(t, []fakecli.Rule{idleHerdrRule("implementer")})
+	t.Run("spawn: explicit ask does not reuse a worker without recorded effort", func(t *testing.T) {
+		f := newSpawnFixture(t, append([]fakecli.Rule{idleHerdrRule("implementer")}, freshSpawnRules()...))
 		configureSpawnFixture(t, &f)
 		f.roster(t, reuse8Row("implementer", "implementer", f.cwd))
 		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"implementer", "--approvals", "ask"})
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		if !strings.Contains(stdout, `"name": "implementer"`) || !strings.Contains(stdout, `"reused": true`) ||
-			!strings.Contains(stdout, `"previous_role": "implementer"`) || !strings.Contains(stdout, `"status": "ready"`) {
-			t.Fatalf("JSON=%q", stdout)
+		if strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"created_pane": true`) {
+			t.Fatalf("legacy worker was reused: %s calls=%#v", stdout, calls)
 		}
-		reuseWarn(t, stderr, "reusing idle worker 'implementer' (grok, implementer)"+retainedWarning)
-		assertNoStart(t, calls)
 	})
 
 	t.Run("spawn: a non-lane reuse of a settled (done) worker retargets the role and warns the retained context", func(t *testing.T) {
@@ -147,7 +144,7 @@ func TestSpawnIdleReuseWarningDescribesRetainedContext(t *testing.T) {
 		configureSpawnFixture(t, &f)
 		f.roster(t, reuseFullRow("cross", "scouter", f.cwd))
 		finishedReport(t, f.state, "cross")
-		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"implementer", "--model", "grok-4.7"})
+		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"implementer", "--model", "grok-4.7", "--effort", "high"})
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
@@ -155,7 +152,7 @@ func TestSpawnIdleReuseWarningDescribesRetainedContext(t *testing.T) {
 			!strings.Contains(stdout, `"previous_role": "scouter"`) || !strings.Contains(stdout, `"status": "ready"`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
-		reuseWarn(t, stderr, "reusing idle worker 'cross' (grok, was scouter, now implementer)"+retainedWarning)
+		reuseWarn(t, stderr, "reusing idle worker 'cross' (grok, was scouter, now implementer; dispatch to 'cross')"+retainedWarning)
 		assertNoStart(t, calls)
 		roster, err := os.ReadFile(filepath.Join(f.state, "ws", "agents.tsv"))
 		if err != nil {
@@ -165,4 +162,68 @@ func TestSpawnIdleReuseWarningDescribesRetainedContext(t *testing.T) {
 			t.Fatalf("roster=%q", roster)
 		}
 	})
+}
+
+func TestSpawnReuseRequiresRecordedEffort(t *testing.T) {
+	for _, tc := range []struct {
+		name, effort, kind string
+		legacy, reuse      bool
+	}{
+		{name: "different", effort: "high"},
+		{name: "equal", effort: "medium", reuse: true},
+		{name: "missing", legacy: true},
+		{name: "codex different", effort: "high", kind: "codex"},
+		{name: "codex equal", effort: "medium", kind: "codex", reuse: true},
+		{name: "codex missing", kind: "codex", legacy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSpawnFixture(t, append([]fakecli.Rule{idleHerdrRule("reviewer")}, freshSpawnRules()...))
+			configureSpawnFixture(t, &f)
+			kind, model := "grok", "grok-4.7"
+			if tc.kind == "codex" {
+				kind, model = "codex", "gpt-5.4"
+				if _, err := fakecli.Install(t, f.bin, kind, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.env["SOHO_MULTI_ROLE"] = "on"
+			f.env["SOHO_ROLE_IMPLEMENTER_EFFORT"] = "medium"
+			row := strings.Split(reuseFullRow("reviewer", "reviewer", f.cwd), "\t")
+			row[2], row[8] = kind, model
+			row[14] = tc.effort
+			if tc.legacy {
+				row = row[:14]
+			}
+			f.roster(t, strings.Join(row, "\t"))
+			code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"implementer", "--kind", kind, "--model", model})
+			if code != 0 {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			if tc.reuse {
+				if !strings.Contains(stdout, `"name": "reviewer"`) || !strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"effort": "medium"`) {
+					t.Fatalf("reuse JSON=%s", stdout)
+				}
+				reuseWarn(t, stderr, "reusing idle worker 'reviewer' ("+kind+", was reviewer, now implementer; dispatch to 'reviewer')"+retainedWarning)
+				assertNoStart(t, calls)
+			} else {
+				if strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"created_pane": true`) || !strings.Contains(stdout, `"effort": "medium"`) {
+					t.Fatalf("expected fresh medium worker: %s", stdout)
+				}
+				started := false
+				for _, call := range calls {
+					if len(call.Argv) >= 2 && call.Argv[0] == "agent" && call.Argv[1] == "start" {
+						started = true
+					}
+				}
+				if !started {
+					t.Fatalf("no agent start: %#v", calls)
+				}
+			}
+			for _, call := range calls {
+				if len(call.Argv) >= 2 && call.Argv[0] == "agent" && call.Argv[1] == "rename" {
+					t.Fatalf("renamed worker: %#v", call)
+				}
+			}
+		})
+	}
 }

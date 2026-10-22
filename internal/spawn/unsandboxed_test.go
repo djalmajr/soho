@@ -65,9 +65,9 @@ func TestSpawnTruncatedRosterApprovalRequests(t *testing.T) {
 						args = append(args, "--approvals", requested)
 					}
 					code, out, stderr, calls = runCmdSpawn(t, f, args)
-					// Off-lane cross-role reuse still requires recorded model/history;
-					// an eight-column row has neither, even for explicit ask.
-					reuse := requested == "ask" && (lanes == "on" || role == "worker")
+					// An eight-column row cannot establish opening effort,
+					// even for explicit ask or the same role.
+					reuse := false
 					starts := 0
 					for _, call := range calls[before:] {
 						if len(call.Argv) > 1 && call.Argv[0] == "agent" && call.Argv[1] == "start" {
@@ -128,7 +128,7 @@ func TestReuseUnsandboxedApprovalRank(t *testing.T) {
 			t.Run(role+"/"+tc.held+"-to-"+tc.requested, func(t *testing.T) {
 				f := newSpawnFixture(t, []fakecli.Rule{idleHerdrRule("worker")})
 				f.roster(t, spawnRosterRow("worker", "implementer", "grok-4.7", tc.held, ""))
-				got, unavailable, blocked := FindReusable(role, "grok", "/tmp/work", "", "grok-4.7", tc.requested, f.ctx, f.env, f.cwd)
+				got, unavailable, blocked := FindReusable(role, "grok", "/tmp/work", "", "grok-4.7", tc.requested, "high", f.ctx, f.env, f.cwd)
 				want := ""
 				if tc.reuse {
 					want = "worker"
