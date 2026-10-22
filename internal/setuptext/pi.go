@@ -4,7 +4,8 @@ import "strings"
 
 const PiInboundMarker = "// soho: inbound peer check (managed by soho setup)"
 
-// PiInboundExtension uses JavaScript-compatible TypeScript: Pi loads it directly.
+// PiInboundExtension is TypeScript that Pi loads directly; its only annotations
+// type the two untyped lets, so strict linters (noImplicitAnyLet) accept it.
 func PiInboundExtension() string { return piInboundText }
 
 func PiInboundManaged(content string) bool {
@@ -31,7 +32,7 @@ const timeoutMS = 10000;
 
 function checkPeer(text) {
   return new Promise((resolve) => {
-    let child;
+    let child: ReturnType<typeof spawn>;
     try {
       child = spawn("soho", ["hook", "inbound", "--pi"], {
         shell: false,
@@ -77,7 +78,7 @@ export default function (pi) {
       return { action: "continue" };
     }
     const result = await checkPeer(event.text);
-    let decision;
+    let decision: { decision?: unknown; reason?: unknown } | undefined;
     if (!result.error && result.output.trim() !== "") {
       try { decision = JSON.parse(result.output); }
       catch {}
