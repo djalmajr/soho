@@ -13,7 +13,7 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 )
 
-const mutationCopyUsage = "usage: mutation-copy [--source <dir>] [--dest <dir>] [--link <relpath>=<target>]..."
+const mutationCopyUsage = "usage: mutation-copy [--source <dir>] [--dest <dir>] [--exclude <glob>]... [--link <relpath>=<target>]..."
 
 // mutation-copy builds the throwaway mutation copy of the repository that the
 // guard was written for, from the worktree's repository files only (never
@@ -47,6 +47,18 @@ func runMutationCopy(args []string, env platform.Env) int {
 		// the current directory when no --source is given), not the empty
 		// parsed value.
 		return mutationCopyRefuse("source", sourceRaw, reason)
+	}
+	ctx := core.LoadConfig(env, source)
+	excludes := parsed.excludes
+	if configured := core.Cfg(&ctx, "mutation_copy_exclude", "", env); configured != "" {
+		for _, pattern := range strings.Split(configured, ",") {
+			excludes = append(excludes, strings.TrimSpace(pattern))
+		}
+	}
+	for _, pattern := range excludes {
+		if !validMutationCopyExclude(pattern) {
+			return mutationCopyUsageError()
+		}
 	}
 
 	dest, destGiven, destCreated, reason := mutationCopyPrepareDest(parsed.dest, cwd, env, home, source)
@@ -129,12 +141,26 @@ func runMutationCopy(args []string, env platform.Env) int {
 	}
 
 	// 3. The repository's files, from the worktree's disk state.
-	result := platform.RunCli("git", []string{"-C", source, "ls-files", "-z", "--cached", "--others", "--exclude-standard"}, platform.RunOptions{Env: env, Cwd: source, TimeoutMs: 30_000})
+	listArgs := []string{"-C", source, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "."}
+	filteredArgs := append([]string(nil), listArgs...)
+	for _, pattern := range excludes {
+		filteredArgs = append(filteredArgs, ":(exclude,glob)"+pattern)
+	}
+	result := platform.RunCli("git", filteredArgs, platform.RunOptions{Env: env, Cwd: source, TimeoutMs: 30_000})
 	if result.NotFound {
 		return failIO("git is not available on PATH")
 	}
 	if result.Status == nil || *result.Status != 0 {
 		return failIO("git ls-files failed: " + strings.TrimSpace(result.Stderr))
+	}
+	excluded := 0
+	if len(excludes) > 0 {
+		// This listing is for cardinality only: never visit or log its paths.
+		unfiltered := platform.RunCli("git", listArgs, platform.RunOptions{Env: env, Cwd: source, TimeoutMs: 30_000})
+		if unfiltered.NotFound || unfiltered.Status == nil || *unfiltered.Status != 0 {
+			return failIO("git ls-files count failed")
+		}
+		excluded = strings.Count(unfiltered.Stdout, "\x00") - strings.Count(result.Stdout, "\x00")
 	}
 	files := 0
 	for _, rel := range strings.Split(result.Stdout, "\x00") {
@@ -231,10 +257,11 @@ func runMutationCopy(args []string, env platform.Env) int {
 
 	// 6. The result.
 	encoded, err := json.Marshal(mutationCopyResult{
-		Copy:   dest,
-		Source: source,
-		Files:  files,
-		Links:  links,
+		Copy:     dest,
+		Source:   source,
+		Files:    files,
+		Excluded: excluded,
+		Links:    links,
 	})
 	if err != nil {
 		return failIO(err.Error())
@@ -308,9 +335,10 @@ func mutationCopyNotRegistered(cause string) {
 }
 
 type mutationCopyArgs struct {
-	source string
-	dest   string
-	links  []string
+	source   string
+	dest     string
+	links    []string
+	excludes []string
 }
 
 func parseMutationCopyArgs(args []string) (mutationCopyArgs, bool) {
@@ -319,7 +347,7 @@ func parseMutationCopyArgs(args []string) (mutationCopyArgs, bool) {
 	destSeen := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "--source" || arg == "--dest" || arg == "--link" {
+		if arg == "--source" || arg == "--dest" || arg == "--link" || arg == "--exclude" {
 			if i+1 >= len(args) || args[i+1] == "" {
 				return mutationCopyArgs{}, false
 			}
@@ -340,6 +368,11 @@ func parseMutationCopyArgs(args []string) (mutationCopyArgs, bool) {
 				parsed.dest = value
 			case "--link":
 				parsed.links = append(parsed.links, value)
+			case "--exclude":
+				if !validMutationCopyExclude(value) {
+					return mutationCopyArgs{}, false
+				}
+				parsed.excludes = append(parsed.excludes, value)
 			}
 			continue
 		}
@@ -350,16 +383,21 @@ func parseMutationCopyArgs(args []string) (mutationCopyArgs, bool) {
 	return parsed, true
 }
 
+func validMutationCopyExclude(pattern string) bool {
+	return pattern != "" && !strings.HasPrefix(pattern, ":")
+}
+
 type mutationCopyLink struct {
 	Path   string `json:"path"`
 	Target string `json:"target"`
 }
 
 type mutationCopyResult struct {
-	Copy   string             `json:"copy"`
-	Source string             `json:"source"`
-	Files  int                `json:"files"`
-	Links  []mutationCopyLink `json:"links"`
+	Copy     string             `json:"copy"`
+	Source   string             `json:"source"`
+	Files    int                `json:"files"`
+	Excluded int                `json:"excluded"`
+	Links    []mutationCopyLink `json:"links"`
 }
 
 func mutationCopyUsageError() int {

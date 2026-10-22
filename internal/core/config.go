@@ -374,6 +374,10 @@ func CfgSource(ctx *Config, key string, env platform.Env) string {
 }
 
 func ConfigKeyOk(key string) bool {
+	// Keep the frozen config listing order while accepting the copy policy.
+	if key == "mutation_copy_exclude" {
+		return true
+	}
 	for _, scalar := range ConfigScalarKeys {
 		if scalar == key {
 			return true

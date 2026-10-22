@@ -431,7 +431,7 @@ func TestMutationCopy(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
-		want := fmt.Sprintf(`{"copy":%q,"source":%q,"files":3,"links":[{"path":"nm","target":%q}]}`+"\n", dest, f.source, deps)
+		want := fmt.Sprintf(`{"copy":%q,"source":%q,"files":3,"excluded":0,"links":[{"path":"nm","target":%q}]}`+"\n", dest, f.source, deps)
 		if out != want {
 			t.Fatalf("exact JSON mismatch:\n got %s\nwant %s", out, want)
 		}
@@ -441,7 +441,7 @@ func TestMutationCopy(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
-		want = fmt.Sprintf(`{"copy":%q,"source":%q,"files":3,"links":[]}`+"\n", plain, f.source)
+		want = fmt.Sprintf(`{"copy":%q,"source":%q,"files":3,"excluded":0,"links":[]}`+"\n", plain, f.source)
 		if out != want {
 			t.Fatalf("exact JSON mismatch without links:\n got %s\nwant %s", out, want)
 		}

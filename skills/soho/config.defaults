@@ -282,6 +282,9 @@ footprint_warn_gb=5
 # Must be writable by every worker sandbox (Codex denies .agents/ and .codex/).
 state_dir=.soho
 
+# Comma-separated Git glob pathspecs excluded before mutation-copy reads files.
+mutation_copy_exclude=
+
 # Language the workers must write reports in (empty = language of the brief).
 report_language=
 
