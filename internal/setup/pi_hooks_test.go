@@ -131,7 +131,8 @@ async function cleanup() {
     await closed;
   }
 }
-const watchdog = setTimeout(async () => { await cleanup(); process.exit(3); }, 5000);
+// 45 s: well inside the Go side's 120 s deadline, above a slow Windows runner (DJA-468).
+const watchdog = setTimeout(async () => { await cleanup(); process.exit(3); }, 45000);
 try {
   const { default: install } = await import(pathToFileURL(process.argv[2]).href);
   let handler;
@@ -237,9 +238,10 @@ func TestSetupPiExtensionRuntime(t *testing.T) {
 				text = "ordinary input"
 			}
 			event, _ := json.Marshal(map[string]string{"type": "input", "source": tc.source, "text": text})
-			// A safety deadline only: a slow Windows runner can spend most of 15 s
-			// starting node and the fake soho (DJA-468).
-			commandCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			// A safety deadline only (DJA-468). It starts before node does, so it
+			// leaves the harness watchdog (45 s, counted from node's start) 75 s of
+			// room for a slow Windows runner to start node and the fake soho.
+			commandCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()
 			command := exec.CommandContext(commandCtx, node, harness, file, string(event))
 			command.Dir = root
