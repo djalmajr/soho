@@ -108,14 +108,24 @@ func TestProcessAncestorsGonePidIsAnError(t *testing.T) {
 // scripted ps (the same fake pattern codexenv uses): the chain is exactly
 // the scripted ppid sequence, root included, with no read of any command
 // line.
+// scriptedPID moves a scripted pid out of the way of this process's own
+// pid, so the fake ps table never gives the test's pid two parents.
+func scriptedPID(n int) int {
+	if os.Getpid() < 1_000_000 {
+		return n + 1_000_000
+	}
+	return n
+}
+
 func TestProcessAncestorsFakePSChain(t *testing.T) {
 	t.Run("POSIX: the chain follows the ppid reads to the root", func(t *testing.T) {
 		dir := t.TempDir()
 		self := strconv.Itoa(os.Getpid())
+		a, b := scriptedPID(4000), scriptedPID(3000)
 		table := map[string]string{
-			self:   "4000\n",
-			"4000": "3000\n",
-			"3000": "1\n",
+			self:            strconv.Itoa(a) + "\n",
+			strconv.Itoa(a): strconv.Itoa(b) + "\n",
+			strconv.Itoa(b): "1\n",
 		}
 		if err := installFakePSTable(t, dir, table); err != nil {
 			t.Fatal(err)
@@ -124,7 +134,7 @@ func TestProcessAncestorsFakePSChain(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ProcessAncestors=%v", err)
 		}
-		want := []int{os.Getpid(), 4000, 3000, 1}
+		want := []int{os.Getpid(), a, b, 1}
 		if len(chain) != len(want) {
 			t.Fatalf("chain=%v want %v", chain, want)
 		}
@@ -137,7 +147,8 @@ func TestProcessAncestorsFakePSChain(t *testing.T) {
 	t.Run("POSIX: a parent of 0 ends the chain at the parentless pid", func(t *testing.T) {
 		dir := t.TempDir()
 		self := strconv.Itoa(os.Getpid())
-		table := map[string]string{self: "4000\n", "4000": "0\n"}
+		a := scriptedPID(4000)
+		table := map[string]string{self: strconv.Itoa(a) + "\n", strconv.Itoa(a): "0\n"}
 		if err := installFakePSTable(t, dir, table); err != nil {
 			t.Fatal(err)
 		}
@@ -145,7 +156,7 @@ func TestProcessAncestorsFakePSChain(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ProcessAncestors=%v", err)
 		}
-		want := []int{os.Getpid(), 4000}
+		want := []int{os.Getpid(), a}
 		if len(chain) != len(want) || chain[0] != want[0] || chain[1] != want[1] {
 			t.Fatalf("chain=%v want %v", chain, want)
 		}
