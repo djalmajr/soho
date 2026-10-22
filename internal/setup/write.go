@@ -105,18 +105,21 @@ func markedLines(text string) string {
 	return strings.Join(out, "\n") + "\n"
 }
 
-func writeHooksSection(root string, env platform.Env) {
+func writeHooksSection(root string, env platform.Env) []string {
+	var ready []string
 	settings := filepath.Join(root, ".claude", "settings.json")
 	setupWriteHooks(settings)
 	_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder, SessionStart doctor)\n", settings)
-	writePiInboundExtension(root)
-	codex := filepath.Join(root, ".codex", "hooks.json")
+	if writePiInboundExtension(root) {
+		ready = append(ready, piInboundRel)
+	}
+	codex := filepath.Join(root, filepath.FromSlash(codexHookRel))
 	var content *string
 	if raw, err := platform.ReadTextFile(codex); err == nil {
 		content = &raw
 	} else if !os.IsNotExist(err) {
 		core.Warn("could not read hooks from "+codex+"; file left untouched", "", "setup")
-		return
+		return ready
 	}
 	if merged := setuptext.CodexHooksResult(content); merged == nil {
 		core.Warn("could not merge hooks into "+codex+"; file left untouched", "", "setup")
@@ -128,6 +131,7 @@ func writeHooksSection(root string, env platform.Env) {
 			platform.DieFriction("could not merge hooks into "+codex, 4)
 		}
 		_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit inbound, codex)\n", codex)
+		ready = append(ready, codexHookRel)
 	}
 	// The generated hooks are the portable PATH commands 'soho hook
 	// reminder' / 'soho hook doctor': they resolve the native binary
@@ -138,21 +142,22 @@ func writeHooksSection(root string, env platform.Env) {
 	if _, found := platform.FindExecutable("soho", env, platform.Current()); !found {
 		core.Warn("SessionStart hook cannot resolve soho in PATH; add the native soho binary to PATH so the generated hooks ('soho hook reminder', 'soho hook doctor') can run", "", "setup")
 	}
+	return ready
 }
 
-func writePiInboundExtension(root string) {
-	file := filepath.Join(root, ".pi", "extensions", "soho-inbound.ts")
+func writePiInboundExtension(root string) bool {
+	file := filepath.Join(root, filepath.FromSlash(piInboundRel))
 	var content *string
 	if raw, err := platform.ReadTextFile(file); err == nil {
 		content = &raw
 	} else if !os.IsNotExist(err) {
 		core.Warn("could not read extension from "+file+"; file left untouched", "", "setup")
-		return
+		return false
 	}
 	next := setuptext.PiInboundResult(content)
 	if next == nil {
 		core.Warn("could not install extension into "+file+"; file has no soho marker and was left untouched", "", "setup")
-		return
+		return false
 	}
 	if content == nil || *content != *next {
 		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
@@ -163,6 +168,7 @@ func writePiInboundExtension(root string) {
 		}
 	}
 	_, _ = fmt.Fprintf(platform.Stdout, "extension ready: %s (input inbound, pi)\n", file)
+	return true
 }
 
 // BuildVersion is the version the CLI was built with ("dev" outside a
@@ -178,11 +184,24 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	if wantPlan && wantProbe {
 		platform.DieFriction("setup: --probe and --plan are exclusive", 2)
 	}
+	if !wantProbe && !containsSetupArg(args, "--detect") {
+		// This refusal must precede migrations, presets and hook writes.
+		refuseImplicitCanonicalSetup(args, ctx, env, cwd)
+	}
 	if wantPlan {
 		CmdPlan(withoutSetupArg(args, "--plan"), ctx, env, cwd)
 		if !containsSetupArg(args, "--no-hooks") {
 			_, _ = fmt.Fprintf(platform.Stdout, "# would merge into %s/.codex/hooks.json: UserPromptSubmit hook (codex)\n", platform.ProjectRoot(env, cwd))
 			_, _ = fmt.Fprintf(platform.Stdout, "# would write %s/.pi/extensions/soho-inbound.ts: input extension (pi)\n", platform.ProjectRoot(env, cwd))
+			if containsSetupArg(args, "--local") || (!containsSetupArg(args, "--target") && core.Cfg(ctx, "setup_target", "canonical", env) == "local") {
+				root := platform.ProjectRoot(env, cwd)
+				rels := append(localRels(root, ctx, env, cwd), localHookRels(root, env)...)
+				if plan := preflightLocalExcludes(root, rels, env, "setup", false); plan != nil && plan.path != "" {
+					if added := missingExcludeEntries(plan.before, plan.needed); len(added) > 0 {
+						_, _ = fmt.Fprintf(platform.Stdout, "# would ensure %s ignores: %s\n", plan.path, strings.Join(added, ", "))
+					}
+				}
+			}
 		}
 		return
 	}
@@ -247,7 +266,11 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		localFile = localTarget(root)
 		refuseUnignorableStateDir(root, ctx, env, cwd, "setup")
 		refuseTrackedLocal(root, env, "setup")
-		preflightLocalExcludes(root, localRels(root, ctx, env, cwd), env, "setup", !dry)
+		rels := localRels(root, ctx, env, cwd)
+		if hooks {
+			rels = append(rels, localHookRels(root, env)...)
+		}
+		preflightLocalExcludes(root, rels, env, "setup", !dry)
 	}
 	if target == "" {
 		target = setupTargetExisting(root)
@@ -317,7 +340,11 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			_, _ = fmt.Fprintf(platform.Stdout, "# would write %s/.pi/extensions/soho-inbound.ts: input extension (pi)\n", root)
 		}
 		if modeLocal {
-			if plan := planLocalExcludes(root, ctx, env, cwd, "setup"); plan != nil && plan.path != "" {
+			rels := localRels(root, ctx, env, cwd)
+			if hooks {
+				rels = append(rels, localHookRels(root, env)...)
+			}
+			if plan := preflightLocalExcludes(root, rels, env, "setup", false); plan != nil && plan.path != "" {
 				added := missingExcludeEntries(plan.before, plan.needed)
 				if len(added) > 0 {
 					_, _ = fmt.Fprintf(platform.Stdout, "# would ensure %s ignores: %s\n", plan.path, strings.Join(added, ", "))
@@ -337,7 +364,11 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			_, _ = fmt.Fprintf(platform.Stdout, "local excludes updated: %s (%s)\n", path, strings.Join(added, ", "))
 		}
 		if hooks {
-			writeHooksSection(root, env)
+			ready := writeHooksSection(root, env)
+			hookPath, hookAdded := ensureLocalExcludes(root, untrackedLocalHooks(root, ready, env), env, "setup")
+			if len(hookAdded) > 0 {
+				_, _ = fmt.Fprintf(platform.Stdout, "local excludes updated: %s (%s)\n", hookPath, strings.Join(hookAdded, ", "))
+			}
 		}
 		if panes != "" {
 			applySetupPreset(conf, panes, parsed, env, cwd)

@@ -51,7 +51,7 @@ func TestSetupLocalTM5Cases(t *testing.T) {
 			t.Fatalf("code=%d out=%q msg=%q file=%q", code, out, msg, after)
 		}
 	})
-	t.Run("// JS: \"canonical setup never switches to a local block it finds (doctor recognition stays advisory)\"", func(t *testing.T) { // Mutation captured: an existing local block must not redirect canonical setup away from AGENTS.md.
+	t.Run("canonical setup refuses an implicit switch from an existing local block", func(t *testing.T) { // DJA-462 intentionally replaces the former canonical-write contract with refusal.
 		root, env, ctx := tm5LocalFixture(t)
 		local := filepath.Join(root, localInstructionFile)
 		if err := os.WriteFile(local, []byte(setuptext.SetupBlock()), 0o600); err != nil {
@@ -60,7 +60,7 @@ func TestSetupLocalTM5Cases(t *testing.T) {
 		code, _, msg := runSetupWrite([]string{"--no-hooks"}, ctx, env, root)
 		canonical, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
 		localAfter, localErr := os.ReadFile(local)
-		if code != 0 || err != nil || localErr != nil || !bytes.Equal(localAfter, []byte(setuptext.SetupBlock())) || !strings.Contains(string(canonical), setuptext.SetupStart) {
+		if code != 2 || !strings.Contains(msg, "this project keeps the soho block in CLAUDE.local.md") || !os.IsNotExist(err) || localErr != nil || !bytes.Equal(localAfter, []byte(setuptext.SetupBlock())) {
 			t.Fatalf("code=%d msg=%q canonical=%q local=%q errs=%v/%v", code, msg, canonical, localAfter, err, localErr)
 		}
 	})
