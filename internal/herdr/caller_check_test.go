@@ -40,6 +40,16 @@ func callerCheckFixture(t *testing.T, herdrRules []fakecli.Rule, parents map[int
 // selfPID is this test process's own pid, where every scripted tree starts.
 func selfPID() int { return os.Getpid() }
 
+// fakePID moves a scripted pid out of the way of this process's own pid:
+// Windows pids are small, so the test's pid can fall inside a scripted
+// chain (9001..9064, say) and short-cut it.
+func fakePID(n int) int {
+	if self := selfPID(); self < 1_000_000 {
+		return n + 1_000_000
+	}
+	return n
+}
+
 // processInfoRule is the fake rule for one pane's process-info read.
 func processInfoRule(pane string, shellPID int) fakecli.Rule {
 	return fakecli.Rule{
@@ -53,22 +63,22 @@ func TestCheckCallerPane(t *testing.T) {
 	t.Run("a tree that reaches the shell_pid is verified", func(t *testing.T) {
 		ResetCallerCheck()
 		env := callerCheckFixture(t,
-			[]fakecli.Rule{processInfoRule(pane, 4000)},
-			map[int]int{selfPID(): 4000, 4000: 1})
+			[]fakecli.Rule{processInfoRule(pane, fakePID(4000))},
+			map[int]int{selfPID(): fakePID(4000), fakePID(4000): 1})
 		env["HERDR_PANE_ID"] = pane
 		got := CheckCallerPane(env)
-		if got.State != CallerVerified || got.Pane != pane || got.ShellPID != 4000 {
+		if got.State != CallerVerified || got.Pane != pane || got.ShellPID != fakePID(4000) {
 			t.Fatalf("CheckCallerPane=%#v", got)
 		}
 	})
 	t.Run("a tree read to the root without the shell_pid is a mismatch", func(t *testing.T) {
 		ResetCallerCheck()
 		env := callerCheckFixture(t,
-			[]fakecli.Rule{processInfoRule(pane, 4000)},
-			map[int]int{selfPID(): 3000, 3000: 1})
+			[]fakecli.Rule{processInfoRule(pane, fakePID(4000))},
+			map[int]int{selfPID(): fakePID(3000), fakePID(3000): 1})
 		env["HERDR_PANE_ID"] = pane
 		got := CheckCallerPane(env)
-		if got.State != CallerMismatch || got.Pane != pane || got.ShellPID != 4000 {
+		if got.State != CallerMismatch || got.Pane != pane || got.ShellPID != fakePID(4000) {
 			t.Fatalf("CheckCallerPane=%#v", got)
 		}
 	})
@@ -104,8 +114,8 @@ func TestCheckCallerPane(t *testing.T) {
 	t.Run("a failed ancestry read midway is unknown", func(t *testing.T) {
 		ResetCallerCheck()
 		env := callerCheckFixture(t,
-			[]fakecli.Rule{processInfoRule(pane, 4000)},
-			map[int]int{selfPID(): 314159}) // 314159 unscripted: the hop fails
+			[]fakecli.Rule{processInfoRule(pane, fakePID(4000))},
+			map[int]int{selfPID(): fakePID(314159)}) // fakePID(314159) unscripted: the hop fails
 		env["HERDR_PANE_ID"] = pane
 		got := CheckCallerPane(env)
 		if got.State != CallerUnknown {
@@ -115,8 +125,8 @@ func TestCheckCallerPane(t *testing.T) {
 	t.Run("a cycle is unknown", func(t *testing.T) {
 		ResetCallerCheck()
 		env := callerCheckFixture(t,
-			[]fakecli.Rule{processInfoRule(pane, 4000)},
-			map[int]int{selfPID(): 3000, 3000: 3001, 3001: 3000})
+			[]fakecli.Rule{processInfoRule(pane, fakePID(4000))},
+			map[int]int{selfPID(): fakePID(3000), fakePID(3000): fakePID(3001), fakePID(3001): fakePID(3000)})
 		env["HERDR_PANE_ID"] = pane
 		got := CheckCallerPane(env)
 		if got.State != CallerUnknown {
@@ -125,11 +135,11 @@ func TestCheckCallerPane(t *testing.T) {
 	})
 	t.Run("more than 64 hops is unknown, not a mismatch", func(t *testing.T) {
 		ResetCallerCheck()
-		// 66 hops: self -> 9001 -> ... -> 9066 -> 1, no shell_pid (4000).
+		// 65 hops: self -> 9001 -> ... -> 9064 -> 1, no shell_pid (4000).
 		table := map[int]int{}
 		prev := selfPID()
 		for i := 1; i <= 65; i++ {
-			next := 9000 + i
+			next := fakePID(9000 + i)
 			if i == 65 {
 				table[prev] = 1
 			} else {
@@ -137,7 +147,7 @@ func TestCheckCallerPane(t *testing.T) {
 			}
 			prev = next
 		}
-		env := callerCheckFixture(t, []fakecli.Rule{processInfoRule(pane, 4000)}, table)
+		env := callerCheckFixture(t, []fakecli.Rule{processInfoRule(pane, fakePID(4000))}, table)
 		env["HERDR_PANE_ID"] = pane
 		got := CheckCallerPane(env)
 		if got.State != CallerUnknown {
@@ -172,8 +182,8 @@ func TestCheckCallerPane(t *testing.T) {
 	t.Run("a different SOHO_DELEGATED_PANE follows the normal rule", func(t *testing.T) {
 		ResetCallerCheck()
 		env := callerCheckFixture(t,
-			[]fakecli.Rule{processInfoRule(pane, 4000)},
-			map[int]int{selfPID(): 3000, 3000: 1})
+			[]fakecli.Rule{processInfoRule(pane, fakePID(4000))},
+			map[int]int{selfPID(): fakePID(3000), fakePID(3000): 1})
 		env["HERDR_PANE_ID"] = pane
 		env["SOHO_DELEGATED_PANE"] = "w1:pother"
 		if got := CheckCallerPane(env); got.State != CallerMismatch {
@@ -186,8 +196,8 @@ func TestCheckCallerPane(t *testing.T) {
 		// the first call computes (one process-info read) and the second
 		// serves the memo.
 		env := callerCheckFixture(t,
-			[]fakecli.Rule{processInfoRule("w1:p10", 4000)},
-			map[int]int{selfPID(): 3000, 3000: 1})
+			[]fakecli.Rule{processInfoRule("w1:p10", fakePID(4000))},
+			map[int]int{selfPID(): fakePID(3000), fakePID(3000): 1})
 		env["HERDR_PANE_ID"] = "w1:p10"
 		first := CheckCallerPane(env)
 		second := CheckCallerPane(env)
