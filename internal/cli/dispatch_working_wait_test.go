@@ -151,44 +151,77 @@ func TestDispatchNoWaitKeepsNotReceivedForAWorkingTarget(t *testing.T) {
 // prompt left typed in the input box certainly did not enter, so the blocking
 // dispatch keeps exiting 15 without waiting (the wait would hit the timeout).
 func TestDispatchBlockingStillExitsNotReceivedWhenThePromptStuckInTheInputBox(t *testing.T) {
-	base := time.Date(2026, 10, 1, 16, 17, 14, 0, time.Local)
-	began := time.Now()
-	oldNow := platform.Now
-	platform.Now = func() time.Time { return base.Add(time.Since(began)) }
-	t.Cleanup(func() { platform.Now = oldNow })
-	sep := strings.Repeat("─", 66)
-	screen := "history: the previous step finished\n" +
-		sep + "\n" +
-		"Read the file " + filepath.Join("$ROOT", "state", "ws", "briefs", "worker-20261001T161714.md") + " in full and execute it.\n" +
-		sep + "\n"
-	f := newDispatchArrivalFixture(t, "idle", 1, 1, "old output\n", "0",
-		fakecli.Rule{Argv: []string{"agent", "read", "worker", "--source", "visible"}, Call: 1, ArgvPrefix: true, Stdout: "boot\n"},
-		fakecli.Rule{Argv: []string{"agent", "read", "worker", "--source", "visible"}, ArgvPrefix: true, Stdout: screen},
-		fakecli.Rule{Argv: []string{"agent", "read", "worker", "--source", "recent-unwrapped"}, ArgvPrefix: true, Stdout: screen},
-		fakecli.Rule{Argv: []string{"agent", "send-keys", "worker", "enter"}, ArgvPrefix: true},
-	)
-	arrivalRosterKind(t, f, "pi")
-	f.env["SOHO_WAIT_POLL_MS"] = "100"
-	taskFile := filepath.Join(f.state, "ws", "task-worker")
-	if err := os.WriteFile(taskFile, []byte("implementer: the old task\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now()
-	code, out, errText := f.run(t, "worker", f.brief, "--timeout", "30000")
-	if code != 15 || dispatchOutputStatus(t, out) != "not-received" {
-		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
-	}
-	if !strings.Contains(errText, "after an Enter on the text left in its input box") || strings.Contains(errText, waitingForReport) || strings.Contains(errText, "was typed while it was working") {
-		t.Fatalf("warning=%q", errText)
-	}
-	// The prompt certainly did not enter: the task title stays the old one.
-	if got := strings.TrimSpace(mustRead(t, taskFile)); got != "implementer: the old task" {
-		t.Fatalf("task-worker=%q: a prompt that did not enter changed the title", got)
-	}
-	if titles := paneTitleCalls(t, f); len(titles) != 0 {
-		t.Fatalf("pane titles=%q: a prompt that did not enter retitled the pane", titles)
-	}
-	if elapsed := time.Since(start); elapsed > 20*time.Second {
-		t.Fatalf("the dispatch waited %v before exiting not-received", elapsed)
+	for _, setupElapsed := range []time.Duration{0, 2 * time.Second} {
+		t.Run(setupElapsed.String(), func(t *testing.T) {
+			base := time.Date(2026, 10, 1, 16, 17, 14, 0, time.Local)
+			// Model preparation crossing a stamp second without a wall-clock sleep.
+			// Advance the clock on reads so the arrival deadlines still terminate.
+			clock := base.Add(setupElapsed)
+			stamp := core.NowStamp(clock)
+			oldNow := platform.Now
+			platform.Now = func() time.Time {
+				now := clock
+				clock = clock.Add(2 * time.Second)
+				return now
+			}
+			t.Cleanup(func() { platform.Now = oldNow })
+			sep := strings.Repeat("─", 66)
+			screen := "history: the previous step finished\n" +
+				sep + "\n" +
+				"Read the file " + filepath.Join("$ROOT", "state", "ws", "briefs", "worker-"+stamp+".md") + " in full and execute it.\n" +
+				sep + "\n"
+			f := newDispatchArrivalFixture(t, "idle", 1, 1, "old output\n", "0",
+				fakecli.Rule{Argv: []string{"agent", "read", "worker", "--source", "visible"}, Call: 1, ArgvPrefix: true, Stdout: "boot\n"},
+				fakecli.Rule{Argv: []string{"agent", "read", "worker", "--source", "visible"}, ArgvPrefix: true, Stdout: screen},
+				fakecli.Rule{Argv: []string{"agent", "read", "worker", "--source", "recent-unwrapped"}, ArgvPrefix: true, Stdout: screen},
+				fakecli.Rule{Argv: []string{"agent", "send-keys", "worker", "enter"}, ArgvPrefix: true},
+			)
+			arrivalRosterKind(t, f, "pi")
+			f.env["SOHO_WAIT_POLL_MS"] = "100"
+			taskFile := filepath.Join(f.state, "ws", "task-worker")
+			if err := os.WriteFile(taskFile, []byte("implementer: the old task\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The fake clock makes elapsed time meaningless, so the report wait
+			// is watched directly: a prompt that did not enter never waits.
+			waits := 0
+			oldWait := dispatchWaitFor
+			dispatchWaitFor = func(agents []string, sd string, ctx *core.Config, env platform.Env, timeout float64, quiet bool, cwd string) int {
+				waits++
+				return oldWait(agents, sd, ctx, env, timeout, quiet, cwd)
+			}
+			t.Cleanup(func() { dispatchWaitFor = oldWait })
+			start := time.Now()
+			code, out, errText := f.run(t, "worker", f.brief, "--timeout", "30000")
+			if waits != 0 {
+				t.Fatalf("the dispatch waited for the report %d time(s) before exiting not-received", waits)
+			}
+			if _, err := os.Stat(filepath.Join(f.state, "ws", "briefs", "worker-"+stamp+".md")); err != nil {
+				t.Fatalf("fixture screen did not name the composed brief: %v; out=%s", err, out)
+			}
+			if code != 15 || dispatchOutputStatus(t, out) != "not-received" {
+				t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
+			}
+			if !strings.Contains(errText, "after an Enter on the text left in its input box") || strings.Contains(errText, waitingForReport) || strings.Contains(errText, "was typed while it was working") {
+				t.Fatalf("setupElapsed=%s out=%s warning=%q", setupElapsed, out, errText)
+			}
+			// The prompt certainly did not enter: the task title stays the old one.
+			if got := strings.TrimSpace(mustRead(t, taskFile)); got != "implementer: the old task" {
+				t.Fatalf("task-worker=%q: a prompt that did not enter changed the title", got)
+			}
+			if titles := paneTitleCalls(t, f); len(titles) != 0 {
+				t.Fatalf("pane titles=%q: a prompt that did not enter retitled the pane", titles)
+			}
+			calls, err := fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prompts, keys := countDispatchCalls(calls, "prompt"), countDispatchCalls(calls, "send-keys"); prompts != 1 || keys != 1 {
+				t.Fatalf("prompt calls=%d send-keys calls=%d, want one prompt and one Enter; calls=%#v", prompts, keys, calls)
+			}
+			if elapsed := time.Since(start); elapsed > 20*time.Second {
+				t.Fatalf("the dispatch waited %v before exiting not-received", elapsed)
+			}
+		})
 	}
 }
