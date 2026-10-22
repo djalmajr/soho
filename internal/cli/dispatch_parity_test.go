@@ -35,8 +35,12 @@ func TestDispatchParityPortedCases(t *testing.T) {
 			t.Fatalf("pane title was not sent with role and task title: %#v", calls)
 		}
 	})
-	t.Run(`JS: "parity dispatch: the reviewer family check and the strict lint (test-multi-role.sh)"`, func(t *testing.T) {
-		f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
+	t.Run(`JS: "parity dispatch: review dispatch accepts a matching family and retains strict lint (test-multi-role.sh)"`, func(t *testing.T) {
+		f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0",
+			fakecli.Rule{Argv: []string{"agent", "get", "rev"}, Stdout: `{"result":{"agent":{"agent_status":"idle"}}}`},
+			fakecli.Rule{Argv: []string{"agent", "prompt", "rev"}, ArgvPrefix: true, Stdout: `{"result":{"submitted":true}}`},
+		)
+		f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
 		role := filepath.Join(f.root, "roles", "reviewer.md")
 		if err := os.WriteFile(role, []byte("---\nname: Reviewer\nmode: review\n---\nReview.\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -48,17 +52,17 @@ func TestDispatchParityPortedCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		code, out, errText := f.run(t, "rev", f.brief, "--no-wait")
-		if code != 5 || out != "" || !strings.Contains(errText, "shares a model family") {
-			t.Fatalf("family check code=%d out=%q stderr=%q", code, out, errText)
+		if code != 0 || !strings.Contains(out, `"wait_status":"submitted"`) || strings.Contains(errText, "family") {
+			t.Fatalf("review dispatch code=%d out=%q stderr=%q", code, out, errText)
 		}
-		// The family guard runs before the first fake Herdr invocation.
+		// The reviewer is submitted even with a matching implementer in the roster.
 
 		badBrief := filepath.Join(f.root, "bad.md")
 		if err := os.WriteFile(badBrief, []byte("# Goal\nDo it.\n# Owned files\nx.go\n# Forbidden\nNo commit or push.\n# Report\ndone.\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		f.env["SOHO_BRIEF_LINT"] = "strict"
-		code, out, errText = f.run(t, "rev", badBrief, "--allow-same-family", "--no-wait")
+		code, out, errText = f.run(t, "rev", badBrief, "--resend", "--no-wait")
 		if code != 2 || out != "" || !strings.Contains(errText, "is missing sections: [Expected result]") {
 			t.Fatalf("strict lint code=%d out=%q stderr=%q", code, out, errText)
 		}

@@ -133,8 +133,8 @@ func validate(a Assignment) error {
 			return errors.New("collaboration participant identity is incomplete")
 		}
 	}
-	if a.Author.Pane == a.Reviewer.Pane || a.Author.Name == a.Reviewer.Name || a.Author.Family == "" || a.Author.Family == "unknown" || a.Reviewer.Family == "" || a.Reviewer.Family == "unknown" || a.Author.Family == a.Reviewer.Family {
-		return errors.New("collaboration requires different participants and model families")
+	if a.Author.Pane == a.Reviewer.Pane || a.Author.Name == a.Reviewer.Name {
+		return errors.New("collaboration requires different participants")
 	}
 	return nil
 }

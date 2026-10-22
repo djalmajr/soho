@@ -724,3 +724,48 @@ func TestDoctorDiscardedModelsNameTheHigherConfigLayer(t *testing.T) {
 		})
 	}
 }
+
+func TestDoctorReportsRetiredFamilyConfigInEveryLayer(t *testing.T) {
+	env, root := tm6DoctorEnv(t)
+	env["HERDR_WORKSPACE_ID"] = "ws"
+	env["XDG_CONFIG_HOME"] = filepath.Join(root, "config")
+	files := map[string]string{
+		"user":    core.EffectiveUserConfigFile(platform.Current(), env, core.UserSelection{}),
+		"project": filepath.Join(root, ".agents", "soho.conf"),
+	}
+	for _, file := range files {
+		if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte("family_check=strict\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := core.LoadConfig(env, root)
+	files["session"] = core.SessionConfPath(&ctx, env, root)
+	if files["session"] == "" {
+		t.Fatal("fixture did not resolve session.conf")
+	}
+	if err := os.MkdirAll(filepath.Dir(files["session"]), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(files["session"], []byte("family_check=off\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx = core.LoadConfig(env, root)
+	output := tm6DoctorOutput(t, &ctx, env, root)
+	for source, file := range files {
+		want := "family_check is retired (" + source + "); delete the family_check line from " + file
+		if !strings.Contains(output, want) {
+			t.Fatalf("missing %q in %s", want, output)
+		}
+		raw, err := os.ReadFile(file)
+		value := "strict"
+		if source == "session" {
+			value = "off"
+		}
+		if err != nil || string(raw) != "family_check="+value+"\n" {
+			t.Fatalf("doctor changed %s: %q %v", source, raw, err)
+		}
+	}
+}

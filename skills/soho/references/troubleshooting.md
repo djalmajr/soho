@@ -178,7 +178,7 @@ Use a verified native release binary, or build an explicitly selected checkout w
 ## Roster column mix-ups
 
 - `agents.tsv` columns are: name, pane, kind, role, family, created_pane, cwd, started, and, on lines written by a current `spawn`, model, approvals, roles, lane, burst (column 13, `burst` for a temporary worker of the flex mode, else empty) and args (column 14, the configured native args the worker opened with). Old lines stop at `started` (8 columns) and are reused only for the same role. Column 4 is the current role. `roles` is a comma-separated history (`scouter,implementer`). Column 12 is the lane (`build`, `explore`, `review`, `read`). `reuse_workers` once compared the family with the cwd. Read columns by name in comments when adding code.
-- With `multi_role=on`, `spawn` may reuse an idle worker of another role when kind, cwd and resolved model match and the worker's approvals are at least the request. A worker that has edited is not reused as `reviewer`, `security-reviewer`, `ui-reviewer` or `inspector`. The reviewer family check still treats that `roles` history as an edit agent after the current role changes.
+- With `multi_role=on`, `spawn` may reuse an idle worker of another role when kind, cwd and resolved model match and the worker's approvals are at least the request. A worker that has edited is not reused as `reviewer`, `security-reviewer`, `ui-reviewer` or `inspector`.
 
 ## Orphan lines in the roster (a line of an agent that died)
 
@@ -345,12 +345,6 @@ Use a verified native release binary, or build an explicitly selected checkout w
 - **Cause:** the result of submitting the prompt could not be confirmed (the short arrival window ran out, the CLI's queue could not be read). The event itself **is** persisted with its report hash and revision — only the delivery is uncertain.
 - **Now:** there is no automatic resend and no exactly-once: after an uncertain result the orchestrator inspects and resumes explicitly.
 - **Do:** read the counterpart's pane and the persisted assignment (`collaborate status <id> --json`): if the counterpart already acted on the event, let the cycle continue from its state; otherwise the orchestrator decides — retry the event (it is idempotent: a repeated event id is not re-delivered), publish `escalate`, or `stop` the assignment. Never retype the report to force it through.
-
-## `collaborate start` exits 5 (same model family)
-
-- **Symptom:** `soho: collaborate: reviewer must use another model family` (exit 5) and the assignment is not published.
-- **Cause:** the author and the reviewer resolve to the same model family — the same rule the `dispatch` reviewer check enforces (it exists so the review is independent of the implementation).
-- **Do:** spawn the reviewer with another kind/model family (`--kind`/`--model` at spawn, or the lane/role model config) and start again. A cycle that already runs cannot swap participants: `stop` it and start a new assignment.
 
 ## A collaboration command cannot resolve the native binary
 

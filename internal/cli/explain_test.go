@@ -26,7 +26,7 @@ func TestExplainTextAndRecommendation(t *testing.T) {
 			}
 		}
 		want := []string{
-			"Recommendation: 2 panels - one writes code (research included) and the review happens here, from another model family. The lightest choice. 3 panels add a reviewer panel.",
+			"Recommendation: 2 panels - one writes code (research included) and the review happens here. The lightest choice. 3 panels add a reviewer panel.",
 			"Recommendation: 3 panels - one writes code (research included) and one reviews. Lighter on quota. 4 panels add a second writer; with 2 panels the review happens here.",
 			"Recommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here.",
 		}

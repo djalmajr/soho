@@ -3,7 +3,6 @@ package cli
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/dispatch"
@@ -11,7 +10,7 @@ import (
 )
 
 // newDispatchMetricsForFixture is the tm3b harness with a claude/anthropic
-// reviewer and the roster authors the --for cases need (issue #39, part 2):
+// reviewer for the sidecar schema check:
 // author (codex/openai, full columns) and ghost (pi, empty family and
 // effort columns).
 func newDispatchMetricsForFixture(t *testing.T) tm3bHarness {
@@ -60,104 +59,10 @@ func dispatchForSidecar(t *testing.T, h tm3bHarness, args ...string) (string, *j
 	return string(raw), obj
 }
 
-func TestDispatchMetricsForSidecar(t *testing.T) { // mutation: the sidecar drops the "for" array on a rewrite and the review line loses the authors
-	t.Run("dispatch_metrics_for_: a roster author carries kind, model, effort and family, never the name", func(t *testing.T) {
-		h := newDispatchMetricsForFixture(t)
-		raw, obj := dispatchForSidecar(t, h, "--for", "author")
-		forValue, ok := obj.Get("for")
-		if !ok {
-			t.Fatalf("sidecar has no for field: %s", raw)
-		}
-		want := `[{"kind":"codex","model":"gpt-5","effort":"high","family":"openai"}]`
-		if got := jsonjs.Stringify(forValue); got != want {
-			t.Fatalf("for=%s, want %s", got, want)
-		}
-		if strings.Contains(raw, "author") {
-			t.Fatalf("the author name reached the sidecar: %s", raw)
-		}
-	})
-	t.Run("dispatch_metrics_for_: a roster author with empty columns carries only the non-empty ones", func(t *testing.T) {
-		h := newDispatchMetricsForFixture(t)
-		raw, obj := dispatchForSidecar(t, h, "--for", "ghost")
-		forValue, ok := obj.Get("for")
-		if !ok {
-			t.Fatalf("sidecar has no for field: %s", raw)
-		}
-		want := `[{"kind":"pi","model":"m/1"}]`
-		if got := jsonjs.Stringify(forValue); got != want {
-			t.Fatalf("for=%s, want %s", got, want)
-		}
-		if strings.Contains(raw, "ghost") {
-			t.Fatalf("the author name reached the sidecar: %s", raw)
-		}
-	})
-	t.Run("dispatch_metrics_for_: a family author carries only the family", func(t *testing.T) {
-		h := newDispatchMetricsForFixture(t)
-		// The reviewer is anthropic and the author family is anthropic too:
-		// the family check is off because the case is the sidecar field, not
-		// the check.
-		h.env["SOHO_FAMILY_CHECK"] = "off"
-		raw, obj := dispatchForSidecar(t, h, "--for", "anthropic")
-		forValue, ok := obj.Get("for")
-		if !ok {
-			t.Fatalf("sidecar has no for field: %s", raw)
-		}
-		if got := jsonjs.Stringify(forValue); got != `[{"family":"anthropic"}]` {
-			t.Fatalf("for=%s, want [{\"family\":\"anthropic\"}]", got)
-		}
-	})
-	t.Run("dispatch_metrics_for_: a fixed-family kind author carries kind and family", func(t *testing.T) {
-		h := newDispatchMetricsForFixture(t)
-		raw, obj := dispatchForSidecar(t, h, "--for", "codex")
-		forValue, ok := obj.Get("for")
-		if !ok {
-			t.Fatalf("sidecar has no for field: %s", raw)
-		}
-		if got := jsonjs.Stringify(forValue); got != `[{"kind":"codex","family":"openai"}]` {
-			t.Fatalf("for=%s, want [{\"kind\":\"codex\",\"family\":\"openai\"}]", got)
-		}
-	})
-	t.Run("dispatch_metrics_for_: several authors keep one object per author in command order", func(t *testing.T) {
-		h := newDispatchMetricsForFixture(t)
-		raw, obj := dispatchForSidecar(t, h, "--for", "author,codex")
-		forValue, ok := obj.Get("for")
-		if !ok {
-			t.Fatalf("sidecar has no for field: %s", raw)
-		}
-		want := `[{"kind":"codex","model":"gpt-5","effort":"high","family":"openai"},{"kind":"codex","family":"openai"}]`
-		if got := jsonjs.Stringify(forValue); got != want {
-			t.Fatalf("for=%s, want %s", got, want)
-		}
-		if strings.Contains(raw, "author") {
-			t.Fatalf("the author name reached the sidecar: %s", raw)
-		}
-	})
-	t.Run("dispatch_metrics_for_: a released author carries the family the dispatch resolves", func(t *testing.T) {
-		h := newDispatchMetricsForFixture(t)
-		released := filepath.Join(h.ws, "briefs", "gone-20260930T210000.dispatch.json")
-		if err := os.MkdirAll(filepath.Dir(released), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(released, []byte(`{"version":1,"kind":"codex","model":"gpt-5","effort":"max","submission":"accepted"}`+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		raw, obj := dispatchForSidecar(t, h, "--for", "gone")
-		forValue, ok := obj.Get("for")
-		if !ok {
-			t.Fatalf("sidecar has no for field: %s", raw)
-		}
-		if got := jsonjs.Stringify(forValue); got != `[{"family":"openai"}]` {
-			t.Fatalf("for=%s, want [{\"family\":\"openai\"}]", got)
-		}
-		if strings.Contains(raw, "gone") {
-			t.Fatalf("the author name reached the sidecar: %s", raw)
-		}
-	})
-	t.Run("dispatch_metrics_for_: without --for the sidecar has no for field", func(t *testing.T) {
-		h := newDispatchMetricsForFixture(t)
-		raw, obj := dispatchForSidecar(t, h)
-		if _, ok := obj.Get("for"); ok {
-			t.Fatalf("sidecar recorded a for field without --for: %s", raw)
-		}
-	})
+func TestDispatchMetricsForSidecar(t *testing.T) {
+	h := newDispatchMetricsForFixture(t)
+	raw, obj := dispatchForSidecar(t, h)
+	if _, ok := obj.Get("for"); ok {
+		t.Fatalf("new dispatch recorded retired author selection: %s", raw)
+	}
 }

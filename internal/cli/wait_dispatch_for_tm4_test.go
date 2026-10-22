@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,104 +12,6 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
-
-func releasedForFixture(t *testing.T, family string, extra ...fakecli.Rule) *dispatchArrivalFixture {
-	t.Helper()
-	f := newDispatchArrivalFixture(t, "idle", 1, 1, "", "0", extra...)
-	role := filepath.Join(f.root, "roles", "reviewer.md")
-	if err := os.WriteFile(role, []byte("---\nname: Reviewer\nmode: review\n---\nReview.\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	roster := "worker\tw0test:p0a\t" + map[bool]string{true: "codex", false: "claude"}[family == "openai"] + "\treviewer\t" + family + "\t0\t\tnow\tmodel-x\ttask\treviewer\n"
-	if err := os.WriteFile(filepath.Join(f.state, "ws", "agents.tsv"), []byte(roster), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return f
-}
-
-func addReleasedForSidecar(t *testing.T, f *dispatchArrivalFixture, agent, stamp, kind, model, submission string, tmp bool) {
-	t.Helper()
-	dir := filepath.Join(f.state, "ws", "briefs")
-	if tmp {
-		dir = filepath.Join(f.env.Get("TMPDIR"), "soho", "ws", "reports")
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	stem := agent + "-" + stamp
-	if err := os.WriteFile(filepath.Join(dir, stem+".dispatch.json"), []byte(fmt.Sprintf("{\"version\":1,\"kind\":%q,\"model\":%q,\"effort\":\"\",\"submission\":%q}\n", kind, model, submission)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestDispatchForReleasedCommandCases(t *testing.T) {
-	t.Run("released author with coherent accepted sidecars resolves its family", func(t *testing.T) { // JS: "released author with coherent accepted sidecars resolves its family"
-		f := releasedForFixture(t, "openai", fakecli.Rule{Argv: []string{"agent", "get", "worker"}, Call: 2, Stdout: `{"result":{"agent":{"agent_status":"working","state_change_seq":2}}}`})
-		addReleasedForSidecar(t, f, "build", "20260927T101001", "pi", "anthropic/claude-3", "accepted", false)
-		addReleasedForSidecar(t, f, "build", "20260927T101002", "cursor", "claude-opus-4", "accepted", true)
-		code, out, stderr := f.run(t, "worker", f.brief, "--for", "build", "--no-wait")
-		if code != 0 || !strings.Contains(out, `"wait_status":"submitted"`) || stderr != "" {
-			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
-		}
-	})
-	t.Run("released author with no accepted sidecar gets the usage diagnostic", func(t *testing.T) { // JS: "released author with no accepted sidecar gets the usage diagnostic"
-		f := releasedForFixture(t, "openai")
-		addReleasedForSidecar(t, f, "build", "20260927T101001", "claude", "", "failed", false)
-		code, out, stderr := f.run(t, "worker", f.brief, "--for", "build", "--no-wait")
-		want := "dispatch: --for 'build': not an agent in the roster, a family (anthropic|openai|xai|google|alibaba), a kind with a fixed family, or an agent with an accepted dispatch recorded in this workspace"
-		if code != 2 || out != "" || !strings.Contains(stderr, want) {
-			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
-		}
-	})
-	t.Run("released author rejects disagreeing or unknown recorded families with counts", func(t *testing.T) { // JS: "released author rejects disagreeing or unknown recorded families with counts"
-		f := releasedForFixture(t, "openai")
-		addReleasedForSidecar(t, f, "build", "20260927T101001", "pi", "anthropic/claude-3", "accepted", false)
-		addReleasedForSidecar(t, f, "build", "20260927T101002", "codex", "", "accepted", true)
-		code, _, stderr := f.run(t, "worker", f.brief, "--for", "build", "--no-wait")
-		if code != 2 || !strings.Contains(stderr, "(anthropic ×1, openai ×1)") {
-			t.Fatalf("disagreeing families: code=%d stderr=%q", code, stderr)
-		}
-		addReleasedForSidecar(t, f, "build", "20260927T101003", "mystery", "", "accepted", false)
-		code, _, stderr = f.run(t, "worker", f.brief, "--for", "build", "--no-wait")
-		if code != 2 || !strings.Contains(stderr, "(anthropic ×1, openai ×1, unknown ×1)") {
-			t.Fatalf("unknown family: code=%d stderr=%q", code, stderr)
-		}
-	})
-	t.Run("a reviewer is refused when a released author shares its family", func(t *testing.T) { // JS: "a reviewer is refused when a released author shares its family"
-		f := releasedForFixture(t, "anthropic")
-		addReleasedForSidecar(t, f, "build", "20260927T101001", "pi", "anthropic/claude-3", "accepted", false)
-		code, _, stderr := f.run(t, "worker", f.brief, "--for", "build", "--no-wait")
-		if code != 5 || !strings.Contains(stderr, "shares a model family with the slice's author(s): build (anthropic)") {
-			t.Fatalf("code=%d stderr=%q", code, stderr)
-		}
-	})
-	t.Run("--for prefers a live roster entry over its recorded dispatches", func(t *testing.T) { // JS: "--for prefers a live roster entry over its recorded dispatches"
-		f := releasedForFixture(t, "openai")
-		roster := "worker\tw0test:p0a\tcodex\treviewer\topenai\t0\t\tnow\tmodel-x\ttask\treviewer\nbuild\tp0b\tclaude\timplementer\topenai\t1\t/tmp\tnow\t\tfull\timplementer\t"
-		if err := os.WriteFile(filepath.Join(f.state, "ws", "agents.tsv"), []byte(roster+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		addReleasedForSidecar(t, f, "build", "20260927T101001", "claude", "", "accepted", false)
-		code, _, stderr := f.run(t, "worker", f.brief, "--for", "build", "--no-wait")
-		if code != 5 || !strings.Contains(stderr, "slice's author(s): build (openai)") {
-			t.Fatalf("code=%d stderr=%q", code, stderr)
-		}
-	})
-	t.Run("released agent names match exactly before the timestamp", func(t *testing.T) { // JS: "released agent names match exactly before the timestamp"
-		f := releasedForFixture(t, "openai")
-		f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
-		addReleasedForSidecar(t, f, "build-2", "20260927T101001", "claude", "", "accepted", false)
-		code, out, stderr := f.run(t, "worker", f.brief, "--for", "build", "--no-wait")
-		if code != 2 || out != "" || !strings.Contains(stderr, "not an agent in the roster") {
-			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
-		}
-	})
-}
-
-type taskReportDispatchResult struct {
-	Report     string `json:"report"`
-	TaskReport string `json:"task_report"`
-}
 
 func readArrivalCalls(t *testing.T, f *dispatchArrivalFixture) []fakecli.Call {
 	t.Helper()
@@ -131,6 +32,11 @@ func runArrivalCommand(t *testing.T, f *dispatchArrivalFixture, args ...string) 
 		return Run(args, f.env)
 	}()
 	return code, out.String(), stderr.String()
+}
+
+type taskReportDispatchResult struct {
+	Report     string `json:"report"`
+	TaskReport string `json:"task_report"`
 }
 
 func readTaskDispatchResult(t *testing.T, out string) taskReportDispatchResult {

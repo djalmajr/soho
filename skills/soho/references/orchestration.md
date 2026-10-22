@@ -7,7 +7,6 @@ It is operational discipline between agents of the same system user, not isolati
 ## When to use it
 
 - A review round-trip through the orchestrator is too slow or too costly for the slice (every finding and fix would be re-typed by the caller).
-- The author and the reviewer run from **distinct model families** — the check is enforced at `start` (exit 5), the same rule as the `dispatch` reviewer family check.
 
 Without an assignment the normal workflow stands: the report file is the completion signal and the orchestrator relays everything.
 

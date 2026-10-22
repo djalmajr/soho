@@ -69,3 +69,17 @@ func TestAssignmentIdentityAndUnreadableStateFailClosed(t *testing.T) {
 		t.Fatal("own lock survived transition")
 	}
 }
+
+func TestAssignmentFamilyMetadataDoesNotRestrictParticipants(t *testing.T) {
+	_, a := assignmentFixture(t)
+	for _, family := range []string{"openai", "unknown", ""} {
+		a.Reviewer.Family = family
+		if err := validate(a); err != nil {
+			t.Fatalf("family=%q: %v", family, err)
+		}
+	}
+	a.Reviewer.Name = a.Author.Name
+	if err := validate(a); err == nil {
+		t.Fatal("same participant accepted")
+	}
+}

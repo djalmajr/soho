@@ -51,7 +51,7 @@ A worker that has to guess will guess — and a simpler model guesses more. Ever
 ## Integration
 
 11. **Fixed order after N parallel deliveries:** repo formatter → workspace typecheck → project gates → full suite → end-to-end smoke on touched surfaces. Only then commit.
-12. **Review by a different model family** than the implementer, before any push. An implementer's self-report is not a review. It pays: across one multi-slice port every review found a real defect the implementer's own tests had passed (a session reused with the wrong model, a cleanup that would drop the whole roster on a malformed answer, a parser that read a field wrong). **Fix checks go to the same reviewer.** After fixing its findings, send the fix list to the reviewer that found them, with a report path of its own: it still has the context, so the check is short. **Parallel workers in one checkout** get disjoint files. When a shared file is unavoidable (an entry point both slices extend), give each worker its own worktree, or separate the slices at commit time: rebuild the shared file from `HEAD` plus only this slice's lines, stage that blob (`git hash-object -w` + `git update-index --cacheinfo`) without touching the other worker's working copy, and run the slice's tests on an exact copy of the index (`git checkout-index -a --prefix=<tmp>/`) before the commit.
+12. **Review before any push.** An implementer's self-report is not a review. It pays: across one multi-slice port every review found a real defect the implementer's own tests had passed (a session reused with the wrong model, a cleanup that would drop the whole roster on a malformed answer, a parser that read a field wrong). **Fix checks go to the same reviewer.** After fixing its findings, send the fix list to the reviewer that found them, with a report path of its own: it still has the context, so the check is short. **Parallel workers in one checkout** get disjoint files. When a shared file is unavoidable (an entry point both slices extend), give each worker its own worktree, or separate the slices at commit time: rebuild the shared file from `HEAD` plus only this slice's lines, stage that blob (`git hash-object -w` + `git update-index --cacheinfo`) without touching the other worker's working copy, and run the slice's tests on an exact copy of the index (`git checkout-index -a --prefix=<tmp>/`) before the commit.
 13. **Say what was proved, not more.** "No regression observed in <tests + smokes>", never "zero regressions". What was skipped is not covered.
 14. **Each delegated slice produces its own report file** in the initiative's directory when one exists.
 
@@ -59,7 +59,7 @@ A worker that has to guess will guess — and a simpler model guesses more. Ever
 
 15. **Re-read before each surgical edit** in a file that may have changed.
 16. **Bulk mechanical edits go to a cheap agent with an exact contract**; the main model keeps decisions and integration.
-17. **Small tasks stay with the orchestrator.** One or two files, no product decision, a few dozen lines, docs, config, a question, a quick verification: doing it beats briefing it. If writing the brief takes longer than the change, make the change. Product code the orchestrator writes still gets a reviewer from another model family before push.
+17. **Small tasks stay with the orchestrator.** One or two files, no product decision, a few dozen lines, docs, config, a question, a quick verification: doing it beats briefing it. If writing the brief takes longer than the change, make the change. Product code the orchestrator writes still gets a reviewer before push.
 18. **Surveys go to a scouter.** Reading many files, another repo, or several tools' conventions to inform a decision is research, not orchestration; the orchestrator briefs a `scouter`, reads the report and decides. Doing the survey itself spends the context that integration needs later.
 
 ## Roles (model-independent)
@@ -68,6 +68,6 @@ A worker that has to guess will guess — and a simpler model guesses more. Ever
 |---|---|---|
 | Orchestrator | decompose, contract, integrate, decide | the one implementing slices |
 | Implementer | one slice, per-item report | the one validating the whole repo |
-| Reviewer | concrete findings anchored to file:line, before push | same model family as the implementer |
+| Reviewer | concrete findings anchored to file:line, before push | an implementer's self-report treated as review |
 | Visual QA | screenshots in both themes, findings | the one fixing |
 | Tasker | rename, move, insert keys — exact contract | a decision maker |

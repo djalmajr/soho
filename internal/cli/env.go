@@ -60,7 +60,7 @@ func cmdEnv(ctx *core.Config, env platform.Env, cwd string) {
 		}
 		lines = append(lines, "kind "+kind+": "+kindVersion(envRun(exe, []string{"--version"}, env)))
 	}
-	lines = append(lines, fmt.Sprintf("config: layout=%s reuse_workers=%s approvals=%s auto_approve=%s family_check=%s brief_lint=%s", core.Cfg(ctx, "layout", "split", env), core.Cfg(ctx, "reuse_workers", "on", env), core.Cfg(ctx, "approvals", "auto", env), core.Cfg(ctx, "auto_approve", "off", env), core.Cfg(ctx, "family_check", "strict", env), core.Cfg(ctx, "brief_lint", "warn", env)))
+	lines = append(lines, fmt.Sprintf("config: layout=%s reuse_workers=%s approvals=%s auto_approve=%s brief_lint=%s", core.Cfg(ctx, "layout", "split", env), core.Cfg(ctx, "reuse_workers", "on", env), core.Cfg(ctx, "approvals", "auto", env), core.Cfg(ctx, "auto_approve", "off", env), core.Cfg(ctx, "brief_lint", "warn", env)))
 	_, _ = fmt.Fprintln(platform.Stdout, strings.Join(lines, "\n"))
 	_ = cwd
 }

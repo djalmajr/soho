@@ -195,9 +195,6 @@ effort.cursor=xhigh
 # Global effort ceiling applied after the kind's own ceiling: low|medium|high|xhigh|max.
 max_effort=max
 
-# Reviewer vs edit-agent model-family check: strict (refuse, exit 5) | warn | off.
-family_check=strict
-
 # Seconds the visible screen must stay unchanged, with the agent not `working`,
 # before a wait gives up on a worker that never wrote its report.
 settled_grace=45
@@ -412,8 +409,7 @@ model.grok.worker=grok
 # Pick a provider/id yourself (add the provider first, see
 # references/kinds.md, "Generic kinds"); with no model set, the CLI uses its
 # own default. Effort maps to --thinking (ceiling max) on pi; the opencode
-# TUI maps no effort flag. Family is by model, so the same-family reviewer
-# check is skipped unless the model id is recognizable.
+# TUI maps no effort flag. Family metadata is derived from recognizable model ids.
 # model.pi.worker=my-provider/my-model
 # effort.pi=max
 # model.opencode.worker=my-provider/my-model

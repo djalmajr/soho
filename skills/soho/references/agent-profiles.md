@@ -274,12 +274,12 @@ Platform behaviour needs a run on the platform. A reviewer that cannot run it sh
   - a small model for closed, low-risk slices;
   - slices on untrusted input need a stronger model, or a brief that lists the hostile variants to test.
 - **designer and UI work with e2e:** a kind that can open a port and run a browser. Not `codex` inside its sandbox.
-- **reviewer:** another family than the implementer (the rule that never moves):
+- **reviewer:** choose by the checks the slice needs:
   - `claude` for UI, architecture and integration; Sonnet 5.5 medium is a useful static reviewer, but less deep than `codex` on the async transitions (appliance and cinzel, 2026-10-01);
   - `codex` with gpt-6.1-sol at `medium` proved useful: it executes the probes, proves a weak test with a surviving mutation, and is honest about `[partial]` (appliance and skedly, 2026-10-01). Expect long reports and the suite running in a copy by default; the operator moved it to `low` on 2026-10-01, with no evidence at `low` yet;
   - `cursor`/`grok` for SQL, atomicity and tests;
   - `codex` when the implementer is `grok` or `cursor`, at `high` effort (`xhigh` for security and large slices);
-  - `agy` at `high` for privacy and access-control reviews, with a check for a state change across requests; `agy` at `medium` for bounded UI. Ask it for the exact command and pasted output of every check it says it ran. When its quota is spent, use another family;
+  - `agy` at `high` for privacy and access-control reviews, with a check for a state change across requests; `agy` at `medium` for bounded UI. Ask it for the exact command and pasted output of every check it says it ran. When its quota is spent, use another available assistant;
   - for platform behaviour, a run on the target machine.
 - **security-reviewer:** `cursor`/`grok` or `codex`, both precise when they could execute their probes.
 - **scouter and researcher:**
@@ -290,7 +290,7 @@ Platform behaviour needs a run on the platform. A reviewer that cannot run it sh
 
 ## Cheap implementers
 
-One goal of this skill is to build with cheap implementers (for example `codex` with gpt-6-luna, or a small model on `pi`) and keep quality with a strong reviewer from another family. Cheap models follow a closed brief well and fail in predictable ways: they stop early on volume, write tests that look right and prove little, and trust the machine they run on. These briefs held up on a long port with four cheap panes:
+One goal of this skill is to build with cheap implementers (for example `codex` with gpt-6-luna, or a small model on `pi`) and keep quality with a strong reviewer. Cheap models follow a closed brief well and fail in predictable ways: they stop early on volume, write tests that look right and prove little, and trust the machine they run on. These briefs held up on a long port with four cheap panes:
 
 1. **Small slices.** Keep a volume slice under about 40 items, or one module. Past that, the first round stops at 30% to 60% and asks for more rounds than a split would have cost.
 2. **The quality bar goes in the first brief, not in an amendment:**

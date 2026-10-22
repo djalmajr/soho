@@ -135,7 +135,7 @@ func TestSetupProbeJavaScriptCases(t *testing.T) {
 			platform.Stdout = &out
 			defer func() { platform.Stdout = old }()
 			CmdProbe(nil, ctx, env, os.TempDir())
-			if !strings.HasPrefix(out.String(), "{\n  \"probes\"") || !strings.Contains(out.String(), "not installed") || !strings.Contains(out.String(), "recommended_reviewer") {
+			if !strings.HasPrefix(out.String(), "{\n  \"probes\"") || !strings.Contains(out.String(), "not installed") || strings.Contains(out.String(), "recommended_reviewer") {
 				t.Fatalf("JSON=%s", out.String())
 			}
 		}},

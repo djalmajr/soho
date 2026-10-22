@@ -6,7 +6,6 @@ import (
 
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -207,41 +206,6 @@ func TestSetupDetectTM5OwnProviderCases(t *testing.T) {
 }
 
 func TestSetupDetectTM5PolicyCases(t *testing.T) {
-	t.Run(`// JS: "recommendReviewerJson: build of each family; not-installed kinds are not candidates"`, func(t *testing.T) {
-		_, _, env, ctx := tm5DetectFixture(t)
-		bin := t.TempDir()
-		for _, exe := range []string{"claude", "codex", "grok", "agy"} {
-			if _, err := fakecli.Install(t, bin, exe, []fakecli.Rule{{AnyArgs: true}}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		for _, item := range fakecli.Env(env.List(), bin) {
-			key, value, ok := strings.Cut(item, "=")
-			if ok {
-				env[key] = value
-			}
-		}
-		if runtime.GOOS == "windows" {
-			env["PATHEXT"] = ".EXE;.CMD;.BAT;.COM"
-		}
-		for _, pair := range []struct{ build, want string }{{"claude", "codex"}, {"codex", "claude"}, {"grok", "codex"}, {"agy", "codex"}} {
-			ctx.Entries["lane_build_kind"] = core.ConfigEntry{Value: pair.build, Source: "project"}
-			cwd := t.TempDir()
-			output := DetectJSON(ctx, env, cwd)
-			var doc map[string]any
-			if err := json.Unmarshal([]byte(output), &doc); err != nil {
-				t.Fatalf("build=%s detect exit=0; output was not JSON: %v\n%s", pair.build, err, output)
-			}
-			recommended, ok := doc["recommended_reviewer"].(map[string]any)
-			if !ok {
-				t.Fatalf("build=%s detect exit=0; recommended_reviewer missing or invalid; output:\n%s", pair.build, output)
-			}
-			rec := recommended
-			if rec["kind"] != pair.want {
-				t.Errorf("build=%s detect exit=0 reviewer=%v want=%s; output:\n%s", pair.build, rec, pair.want, output)
-			}
-		}
-	})
 	t.Run(`// JS: "effectiveBuildFamily: lane kind+model, role config, frontmatter, layer rule"`, func(t *testing.T) {
 		_, _, env, ctx := tm5DetectFixture(t)
 		for _, tc := range []struct{ lane, role, model, family string }{{"codex", "claude", "", "openai"}, {"", "claude", "", "anthropic"}, {"", "", "grok-4.7", "xai"}} {

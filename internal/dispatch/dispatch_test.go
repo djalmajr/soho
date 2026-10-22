@@ -81,41 +81,6 @@ func TestDispatchHelpers(t *testing.T) {
 			t.Fatalf("submission=%v", got)
 		}
 	})
-	t.Run(`JS: --for resolves family names and fixed-family kinds`, func(t *testing.T) {
-		for spec, want := range map[string]string{"openai": "openai", "codex": "openai", "gemini": "google", "alibaba": "alibaba"} {
-			got, err := ForSpecFamily(spec, t.TempDir(), platform.Env{}, t.TempDir(), &core.Config{Entries: map[string]core.ConfigEntry{}})
-			if err != nil || got != want {
-				t.Errorf("%s: got %q, %v", spec, got, err)
-			}
-		}
-	})
-	t.Run(`JS: forSpecFamily ignores accepted sidecars whose pair belongs to another agent`, func(t *testing.T) { // Mutation captured: counting every filename with the requested prefix assigns another agent's family.
-		sd := t.TempDir()
-		briefs := filepath.Join(sd, "briefs")
-		if err := os.MkdirAll(briefs, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		data := `{"version":1,"kind":"codex","model":"gpt-5","submission":"accepted"}`
-		if err := os.WriteFile(filepath.Join(briefs, "rev-extra-20260929T051905.dispatch.json"), []byte(data), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		_, err := ForSpecFamily("rev", sd, platform.Env{"HERDR_WORKSPACE_ID": "ws", "TMPDIR": t.TempDir()}, "/work", &core.Config{Entries: map[string]core.ConfigEntry{}})
-		if err == nil || !strings.Contains(err.Error(), "not an agent in the roster") {
-			t.Fatalf("orphan pair resolved as rev family: %v", err)
-		}
-	})
-	t.Run(`JS: --for rejects a reviewer whose edit author shares its family`, func(t *testing.T) {
-		sd := t.TempDir()
-		roster := "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\n" +
-			"author\tp1\tcodex\timplementer\topenai\t0\t/work\tnow\tgpt-5\task\timplementer\n"
-		if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte(roster), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		got := FamilyConflicts(sd, "openai", platform.Env{}, t.TempDir())
-		if len(got) != 1 || !strings.Contains(got[0], "author (codex)") {
-			t.Fatalf("conflicts=%v, want author (codex)", got)
-		}
-	})
 }
 
 func TestDispatchJavaScriptHelperCases(t *testing.T) {
@@ -204,82 +169,6 @@ func TestDispatchJavaScriptHelperCases(t *testing.T) {
 			t.Fatalf("off=%#v", off)
 		}
 	})
-	t.Run(`JS: "family: unknown and empty families never conflict"`, func(t *testing.T) {
-		sd := t.TempDir()
-		roster := "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\nex\tp1\tgrok\tscouter\txai\t1\t/tmp/work\tnow\tgrok-4.7\ttask\timplementer,scouter\n"
-		if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte(roster), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		for _, family := range []string{"", "unknown", "openai"} {
-			if got := FamilyConflicts(sd, family, platform.Env{}, t.TempDir()); len(got) != 0 {
-				t.Errorf("%q conflicts=%v", family, got)
-			}
-		}
-	})
-	t.Run(`JS: "family: edit history counts, the wrong family does not, a plain worker never does"`, func(t *testing.T) {
-		sd := t.TempDir()
-		cwd, err := os.Getwd()
-		if err != nil {
-			t.Fatal(err)
-		}
-		env := platform.Env{"SOHO_SKILL_DIR": "../../skills/soho"}
-		roster := "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\nex\tp1\tgrok\tscouter\txai\t1\t/tmp/work\tnow\tgrok-4.7\ttask\timplementer,scouter\nother\tp2\tcodex\timplementer\topenai\t1\t/tmp/work\tnow\tgpt-5\ttask\timplementer\nplain\tp3\tgrok\tscouter\txai\t1\t/tmp/work\tnow\tgrok-4.7\ttask\tscouter\n"
-		if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte(roster), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if got := strings.Join(FamilyConflicts(sd, "xai", env, cwd), ","); got != "ex (grok)" {
-			t.Fatalf("xai=%q", got)
-		}
-		if got := strings.Join(FamilyConflicts(sd, "openai", env, cwd), ","); got != "other (codex)" {
-			t.Fatalf("openai=%q", got)
-		}
-	})
-	t.Run(`JS: "family: an old 8-column line is counted by its role"`, func(t *testing.T) {
-		sd := t.TempDir()
-		roster := "impl\tp1\tgrok\timplementer\txai\t1\t/tmp/work\tnow\n"
-		if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte(roster), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if got := FamilyConflicts(sd, "xai", platform.Env{}, t.TempDir()); len(got) != 1 || got[0] != "impl (grok)" {
-			t.Fatalf("conflicts=%v", got)
-		}
-	})
-	t.Run(`JS: "family: the 12-column history is column 11 (lane not folded in)"`, func(t *testing.T) {
-		sd := t.TempDir()
-		roster := "ex\tp1\tgrok\tscouter\txai\t1\t/tmp/work\tnow\tgrok-4.7\tfull\timplementer\texplore\n"
-		if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte(roster), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		cwd, err := os.Getwd()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := FamilyConflicts(sd, "xai", platform.Env{"SOHO_SKILL_DIR": "../../skills/soho"}, cwd); len(got) != 1 || got[0] != "ex (grok)" {
-			t.Fatalf("conflicts=%v", got)
-		}
-	})
-	t.Run(`JS: "family: a documenter session is an edit agent only when it edited before"`, func(t *testing.T) {
-		sd := t.TempDir()
-		cwd, err := os.Getwd()
-		if err != nil {
-			t.Fatal(err)
-		}
-		env := platform.Env{"SOHO_SKILL_DIR": "../../skills/soho"}
-		roster := "doc\tp1\tcodex\tdocumenter\topenai\t1\t/tmp/work\tnow\tgpt-5\ttask\timplementer,documenter\n"
-		if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte(roster), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if got := FamilyConflicts(sd, "openai", env, cwd); len(got) != 1 {
-			t.Fatalf("edit history conflicts=%v", got)
-		}
-		roster = strings.Replace(roster, "implementer,documenter", "documenter", 1)
-		if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte(roster), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if got := FamilyConflicts(sd, "openai", env, cwd); len(got) != 0 {
-			t.Fatalf("document-only history conflicts=%v", got)
-		}
-	})
 	t.Run(`JS: "compose: role header, brief verbatim, the report contract in order"`, func(t *testing.T) {
 		role := filepath.Join(t.TempDir(), "implementer.md")
 		if err := os.WriteFile(role, []byte("---\nname: Implementer\n---\n\nRole text.\n"), 0o600); err != nil {
@@ -307,67 +196,6 @@ func TestDispatchJavaScriptHelperCases(t *testing.T) {
 }
 
 func TestDispatchRemainingHelperCases(t *testing.T) {
-	t.Run(`JS: "family: a project role with mode: edit counts via the history"`, func(t *testing.T) {
-		dir := t.TempDir()
-		roles := filepath.Join(t.TempDir(), "roles")
-		if err := os.MkdirAll(roles, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(roles, "custom.md"), []byte("---\nmode: edit\n---\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		roster := "doc\tp1\tcodex\tdocumenter\topenai\t0\t/work\tnow\tgpt-5\ttask\tcustom,documenter\n"
-		if err := os.WriteFile(filepath.Join(dir, "agents.tsv"), []byte(roster), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		cwd, err := os.Getwd()
-		if err != nil {
-			t.Fatal(err)
-		}
-		env := platform.Env{"SOHO_ROLES": roles, "SOHO_SKILL_DIR": "../../skills/soho"}
-		got := FamilyConflicts(dir, "openai", env, cwd)
-		if len(got) != 1 || got[0] != "doc (codex)" {
-			t.Fatalf("project edit-role history conflicts=%v", got)
-		}
-	})
-	t.Run(`JS: "forSpecFamily: roster agent (col 5, derived when unknown), family name, fixed kind, unresolved"`, func(t *testing.T) {
-		sd := t.TempDir()
-		roster := "build\tp1\tcodex\timplementer\topenai\t0\t/work\tnow\tgpt-5\ttask\timplementer\n" +
-			"derived\tp2\tgrok\timplementer\tunknown\t0\t/work\tnow\tgrok-4.7\ttask\timplementer\n"
-		if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte(roster), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
-		for spec, want := range map[string]string{"build": "openai", "derived": "xai", "anthropic": "anthropic", "gemini": "google"} {
-			got, err := ForSpecFamily(spec, sd, platform.Env{"HERDR_WORKSPACE_ID": "ws", "TMPDIR": t.TempDir()}, "/work", ctx)
-			if err != nil || got != want {
-				t.Errorf("%s: got %q, %v; want %q", spec, got, err, want)
-			}
-		}
-		if got, err := ForSpecFamily("mystery", sd, platform.Env{"HERDR_WORKSPACE_ID": "ws", "TMPDIR": t.TempDir()}, "/work", ctx); err == nil || got != "" || !strings.Contains(err.Error(), "not an agent in the roster") || !strings.Contains(err.Error(), "a family (anthropic|openai|xai|google|alibaba)") {
-			t.Fatalf("unresolved: got %q, %v", got, err)
-		}
-	})
-	t.Run(`JS: "forSpecFamily: conflicting recorded families are reported in code-unit order"`, func(t *testing.T) {
-		sd := t.TempDir()
-		briefs := filepath.Join(sd, "briefs")
-		if err := os.MkdirAll(briefs, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		for _, row := range []struct{ name, family string }{{"released-20260928T000001", "zeta"}, {"released-20260928T000002", "alpha"}} {
-			data := `{"version":1,"kind":"codex","model":"gpt-5","submission":"accepted"}`
-			if row.family == "zeta" {
-				data = `{"version":1,"kind":"claude","model":"sonnet","submission":"accepted"}`
-			}
-			if err := os.WriteFile(filepath.Join(briefs, row.name+".dispatch.json"), []byte(data), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		_, err := ForSpecFamily("released", sd, platform.Env{"HERDR_WORKSPACE_ID": "ws", "TMPDIR": t.TempDir()}, "/work", &core.Config{Entries: map[string]core.ConfigEntry{}})
-		if err == nil || !strings.Contains(err.Error(), "anthropic ×1, openai ×1") || !strings.Contains(err.Error(), "pass the family instead (anthropic|openai|xai|google|alibaba)") {
-			t.Fatalf("conflict error=%v", err)
-		}
-	})
 	t.Run(`JS: "compose: the report-writer line leads the standing rules in brief and amendment"`, func(t *testing.T) {
 		role := filepath.Join(t.TempDir(), "role.md")
 		if err := os.WriteFile(role, []byte("---\nname: Tester\n---\nRole.\n"), 0o600); err != nil {

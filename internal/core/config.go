@@ -79,7 +79,7 @@ var ConfigScalarKeys = []string{
 	"split_min_pane", "pane_columns", "pane_overflow", "pane_column_rows", "herd_label", "herd_label_max", "reuse_workers",
 	"multi_role", "panes", "lanes", "pane_mode", "flex_extra", "flex_roles",
 	"worker_context", "brief_lint", "brief_lint_aliases", "brief_lint_placeholders", "approvals",
-	"auto_approve", "max_auto_approvals", "max_effort", "family_check",
+	"auto_approve", "max_auto_approvals", "max_effort",
 	"settled_grace", "spawn_timeout", "dispatch_timeout", "compact_timeout", "provider_retries",
 	"provider_retry_delay", "provider_capacity_texts", "provider_error_texts",
 	"prompt_check_seconds", "prompt_settle_seconds", "stuck_warn_minutes", "context_warn_percent", "state_dir",

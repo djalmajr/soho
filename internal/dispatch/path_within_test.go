@@ -1,13 +1,8 @@
 package dispatch
 
 import (
-	"os"
-	"path/filepath"
 	"runtime"
 	"testing"
-
-	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/platform"
 )
 
 // DJA-379: PathWithin is the containment check the dispatch report route
@@ -58,29 +53,6 @@ func TestPathWithinTable(t *testing.T) {
 			t.Fatalf("PathWithin(%q, %q, %q) = %v; want %v", tc.child, tc.parent, tc.goos, got, tc.want)
 		}
 	}
-}
-
-// DJA-379: the readers already scan both the state dir and the soho
-// scratch dir, and the report route must not need reader changes. This
-// pins the family lookup side: an accepted dispatch recorded only under
-// $TMPDIR/soho/<ws>/reports still resolves the family (the state-dir
-// side is covered by the existing ForSpecFamily cases).
-func TestPathWithinRelatedReadersScanBothDirs(t *testing.T) {
-	t.Run("the family lookup finds an accepted dispatch recorded only in the TMPDIR soho dir", func(t *testing.T) {
-		sd := t.TempDir()
-		tmp := t.TempDir()
-		reports := filepath.Join(tmp, "soho", "ws", "reports")
-		if err := os.MkdirAll(reports, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(reports, "build-20261001T000000.dispatch.json"), []byte(`{"version":1,"kind":"claude","model":"sonnet","submission":"accepted"}`+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		got, err := ForSpecFamily("build", sd, platform.Env{"HERDR_WORKSPACE_ID": "ws", "TMPDIR": tmp}, "/work", &core.Config{Entries: map[string]core.ConfigEntry{}})
-		if err != nil || got != "anthropic" {
-			t.Fatalf("ForSpecFamily from the TMPDIR sidecar: got %q, %v; want anthropic", got, err)
-		}
-	})
 }
 
 // The POSIX root contains every absolute path: "/" plus the separator must

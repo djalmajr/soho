@@ -160,7 +160,7 @@ func TestDispatchUsageErrorsPortedCases(t *testing.T) {
 		{name: "missing file", args: []string{"worker", filepath.Join(f.root, "missing.md")}, code: 2, stderr: "soho: brief not found: " + filepath.Join(f.root, "missing.md") + "\n"},
 		{name: "unknown agent", args: []string{"other", f.brief}, code: 3, stderr: "soho: agent 'other' is not in this skill's roster (spawn it first, or pass a name you spawned)\n"},
 		// DJA-473: options may come before the agent and the brief.
-		{name: "option before the positionals", args: []string{"--for", "anthropic", "other", f.brief}, code: 3, stderr: "soho: agent 'other' is not in this skill's roster (spawn it first, or pass a name you spawned)\n"},
+		{name: "option before the positionals", args: []string{"--role", "reviewer", "other", f.brief}, code: 3, stderr: "soho: agent 'other' is not in this skill's roster (spawn it first, or pass a name you spawned)\n"},
 		{name: "option between the positionals", args: []string{"other", "--timeout", "90s", f.brief}, code: 3, stderr: "soho: agent 'other' is not in this skill's roster (spawn it first, or pass a name you spawned)\n"},
 		{name: "unknown option before the positionals", args: []string{"--not-an-option", "worker", f.brief}, code: 2, stderr: "soho: dispatch: unknown option --not-an-option\n"},
 		{name: "a third positional", args: []string{"worker", f.brief, "extra"}, code: 2, stderr: "soho: dispatch: unexpected argument extra (usage: dispatch <agent> <brief.md> [options])\n"},
@@ -207,8 +207,8 @@ func TestDispatchWaitEmptyExitErrorRecordsFriction(t *testing.T) { // Mutation c
 	}
 }
 
-func TestDispatchForAmendPortedCases(t *testing.T) {
-	// JS: "dispatch: --for with --amend is accepted and keeps the --for validations"
+func TestDispatchAmendPortedCases(t *testing.T) {
+	// Amendments submit normally and reject retired author selection options.
 	h := newTM3bHarness(t, tm3bFullBrief())
 	rolesDir := filepath.Dir(h.role)
 	if err := os.WriteFile(filepath.Join(rolesDir, "reviewer.md"), []byte("---\nname: Reviewer\nmode: review\n---\nRole body.\n"), 0o600); err != nil {
@@ -230,33 +230,31 @@ func TestDispatchForAmendPortedCases(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(h.ws, "last-report-reviewer"), []byte(previous+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Run("--for with --amend is accepted and proceeds with the amendment", func(t *testing.T) {
-		code, out, stderr := h.run(t, "reviewer", h.brief, "--amend", "--for", "author", "--no-wait")
+	t.Run("an amendment is accepted without author selection", func(t *testing.T) {
+		code, out, stderr := h.run(t, "reviewer", h.brief, "--amend", "--no-wait")
 		if code != 0 || !strings.Contains(out, `"wait_status":"submitted"`) || !strings.Contains(out, `"amend":true`) {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 		}
-		if strings.Contains(stderr, "--for needs a plain dispatch") {
-			t.Fatalf("amend with --for still rejected: %s", stderr)
-		}
+
 	})
-	t.Run("--for with --amend and an unknown spec still exits 2", func(t *testing.T) {
+	t.Run("retired author selection on an amendment exits 2", func(t *testing.T) {
 		defer func() {
 			v := recover()
 			x, ok := v.(*platform.ExitError)
-			if !ok || x.Code != 2 || !strings.Contains(x.Msg, "not an agent in the roster") {
+			if !ok || x.Code != 2 || !strings.Contains(x.Msg, "unknown option --for") {
 				t.Fatalf("panic=%#v", v)
 			}
 		}()
 		h.run(t, "reviewer", h.brief, "--amend", "--for", "nosuchspec", "--no-wait")
 	})
-	t.Run("--for with --amend on a non-reviewer role still exits 2", func(t *testing.T) {
+	t.Run("retired author selection on an edit amendment exits 2", func(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(h.ws, "last-report-author"), []byte(previous+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		defer func() {
 			v := recover()
 			x, ok := v.(*platform.ExitError)
-			if !ok || x.Code != 2 || !strings.Contains(x.Msg, "applies to a reviewer dispatch") {
+			if !ok || x.Code != 2 || !strings.Contains(x.Msg, "unknown option --for") {
 				t.Fatalf("panic=%#v", v)
 			}
 		}()

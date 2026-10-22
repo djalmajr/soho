@@ -160,7 +160,7 @@ func warmFixtureTrap(t *testing.T) (string, string) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(project, []byte("lane.build.kind=codex\nfamily_check=off\nherd_label=TRAP_PROJECT\n"), 0o600); err != nil {
+	if err := os.WriteFile(project, []byte("lane.build.kind=codex\nherd_label=TRAP_PROJECT\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(session, []byte("herd_label=TRAP_SESSION\n"), 0o600); err != nil {
@@ -369,22 +369,22 @@ func TestFixtureIsolation(t *testing.T) {
 					t.Fatalf("isolated reopen: code=%d stdout=%q stderr=%q", run.code, run.stdout, run.stderr)
 				}
 			} else {
-				f := releasedForFixture(t, "anthropic")
+				f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
+				f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
 				code, out, stderr = runArrivalCommand(t, f, "config")
 				if strings.Contains(out, "TRAP_") {
 					t.Fatalf("dispatch fixture read the trap: code=%d stdout=%q stderr=%q", code, out, stderr)
 				}
-				addReleasedForSidecar(t, f, "build", "20260927T101001", "pi", "anthropic/claude-3", "accepted", false)
-				rc, stdout, errOut := f.run(t, "worker", f.brief, "--for", "build", "--no-wait")
-				if rc != 5 || stdout != "" || !strings.Contains(errOut, "shares a model family") {
-					t.Fatalf("isolated family guard: code=%d stdout=%q stderr=%q", rc, stdout, errOut)
+				rc, stdout, errOut := f.run(t, "worker", f.brief, "--no-wait")
+				if rc != 0 || !strings.Contains(stdout, `"wait_status":"submitted"`) {
+					t.Fatalf("isolated dispatch: code=%d stdout=%q stderr=%q", rc, stdout, errOut)
 				}
 				calls, err := fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
 				if err != nil && !os.IsNotExist(err) {
 					t.Fatal(err)
 				}
-				if countArgvPrefix(calls, []string{"agent", "prompt"}) != 0 {
-					t.Fatalf("family refusal sent a prompt: %v", calls)
+				if countArgvPrefix(calls, []string{"agent", "prompt"}) != 1 {
+					t.Fatalf("dispatch did not send exactly one prompt: %v", calls)
 				}
 			}
 			if code != 0 || stderr != "" || strings.Contains(out, "TRAP_") {

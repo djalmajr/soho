@@ -784,9 +784,6 @@ func runRetirementDispatchScenario(t *testing.T, invocations map[string][]retire
 		if prompts != wantPrompts {
 			t.Fatalf("step %d prompt count=%d want=%d; calls=%q", i, prompts, wantPrompts, calls)
 		}
-		if code == 5 && !strings.Contains(stderr, "shares a model family with edit agents") {
-			t.Fatalf("family refusal=%q", stderr)
-		}
 		if code == 2 && !strings.Contains(stderr, "brief_lint=strict") {
 			t.Fatalf("strict lint refusal=%q", stderr)
 		}
@@ -955,7 +952,7 @@ func TestRetirementDispatchContract(t *testing.T) {
 				}
 			},
 		},
-		// test-multi-role.sh — the reviewer family check and the strict lint.
+		// test-multi-role.sh — reviewer submission and strict lint.
 		"dispatch-family": {
 			rules: []fakecli.Rule{
 				retireAgentGetRule("rev", "idle"),
@@ -1212,83 +1209,4 @@ func mergeStepEnv(step retireStep, envs []map[string]string) retireStep {
 		}
 	}
 	return step
-}
-
-// ---------- the UTF-16 family order, through the real CLI ----------
-
-// The legacy `dispatch family conflict details use deterministic UTF-16
-// order` (test/dispatch.test.mjs:1260) and its sibling
-// `forSpecFamily: conflicting recorded families are reported in code-unit
-// order` (test/dispatch.test.mjs:1314; the native sibling is
-// internal/dispatch/dispatch_test.go:352, two families) are consumed here
-// end-to-end: four accepted sidecars of a released agent across four
-// families must fail `--for` with the families in code-unit order —
-// anthropic, google, openai, xai — whatever the locale. The family alphabet
-// is closed ASCII, so sort.Strings (byte order) and UTF-16 code-unit order
-// agree; a locale-dependent comparison would not.
-func TestRetirementDispatchFamilyOrderUTF16(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the POSIX fixture contract (see the suite header)")
-	}
-	f := newRetirementFixture(t, nil, func(f *retirementFixture) {
-		// `build` is NOT in the roster: the roster branch of ForSpecFamily
-		// returns the row's family (derived from kind/model) without the
-		// sidecar scan; the scan — and the conflict — only run for a spec
-		// that is a released agent, not a live one.
-		retireWriteRoster(t, f, retireR11+
-			"rev\tp9\tcodex\treviewer\topenai\t1\t/work\tnow\tgpt-5\ttask\treviewer\n")
-		if err := os.WriteFile(filepath.Join(f.repo, "brief.md"), []byte("# Goal\n\nwork\n"), 0o600); err != nil {
-			f.t.Fatal(err)
-		}
-		briefs := filepath.Join(f.ws, "briefs")
-		if err := os.MkdirAll(briefs, 0o700); err != nil {
-			f.t.Fatal(err)
-		}
-		for _, row := range []struct{ ts, kind, model string }{
-			{"20260925T100001", "grok", "grok-4"},
-			{"20260925T100002", "codex", "gpt-5"},
-			{"20260925T100003", "gemini", "gemini-2.5"},
-			{"20260925T100004", "claude", "claude-sonnet-4"},
-		} {
-			data := fmt.Sprintf(`{"version":1,"kind":%q,"model":%q,"effort":"full","submission":"accepted"}`, row.kind, row.model)
-			if err := os.WriteFile(filepath.Join(briefs, "build-"+row.ts+".dispatch.json"), []byte(data), 0o600); err != nil {
-				f.t.Fatal(err)
-			}
-		}
-	})
-	code, out, errOut := f.run(t, retireStep{Args: []string{"dispatch", "rev", "brief.md", "--for", "build", "--no-wait"}, Env: map[string]string{"SOHO_BRIEF_LINT": "off"}})
-	if code != 2 {
-		t.Fatalf("code=%d out=%q err=%q, want the family-conflict refusal 2", code, out, errOut)
-	}
-	wantErr := "PROG: dispatch: --for 'build': the recorded dispatches of this released agent do not agree on one known model family (anthropic ×1, google ×1, openai ×1, xai ×1); pass the family instead (anthropic|openai|xai|google|alibaba)"
-	if got := strings.TrimSpace(f.norm(normalizeParityError(errOut))); got != wantErr {
-		t.Fatalf("stderr=%q\nwant %q", got, wantErr)
-	}
-	// The friction line carries the same detail, with the timestamp to TS.
-	log, err := os.ReadFile(filepath.Join(f.ws, "friction.log"))
-	if err != nil {
-		t.Fatalf("friction log: %v", err)
-	}
-	wantLine := "TS\terror(exit 2)\tdispatch\t" + strings.TrimPrefix(wantErr, "PROG: ")
-	if got := strings.TrimSpace(normFrictionContent(f.norm(string(log)))); got != wantLine {
-		t.Fatalf("friction=%q\nwant %q", got, wantLine)
-	}
-	// Nothing was sent: no herdr call, no composed prompt, no task pointer,
-	// no $TMPDIR tree (the send and the writes happen after the family
-	// check, so a refusal touches nothing).
-	if lines := f.herdrLogLines(t); len(lines) != 0 {
-		t.Fatalf("the refused --for sends nothing; got calls %v", lines)
-	}
-	if _, err := os.Stat(filepath.Join(f.ws, "task-rev")); !os.IsNotExist(err) {
-		t.Fatalf("a refused --for leaves no task pointer: %v", err)
-	}
-	entries, _ := os.ReadDir(filepath.Join(f.ws, "briefs"))
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "rev-") {
-			t.Fatalf("a refused --for leaves no composed brief: %s", e.Name())
-		}
-	}
-	if _, err := os.Stat(filepath.Join(f.tmp, "soho")); !os.IsNotExist(err) {
-		t.Fatalf("no $TMPDIR tree for a refused dispatch: %v", err)
-	}
 }
