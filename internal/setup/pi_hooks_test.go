@@ -237,7 +237,9 @@ func TestSetupPiExtensionRuntime(t *testing.T) {
 				text = "ordinary input"
 			}
 			event, _ := json.Marshal(map[string]string{"type": "input", "source": tc.source, "text": text})
-			commandCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			// A safety deadline only: a slow Windows runner can spend most of 15 s
+			// starting node and the fake soho (DJA-468).
+			commandCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			command := exec.CommandContext(commandCtx, node, harness, file, string(event))
 			command.Dir = root
