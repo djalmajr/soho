@@ -78,15 +78,17 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 
 	if closes {
 		if created == "1" {
-			if herdr.PaneClose(pane, env) {
+			if herdr.PaneClose(pane, env) || closePane && herdr.PaneGetGone(pane, env) {
 				suffix := ""
 				if burst {
 					suffix = " (temporary)"
 				}
 				_, _ = fmt.Fprintf(platform.Stdout, "closed pane %s%s\n", pane, suffix)
+			} else if closePane {
+				core.DieFriction(fmt.Sprintf("release: could not close the pane %s of '%s'; the roster and report were kept; retry release --close", pane, agent), 4, frictionLogPath, "release")
 			}
 		} else {
-			core.Warn(fmt.Sprintf("pane %s was not created by this skill; not closing it", pane), frictionLogPath, "release")
+			core.DieFriction(fmt.Sprintf("pane %s was not created by this skill; not closing it; the roster and report were kept. Release it without closing the pane: soho release %s", pane, agent), 4, frictionLogPath, "release")
 		}
 	} else {
 		core.PaneTaskTitle(sd, agent, nil, env)

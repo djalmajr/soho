@@ -2,10 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
@@ -158,7 +160,7 @@ func TestReleaseForceBypassesUnavailableGuard(t *testing.T) { // JS: "release --
 	}
 }
 
-func TestReleaseNeverClosesExternalPane(t *testing.T) { // JS: "release --close leaves a pane not created by this skill open"
+func TestReleaseNeverClosesExternalPane(t *testing.T) { // release --close refuses an operator-owned pane without losing its roster row.
 	// Mutation captured: closing regardless of created_pane shuts down an operator-owned pane.
 	f := newReleaseFixture(t, "", "")
 	if err := os.WriteFile(filepath.Join(f.state, "agents.tsv"), []byte("# header\n"+releaseRow("worker", "p-worker", "0", "implementer", false, "/tmp/work")+"\n"), 0o600); err != nil {
@@ -166,8 +168,138 @@ func TestReleaseNeverClosesExternalPane(t *testing.T) { // JS: "release --close 
 	}
 	addReleaseReport(t, f.state, "worker", false)
 	r := f.run(t, "worker", "--close")
-	if r.code != 0 || len(callsTo(r.calls, "pane", "close", "p-worker")) != 0 || !strings.Contains(r.stderr, "pane p-worker was not created by this skill; not closing it") || core.RosterLine(f.state, "worker") != "" {
+	if r.code != 4 || len(callsTo(r.calls, "pane", "close", "p-worker")) != 0 || !strings.Contains(r.stderr, "pane p-worker was not created by this skill; not closing it") || !strings.Contains(r.stderr, "soho release worker\n") || core.RosterLine(f.state, "worker") == "" || strings.Contains(r.stdout, "released worker") {
 		t.Fatalf("release status=%d stdout=%q stderr=%q calls=%#v roster=%q", r.code, r.stdout, r.stderr, r.calls, core.RosterLine(f.state, "worker"))
+	}
+}
+
+func TestReleaseCloseFailureKeepsRosterAndReport(t *testing.T) {
+	for _, name := range []string{"build", "build-6", "build-7", "review", "review-5"} {
+		t.Run(name, func(t *testing.T) {
+			f := newReleaseFixture(t, "", "")
+			if err := os.WriteFile(filepath.Join(f.state, "agents.tsv"), []byte("# header\n"+releaseRow(name, "p-worker", "1", "implementer", false, f.cwd)+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			addReleaseReport(t, f.state, name, false)
+			dir := t.TempDir()
+			if _, err := fakecli.Install(t, dir, "herdr", []fakecli.Rule{{Argv: []string{"pane", "close", "p-worker"}, Code: 1, Stderr: "close refused"}}); err != nil {
+				t.Fatal(err)
+			}
+			f.env = withFakeCLI(f.env, dir)
+			f.configFile = filepath.Join(dir, "herdr.json")
+			r := f.run(t, name, "--close")
+			if r.code != 4 || strings.Contains(r.stdout, "released ") || !strings.Contains(r.stderr, "could not close the pane p-worker") || core.RosterLine(f.state, name) == "" {
+				t.Fatalf("status=%d stdout=%q stderr=%q roster=%q", r.code, r.stdout, r.stderr, core.RosterLine(f.state, name))
+			}
+			if _, err := os.Stat(core.LastReportPath(f.state, name)); err != nil {
+				t.Fatal(err)
+			}
+			if len(r.calls) != 2 || len(callsTo(r.calls, "pane", "close", "p-worker")) != 1 || len(callsTo(r.calls, "pane", "get", "p-worker")) != 1 {
+				t.Fatalf("effects after failed close: %#v", r.calls)
+			}
+			// A retry uses the retained registration and the same pane, then succeeds.
+			f.env = withFakeCLI(f.env, f.fakeDir)
+			f.configFile = filepath.Join(f.fakeDir, "herdr.json")
+			r = f.run(t, name, "--close")
+			if r.code != 0 || !strings.Contains(r.stdout, "released "+name+"\n") || core.RosterLine(f.state, name) != "" || len(callsTo(r.calls, "pane", "close", "p-worker")) != 1 {
+				t.Fatalf("retry status=%d stdout=%q stderr=%q roster=%q calls=%#v", r.code, r.stdout, r.stderr, core.RosterLine(f.state, name), r.calls)
+			}
+		})
+	}
+}
+
+func TestReleaseCloseFailedQuery(t *testing.T) {
+	for _, tc := range []struct {
+		name, response  string
+		queryCode, want int
+	}{
+		{"gone", `{"error":{"code":"pane_not_found","message":"gone"}}`, 1, 0},
+		{"present", `{"result":{"pane":{"id":"p-worker"}}}`, 0, 4},
+		{"permission", `{"error":{"code":"permission_denied","message":"denied"}}`, 1, 4},
+		{"malformed", `invalid`, 1, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newReleaseFixture(t, "", "")
+			addReleaseReport(t, f.state, "worker", false)
+			dir := t.TempDir()
+			if _, err := fakecli.Install(t, dir, "herdr", []fakecli.Rule{
+				{Argv: []string{"pane", "close", "p-worker"}, Code: 1},
+				{Argv: []string{"pane", "get", "p-worker"}, Code: tc.queryCode, Stdout: tc.response},
+				{Argv: []string{"pane", "list", "--workspace", "ws"}, Stdout: `{"result":{"panes":[]}}`},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			f.env = withFakeCLI(f.env, dir)
+			f.configFile = filepath.Join(dir, "herdr.json")
+			r := f.run(t, "worker", "--close")
+			if r.code != tc.want || (core.RosterLine(f.state, "worker") == "") != (tc.want == 0) || strings.Contains(r.stdout, "released worker") != (tc.want == 0) {
+				t.Fatalf("status=%d stdout=%q stderr=%q roster=%q", r.code, r.stdout, r.stderr, core.RosterLine(f.state, "worker"))
+			}
+			closed, queried := callsTo(r.calls, "pane", "close", "p-worker"), callsTo(r.calls, "pane", "get", "p-worker")
+			if len(closed) != 1 || len(queried) != 1 || closed[0] >= queried[0] {
+				t.Fatalf("close/query order: %#v", r.calls)
+			}
+		})
+	}
+}
+
+func TestReleaseBurstCloseFailureWithoutFlagKeepsBehavior(t *testing.T) {
+	f := newReleaseFixture(t, "", "")
+	if err := os.WriteFile(filepath.Join(f.state, "agents.tsv"), []byte("# header\n"+releaseRow("worker", "p-worker", "1", "implementer", true, f.cwd)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	addReleaseReport(t, f.state, "worker", false)
+	dir := t.TempDir()
+	if _, err := fakecli.Install(t, dir, "herdr", []fakecli.Rule{
+		{Argv: []string{"pane", "close", "p-worker"}, Code: 1},
+		{Argv: []string{"pane", "list", "--workspace", "ws"}, Stdout: `{"result":{"panes":[]}}`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.env = withFakeCLI(f.env, dir)
+	f.configFile = filepath.Join(dir, "herdr.json")
+	r := f.run(t, "worker")
+	if r.code != 0 || !strings.Contains(r.stdout, "released worker\n") || core.RosterLine(f.state, "worker") != "" || len(callsTo(r.calls, "pane", "get", "p-worker")) != 0 {
+		t.Fatalf("status=%d stdout=%q stderr=%q roster=%q calls=%#v", r.code, r.stdout, r.stderr, core.RosterLine(f.state, "worker"), r.calls)
+	}
+}
+
+func TestReleaseCopyRemovalTiming(t *testing.T) {
+	for _, keep := range []bool{true, false} {
+		t.Run(fmt.Sprintf("keep=%t", keep), func(t *testing.T) {
+			f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"pane", "list", "--workspace", "ws"}, Stdout: `{"result":{"panes":[]}}`}})
+			f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+			rows := make([]core.CopyRow, 0, 268)
+			for i := 0; i < 268; i++ {
+				dir := filepath.Join(f.tmp, fmt.Sprintf("copy-%03d", i))
+				if err := os.Mkdir(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				for j := 0; j < 8; j++ {
+					if err := os.WriteFile(filepath.Join(dir, fmt.Sprint(j)), make([]byte, 16384), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				rows = append(rows, core.CopyRow{Path: dir, Owner: "worker", Pane: "p-worker", Created: core.FrictionISO(platform.Now()), Source: "-", Origin: "mutation-copy"})
+			}
+			f.writeCopies(t, rows)
+			addReleaseReport(t, filepath.Join(f.state, "ws"), "worker", false)
+			args := []string{"release", "worker", "--keep-procs"}
+			if keep {
+				args = append(args, "--keep-copies")
+			}
+			started := time.Now()
+			code, out, stderr := f.run(t, f.env, args...)
+			elapsed := time.Since(started)
+			want := 268
+			if keep {
+				want = 0
+			}
+			if code != 0 || strings.Count(out, "removed copy ") != want || len(f.copiesRows(t)) != 268-want {
+				t.Fatalf("status=%d removed=%d stderr=%q", code, strings.Count(out, "removed copy "), stderr)
+			}
+			t.Logf("release keep-copies=%t copies=268 files=2144 bytes=35127296 elapsed=%s removed=%d", keep, elapsed, want)
+		})
 	}
 }
 
