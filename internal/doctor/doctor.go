@@ -454,6 +454,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	doctorContextWindow(ctx, env, s)
 	doctorBackgroundPatterns(ctx, env, s)
 	doctorApprovals(ctx, env, s)
+	doctorCodexApprovalOverrides(ctx, env, cwd, s)
 	doctorCodexNetwork(ctx, env, cwd, s)
 	codexenv.DoctorCodexPolicyWarnings(env, platform.Current(), s.Warning)
 	doctorFeedback(ctx, env, s)
@@ -1170,6 +1171,40 @@ func doctorApprovals(ctx *core.Config, env platform.Env, s *Say) {
 	for _, key := range ordered {
 		if core.Cfg(ctx, key, "", env) == "unsandboxed" {
 			s.Warning(fmt.Sprintf("config: %s=unsandboxed; workers run without a sandbox by the owner's choice", keys[key]))
+		}
+	}
+}
+
+func doctorCodexApprovalOverrides(ctx *core.Config, env platform.Env, cwd string, s *Say) {
+	roles := map[string]bool{}
+	for _, dir := range core.RoleDirs(env, cwd) {
+		entries, _ := os.ReadDir(dir)
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") {
+				roles[strings.TrimSuffix(entry.Name(), ".md")] = true
+			}
+		}
+	}
+	if core.LanesEnabled(ctx, env) {
+		for _, lane := range core.LaneNames(ctx, env) {
+			for _, role := range doctorLaneRoles(core.LaneRolesCSV(ctx, lane, env)) {
+				roles[role] = true
+			}
+		}
+	}
+	ordered := make([]string, 0, len(roles))
+	for role := range roles {
+		ordered = append(ordered, role)
+	}
+	textutil.SortUTF16(ordered)
+	for _, role := range ordered {
+		res := core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{})
+		if res.Kind != "codex" || res.Approvals == "ask" {
+			continue
+		}
+		args := spawn.ConfigNativeArgs("codex", res.Lane, role, ctx, env, cwd, nil)
+		if flag := kinds.CodexApprovalOverrideFlag(strings.Fields(args)); flag != "" {
+			s.Warning(fmt.Sprintf("config: %s runs codex with %s in its args; approvals=%s is not added (the args win)", role, flag, res.Approvals))
 		}
 	}
 }

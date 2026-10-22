@@ -1144,7 +1144,21 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			_, _ = fmt.Fprintf(platform.Stderr, "soho: spawn: the new worker is '%s' ('%s' is already live); dispatch to '%s'\n", o.name, base, o.name)
 		}
 	}
-	args := buildArgs(kind, o.approvals, o.model, o.effort, ctx, env)
+	native := ConfigNativeArgs(kind, lane, o.role, ctx, env, cwd, func(key, own string) {
+		if own == "" {
+			own = "?"
+		}
+		Warn(fmt.Sprintf("%s not passed: those args belong to kind %s and this spawn runs %s", key, own, kind), ctx, env, "spawn")
+	})
+	approvalsForArgs := o.approvals
+	if kind == "codex" {
+		nativeArgs := append(strings.Fields(native), o.native...)
+		if flag := kinds.CodexApprovalOverrideFlag(nativeArgs); flag != "" {
+			approvalsForArgs = "ask"
+			Warn(fmt.Sprintf("spawn: codex args already set the sandbox or approvals (%s); approvals=%s adds nothing for '%s'", flag, o.approvals, o.name), ctx, env, "spawn")
+		}
+	}
+	args := buildArgs(kind, approvalsForArgs, o.model, o.effort, ctx, env)
 	// DJA-392: mcp=none translates to the kind's per-process flag, right
 	// after the effort args (buildArgs ends with them) and before the
 	// config and user args; a kind without a per-process flag warns once
@@ -1170,12 +1184,6 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	} else {
 		args = append(args, mcpArgs...)
 	}
-	native := ConfigNativeArgs(kind, lane, o.role, ctx, env, cwd, func(key, own string) {
-		if own == "" {
-			own = "?"
-		}
-		Warn(fmt.Sprintf("%s not passed: those args belong to kind %s and this spawn runs %s", key, own, kind), ctx, env, "spawn")
-	})
 	if native != "" {
 		args = append(args, strings.Fields(native)...)
 	}

@@ -205,6 +205,23 @@ func KindModelArgs(kind, model, effort string, warn WarnFunc) []string {
 	}
 }
 
+// CodexApprovalOverrideFlag returns the first native sandbox or approval flag.
+// Short options must be exact tokens; long options also accept =value.
+func CodexApprovalOverrideFlag(args []string) string {
+	for _, arg := range args {
+		flag, _, _ := strings.Cut(arg, "=")
+		switch flag {
+		case "-s", "-a":
+			if arg == flag {
+				return flag
+			}
+		case "--sandbox", "--ask-for-approval", "--dangerously-bypass-approvals-and-sandbox", "--full-auto", "--approve-for-me":
+			return flag
+		}
+	}
+	return ""
+}
+
 func KindApprovalArgs(kind, mode string, warn WarnFunc) ([]string, error) {
 	if mode == "" || mode == "ask" {
 		return nil, nil
