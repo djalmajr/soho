@@ -32,6 +32,7 @@ type r11Case struct {
 	question, noWait, authScreen bool
 	appendAuth                   bool
 	noRecent                     bool
+	cursorPlan                   bool
 }
 
 func TestDispatchR11D58AuthScreens(t *testing.T) {
@@ -340,6 +341,9 @@ func newR11Fixture(t *testing.T, tc r11Case) *r11Fixture {
 		t.Fatal(err)
 	}
 	model, kind, family := "grok-4.7", "grok", "xai"
+	if tc.cursorPlan {
+		model, kind = "grok-4.7-xhigh", "cursor"
+	}
 	if tc.question || tc.input {
 		model, kind, family = "gpt-5", "codex", "openai"
 	}
@@ -406,6 +410,9 @@ func newR11Fixture(t *testing.T, tc r11Case) *r11Fixture {
 		{Argv: []string{"agent", "read", "worker", "--source", "visible"}, Call: 3, Stdout: screen},
 		{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "20"}, Stdout: screen},
 		{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "40"}, Stdout: screen},
+	}
+	if tc.cursorPlan {
+		visible = append(visible, fakecli.Rule{Argv: []string{"agent", "read", "worker", "--source", "visible"}, Stdout: screen})
 	}
 	if tc.input {
 		afterEnter := tc.post

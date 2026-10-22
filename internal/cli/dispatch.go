@@ -597,11 +597,13 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	status, resent, enterSent := "submitted", false, false
 	if checkOn {
 		window := time.Duration(checkSecs) * time.Second
+		arrivalState := preState.State
 		arrived := func() bool {
 			if nonEmpty(report) {
 				return true
 			}
 			st := herdr.AgentState(agent, env, herdr.Timeout, nil)
+			arrivalState = st.State
 			return (st.State == "working" || st.State == "blocked") && preSeq != "" && seqString(st.Seq) != "" && seqString(st.Seq) != preSeq
 		}
 		promptEvidence := func() bool {
@@ -610,6 +612,17 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 		}
 		if !wasWorking && !waitDispatchArrivalExtra(window, env, arrived, transcriptArrival) {
 			screen := herdr.AgentRead(env, agent, "visible", nil)
+			// A plan refusal leaves the pointer in the composer. Neither an
+			// Enter nor a resend can change the subscription's model settings.
+			// Reuse the arrival state and the existing visible frame so this
+			// check does not advance observation before the composer retry.
+			if !nonEmpty(report) {
+				d := core.ProviderDetectTexts(arrivalState, screen, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
+				if d != nil && core.IsModelPlanError(d.Cause) {
+					recordDispatchTask(sd, agent, role, brief, amend, env)
+					return emitDispatchResult(agent, role, kind, composed, report, taskReport, "provider-error", amend, jsonjs.O("status", "provider-error", "lane", lane, "model", model, "cause", d.Cause), 14, sd, false, false)
+				}
+			}
 			if firstEnterReady(kind, screen, composed) {
 				// A recognized composer still holds this exact composed prompt
 				// path: the prompt is typed and not sent. A report, a read, the
@@ -2108,8 +2121,8 @@ func noWaitObservation(agent, role, kind, lane, model, report string, env platfo
 		return "submitted", nil
 	}
 	recent := herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40))
-	d := provider.ProviderDetect(state.State, recent)
-	if d != nil && d.Status == "provider-error" && d.Auth && !priorAuth[d.Cause] {
+	d := core.ProviderDetectTexts(state.State, recent, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
+	if d != nil && d.Status == "provider-error" && ((d.Auth && !priorAuth[d.Cause]) || core.IsModelPlanError(d.Cause)) {
 		if lane == "" {
 			lane = core.LaneOfRole(ctx, role, env)
 		}
