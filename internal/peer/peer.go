@@ -38,6 +38,7 @@ const (
 var peerOpenMarkers = []string{PeerPrefix}
 
 var controlRE = regexp.MustCompile(`[\x00-\x08\x0b-\x1f\x7f]`)
+var orchestratorNameRE = regexp.MustCompile(`^orchestrator(-[0-9]+)?$`)
 var marker200 = regexp.MustCompile("\x1b\\[200~")
 var marker201 = regexp.MustCompile("\x1b\\[201~")
 var peerLogSeparators = regexp.MustCompile(`[\r\n\t]+`)
@@ -71,18 +72,21 @@ type agentInfo struct {
 }
 
 type resolvedTarget struct {
-	RefShown  string
-	Machine   string
-	OK        bool
-	TimedOut  bool
-	Code      string
-	Cause     string
-	TargetArg string
-	Status    string
-	Cwd       string
-	Workspace string
-	Kind      string
-	Seq       string
+	RefShown     string
+	Machine      string
+	OK           bool
+	TimedOut     bool
+	Code         string
+	Cause        string
+	TargetArg    string
+	Status       string
+	Cwd          string
+	Workspace    string
+	Kind         string
+	Seq          string
+	NoAgentHint  *string
+	ResolvedFrom string
+	ResolvedName string
 }
 
 // readPaneHint preserves the local advice and names the visible read command
@@ -436,28 +440,84 @@ func resolveTarget(target string, env platform.Env) resolvedTarget {
 // timeoutMS: the agent_not_ready retries of send pass what is left of the
 // send's --timeout.
 func resolveTargetWithin(target string, env platform.Env, timeoutMS int) resolvedTarget {
+	deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
+	remaining := func() int { return int(time.Until(deadline).Milliseconds()) }
 	ref := sessionref.ParseRef(target)
+	workspaceRef := workspaceTargetRef(target)
 	machine, paneTarget, shown := sessionref.LocalMachine, target, target
 	if ref != nil {
 		machine, paneTarget, shown = ref.Machine, ref.PaneID, sessionref.FormatRef(*ref)
+	} else if workspaceRef != nil {
+		machine, paneTarget = workspaceRef.Machine, workspaceRef.PaneID
 	}
-	a := agentGet(machine, paneTarget, env, timeoutMS)
+	timedOut := func() resolvedTarget {
+		return resolvedTarget{RefShown: shown, Machine: machine, TimedOut: true,
+			Cause: fmt.Sprintf("herdr agent get timed out after %ss", numberSeconds(timeoutMS))}
+	}
+	left := remaining()
+	if left <= 0 {
+		return timedOut()
+	}
+	a := agentGet(machine, paneTarget, env, left)
+	var hint *string
+	resolvedFrom, resolvedName := "", ""
+	if a.Code == "agent_not_found" && workspaceRef != nil {
+		shown = sessionref.FormatRef(*workspaceRef)
+		left = remaining()
+		if left <= 0 {
+			return timedOut()
+		}
+		candidates := workspaceAgents(workspaceRef.PaneID, machine, env, left)
+		if remaining() <= 0 {
+			return timedOut()
+		}
+		text := noAgentHintFor(workspaceRef.PaneID, candidates)
+		hint = &text
+		var orchestrators []SessionEntry
+		for _, e := range candidates {
+			if orchestratorNameRE.MatchString(valueString(e.Name)) {
+				orchestrators = append(orchestrators, e)
+			}
+		}
+		if len(orchestrators) == 1 {
+			e := orchestrators[0]
+			left = remaining()
+			if left <= 0 {
+				return timedOut()
+			}
+			a = agentGet(machine, e.PaneID, env, left)
+			if a.OK {
+				resolvedFrom, resolvedName = shown, valueString(e.Name)
+				paneTarget, shown = e.PaneID, e.Ref
+			}
+		}
+	}
 	if a.NotFound {
 		return resolvedTarget{RefShown: shown, Machine: machine, Cause: a.Cause}
 	}
 	if !a.OK {
-		return resolvedTarget{RefShown: shown, Machine: machine, Code: a.Code, Cause: a.Cause, TimedOut: a.TimedOut}
+		return resolvedTarget{RefShown: shown, Machine: machine, Code: a.Code, Cause: a.Cause, TimedOut: a.TimedOut, NoAgentHint: hint}
 	}
 	targetArg := paneTarget
 	if a.PaneID != "" {
 		targetArg = a.PaneID
 	}
 	return resolvedTarget{RefShown: shown, Machine: machine, OK: true, TargetArg: targetArg,
-		Status: a.Status, Cwd: a.Cwd, Workspace: a.WorkspaceID, Kind: a.Kind, Seq: a.Seq}
+		Status: a.Status, Cwd: a.Cwd, Workspace: a.WorkspaceID, Kind: a.Kind, Seq: a.Seq, ResolvedFrom: resolvedFrom, ResolvedName: resolvedName}
+}
+
+// ParseRef currently requires a pane. Validate a workspace with its existing
+// machine/workspace grammar using an internal pane suffix, then remove it.
+func workspaceTargetRef(target string) *sessionref.Ref {
+	ref := sessionref.ParseRef(strings.TrimSpace(target) + ":p0")
+	if ref != nil {
+		ref.PaneID = strings.TrimSuffix(ref.PaneID, ":p0")
+	}
+	return ref
 }
 
 // noAgentHint builds the same-workspace suggestion for the agent_not_found 4
-// of a [machine/]<workspace>:<pane> reference: the live agents of the same
+// of a [machine/]<workspace>[:<pane>] reference: the live agents of the same
 // workspace on the same machine, listed the way find does (the same snapshot
 // agent list, with --machine for a remote machine). At most 5, preferring the
 // names that begin with "orchestrator". A failed or empty listing — and a
@@ -466,21 +526,25 @@ func resolveTargetWithin(target string, env platform.Env, timeoutMS int) resolve
 func noAgentHint(target, machine string, env platform.Env) string {
 	ref := sessionref.ParseRef(target)
 	if ref == nil {
+		ref = workspaceTargetRef(target)
+	}
+	if ref == nil {
 		return ""
 	}
-	workspace, _, cut := strings.Cut(ref.PaneID, ":")
-	if !cut || workspace == "" {
-		return ""
+	workspace, _, _ := strings.Cut(ref.PaneID, ":")
+	return noAgentHintFor(workspace, workspaceAgents(workspace, machine, env, HerdrCallTimeoutMS))
+}
+
+func workspaceAgents(workspace, machine string, env platform.Env, timeoutMS int) []SessionEntry {
+	if workspace == "" {
+		return nil
 	}
-	result := FetchSessions([]string{machine}, SnapshotOptions{Env: env})
+	result := FetchSessions([]string{machine}, SnapshotOptions{Env: env, TimeoutMS: timeoutMS})
 	if len(result.Failures) > 0 {
-		return ""
+		return nil
 	}
 	candidates := []SessionEntry{}
 	for _, e := range result.Entries {
-		// A live agent of the same workspace on the same machine: a pane with
-		// no agent status holds nothing to suggest, and another workspace's
-		// agents are not candidates.
 		if e.Machine != machine || valueString(e.Status) == "" {
 			continue
 		}
@@ -488,6 +552,10 @@ func noAgentHint(target, machine string, env platform.Env) string {
 			candidates = append(candidates, e)
 		}
 	}
+	return candidates
+}
+
+func noAgentHintFor(workspace string, candidates []SessionEntry) string {
 	if len(candidates) == 0 {
 		return ""
 	}
@@ -1058,12 +1126,20 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		log(SenderRefOf(env), t.RefShown, result)
 		if t.Code == "agent_not_found" {
 			msg := "send: no agent in " + t.RefShown
-			if hint := noAgentHint(target, t.Machine, env); hint != "" {
+			hint := t.NoAgentHint
+			if hint == nil {
+				text := noAgentHint(target, t.Machine, env)
+				hint = &text
+			}
+			if hint := *hint; hint != "" {
 				msg += hint
 			}
 			platform.Die(msg, 4)
 		}
 		platform.Die(fmt.Sprintf("send: %s unavailable: %s", t.RefShown, t.Cause), 4)
+	}
+	if t.ResolvedFrom != "" {
+		fmt.Fprintf(platform.Stderr, "soho: send: %s resolved to %s (%s)\n", t.ResolvedFrom, t.RefShown, t.ResolvedName)
 	}
 	if t.Machine == sessionref.LocalMachine {
 		policyCwd := t.Cwd
