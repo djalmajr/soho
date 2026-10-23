@@ -337,6 +337,8 @@ The skill enforces the transport and the report contract. The orchestrator still
 
 ## When something goes wrong
 
+Cursor's active `MCP Server Approval Required` title followed by at least one `[a] Approve all`, `[c] Continue` or `[q] Quit` choice at the end of the full visible screen blocks spawn (`blocked_at_startup`) and dispatch/wait (`blocked`) with exit 7. Soho never answers this MCP dialog, even with `auto_approve=on`; the operator answers in the pane. A later composer supersedes a quoted dialog. Dispatch checks again before typing and preserves prior delivery markers on refusal; other providers retain their existing approval policies, including `hooks_review=trust|block`.
+
 `skills/soho/references/troubleshooting.md` lists every failure seen while validating the skill (sandbox denials — including `.git` and network — premature `done`, Cursor model syntax, startup dialogs, a codex CLI that updates itself at start, focus, command guards, stale roster lines, an `auto_approve` dialog that loops, a worker stuck without a report, the skill's own exit 137, `wait` timing out while the worker is still working, and the worktree/mutation isolation rules) with the fix and the validation procedure for a new kind.
 
 ## Codex

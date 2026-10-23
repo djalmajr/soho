@@ -205,7 +205,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	// send below, unchanged.
 	if startup.Enabled(kind) {
 		st, screen, screenOK := cursorStartupScreen(agent, env)
-		ev := startup.Evaluate(kind, startup.CurrentPlatform(), st.State, screen, screenOK)
+		ev := spawn.EvaluateCursorStartup(kind, st.State, screen, screenOK)
 		if ev.Refuses() {
 			return dispatchCursorStartupRefusal(agent, role, kind, "", "", "", st.State, ev, sd)
 		}
@@ -433,8 +433,13 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	if err := os.WriteFile(lastPath, []byte(report+"\n"), 0o666); err != nil {
 		panic(err)
 	}
-	for _, name := range dispatchWaitFiles {
-		_ = os.Remove(filepath.Join(sd, "wait", agent+"."+name))
+	clearDispatchWait := func() {
+		for _, name := range dispatchWaitFiles {
+			_ = os.Remove(filepath.Join(sd, "wait", agent+"."+name))
+		}
+	}
+	if kind != "cursor" {
+		clearDispatchWait()
 	}
 	text := fmt.Sprintf("Read the file %s in full and execute it. It contains your role, your brief, and your report contract. When finished, write your report to %s and reply with exactly that path and nothing else.", composed, report)
 	if amend {
@@ -449,9 +454,8 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	if settleErr != nil {
 		settleSecs = 20
 	}
-	// lastVisible is the last visible screen this dispatch already read
-	// before typing (the settle reads, then the check's baseline): the
-	// codex hooks review check below reads nothing of its own.
+	// The last visible settle/baseline screen is reused for Codex hooks.
+	// Cursor is read again after all reads that can fall back to visible.
 	lastVisible := ""
 	if settleSecs > 0 && !wasWorking {
 		prev := herdr.AgentRead(env, agent, "visible", nil)
@@ -541,13 +545,8 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 		_ = restoreTaskDispatch(sd, agent, lastPath, lastData, priorPointer)
 		return dispatchCursorStartupRefusal(agent, role, kind, composed, report, taskReport, st.State, ev, sd)
 	}
-	// codex's hooks review screen (DJA-434) on the last screen read above:
-	// the prompt's Enter would confirm "1. Review hooks". hooks_review=trust
-	// approves the hooks with spawn's code and the send goes on (the
-	// check's baseline becomes the screen the approval ended on);
-	// hooks_review=block, or an approval that did not take, types nothing
-	// and ends like the startup refusal above: the task state restored, the
-	// blocked result, exit 7.
+	// Hooks review follows the owner's explicit policy, unlike approval
+	// dialogs that dispatch never answers. Reuse the screen already read.
 	if kind == "codex" && codexhooks.IsReview(lastVisible) {
 		mode := core.HooksReviewMode(ctx, env)
 		approved := false
@@ -570,6 +569,11 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 			core.Warn(codexhooks.BlockedLine("dispatch", agent, mode), frictionLogPath, "dispatch")
 			return emitDispatchResult(agent, role, kind, composed, report, taskReport, "blocked", false, jsonjs.O("cause", "codex-hooks-review"), 0, sd, false, false)
 		}
+	}
+	// Cursor's final visible read above follows every possible fallback.
+	// Clear previous delivery markers only once that latest screen is safe.
+	if kind == "cursor" {
+		clearDispatchWait()
 	}
 	p := herdr.AgentPrompt(agent, text, env)
 	if !p.Ok {
@@ -1135,7 +1139,7 @@ func cursorStartupRefusal(kind, agent string, env platform.Env) (bool, startup.E
 		return false, startup.Evaluation{}, herdr.AgentStateResult{}
 	}
 	st, screen, screenOK := cursorStartupScreen(agent, env)
-	ev := startup.Evaluate(kind, startup.CurrentPlatform(), st.State, screen, screenOK)
+	ev := spawn.EvaluateCursorStartup(kind, st.State, screen, screenOK)
 	return ev.Refuses(), ev, st
 }
 
@@ -1147,6 +1151,8 @@ func cursorStartupRefusal(kind, agent string, env platform.Env) (bool, startup.E
 func warnCursorStartupRefusal(agent, kind, state string, ev startup.Evaluation) {
 	what := "the startup is unverified"
 	switch {
+	case ev.Reason == "mcp-approval":
+		what = "Cursor requires approval of MCP servers; the operator must answer in the pane"
 	case ev.Verdict == startup.VerdictBlocked:
 		what = "it is on the cursor workspace trust dialog"
 	case ev.Reason == startup.ReasonEmptyScreen:

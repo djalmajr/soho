@@ -22,6 +22,8 @@ Observed failures while building and validating this skill (2026-09-20, Herdr 0.
 
 ## `agent start` returns `agent_not_ready` (exit 7)
 
+Cursor's active `MCP Server Approval Required` title followed by at least one `[a] Approve all`, `[c] Continue` or `[q] Quit` choice at the end of the full visible screen blocks spawn (`blocked_at_startup`) and dispatch/wait (`blocked`) with exit 7. Soho never answers this MCP dialog, even with `auto_approve=on`; the operator answers in the pane. A later composer supersedes a quoted dialog. Dispatch checks again before typing and preserves prior delivery markers on refusal; other providers retain their existing approval policies, including `hooks_review=trust|block`.
+
 - **Cause:** a startup dialog: Codex update prompt, login, workspace trust.
 - **Now:** `spawn` records the agent, returns focus to the pane that had it when focus is still on the new pane, prints the visible screen, exits 7. Ask the user, then `herdr agent send-keys <name> …` and `herdr agent wait <name>`. The roster entry is valid; `dispatch` works after the dialog is cleared.
 

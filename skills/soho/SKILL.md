@@ -509,6 +509,8 @@ For briefs, name the focused package/test that proves the slice. A full or repea
 
 ## Safety
 
+Cursor's active `MCP Server Approval Required` title followed by at least one `[a] Approve all`, `[c] Continue` or `[q] Quit` choice at the end of the full visible screen blocks spawn (`blocked_at_startup`) and dispatch/wait (`blocked`) with exit 7. Soho never answers this MCP dialog, even with `auto_approve=on`; the operator answers in the pane. A later composer supersedes a quoted dialog. Dispatch checks again before typing and preserves prior delivery markers on refusal; other providers retain their existing approval policies, including `hooks_review=trust|block`.
+
 - Never `herdr server stop`; never close panes, tabs, or workspaces this skill did not create.
 - Prefer `--current`, explicit pane IDs, and unique agent names. Parse IDs from JSON, never from sidebar order.
 - Briefs and reports may contain repo content; keep secrets out of them.
