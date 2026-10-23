@@ -1283,6 +1283,21 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	if !blocked {
 		lastState, lastScreen, blocked = checkStartWindow(o, kind, env, created, agentArgs, ctx)
 	}
+	if kind == "codex" {
+		if blocked {
+			lastScreen = herdr.AgentRead(env, o.name, "visible", intPtr(40))
+		}
+		if isCodexUpdatePrompt(lastScreen) {
+			versions := codexUpdateVersions(lastScreen)
+			sent := herdr.AgentSendKeys(o.name, "Escape", env)
+			time.Sleep(pollMillis(env))
+			lastState, lastScreen, blocked = checkStartWindow(o, kind, env, created, agentArgs, ctx)
+			blocked = blocked || !sent || strings.TrimSpace(lastScreen) == "" || isCodexUpdatePrompt(lastScreen) || lastState == "blocked" || lastState == "unavailable"
+			if sent && !isCodexUpdatePrompt(lastScreen) && strings.TrimSpace(lastScreen) != "" {
+				_, _ = fmt.Fprintf(platform.Stderr, "soho: spawn: skipped codex's update prompt for '%s'%s; update codex yourself when no codex agent is running\n", o.name, versions)
+			}
+		}
+	}
 	if !blocked && lastState != "unavailable" {
 		if p := provider.ProviderDetect(lastState, lastScreen); p != nil && p.Status == "provider-error" && p.Auth {
 			core.DieFriction(fmt.Sprintf("agent '%s' (%s) hit a terminal provider authentication error right after start: %s; pane %s stays open for inspection", o.name, kind, p.Cause, o.pane), 14, "", "")

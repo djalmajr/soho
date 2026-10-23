@@ -1,5 +1,7 @@
 # Troubleshooting and lessons learned
 
+`spawn` skips Codex's active startup update menu with one `Escape` and reads the screen again; a persistent menu remains `blocked_at_startup` (exit 7), while a menu quoted above the composer receives no key. Update Codex yourself when no Codex agent is running.
+
 Observed failures while building and validating this skill (2026-09-20, Herdr 0.9.1, macOS). Each entry: symptom → cause → what the skill does now → what you should do. Read this before changing the script or adding a kind.
 
 ## Worker says it wrote the report, file never appears
