@@ -10,10 +10,13 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
 func TestMain(m *testing.M) {
+	testutil.CalmPressure()
+
 	fakecli.RunTests(m)
 }
 

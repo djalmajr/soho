@@ -13,6 +13,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -21,11 +22,8 @@ var packageDir string
 var packageDirErr error
 
 func TestMain(m *testing.M) {
-	// CLI fixtures must not depend on this host's disk/swap pressure. Tests
-	// of the warning override these existing hooks explicitly and restore
-	// this calm default; production measurements are unchanged.
-	platform.DiskFree = func(string) (int64, int64, bool) { return 50, 100, true }
-	platform.SwapUsage = func(platform.Env) (int64, int64, bool) { return 0, 100, true }
+	testutil.CalmPressure()
+
 	managedCLIHelperMain()
 	fakecli.Main()
 	fakecli.GuardSuiteRun()
