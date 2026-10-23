@@ -4,6 +4,8 @@ Observed failures while building and validating this skill (2026-09-20, Herdr 0.
 
 ## Worker says it wrote the report, file never appears
 
+If a Codex worker opened with `spawn --cwd` registers copies or processes in another repository's state directory, check `[shell_environment_policy] include_only` in `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`): `doctor` warns for Codex roles or lanes when no pattern allows `SOHO_REGISTRY_DIR`; add `"SOHO_*"` yourself so commands inherit the pane's resource-registration hint.
+
 - **Symptom:** the agent replies with the report path; `collect` falls back to terminal output; `ls` shows nothing. Codex prints `zsh: operation not permitted: …/.agents/…`.
 - **Cause:** Codex's `workspace-write` sandbox allows the repo root, `/tmp` and `$TMPDIR` but **denies its own config roots `.agents/` and `.codex/`** (tested: `.claude`, `.cache`, `.tmp`, `.worktrees`, `node_modules/.cache` and `.soho` are writable).
 - **Now:** state lives in `<repo>/.soho/`. Never move it under `.agents/`. With `SOHO_DIR`, make sure every kind can write there.
