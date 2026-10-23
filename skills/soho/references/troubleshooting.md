@@ -227,6 +227,8 @@ Use a verified native release binary, or build an explicitly selected checkout w
 - **Cause:** the CLI stopped on a terminal authentication error. Unlike a transient timeout, the first reliable observation is enough; repeating the same prompt will not repair the credentials. `spawn` leaves the pane open but does not register a worker that failed during startup. An authentication screen already present before `dispatch`, with no evidence of a new attempt, results in `not-received` (exit 15).
 - **Do:** read the pane, repair the CLI's authentication, then start or dispatch again. Keep credentials out of reports and friction notes.
 
+- Cursor `Model unavailable on <plan>` in the provider detector's last ten non-empty lines ends `wait` or a waiting `dispatch` with `provider-error` (exit 14), preserving the sanitized line as `cause` without retrying; use the model without an effort suffix on a plan that rejects fixed-setting variants.
+
 ## `doctor --fix` will not pick 3 or 4
 
 - **Symptom:** `doctor --fix` exits 2 and the config file is unchanged.

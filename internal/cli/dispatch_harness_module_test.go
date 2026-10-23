@@ -13,6 +13,61 @@ import (
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
+func TestDispatchProviderCursorPlan(t *testing.T) {
+	for _, message := range []struct{ name, line string }{
+		{"plain", "Error: Model unavailable on Plus. Plus includes Composer 2.5, Grok 4.7, Grok 4.6, and Grok 4.5 with fixed settings"},
+		{"pipe", "Error: Model unavailable on Plus. Available models: Composer | Grok"},
+	} {
+		for _, noWait := range []bool{false, true} {
+			name := "wait"
+			if noWait {
+				name = "no-wait"
+			}
+			t.Run(message.name+"/"+name, func(t *testing.T) {
+				line := message.line
+				f := newR11Fixture(t, r11Case{initial: "Welcome to the worker", post: line, recent: line, mode: "idle", check: "1", authScreen: true, cursorPlan: true})
+				for _, key := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME"} {
+					f.env[key] = f.root
+				}
+				f.env["SOHO_WAIT_POLL_MS"] = "1"
+				f.env["SOHO_PROVIDER_RETRIES"] = "3"
+				f.env["SOHO_PROVIDER_RETRY_DELAY"] = "0"
+				args := []string{"worker", f.brief, "--timeout", "3000"}
+				if noWait {
+					args = append(args, "--no-wait")
+				}
+				code, out, stderr := f.run(t, args...)
+				var got map[string]any
+				if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &got); err != nil {
+					t.Fatalf("code=%d out=%q stderr=%q: %v", code, out, stderr, err)
+				}
+				if code != 14 || got["wait_status"] != "provider-error" || got["cause"] != line {
+					t.Fatalf("code=%d out=%q stderr=%q, want provider-error/14 and %q", code, out, stderr, line)
+				}
+				calls, err := fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if countDispatchCalls(calls, "prompt") != 1 || countDispatchCalls(calls, "send-keys") != 0 {
+					t.Fatalf("unexpected retry: %#v", calls)
+				}
+			})
+		}
+	}
+}
+
+func TestDispatchProviderPlanAfterReceipt(t *testing.T) {
+	for _, line := range []string{"Error: Model unavailable on Pro", "Error: Model unavailable on Plus. Available models: Composer | Grok"} {
+		t.Run(line, func(t *testing.T) {
+			// The existing receipt fixture models an accepted turn followed by idle.
+			// This covers the no-wait observation after arrival, separately from the
+			// Cursor startup reads that take the pre-resend refusal path above.
+			verifyR11Case(t, r11Case{initial: "Welcome to the worker", post: line, recent: line, mode: "idle", check: "1", authScreen: true, noWait: true, exit: 14, status: "provider-error", cause: line})
+
+		})
+	}
+}
+
 const harnessModulePost = "Error: Cannot find module\n" +
 	" '/private/tmp/hs-go/orch/pi-broken/dist/bundle/chunks/openai-completions-JXDDPZ23.js' imported\n" +
 	" from /private/tmp/hs-go/orch/pi-broken/dist/bundle/chunks/chunk-3YAHQSW6.js\n" +
