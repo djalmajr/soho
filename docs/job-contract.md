@@ -17,8 +17,8 @@ soho job status  --id <id>                      # read-only; state, event count,
 soho job wait    --id <id> [--timeout MS]       # blocks until a terminal state
 soho job events  --id <id> [--since <seq>] [--wait MS]   # JSON lines; long-poll
 soho job collect --id <id> [--md] [--verify]    # final report (JSON, or report.md with --md)
-soho job amend   --id <id> [<file>|-]           # contract change or answer to a question
-soho job send    --id <id> [<file>|-]           # non-blocking note to the job orchestrator
+soho job amend   --id <id> [<file>|-]           # contract change or answer to a question; prints numeric seq
+soho job send    --id <id> [<file>|-]           # non-blocking note to the job orchestrator; prints numeric seq
 soho job ack     --id <id> --upto <seq>         # dispatcher routed every decision up to <seq>
 soho job cancel  --id <id> [--grace <seconds>]
 soho job close   --id <id> [--force]
@@ -320,8 +320,8 @@ Events are private to the dispatcher and are never copied to a public forge.
 
 ## Feedback from the dispatcher
 
-- `job amend`: the feedback changes the contract (goal, acceptance, decisions, constraints, scope) or answers a `question`/`blocked`. It becomes a formal amendment with a new report and unblocks the job.
-- `job send`: a non-blocking note that does not change the contract. The supervisor delivers it to the job orchestrator's pane on the same machine. It does not unblock the job.
+- `job amend`: the feedback changes the contract (goal, acceptance, decisions, constraints, scope) or answers a `question`/`blocked`. It becomes a formal amendment with a new report and unblocks the job. The JSON reply includes the request's numeric `seq`, matching the text `refs.seq_ref` in that request's `amend_received` event after delivery.
+- `job send`: a non-blocking note that does not change the contract. The supervisor delivers it to the job orchestrator's pane on the same machine. It does not unblock the job. The JSON reply includes the request's numeric `seq`, matching the text `refs.seq_ref` in that request's `amend_received` event after delivery.
 - When in doubt, use `amend`. The job orchestrator treats both as information from the dispatcher, never as user intent beyond their text.
 
 ## Input limits

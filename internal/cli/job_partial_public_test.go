@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,66 @@ import (
 	"github.com/djalmajr/soho/internal/job"
 	"github.com/djalmajr/soho/internal/platform"
 )
+
+// Control replies and delivery events use separate counters: compare the
+// public CLI replies with the events produced by the real supervisor path.
+func TestJobControlSeqDelivery(t *testing.T) {
+	var seqs []int
+	f, _, _ := partialPublicFix(t, false, func(f *jobFix, co string) {
+		f.env["TMPDIR"] = t.TempDir()
+		body := filepath.Join(co, "control-body.md")
+		if err := os.WriteFile(body, []byte("dispatcher feedback"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for i, sub := range []string{"amend", "amend", "send"} {
+			code, out, errOut := f.run(t, sub, "--id", "job-1", body)
+			var reply struct {
+				Seq int `json:"seq"`
+			}
+			if err := json.Unmarshal([]byte(out), &reply); err != nil || code != 0 || errOut != "" || reply.Seq != i+1 {
+				t.Fatalf("%s reply code=%d out=%q stderr=%q decode=%v want numeric seq=%d", sub, code, out, errOut, err, i+1)
+			}
+			seqs = append(seqs, reply.Seq)
+		}
+	})
+	code, out, errOut := f.run(t, "events", "--id", "job-1")
+	if code != 0 || errOut != "" {
+		t.Fatalf("events code=%d out=%q stderr=%q", code, out, errOut)
+	}
+	var received []job.Event
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		var event job.Event
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Tipo == "amend_received" {
+			received = append(received, event)
+		}
+	}
+	if len(received) != 3 {
+		t.Fatalf("delivery events=%+v; output=%s", received, out)
+	}
+	for i, event := range received {
+		wantSummary := "amendment delivered"
+		if i == 2 {
+			wantSummary = "note delivered"
+		}
+		if event.Refs["seq_ref"] != strconv.Itoa(seqs[i]) || event.Resumo != wantSummary {
+			t.Fatalf("request seq=%d delivery=%+v want summary=%q", seqs[i], event, wantSummary)
+		}
+	}
+}
+
+func TestJobStatusControlSeqAbsent(t *testing.T) {
+	f := newJobFix(t)
+	co := f.checkout(t, "example-org", "example-repo")
+	f.startJob(t, co)
+	f.env["TMPDIR"] = t.TempDir()
+	code, out, errOut := f.run(t, "status", "--id", "job-1")
+	if code != 0 || errOut != "" || out != jobControlStatusLine {
+		t.Fatalf("status changed: code=%d out=%q stderr=%q", code, out, errOut)
+	}
+}
 
 // The done+partial public-path contract: for a done job that carries a
 // partial outcome of its own worker collaboration — and for the complete
@@ -59,7 +120,7 @@ func partialPublicFakeHerdrSoho(args []string) int {
 	case "spawn":
 		fmt.Println(`{"name":"orch-1","pane":"w1:p1"}`)
 		return 0
-	case "dispatch":
+	case "dispatch", "send":
 		return 0
 	case "status":
 		if len(args) < 2 || args[1] != "orch-1" {
@@ -116,7 +177,7 @@ func (c *partialPublicClock) Sleep(d time.Duration) { c.mono += int64(d) }
 // supervisor runs to its terminal outcome. withCollab adds the worker
 // collaboration the capture must end partial. The fixture is returned:
 // the CLI surfaces run on the same env, over the same repos root.
-func partialPublicFix(t *testing.T, withCollab bool) (*jobFix, string, string) {
+func partialPublicFix(t *testing.T, withCollab bool, beforeRun ...func(*jobFix, string)) (*jobFix, string, string) {
 	t.Helper()
 	f := newJobFix(t)
 	co := f.checkout(t, "example-org", "example-repo")
@@ -194,6 +255,9 @@ func partialPublicFix(t *testing.T, withCollab bool) (*jobFix, string, string) {
 	}
 	env["FAKE_STATUS_REPORT"] = orchReport
 	env["HERDR_FAKE"] = "1"
+	for _, before := range beforeRun {
+		before(f, co)
+	}
 	sup, err := job.NewSupervisor(store, "job-1", env, exe, func(m string) { t.Fatalf("friction: %s", m) })
 	if err != nil {
 		t.Fatal(err)

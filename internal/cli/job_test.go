@@ -676,7 +676,7 @@ func TestJobControlAmendSendWriteRequests(t *testing.T) {
 	}
 
 	code, out, errOut := f.run(t, "amend", "--id", "job-1", bodyFile)
-	if code != 0 || out != jobControlStatusLine || errOut != "" {
+	if code != 0 || out != strings.TrimSuffix(jobControlStatusLine, "}\n")+`,"seq":1}`+"\n" || errOut != "" {
 		t.Fatalf("amend code=%d out=%q err=%q", code, out, errOut)
 	}
 	data, err := os.ReadFile(filepath.Join(ctl, "amend-000001.md"))
@@ -689,7 +689,7 @@ func TestJobControlAmendSendWriteRequests(t *testing.T) {
 	jobStdin = strings.NewReader("send note\n")
 	t.Cleanup(func() { jobStdin = old })
 	code, out, errOut = f.run(t, "send", "--id", "job-1", "-")
-	if code != 0 || out != jobControlStatusLine || errOut != "" {
+	if code != 0 || out != strings.TrimSuffix(jobControlStatusLine, "}\n")+`,"seq":2}`+"\n" || errOut != "" {
 		t.Fatalf("send code=%d out=%q err=%q", code, out, errOut)
 	}
 	data, err = os.ReadFile(filepath.Join(ctl, "send-000002.md"))
@@ -701,7 +701,7 @@ func TestJobControlAmendSendWriteRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out, _ = f.run(t, "amend", "--id", "job-1", bodyFile2)
-	if code != 0 || out != jobControlStatusLine {
+	if code != 0 || out != strings.TrimSuffix(jobControlStatusLine, "}\n")+`,"seq":3}`+"\n" {
 		t.Fatalf("amend 2 code=%d out=%q", code, out)
 	}
 	data, err = os.ReadFile(filepath.Join(ctl, "amend-000003.md"))
