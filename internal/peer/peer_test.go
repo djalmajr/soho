@@ -18,6 +18,7 @@ import (
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/peer"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -25,6 +26,8 @@ import (
 func arrivalWindowMS(env platform.Env) int
 
 func TestMain(m *testing.M) {
+	testutil.CalmPressure()
+
 	// Pin the peer header clock to one fixed instant for the whole
 	// package, so the expected prompts built in the tests match the
 	// emitted ones byte for byte.

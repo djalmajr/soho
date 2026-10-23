@@ -300,6 +300,16 @@ func InstallWithOptions(t testing.TB, dir, name string, rules []Rule, options In
 	}
 	if runtime.GOOS == "windows" {
 		err = os.Link(preparedBinary, target)
+		if err != nil {
+			// A hard link cannot cross drives: a test whose temporary
+			// directory sits on another drive than the prepared binary
+			// gets its own copy.
+			data, readErr := os.ReadFile(preparedBinary)
+			if readErr != nil {
+				return "", readErr
+			}
+			err = os.WriteFile(target, data, 0o755)
+		}
 	} else {
 		err = os.Symlink(bin, target)
 		if err != nil {

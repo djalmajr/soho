@@ -10,10 +10,14 @@ import (
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
-func TestMain(m *testing.M) { fakecli.RunTests(m) }
+func TestMain(m *testing.M) {
+	testutil.CalmPressure()
+	fakecli.RunTests(m)
+}
 
 func TestSpawnMapsConfiguredArgumentsAndWritesRoster(t *testing.T) {
 	// Mutation captured: changing approval, model, effort, configured args order, or trailing argv changes the observable Herdr start argv.

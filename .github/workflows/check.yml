@@ -62,15 +62,24 @@ jobs:
             Select-Object -First 1
           if (-not $bin) { throw "Go is not on PATH and a native Go 1.25 toolcache entry was not found" }
           Add-Content -Path $env:GITHUB_PATH -Value $bin
-      - name: Keep the Go build cache on the work drive
+      - name: Keep the Go build cache and the test temp on the work drive
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $cache = Join-Path $env:RUNNER_TEMP 'go-build'
           $tmp = Join-Path $env:RUNNER_TEMP 'go-tmp'
-          New-Item -ItemType Directory -Force -Path $cache, $tmp | Out-Null
+          $testTmp = Join-Path $env:RUNNER_TEMP 'test-tmp'
+          New-Item -ItemType Directory -Force -Path $cache, $tmp, $testTmp | Out-Null
           Add-Content -Path $env:GITHUB_ENV -Value "GOCACHE=$cache"
           Add-Content -Path $env:GITHUB_ENV -Value "GOTMPDIR=$tmp"
+          # t.TempDir and os.MkdirTemp follow TEMP and TMP, which default to
+          # the system drive; the suite's temporary files fill it.
+          Add-Content -Path $env:GITHUB_ENV -Value "TEMP=$testTmp"
+          Add-Content -Path $env:GITHUB_ENV -Value "TMP=$testTmp"
+      - name: Free disk before the tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}
       - name: Formatting and vet
         if: matrix.suite == 'native'
         shell: pwsh
@@ -93,3 +102,7 @@ jobs:
         run: |
           go test -race -timeout=30m ./...
           if ($LASTEXITCODE -ne 0) { throw "go test -race failed" }
+      - name: Free disk after the tests
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}
