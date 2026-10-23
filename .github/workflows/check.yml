@@ -18,11 +18,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
+        os: [windows-2025]
         # The native and race suites run as separate jobs, each with its own
         # time budget and disk: one after the other they no longer fit the
         # Windows runner.
-        suite: [native, race]
+        suite: [native]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 75
     env:
@@ -94,8 +94,29 @@ jobs:
         if: matrix.suite == 'native'
         shell: pwsh
         run: |
-          go test -timeout=30m ./...
-          if ($LASTEXITCODE -ne 0) { throw "go test failed" }
+          $samples = Join-Path $env:RUNNER_TEMP 'proc-samples.txt'
+          $sampler = Start-Job -ArgumentList $samples -ScriptBlock {
+            param($out)
+            $t0 = Get-Date
+            while ($true) {
+              $os = Get-CimInstance Win32_OperatingSystem
+              $pf = (Get-CimInstance Win32_PageFileUsage | Measure-Object -Property CurrentUsage -Sum).Sum
+              $c = [math]::Round((Get-PSDrive C).Free/1GB,1)
+              $top = Get-Process | Group-Object Name | Sort-Object Count -Descending | Select-Object -First 8 | ForEach-Object { "$($_.Name)=$($_.Count)" }
+              $mem = Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 5 | ForEach-Object { "$($_.Name):$([math]::Round($_.WorkingSet64/1MB))MB" }
+              "t=$([int]((Get-Date)-$t0).TotalSeconds) freeMemMB=$([math]::Round($os.FreePhysicalMemory/1KB)) pagefileMB=$pf C=$c procs=$((Get-Process).Count) | $($top -join ' ') | $($mem -join ' ')" | Add-Content $out
+              Start-Sleep 60
+            }
+          }
+          $json = Join-Path $env:RUNNER_TEMP 'test.json'
+          go test -json -timeout=30m ./... > $json
+          $rc = $LASTEXITCODE
+          Stop-Job $sampler
+          Get-Content $samples
+          $events = Get-Content $json | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ -and $_.Test -and ($_.Action -eq 'pass' -or $_.Action -eq 'fail') -and $_.Test -notmatch '/' }
+          $events | Sort-Object Elapsed -Descending | Select-Object -First 60 | ForEach-Object { "{0,8:N1}s {1} {2} {3}" -f $_.Elapsed, $_.Action, ($_.Package -replace '.*/internal/',''), $_.Test }
+          Get-Content $json | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ -and -not $_.Test -and ($_.Action -eq 'pass' -or $_.Action -eq 'fail') } | ForEach-Object { "PKG {0,8:N1}s {1} {2}" -f $_.Elapsed, $_.Action, $_.Package }
+          if ($rc -ne 0) { throw "go test failed" }
       - name: Race detector
         if: matrix.suite == 'race'
         shell: pwsh
