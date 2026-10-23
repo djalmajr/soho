@@ -217,6 +217,9 @@ An ephemeral job is one self-contained orchestration run driven by a dispatcher,
 - `job collect --id <id> [--md] [--verify]` — the final report (JSON, or `report.md` with `--md`).
 - `job amend --id <id> [<file>|-]` — feedback that changes the contract (goal, acceptance, decisions, constraints, scope) or answers a `question`/`blocked`; it becomes a formal amendment with a new report and unblocks the job. When in doubt, use `amend`.
 - `job send --id <id> [<file>|-]` — a non-blocking note to the job orchestrator; it does not unblock the job.
+
+Both `job amend` and `job send` print the request's numeric `seq` in their JSON reply, matching the text `refs.seq_ref` in that request's `amend_received` event after the supervisor delivers it.
+
 - `job ack --id <id> --upto <seq>` — the dispatcher routed every decision up to `<seq>` (monotonic; a lower value is a no-op).
 - `job cancel --id <id> [--grace <seconds>]` — the job waits `--grace` seconds (default 120), then stops and reports what it has.
 - `job close --id <id> [--force]` — release the job (exits 24 while a decision is still unacknowledged; `--force` closes anyway).

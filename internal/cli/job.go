@@ -421,9 +421,10 @@ type jobStatusLine struct {
 	// The count is job.HeldControls's read of control/ and the event log;
 	// the CLI repeats none of that rule, and the read writes nothing.
 	HeldControls []job.HeldControl `json:"held_controls"`
+	Seq          int               `json:"seq,omitempty"`
 }
 
-func printJobStatusLine(snap job.Snapshot) {
+func printJobStatusLine(snap job.Snapshot, seq ...int) {
 	partial := job.PartialCollaborations(snap.State)
 	held, err := job.HeldControls(snap)
 	if err != nil {
@@ -442,6 +443,9 @@ func printJobStatusLine(snap job.Snapshot) {
 		HeldControls:          held,
 	}
 	line.Eventos.Total = snap.EventTotal
+	if len(seq) > 0 {
+		line.Seq = seq[0]
+	}
 	line.Eventos.UltimoSeq = snap.LastSeq
 	if line.DecisionsPendentes == nil {
 		line.DecisionsPendentes = []int{}
@@ -989,12 +993,12 @@ func jobSupervise(args []string, env platform.Env, launch job.LaunchLocators) in
 
 // jobControlStatus prints the fresh snapshot status line after a control
 // request: the store and id are known, so only a read failure dies.
-func jobControlStatus(sub string, store *job.Store, id string) {
+func jobControlStatus(sub string, store *job.Store, id string, seq ...int) {
 	snap, err := store.Snapshot(id)
 	if err != nil {
 		dieJob(sub, err)
 	}
-	printJobStatusLine(snap)
+	printJobStatusLine(snap, seq...)
 }
 
 // jobAmend queues the amendment body (a file or -) as a control request and
@@ -1014,10 +1018,11 @@ func jobAmend(args []string, env platform.Env, cwd string) int {
 		return code
 	}
 	body := jobReadBody("amend", "body", pos[0], jobAmendBodyLimit, "64 KiB")
-	if _, err := store.RequestAmend(id, body); err != nil {
+	item, err := store.RequestAmend(id, body)
+	if err != nil {
 		dieJob("amend", err)
 	}
-	jobControlStatus("amend", store, id)
+	jobControlStatus("amend", store, id, item.Seq)
 	return 0
 }
 
@@ -1037,10 +1042,11 @@ func jobSend(args []string, env platform.Env, cwd string) int {
 		return code
 	}
 	body := jobReadBody("send", "body", pos[0], jobSendBodyLimit, "16 KiB")
-	if _, err := store.RequestSend(id, body); err != nil {
+	item, err := store.RequestSend(id, body)
+	if err != nil {
 		dieJob("send", err)
 	}
-	jobControlStatus("send", store, id)
+	jobControlStatus("send", store, id, item.Seq)
 	return 0
 }
 
