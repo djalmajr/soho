@@ -2,6 +2,7 @@
 package herdr
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -51,11 +52,15 @@ type AgentPromptResult struct {
 	Raw string
 }
 
-func run(args []string, env platform.Env) platform.RunResult {
-	return runWithTimeout(args, env, Timeout)
+func run(args []string, env platform.Env, callCtx ...context.Context) platform.RunResult {
+	return runWithTimeout(args, env, Timeout, callCtx...)
 }
-func runWithTimeout(args []string, env platform.Env, timeout time.Duration) platform.RunResult {
-	return platform.RunCli("herdr", args, platform.RunOptions{Env: env, TimeoutMs: int(timeout / time.Millisecond)})
+func runWithTimeout(args []string, env platform.Env, timeout time.Duration, callCtx ...context.Context) platform.RunResult {
+	var ctx context.Context
+	if len(callCtx) > 0 {
+		ctx = callCtx[0]
+	}
+	return platform.RunCli("herdr", args, platform.RunOptions{Env: env, Context: ctx, TimeoutMs: int(timeout / time.Millisecond)})
 }
 func parsed(s string) any { v, _ := jsonjs.Parse([]byte(s)); return v }
 func get(v any, keys ...string) any {
@@ -162,8 +167,8 @@ func TabList(env platform.Env, ws string) []any {
 
 // AgentReadOK is AgentRead that also reports whether the read succeeded, for
 // callers that must tell an empty screen from a failed read.
-func AgentReadOK(env platform.Env, agent, source string, lines *int) (string, bool) {
-	r := agentRead(env, agent, source, lines)
+func AgentReadOK(env platform.Env, agent, source string, lines *int, callCtx ...context.Context) (string, bool) {
+	r := agentRead(env, agent, source, lines, callCtx...)
 	if !ok(r) {
 		return "", false
 	}
@@ -176,12 +181,12 @@ func AgentReadOK(env platform.Env, agent, source string, lines *int) (string, bo
 // visible screen is what such an agent shows, so that read takes its place;
 // without it every check on a working opencode read an empty screen (the
 // prompt of a dispatch or amendment, a quota or auth error).
-func agentRead(env platform.Env, agent, source string, lines *int) platform.RunResult {
+func agentRead(env platform.Env, agent, source string, lines *int, callCtx ...context.Context) platform.RunResult {
 	args := []string{"agent", "read", agent, "--source", source}
 	if lines != nil {
 		args = append(args, "--lines", fmt.Sprint(*lines))
 	}
-	r := run(args, env)
+	r := run(args, env, callCtx...)
 	if ok(r) || !strings.HasPrefix(source, "recent") {
 		return r
 	}
@@ -192,11 +197,11 @@ func agentRead(env platform.Env, agent, source string, lines *int) platform.RunR
 	if code, _ := errorInfo(raw); code != "agent_not_idle" {
 		return r
 	}
-	return run([]string{"agent", "read", agent, "--source", "visible"}, env)
+	return run([]string{"agent", "read", agent, "--source", "visible"}, env, callCtx...)
 }
 
-func AgentRead(env platform.Env, agent, source string, lines *int) string {
-	r := agentRead(env, agent, source, lines)
+func AgentRead(env platform.Env, agent, source string, lines *int, callCtx ...context.Context) string {
+	r := agentRead(env, agent, source, lines, callCtx...)
 	if !ok(r) {
 		return ""
 	}
@@ -217,7 +222,7 @@ func PaneRead(env platform.Env, pane, source string, lines *int) (string, bool) 
 	}
 	return r.Stdout, true
 }
-func AgentState(target string, env platform.Env, timeout time.Duration, retryPauses []time.Duration) AgentStateResult {
+func AgentState(target string, env platform.Env, timeout time.Duration, retryPauses []time.Duration, callCtx ...context.Context) AgentStateResult {
 	if timeout <= 0 {
 		timeout = Timeout
 	}
@@ -226,11 +231,23 @@ func AgentState(target string, env platform.Env, timeout time.Duration, retryPau
 	}
 	var r platform.RunResult
 	for attempt := 0; ; attempt++ {
-		r = runWithTimeout([]string{"agent", "get", target}, env, timeout)
+		r = runWithTimeout([]string{"agent", "get", target}, env, timeout, callCtx...)
 		if attempt >= len(retryPauses) || !transientKill(r) {
 			break
 		}
-		time.Sleep(retryPauses[attempt])
+		if len(callCtx) == 0 || callCtx[0] == nil {
+			time.Sleep(retryPauses[attempt])
+		} else {
+			timer := time.NewTimer(retryPauses[attempt])
+			select {
+			case <-timer.C:
+			case <-callCtx[0].Done():
+			}
+			timer.Stop()
+			if callCtx[0].Err() != nil {
+				break
+			}
+		}
 	}
 	empty := AgentStateResult{Seq: ""}
 	if r.Error == "ETIMEDOUT" {
@@ -525,11 +542,11 @@ func PaneGetGone(pane string, env platform.Env) bool {
 	code, _ := errorInfo(raw)
 	return code == "pane_not_found"
 }
-func PaneSendText(pane, text string, env platform.Env) bool {
-	return ok(run([]string{"pane", "send-text", pane, text}, env))
+func PaneSendText(pane, text string, env platform.Env, callCtx ...context.Context) bool {
+	return ok(run([]string{"pane", "send-text", pane, text}, env, callCtx...))
 }
-func PaneSendKeys(pane, keys string, env platform.Env) bool {
-	return ok(run([]string{"pane", "send-keys", pane, keys}, env))
+func PaneSendKeys(pane, keys string, env platform.Env, callCtx ...context.Context) bool {
+	return ok(run([]string{"pane", "send-keys", pane, keys}, env, callCtx...))
 }
 func AgentPrompt(agent, prompt string, env platform.Env) AgentPromptResult {
 	r := platform.RunCli("herdr", []string{"agent", "prompt", agent, prompt}, platform.RunOptions{Env: env, TimeoutMs: int(Timeout / time.Millisecond), MergeOutput: true})

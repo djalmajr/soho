@@ -700,10 +700,9 @@ func TestCompactPiNotRestored(t *testing.T) {
 	}
 }
 
-// TestCompactPiTimeoutStillRestores verifies that a timeout with the thinking
-// still off tries to restore the level before exiting; the timeout JSON carries
-// thinking_restored.
-func TestCompactPiTimeoutStillRestores(t *testing.T) {
+// A hard deadline includes preparation and restoration: it must not buy
+// another thinking cycle after the budget expires during the first pause.
+func TestCompactPiDeadlineDoesNotExtendForRestore(t *testing.T) {
 	before := "old output line\n• thinking: high\n"
 	off := "old output line\n• thinking: off\n"
 	// After the send the footer shows high (no proof): the compact times out,
@@ -718,7 +717,7 @@ func TestCompactPiTimeoutStillRestores(t *testing.T) {
 		{Argv: []string{"pane", "send-text", "p1", "/compact"}, Stdout: `{"result":{}}`},
 		{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 	})
-	code, out, _ := f.run(t, "compact", "worker", "--timeout", "500")
+	code, out, stderr := f.run(t, "compact", "worker", "--timeout", "500")
 	if code != 9 {
 		t.Fatalf("code=%d want 9 out=%s", code, out)
 	}
@@ -726,12 +725,15 @@ func TestCompactPiTimeoutStillRestores(t *testing.T) {
 	if value["status"] != "timeout" {
 		t.Fatalf("json=%v", value)
 	}
-	if restored, ok := value["thinking_restored"].(bool); !ok || !restored {
-		t.Fatalf("thinking_restored=%v want true (restored before the timeout exit): %v", value["thinking_restored"], value)
+	if restored, ok := value["thinking_restored"].(bool); !ok || restored || !strings.Contains(stderr, "set it by hand") {
+		t.Fatalf("thinking_restored=%v want false with manual restoration warning: %v stderr=%q", value["thinking_restored"], value, stderr)
 	}
 	calls := f.calls(t)
-	if n := countArgv(calls, []string{"pane", "send-keys", "p1", "shift+tab"}); n != 2 {
-		t.Fatalf("shift+tab calls=%d want 2 (one off, one restore): %#v", n, calls)
+	if n := countArgv(calls, []string{"pane", "send-keys", "p1", "shift+tab"}); n != 1 {
+		t.Fatalf("shift+tab calls=%d want 1 (no restoration after deadline): %#v", n, calls)
+	}
+	if n := countArgv(calls, []string{"pane", "send-text", "p1", "/compact"}); n != 0 {
+		t.Fatalf("sent /compact after preparation exhausted the deadline: %#v", calls)
 	}
 }
 
@@ -1044,7 +1046,9 @@ func TestCompactClaudeProofAfterDeadlineStillCompacted(t *testing.T) {
 	})
 	// The pre-send read and two polls run before the deadline.
 	compactDeadlineAfterReads(t, f, 3)
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "500")
+	// The synthetic proof deadline advances after three reads; leave the real
+	// phase budget available for the final-read protocol under test.
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "30s")
 	if code != 0 || withoutShortTimeoutWarning(errText) != "" {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
@@ -1082,7 +1086,9 @@ func TestCompactPiEndingOnLastRead(t *testing.T) {
 	})
 	// The pre-send read and two polls run before the deadline.
 	compactDeadlineAfterReads(t, f, 3)
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "500")
+	// The synthetic proof deadline advances after three reads; leave the real
+	// phase budget available for the final-read protocol under test.
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "30s")
 	if code != 0 || withoutShortTimeoutWarning(errText) != "" {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
@@ -1113,7 +1119,9 @@ func TestCompactLastReadNothingTimesOut(t *testing.T) {
 	})
 	// The pre-send read and two polls run before the deadline.
 	compactDeadlineAfterReads(t, f, 3)
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "500")
+	// The synthetic proof deadline advances after three reads; leave the real
+	// phase budget available for the final-read protocol under test.
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "30s")
 	if code != 9 || withoutShortTimeoutWarning(errText) != "" {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}

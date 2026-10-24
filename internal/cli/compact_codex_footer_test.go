@@ -265,7 +265,9 @@ func TestCompactCodexFooterDropAfterDeadlineCompacted(t *testing.T) {
 		{Argv: compactReadArgv("worker"), Call: 4, Stdout: codexScrolled(codexFooterAfter3)},
 	})
 	compactDeadlineAfterReads(t, f, 3)
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "500")
+	// The synthetic deadline controls the final-read protocol; keep the real
+	// phase budget available until that protocol has been exercised.
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "30s")
 	if code != 0 || withoutShortTimeoutWarning(errText) != "" {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
