@@ -317,6 +317,12 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 		}
 	}
 	used := usedKinds(ctx, env, cwd)
+	for _, kind := range used {
+		if kind == "codex" {
+			doctorCodexRegistryPolicy(env, s)
+			break
+		}
+	}
 	var missing []string
 	for _, k := range used {
 		if _, ok := platform.FindExecutable(kindExe(k), env, platform.Current()); !ok {
