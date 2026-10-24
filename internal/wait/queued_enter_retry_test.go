@@ -197,7 +197,7 @@ func TestQueuedEnterRetryRefusesKnownDialog(t *testing.T) {
 	if provider.DialogUI("claude", screen) == "" {
 		t.Fatalf("fixture screen carries no known dialog:\n%s", screen)
 	}
-	if region, ok := provider.ComposerRegion("claude", screen); !ok || !provider.ComposerHoldsPath(region, queuedRetryPrompt) {
+	if region, ok := provider.ComposerRegion("claude", screen); !ok || !provider.ComposerHoldsPathFor("claude", region, queuedRetryPrompt) {
 		t.Fatalf("fixture composer does not hold the stored path:\n%s", screen)
 	}
 	f, stderr := queuedRetryProbe(t, screen, map[string]string{

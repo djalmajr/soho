@@ -13,6 +13,7 @@ package cli
 // busy fixture: a re-executed Go test binary, no scripts.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -219,6 +220,92 @@ func TestDispatchDelayedComposerTextWrappedInTheComposer(t *testing.T) {
 	}
 	if n, _ := pasteSendKeys(calls); n != 1 {
 		t.Fatalf("send-keys calls=%d, want exactly one bounded Enter; calls=%#v", n, calls)
+	}
+}
+
+func TestReviewR4PiFirstKeyGuard(t *testing.T) {
+	f := newBusyDispatchFixture(t)
+	pasteRoster(t, f, "pi")
+	path := f.composedPath()
+	cut := strings.LastIndex(path, "-") + 1
+	screen := pastePiScreen("old output\n", "› Read "+path[:cut]+"\n  "+path[cut:]+" in full.", "footer\n")
+	pasteFirstInstall(t, f, pasteGetRules("idle", 1, 0), screen,
+		fakecli.Rule{Argv: []string{"agent", "prompt", "worker"}, ArgvPrefix: true, Stdout: `{"result":{"sent":true}}`},
+		fakecli.Rule{Argv: []string{"agent", "send-keys", "worker", "enter"}, ArgvPrefix: true},
+	)
+	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
+	calls := f.calls(t)
+	keys, _ := pasteSendKeys(calls)
+	prompts := countArgvPrefix(calls, []string{"agent", "prompt"})
+	if code != 15 || dispatchOutputStatus(t, out) != "not-received" || keys != 0 || prompts != 1 {
+		t.Fatalf("literal Pi text must not authorize Enter: screen=%q code=%d enters=%d prompts=%d out=%s stderr=%s calls=%#v", screen, code, keys, prompts, out, errText, calls)
+	}
+}
+
+func TestDispatchDelayedComposerIndentedWrappedPointer(t *testing.T) {
+	f := newBusyDispatchFixture(t)
+	path := f.composedPath()
+	const width = 80
+	remaining := "Read the file " + path + " in full and execute it."
+	var lines []string
+	for prefix := "› "; remaining != ""; prefix = "  " {
+		n := width - 2
+		if len(remaining) < n {
+			n = len(remaining)
+		}
+		lines = append(lines, prefix+remaining[:n])
+		remaining = remaining[n:]
+	}
+	warnings := "⚠ 2 warnings · f2 to view"
+	screen := "• Earlier output …\n  └ command result\n\n  New activity · ↓ Back to bottom · esc\n\n" + strings.Join(lines, "\n") +
+		"\n\n  GPT-6.1-Sol high · Context 20% · ← for agents\n" + strings.Repeat(" ", width-len([]rune(warnings))) + warnings + "\n"
+	pasteInstall(t, f, pasteGetRules("idle", 1, 2), screen,
+		fakecli.Rule{Argv: []string{"agent", "prompt", "worker"}, ArgvPrefix: true, Stdout: `{"result":{"sent":true}}`},
+		fakecli.Rule{Argv: []string{"agent", "send-keys", "worker", "enter"}, ArgvPrefix: true},
+	)
+	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
+	if code != 0 || dispatchOutputStatus(t, out) != "submitted" || !strings.Contains(out, `"enter_sent":true`) || strings.Contains(out, `"resent":true`) {
+		t.Fatalf("code=%d out=%s stderr=%s screen=%q", code, out, errText, screen)
+	}
+	if !strings.Contains(errText, "reached its input after the arrival check; sent Enter without resending") {
+		t.Fatalf("post-deadline Enter branch not taken: %s", errText)
+	}
+	calls := f.calls(t)
+	count, at := pasteSendKeys(calls)
+	if count != 1 || strings.Join(calls[at].Argv, " ") != "agent send-keys worker enter" || countArgvPrefix(calls, []string{"agent", "prompt"}) != 1 || pastePromptsAfter(calls, at) != 0 {
+		t.Fatalf("want initial prompt then exactly one plain Enter, no resend: %#v", calls)
+	}
+}
+
+func TestDispatchDelayedComposerSoftWrapSpaces(t *testing.T) {
+	for _, negative := range []bool{false, true} {
+		t.Run(fmt.Sprint(negative), func(t *testing.T) {
+			f := newBusyDispatchFixture(t)
+			path := f.composedPath()
+			screen := "› Read " + path + " \n  in full and execute it."
+			if negative {
+				at := strings.LastIndex(path, "-") + 1
+				screen = "› Read " + path[:at] + " \n  " + path[at:] + " in full and execute it."
+			}
+			screen += "\n\n" + strings.Repeat("-", len(path)+50) + "\n" + strings.Repeat("-", len(path)+50)
+			pasteInstall(t, f, pasteGetRules("idle", 1, 2), screen,
+				fakecli.Rule{Argv: []string{"agent", "prompt", "worker"}, ArgvPrefix: true, Stdout: `{"result":{"sent":true}}`},
+				fakecli.Rule{Argv: []string{"agent", "send-keys", "worker", "enter"}, ArgvPrefix: true},
+			)
+			code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
+			wantCode, wantEnters, wantStatus := 0, 1, "submitted"
+			if negative {
+				wantCode, wantEnters, wantStatus = 15, 0, "not-received"
+			}
+			calls := f.calls(t)
+			enters, at := pasteSendKeys(calls)
+			if code != wantCode || dispatchOutputStatus(t, out) != wantStatus || enters != wantEnters || countArgvPrefix(calls, []string{"agent", "prompt"}) != 1 {
+				t.Fatalf("code=%d out=%s stderr=%s calls=%#v screen=%q", code, out, errText, calls, screen)
+			}
+			if !negative && (strings.Join(calls[at].Argv, " ") != "agent send-keys worker enter" || pastePromptsAfter(calls, at) != 0 || !strings.Contains(errText, "reached its input after the arrival check; sent Enter without resending")) {
+				t.Fatalf("missing Enter-only delayed branch: calls=%#v stderr=%s", calls, errText)
+			}
+		})
 	}
 }
 

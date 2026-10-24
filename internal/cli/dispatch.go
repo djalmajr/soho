@@ -689,7 +689,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 				if nonEmpty(report) || transcriptArrival() || ((resendState.State == "working" || resendState.State == "blocked") && preSeq != "" && seqString(resendState.Seq) != "" && preSeq != seqString(resendState.Seq)) {
 					// Receipt can arrive between the deadline and this final read.
 					// Preserve the original sequence baseline; never resend it.
-				} else if recognized && provider.ComposerHoldsPath(region, composed) {
+				} else if recognized && provider.ComposerHoldsPathFor(kind, region, composed) {
 					// This exact composed prompt path is in the recognized
 					// composer: the text landed after the arrival check. Send
 					// only the bounded Enter and never duplicate the text.
@@ -1105,7 +1105,7 @@ func cursorStartupScreen(agent string, env platform.Env) (herdr.AgentStateResult
 // positive composer proof.
 func firstEnterReady(kind, screen, composed string) bool {
 	region, recognized := provider.ComposerRegion(kind, screen)
-	return recognized && provider.ComposerHoldsPath(region, composed)
+	return recognized && provider.ComposerHoldsPathFor(kind, region, composed)
 }
 
 // dispatchComposerEmpty accepts only whitespace after the provider's input

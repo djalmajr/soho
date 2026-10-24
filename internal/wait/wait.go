@@ -318,7 +318,7 @@ func inputRegionHolds(kind, screen, composed string) bool {
 		return false
 	}
 	region, recognized := provider.ComposerRegion(kind, screen)
-	return recognized && provider.ComposerHoldsPath(region, composed)
+	return recognized && provider.ComposerHoldsPathFor(kind, region, composed)
 }
 
 // rosterKind reports the agent's provider kind from the roster (field 2),
