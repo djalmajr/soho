@@ -79,7 +79,8 @@ func TestWaitJavaScriptPureCases(t *testing.T) {
 
 func TestWaitJavaScriptReportProbeCases(t *testing.T) {
 	t.Run("wait: report ready only on the second probe with the same size", func(t *testing.T) { // JS: "wait: report ready only on the second probe with the same size"
-		f := newQueuedProbeFixture(t, "working", "5", "working\n", nil)
+		// A finished worker is idle; working now deliberately defers completion.
+		f := newQueuedProbeFixture(t, "idle", "5", "working\n", nil)
 		report := filepath.Join(f.sd, "reports", "worker.md")
 		if err := os.MkdirAll(filepath.Dir(report), 0o700); err != nil {
 			t.Fatal(err)

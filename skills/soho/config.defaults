@@ -199,6 +199,9 @@ max_effort=max
 # before a wait gives up on a worker that never wrote its report.
 settled_grace=45
 
+# Seconds to wait on a stable report while its pane is working; 0 disables the wait.
+report_working_max=600
+
 # One regular expression (RE2) per kind: a still screen whose last 15
 # non-empty lines match it is not settled. Each line is tried, and also each
 # line joined to the next one by a space, so a footer a narrow pane wraps in

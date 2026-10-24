@@ -29,6 +29,10 @@ import (
 // The exact byte text the Go and JS dispatchers must agree on.
 const windowsRuntimeNote = "- Your sandbox may not have the runtimes your brief requires (node, bun or another) or may deny them even with full approvals, so a check on the host PATH is not proof about this sandbox. If your brief carries a `## Runtime capability probe` section naming the required commands, run at most one minimal version probe per required runtime in this worker sandbox and record the exact command, exit code and result; never repeat an identical denied probe. A denied or missing runtime keeps its item [partial]; route the blocked gate to the orchestrator for an orchestrator-produced log of the same revision; check any external evidence for the same command, source and revision before letting it resolve the item, and it must never silently turn an unresolved [partial] into a pass.\n"
 
+func TestMain(m *testing.M) {
+	fakecli.RunTests(m)
+}
+
 // withPlatform injects the composition's platform seam for one test and
 // restores the runtime boundary (platform.Current) after it.
 func withPlatform(t *testing.T, goos string) {
@@ -320,7 +324,9 @@ func TestWindowsRuntimeNoteReportLifecycle(t *testing.T) {
 	if _, err := fakecli.Install(t, bin, "herdr", rules); err != nil {
 		t.Fatal(err)
 	}
-	env := platform.Env{"PATH": bin, "SOHO_FAKECLI_CONFIG": bin, "HERDR_SOCKET_PATH": filepath.Join(base, "none.sock"), "SOHO_WAIT_POLL_MS": "1", "HERDR_WORKSPACE_ID": "ws"}
+	// This fixture checks report verdicts, not a worker still writing a report.
+	// Keep the report authoritative without introducing state probes here.
+	env := platform.Env{"PATH": bin, "SOHO_FAKECLI_CONFIG": bin, "HERDR_SOCKET_PATH": filepath.Join(base, "none.sock"), "SOHO_WAIT_POLL_MS": "1", "HERDR_WORKSPACE_ID": "ws", "SOHO_REPORT_WORKING_MAX": "0"}
 	ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
 	runWait := func(report string) (string, string, int) {
 		if err := os.WriteFile(filepath.Join(sd, "last-report-worker"), []byte(report+"\n"), 0o600); err != nil {
@@ -371,5 +377,12 @@ func TestWindowsRuntimeNoteReportLifecycle(t *testing.T) {
 	}
 	if strings.Contains(out2, `"partial"`) || strings.Contains(out2, `verdict_effective":"fail"`) {
 		t.Fatalf("the fresh amendment report with resolved evidence and no partial must be eligible to pass: out=%q", out2)
+	}
+	calls, err := fakecli.ReadCalls(filepath.Join(bin, "herdr.calls.jsonl"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("report verdict lifecycle must not probe Herdr: %#v", calls)
 	}
 }

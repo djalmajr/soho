@@ -497,6 +497,8 @@ func TestWaitJavaScriptRankCases(t *testing.T) {
 func TestWaitJavaScriptDoneReportCases(t *testing.T) {
 	writeReport := func(t *testing.T, f *waitStatusFixture, agent, role, body string) {
 		t.Helper()
+		// These cases test report formatting, not a pane that is still working.
+		f.env["SOHO_REPORT_WORKING_MAX"] = "0"
 		report := filepath.Join(f.state, "reports", agent+".md")
 		if err := os.MkdirAll(filepath.Dir(report), 0o700); err != nil {
 			t.Fatal(err)
@@ -888,6 +890,8 @@ func TestWaitRemainingExitCases(t *testing.T) {
 func TestWaitRemainingReportCases(t *testing.T) {
 	write := func(t *testing.T, f *waitStatusFixture, agent, body string) {
 		t.Helper()
+		// Keep report parsing independent of the fake pane's state probe.
+		f.env["SOHO_REPORT_WORKING_MAX"] = "0"
 		path := filepath.Join(f.state, "reports", agent+".md")
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)

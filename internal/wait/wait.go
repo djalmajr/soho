@@ -327,6 +327,72 @@ func rosterKind(sd, agent string) string {
 	return field(strings.Split(core.RosterLine(sd, agent), "\t"), 2)
 }
 
+func reportIdentity(report string, info os.FileInfo) string {
+	return fmt.Sprintf("%d\t%d\t%s", info.Size(), info.ModTime().UnixNano(), strconv.Quote(report))
+}
+
+func reportStableAt(sd, agent, identity string) (int64, bool) {
+	raw, ok := readWaitFile(sd, agent, "report-stable-at")
+	parts := strings.SplitN(raw, "\t", 2)
+	if !ok || len(parts) != 2 || parts[1] != identity || !uintPattern.MatchString(parts[0]) {
+		return 0, false
+	}
+	at, err := strconv.ParseInt(parts[0], 10, 64)
+	return at, err == nil && at > 0
+}
+
+// reportAgentState checks report completion for wait and blocking dispatch.
+// Failed or missing panes preserve the report's authority.
+func reportAgentState(sd, agent string, ctx *core.Config, env platform.Env, stable bool, identity string) string {
+	max, err := strconv.ParseInt(core.Cfg(ctx, "report_working_max", "600", env), 10, 64)
+	if err != nil || max < 0 {
+		max = 600
+	}
+	done := func() string {
+		if !core.Nowrite(env) {
+			removeWaitFile(sd, agent, "report-stable-at")
+		}
+		return "done"
+	}
+	at, hasTimer := reportStableAt(sd, agent, identity)
+	final, _ := readWaitFile(sd, agent, "report-working-final")
+	if final != identity {
+		if !core.Nowrite(env) {
+			removeWaitFile(sd, agent, "report-working-final")
+		}
+	} else {
+		return done()
+	}
+	if !hasTimer && !core.Nowrite(env) {
+		removeWaitFile(sd, agent, "report-stable-at")
+	}
+	if max == 0 {
+		return done()
+	}
+	st := herdr.AgentState(agent, env, herdr.Timeout, nil)
+	switch st.State {
+	case "idle", "done", "gone", "unavailable":
+		return done()
+	case "working":
+		if !stable && !hasTimer {
+			return "pending"
+		}
+		now := platform.Now().Unix()
+		if !hasTimer {
+			if !core.Nowrite(env) {
+				writeWaitFile(sd, agent, "report-stable-at", strconv.FormatInt(now, 10)+"\t"+identity+"\n")
+			}
+		} else if now-at > max {
+			if !core.Nowrite(env) {
+				writeWaitFile(sd, agent, "report-working-final", identity+"\n")
+			}
+			fmt.Fprintf(platform.Stderr, "soho: wait: '%s' wrote its report but its pane is still working after %ds; treating the report as final\n", agent, now-at)
+			return done()
+		}
+	}
+	return "pending"
+}
+
 func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) string {
 	grace, _ := strconv.ParseFloat(core.Cfg(ctx, "settled_grace", "45", env), 64)
 	if reportNonEmpty(report) {
@@ -337,11 +403,18 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 		size := strconv.FormatInt(info.Size(), 10)
 		prev, ok := readWaitFile(sd, agent, "size")
 		writeWaitFile(sd, agent, "size", wcSize(info.Size())+"\n")
-		if ok && strings.TrimSpace(prev) == size {
-			return "done"
+		identity := reportIdentity(report, info)
+		_, hasTimer := reportStableAt(sd, agent, identity)
+		final, _ := readWaitFile(sd, agent, "report-working-final")
+		if (ok && strings.TrimSpace(prev) == size) || hasTimer || final == identity {
+			return reportAgentState(sd, agent, ctx, env, true, identity)
 		}
+		removeWaitFile(sd, agent, "report-stable-at")
+		removeWaitFile(sd, agent, "report-working-final")
 		return "pending"
 	}
+	removeWaitFile(sd, agent, "report-stable-at")
+	removeWaitFile(sd, agent, "report-working-final")
 	st := herdr.AgentState(agent, env, herdr.Timeout, nil)
 	nrFile := filepath.Join(sd, "wait", agent+".not-received")
 	queuedFile := filepath.Join(sd, "wait", agent+".queued")

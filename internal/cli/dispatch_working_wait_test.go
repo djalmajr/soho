@@ -72,6 +72,12 @@ func TestDispatchBlockingWaitsForTheReportWhenAWorkingTargetShowsNoPrompt(t *tes
 	var seen string
 	var markerErr, reportErr error
 	realWait := dispatchWaitFor
+	// At report publication the worker finishes its turn. Keep arrival's
+	// working responses separate from the wait's idle response.
+	idleBin := t.TempDir()
+	if _, err := fakecli.Install(t, idleBin, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"agent_status":"idle","state_change_seq":6}}}`}}); err != nil {
+		t.Fatal(err)
+	}
 	dispatchWaitFor = func(agents []string, sd string, ctx *core.Config, env platform.Env, timeout float64, quiet bool, cwd string) int {
 		raw, err := os.ReadFile(marker)
 		seen, markerErr = string(raw), err
@@ -80,7 +86,12 @@ func TestDispatchBlockingWaitsForTheReportWhenAWorkingTargetShowsNoPrompt(t *tes
 		} else {
 			reportErr = os.ErrNotExist
 		}
-		return realWait(agents, sd, ctx, env, timeout, quiet, cwd)
+		waitEnv := platform.Env{}
+		for key, value := range env {
+			waitEnv[key] = value
+		}
+		waitEnv["PATH"], waitEnv["SOHO_FAKECLI_CONFIG"] = idleBin, idleBin
+		return realWait(agents, sd, ctx, waitEnv, timeout, quiet, cwd)
 	}
 	t.Cleanup(func() { dispatchWaitFor = realWait })
 	code, out, errText := f.run(t, "worker", f.brief, "--timeout", "30000")
