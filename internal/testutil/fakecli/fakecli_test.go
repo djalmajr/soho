@@ -18,6 +18,62 @@ func TestMain(m *testing.M) {
 	RunTests(m)
 }
 
+type installGuardFailure string
+
+// Embed TB to satisfy its private methods; only these two methods are used
+// before the guard. Fatalf panics so the expected failure stays in-process.
+type installGuardTB struct{ testing.TB }
+
+func (installGuardTB) Helper() {}
+func (installGuardTB) Fatalf(format string, args ...any) {
+	panic(installGuardFailure(fmt.Sprintf(format, args...)))
+}
+
+func TestInstallRequiresFakeRoutingBeforeSideEffects(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		install func(testing.TB, string) (string, error)
+	}{
+		{"Install", func(tb testing.TB, dir string) (string, error) { return Install(tb, dir, "probe", nil) }},
+		{"InstallWithOptions", func(tb testing.TB, dir string) (string, error) {
+			return InstallWithOptions(tb, dir, "probe", nil, InstallOptions{CaptureStdin: true})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			saved := routesFakes.Load()
+			routesFakes.Store(false)
+			t.Cleanup(func() { routesFakes.Store(saved) })
+			dir := filepath.Join(t.TempDir(), "must-not-exist")
+			beforeBinary, beforeErr := preparedBinary, prepareErr
+			var failure any
+			func() {
+				defer func() { failure = recover() }()
+				_, _ = tc.install(installGuardTB{TB: t}, dir)
+			}()
+			if failure != installGuardFailure("fakecli: package must call fakecli.RunTests(m) or fakecli.Main() in TestMain") {
+				t.Fatalf("expected routing refusal, got %#v", failure)
+			}
+			if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+				t.Fatalf("installation created its destination before refusal: %v", err)
+			}
+			if preparedBinary != beforeBinary || prepareErr != beforeErr {
+				t.Fatal("installation prepared an image before refusing unrouted fakes")
+			}
+		})
+	}
+}
+
+func TestMainRecordsRoutingBeforeConfigCheck(t *testing.T) {
+	saved := routesFakes.Load()
+	routesFakes.Store(false)
+	t.Cleanup(func() { routesFakes.Store(saved) })
+	t.Setenv(configEnv, "")
+	Main()
+	if !routesFakes.Load() {
+		t.Fatal("Main did not record routing before returning for an empty config")
+	}
+}
+
 func TestReexecRecordsExactArgumentsAndDispatchesRule(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := Install(t, dir, "probe", []Rule{{Argv: []string{"subcommand", "space and \"quote\""}, Stdout: "ok\n"}}); err != nil {

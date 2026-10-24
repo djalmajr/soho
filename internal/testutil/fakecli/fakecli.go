@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -65,6 +66,10 @@ type EnvOptions struct {
 var preparedBinary string
 var prepareOnce sync.Once
 var prepareErr error
+
+// routesFakes is process-local: Main must run before a test installs an image
+// that can re-execute this package, including the Windows warm-up image.
+var routesFakes atomic.Bool
 
 // waitFileTimeoutEnv carries a shorter cap than the 60 s default into the
 // re-executed fake, so tests do not wait for the timeout. The variable would
@@ -269,6 +274,9 @@ func Install(t testing.TB, dir, name string, rules []Rule) (string, error) {
 
 func InstallWithOptions(t testing.TB, dir, name string, rules []Rule, options InstallOptions) (string, error) {
 	t.Helper()
+	if !routesFakes.Load() {
+		t.Fatalf("fakecli: package must call fakecli.RunTests(m) or fakecli.Main() in TestMain")
+	}
 	if runtime.GOOS == "windows" {
 		if err := prepareBinary(); err != nil {
 			return "", fmt.Errorf("fakecli: prepare test binary: %w", err)
@@ -405,6 +413,7 @@ func pathValue(env []string) string {
 // Main assumes the fake CLI role when Install's config environment variable is set.
 // Call at the start of TestMain; it exits the re-executed test process after dispatch.
 func Main() {
+	routesFakes.Store(true)
 	configPath := os.Getenv(configEnv)
 	if configPath == "" {
 		return
