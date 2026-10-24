@@ -20,6 +20,182 @@ const piBoxSeparator = "──────────────────�
 // claudeBoxSeparator is Claude Code's input-box border line (all '─').
 const claudeBoxSeparator = "──────────────────────────────────────────────────────────────────────────"
 
+func TestComposerIndentedWrappedPath(t *testing.T) {
+	for _, directory := range []string{`C:\Users\worker\briefs\`, `/tmp/worker/workspace/briefs/`} {
+		width := 16 + len(directory)
+		name := "implementer-" + strings.Repeat("x", width-2-len("implementer-")-1) + "-"
+		path := directory + name + "20261023T181332.brief.md"
+		t.Run(path, func(t *testing.T) {
+			wrapped := "› Read the file " + directory + "\n  " + name + "\n  20261023T181332.brief.md in full."
+			for _, tc := range []struct {
+				name, screen string
+				want         bool
+			}{
+				{"exact", wrapped + "\n\nfooter", true},
+				{"rejected", strings.Replace(wrapped, ".md in full.", ".md.rejected in full.", 1), false},
+				{"history", strings.TrimPrefix(wrapped, "› ") + "\n\n› unrelated draft\n\nfooter", false},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					lines, ok := ComposerRegion("codex", tc.screen)
+					if !ok || ComposerHoldsPathFor("codex", lines, path) != tc.want {
+						t.Fatalf("region=%q recognized=%v want holds=%v path=%q", lines, ok, tc.want, path)
+					}
+				})
+			}
+		})
+	}
+	t.Run("suffix-on-next-line", func(t *testing.T) {
+		path := "/tmp/brief.md"
+		first := "› Read " + path
+		screen := first + "\n  .rejected\n\n" + strings.Repeat("-", len([]rune(first)))
+		lines, ok := ComposerRegion("codex", screen)
+		if !ok || ComposerHoldsPathFor("codex", lines, path) || !ComposerHoldsPathFor("codex", lines, path+".rejected") {
+			t.Fatalf("region=%q recognized=%v path=%q", lines, ok, path)
+		}
+	})
+	t.Run("claude-literal-continuation", func(t *testing.T) {
+		path := "/tmp/briefs/worker.md"
+		screen := claudeBoxSeparator + "\n❯ Read /tmp/briefs/\n│ worker.md in full.\n" + claudeBoxSeparator
+		lines, ok := ComposerRegion("claude", screen)
+		if !ok || ComposerHoldsPathFor("claude", lines, path) {
+			t.Fatalf("region=%q recognized=%v path=%q", lines, ok, path)
+		}
+	})
+}
+
+func TestComposerSoftWrapSpaces(t *testing.T) {
+	for _, tc := range []struct {
+		name, screen, path string
+		want               bool
+	}{
+		{"real-space", "› Read C:\\Users\\Some \n  Name\\brief.md in full.", `C:\Users\Some Name\brief.md`, true},
+		{"missing-space", "› Read C:\\Users\\Some \n  Name\\brief.md in full.", `C:\Users\SomeName\brief.md`, false},
+		{"prose", "› Read /tmp/brief.md \n  in full and execute it.", "/tmp/brief.md", true},
+		{"extra-indent-is-text", "  › Read C:\\Users\\Some\n     Name\\brief.md in full.", `C:\Users\SomeName\brief.md`, false},
+		{"extra-indent-preserved", "  › Read C:\\Users\\Some\n     Name\\brief.md in full.", `C:\Users\Some  Name\brief.md`, true},
+		{"unicode-footer", "› Read /tmp/worker-\n  brief.md", "/tmp/worker-brief.md", true},
+		{"mixed-breaks", "› Read /tmp/Some\n  Name/worker-\n  brief.md", "/tmp/Some Name/worker-brief.md", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			footer := strings.Repeat("-", 60) + "\n" + strings.Repeat("-", 60)
+			if tc.name == "unicode-footer" {
+				footer = "界"
+			}
+			lines, ok := ComposerRegion("codex", tc.screen+"\n\n"+footer)
+			if !ok || ComposerHoldsPathFor("codex", lines, tc.path) != tc.want {
+				t.Fatalf("screen=%q region=%q recognized=%v path=%q want=%v", tc.screen, lines, ok, tc.path, tc.want)
+			}
+		})
+	}
+}
+
+// codexRealWrapScreen mirrors the rc12 history, activity indicator and two-line
+// footer. Width is only a fixture layout choice, not path-matching evidence.
+func codexRealWrapScreen(composer string, width int) string {
+	warnings := "⚠ 2 warnings · f2 to view"
+	history := "• Ran a command …"
+	return history +
+		"\n  └ output\n\n  New activity · ↓ Back to bottom · esc\n\n" + composer +
+		"\n\n  GPT-6.1-Sol high · Context 20% · ← for agents\n" +
+		strings.Repeat(" ", width-len([]rune(warnings))) + warnings
+}
+
+func TestComposerRealCodexWrap(t *testing.T) {
+	const width = 96
+	directory := `C:\Users\worker\briefs\` + strings.Repeat("x", width-16-len(`C:\Users\worker\briefs\`))
+	name := strings.Repeat("y", width-3) + "-"
+	path := directory + name + "20261023.brief.md"
+	wrapped := "› Read the file " + directory + "\n  " + name + "\n  20261023.brief.md in full."
+	soft := "› Read C:\\Users\\Some \n  Name\\brief.md in full."
+	for _, tc := range []struct {
+		name, screen, path string
+		want               bool
+	}{
+		{"windows-three-lines", codexRealWrapScreen(wrapped, width), path, true},
+		{"real-space", codexRealWrapScreen(soft, width), `C:\Users\Some Name\brief.md`, true},
+		{"missing-space", codexRealWrapScreen(soft, width), `C:\Users\SomeName\brief.md`, false},
+		{"single-widest-line", "› Read C:\\Users\\Some\n  Name\\b.md\n\n·", `C:\Users\SomeName\b.md`, true},
+		{"cjk-history", "界\n" + codexRealWrapScreen(wrapped, width), path, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			region, ok := ComposerRegion("codex", tc.screen)
+			if !ok || ComposerHoldsPathFor("codex", region, tc.path) != tc.want {
+				t.Fatalf("screen=%q region=%q recognized=%v path=%q want=%v", tc.screen, region, ok, tc.path, tc.want)
+			}
+		})
+	}
+}
+
+func TestComposerAcceptedWrapAmbiguity(t *testing.T) {
+	for _, path := range []string{"/tmp/SomeName/brief.md", "/tmp/Some Name/brief.md"} {
+		for _, prefix := range []string{"› Read ", "› \u1160 Read "} {
+			screen := prefix + "/tmp/Some\n  Name/brief.md\n\n----------------\n----------------"
+			region, ok := ComposerRegion("codex", screen)
+			if !ok || !ComposerHoldsPathFor("codex", region, path) {
+				t.Fatalf("accepted ambiguity changed: screen=%q region=%q recognized=%v path=%q", screen, region, ok, path)
+			}
+		}
+	}
+}
+
+func TestReviewR4PiIsolation(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, body, path string
+	}{
+		{"pi-literal-prompt", "pi", "› Read /tmp/Some\n  Name/brief.md in full.", "/tmp/SomeName/brief.md"},
+		{"pi-literal-prompt-spaced-path", "pi", "› Read /tmp/Some\n  Name/brief.md in full.", "/tmp/Some Name/brief.md"},
+		{"pi-normal", "pi", "Read /tmp/Some\n  Name/brief.md in full.", "/tmp/SomeName/brief.md"},
+		{"claude-guard", "claude", "❯ › Read /tmp/Some\n  Name/brief.md in full.", "/tmp/SomeName/brief.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			screen := piBoxSeparator + "\n" + tc.body + "\n" + piBoxSeparator
+			region, ok := ComposerRegion(tc.kind, screen)
+			baseline := ComposerHoldsPath(region, tc.path)
+			got := ComposerHoldsPathFor(tc.kind, region, tc.path)
+			if !ok || baseline || got != baseline {
+				t.Fatalf("kind=%s screen=%q region=%q recognized=%v baseline=%v current=%v path=%q", tc.kind, screen, region, ok, baseline, got, tc.path)
+			}
+		})
+	}
+}
+
+func TestComposerKindIsolation(t *testing.T) {
+	lines := []string{"› Read /tmp/Some", "  Name/brief.md"}
+	for _, kind := range []string{"codex", "pi", "claude", "opencode", "", "unknown"} {
+		for _, path := range []string{"/tmp/SomeName/brief.md", "/tmp/Some Name/brief.md"} {
+			if got := ComposerHoldsPathFor(kind, lines, path); got != (kind == "codex") {
+				t.Fatalf("kind=%q path=%q held=%v", kind, path, got)
+			}
+		}
+		// Every kind retains the original joins when no layout removal is needed.
+		plain := []string{"Read /tmp/Some", "Name/brief.md"}
+		if !ComposerHoldsPathFor(kind, plain, "/tmp/SomeName/brief.md") {
+			t.Fatalf("kind=%q lost the original empty join", kind)
+		}
+	}
+	if ComposerHoldsPath(lines, "/tmp/SomeName/brief.md") {
+		t.Fatal("the kind-free predicate must keep literal input unchanged")
+	}
+}
+
+func TestComposerWrapLimit(t *testing.T) {
+	// Eight input lines exhaust recognition's eight non-empty-line window.
+	// Test the path predicate's fallback directly as well for larger regions.
+	for _, n := range []int{8, 9} {
+		lines := []string{"› Read /tmp/"}
+		for i := 1; i < n; i++ {
+			lines = append(lines, "  x")
+		}
+		path := "/tmp/" + strings.Repeat("x", n-1)
+		if got := ComposerHoldsPathFor("codex", lines, path); got != (n == 8) {
+			t.Fatalf("lines=%d path=%q held=%v", n, path, got)
+		}
+		if n == 9 && !ComposerHoldsPathFor("codex", lines, strings.Join(lines, "")) {
+			t.Fatal("over-limit input lost the original empty-join behavior")
+		}
+	}
+}
+
 // rc14ClaudeScreen is the real rc.14 screen (the end), verbatim: the taken
 // message's end line in the history, the empty box (a bare ❯) between the
 // two '─' border lines, and the footer below.
@@ -66,7 +242,7 @@ func TestComposerRegion(t *testing.T) {
 	t.Run("a wrapped codex path stays in the input before the footer", func(t *testing.T) {
 		screen := "› Read the file " + path[:len(path)-13] + "\n" + path[len(path)-13:] + " in full and execute it.\n\n  GPT-6.1-Sol medium · Context 20%\n"
 		lines, ok := ComposerRegion("codex", screen)
-		if !ok || len(lines) != 2 || !ComposerHoldsPath(lines, path) {
+		if !ok || len(lines) != 2 || !ComposerHoldsPathFor("codex", lines, path) {
 			t.Fatalf("wrapped input was lost: region=%q ok=%v", lines, ok)
 		}
 	})

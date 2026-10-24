@@ -39,7 +39,8 @@ func ComposerRegionBounds(kind, visible string) (start, end int, ok bool) {
 // provider kind and the visible screen, or ok = false when the screen is not
 // a recognized composer for the kind (unknown kind, or the kind's composer
 // shape not present). Consumers must not treat the visible screen as
-// composer input without this recognition.
+// composer input without this recognition. Screen lines are preserved;
+// ComposerHoldsPathFor handles Codex continuation indentation and wrap ambiguity.
 func ComposerRegion(kind, visible string) ([]string, bool) {
 	start, end, ok := ComposerRegionBounds(kind, visible)
 	if !ok {
@@ -47,6 +48,38 @@ func ComposerRegion(kind, visible string) ([]string, bool) {
 	}
 	lines := strings.Split(strings.ReplaceAll(visible, "\r\n", "\n"), "\n")
 	return lines[start:end], true
+}
+
+// codexWrappedHoldsPath tries each break as either empty or one space. A screen
+// cannot show a separator the renderer hides at a wrap, so a draft differing
+// from the typed path only at a wrap point looks identical and is credited.
+// This is accepted: the alternative never credits a hard-wrapped pointer, and
+// the cost of a wrong Enter is a worker reading a path that does not exist.
+func codexWrappedHoldsPath(lines []string, composed string) bool {
+	indent := len(lines[0]) - len(strings.TrimLeft(lines[0], " ")) + 2
+	parts := append([]string(nil), lines...)
+	for i := 1; i < len(parts); i++ {
+		n := len(parts[i]) - len(strings.TrimLeft(parts[i], " "))
+		if n > indent {
+			n = indent
+		}
+		parts[i] = parts[i][n:]
+	}
+	for mask := 0; mask < 1<<(len(parts)-1); mask++ {
+		input := parts[0]
+		inserted := map[int]bool{}
+		for i := 1; i < len(parts); i++ {
+			if mask&(1<<(i-1)) != 0 {
+				inserted[len(input)] = true
+				input += " "
+			}
+			input += parts[i]
+		}
+		if holdsPathBoundary(input, inserted, composed) {
+			return true
+		}
+	}
+	return false
 }
 
 // DialogUI reports the name of a known trust, approval, or question UI the
@@ -161,14 +194,24 @@ func LineHoldsPath(line, composed string) bool {
 	return holdsPathBoundary(line, nil, composed)
 }
 
-// ComposerHoldsPath reports whether the composer region lines hold the exact
-// composed prompt path as a whole path. The region is one composer line
-// wrapped over screen lines; it is reassembled two ways — without a
-// separator for a wrap mid-word and with a single space for a wrap at a
-// space — and either reassembly passing the boundary check counts. A wrap
-// at a space is credited only when both neighbours are path boundaries, so
+// ComposerHoldsPathFor reports whether the composer region lines hold the exact
+// composed prompt path as a whole path. Codex regions of up to eight lines
+// try each break independently after stripping continuation layout spaces.
+// Other regions retain the empty join and single-space join. An inserted
+// space is a boundary only when both neighbours are path boundaries, so
 // a longer path such as "…/worker-…md.rejected" split across lines never
 // passes for the shorter path.
+func ComposerHoldsPathFor(kind string, lines []string, composed string) bool {
+	// Bound the combinations to 128. Larger regions retain the original joins.
+	if kind == "codex" && len(lines) > 1 && len(lines) <= 8 && strings.HasPrefix(strings.TrimLeft(lines[0], " "), "› ") {
+		return codexWrappedHoldsPath(lines, composed)
+	}
+	return ComposerHoldsPath(lines, composed)
+}
+
+// ComposerHoldsPath checks the original empty and single-space joins without
+// provider-specific layout interpretation. Literal input stays literal even
+// when its first line happens to begin with a provider's prompt glyph.
 func ComposerHoldsPath(lines []string, composed string) bool {
 	if holdsPathBoundary(strings.Join(lines, ""), nil, composed) {
 		return true
