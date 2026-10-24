@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,6 +20,97 @@ import (
 
 // compactPollInterval is the pause between the compact's screen reads.
 const compactPollInterval = 2 * time.Second
+
+// compactBudget is shared by every call and pause, including retries and
+// restoration. Its real clock is independent of the proof polling clock.
+type compactBudget struct {
+	ctx              context.Context
+	env              platform.Env
+	screen           string
+	thinkingChanged  bool
+	thinkingRestored bool
+	transcriptState  string
+	transcriptPath   string
+}
+
+type compactDeadlineExceeded struct{}
+
+func (b *compactBudget) check() {
+	if b.ctx.Err() != nil {
+		panic(compactDeadlineExceeded{})
+	}
+}
+
+func (b *compactBudget) sleep(d time.Duration) {
+	b.check()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-b.ctx.Done():
+	}
+	b.check()
+}
+
+func (b *compactBudget) state(agent string) herdr.AgentStateResult {
+	b.check()
+	r := herdr.AgentState(agent, b.env, herdr.Timeout, nil, b.ctx)
+	b.check()
+	return r
+}
+
+func (b *compactBudget) readOK(agent, source string, lines *int) (string, bool) {
+	b.check()
+	s, ok := herdr.AgentReadOK(b.env, agent, source, lines, b.ctx)
+	b.check()
+	if ok {
+		b.screen = s
+	}
+	return s, ok
+}
+
+func (b *compactBudget) read(agent, source string, lines *int) string {
+	s, _ := b.readOK(agent, source, lines)
+	return s
+}
+
+func (b *compactBudget) sendText(pane, text string) bool {
+	b.check()
+	ok := herdr.PaneSendText(pane, text, b.env, b.ctx)
+	b.check()
+	return ok
+}
+
+func (b *compactBudget) sendKeys(pane, keys string) bool {
+	b.check()
+	ok := herdr.PaneSendKeys(pane, keys, b.env, b.ctx)
+	b.check()
+	return ok
+}
+
+func (b *compactBudget) transcript(agent string) string {
+	b.check()
+	path := herdr.ClaudeTranscriptPath(agent, b.env, b.ctx)
+	b.check()
+	b.transcriptPath = path
+	b.transcriptState = "missing"
+	if path != "" {
+		b.transcriptState = "unreadable"
+	}
+	return path
+}
+
+func (b *compactBudget) boundaries(path string) (int, bool) {
+	b.check()
+	n, ok := herdr.CountClaudeCompactBoundaries(path, b.ctx)
+	b.check()
+	if ok {
+		b.transcriptState = "counted"
+	} else {
+		b.transcriptState = "unreadable"
+	}
+	return n, ok
+}
 
 // compactComposerWindow is how long the composer confirm waits, after each
 // Enter, for the /compact line to leave the codex composer, one poll per
@@ -285,8 +378,42 @@ func cmdCompact(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 // claude timeout JSON carries a transcript field (counted, missing or
 // unreadable) saying what the session transcript gave. It never uses `agent
 // prompt` and never resends.
-func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ctx *core.Config, env platform.Env, cwd string, inDispatch bool) int {
-	state := herdr.AgentState(agent, env, herdr.Timeout, nil)
+func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ctx *core.Config, env platform.Env, cwd string, inDispatch bool) (code int) {
+	budgetCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
+	defer cancel()
+	budget := &compactBudget{ctx: budgetCtx, env: env, transcriptState: "missing"}
+	phaseStart := time.Now()
+	defer func() {
+		if value := recover(); value != nil {
+			if _, expired := value.(compactDeadlineExceeded); !expired {
+				panic(value)
+			}
+			pairs := []any{"agent", agent, "kind", kind, "status", "timeout", "elapsed_ms", time.Since(phaseStart).Milliseconds()}
+			if budget.thinkingChanged {
+				pairs = append(pairs, "thinking_restored", budget.thinkingRestored)
+				if !budget.thinkingRestored {
+					core.Warn(fmt.Sprintf("compact: deadline exhausted before '%s' thinking could be restored; set it by hand before the next brief", agent), frictionLogPath, "compact")
+				}
+			}
+			if kind == "pi" && strings.Contains(budget.screen, compactPiRunning) {
+				pairs = append(pairs, "still_compacting", true)
+				core.Warn(fmt.Sprintf("compact: '%s' is still compacting (%q on the last screen); do not send /compact again: wait and read its screen before the next brief", agent, compactPiRunning), frictionLogPath, "compact")
+			}
+			if kind == "claude" {
+				// Reconcile a transcript removed during the idle wait without
+				// starting another Herdr process after the deadline.
+				if budget.transcriptPath != "" {
+					if _, err := os.Stat(budget.transcriptPath); os.IsNotExist(err) {
+						budget.transcriptState = "missing"
+					}
+				}
+				pairs = append(pairs, "transcript", budget.transcriptState)
+			}
+			fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O(pairs...)))
+			code = 9
+		}
+	}()
+	state := budget.state(agent)
 	if state.State == "working" || state.State == "blocked" {
 		core.DieFriction(fmt.Sprintf("compact: agent '%s' is %s; compact only an idle worker", agent, state.State), 10, frictionLogPath, "compact")
 	}
@@ -295,7 +422,7 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 	// The proof lines already on screen before the send: pi does not echo the
 	// /compact it runs, so a proof counts when it sits below the echoed command
 	// (claude, codex) or when it is a line that was not there before the send.
-	before, readOK := herdr.AgentReadOK(env, agent, "recent", intPtr(compactScreenLines))
+	before, readOK := budget.readOK(agent, "recent", intPtr(compactScreenLines))
 	if !readOK {
 		// Without the screen before the send, an earlier compaction still on screen
 		// would read as this one's proof: send nothing.
@@ -341,9 +468,9 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 	transcriptBefore := 0
 	transcriptOK := false
 	if kind == "claude" {
-		transcriptPath = herdr.ClaudeTranscriptPath(agent, env)
+		transcriptPath = budget.transcript(agent)
 		if transcriptPath != "" {
-			transcriptBefore, transcriptOK = herdr.CountClaudeCompactBoundaries(transcriptPath)
+			transcriptBefore, transcriptOK = budget.boundaries(transcriptPath)
 		}
 	}
 	// transcriptRisen reports the transcript proof: a compact_boundary line
@@ -353,7 +480,7 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 		if !transcriptOK {
 			return false
 		}
-		n, ok := herdr.CountClaudeCompactBoundaries(transcriptPath)
+		n, ok := budget.boundaries(transcriptPath)
 		return ok && n > transcriptBefore
 	}
 	thinkingBefore := ""
@@ -363,11 +490,32 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 	// becomes unavailable or dies) exits through DieFriction; the level still
 	// goes back first, so the next brief does not run with thinking off.
 	defer func() {
-		if thinkingChanged && !restoreDone {
-			restoreDone = true
-			if shown := compactThinkingLevel(agent, pane, env, thinkingBefore); shown != thinkingBefore {
-				core.Warn(fmt.Sprintf("compact: could not restore '%s' thinking to '%s' (shows '%s'); set it by hand before the next brief", agent, thinkingBefore, shown), frictionLogPath, "compact")
+		original := recover()
+		func() {
+			// Cleanup shares the budget, but its expiry must not replace an
+			// operational exit. Any unexpected cleanup panic must escape before
+			// the original error is rethrown below.
+			defer func() {
+				if value := recover(); value != nil {
+					if _, expired := value.(compactDeadlineExceeded); !expired {
+						panic(value)
+					}
+					if _, alreadyExpired := original.(compactDeadlineExceeded); !alreadyExpired {
+						core.Warn(fmt.Sprintf("compact: deadline exhausted before '%s' thinking could be restored; set it by hand before the next brief", agent), frictionLogPath, "compact")
+					}
+				}
+			}()
+			if thinkingChanged && !restoreDone {
+				restoreDone = true
+				shown := compactThinkingLevel(agent, pane, env, thinkingBefore, budget)
+				budget.thinkingRestored = shown == thinkingBefore
+				if !budget.thinkingRestored {
+					core.Warn(fmt.Sprintf("compact: could not restore '%s' thinking to '%s' (shows '%s'); set it by hand before the next brief", agent, thinkingBefore, shown), frictionLogPath, "compact")
+				}
 			}
+		}()
+		if original != nil {
+			panic(original)
 		}
 	}()
 	if kind == "pi" {
@@ -377,12 +525,13 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 		thinkingBefore = compactThinkingFooter(before)
 		if thinkingBefore != "" && thinkingBefore != "off" {
 			thinkingChanged = true
-			if level := compactThinkingLevel(agent, pane, env, "off"); level != "off" {
+			budget.thinkingChanged = true
+			if level := compactThinkingLevel(agent, pane, env, "off", budget); level != "off" {
 				core.Warn(fmt.Sprintf("compact: could not turn '%s' thinking off before compacting (still '%s'); compacting anyway", agent, level), frictionLogPath, "compact")
 			}
 		}
 	}
-	if !herdr.PaneSendText(pane, "/compact", env) {
+	if !budget.sendText(pane, "/compact") {
 		core.DieFriction(fmt.Sprintf("compact: could not send /compact to pane '%s'; release --close and spawn --fresh instead", pane), 4, frictionLogPath, "compact")
 	}
 	// opencode pops up a command menu above the input box when the /compact
@@ -399,30 +548,30 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 	proofObserved := false
 	proceedToWait := true
 	if kind == "opencode" {
-		switch compactOpenCodeMenuSelection(agent, env) {
+		switch compactOpenCodeMenuSelection(agent, env, budget) {
 		case openCodeMenuNothing:
 			// The menu has no /compact (an empty session): pressing Enter would
 			// run the top item (e.g. /review); clear the box and report nothing
 			// to compact, like claude and pi.
-			herdr.PaneSendKeys(pane, "ctrl+u", env)
+			budget.sendKeys(pane, "ctrl+u")
 			endStatus = "nothing-to-compact"
 			proceedToWait = false
 		case openCodeMenuMissing:
 			// /compact is not on top, or the menu never appeared: clear the box
 			// and stop; nothing was compacted.
-			herdr.PaneSendKeys(pane, "ctrl+u", env)
+			budget.sendKeys(pane, "ctrl+u")
 			core.DieFriction(fmt.Sprintf("compact: could not select /compact in the command menu of '%s'; nothing was compacted", agent), 4, frictionLogPath, "compact")
 		}
 	}
 	start := platform.Now()
 	if proceedToWait {
-		if !herdr.PaneSendKeys(pane, "Enter", env) {
+		if !budget.sendKeys(pane, "Enter") {
 			core.DieFriction(fmt.Sprintf("compact: could not send Enter to pane '%s'; release --close and spawn --fresh instead", pane), 4, frictionLogPath, "compact")
 		}
 		deadline := start.Add(time.Duration(timeoutMS) * time.Millisecond)
 		for {
 			if !compacted && endStatus == "" {
-				screen := herdr.AgentRead(env, agent, "recent", intPtr(compactScreenLines))
+				screen := budget.read(agent, "recent", intPtr(compactScreenLines))
 				if kind == "codex" && compactCodexComposerStuck(screen, proof) && !proofNew(screen) {
 					// A /compact on the composer line, with no proof below the last
 					// /compact, means the command never ran: an Enter that lands before
@@ -439,13 +588,13 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 					// trusted; one more Enter gets the same confirm, and a line that
 					// stays in the box after both is cleared and reported (4, nothing
 					// was compacted).
-					screen = compactCodexComposerRetry(agent, pane, kind, proof, env)
+					screen = compactCodexComposerRetry(agent, pane, kind, proof, env, budget)
 				}
 				if proofNew(screen) || footerDropped(screen) || transcriptRisen() {
 					proofObserved = true
 				}
 				if proofObserved {
-					compacted = compactWaitIdle(agent, env, deadline)
+					compacted = compactWaitIdle(agent, env, deadline, budget)
 				} else {
 					// An ending counts only when it belongs to this attempt: below a
 					// /compact the screen gained since the pre-send read, on a line
@@ -462,14 +611,14 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 					if endStatus == "" {
 						// No proof yet: a worker that died meanwhile stops the wait now (6, 4)
 						// instead of running out the deadline.
-						compactDieOnDeadWorker(agent, herdr.AgentState(agent, env, herdr.Timeout, nil))
+						compactDieOnDeadWorker(agent, budget.state(agent))
 					}
 				}
 			}
 			if compacted || endStatus != "" || !platform.Now().Before(deadline) {
 				break
 			}
-			time.Sleep(compactPollInterval)
+			budget.sleep(compactPollInterval)
 		}
 	}
 	// The deadline ran out without proof or ending: the compaction can finish
@@ -479,11 +628,11 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 	// re-evaluated on a screen that may have scrolled: it still gets the
 	// capped idle wait that follows.
 	if !compacted && endStatus == "" {
-		screen := herdr.AgentRead(env, agent, "recent", intPtr(compactScreenLines))
+		screen := budget.read(agent, "recent", intPtr(compactScreenLines))
 		if proofObserved || proofNew(screen) || footerDropped(screen) || transcriptRisen() {
 			// The idle wait that follows gets a short cap of its own: ten poll
 			// intervals from now.
-			compacted = compactWaitIdle(agent, env, platform.Now().Add(compactPollInterval*10))
+			compacted = compactWaitIdle(agent, env, platform.Now().Add(compactPollInterval*10), budget)
 		} else {
 			for i := range endings {
 				if line, ok := compactEndingNew(screen, before, endings[i].text, endSeen[i]); ok {
@@ -501,8 +650,9 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 		// The /compact ran with the thinking off: give the level back before
 		// any exit, a timeout or a failure included; the result reports
 		// whether it came back.
-		if shown := compactThinkingLevel(agent, pane, env, thinkingBefore); shown == thinkingBefore {
+		if shown := compactThinkingLevel(agent, pane, env, thinkingBefore, budget); shown == thinkingBefore {
 			thinkingRestored = true
+			budget.thinkingRestored = true
 		} else {
 			core.Warn(fmt.Sprintf("compact: could not restore '%s' thinking to '%s' (shows '%s'); set it by hand before the next brief", agent, thinkingBefore, shown), frictionLogPath, "compact")
 		}
@@ -538,7 +688,7 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 	if !compacted {
 		// pi shows "Compacting context..." while its compaction runs: a timeout
 		// then is the observer giving up, not the compaction failing.
-		if kind == "pi" && strings.Contains(herdr.AgentRead(env, agent, "recent", intPtr(compactScreenLines)), compactPiRunning) {
+		if kind == "pi" && strings.Contains(budget.read(agent, "recent", intPtr(compactScreenLines)), compactPiRunning) {
 			core.Warn(fmt.Sprintf("compact: '%s' is still compacting (%q on screen); do not send /compact again: wait and read its screen before the next brief", agent, compactPiRunning), frictionLogPath, "compact")
 			pairs := []any{"agent", agent, "kind", kind, "status", "timeout", "elapsed_ms", elapsed, "still_compacting", true}
 			if thinkingChanged {
@@ -553,13 +703,13 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 			// and counted without a new compact_boundary, missing when there is
 			// no id session or the file does not exist, unreadable when the
 			// file was found but could not be read.
-			fmt.Fprintln(platform.Stdout, resultJSON("timeout", "transcript", compactClaudeTranscriptState(agent, env)))
+			fmt.Fprintln(platform.Stdout, resultJSON("timeout", "transcript", compactClaudeTranscriptState(agent, env, budget)))
 			return 9
 		}
 		fmt.Fprintln(platform.Stdout, resultJSON("timeout"))
 		return 9
 	}
-	compactThinkingWarning(agent, kind, role, lane, model, ctx, env, cwd)
+	compactThinkingWarning(agent, kind, role, lane, model, ctx, env, cwd, budget)
 	if inDispatch {
 		// The dispatch keeps one JSON line on stdout: its own result.
 		fmt.Fprintf(platform.Stderr, "soho: dispatch: compacted '%s' in %d ms\n", agent, elapsed)
@@ -591,12 +741,12 @@ func compactDieOnDeadWorker(agent string, state herdr.AgentStateResult) {
 // no id session or the file does not exist, and "unreadable" when the file
 // was found but could not be read. No path, session id or content ever
 // reaches the JSON.
-func compactClaudeTranscriptState(agent string, env platform.Env) string {
-	path := herdr.ClaudeTranscriptPath(agent, env)
+func compactClaudeTranscriptState(agent string, env platform.Env, budget *compactBudget) string {
+	path := budget.transcript(agent)
 	if path == "" {
 		return "missing"
 	}
-	if _, ok := herdr.CountClaudeCompactBoundaries(path); !ok {
+	if _, ok := budget.boundaries(path); !ok {
 		return "unreadable"
 	}
 	return "counted"
@@ -607,9 +757,9 @@ func compactClaudeTranscriptState(agent string, env platform.Env) string {
 // proof, so this keeps waiting instead of treating working as a failure. A
 // worker that dies in the meantime (gone, unavailable) exits right away (6,
 // 4) instead of waiting out the deadline as a timeout.
-func compactWaitIdle(agent string, env platform.Env, deadline time.Time) bool {
+func compactWaitIdle(agent string, env platform.Env, deadline time.Time, budget *compactBudget) bool {
 	for {
-		state := herdr.AgentState(agent, env, herdr.Timeout, nil)
+		state := budget.state(agent)
 		if state.State == "idle" || state.State == "done" {
 			return true
 		}
@@ -617,7 +767,7 @@ func compactWaitIdle(agent string, env platform.Env, deadline time.Time) bool {
 		if !platform.Now().Before(deadline) {
 			return false
 		}
-		time.Sleep(compactPollInterval)
+		budget.sleep(compactPollInterval)
 	}
 }
 
@@ -674,18 +824,18 @@ func compactCodexComposerStuck(screen, proof string) bool {
 // like the proof wait. It returns the first screen whose composer no longer
 // holds /compact, or "" when the line is still there at the end of the
 // window.
-func compactComposerCleared(agent, proof string, env platform.Env) string {
+func compactComposerCleared(agent, proof string, env platform.Env, budget *compactBudget) string {
 	deadline := platform.Now().Add(compactComposerWindow)
 	for {
-		screen := herdr.AgentRead(env, agent, "recent", intPtr(compactScreenLines))
+		screen := budget.read(agent, "recent", intPtr(compactScreenLines))
 		if !compactCodexComposerStuck(screen, proof) {
 			return screen
 		}
-		compactDieOnDeadWorker(agent, herdr.AgentState(agent, env, herdr.Timeout, nil))
+		compactDieOnDeadWorker(agent, budget.state(agent))
 		if !platform.Now().Before(deadline) {
 			return ""
 		}
-		time.Sleep(compactComposerPoll)
+		budget.sleep(compactComposerPoll)
 	}
 }
 
@@ -699,8 +849,8 @@ func compactComposerCleared(agent, proof string, env platform.Env) string {
 // box after both is cleared with ctrl+u and reported (4, nothing was
 // compacted). It returns the first screen whose composer no longer holds
 // /compact, so the proof check runs on a screen past the stuck state.
-func compactCodexComposerRetry(agent, pane, kind, proof string, env platform.Env) string {
-	if screen := compactComposerCleared(agent, proof, env); screen != "" {
+func compactCodexComposerRetry(agent, pane, kind, proof string, env platform.Env, budget *compactBudget) string {
+	if screen := compactComposerCleared(agent, proof, env, budget); screen != "" {
 		return screen
 	}
 	// Right before the second Enter: re-read the state and the screen. A
@@ -708,9 +858,9 @@ func compactCodexComposerRetry(agent, pane, kind, proof string, env platform.Env
 	// must not get an extra Enter — it would answer the question, not run
 	// /compact. A worker that is neither idle nor done (dialog or not) is
 	// also not pressed: in both branches no key is sent, not even the clear.
-	state := herdr.AgentState(agent, env, herdr.Timeout, nil)
+	state := budget.state(agent)
 	compactDieOnDeadWorker(agent, state)
-	screen := herdr.AgentRead(env, agent, "recent", intPtr(compactScreenLines))
+	screen := budget.read(agent, "recent", intPtr(compactScreenLines))
 	if provider.DialogKind(kind, screen) == "question" {
 		core.DieFriction(fmt.Sprintf("compact: '/compact' stayed in the composer of '%s' after the first Enter; showing a dialog after /compact; pressed nothing, nothing was compacted", agent), 4, frictionLogPath, "compact")
 	}
@@ -724,11 +874,11 @@ func compactCodexComposerRetry(agent, pane, kind, proof string, env platform.Env
 	if !compactCodexComposerStuck(screen, proof) {
 		return screen
 	}
-	herdr.PaneSendKeys(pane, "Enter", env)
-	if screen := compactComposerCleared(agent, proof, env); screen != "" {
+	budget.sendKeys(pane, "Enter")
+	if screen := compactComposerCleared(agent, proof, env, budget); screen != "" {
 		return screen
 	}
-	herdr.PaneSendKeys(pane, "ctrl+u", env)
+	budget.sendKeys(pane, "ctrl+u")
 	core.DieFriction(fmt.Sprintf("compact: '/compact' stayed in the composer of '%s' after two Enters; cleared it, nothing was compacted", agent), 4, frictionLogPath, "compact")
 	return ""
 }
@@ -953,11 +1103,11 @@ func compactEndingNew(screen, before, text string, seen map[string]bool) (string
 // compactThinkingWarning warns, for pi only, when the last footer line of the
 // screen containing a bullet ends with a thinking different from the
 // worker's effective effort after compaction; it never changes the exit code.
-func compactThinkingWarning(agent, kind, role, lane, model string, ctx *core.Config, env platform.Env, cwd string) {
+func compactThinkingWarning(agent, kind, role, lane, model string, ctx *core.Config, env platform.Env, cwd string, budget *compactBudget) {
 	if kind != "pi" {
 		return
 	}
-	screen := herdr.AgentRead(env, agent, "recent", intPtr(compactScreenLines))
+	screen := budget.read(agent, "recent", intPtr(compactScreenLines))
 	thinking := compactThinkingFooter(screen)
 	if thinking == "" {
 		return
@@ -974,14 +1124,14 @@ func compactThinkingWarning(agent, kind, role, lane, model string, ctx *core.Con
 // to compactThinkingTaps presses; it reports the level the footer still shows,
 // the wanted one when it was reached. A failed key press stops the presses;
 // a failed read shows no level.
-func compactThinkingLevel(agent, pane string, env platform.Env, wanted string) string {
+func compactThinkingLevel(agent, pane string, env platform.Env, wanted string, budget *compactBudget) string {
 	shown := ""
 	for i := 0; i < compactThinkingTaps; i++ {
-		if !herdr.PaneSendKeys(pane, "shift+tab", env) {
+		if !budget.sendKeys(pane, "shift+tab") {
 			break
 		}
-		time.Sleep(compactPollInterval)
-		shown = compactThinkingFooter(herdr.AgentRead(env, agent, "recent", intPtr(compactScreenLines)))
+		budget.sleep(compactPollInterval)
+		shown = compactThinkingFooter(budget.read(agent, "recent", intPtr(compactScreenLines)))
 		if shown == wanted {
 			return shown
 		}
@@ -1041,10 +1191,10 @@ func compactOpenCodeMenu(screen string) []string {
 // (or a menu that never appears) cannot be selected. A recent read of a
 // working opencode fails with agent_not_idle and herdr.AgentRead already
 // falls back to the visible screen.
-func compactOpenCodeMenuSelection(agent string, env platform.Env) openCodeMenuResult {
+func compactOpenCodeMenuSelection(agent string, env platform.Env, budget *compactBudget) openCodeMenuResult {
 	deadline := platform.Now().Add(compactOpenCodeMenuWindow)
 	for {
-		menu := compactOpenCodeMenu(herdr.AgentRead(env, agent, "visible", nil))
+		menu := compactOpenCodeMenu(budget.read(agent, "visible", nil))
 		if len(menu) > 0 {
 			if menu[0] == "compact" {
 				return openCodeMenuCompact
@@ -1059,6 +1209,6 @@ func compactOpenCodeMenuSelection(agent string, env platform.Env) openCodeMenuRe
 		if !platform.Now().Before(deadline) {
 			return openCodeMenuMissing
 		}
-		time.Sleep(compactOpenCodeMenuPoll)
+		budget.sleep(compactOpenCodeMenuPoll)
 	}
 }
