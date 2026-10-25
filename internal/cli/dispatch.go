@@ -301,17 +301,22 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 		compactTimeoutMS := core.CompactTimeoutMS(ctx, env)
 		if compactProof(kind) == "" {
 			core.Warn(fmt.Sprintf("dispatch: --compact skipped: kind '%s' has no verified compact command", kind), frictionLogPath, "dispatch")
-		} else if code := compactPhaseDispatch(compactPhaseDispatchOptions{
+		} else if result := compactPhaseDispatch(compactPhaseDispatchOptions{
 			Agent: agent, Pane: at(1), Kind: kind, Role: role, Lane: lane, Model: model,
 			Brief: brief, SD: sd, TimeoutMS: compactTimeoutMS, Ctx: ctx, Env: env, Cwd: cwd,
-		}); code != 0 {
+		}); result.Code != 0 {
+			code := result.Code
 			// The compaction phase did not finish: say so, and that this brief was
 			// not sent, so the orchestrator does not look for it on the screen.
 			fmt.Fprintf(platform.Stderr, "soho: dispatch: the compact step of '%s' did not finish (exit %d); the brief was not sent\n", agent, code)
 			if code == 9 {
 				// 9 is the compact phase's timeout exit (compactRun): the limit
 				// is the effective compact_timeout, in the numberSeconds form.
-				core.Warn(fmt.Sprintf("dispatch: compact of '%s' timed out after %ss (compact_timeout=%d); the brief was not sent", agent, compactTimeoutSeconds(compactTimeoutMS), compactTimeoutMS), frictionLogPath, "dispatch")
+				warning := fmt.Sprintf("dispatch: compact of '%s' timed out after %ss (compact_timeout=%d); the brief was not sent", agent, compactTimeoutSeconds(compactTimeoutMS), compactTimeoutMS)
+				if result.Screens != "" {
+					warning += "; screens saved to " + result.Screens
+				}
+				core.Warn(warning, frictionLogPath, "dispatch")
 			}
 			return code
 		}
@@ -833,7 +838,7 @@ func containsWord(list, word string) bool {
 // note on its way to the CLI boundary; the panic is re-raised only after
 // the note is printed, so the boundary still prints the compact message and
 // records the friction line.
-func compactDispatchStep(agent, pane, kind, role, lane, model string, timeoutMS int64, ctx *core.Config, env platform.Env, cwd string) int {
+func compactDispatchStep(agent, pane, kind, role, lane, model string, timeoutMS int64, ctx *core.Config, env platform.Env, cwd string) compactStepResult {
 	defer func() {
 		value := recover()
 		if value == nil {
@@ -846,7 +851,7 @@ func compactDispatchStep(agent, pane, kind, role, lane, model string, timeoutMS 
 		fmt.Fprintf(platform.Stderr, "soho: dispatch: the compact step of '%s' did not finish (exit %d); the brief was not sent\n", agent, exitErr.Code)
 		panic(value)
 	}()
-	return compactRun(agent, pane, kind, role, lane, model, timeoutMS, ctx, env, cwd, true)
+	return compactRunWithScreens(agent, pane, kind, role, lane, model, timeoutMS, ctx, env, cwd, true)
 }
 
 // compactTimeoutSeconds renders a millisecond count in the numberSeconds
@@ -885,7 +890,7 @@ type compactPhaseDispatchOptions struct {
 // could not be removed (a later token, an unreadable file, a lock panic)
 // aborts with 4 before the brief: the standing marker still denies the send,
 // and a different token never authorizes this dispatch's send.
-func compactPhaseDispatch(opts compactPhaseDispatchOptions) int {
+func compactPhaseDispatch(opts compactPhaseDispatchOptions) compactStepResult {
 	absBrief := opts.Brief
 	if p, err := filepath.Abs(opts.Brief); err == nil {
 		absBrief = p
@@ -905,7 +910,7 @@ func compactPhaseDispatch(opts compactPhaseDispatchOptions) int {
 			return core.CompactPhaseRemove(opts.SD, opts.Agent, token)
 		}()
 	}
-	code := func() int {
+	result := func() compactStepResult {
 		defer func() {
 			if r := recover(); r != nil {
 				// A failed phase keeps its own error; the cleanup failure is
@@ -920,11 +925,11 @@ func compactPhaseDispatch(opts compactPhaseDispatchOptions) int {
 	}()
 	if err := removeMarker(); err != nil {
 		core.Warn(fmt.Sprintf("dispatch: the compact-phase marker of '%s' was not removed: %v", opts.Agent, err), frictionLogPath, "dispatch")
-		if code == 0 {
+		if result.Code == 0 {
 			core.DieFriction(fmt.Sprintf("dispatch: the compact phase of '%s' finished, but its marker could not be removed (%v); the brief was not sent", opts.Agent, err), 4, frictionLogPath, "dispatch")
 		}
 	}
-	return code
+	return result
 }
 
 // writeDispatchSidecarWithTask records the attempt and its durable task report
