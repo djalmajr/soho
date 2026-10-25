@@ -379,10 +379,12 @@ func cmdCompact(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 // unreadable) saying what the session transcript gave. It never uses `agent
 // prompt` and never resends.
 func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ctx *core.Config, env platform.Env, cwd string, inDispatch bool) (code int) {
+	// phaseStart is taken before the deadline starts, so the elapsed_ms a
+	// timeout reports is never below the limit (a coarse clock included).
+	phaseStart := time.Now()
 	budgetCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
 	defer cancel()
 	budget := &compactBudget{ctx: budgetCtx, env: env, transcriptState: "missing"}
-	phaseStart := time.Now()
 	defer func() {
 		if value := recover(); value != nil {
 			if _, expired := value.(compactDeadlineExceeded); !expired {
