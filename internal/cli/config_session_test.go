@@ -246,7 +246,7 @@ func TestConfigSetArgumentForms(t *testing.T) {
 	t.Run("empty assignment value requests a missing value", func(t *testing.T) {
 		env, cwd := commandFixture(t)
 		code, out, errOut := runIn(t, []string{"config", "set", "layout="}, env, cwd)
-		if code != 2 || out != "" || errOut != "soho: usage: config set <key> <value> | <key>=<value> [--project|--user]\n" {
+		if code != 2 || out != "" || errOut != "soho: usage: config set <key> <value> | <key>=<value> [--project|--user] (default --project; for this session only: soho session set)\n" {
 			t.Fatalf("empty assignment code=%d out=%q err=%q", code, out, errOut)
 		}
 		if _, err := os.Stat(filepath.Join(cwd, ".agents", "soho.conf")); !os.IsNotExist(err) {
