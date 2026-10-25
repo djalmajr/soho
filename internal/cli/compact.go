@@ -2,9 +2,12 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -378,19 +381,42 @@ func cmdCompact(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 // claude timeout JSON carries a transcript field (counted, missing or
 // unreadable) saying what the session transcript gave. It never uses `agent
 // prompt` and never resends.
-func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ctx *core.Config, env platform.Env, cwd string, inDispatch bool) (code int) {
+func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ctx *core.Config, env platform.Env, cwd string, inDispatch bool) int {
+	return compactRunWithScreens(agent, pane, kind, role, lane, model, timeoutMS, ctx, env, cwd, inDispatch).Code
+}
+
+type compactStepResult struct {
+	Code    int
+	Screens string
+}
+
+// compactRunWithScreens carries the local diagnostic path to dispatch without
+// changing standalone compact's stderr or JSON contract.
+func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutMS int64, ctx *core.Config, env platform.Env, cwd string, inDispatch bool) (result compactStepResult) {
 	// phaseStart is taken before the deadline starts, so the elapsed_ms a
 	// timeout reports is never below the limit (a coarse clock included).
 	phaseStart := time.Now()
 	budgetCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
 	defer cancel()
 	budget := &compactBudget{ctx: budgetCtx, env: env, transcriptState: "missing"}
+	before := ""
+	timedOut := false
+	var timeoutElapsed int64
+	// Run after the deadline recovery and thinking restoration. One save
+	// call covers both timeout exits without changing their result JSON.
+	defer func() {
+		if result.Code == 9 && timedOut {
+			result.Screens = compactSaveTimeoutScreens(core.StateDirPath(ctx, env, cwd), agent, kind, timeoutElapsed, before, budget.screen, env)
+		}
+	}()
 	defer func() {
 		if value := recover(); value != nil {
 			if _, expired := value.(compactDeadlineExceeded); !expired {
 				panic(value)
 			}
-			pairs := []any{"agent", agent, "kind", kind, "status", "timeout", "elapsed_ms", time.Since(phaseStart).Milliseconds()}
+			timedOut = true
+			timeoutElapsed = time.Since(phaseStart).Milliseconds()
+			pairs := []any{"agent", agent, "kind", kind, "status", "timeout", "elapsed_ms", timeoutElapsed}
 			if budget.thinkingChanged {
 				pairs = append(pairs, "thinking_restored", budget.thinkingRestored)
 				if !budget.thinkingRestored {
@@ -412,7 +438,7 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 				pairs = append(pairs, "transcript", budget.transcriptState)
 			}
 			fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O(pairs...)))
-			code = 9
+			result.Code = 9
 		}
 	}()
 	state := budget.state(agent)
@@ -424,7 +450,8 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 	// The proof lines already on screen before the send: pi does not echo the
 	// /compact it runs, so a proof counts when it sits below the echoed command
 	// (claude, codex) or when it is a line that was not there before the send.
-	before, readOK := budget.readOK(agent, "recent", intPtr(compactScreenLines))
+	var readOK bool
+	before, readOK = budget.readOK(agent, "recent", intPtr(compactScreenLines))
 	if !readOK {
 		// Without the screen before the send, an earlier compaction still on screen
 		// would read as this one's proof: send nothing.
@@ -679,15 +706,17 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 		if inDispatch && endStatus == "nothing-to-compact" {
 			// The dispatch keeps one JSON line on stdout: its own result.
 			fmt.Fprintf(platform.Stderr, "soho: dispatch: '%s' had nothing to compact\n", agent)
-			return 0
+			return compactStepResult{}
 		}
 		fmt.Fprintln(platform.Stdout, resultJSON(endStatus))
 		if endStatus == "failed" {
-			return 9
+			return compactStepResult{Code: 9}
 		}
-		return 0
+		return compactStepResult{}
 	}
 	if !compacted {
+		timedOut = true
+		timeoutElapsed = elapsed
 		// pi shows "Compacting context..." while its compaction runs: a timeout
 		// then is the observer giving up, not the compaction failing.
 		if kind == "pi" && strings.Contains(budget.read(agent, "recent", intPtr(compactScreenLines)), compactPiRunning) {
@@ -697,7 +726,7 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 				pairs = append(pairs, "thinking_restored", thinkingRestored)
 			}
 			fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O(pairs...)))
-			return 9
+			return compactStepResult{Code: 9}
 		}
 		if kind == "claude" {
 			// The timeout says what the claude session transcript gave, without
@@ -706,19 +735,93 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 			// no id session or the file does not exist, unreadable when the
 			// file was found but could not be read.
 			fmt.Fprintln(platform.Stdout, resultJSON("timeout", "transcript", compactClaudeTranscriptState(agent, env, budget)))
-			return 9
+			return compactStepResult{Code: 9}
 		}
 		fmt.Fprintln(platform.Stdout, resultJSON("timeout"))
-		return 9
+		return compactStepResult{Code: 9}
 	}
 	compactThinkingWarning(agent, kind, role, lane, model, ctx, env, cwd, budget)
 	if inDispatch {
 		// The dispatch keeps one JSON line on stdout: its own result.
 		fmt.Fprintf(platform.Stderr, "soho: dispatch: compacted '%s' in %d ms\n", agent, elapsed)
-		return 0
+		return compactStepResult{}
 	}
 	fmt.Fprintln(platform.Stdout, resultJSON("compacted"))
-	return 0
+	return compactStepResult{}
+}
+
+// compactSaveTimeoutScreens keeps raw screens local. Like SaveStalledScreen,
+// it writes a temp file in wait and renames it over the target atomically.
+// OpenFile applies the process umask to 0666; failures and read-only mode
+// return no path, so neither screen contents nor write errors get logged.
+func compactSaveTimeoutScreens(stateDir, agent, kind string, elapsed int64, before, last string, env platform.Env) string {
+	if core.Nowrite(env) || stateDir == "" || agent == "" || agent == "." || agent == ".." || strings.ContainsAny(agent, "/\\\r\n") {
+		return ""
+	}
+	var body strings.Builder
+	fmt.Fprintf(&body, "== kind ==\n%s\n== elapsed ms ==\n%d\n", kind, elapsed)
+	if kind == "codex" {
+		value, ok := compactCodexContext(before)
+		fmt.Fprintf(&body, "== footer base ==\nvalue=%d\nok=%t\n", value, ok)
+	}
+	fmt.Fprintf(&body, "== before (pre-send) ==\n%s\n== last screen ==\n%s", before, last)
+	waitDir := filepath.Join(stateDir, "wait")
+	if err := os.MkdirAll(waitDir, 0o777); err != nil {
+		return ""
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return ""
+	}
+	tmpName := filepath.Join(waitDir, fmt.Sprintf(".compact-%x.screens", nonce))
+	tmp, err := os.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+	if err != nil {
+		return ""
+	}
+	_, err = tmp.WriteString(body.String())
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	dest := filepath.Join(waitDir, "compact-"+agent+"-"+time.Now().UTC().Format("20060102T150405Z")+".screens")
+	if err == nil {
+		err = os.Rename(tmpName, dest)
+	}
+	if err != nil {
+		_ = os.Remove(tmpName)
+		return ""
+	}
+	compactPruneTimeoutScreens(waitDir, agent)
+	return dest
+}
+
+// compactTimeoutScreensKeep is how many timeout captures of one agent stay
+// in the wait dir; clean, release and gc do not age this pattern.
+const compactTimeoutScreensKeep = 5
+
+var compactTimeoutScreensStampRE = regexp.MustCompile(`^\d{8}T\d{6}Z\.screens$`)
+
+// compactPruneTimeoutScreens removes the agent's oldest captures beyond
+// compactTimeoutScreensKeep. Only names that are exactly
+// compact-<agent>-<stamp>.screens count, so build never matches build-6;
+// the UTC stamp sorts by time. Failures are silent, like the save.
+func compactPruneTimeoutScreens(waitDir, agent string) {
+	entries, err := os.ReadDir(waitDir)
+	if err != nil {
+		return
+	}
+	prefix := "compact-" + agent + "-"
+	var mine []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.Type().IsRegular() && strings.HasPrefix(name, prefix) && compactTimeoutScreensStampRE.MatchString(name[len(prefix):]) {
+			mine = append(mine, name)
+		}
+	}
+	sort.Strings(mine)
+	for len(mine) > compactTimeoutScreensKeep {
+		_ = os.Remove(filepath.Join(waitDir, mine[0]))
+		mine = mine[1:]
+	}
 }
 
 // compactDieOnDeadWorker exits 4 (unavailable) or 6 (gone) with the same

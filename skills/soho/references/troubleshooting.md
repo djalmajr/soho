@@ -320,7 +320,7 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 
 ## Exit 137 with no cause: the skill's own process was killed from outside
 
-- **Symptom:** a `dispatch` (or a foreground `wait`) dies with exit 137 and no cause line; it looks like the wait timed out, but the skill's own timeout exits 9 with a `timeout` JSON line and a friction suggestion.
+- **Symptom:** a `dispatch` (or a foreground `wait`) dies with exit 137 and no cause line; it looks like the wait timed out, but the skill's own timeout exits 9 with a `timeout` JSON line and a friction suggestion. A standalone `soho compact` timeout records local diagnostics in `<stateDir>/wait/compact-<agent>-<UTC yyyymmddThhmmssZ>.screens` without printing the path; `dispatch --compact` appends the path to its timeout warning when the write succeeds and `SOHO_NOWRITE` is off. Each save keeps the agent's five newest captures and removes older ones; `clean`, `release` and `gc` leave them alone.
 - **Cause:** an external kill — the process was SIGKILLed, usually by the time cap of the command that called it. The 137 cause the skill prints is for a killed `herdr agent get` child, not for the skill process itself, which cannot write a cause once it is dead.
 - **Now:** a `herdr agent get` killed by a signal (exit ≥ 128) is retried after 1 s and 2 s before counting; the skill process itself cannot catch its own SIGKILL.
 - **Do:** the prompt may have gone out — run `status <agent>` (or `wait <agent>`) before repeating, so a brief is not sent twice. Run a `dispatch` that waits in the background (or `--no-wait` followed by `wait`), which matters under a Bash call cap (10 minutes for a Claude Code orchestrator).
