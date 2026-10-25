@@ -18,6 +18,7 @@ const standingRules = "- Only you write this report, once all of the brief is do
 	"- Command output you put in the report is pasted from the run, never retyped or reconstructed.\n" +
 	"- Nobody watches this terminal: do not ask interactive questions or wait for a confirmation. When the brief does not decide something, follow its \"When the brief does not decide\" section, or mark the item partial and list the gap and the options under open questions.\n" +
 	"- Never invent names, endpoints, flags, credentials, URLs or requirements.\n" +
+	"- Stop only processes you started, one recorded PID at a time (`soho procs stop <pid>` for the ones you registered with `soho procs add`). Never build a PID list from `ps`, `pgrep`, `lsof` or `awk` output, and never run `kill $(…)`, `xargs kill`, `pkill`, `killall`, `kill -1`, `kill 0` or `kill -- -1`.\n" +
 	"- Do not commit, push, tag, or open pull requests.\n" +
 	"- When finished, reply in the terminal with exactly the report path and nothing else.\n"
 
