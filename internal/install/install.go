@@ -296,11 +296,11 @@ func replaceDestination(binPath, destination string) (string, string, []string, 
 		return "", "", stranded, fmt.Errorf("install: replacing %s: %w (%v)", destination, err, asideErr)
 	}
 	previousDigest, digestErr := sha256File(destination)
-	if moveErr := renameFile(destination, aside); moveErr != nil {
+	if moveErr := retryRename(destination, aside); moveErr != nil {
 		return "", "", stranded, fmt.Errorf("install: replacing %s: %w (moving it to %s: %v)", destination, err, aside, moveErr)
 	}
-	if err := renameFile(binPath, destination); err != nil {
-		if undoErr := renameFile(aside, destination); undoErr != nil {
+	if err := retryRename(binPath, destination); err != nil {
+		if undoErr := retryRename(aside, destination); undoErr != nil {
 			return "", "", stranded, fmt.Errorf("install: replacing %s: %w (the previous binary is at %s: %v)", destination, err, aside, undoErr)
 		}
 		return "", "", stranded, fmt.Errorf("install: replacing %s after moving it aside: %w", destination, err)
@@ -313,6 +313,32 @@ func replaceDestination(binPath, destination string) (string, string, []string, 
 		return aside, "", stranded, nil
 	}
 	return aside, marker, stranded, nil
+}
+
+const renameMaxAttempts = 10
+
+// These process-wide seams are overridden only by non-parallel tests.
+var (
+	retryRenameError = isTransientRenameError
+	sleepRenameRetry = time.Sleep
+)
+
+// retryRename bounds transient Windows sharing/lock violations to ten
+// attempts and 2.75 seconds of waiting. The initial direct replacement
+// deliberately does not use this helper: its refusal triggers move-aside.
+func retryRename(src, dst string) error {
+	delay := 50 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		err := renameFile(src, dst)
+		if err == nil || attempt == renameMaxAttempts || !retryRenameError(err) {
+			return err
+		}
+		sleepRenameRetry(delay)
+		delay *= 2
+		if delay > 400*time.Millisecond {
+			delay = 400 * time.Millisecond
+		}
+	}
 }
 
 // asideNames lists the backup names of destination: <destination>.old,
