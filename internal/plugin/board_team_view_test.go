@@ -496,6 +496,71 @@ func TestBoardTeamLoadKeepsTheCurrentCancelOnAStaleResult(t *testing.T) {
 	}
 }
 
+// Shutdown joins both current and superseded writers, even after cancellation.
+func TestBoardTeamViewShutdownJoinsCancelledLoads(t *testing.T) {
+	dir := t.TempDir()
+	var load boardTeamLoad
+	release := make(chan struct{})
+	cancelled := make(chan struct{}, 2)
+	writesDone := make(chan struct{}, 2)
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		close(release)
+		// Join independently of shutdown so a broken shutdown also leaves
+		// no writer behind when this regression test fails.
+		for i := 0; i < 2; i++ {
+			select {
+			case <-writesDone:
+			case <-time.After(5 * time.Second):
+				t.Error("released team-view writer did not finish")
+				return
+			}
+		}
+		select {
+		case <-finished:
+			for _, name := range []string{"1", "2"} {
+				data, err := os.ReadFile(filepath.Join(dir, name))
+				if err != nil || string(data) != "late write" {
+					t.Errorf("joined writer %s: data=%q err=%v", name, data, err)
+				}
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("team-view shutdown did not join its workers")
+		}
+	})
+	for seq := 1; seq <= 2; seq++ {
+		ctx := load.start(seq)
+		name := filepath.Join(dir, string(rune('0'+seq)))
+		load.run(func() {
+			defer func() { writesDone <- struct{}{} }()
+			<-ctx.Done()
+			cancelled <- struct{}{}
+			<-release
+			if err := os.WriteFile(name, []byte("late write"), 0o600); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	go func() {
+		load.shutdown()
+		close(finished)
+	}()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-cancelled:
+		case <-time.After(5 * time.Second):
+			t.Fatal("shutdown did not cancel the current and superseded loads")
+		}
+	}
+	select {
+	case <-finished:
+		t.Fatal("shutdown returned with team-view writers still running")
+	case <-time.After(100 * time.Millisecond):
+		// Both workers are deliberately held after cancellation. Cleanup
+		// releases them and waits before TempDir removes their directory.
+	}
+}
+
 // startBoardTeamLoop runs the production session loop over the team-view
 // fixture with the view-opening row listed, and returns the input writer,
 // the output path, the shutdown channel and the loop's exit code channel.
