@@ -360,17 +360,21 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	// makes its CLI read the brief mid-turn and drop the open task: refuse
 	// (exit 10) before typing anything or writing any task state, naming
 	// the escapes. --amend amends the open task and --queue opts into
-	// typing now (today's queued behavior); a failed agent get
-	// (unavailable) and a closed task (the report exists) keep today's
-	// behavior. The check rides the dispatch's pre-send state read, which
-	// is taken here, before the first sidecar write.
+	// typing now (today's queued behavior). A report may still be a draft,
+	// so its presence does not bypass the refusal; a failed agent get
+	// (unavailable) or no current task-report path keeps today's behavior.
+	// The check rides the dispatch's pre-send state read, which is taken
+	// here, before the first sidecar write.
 	var before herdr.AgentStateResult
 	if checkOn {
 		before = herdr.AgentState(agent, env, herdr.Timeout, nil)
 		if !amend && !queue && (before.State == "working" || before.State == "blocked") {
 			if ptr := taskreport.ReadTaskReportPointer(sd, agent); ptr != nil {
 				if cur, ok := ptr.Get("current"); ok {
-					if s, isStr := cur.(string); isStr && s != "" && !nonEmpty(s) {
+					if s, isStr := cur.(string); isStr && s != "" {
+						if nonEmpty(s) {
+							core.DieFriction(fmt.Sprintf("dispatch: '%s' is still working although its report exists at %s (it may be a draft); nothing was sent. Retry once its pane is idle (herdr agent get %s; after report_working_max, soho wait returns done without waiting for the pane), send an amendment (--amend), or pass --queue to type this brief now (its CLI may read it mid-turn)", agent, s, agent), 10, frictionLogPath, "dispatch")
+						}
 						core.DieFriction(fmt.Sprintf("dispatch: '%s' is still working on its open task (no report at %s); wait for it (soho wait %s), send an amendment (--amend), or pass --queue to type this brief now (its CLI may read it mid-turn and drop the open task)", agent, s, agent), 10, frictionLogPath, "dispatch")
 					}
 				}

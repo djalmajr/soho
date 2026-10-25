@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -280,108 +281,165 @@ func (f *busyDispatchFixture) queuedRules() []fakecli.Rule {
 }
 
 func TestDispatchBusyQueueKeepsTodayBehavior(t *testing.T) {
-	f := newBusyDispatchFixture(t)
-	f.openPointer(t)
-	f.env["SOHO_PROMPT_CHECK_SECONDS"] = "1"
-	f.install(t, f.queuedRules())
-	code, out, errText := f.run(t, "worker", f.brief, "--queue", "--no-wait")
-	if code != 0 {
-		t.Fatalf("code=%d out=%q err=%q", code, out, errText)
-	}
-	if status := dispatchOutputStatus(t, out); status != "queued" {
-		t.Fatalf("wait_status=%s out=%s", status, out)
-	}
-	want := "soho: prompt queued: 'worker' is working; it takes the prompt when its turn ends\n"
-	if errText != want {
-		t.Fatalf("stderr=%q; want %q", errText, want)
-	}
-	if n := countArgvPrefix(f.calls(t), []string{"agent", "prompt"}); n != 1 {
-		t.Fatalf("--queue typed %d prompt(s); want 1", n)
-	}
-	sidecar, err := os.ReadFile(f.sidecarPath())
-	if err != nil || !strings.Contains(string(sidecar), `"arrival":"queued"`) {
-		t.Fatalf("sidecar=%q err=%v; want the queued arrival", sidecar, err)
-	}
-	if _, err := os.Stat(filepath.Join(f.stateDir, "wait", "worker.queued")); err != nil {
-		t.Fatalf("queued marker missing: %v", err)
+	for _, reportExists := range []bool{false, true} {
+		t.Run("report_exists="+strconv.FormatBool(reportExists), func(t *testing.T) {
+			f := newBusyDispatchFixture(t)
+			if reportExists {
+				if err := os.WriteFile(f.openReport, []byte("# Draft report\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.openPointer(t)
+			f.env["SOHO_PROMPT_CHECK_SECONDS"] = "1"
+			f.install(t, f.queuedRules())
+			code, out, errText := f.run(t, "worker", f.brief, "--queue", "--no-wait")
+			if code != 0 {
+				t.Fatalf("code=%d out=%q err=%q", code, out, errText)
+			}
+			if status := dispatchOutputStatus(t, out); status != "queued" {
+				t.Fatalf("wait_status=%s out=%s", status, out)
+			}
+			want := "soho: prompt queued: 'worker' is working; it takes the prompt when its turn ends\n"
+			if errText != want {
+				t.Fatalf("stderr=%q; want %q", errText, want)
+			}
+			if n := countArgvPrefix(f.calls(t), []string{"agent", "prompt"}); n != 1 {
+				t.Fatalf("--queue typed %d prompt(s); want 1", n)
+			}
+			sidecar, err := os.ReadFile(f.sidecarPath())
+			if err != nil || !strings.Contains(string(sidecar), `"arrival":"queued"`) {
+				t.Fatalf("sidecar=%q err=%v; want the queued arrival", sidecar, err)
+			}
+			if _, err := os.Stat(filepath.Join(f.stateDir, "wait", "worker.queued")); err != nil {
+				t.Fatalf("queued marker missing: %v", err)
+			}
+		})
 	}
 }
 
 func TestDispatchBusyAmendKeepsTodayBehavior(t *testing.T) {
-	f := newBusyDispatchFixture(t)
-	f.openPointer(t)
-	if err := os.WriteFile(filepath.Join(f.stateDir, "last-report-worker"), []byte(f.openReport+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	amendBrief := filepath.Join(f.root, "amend.md")
-	if err := os.WriteFile(amendBrief, []byte("# Amendment\n\nFix the report path.\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	f.env["SOHO_PROMPT_CHECK_SECONDS"] = "1"
-	f.install(t, f.queuedRules())
-	code, out, errText := f.run(t, "worker", amendBrief, "--amend", "--no-wait")
-	if code != 0 {
-		t.Fatalf("code=%d out=%q err=%q", code, out, errText)
-	}
-	if status := dispatchOutputStatus(t, out); status != "queued" {
-		t.Fatalf("wait_status=%s out=%s", status, out)
-	}
-	if !strings.Contains(out, `"amend":true`) {
-		t.Fatalf("the amendment flag is missing: %s", out)
-	}
-	want := "soho: prompt queued: 'worker' is working; it takes the prompt when its turn ends\n"
-	if errText != want {
-		t.Fatalf("stderr=%q; want %q", errText, want)
-	}
-	if n := countArgvPrefix(f.calls(t), []string{"agent", "prompt"}); n != 1 {
-		t.Fatalf("--amend typed %d prompt(s); want 1", n)
-	}
-	// The amendment keeps the task's stable report and moves the pointer's
-	// current to the new report.
-	raw, err := os.ReadFile(taskreport.TaskReportPointerPath(f.stateDir, "worker"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	value, perr := jsonjs.Parse(raw)
-	if perr != nil {
-		t.Fatalf("pointer %s is not JSON: %v", raw, perr)
-	}
-	pointer, ok := value.(*jsonjs.Object)
-	if !ok {
-		t.Fatalf("pointer %s is not an object", raw)
-	}
-	current, _ := pointer.Get("current")
-	if current != filepath.Join(f.stateDir, "reports", "worker-20261003T152648.md") {
-		t.Fatalf("pointer current=%v; want the amendment's report", current)
-	}
-	taskReport, _ := pointer.Get("task_report")
-	if taskReport != filepath.Join(f.stateDir, "reports", "worker-20261003T100000.current.md") {
-		t.Fatalf("pointer task_report=%v; want the task's stable report kept", taskReport)
+	for _, reportExists := range []bool{false, true} {
+		t.Run("report_exists="+strconv.FormatBool(reportExists), func(t *testing.T) {
+			f := newBusyDispatchFixture(t)
+			if reportExists {
+				if err := os.WriteFile(f.openReport, []byte("# Draft report\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.openPointer(t)
+			if err := os.WriteFile(filepath.Join(f.stateDir, "last-report-worker"), []byte(f.openReport+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			amendBrief := filepath.Join(f.root, "amend.md")
+			if err := os.WriteFile(amendBrief, []byte("# Amendment\n\nFix the report path.\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			f.env["SOHO_PROMPT_CHECK_SECONDS"] = "1"
+			f.install(t, f.queuedRules())
+			code, out, errText := f.run(t, "worker", amendBrief, "--amend", "--no-wait")
+			if code != 0 {
+				t.Fatalf("code=%d out=%q err=%q", code, out, errText)
+			}
+			if status := dispatchOutputStatus(t, out); status != "queued" {
+				t.Fatalf("wait_status=%s out=%s", status, out)
+			}
+			if !strings.Contains(out, `"amend":true`) {
+				t.Fatalf("the amendment flag is missing: %s", out)
+			}
+			want := "soho: prompt queued: 'worker' is working; it takes the prompt when its turn ends\n"
+			if errText != want {
+				t.Fatalf("stderr=%q; want %q", errText, want)
+			}
+			if n := countArgvPrefix(f.calls(t), []string{"agent", "prompt"}); n != 1 {
+				t.Fatalf("--amend typed %d prompt(s); want 1", n)
+			}
+			// The amendment keeps the task's stable report and moves the pointer's
+			// current to the new report.
+			raw, err := os.ReadFile(taskreport.TaskReportPointerPath(f.stateDir, "worker"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, perr := jsonjs.Parse(raw)
+			if perr != nil {
+				t.Fatalf("pointer %s is not JSON: %v", raw, perr)
+			}
+			pointer, ok := value.(*jsonjs.Object)
+			if !ok {
+				t.Fatalf("pointer %s is not an object", raw)
+			}
+			current, _ := pointer.Get("current")
+			if current != filepath.Join(f.stateDir, "reports", "worker-20261003T152648.md") {
+				t.Fatalf("pointer current=%v; want the amendment's report", current)
+			}
+			taskReport, _ := pointer.Get("task_report")
+			if taskReport != filepath.Join(f.stateDir, "reports", "worker-20261003T100000.current.md") {
+				t.Fatalf("pointer task_report=%v; want the task's stable report kept", taskReport)
+			}
+		})
 	}
 }
 
-func TestDispatchBusyWithAClosedTaskKeepsTodayBehavior(t *testing.T) {
-	f := newBusyDispatchFixture(t)
-	// The open task's report already exists: the task is closed, so a
-	// working worker takes the new brief as today.
-	if err := os.WriteFile(f.openReport, []byte("# Report\n\ndone\n"), 0o600); err != nil {
-		t.Fatal(err)
+func TestDispatchBusyWithAReportStillRefuses(t *testing.T) {
+	for _, state := range []string{"working", "blocked"} {
+		t.Run(state, func(t *testing.T) {
+			f := newBusyDispatchFixture(t)
+			if err := os.WriteFile(f.openReport, []byte("# Report\n\ndone\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			f.openPointer(t)
+			f.install(t, []fakecli.Rule{
+				{Argv: []string{"agent", "list"}, ArgvPrefix: true, Stdout: `{"result":{"agents":[]}}`},
+				{Argv: []string{"agent", "get", "worker"}, Stdout: busyStateJSON(state, 1)},
+				{Argv: []string{"agent", "prompt", "worker"}, ArgvPrefix: true, Stdout: `{"result":{"sent":true}}`},
+			})
+			before := snapshotTree(t, f.stateDir)
+			code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
+			if code != 10 || out != "" {
+				t.Fatalf("code=%d out=%q err=%q; want refusal 10 with empty stdout", code, out, errText)
+			}
+			want := "soho: dispatch: 'worker' is still working although its report exists at " + f.openReport + " (it may be a draft); nothing was sent. Retry once its pane is idle (herdr agent get worker; after report_working_max, soho wait returns done without waiting for the pane), send an amendment (--amend), or pass --queue to type this brief now (its CLI may read it mid-turn)\n"
+			if errText != want {
+				t.Fatalf("stderr=%q; want %q", errText, want)
+			}
+			calls := f.calls(t)
+			if n := countArgvPrefix(calls, []string{"agent", "get", "worker"}); n != 1 {
+				t.Fatalf("pre-send state reads=%d; want 1", n)
+			}
+			for _, call := range calls {
+				if len(call.Argv) < 2 || call.Argv[0] != "agent" || (call.Argv[1] != "get" && call.Argv[1] != "list") {
+					t.Fatalf("refusal made a non-read Herdr call: %#v", call)
+				}
+			}
+			after := snapshotTree(t, f.stateDir)
+			delete(after, "friction.log")
+			if !reflect.DeepEqual(before, after) {
+				t.Fatalf("refusal changed task state: before=%v after=%v", before, after)
+			}
+			friction, err := os.ReadFile(filepath.Join(f.stateDir, "friction.log"))
+			if err != nil || !strings.Contains(string(friction), strings.TrimPrefix(strings.TrimSpace(want), "soho: ")) {
+				t.Fatalf("friction log=%q err=%v; want refusal recorded", friction, err)
+			}
+		})
 	}
-	f.openPointer(t)
-	f.env["SOHO_PROMPT_CHECK_SECONDS"] = "1"
-	f.install(t, f.queuedRules())
-	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
-	if code != 0 {
-		t.Fatalf("code=%d out=%q err=%q", code, out, errText)
-	}
-	if status := dispatchOutputStatus(t, out); status != "queued" {
-		t.Fatalf("wait_status=%s out=%s", status, out)
-	}
-	if strings.Contains(errText, "still working on its open task") {
-		t.Fatalf("the refusal fired for a closed task: %q", errText)
-	}
-	if n := countArgvPrefix(f.calls(t), []string{"agent", "prompt"}); n != 1 {
-		t.Fatalf("typed %d prompt(s); want 1", n)
+}
+
+func TestDispatchBusyWithoutCurrentReportKeepsTodayBehavior(t *testing.T) {
+	for _, pointer := range []string{"absent", "empty current"} {
+		t.Run(pointer, func(t *testing.T) {
+			f := newBusyDispatchFixture(t)
+			if pointer == "empty current" {
+				f.openReport = ""
+				f.openPointer(t)
+			}
+			f.install(t, f.queuedRules())
+			code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
+			if code != 0 || dispatchOutputStatus(t, out) != "queued" {
+				t.Fatalf("code=%d out=%q err=%q; want first dispatch queued", code, out, errText)
+			}
+			if n := countArgvPrefix(f.calls(t), []string{"agent", "prompt"}); n != 1 {
+				t.Fatalf("first dispatch typed %d prompt(s); want 1", n)
+			}
+		})
 	}
 }
 
@@ -410,6 +468,35 @@ func TestDispatchIdleWithAnOpenTaskKeepsTodayBehavior(t *testing.T) {
 	}
 	if n := countArgvPrefix(f.calls(t), []string{"agent", "prompt"}); n != 1 {
 		t.Fatalf("typed %d prompt(s); want 1", n)
+	}
+}
+
+func TestDispatchIdleWithAReportKeepsTodayBehavior(t *testing.T) {
+	f := newBusyDispatchFixture(t)
+	f.openPointer(t)
+	if err := os.WriteFile(f.openReport, []byte("# Report\n\ndone\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rules := f.queuedRules()
+	// Observe idle in the pre-send read, then a new working sequence after
+	// submission, so the arrival proves the idle target accepted the brief.
+	rules = append([]fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Call: 1, Stdout: busyStateJSON("idle", 1)}}, rules...)
+	for i := 1; i < len(rules); i++ {
+		if reflect.DeepEqual(rules[i].Argv, []string{"agent", "get", "worker"}) {
+			rules[i].Stdout = busyStateJSON("working", 2)
+		}
+	}
+	f.install(t, rules)
+	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
+	if code != 0 || dispatchOutputStatus(t, out) != "submitted" || errText != "" {
+		t.Fatalf("code=%d out=%q err=%q; want idle target to receive the brief", code, out, errText)
+	}
+	calls := f.calls(t)
+	if n := countArgvPrefix(calls, []string{"agent", "get", "worker"}); n < 2 {
+		t.Fatalf("state reads=%d; want pre-send and arrival reads", n)
+	}
+	if n := countArgvPrefix(calls, []string{"agent", "prompt"}); n != 1 {
+		t.Fatalf("idle dispatch typed %d prompt(s); want 1", n)
 	}
 }
 

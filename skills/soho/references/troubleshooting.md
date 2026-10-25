@@ -138,7 +138,7 @@ Use a verified native release binary, or build an explicitly selected checkout w
 
 ## `wait` reported `blocked` once for a worker that went on working
 
-A stable report with a working pane stays pending in `wait` and blocking `dispatch` until the pane becomes `idle` or `done`, or `report_working_max` seconds pass (default `600`, `0` restores immediate completion); exceeding the cap prints a warning, and a missing or unreadable pane still allows completion. `status` can show `done` while the pane is still working; `wait` is the completion signal.
+A stable report with a working pane stays pending in `wait` and blocking `dispatch` until the pane becomes `idle` or `done`, or `report_working_max` seconds pass (default `600`, `0` restores immediate completion); exceeding the cap prints a warning, and a missing or unreadable pane still allows completion. A new `dispatch` with pre-send state checks enabled refuses a `working` or `blocked` target with a current task-report path (exit 10), even when that report exists and may be a draft; wait for the worker, send an amendment with `--amend`, or explicitly allow typing mid-turn with `--queue`. A `wait` done after the cap confirms the report, not that the pane is free: check the pane (`herdr agent get <agent>`) and dispatch once it is `idle` or `done`. `status` can show `done` while the pane is still working; `wait` is the completion signal.
 
 - **Cause:** approval UIs flash briefly; a single `blocked` sample is not proof.
 - **Now:** two consecutive probes (≈6 s) are required. With `auto_approve=on` the default option is sent and the wait continues.
