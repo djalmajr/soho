@@ -80,7 +80,7 @@ var ConfigScalarKeys = []string{
 	"multi_role", "panes", "lanes", "pane_mode", "flex_extra", "flex_roles",
 	"worker_context", "brief_lint", "brief_lint_aliases", "brief_lint_placeholders", "approvals",
 	"auto_approve", "max_auto_approvals", "max_effort",
-	"settled_grace", "spawn_timeout", "dispatch_timeout", "compact_timeout", "provider_retries",
+	"settled_grace", "report_working_max", "spawn_timeout", "dispatch_timeout", "compact_timeout", "provider_retries",
 	"provider_retry_delay", "provider_capacity_texts", "provider_error_texts",
 	"prompt_check_seconds", "prompt_settle_seconds", "stuck_warn_minutes", "context_warn_percent", "state_dir",
 	"report_language", "notify", "feedback", "feedback_repo", "feedback_dir", "feedback_to",
@@ -419,6 +419,11 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return false
 	}
 	switch {
+	case key == "report_working_max":
+		// The wait reader parses an int64 and falls back to 600 on overflow:
+		// refuse a value it would not honor.
+		_, err := strconv.ParseInt(value, 10, 64)
+		return decimalRE.MatchString(value) && err == nil
 	case key == "approvals" || (strings.HasPrefix(key, "lane.") || strings.HasPrefix(key, "role.")) && strings.HasSuffix(key, ".approvals"):
 		return value == "ask" || value == "edits" || value == "auto" || value == "full" || value == "unsandboxed"
 	case key == "max_workers" || key == "provider_retries" || key == "provider_retry_delay" || key == "prompt_check_seconds" || key == "prompt_settle_seconds" || key == "stuck_warn_minutes" || key == "pressure_disk_free_percent" || key == "pressure_swap_percent" || key == "pressure_refuse_disk_free_percent" || key == "pressure_refuse_swap_percent" || key == "footprint_warn_gb":
