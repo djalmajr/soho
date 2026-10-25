@@ -1094,7 +1094,7 @@ func CmdConfigSet(argv []string, ctx *Config, env platform.Env, cwd string) {
 	}
 	key, value, sawValue = SplitPairArg(key, value, sawValue, "config set")
 	if key == "" || !sawValue {
-		platform.Die("usage: config set <key> <value> | <key>=<value> [--project|--user]", 2)
+		platform.Die("usage: config set <key> <value> | <key>=<value> [--project|--user] (default --project; for this session only: soho session set)", 2)
 	}
 	if value == "" {
 		platform.Die("config set: empty value", 2)
