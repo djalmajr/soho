@@ -14,19 +14,121 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 )
 
-const procsUsage = "usage: soho procs | procs add <pid> [--agent <name>]"
+const procsUsage = "usage: soho procs | procs add <pid> [--agent <name>] | procs stop <pid>… [--agent <name>]\nprocs stop exits: 0 stopped/already gone; 2 usage/refusal; 4 stop failed (worst code wins)"
 
-// cmdProcs lists the process registry, or registers a worker process. The
+// cmdProcs lists, registers, or stops registered worker processes. The
 // command line of a process is never read or stored: it may carry
 // credentials.
 func cmdProcs(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	if len(argv) == 0 {
 		return procsList(ctx, env, cwd)
 	}
-	if argv[0] != "add" {
+	switch argv[0] {
+	case "add":
+		return procsAdd(argv[1:], ctx, env, cwd)
+	case "stop":
+		return procsStop(argv[1:], ctx, env, cwd)
+	default:
 		return procsUsageError()
 	}
-	return procsAdd(argv[1:], ctx, env, cwd)
+}
+
+// procsStop never discovers processes: only the caller's registered rows
+// can reach the existing identity-checked stop operation.
+func procsStop(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
+	var pids []string
+	var agent string
+	agentSeen := false
+	for i := 0; i < len(argv); i++ {
+		if argv[i] == "--agent" {
+			if agentSeen || i+1 >= len(argv) || argv[i+1] == "" {
+				return procsUsageError()
+			}
+			agent, agentSeen = argv[i+1], true
+			i++
+		} else if strings.HasPrefix(argv[i], "--") {
+			return procsUsageError()
+		} else {
+			pids = append(pids, argv[i])
+		}
+	}
+	if len(pids) == 0 {
+		return procsUsageError()
+	}
+	sd := registryDestination(env)
+	if sd == "" {
+		sd = core.StateDir(ctx, env, cwd)
+	}
+	incorporatePendingProcs("procs stop", sd, env)
+	paneAgent := rosterAgentForPane(sd, env.Get("HERDR_PANE_ID"))
+	owner := paneAgent
+	if agentSeen {
+		if core.RosterLine(sd, agent) == "" || (paneAgent != "" && paneAgent != agent) {
+			for _, arg := range pids {
+				_, _ = fmt.Fprintf(platform.Stderr, "procs stop: refusing %s: --agent %s does not match the calling pane's agent %s\n", arg, agent, paneAgent)
+			}
+			return 2
+		}
+		owner = agent
+	}
+	rows, err := core.ReadProcs(sd)
+	if err != nil {
+		_, _ = fmt.Fprintf(platform.Stderr, "procs stop: cannot read the process registry (%v)\n", err)
+		return 4
+	}
+	code := 0
+	for _, arg := range pids {
+		refuse := func(cause string) {
+			_, _ = fmt.Fprintf(platform.Stderr, "procs stop: refusing %s: %s\n", arg, cause)
+			if code < 2 {
+				code = 2
+			}
+		}
+		decimal := arg != ""
+		for _, c := range arg {
+			if c < '0' || c > '9' {
+				decimal = false
+			}
+		}
+		pid, err := strconv.Atoi(arg)
+		if !decimal || err != nil || pid <= 0 {
+			refuse("not a positive decimal integer pid")
+			continue
+		}
+		if pid == 1 || pid == os.Getpid() || pid == platform.ParentPID() {
+			refuse("pid is system init, this soho process, or its parent")
+			continue
+		}
+		if owner == "" {
+			refuse("no calling agent in the roster")
+			continue
+		}
+		matched, owned := false, false
+		for _, row := range rows {
+			if row.Pid != pid {
+				continue
+			}
+			matched = true
+			if row.Owner != owner {
+				continue
+			}
+			owned = true
+			result := core.StopProcRow(sd, row, env)
+			if result.Line != "" {
+				_, _ = fmt.Fprintln(platform.Stdout, result.Line)
+			}
+			if result.Err != nil {
+				_, _ = fmt.Fprintf(platform.Stderr, "procs stop: %v\n", result.Err)
+				code = 4
+			}
+		}
+		if !matched {
+			refuse("pid is not registered")
+		} else if !owned {
+			refuse("registered process belongs to another agent")
+		}
+	}
+	return code
 }
 
 // procsList is read-only: <pid>  <name>  <owner>  <age>  <state>, the

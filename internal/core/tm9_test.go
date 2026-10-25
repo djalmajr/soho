@@ -180,12 +180,19 @@ func TestTM9CoreCases(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			readOnly := name == "reviewer" || name == "security-reviewer"
 			if strings.Contains(string(body), "ps -axo") || !strings.Contains(string(body), "ps -p <pid> -o lstart=,comm=") {
 				t.Errorf("%s lacks the process identity check", name)
 			}
+			// No role may leave room for a broadcast kill (DJA-535).
+			if !strings.Contains(string(body), "never build a PID list") || !strings.Contains(string(body), "`xargs kill`") || !strings.Contains(string(body), "`kill -1`") {
+				t.Errorf("%s lacks the PID-list and broadcast-kill ban", name)
+			}
+			if !readOnly && !strings.Contains(string(body), "`soho procs stop <pid>`") {
+				t.Errorf("%s does not point to soho procs stop", name)
+			}
 			// Edit roles may also read the registry; read-only roles must not
 			// run soho procs, which can write state in the repository.
-			readOnly := name == "reviewer" || name == "security-reviewer"
 			affirms := strings.Contains(string(body), "`soho procs` shows it `running`")
 			if readOnly != strings.Contains(string(body), "not `soho procs`") || readOnly == affirms || !readOnly && !strings.Contains(string(body), "`reused`") {
 				t.Errorf("%s: wrong soho procs guidance for its mode", name)
