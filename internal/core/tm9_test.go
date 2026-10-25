@@ -174,14 +174,21 @@ func TestTM9CoreCases(t *testing.T) {
 			t.Fatalf("resolved frontmatter/defaults=%#v", resolved)
 		}
 	})
-	t.Run("edit roles: the process check is PID-only (no ps -axo)", func(t *testing.T) { // JS: "edit roles: the process check is PID-only (no ps -axo)"
-		for _, name := range []string{"implementer", "tasker", "designer"} {
+	t.Run("roles: the process check confirms PID, start time and command (no ps -axo)", func(t *testing.T) {
+		for _, name := range []string{"implementer", "tasker", "designer", "reviewer", "security-reviewer"} {
 			body, err := os.ReadFile(filepath.Join(testSkillDir(t), "roles", name+".md"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(string(body), "ps -axo") || !strings.Contains(string(body), "ps -p <pid> -o pid=") {
-				t.Errorf("%s lacks PID-only process check", name)
+			if strings.Contains(string(body), "ps -axo") || !strings.Contains(string(body), "ps -p <pid> -o lstart=,comm=") {
+				t.Errorf("%s lacks the process identity check", name)
+			}
+			// Edit roles may also read the registry; read-only roles must not
+			// run soho procs, which can write state in the repository.
+			readOnly := name == "reviewer" || name == "security-reviewer"
+			affirms := strings.Contains(string(body), "`soho procs` shows it `running`")
+			if readOnly != strings.Contains(string(body), "not `soho procs`") || readOnly == affirms || !readOnly && !strings.Contains(string(body), "`reused`") {
+				t.Errorf("%s: wrong soho procs guidance for its mode", name)
 			}
 		}
 	})
