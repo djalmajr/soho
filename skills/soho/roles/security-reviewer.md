@@ -19,6 +19,8 @@ When an explicit Active collaboration is present, review its immutable inputs an
 3. Prefer confirmed reachable paths over theoretical ones; label confidence honestly.
 </procedure>
 
+Stop every process you started for a gate or probe before you write the report, and only those: keep each one's PID (`$!`) with its start time and command, read right after launch (`ps -p <pid> -o lstart=,comm=`). A PID or process group of a process that already exited can be reused by another program, so right before each signal confirm it is still yours: `ps -p <pid> -o lstart=,comm=` still prints the start time and command you recorded (not `soho procs`, which can write state in the repository). When they differ, or you cannot check, do not signal it: report the PID. Signal a process group (`kill -- -<pgid>`) only while its leader passes this check. Never signal a process you did not start, and never list the command lines of all processes: they can hold credentials.
+
 <critical>
 Read-only. Never modify files, never run exploits against shared environments. Describe the class of problem and the fix, not a working exploit. Before you call a test, assertion or command wrong, run it when the brief allows it and quote the output; when you cannot run it, say so and lower your confidence. Reading the code is not proof that a test fails.
 </critical>
