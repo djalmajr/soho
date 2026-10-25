@@ -135,10 +135,37 @@ func checkCallerPane(pane, delegated string, env platform.Env) CallerCheck {
 		Session: session.Session, PaneSession: session.PaneSession, ShownIn: session.ShownIn}
 }
 
+var callerProcessInfoRunner struct {
+	sync.Mutex
+	run func(string, []string, platform.RunOptions) platform.RunResult
+}
+
+// OverrideCallerProcessInfoRunner replaces only the caller-pane process-info
+// command in tests. A nil runner uses platform.RunCli, including its production
+// timeout. The returned function restores the previous runner. Tests using this
+// process-wide seam must not call t.Parallel.
+func OverrideCallerProcessInfoRunner(run func(string, []string, platform.RunOptions) platform.RunResult) (restore func()) {
+	callerProcessInfoRunner.Lock()
+	previous := callerProcessInfoRunner.run
+	callerProcessInfoRunner.run = run
+	callerProcessInfoRunner.Unlock()
+	return func() {
+		callerProcessInfoRunner.Lock()
+		callerProcessInfoRunner.run = previous
+		callerProcessInfoRunner.Unlock()
+	}
+}
+
 // paneShellPID reads result.process_info.shell_pid from
 // `herdr pane process-info --pane <pane>`.
 func paneShellPID(pane string, env platform.Env) (int, bool) {
-	r := platform.RunCli("herdr", []string{"pane", "process-info", "--pane", pane}, platform.RunOptions{Env: env, TimeoutMs: 10000})
+	callerProcessInfoRunner.Lock()
+	run := callerProcessInfoRunner.run
+	callerProcessInfoRunner.Unlock()
+	if run == nil {
+		run = platform.RunCli
+	}
+	r := run("herdr", []string{"pane", "process-info", "--pane", pane}, platform.RunOptions{Env: env, TimeoutMs: 10000})
 	if r.NotFound || r.TimedOut || r.Status == nil || *r.Status != 0 {
 		return 0, false
 	}

@@ -1,8 +1,10 @@
 package spawn_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -14,7 +16,34 @@ import (
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
-const spawnRefuseLine = "soho: spawn: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Nothing was changed. Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn\n"
+const spawnRefuseLine = "soho: spawn: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell %d); the id was inherited from another process, such as a forked session. Nothing was changed. Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn\n"
+
+// Windows may assign the test process PID 4000. Keep the claimed shell
+// distinct from the start of the scripted ancestry even in that case.
+func callerShellPID() int {
+	if os.Getpid() == 4000 {
+		return 4001
+	}
+	return 4000
+}
+
+// stubCallerProcessInfo keeps the actual caller check and JSON parser, but
+// supplies the response in memory: starting a race-built fake herdr on a
+// loaded Windows host must not turn a mismatch into unknown after 10 seconds.
+// Each non-parallel subtest owns and restores its runner and call counter.
+func stubCallerProcessInfo(t *testing.T) *int {
+	t.Helper()
+	calls := 0
+	t.Cleanup(herdr.OverrideCallerProcessInfoRunner(func(exe string, args []string, opts platform.RunOptions) platform.RunResult {
+		calls++
+		if exe != "herdr" || !reflect.DeepEqual(args, []string{"pane", "process-info", "--pane", "w1:p9"}) || opts.TimeoutMs != 10000 || opts.Env.Get("HERDR_PANE_ID") != "w1:p9" {
+			t.Fatalf("unexpected process-info request: exe=%q args=%q timeout=%d pane=%q", exe, args, opts.TimeoutMs, opts.Env.Get("HERDR_PANE_ID"))
+		}
+		status := 0
+		return platform.RunResult{Status: &status, Stdout: fmt.Sprintf(`{"result":{"process_info":{"shell_pid":%d}}}`, callerShellPID())}
+	}))
+	return &calls
+}
 
 // callerSpawnFixture builds a spawn fixture (the same shape as the
 // internal newSpawnFixture) with the scripted ancestry the caller-pane
@@ -53,6 +82,9 @@ func callerSpawnFixture(t *testing.T, herdrRules []fakecli.Rule, parents map[int
 	env["SOHO_WAIT_POLL_MS"] = "1"
 	env["HERDR_ENV"] = "1"
 	env["HERDR_PANE_ID"] = "w1:p9"
+	env["SOHO_DELEGATED_PANE"] = ""
+	env["SOHO_CALLER_CHECK"] = "refuse"
+	env["CLAUDE_CODE_SESSION_ID"] = ""
 	if err := os.MkdirAll(filepath.Join(state, "ws"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -101,14 +133,14 @@ func freshSpawnRules() []fakecli.Rule {
 		{Argv: []string{"tab", "create"}, ArgvPrefix: true, Stdout: `{"result":{"tab":{"tab_id":"t-herd","label":"herd"},"root_pane":{"pane_id":"p-new"}}}`},
 		{Argv: []string{"tab", "get"}, ArgvPrefix: true, Stdout: `{"result":{"tab":{"tab_id":"t-herd","label":"herd"},"root_pane":{"pane_id":"p-root"}}}`},
 		{Argv: []string{"tab", "rename"}, ArgvPrefix: true},
-		{Argv: []string{"pane", "process-info", "--pane", "w1:p9"}, Stdout: `{"result":{"process_info":{"shell_pid":4000}}}`},
+		{Argv: []string{"pane", "process-info", "--pane", "w1:p9"}, Stdout: fmt.Sprintf(`{"result":{"process_info":{"shell_pid":%d}}}`, callerShellPID())},
 	}
 }
 
 // forkedPS is the ancestry table of a process that is NOT in the claimed
-// pane: the walk reaches the root without the pane's shell (4000).
+// pane: the walk reaches the root without the pane's shell.
 func forkedPS() map[int]int {
-	return map[int]int{os.Getpid(): 3000, 3000: 1}
+	return map[int]int{os.Getpid(): 1}
 }
 
 // spawnCallCount counts the fake herdr calls whose argv starts with argv.
@@ -162,13 +194,17 @@ func runSpawnCLI(t *testing.T, env platform.Env, cwd string, args []string) (int
 func TestCmdSpawnCallerPaneCheck(t *testing.T) {
 	t.Run("mismatch with refuse exits 2 before pane split, agent start or agent rename", func(t *testing.T) {
 		herdr.ResetCallerCheck()
+		processInfoCalls := stubCallerProcessInfo(t)
 		env, _, cwd, bin := callerSpawnFixture(t, freshSpawnRules(), forkedPS())
 		code, _, errOut := runSpawnCLI(t, env, cwd, []string{"worker", "--pane", "w0test:p0a", "--name", "worker"})
+		if *processInfoCalls != 1 {
+			t.Fatalf("in-memory process-info calls=%d want 1; fake process startup dependency returned", *processInfoCalls)
+		}
 		if code != 2 {
 			t.Fatalf("code=%d err=%q", code, errOut)
 		}
-		if errOut != spawnRefuseLine {
-			t.Fatalf("stderr=%q want %q", errOut, spawnRefuseLine)
+		if want := fmt.Sprintf(spawnRefuseLine, callerShellPID()); errOut != want {
+			t.Fatalf("stderr=%q want %q", errOut, want)
 		}
 		if n := spawnCallCount(t, bin, "pane", "split"); n != 0 {
 			t.Fatalf("pane split called %d times", n)
@@ -179,19 +215,26 @@ func TestCmdSpawnCallerPaneCheck(t *testing.T) {
 		if n := spawnCallCount(t, bin, "agent", "rename"); n != 0 {
 			t.Fatalf("agent rename called %d times", n)
 		}
-		if n := spawnCallCount(t, bin, "pane", "process-info", "--pane", "w1:p9"); n != 1 {
-			t.Fatalf("process-info calls=%d want 1", n)
+		if n := spawnCallCount(t, bin, "pane", "process-info"); n != 0 {
+			t.Fatalf("process-info started %d fake processes; want only the in-memory read", n)
 		}
 	})
 	t.Run("mismatch with warn continues and logs the friction line", func(t *testing.T) {
 		herdr.ResetCallerCheck()
-		env, _, cwd, _ := callerSpawnFixture(t, freshSpawnRules(), forkedPS())
+		processInfoCalls := stubCallerProcessInfo(t)
+		env, _, cwd, bin := callerSpawnFixture(t, freshSpawnRules(), forkedPS())
 		env["SOHO_CALLER_CHECK"] = "warn"
 		code, stdout, errOut := runSpawnCLI(t, env, cwd, []string{"worker", "--pane", "w0test:p0a", "--name", "worker"})
+		if *processInfoCalls != 1 {
+			t.Fatalf("in-memory process-info calls=%d want 1; fake process startup dependency returned", *processInfoCalls)
+		}
+		if n := spawnCallCount(t, bin, "pane", "process-info"); n != 0 {
+			t.Fatalf("process-info started %d fake processes; want only the in-memory read", n)
+		}
 		if code != 0 {
 			t.Fatalf("code=%d stdout=%q err=%q", code, stdout, errOut)
 		}
-		if !strings.Contains(errOut, "soho: warning: spawn: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Continuing because caller_check=warn. Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn") {
+		if !strings.Contains(errOut, fmt.Sprintf("soho: warning: spawn: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell %d); the id was inherited from another process, such as a forked session. Continuing because caller_check=warn. Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn", callerShellPID())) {
 			t.Fatalf("stderr missing the warn line: %q", errOut)
 		}
 		friction, err := os.ReadFile(filepath.Join(env["SOHO_DIR"], "ws", "friction.log"))
@@ -201,9 +244,13 @@ func TestCmdSpawnCallerPaneCheck(t *testing.T) {
 	})
 	t.Run("off makes no process-info call", func(t *testing.T) {
 		herdr.ResetCallerCheck()
+		processInfoCalls := stubCallerProcessInfo(t)
 		env, _, cwd, bin := callerSpawnFixture(t, freshSpawnRules(), forkedPS())
 		env["SOHO_CALLER_CHECK"] = "off"
 		code, stdout, errOut := runSpawnCLI(t, env, cwd, []string{"worker", "--pane", "w0test:p0a", "--name", "worker"})
+		if *processInfoCalls != 0 {
+			t.Fatalf("off made %d in-memory process-info calls", *processInfoCalls)
+		}
 		if code != 0 {
 			t.Fatalf("code=%d stdout=%q err=%q", code, stdout, errOut)
 		}
