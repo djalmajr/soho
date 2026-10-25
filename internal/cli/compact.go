@@ -803,12 +803,14 @@ func compactCodexComposerLine(screen string) (string, bool) {
 // above an empty or busy composer: not stuck. A stale proof is never success
 // by itself — the fresh-proof rule decides that; here it only keeps the
 // retry protocol (a second Enter and a clear) from firing on a delivered
-// command, for every consumer of the check (the proof poll, the confirm and
+// command. A current codex running-compaction marker likewise prevents a
+// retry, but is not proof of completion. This applies to every consumer of
+// the check (the proof poll, the confirm and
 // the re-read before the second Enter). A screen without a composer line (a
 // read before the TUI drew the box, or a frozen worker) is not stuck: the
 // proof wait and its liveness checks take over.
 func compactCodexComposerStuck(screen, proof string) bool {
-	if compactProofBelow(screen, proof) {
+	if compactProofBelow(screen, proof) || compactCodexComposerRunning(screen) {
 		return false
 	}
 	line, ok := compactCodexComposerLine(screen)
@@ -816,6 +818,45 @@ func compactCodexComposerStuck(screen, proof string) bool {
 		return false
 	}
 	return compactCommandLine(line)
+}
+
+// compactCodexComposerRunning accepts a running marker below the last
+// /compact history echo, excluding the line selected as the composer.
+// Without a history echo,
+// only the last eight non-empty lines can show a current marker.
+// This is acceptance, not completion; the existing proof budget still applies.
+func compactCodexComposerRunning(screen string) bool {
+	lines := compactLines(screen)
+	composerIndex := -1
+	if composer, ok := compactCodexComposerLine(screen); ok {
+		for i := len(lines) - 1; i >= 0; i-- {
+			if lines[i] == composer {
+				composerIndex = i
+				break
+			}
+		}
+	}
+	anchor := -1
+	for i, line := range lines {
+		if i != composerIndex && compactCommandLine(line) {
+			anchor = i
+		}
+	}
+	nonEmpty := 0
+	for i := len(lines) - 1; i > anchor; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		nonEmpty++
+		if anchor < 0 && nonEmpty > 8 {
+			break
+		}
+		if strings.HasPrefix(line, "• Compacting context (") {
+			return true
+		}
+	}
+	return false
 }
 
 // compactComposerCleared waits, up to compactComposerWindow with one poll
@@ -861,18 +902,17 @@ func compactCodexComposerRetry(agent, pane, kind, proof string, env platform.Env
 	state := budget.state(agent)
 	compactDieOnDeadWorker(agent, state)
 	screen := budget.read(agent, "recent", intPtr(compactScreenLines))
+	// A late acceptance (including the running marker) goes back to the
+	// proof wait even if the worker has just become busy. The state and
+	// dialog guards below apply only while a retry key is still needed.
+	if !compactCodexComposerStuck(screen, proof) {
+		return screen
+	}
 	if provider.DialogKind(kind, screen) == "question" {
 		core.DieFriction(fmt.Sprintf("compact: '/compact' stayed in the composer of '%s' after the first Enter; showing a dialog after /compact; pressed nothing, nothing was compacted", agent), 4, frictionLogPath, "compact")
 	}
 	if state.State != "idle" && state.State != "done" {
 		core.DieFriction(fmt.Sprintf("compact: '/compact' stayed in the composer of '%s' after the first Enter and the worker is %s; pressed nothing, nothing was compacted", agent, state.State), 4, frictionLogPath, "compact")
-	}
-	// The box can have changed since the confirm gave up (/compact ran late,
-	// or another command is in it now): the second Enter goes only to a
-	// composer that still holds /compact; any other screen goes back to the
-	// proof check with no key.
-	if !compactCodexComposerStuck(screen, proof) {
-		return screen
 	}
 	budget.sendKeys(pane, "Enter")
 	if screen := compactComposerCleared(agent, proof, env, budget); screen != "" {
