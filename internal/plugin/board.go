@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -800,8 +801,25 @@ func (s *BoardState) FeedChunk(chunk string) string {
 // boardTeamLoad is the session loop's one in-flight team-view load: the
 // cancel of its reads and the sequence of the open it belongs to.
 type boardTeamLoad struct {
-	cancel contextpkg.CancelFunc
-	seq    int
+	cancel  contextpkg.CancelFunc
+	seq     int
+	workers sync.WaitGroup
+}
+
+// run tracks every load, including a superseded load still unwinding.
+func (l *boardTeamLoad) run(work func()) {
+	l.workers.Add(1)
+	go func() {
+		defer l.workers.Done()
+		work()
+	}()
+}
+
+// shutdown cancels the current load and joins all reads before the loop
+// returns, so a child cannot keep writing after its caller tears down.
+func (l *boardTeamLoad) shutdown() {
+	l.stop()
+	l.workers.Wait()
 }
 
 // start supersedes the in-flight load (its reads are cancelled) and
@@ -1174,7 +1192,7 @@ func runSessionLoopWithSignals(env platform.Env, platformName, executable string
 	// leaves a CLI read in flight.
 	teamResults := make(chan pickerTeamViewResult, 1)
 	var teamLoad boardTeamLoad
-	defer teamLoad.stop()
+	defer teamLoad.shutdown()
 	var escTimer <-chan time.Time
 	var resize <-chan time.Time
 	lastWidth, lastHeight := modalDimensions(stdout, width)
@@ -1272,14 +1290,14 @@ func runSessionLoopWithSignals(env platform.Env, platformName, executable string
 				view := state.TeamView
 				teamCtx := teamLoad.start(view.loadSeq)
 				redrawSession(stdout, state, width)
-				go func() {
+				teamLoad.run(func() {
 					runPickerTeamViewLoad(teamCtx, executable, env, platformName, view, func(res pickerTeamViewResult) {
 						select {
 						case teamResults <- res:
 						case <-teamCtx.Done():
 						}
 					})
-				}()
+				})
 			}
 			if action == "update" {
 				requestBoardUpdate(updateReq)
