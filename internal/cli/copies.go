@@ -861,6 +861,9 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		pane = "-"
 	}
 	task, report := copyTaskColumns(sd, owner)
+	if warning := copiesAddNestedWarning(sd, resolved); warning != "" {
+		core.Warn(warning, frictionLogPath, "copies")
+	}
 	row := core.CopyRow{Path: resolved, Owner: owner, Pane: pane, Created: core.FrictionISO(platform.Now()), Source: "-", Origin: "add", Task: task, Report: report}
 	if err := upsertCopies(sd, row); err != nil {
 		if err = queueCopy("copies add", sd, row, err, env); err == nil {
@@ -873,6 +876,69 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		core.DieFriction(fmt.Sprintf("copies add: could not register '%s' (%v)", path, err), 4, frictionLogPath, "copies")
 	}
 	return 0
+}
+
+// copiesAddNestedWarning uses one registry snapshot for this advisory check;
+// registration still follows its usual locked upsert, even if the scan fails.
+func copiesAddNestedWarning(sd, parent string) string {
+	rows, err := core.ReadCopies(sd)
+	if err != nil {
+		return ""
+	}
+	var children []string
+	for _, row := range rows {
+		child, err := filepath.EvalSymlinks(row.Path)
+		if err == nil && strictlyInside(parent, child) {
+			children = append(children, child)
+		}
+	}
+	if len(children) == 0 {
+		return ""
+	}
+	inner := children[0]
+	if len(children) > 1 {
+		inner += fmt.Sprintf(" (+%d more)", len(children)-1)
+	}
+	other := ""
+	if hasOtherEntries(parent, children[0]) {
+		other = " (and other entries)"
+	}
+	return fmt.Sprintf("copies add: %s contains the registered copy %s%s; release removes all of %s, logs included. Register only the copy, or release with --keep-copies to keep it", parent, inner, other, parent)
+}
+
+// strictlyInside is inside without equality: the relative path must name a
+// descendant, so a spelling of parent itself (a UNC volume in another case
+// on Windows, where Rel folds case) never counts as a child.
+func strictlyInside(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && relative != "." && inside(parent, child)
+}
+
+// hasOtherEntries reports whether a directory on the way from parent down to
+// child, parent included and child excluded, holds anything besides the next
+// step toward child. Each directory on that path holds that step, so reading
+// two entries of each one decides it: the work is bounded by the depth, not
+// by how wide the directories are, and child itself is never opened. A
+// directory that cannot be read counts as holding other entries.
+func hasOtherEntries(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	if err != nil {
+		return true
+	}
+	dir := parent
+	for _, step := range strings.Split(relative, string(filepath.Separator)) {
+		f, err := os.Open(dir)
+		if err != nil {
+			return true
+		}
+		entries, _ := f.ReadDir(2)
+		_ = f.Close()
+		if len(entries) != 1 {
+			return true
+		}
+		dir = filepath.Join(dir, step)
+	}
+	return false
 }
 
 func copiesAddUsageError() int {
