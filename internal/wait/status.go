@@ -3,10 +3,14 @@ package wait
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/communication"
@@ -16,6 +20,7 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/provider"
 	"github.com/djalmajr/soho/internal/sessionref"
+	"github.com/djalmajr/soho/internal/taskreport"
 )
 
 // probeNotInRoster runs the D11 agent get for an agent outside the roster
@@ -125,9 +130,11 @@ func rosterNames(sd string) []string {
 
 func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	sd := core.StateDir(ctx, env, cwd)
+	restartStates := map[string]herdr.AgentStateResult{}
 	if len(argv) == 0 {
 		argv = rosterNames(sd)
 		if len(argv) == 0 {
+			restartNotices(sd, env, platform.Stderr, nil, restartStates)
 			fmt.Fprintf(platform.Stderr, "status: no agents in the roster (state dir: %s)\n", sd)
 			return 0
 		}
@@ -253,6 +260,9 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 					}
 				}
 			}
+			if !stale && !quota && p == nil && question == "" {
+				restartStates[agent] = st
+			}
 		}
 		var taskS, activityS any
 		if info, e := os.Stat(core.LastReportPath(sd, agent)); e == nil {
@@ -318,6 +328,7 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 			}
 		}
 	}
+	restartNotices(sd, env, platform.Stderr, argv, restartStates)
 	return rc
 }
 
@@ -498,4 +509,130 @@ func queuedPromptIsUnresolved(sd, agent, state string, ctx *core.Config, env pla
 		return false
 	}
 	return provider.ProviderDetectTexts(state, herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40)), core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env)) == nil
+}
+
+// RestartTask describes the existing task; notices never change its pointer.
+type RestartTask struct {
+	Agent, Current, Brief, State, Reason string
+	Code                                 int
+}
+
+var restartReportStamp = regexp.MustCompile(`-(\d{8}T\d{6})(?:-\d+)?\.md$`)
+
+// InspectRestartTask uses the local timestamp dispatch puts in the report name.
+// The dispatch sidecar has submission state, but no submission timestamp.
+func InspectRestartTask(agent, sd string, boot time.Time, env platform.Env) RestartTask {
+	return inspectRestartTask(agent, sd, boot, env, nil)
+}
+
+func inspectRestartTask(agent, sd string, boot time.Time, env platform.Env, knownState *herdr.AgentStateResult) RestartTask {
+	task := RestartTask{Agent: agent, Code: 2, Reason: "task is not interrupted"}
+	if core.RosterLine(sd, agent) == "" {
+		task.Reason = "agent is not in the roster"
+		return task
+	}
+	pointer := taskreport.ReadTaskReportPointer(sd, agent)
+	if pointer == nil {
+		return task
+	}
+	current, _ := pointer.Get("current")
+	task.Current, _ = current.(string)
+	if task.Current == "" || reportNonEmpty(task.Current) {
+		return task
+	}
+	stamp := restartReportStamp.FindStringSubmatch(filepath.Base(task.Current))
+	if len(stamp) != 2 {
+		return task
+	}
+	dispatched, err := time.ParseInLocation("20060102T150405", stamp[1], time.Local)
+	if err != nil {
+		return task
+	}
+	now := platform.Now()
+	if boot.After(now) || dispatched.After(now) {
+		task.Code = 4
+		task.Reason = "the boot time is inconsistent with the current clock; nothing was sent"
+		return task
+	}
+	if !dispatched.Before(boot) {
+		return task
+	}
+	var state herdr.AgentStateResult
+	if knownState != nil {
+		state = *knownState
+	} else {
+		state = herdr.AgentState(agent, env, herdr.Timeout, nil)
+	}
+	task.State = state.State
+	if state.State == "working" || state.State == "blocked" {
+		task.Code = 10
+		task.Reason = "agent is " + state.State
+		return task
+	}
+	if state.State != "idle" && state.State != "done" {
+		task.Reason = "agent is " + state.State
+		return task
+	}
+	base := strings.TrimSuffix(filepath.Base(task.Current), ".md")
+	task.Brief = filepath.Join(sd, "briefs", base+".md")
+	if filepath.Clean(filepath.Dir(task.Current)) != filepath.Join(sd, "reports") {
+		// Scratch artifacts may have disappeared with /tmp; retain their path.
+		task.Brief = filepath.Join(filepath.Dir(task.Current), base+".brief.md")
+	}
+	task.Code = 0
+	task.Reason = "task was dispatched before the machine restarted"
+	return task
+}
+
+// RestartNotices adds advisory text only; stdout status rows remain unchanged.
+func RestartNotices(sd string, env platform.Env, out io.Writer, agents []string) {
+	restartNotices(sd, env, out, agents, nil)
+}
+
+// A non-nil cache limits status notices to its normal-output state reads.
+func restartNotices(sd string, env platform.Env, out io.Writer, agents []string, states map[string]herdr.AgentStateResult) {
+	boot, err := platform.BootTime()
+	if err != nil || boot.IsZero() || boot.After(platform.Now()) {
+		return
+	}
+	if len(agents) == 0 {
+		agents = rosterNames(sd)
+	}
+	for _, agent := range agents {
+		var knownState *herdr.AgentStateResult
+		if states != nil {
+			cached, ok := states[agent]
+			if !ok {
+				continue
+			}
+			knownState = &cached
+		}
+		if task := inspectRestartTask(agent, sd, boot, env, knownState); task.Code == 0 {
+			fmt.Fprintf(out, "'%s': its task was dispatched before the machine restarted (%s); run soho resume %s\n", agent, boot.Local().Format(time.RFC3339), agent)
+		}
+	}
+	rows, err := core.ReadProcs(sd)
+	if err != nil {
+		return
+	}
+	for _, row := range rows {
+		started, err := restartProcStart(row.Started)
+		if err == nil && started.Before(boot) && core.ProcRowState(row, env) == "gone" {
+			fmt.Fprintf(out, "proc %d of '%s' (%s) ended with the restart\n", row.Pid, row.Owner, row.Name)
+		}
+	}
+}
+func restartProcStart(raw string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return t, nil
+	}
+	if t, err := time.ParseInLocation(time.ANSIC, raw, time.Local); err == nil {
+		return t, nil
+	}
+	ticks, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || ticks < 116444736000000000 {
+		return time.Time{}, fmt.Errorf("unknown process start time")
+	}
+	ticks -= 116444736000000000
+	return time.Unix(ticks/10000000, (ticks%10000000)*100), nil
 }
