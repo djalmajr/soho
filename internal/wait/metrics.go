@@ -24,18 +24,11 @@ import (
 	"github.com/djalmajr/soho/internal/taskreport"
 )
 
-// metricsTypeValues are the accepted values of a brief's `Type:` line. Any
-// other value, or no line, keeps the type field out of the metrics line.
-var metricsTypeValues = map[string]bool{
-	"mechanical": true, "backend": true, "ui": true,
-	"docs": true, "review": true, "security": true,
-}
-
 // The same fence and state-position rules reportscan applies to [partial],
 // so the [done] and [skipped] counts agree with it line for line.
 var (
 	metricsFenceOpen     = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})")
-	metricsFenceClose    = regexp.MustCompile("^ {0,3}(`{3,}|~{3,}) *$")
+	metricsFenceClose    = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})[ \\t\\r]*$")
 	metricsDoneMarker    = regexp.MustCompile("[`*]*\\[done\\][`*]*")
 	metricsSkippedMarker = regexp.MustCompile("[`*]*\\[skipped\\][`*]*")
 	metricsAnyDone       = regexp.MustCompile(`\[done\]`)
@@ -86,7 +79,7 @@ func recordMetrics(sd, agent, report, text string, header *reportscan.ReviewHead
 func metricsLine(sd, agent, report, text string, header *reportscan.ReviewHeaderResult, partial int) string {
 	line := jsonjs.O("ts", platform.Now().UTC().Format(time.RFC3339), "agent", agent, "report", filepath.Base(report))
 	roster := strings.Split(core.RosterLine(sd, agent), "\t")
-	role := field(roster, 3)
+	role := TaskRole(sd, agent)
 	if role != "" {
 		line.Set("role", role)
 	}
@@ -158,13 +151,31 @@ func metricsBriefType(sd, report string) string {
 	if err != nil {
 		return ""
 	}
-	for _, raw := range strings.Split(text, "\n") {
+	return BriefType(text)
+}
+
+// BriefType shares the settled-metrics Type vocabulary with dispatch.
+// The first Type line outside a fenced example decides, including invalid values.
+func BriefType(body string) string {
+	fence := ""
+	for _, raw := range strings.Split(body, "\n") {
+		if fence != "" {
+			if close := metricsFenceClose.FindStringSubmatch(raw); close != nil && close[1][0] == fence[0] && len(close[1]) >= len(fence) {
+				fence = ""
+			}
+			continue
+		}
+		if open := metricsFenceOpen.FindStringSubmatch(raw); open != nil {
+			fence = open[1]
+			continue
+		}
 		line := strings.TrimSpace(raw)
 		if !strings.HasPrefix(line, "Type:") {
 			continue
 		}
 		value := strings.TrimSpace(strings.TrimPrefix(line, "Type:"))
-		if len(value) > 0 && !strings.ContainsAny(value, " \t") && metricsTypeValues[value] {
+		switch value {
+		case "mechanical", "backend", "ui", "docs", "review", "security":
 			return value
 		}
 		return ""
