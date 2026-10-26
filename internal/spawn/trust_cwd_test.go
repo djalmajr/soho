@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -151,6 +152,9 @@ func TestTrustRoot(t *testing.T) {
 				owned = func(os.FileInfo) bool { return false }
 				want = ""
 			case "control":
+				if runtime.GOOS == "windows" {
+					t.Skip("Windows file names cannot hold control characters; TestTrustRootVolumeAndControl covers the refusal")
+				}
 				cwd = trustRepo(t, base, "bad\npath")
 				want = ""
 			case "no-git":
@@ -162,7 +166,7 @@ func TestTrustRoot(t *testing.T) {
 				t.Fatalf("root=%q reason=%q want=%q cwd=%q", got, reason, want, cwd)
 			}
 			if name == "quote" {
-				if got := trustCwdArgument(got); got != `projects={"`+want+`"={trust_level="trusted"}}` {
+				if got := trustCwdArgument(got); got != `projects={"`+trustTOMLBasic(want)+`"={trust_level="trusted"}}` {
 					t.Fatalf("argument=%q", got)
 				}
 			}
@@ -242,7 +246,7 @@ func TestSpawnTrustCwd(t *testing.T) {
 			}
 			enabled := tc.kind == "codex" && tc.mode == "on" && !tc.refused
 			if enabled {
-				wantTrust := `projects={"` + root + `"={trust_level="trusted"}}`
+				wantTrust := `projects={"` + trustTOMLBasic(root) + `"={trust_level="trusted"}}`
 				if index < 1 || tail[index-1] != "-c" || tail[index] != wantTrust || !reflect.DeepEqual(tail[index+1:], []string{"--owner-config", "--owner-role", "--owner-cli"}) {
 					t.Fatalf("argv=%q", tail)
 				}
@@ -302,4 +306,10 @@ func TestTrustRootVolumeAndControl(t *testing.T) {
 			t.Fatalf("accepted unsafe root=%q result=%q %q", root, got, reason)
 		}
 	}
+}
+
+// trustTOMLBasic is the TOML basic-string body of a path: a Windows root
+// carries backslashes, which the encoder escapes.
+func trustTOMLBasic(path string) string {
+	return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(path)
 }
