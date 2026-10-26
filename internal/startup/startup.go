@@ -57,9 +57,10 @@ const (
 // unverified), the reason it stands on and the source the screen came from
 // (the visible screen read; always "visible" today).
 type Evaluation struct {
-	Verdict string
-	Reason  string
-	Source  string
+	Verdict                 string
+	Reason                  string
+	Source                  string
+	answerKey, answerOption string
 }
 
 // Refuses reports whether the assessment refuses the start or the send:
@@ -250,7 +251,8 @@ func Evaluate(kind, goos, state, screen string, screenOK bool) Evaluation {
 		return Evaluation{Verdict: VerdictUnverified, Reason: ReasonStateUnavailable, Source: SourceVisible}
 	}
 	if ActiveTrustDialog(screen) {
-		return Evaluation{Verdict: VerdictBlocked, Reason: ReasonWorkspaceTrust, Source: SourceVisible}
+		key, option, _ := AnswerHint(kind, screen)
+		return Evaluation{Verdict: VerdictBlocked, Reason: ReasonWorkspaceTrust, Source: SourceVisible, answerKey: key, answerOption: option}
 	}
 	if PartialTrustDialog(screen) {
 		return Evaluation{Verdict: VerdictUnverified, Reason: ReasonScreenIncomplete, Source: SourceVisible}
