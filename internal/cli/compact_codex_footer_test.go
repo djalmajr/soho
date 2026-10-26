@@ -115,9 +115,10 @@ func TestDispatchCompactCodexFooterDropSendsBrief(t *testing.T) {
 
 // TestCompactCodexFooterNoProofTimesOut runs the screens where the footer is
 // not proof: the gauge does not fall, the mid-compaction footer alone, a
-// gauge before the send under 10%, a gauge-shaped line in the history above
-// the last four non-empty lines, and no gauge before the send. Each one ends
-// at the timeout (9) with /compact sent once, like before the footer proof.
+// gauge-shaped line in the history above the last four non-empty lines, and
+// no gauge before the send. Each one ends at the timeout (9) with /compact
+// sent once, like before the footer proof. A gauge under 10% before the send
+// skips the compaction instead (compact_codex_low_context_test.go).
 func TestCompactCodexFooterNoProofTimesOut(t *testing.T) {
 	history := "Context 3% used · 475K window\n"
 	cases := []struct {
@@ -134,11 +135,6 @@ func TestCompactCodexFooterNoProofTimesOut(t *testing.T) {
 			name:   "the footer in the middle of the compaction alone",
 			before: codexScrolled(codexFooterBefore49),
 			after:  "• Compacting context (17s • esc to interrupt)\n" + codexScrolledIndicator + "\n› Ask Codex to do anything\n\n" + codexFooterCompacting,
-		},
-		{
-			name:   "a gauge before the send under 10%",
-			before: codexScrolled("  GPT-6.1-Sol medium · Context 8% used · 475K window · weekly 76% left · main\n"),
-			after:  codexScrolled("  GPT-6.1-Sol medium · Context 2% used · 475K window · weekly 76% left · main\n"),
 		},
 		{
 			name:   "the gauge only in the history above the last four lines",
