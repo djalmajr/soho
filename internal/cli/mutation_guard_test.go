@@ -712,7 +712,7 @@ func TestMutationGuard(t *testing.T) {
 			t.Skip("symlink creation is unavailable on this host")
 		}
 		code, out, stderr := runMutationGuardFixture(t, s, []string{s.copy}, platform.Env{"CARGO_TARGET_DIR": filepath.Join(s.copy, "target")})
-		want := "ok copy-outside-source\nok no-symlink-into-source\nok build-env\nok cargo-config\n"
+		want := "ok copy-outside-source\nok copy-outside-repository\nok no-symlink-into-source\nok build-env\nok cargo-config\n"
 		if code != 0 || out != want || stderr != "" {
 			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, stderr)
 		}
@@ -756,7 +756,7 @@ func TestMutationGuard(t *testing.T) {
 		sourceBefore := treeHash(s.source)
 		buildBefore := treeHash(filepath.Join(s.source, "target"))
 		code, out, stderr := runMutationGuardFixture(t, s, []string{s.copy}, platform.Env{"CARGO_TARGET_DIR": filepath.Join(s.copy, "target")})
-		if code != 0 || out != "ok copy-outside-source\nok no-symlink-into-source\nok build-env\nok cargo-config\n" || stderr != "" {
+		if code != 0 || out != "ok copy-outside-source\nok copy-outside-repository\nok no-symlink-into-source\nok build-env\nok cargo-config\n" || stderr != "" {
 			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, stderr)
 		}
 		if err := os.WriteFile(filepath.Join(s.copy, "source.txt"), []byte("temporary mutation\n"), 0o600); err != nil {
@@ -847,7 +847,7 @@ func TestMutationGuard(t *testing.T) {
 		s := newGuardFixture(t)
 		// The correct source: exit 0, as today.
 		code, out, stderr := runMutationGuardFixture(t, s, []string{s.copy, "--source", s.source}, nil, s.copy)
-		want := "ok copy-outside-source\nok no-symlink-into-source\nok build-env\nok cargo-config\n"
+		want := "ok copy-outside-source\nok copy-outside-repository\nok no-symlink-into-source\nok build-env\nok cargo-config\n"
 		if code != 0 || out != want || stderr != "" {
 			t.Fatalf("correct source: code=%d stdout=%q stderr=%q", code, out, stderr)
 		}
@@ -860,7 +860,7 @@ func TestMutationGuard(t *testing.T) {
 	t.Run("default source from the project root still passes", func(t *testing.T) {
 		s := newGuardFixture(t)
 		code, out, stderr := runMutationGuardFixture(t, s, []string{s.copy}, nil, s.source)
-		want := "ok copy-outside-source\nok no-symlink-into-source\nok build-env\nok cargo-config\n"
+		want := "ok copy-outside-source\nok copy-outside-repository\nok no-symlink-into-source\nok build-env\nok cargo-config\n"
 		if code != 0 || out != want || stderr != "" {
 			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, stderr)
 		}

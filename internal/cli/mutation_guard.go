@@ -118,6 +118,7 @@ func runMutationGuardAt(args []string, env platform.Env, cwd string) int {
 
 	report := mutationGuardChecks(copyPath, sourcePath, env, parsed.envNames)
 	failed := printMutationCheck("copy-outside-source", "", report.Overlap)
+	failed = printMutationCheck("copy-outside-repository", report.Repository, false) || failed
 	failed = printMutationCheck("no-symlink-into-source", report.Symlink, false) || failed
 	failed = printMutationCheck("build-env", report.BuildEnv, false) || failed
 	failed = printMutationCheck("cargo-config", report.Cargo, false) || failed
@@ -130,21 +131,25 @@ func runMutationGuardAt(args []string, env platform.Env, cwd string) int {
 // mutationGuardReport is one guard run's results: each field is the detail
 // printed for its check ("" passes), Overlap the copy/source overlap flag.
 type mutationGuardReport struct {
-	Overlap  bool
-	Symlink  string
-	BuildEnv string
-	Cargo    string
+	Overlap    bool
+	Repository string
+	Symlink    string
+	BuildEnv   string
+	Cargo      string
 }
 
 func (r mutationGuardReport) failed() bool {
-	return r.Overlap || r.Symlink != "" || r.BuildEnv != "" || r.Cargo != ""
+	return r.Overlap || r.Repository != "" || r.Symlink != "" || r.BuildEnv != "" || r.Cargo != ""
 }
 
 // mutationGuardChecks runs the guard's checks for copyPath against sourcePath
 // without printing. extraEnvNames are the `--env NAME` values the guard CLI
 // accepted; mutation-copy passes none.
 func mutationGuardChecks(copyPath, sourcePath string, env platform.Env, extraEnvNames []string) mutationGuardReport {
-	report := mutationGuardReport{Overlap: inside(sourcePath, copyPath) || inside(copyPath, sourcePath)}
+	report := mutationGuardReport{
+		Overlap:    insideFilesystem(sourcePath, copyPath) || insideFilesystem(copyPath, sourcePath),
+		Repository: mutationRepositoryRefusal(copyPath, sourcePath, env),
+	}
 	if detail, scanErr := symlinkIntoSource(copyPath, sourcePath); scanErr != nil {
 		report.Symlink = "unable to inspect symlinks safely"
 	} else {
@@ -170,6 +175,9 @@ func (r mutationGuardReport) failingLines() []string {
 	if r.Overlap {
 		lines = append(lines, "fail copy-outside-source: copy and source directories overlap")
 	}
+	if r.Repository != "" {
+		lines = append(lines, "fail copy-outside-repository: "+r.Repository)
+	}
 	if r.Symlink != "" {
 		lines = append(lines, "fail no-symlink-into-source: "+r.Symlink)
 	}
@@ -185,6 +193,65 @@ func (r mutationGuardReport) failingLines() []string {
 func mutationGuardUsageError() int {
 	_, _ = fmt.Fprintf(platform.Stderr, "soho: %s\n", mutationGuardUsage)
 	return 2
+}
+
+// mutationRepositoryTop finds the main checkout even when source is a linked
+// worktree. Nonstandard Git layouts fall back to the source's worktree top.
+func mutationRepositoryTop(source string, env platform.Env) string {
+	gitEnv := env.Clone()
+	for key := range gitEnv {
+		switch strings.ToUpper(key) {
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE":
+			delete(gitEnv, key)
+		}
+	}
+	resolve := func(args ...string) string {
+		result := platform.RunCli("git", append([]string{"-C", source, "rev-parse"}, args...), platform.RunOptions{Env: gitEnv, Cwd: source, TimeoutMs: 5_000})
+		if result.NotFound || result.Status == nil || *result.Status != 0 {
+			return ""
+		}
+		value := strings.TrimSuffix(strings.TrimSuffix(result.Stdout, "\n"), "\r")
+		if value == "" {
+			return ""
+		}
+		resolved, err := filepath.EvalSymlinks(resolveRelative(source, filepath.FromSlash(value)))
+		if err != nil {
+			return ""
+		}
+		return resolved
+	}
+	if common := resolve("--path-format=absolute", "--git-common-dir"); common != "" && filepath.Base(common) == ".git" {
+		return filepath.Dir(common)
+	}
+	return resolve("--show-toplevel")
+}
+
+func mutationRepositoryRefusal(copyPath, sourcePath string, env platform.Env) string {
+	if top := mutationRepositoryTop(sourcePath, env); top != "" && insideFilesystem(top, copyPath) {
+		return "the copy is inside the repository at " + top
+	}
+	return ""
+}
+
+// insideFilesystem retains lexical containment and also recognizes aliases
+// by comparing the parent with each existing candidate ancestor. Missing
+// leaves are skipped until their nearest existing ancestor is reached.
+func insideFilesystem(parent, candidate string) bool {
+	if inside(parent, candidate) {
+		return true
+	}
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		return false
+	}
+	for path := filepath.Clean(candidate); ; path = filepath.Dir(path) {
+		if info, err := os.Stat(path); err == nil && os.SameFile(parentInfo, info) {
+			return true
+		}
+		if filepath.Dir(path) == path {
+			return false
+		}
+	}
 }
 
 func printMutationCheck(name, detail string, overlap bool) bool {
