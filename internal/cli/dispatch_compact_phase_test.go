@@ -798,7 +798,10 @@ func TestDispatchCompactSigKILLKeepsTheInterruptedMarker(t *testing.T) {
 	// Registered after t.TempDir, so it runs first: on Windows a fake herdr
 	// the killed child started can hold its exe for a moment after the kill,
 	// and the TempDir cleanup would fail with "Access is denied" (DJA-553).
-	t.Cleanup(func() { compactRemoveWithRetry(filepath.Join(root, "bin"), 10*time.Second) })
+	// Other platforms remove an exited process's files at once.
+	if runtime.GOOS == "windows" {
+		t.Cleanup(func() { compactRemoveWithRetry(filepath.Join(root, "bin"), 10*time.Second) })
+	}
 	stateDir := filepath.Join(root, "state", "ws")
 	marker := core.CompactPendingPath(stateDir, "worker")
 	bin, err := os.Executable()
@@ -830,11 +833,14 @@ func TestDispatchCompactSigKILLKeepsTheInterruptedMarker(t *testing.T) {
 	}
 	// The hard kill: the child's cleanup never runs. On Windows the kill
 	// takes the whole tree, so no fake herdr the child started outlives it.
+	treeKilled := false
 	if runtime.GOOS == "windows" {
-		_ = exec.Command("taskkill", "/T", "/F", "/PID", fmt.Sprint(cmd.Process.Pid)).Run()
+		treeKilled = exec.Command("taskkill", "/T", "/F", "/PID", fmt.Sprint(cmd.Process.Pid)).Run() == nil
 	}
-	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		t.Fatal(err)
+	if !treeKilled {
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Fatal(err)
+		}
 	}
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("the child survived the kill")
