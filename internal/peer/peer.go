@@ -1027,8 +1027,14 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	// peer.SendAssignmentMessage, which gates itself after its own
 	// validation.
 	core.CallerGate("send", ctx, env, cwd)
-	senderRef, senderName, senderKind, senderRole, senderModel := SenderInfo(ctx, env, cwd, formerWaiting)
-	if !formerWaiting {
+	// Without a caller pane or an explicit workspace, StateDirPath would
+	// infer the focused workspace, which may belong to another session.
+	// Keep delivery stateless in that case, including roster resolution
+	// (StateRoot can update .gitignore even when the roster is only read).
+	noCallerWorkspace := env.Get("HERDR_PANE_ID") == "" && env.Get("HERDR_WORKSPACE_ID") == ""
+	stateless := formerWaiting || noCallerWorkspace
+	senderRef, senderName, senderKind, senderRole, senderModel := SenderInfo(ctx, env, cwd, stateless)
+	if !stateless {
 		if _, err := os.ReadFile(filepath.Join(core.StateDirPath(ctx, env, cwd), "agents.tsv")); err != nil && !os.IsNotExist(err) {
 			platform.Die("send: worker registration is unreadable; nothing was sent", 4)
 		}
@@ -1059,7 +1065,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		platform.Die(fmt.Sprintf("send: '%s' is a worker of this team (role %s): a worker reports through its report file, not by message (nothing was sent)", senderName, senderRole), 2)
 	}
 	stateDir := ""
-	if !formerWaiting {
+	if !stateless {
 		stateDir = core.StateDirPath(ctx, env, cwd)
 	}
 	// The short-timeout warning logs under the state dir, so it comes after the
@@ -1074,6 +1080,9 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	}
 	log := func(from, to, result string) {
 		if stateDir == "" {
+			if noCallerWorkspace && (result == "sent" || result == "queued") {
+				fmt.Fprintln(platform.Stderr, "soho: send: no caller workspace; the message was delivered but not logged")
+			}
 			return
 		}
 		appendPeerLog(stateDir, from, to, result, utf16Length(body), id, env)
