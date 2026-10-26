@@ -202,6 +202,12 @@ var compactCodexFooterRE = regexp.MustCompile(`Context (\d{1,3})% used\s*\x{B7}\
 // the footer also loses its window while a compaction is still running.
 var compactCodexTruncatedFooterRE = regexp.MustCompile(`Context (\d{1,3})% used(?:\s*\x{B7}\s*\x{2026})?\s*$`)
 
+// compactCodexWindowlessFooterRE is codex 0.164's zero footer after a
+// compaction: the segment after the separator is metadata that starts with a
+// letter (`weekly 95% left`), never a clipped window (`475K win…`) or an
+// ellipsis, which start with a digit or a dot.
+var compactCodexWindowlessFooterRE = regexp.MustCompile(`Context 0% used\s*\x{B7}\s*(\pL[^\x{B7}]*)`)
+
 // compactCodexFooterLines is how many non-empty lines, counted from the
 // bottom of the screen, are looked at: the composer line and the footer
 // below it. A gauge-shaped text higher up (the history, a brief, a report) is
@@ -268,6 +274,43 @@ func compactCodexContextDropped(base int, screen string) bool {
 	}
 	now, ok := compactCodexContext(screen)
 	return ok && now <= base/2
+}
+
+// compactCodexWindowlessZero is a candidate for idle-aware proof, never a
+// parser reading. Codex 0.164 keeps this footer after a compaction; while
+// working, or with a running marker in the last 15 non-empty lines, it is
+// not proof. The caller must check the state from this observation.
+func compactCodexWindowlessZero(screen string) bool {
+	lines := compactLines(screen)
+	nonEmpty := 0
+	for i := len(lines) - 1; i >= 0 && nonEmpty < 15; i-- {
+		if strings.TrimSpace(lines[i]) == "" {
+			continue
+		}
+		nonEmpty++
+		if strings.Contains(lines[i], "• Compacting context (") {
+			return false
+		}
+	}
+	// Match the parser's footer region and first-gauge-from-bottom rule,
+	// leaving compactCodexContext's windowless-zero contract unchanged.
+	footer := ""
+	nonEmpty = 0
+	for i := len(lines) - 1; i >= 0 && nonEmpty < compactCodexFooterLines; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		nonEmpty++
+		if strings.HasPrefix(line, "›") {
+			m := compactCodexWindowlessFooterRE.FindStringSubmatch(footer)
+			return m != nil && !compactCodexFooterRE.MatchString(footer)
+		}
+		if footer == "" && compactCodexGaugeRE.MatchString(line) {
+			footer = line
+		}
+	}
+	return false
 }
 
 // compactEnding is a screen line that ends the /compact wait without the
@@ -487,7 +530,15 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 		endStatus = "nothing-to-compact"
 	}
 	footerDropped := func(screen string) bool {
-		return footerOK && compactCodexContextDropped(footerBase, screen)
+		if footerOK && compactCodexContextDropped(footerBase, screen) {
+			return true
+		}
+		if !footerOK || footerBase < compactCodexFooterMinBefore || !compactCodexWindowlessZero(screen) {
+			return false
+		}
+		state := budget.state(agent)
+		compactDieOnDeadWorker(agent, state)
+		return state.State == "idle" || state.State == "done"
 	}
 	endings := compactEndings(kind)
 	endSeen := make([]map[string]bool, len(endings))

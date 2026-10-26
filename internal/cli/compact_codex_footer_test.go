@@ -185,12 +185,15 @@ func codexHistoryAboveComposer() string {
 // TestCompactCodexFooterHistoryAboveComposerTimesOut is the review finding:
 // with the real footer momentarily without the window, a gauge-shaped
 // sentence of the history just above the composer must not be read as the
-// footer. Nothing was compacted: the compact ends at the timeout (9).
+// footer. Nothing was compacted: the compact ends at the timeout (9). The
+// pane stays working after the send, so the windowless zero footer is not
+// the idle proof of codex 0.164 (DJA-552) and only the history phrase could
+// end the wait.
 func TestCompactCodexFooterHistoryAboveComposerTimesOut(t *testing.T) {
 	fakeFastClock(t, 6*time.Second)
 	f := newCompactFixture(t, "codex", []fakecli.Rule{
 		{Argv: []string{"agent", "get", "worker"}, Call: 1, Stdout: compactStateJSON("idle", 1)},
-		{Argv: []string{"agent", "get", "worker"}, Stdout: compactStateJSON("idle", 2)},
+		{Argv: []string{"agent", "get", "worker"}, Stdout: compactStateJSON("working", 2)},
 		{Argv: []string{"pane", "send-text", "p1", "/compact"}, Stdout: `{"result":{}}`},
 		{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 		{Argv: compactReadArgv("worker"), Call: 1, Stdout: codexScrolled(codexFooterBefore49)},
