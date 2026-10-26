@@ -230,3 +230,18 @@ func TestDispatchAmendReadOnlyEditRefusal(t *testing.T) {
 		t.Fatal("amendment refusal changed dispatch state")
 	}
 }
+
+// A role without a declared mode (a custom project role) is not read-only for
+// the refusal: an edit brief goes out unchanged.
+func TestDispatchRoleWithoutModeAcceptsEditBrief(t *testing.T) {
+	f := roleDispatchFixture(t)
+	writeRoleFixture(t, filepath.Join(f.root, "roles", "custom.md"), "---\nname: custom\n---\nCustom role instructions.\n")
+	writeRoleFixture(t, f.brief, "Type: backend\n# Owned files\n- app.go\n")
+	code, out, msg := f.run(t, "worker", f.brief, "--no-wait", "--role", "custom")
+	if code != 0 {
+		t.Fatalf("code=%d out=%s msg=%s", code, out, msg)
+	}
+	if strings.Contains(msg, "asks for edits") {
+		t.Fatalf("refused a role without a declared mode: %q", msg)
+	}
+}

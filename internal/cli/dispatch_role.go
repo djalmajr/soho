@@ -35,7 +35,7 @@ func openDispatchRole(sd, agent string) string {
 }
 
 func refuseReadOnlyEditBrief(body, brief, agent, role string, explicit bool, ctx *core.Config, env platform.Env, cwd string) {
-	if core.RoleIsEdit(role, env, cwd) {
+	if core.RoleIsEdit(role, env, cwd) || !roleDeclaredReadOnly(role, env, cwd) {
 		return
 	}
 	typeValue := dispatch.BriefType(body)
@@ -62,4 +62,12 @@ func refuseReadOnlyEditBrief(body, brief, agent, role string, explicit bool, ctx
 
 func amendmentRoleHeader(roleFile, role, agent string) string {
 	return fmt.Sprintf("The role instructions below replace the role instructions of your previous dispatch.\n\n# Role: %s\n\nYou are running as the `%s` role, agent name `%s`.\n\n%s\n\n", core.FmGet(roleFile, "name"), role, agent, core.RoleBody(roleFile))
+}
+
+// roleDeclaredReadOnly reports a role whose file declares mode: read-only.
+// Only that explicit header contradicts an edit brief; a role without a
+// declared mode (a custom project role) is not refused.
+func roleDeclaredReadOnly(role string, env platform.Env, cwd string) bool {
+	file := core.RoleFile(role, env, cwd)
+	return file != "" && core.FmGet(file, "mode") == "read-only"
 }
