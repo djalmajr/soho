@@ -795,6 +795,10 @@ func TestDispatchCompactSigKILLKeepsTheInterruptedMarker(t *testing.T) {
 		t.Skip("child mode")
 	}
 	root := t.TempDir()
+	// Registered after t.TempDir, so it runs first: on Windows a fake herdr
+	// the killed child started can hold its exe for a moment after the kill,
+	// and the TempDir cleanup would fail with "Access is denied" (DJA-553).
+	t.Cleanup(func() { compactRemoveWithRetry(filepath.Join(root, "bin"), 10*time.Second) })
 	stateDir := filepath.Join(root, "state", "ws")
 	marker := core.CompactPendingPath(stateDir, "worker")
 	bin, err := os.Executable()
@@ -824,8 +828,12 @@ func TestDispatchCompactSigKILLKeepsTheInterruptedMarker(t *testing.T) {
 	if rec.Pane != "p1" || rec.Brief != filepath.Join(root, "brief.md") || rec.Token == "" || rec.Started == "" {
 		t.Fatalf("marker = %+v; want pane p1, the child's brief path, a token and a start", rec)
 	}
-	// The hard kill: the child's cleanup never runs.
-	if err := cmd.Process.Kill(); err != nil {
+	// The hard kill: the child's cleanup never runs. On Windows the kill
+	// takes the whole tree, so no fake herdr the child started outlives it.
+	if runtime.GOOS == "windows" {
+		_ = exec.Command("taskkill", "/T", "/F", "/PID", fmt.Sprint(cmd.Process.Pid)).Run()
+	}
+	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		t.Fatal(err)
 	}
 	if err := cmd.Wait(); err == nil {
@@ -1181,5 +1189,18 @@ func TestStatusCompactPhaseUnderNowriteWritesNothing(t *testing.T) {
 				t.Fatalf("the marker changed under NOWRITE: %q err=%v", after, err)
 			}
 		})
+	}
+}
+
+// compactRemoveWithRetry removes dir, retrying while a process that is still
+// exiting holds one of its files (Windows sharing violations), for at most
+// limit. A path that cannot be removed in time is left for t.TempDir to report.
+func compactRemoveWithRetry(dir string, limit time.Duration) {
+	deadline := time.Now().Add(limit)
+	for {
+		if err := os.RemoveAll(dir); err == nil || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
