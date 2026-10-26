@@ -29,7 +29,7 @@ import (
 var knownCommands = map[string]bool{
 	"config": true, "session": true, "roles": true, "role": true, "kinds": true,
 	"models": true, "model": true, "spawn": true, "dispatch": true, "lint": true,
-	"find": true, "run": true, "status": true, "wait": true, "collect": true,
+	"find": true, "run": true, "status": true, "resume": true, "wait": true, "collect": true,
 	"send": true, "stats": true, "release": true, "clean": true, "setup": true,
 	"doctor": true, "explain": true, "init": true, "title": true, "regrid": true,
 	"roster": true, "friction": true, "feedback": true, "tab-label": true,
@@ -148,7 +148,7 @@ func Run(args []string, env platform.Env) (code int) {
 	}
 	var commandConfig *core.Config
 	readOnlyRejectedDoctor := command == "doctor" && decisionEnv.Get("SOHO_NOWRITE") == "1" && len(args) > 1
-	if !readOnlyRejectedDoctor && (command == "config" || command == "session" || command == "roles" || command == "role" || command == "explain" || command == "layout-plan" || command == "regrid" || command == "promote" || command == "tab-label" || command == "stats" || command == "metrics" || command == "collect" || command == "setup" || command == "release" || command == "doctor" || command == "init" || command == "spawn" || command == "dispatch" || command == "run" || command == "lint" || command == "wait" || command == "status") {
+	if !readOnlyRejectedDoctor && (command == "config" || command == "session" || command == "roles" || command == "role" || command == "explain" || command == "layout-plan" || command == "regrid" || command == "promote" || command == "tab-label" || command == "stats" || command == "metrics" || command == "collect" || command == "setup" || command == "release" || command == "doctor" || command == "init" || command == "spawn" || command == "dispatch" || command == "resume" || command == "run" || command == "lint" || command == "wait" || command == "status") {
 		ctx := core.LoadConfigFor(decisionEnv, commandCwd, userSel)
 		configCtx = &ctx
 	}
@@ -217,7 +217,7 @@ func Run(args []string, env platform.Env) (code int) {
 	if command == "hook" {
 		return cmdHook(args[1:], decisionEnv, commandCwd)
 	}
-	if command == "roster" || command == "friction" || command == "title" || command == "clean" || command == "feedback" || command == "regrid" || command == "promote" || command == "tab-label" || command == "release" || command == "reopen" || command == "spawn" || command == "dispatch" || command == "run" || command == "collect" || command == "init" || command == "wait" || command == "status" || command == "compact" || command == "copies" || command == "gc" || command == "procs" {
+	if command == "roster" || command == "friction" || command == "title" || command == "clean" || command == "feedback" || command == "regrid" || command == "promote" || command == "tab-label" || command == "release" || command == "reopen" || command == "spawn" || command == "dispatch" || command == "resume" || command == "run" || command == "collect" || command == "init" || command == "wait" || command == "status" || command == "compact" || command == "copies" || command == "gc" || command == "procs" {
 		ctx := core.LoadConfigFor(decisionEnv, commandCwd, userSel)
 		commandConfig = &ctx
 		herdr.RequireEnv(decisionEnv, platform.Current(), os.Getpid(), nil)
@@ -253,6 +253,9 @@ func Run(args []string, env platform.Env) (code int) {
 				frictionLogPath = filepath.Join(core.StateDir(configCtx, decisionEnv, commandCwd), "friction.log")
 			}
 		}
+	}
+	if command == "resume" {
+		return cmdResume(args[1:], configCtx, decisionEnv, commandCwd)
 	}
 	if command == "mutation-guard" {
 		return runMutationGuard(args[1:], decisionEnv)

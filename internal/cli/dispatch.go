@@ -33,6 +33,12 @@ var dispatchWaitFor = waitpkg.WaitFor
 var writeDispatchSidecar = dispatch.WriteSidecar
 
 func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
+	return cmdDispatchWithOptions(argv, ctx, env, cwd, dispatchOptions{})
+}
+
+type dispatchOptions struct{ noResend bool }
+
+func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, cwd string, behavior dispatchOptions) int {
 	// The agent and the brief are the first two arguments that are neither
 	// an option nor an option's value, so options may come before them.
 	// --cwd is refused below, but its value is still skipped here so the
@@ -743,6 +749,9 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 					recent, recentOK := herdr.AgentReadOK(env, agent, "recent-unwrapped", intPtr(40))
 					if !recentOK || provider.ScreenShowsPath(recent, composed) {
 						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an unconfirmed recent screen")
+					}
+					if behavior.noResend {
+						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "unconfirmed arrival without a resend")
 					}
 					core.Warn(fmt.Sprintf("prompt to '%s' did not arrive; sending it once more", agent), frictionLogPath, "dispatch")
 					if herdr.AgentPrompt(agent, text, env).Ok {

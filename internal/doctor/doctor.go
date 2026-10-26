@@ -21,6 +21,7 @@ import (
 	"github.com/djalmajr/soho/internal/setuptext"
 	"github.com/djalmajr/soho/internal/spawn"
 	textutil "github.com/djalmajr/soho/internal/text"
+	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
 
 type Say struct {
@@ -258,6 +259,7 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 }
 func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) {
 	s := &Say{Out: out}
+	doctorRestartNotices(ctx, env, cwd, platform.Stderr)
 	if env.Get("HERDR_ENV") == "1" {
 		herdrContextCheck(env, s)
 		// After the context check: this process must actually run in the
@@ -1421,4 +1423,22 @@ func trustCwdCheck(ctx *core.Config, env platform.Env, s *Say) {
 		description = "codex workers keep codex's folder dialog"
 	}
 	s.Ok(fmt.Sprintf("trust_cwd: %s (%s) [%s]", core.TrustCwdMode(ctx, env), description, core.CfgSource(ctx, "trust_cwd", env)))
+}
+
+// Restart notices are advisory even when doctor runs outside a resolvable
+// Herdr workspace, like its other best-effort workspace probes.
+func doctorRestartNotices(ctx *core.Config, env platform.Env, cwd string, out io.Writer) {
+	defer func() {
+		if value := recover(); value != nil {
+			if _, ok := value.(*platform.ExitError); !ok {
+				panic(value)
+			}
+		}
+	}()
+	readEnv := platform.Env{}
+	for key, value := range env {
+		readEnv[key] = value
+	}
+	readEnv["SOHO_NOWRITE"] = "1"
+	waitpkg.RestartNotices(core.StateDirPath(ctx, readEnv, cwd), readEnv, out, nil)
 }
