@@ -113,6 +113,9 @@ func TestSetupProjectRolesMigration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Windows reads the file id through the path on first use; load
+			// it now, while the old path still exists.
+			os.SameFile(info, info)
 			before := treeListing(t, root)
 			args := []string{"--no-hooks"}
 			if mode == "local" {
