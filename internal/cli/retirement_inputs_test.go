@@ -71,7 +71,7 @@ var retirementInvocations = map[string]map[string][]retireStep{
 			{Args: []string{"dispatch", "res", "brief.md", "--no-wait"}, RC: 0, JSON: []map[string]interface{}{{"agent": "res", "kind": "grok", "role": "researcher", "wait_status": "submitted"}}},
 		},
 		"dispatch-denied": {
-			{Args: []string{"dispatch", "worker", "brief.md", "--timeout", "2000"}, RC: 4, JSON: []map[string]interface{}{{"agent": "worker", "kind": "grok", "role": "implementer", "wait_status": "unavailable"}}},
+			{Args: []string{"dispatch", "worker", "brief.md", "--timeout", "2000"}, RC: 4, JSON: []map[string]interface{}{{"agent": "worker", "kind": "codex", "role": "implementer", "wait_status": "unavailable"}}},
 		},
 		"dispatch-family": {
 			{Args: []string{"dispatch", "rev", "brief.md", "--resend", "--no-wait"}, RC: 0, JSON: []map[string]interface{}{{"agent": "rev", "kind": "codex", "role": "reviewer", "wait_status": "submitted"}}},

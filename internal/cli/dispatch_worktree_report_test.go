@@ -62,7 +62,7 @@ func TestDispatchWorktreeReportRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	row := func(name, pane, cwd string) string {
-		return strings.Join([]string{name, pane, "claude", "implementer", "anthropic", "", cwd, "now", "model-x", "", "implementer", "build"}, "\t")
+		return strings.Join([]string{name, pane, "codex", "implementer", "anthropic", "", cwd, "now", "model-x", "full", "implementer", "build"}, "\t")
 	}
 	roster := "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\n" +
 		row("a-wt", "p1", wt) + "\n" +

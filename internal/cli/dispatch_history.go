@@ -70,8 +70,11 @@ func memberTaskPaths(sd, member string) (composed, sidecar string, ok bool) {
 		if err != nil || !st.Mode().IsRegular() {
 			continue
 		}
-		for _, ext := range []string{".md", ".brief.md"} {
+		for _, ext := range []string{".brief.md", ".md"} {
 			c := filepath.Join(dir, base+ext)
+			if filepath.Clean(c) == filepath.Clean(member) {
+				break // A missing composed brief never turns the report into one.
+			}
 			if cst, cerr := os.Stat(c); cerr == nil && cst.Mode().IsRegular() {
 				return c, sc, true
 			}
@@ -85,8 +88,11 @@ func memberTaskPaths(sd, member string) (composed, sidecar string, ok bool) {
 func memberComposedPath(sd, member string) (string, bool) {
 	base := strings.TrimSuffix(filepath.Base(member), ".md")
 	for _, dir := range []string{filepath.Join(sd, "briefs"), filepath.Dir(member)} {
-		for _, ext := range []string{".md", ".brief.md"} {
+		for _, ext := range []string{".brief.md", ".md"} {
 			c := filepath.Join(dir, base+ext)
+			if filepath.Clean(c) == filepath.Clean(member) {
+				break
+			}
 			if st, err := os.Stat(c); err == nil && st.Mode().IsRegular() {
 				return c, true
 			}
@@ -222,6 +228,7 @@ func dispatchDuplicateResult(agent, role, kind string, dup *dispatchDuplicate, n
 	}
 	if noWait {
 		obj := jsonjs.O("wait_status", "submitted", "agent", agent, "role", role, "kind", kind, "composed_prompt", dup.composed, "report", dup.report, "task_report", dup.taskReport, "report_exists", nonEmpty(dup.report), "auto_approved", approved, "duplicate_of", dup.duplicateOf)
+		markReportVolatile(obj, dup.report, sd)
 		if dup.amendment {
 			obj.Set("amend", true)
 		}
@@ -260,6 +267,7 @@ func emitDuplicateDispatchResult(agent, role, kind string, dup *dispatchDuplicat
 		}
 	}
 	out := jsonjs.O("wait_status", status, "agent", agent, "role", role, "kind", kind, "composed_prompt", dup.composed, "report", dup.report, "task_report", dup.taskReport, "duplicate_of", dup.duplicateOf)
+	markReportVolatile(out, dup.report, sd)
 	settled := ""
 	reportPath := dup.report
 	if last != nil {

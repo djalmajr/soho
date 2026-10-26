@@ -138,7 +138,7 @@ Use a verified native release binary, or build an explicitly selected checkout w
 ## Worker in a worktree cannot write the report
 
 - **Cause:** the report path is under the main repo; sandboxes limit the worker to its own cwd (+ `/tmp`).
-- **Now:** when the roster cwd differs from the repo root, `dispatch` routes brief and report through `$TMPDIR/soho/<ws>/reports/`.
+- **Now:** only a codex worker whose approvals are not `unsandboxed` and whose cwd cannot hold the state dir uses `$TMPDIR/soho/<ws>/reports/` for its brief, report and task report; other workers keep composed briefs in state `briefs/` and report/task-report files in state `reports/`. `report_volatile: true` identifies the scratch route, and wait/status create a mirror only when the task settles as done with a non-empty scratch report, using a temporary file plus an exclusive link through the state-rooted destination directory. Existing destinations are never replaced, linked/non-directory state `reports/` is refused, and no digest record or refresh is used. If scratch is gone, they recover the protected mirror.
 
 ## `wait` reported `blocked` once for a worker that went on working
 

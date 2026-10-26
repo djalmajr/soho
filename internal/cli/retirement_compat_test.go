@@ -925,9 +925,10 @@ func TestRetirementDispatchContract(t *testing.T) {
 			brief: retireBrief,
 		},
 		// test-status.sh:199 — a denied worker: the dispatch reports
-		// `unavailable` (rc 4), never `gone`; the worker cwd outside the repo
-		// routes the report and the composed prompt through
-		// $TMPDIR/soho/<ws>/reports/.
+		// `unavailable` (rc 4), never `gone`; a sandboxed codex worker whose
+		// cwd is outside the repo routes the report and the composed prompt
+		// through $TMPDIR/soho/<ws>/reports/ (DJA-538: only a sandbox that
+		// confines writes to the cwd takes the scratch dir).
 		"dispatch-denied": {
 			rules: []fakecli.Rule{
 				{Argv: []string{"agent", "get", "worker"}, Code: 1, Stderr: retireDeniedOS + "\n"},
@@ -935,7 +936,7 @@ func TestRetirementDispatchContract(t *testing.T) {
 			},
 			stepEnv: []map[string]string{{"SOHO_BRIEF_LINT": "off"}},
 			seed: func(f *retirementFixture) {
-				retireWriteRoster(t, f, retireR8+retireWorker8)
+				retireWriteRoster(t, f, retireR8+"worker\tp1\tcodex\timplementer\topenai\t1\t/work\tnow\n")
 				writeBrief(f, "brief.md", retireBrief)
 			},
 			role: "implementer", agent: "worker", brief: retireBrief,
@@ -1027,7 +1028,7 @@ func TestRetirementDispatchContract(t *testing.T) {
 			sc.sidecar = map[string][3]string{
 				"dispatch-quota":  {"grok", "grok-4.7", ""},
 				"dispatch-titled": {"grok", "grok-4.7", ""},
-				"dispatch-denied": {"grok", "", ""},
+				"dispatch-denied": {"codex", "", ""},
 				"dispatch-family": {"codex", "gpt-5", ""},
 				"dispatch-col4":   {"grok", "grok-4.7", ""},
 				"run-no-wait":     {"grok", "grok", "xhigh"},

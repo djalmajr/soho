@@ -177,9 +177,12 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	refuseReadOnlyEditBrief(briefRaw, brief, agent, role, explicitRole, ctx, env, cwd)
 	// The report and the composed prompt follow the state dir only when the
 	// worker can reach it: a sandboxed worker writes inside its own cwd, so
-	// with a non-empty worker cwd the files go to the soho scratch dir
-	// whenever sd is not inside that cwd — the caller's project root no
-	// longer decides. Comparing the worker's cwd with the caller's root
+	// a sandboxed codex (approvals other than unsandboxed) with a non-empty
+	// worker cwd uses the soho scratch dir when sd is not inside that cwd;
+	// every other worker writes to the state dir (DJA-538). The report and
+	// the stable task report share one directory, and outside scratch the
+	// composed briefs keep the state briefs directory. The caller's project
+	// root no longer decides. Comparing the worker's cwd with the caller's root
 	// routed a worktree caller's report into the main checkout's sd, which
 	// the worker there cannot write (DJA-379).
 	// The scratch reports dir is used only when its three levels are
@@ -193,7 +196,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	// (ScratchCreate, which checks every level again), so a dispatch refused
 	// in between leaves no scratch tree.
 	workerCwd := at(6)
-	scratch := workerCwd != "" && !dispatch.PathWithin(sd, workerCwd, platform.Current())
+	scratch := at(2) == "codex" && at(9) != "unsandboxed" && workerCwd != "" && !dispatch.PathWithin(sd, workerCwd, platform.Current())
 	scratchRefusal := func(err error) {
 		core.DieFriction(fmt.Sprintf("dispatch: the scratch reports dir cannot be used (%v); nothing was sent to '%s'", err, agent), 4, frictionLogPath, "dispatch")
 	}
@@ -251,8 +254,8 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	core.StateDir(ctx, env, cwd)
 	now := platform.Now()
 	stamp := core.NowStamp(now)
-	reportsDir := filepath.Join(sd, "briefs")
 	reportDir := filepath.Join(sd, "reports")
+	reportsDir := filepath.Join(sd, "briefs")
 	// The scratch reports dir was decided, and its existing levels
 	// checked, right after the roster line; the missing ones are created
 	// here (DJA-443).
@@ -401,8 +404,9 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	// amendment).
 	priorPointer := taskreport.ReadTaskReportPointer(sd, agent)
 	taskReport := taskReportAfterDispatch(sd, report, amend, priorPointer)
+	taskReport = filepath.Join(reportDir, filepath.Base(taskReport))
 	if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "attempted", "", session, role); err != nil {
-		return writeDispatchError(agent, role, kind, composed, report, taskReport, "couldn't write the attempt sidecar: "+sanitizeDispatchCause(err.Error()), 4,
+		return writeDispatchError(agent, role, kind, composed, report, taskReport, sd, "couldn't write the attempt sidecar: "+sanitizeDispatchCause(err.Error()), 4,
 			fmt.Sprintf("could not write the attempt sidecar %s: %s", sidecar, sanitizeDispatchCause(err.Error())))
 	}
 	shared := false
@@ -610,7 +614,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 		if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, restoredReport, briefSHA, "failed", "", session, role); err != nil {
 			core.Warn(fmt.Sprintf("could not record the failed submission in the attempt sidecar %s: %s", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 		}
-		return writeDispatchError(agent, role, kind, composed, report, taskReport, p.Raw, 4,
+		return writeDispatchError(agent, role, kind, composed, report, taskReport, sd, p.Raw, 4,
 			"prompt submission failed; inspect with: herdr agent get "+agent+" && herdr agent read "+agent+". Do not resend blindly.")
 	}
 	if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session, role); err != nil {
@@ -1107,8 +1111,9 @@ func restoreTaskDispatch(sd, agent, lastPath string, priorLast []byte, prior *js
 	}
 	return os.WriteFile(lastPath, priorLast, 0o666)
 }
-func writeDispatchError(agent, role, kind, composed, report, taskReport, raw string, code int, warning string) int {
+func writeDispatchError(agent, role, kind, composed, report, taskReport, sd, raw string, code int, warning string) int {
 	obj := jsonjs.O("wait_status", "error", "agent", agent, "role", role, "kind", kind, "composed_prompt", composed, "report", report, "task_report", taskReport, "report_exists", false, "raw", raw)
+	markReportVolatile(obj, report, sd)
 	fmt.Fprintln(platform.Stdout, jsonjs.Stringify(obj))
 	core.Warn(warning, frictionLogPath, "dispatch")
 	return code
@@ -1241,6 +1246,7 @@ func dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, si
 	_ = lane
 	markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA, env, wasWorking)
 	obj := jsonjs.O("wait_status", "not-received", "agent", agent, "role", role, "kind", kind, "composed_prompt", composed, "report", report, "task_report", taskReport, "report_exists", nonEmpty(report))
+	markReportVolatile(obj, report, sd)
 	fmt.Fprintln(platform.Stdout, jsonjs.Stringify(obj))
 	warnNotReceived(agent, why, wasWorking, false)
 	return 15
@@ -1287,6 +1293,12 @@ func warnNotReceived(agent, why string, wasWorking, waiting bool) {
 	core.Warn(warning, frictionLogPath, "dispatch")
 }
 
+func markReportVolatile(out *jsonjs.Object, report, sd string) {
+	if report != "" && !dispatch.PathWithin(report, sd, platform.Current()) {
+		out.Set("report_volatile", true)
+	}
+}
+
 func emitDispatchResult(agent, role, kind, composed, report, taskReport, status string, amend bool, last *jsonjs.Object, waitCode int, sd string, enterSent, resent bool) int {
 	if last != nil {
 		if v, ok := last.Get("status"); ok {
@@ -1296,6 +1308,7 @@ func emitDispatchResult(agent, role, kind, composed, report, taskReport, status 
 		}
 	}
 	out := jsonjs.O("wait_status", status, "agent", agent, "role", role, "kind", kind, "composed_prompt", composed, "report", report, "task_report", taskReport)
+	markReportVolatile(out, report, sd)
 	settled := ""
 	reportPath := report
 	if last != nil {
