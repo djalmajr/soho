@@ -364,6 +364,10 @@ func ResolveSpawnEffort(role, lane, kind string, kindLayer int, ctx *core.Config
 			effort = core.FmGet(file, "effort")
 		}
 	}
+	return clampResolvedEffort(effort, kind, model, ctx, env)
+}
+
+func clampResolvedEffort(effort, kind, model string, ctx *core.Config, env platform.Env) string {
 	if text.HasWord(strings.Join(core.EffortLadder, " "), effort) {
 		effort = kinds.ClampTo(kinds.ClampTo(effort, kinds.KindEffortCeiling(kind)), core.Cfg(ctx, "max_effort", "", env))
 		if kind == "codex" {
@@ -371,6 +375,34 @@ func ResolveSpawnEffort(role, lane, kind string, kindLayer int, ctx *core.Config
 		}
 	}
 	return effort
+}
+
+// LaneRoleEffortConflict compares a lane session's effective effort with an
+// explicit role request, excluding kind defaults and applying spawn's ceilings.
+// Callers first establish that the effort came from the lane, rather than a flag.
+func LaneRoleEffortConflict(role, kind, model, effective string, ctx *core.Config, env platform.Env, cwd string) (requested, source string) {
+	requested = core.Cfg(ctx, "role_"+strings.ReplaceAll(role, "-", "_")+"_effort", "", env)
+	source = "role." + role + ".effort"
+	if requested == "" {
+		source = "role file"
+		if file := core.RoleFile(role, env, cwd); file != "" {
+			requested = core.FmGet(file, "effort")
+		}
+	}
+	requested = clampResolvedEffort(requested, kind, model, ctx, env)
+	if requested == "" || requested == clampResolvedEffort(effective, kind, model, ctx, env) {
+		return "", ""
+	}
+	return requested, source
+}
+
+func warnLaneRoleEffort(name, role, lane, kind, model, effective string, fromLane bool, ctx *core.Config, env platform.Env, cwd string) {
+	if !fromLane || lane == "" {
+		return
+	}
+	if requested, source := LaneRoleEffortConflict(role, kind, model, effective, ctx, env, cwd); requested != "" {
+		Warn(fmt.Sprintf("spawn: '%s' runs %s at the lane's effort %s; the role asks for %s (%s) — pass --effort %s or set lane.%s.effort", name, role, effective, requested, source, requested, lane), ctx, env, "spawn")
+	}
 }
 
 func ResumeArg(kind string, args []string) string {
@@ -1074,6 +1106,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 				renamedTo = o.name
 			}
 			gateReuse(name, o.role, actual, ctx, env, cwd)
+			warnLaneRoleEffort(name, o.role, lane, actual, fieldAt(f, 8), fieldAt(f, 14), strings.HasPrefix(res.EffortFrom, "lane "), ctx, env, cwd)
 			EmitReuse(name, o.role, actual, ctx, env, cwd)
 			sameTreeEditors(name, o.role, fieldAt(f, 6), sd, env, cwd, ctx)
 			warnMsg := fmt.Sprintf("reusing idle lane '%s' worker '%s' as %s; existing session context is retained", lane, selected, o.role)
@@ -1163,6 +1196,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			_, _ = fmt.Fprintf(platform.Stderr, "soho: spawn: the new worker is '%s' ('%s' is already live); dispatch to '%s'\n", o.name, base, o.name)
 		}
 	}
+	warnLaneRoleEffort(o.name, o.role, lane, kind, o.model, o.effort, strings.HasPrefix(res.EffortFrom, "lane "), ctx, env, cwd)
 	native := ConfigNativeArgs(kind, lane, o.role, ctx, env, cwd, func(key, own string) {
 		if own == "" {
 			own = "?"
