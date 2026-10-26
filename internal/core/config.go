@@ -80,7 +80,7 @@ var ConfigScalarKeys = []string{
 	"multi_role", "panes", "lanes", "pane_mode", "flex_extra", "flex_roles",
 	"worker_context", "brief_lint", "brief_lint_aliases", "brief_lint_placeholders", "approvals",
 	"auto_approve", "max_auto_approvals", "max_effort",
-	"settled_grace", "report_working_max", "spawn_timeout", "dispatch_timeout", "compact_timeout", "provider_retries",
+	"settled_grace", "report_working_max", "trust_cwd", "spawn_timeout", "dispatch_timeout", "compact_timeout", "provider_retries",
 	"provider_retry_delay", "provider_capacity_texts", "provider_error_texts",
 	"prompt_check_seconds", "prompt_settle_seconds", "stuck_warn_minutes", "context_warn_percent", "state_dir",
 	"report_language", "notify", "feedback", "feedback_repo", "feedback_dir", "feedback_to",
@@ -323,6 +323,14 @@ func HooksReviewModeOk(value string) bool {
 	return value == "trust" || value == "block"
 }
 
+// TrustCwdMode fails closed on invalid config or environment values.
+func TrustCwdMode(ctx *Config, env platform.Env) string {
+	if Cfg(ctx, "trust_cwd", "on", env) == "on" {
+		return "on"
+	}
+	return "off"
+}
+
 // HooksReviewMode resolves the hooks_review policy (DJA-434): trust by
 // default — spawn, dispatch and send approve codex's "Hooks need review"
 // screen — or block, which leaves it to the operator. The
@@ -428,7 +436,7 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return value == "ask" || value == "edits" || value == "auto" || value == "full" || value == "unsandboxed"
 	case key == "max_workers" || key == "provider_retries" || key == "provider_retry_delay" || key == "prompt_check_seconds" || key == "prompt_settle_seconds" || key == "stuck_warn_minutes" || key == "pressure_disk_free_percent" || key == "pressure_swap_percent" || key == "pressure_refuse_disk_free_percent" || key == "pressure_refuse_swap_percent" || key == "footprint_warn_gb":
 		return decimalRE.MatchString(value)
-	case key == "multi_role" || key == "reuse_workers" || key == "lanes":
+	case key == "multi_role" || key == "reuse_workers" || key == "lanes" || key == "trust_cwd":
 		return value == "on" || value == "off"
 	case key == "setup_target":
 		return value == "canonical" || value == "local"
