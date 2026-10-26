@@ -6,7 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 )
@@ -66,11 +68,38 @@ func validPointer(pointer *jsonjs.Object) bool {
 
 // WriteTaskReportPointer atomically writes pointer as JavaScript-compatible JSON.
 func WriteTaskReportPointer(sd, agent string, pointer any) error {
+	// Pane is optional origin metadata; layout changes do not invalidate it.
+	if obj, ok := pointer.(*jsonjs.Object); ok {
+		if _, present := obj.Get("pane"); !present {
+			if fields := strings.Split(core.RosterLine(sd, agent), "\t"); len(fields) > 1 && fields[1] != "" {
+				obj.Set("pane", fields[1])
+			}
+		}
+	}
 	content := jsonjs.Stringify(pointer)
 	if content == "" {
 		return errors.New("taskreport: pointer is not JSON-serializable")
 	}
 	return platform.AtomicWrite(TaskReportPointerPath(sd, agent), content+"\n")
+}
+
+// RetireTaskReportPointer ends the active task while retaining its closure
+// evidence for legacy sidecars. Repeating retirement leaves history unchanged.
+func RetireTaskReportPointer(sd, agent string) error {
+	pointer := ReadTaskReportPointer(sd, agent)
+	if pointer == nil {
+		return nil
+	}
+	currentValue, _ := pointer.Get("current")
+	current := currentValue.(string)
+	if current == "" {
+		return nil
+	}
+	historyValue, _ := pointer.Get("history")
+	history := append(historyValue.([]any), current)
+	pointer.Set("history", history)
+	pointer.Set("current", "")
+	return WriteTaskReportPointer(sd, agent, pointer)
 }
 
 func readNonEmpty(file string) []byte {
@@ -91,6 +120,11 @@ func SyncTaskReport(sd, agent string) (string, error) {
 	currentValue, _ := pointer.Get("current")
 	stable := stableValue.(string)
 	current := currentValue.(string)
+	if current == "" {
+		// A retired pointer (release, reopen, fresh spawn) has no open task:
+		// the stable copy of its last report stays as it is.
+		return "", nil
+	}
 	content := readNonEmpty(current)
 	if content == nil {
 		mirror := filepath.Join(sd, "reports", filepath.Base(current))

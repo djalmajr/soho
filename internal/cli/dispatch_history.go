@@ -125,6 +125,9 @@ func findDispatchDuplicate(sd, agent, briefSHA string, amend bool) *dispatchDupl
 			current = s
 		}
 	}
+	if current == "" {
+		return nil
+	}
 	members := []string{}
 	if v, ok := pointer.Get("history"); ok {
 		if items, ok := v.([]any); ok {

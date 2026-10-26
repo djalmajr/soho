@@ -14,6 +14,7 @@ import (
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/layout"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/taskreport"
 )
 
 func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
@@ -94,6 +95,9 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 		core.PaneTaskTitle(sd, agent, nil, env)
 	}
 
+	if err := taskreport.RetireTaskReportPointer(sd, agent); err != nil {
+		core.DieFriction("release: could not retire task pointer: "+err.Error(), 4, frictionLogPath, "release")
+	}
 	core.RosterRemove(sd, agent)
 	releaseCopies(sd, agent, keepCopies, env, cwd)
 	releaseProcs(sd, agent, keepProcs, env)

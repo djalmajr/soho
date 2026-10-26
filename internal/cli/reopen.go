@@ -83,6 +83,8 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	platform.Stdout = releaseDiscardWriter{}
 	defer func() { platform.Stdout = oldOut }()
 	code := cmdRelease(releaseArgs, ctx, env, cwd)
+	// Successful release retires the task pointer before the replacement
+	// starts; spawn also retires legacy pointers on every new-agent path.
 	platform.Stdout = oldOut
 	if code != 0 {
 		return code
