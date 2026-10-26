@@ -936,7 +936,7 @@ func TestRetirementDispatchContract(t *testing.T) {
 			},
 			stepEnv: []map[string]string{{"SOHO_BRIEF_LINT": "off"}},
 			seed: func(f *retirementFixture) {
-				retireWriteRoster(t, f, retireR8+"worker\tp1\tcodex\timplementer\topenai\t1\t/work\tnow\n")
+				retireWriteRoster(t, f, retireR8+"worker\tp1\tcodex\timplementer\topenai\t1\t"+t.TempDir()+"\tnow\n")
 				writeBrief(f, "brief.md", retireBrief)
 			},
 			role: "implementer", agent: "worker", brief: retireBrief,
@@ -959,9 +959,10 @@ func TestRetirementDispatchContract(t *testing.T) {
 			},
 			stepEnv: []map[string]string{{}, {}, {"SOHO_BRIEF_LINT": "strict"}, {}},
 			seed: func(f *retirementFixture) {
+				work := t.TempDir()
 				retireWriteRoster(t, f, retireR11+
-					"rev\tp9\tcodex\treviewer\topenai\t1\t/work\tnow\tgpt-5\ttask\treviewer\n"+
-					"ex\tp1\tcodex\tscouter\topenai\t1\t/work\tnow\tgpt-5\tfull\timplementer,scouter\n")
+					"rev\tp9\tcodex\treviewer\topenai\t1\t"+work+"\tnow\tgpt-5\ttask\treviewer\n"+
+					"ex\tp1\tcodex\tscouter\topenai\t1\t"+work+"\tnow\tgpt-5\tfull\timplementer,scouter\n")
 				writeBrief(f, "brief.md", retireBriefMR)
 				writeBrief(f, "full.md", retireFullBrief)
 			},
@@ -976,7 +977,7 @@ func TestRetirementDispatchContract(t *testing.T) {
 			},
 			stepEnv: []map[string]string{{"SOHO_BRIEF_LINT": "off"}},
 			seed: func(f *retirementFixture) {
-				retireWriteRoster(t, f, retireR11+"res\tp3\tgrok\tresearcher\txai\t1\t/work\tnow\tgrok-4.7\task\tresearcher\n")
+				retireWriteRoster(t, f, retireR11+"res\tp3\tgrok\tresearcher\txai\t1\t"+t.TempDir()+"\tnow\tgrok-4.7\task\tresearcher\n")
 				writeBrief(f, "brief.md", retireBriefMR)
 			},
 			role: "researcher", agent: "res", brief: retireBriefMR,

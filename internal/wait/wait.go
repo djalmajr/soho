@@ -958,7 +958,12 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				// shows why (DJA-434: codex's hooks review screen took the
 				// brief's Enter).
 				visible := herdr.AgentRead(env, agent, "visible", nil)
-				jsonLine(jsonjs.O("agent", agent, "status", "settled-no-report", "report", report, "screen", lastNonEmpty(visible, 20)))
+				line := jsonjs.O("agent", agent, "status", "settled-no-report", "report", report, "screen", lastNonEmpty(visible, 20))
+				workerCwd := field(strings.Split(core.RosterLine(sd, agent), "\t"), 6)
+				if WorkerCwdGone(workerCwd) {
+					line.Set("cause", "; its working directory "+workerCwd+" no longer exists")
+				}
+				jsonLine(line)
 				if field(strings.Split(core.RosterLine(sd, agent), "\t"), 2) == "codex" && codexhooks.IsReview(visible) {
 					sendWarning(fmt.Sprintf("agent '%s' is on codex's hooks review screen; it never took the brief. With hooks_review=trust (now %s) the next dispatch approves the hooks first: dispatch the brief again (soho dispatch %s <brief> --resend). With hooks_review=block nothing is typed into it: answer it in the pane yourself (2. Trust all and continue), then dispatch again.", agent, core.HooksReviewMode(ctx, env), agent))
 				}
@@ -1382,4 +1387,16 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		panic(value)
 	}()
 	return WaitFor(agents, sd, ctx, env, timeout, any, cwd)
+}
+
+// WorkerCwdStat is the filesystem boundary for cwd checks, injectable in tests.
+var WorkerCwdStat = os.Stat
+
+// WorkerCwdGone confirms absence or a non-directory; unreadable is not gone.
+func WorkerCwdGone(cwd string) bool {
+	if cwd == "" {
+		return false
+	}
+	info, err := WorkerCwdStat(cwd)
+	return os.IsNotExist(err) || (err == nil && !info.IsDir())
 }

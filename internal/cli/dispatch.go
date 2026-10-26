@@ -129,6 +129,10 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	if line == "" {
 		core.DieFriction(fmt.Sprintf("agent '%s' is not in this skill's roster (spawn it first, or pass a name you spawned)", agent), 3, frictionLogPath, "dispatch")
 	}
+	rosterFields := strings.Split(line, "\t")
+	if len(rosterFields) > 6 && waitpkg.WorkerCwdGone(rosterFields[6]) {
+		core.DieFriction(fmt.Sprintf("dispatch: '%s' runs in %s, which no longer exists; nothing was sent. Release it with --close and spawn it again in an existing directory", agent, rosterFields[6]), 4, frictionLogPath, "dispatch")
+	}
 	if amend {
 		if _, err := os.Stat(filepath.Join(sd, "last-report-"+agent)); err != nil {
 			core.DieFriction(fmt.Sprintf("dispatch: --amend needs an earlier dispatch to '%s' (nothing to amend)", agent), 2, frictionLogPath, "dispatch")
