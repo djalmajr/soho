@@ -80,7 +80,9 @@ func TestCompactCodexWindowless(t *testing.T) {
 			f := newCompactFixture(t, "codex", rules)
 			compactLowContextEnv(t, f.env)
 			t.Chdir(f.root)
-			code, out, stderr := f.run(t, "compact", "worker", "--timeout", "500")
+			// --timeout is also a real-time budget; the fake clock ends the wait,
+			// so a slow host (Windows with -race) must not exhaust it first.
+			code, out, stderr := f.run(t, "compact", "worker", "--timeout", "5000")
 			value := compactJSON(t, out)
 			if code != tc.code || value["status"] != tc.status {
 				t.Fatalf("state=%s base=%d exit=%d want=%d stdout=%q stderr=%q", tc.state, tc.base, code, tc.code, out, stderr)
