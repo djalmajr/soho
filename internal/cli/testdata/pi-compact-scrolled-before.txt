@@ -1,0 +1,41 @@
+  227 - Renderizar `Section::Block` "Usage credits" em `anthropic_sections` (antes de            │
+ `push_reset_credits`, panels.rs:929) + linhas de tooltip após o bloco Extra usage               │
+ (render.rs:511-544); `usage --json` recebe via `ReportSection::Block` (report.rs:201).          │
+  228 - Linhas (inglês), só com valor real: `balance: $12.34` / `auto-reload: on|off` / `spent   │
+ this month: $1.20 of $50.00` (sem "of" sem cap) / nota de status reusing `status_note()`;       │
+ nenhuma linha possível → sem bloco (estado observado hoje).                                     │
+  229 - Com `spend` presente, suprimir a métrica "Extra usage" (panels.rs:899-928,               │
+ render.rs:511-544) — mesmos used/limit; `extra_usage` só como fallback quando `spend` ausente.  │
+  230 - Fixtures: bloco completo com balance nos dois shapes; payload observado verbatim (sem    │
+ seção); `spend` ausente/`null`; `spend` malformado nunca quebra a resposta; `fmt_minor` com     │
+ exponent 0 e 2.                                                                                 │
+      ...                                                                                        │
+                                                                                                 │
+                                                                                                 │
+ The report has been created. Doing a final consistency check on the line count of the
+ "Recomendação" section (must be 15 lines or fewer):
+
+ ```
+   ## Recomendação
+
+   - Parse de `spend` ... (1)
+   - Levantar em `AnthropicSnapshot.spend` ... (2)
+   - Renderizar `Section::Block` ... (3)
+   - Linhas (inglês), só com valor real ... (4)
+   - Com `spend` presente ... (5)
+   - Fixtures: ... (6)
+   - Alternativas descartadas: ... (7)
+ ```
+
+ 7 content lines + header. No problem.
+
+ Now, I'll reply with the exact path of the report and nothing else.
+
+ /project/.soho/w96/reports/build-10-20261026T121523.md
+
+──────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────
+~/project (main)
+↑288k ↓46k R4.7M CH99.8% 57.1%/262k (auto)                             model • high
+
