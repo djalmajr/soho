@@ -324,6 +324,7 @@ caller_check=refuse
 # spawn ends blocked_at_startup (exit 7), dispatch blocked (exit 7), send
 # refused as a dialog (exit 17). An invalid value counts as block. Codex only.
 hooks_review=trust
+trust_cwd=on
 
 # Worker-to-worker messages: off (default) | policy. With policy, named
 # directional rules decide which worker may send which message type to which

@@ -400,6 +400,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	if hr := core.Cfg(ctx, "hooks_review", "trust", env); !core.HooksReviewModeOk(hr) {
 		s.Warning(fmt.Sprintf("config: hooks_review='%s' is not trust|block (it applies as block)", hr))
 	}
+	trustCwdCheck(ctx, env, s)
 	capRaw := core.Cfg(ctx, "split_max_panes", "4", env)
 	cap := layout.SplitCap(ctx, env)
 	pcsRaw := core.Cfg(ctx, "pane_columns", "", env)
@@ -1382,4 +1383,16 @@ func settingsDoctorHook(file string) string {
 		return "native"
 	}
 	return ""
+}
+
+func trustCwdCheck(ctx *core.Config, env platform.Env, s *Say) {
+	raw := core.Cfg(ctx, "trust_cwd", "on", env)
+	if raw != "on" && raw != "off" {
+		s.Warning(fmt.Sprintf("config: trust_cwd='%s' is not on|off (it applies as off)", raw))
+	}
+	description := "codex workers trust their repository root for the session; set trust_cwd=off to keep codex's folder dialog"
+	if core.TrustCwdMode(ctx, env) == "off" {
+		description = "codex workers keep codex's folder dialog"
+	}
+	s.Ok(fmt.Sprintf("trust_cwd: %s (%s) [%s]", core.TrustCwdMode(ctx, env), description, core.CfgSource(ctx, "trust_cwd", env)))
 }

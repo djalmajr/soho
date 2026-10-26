@@ -1199,6 +1199,14 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	} else {
 		args = append(args, mcpArgs...)
 	}
+	if kind == "codex" && core.TrustCwdMode(ctx, env) == "on" {
+		root, reason := trustRootEnv(o.cwd, env, trustOwned)
+		if reason == "" {
+			args = append(args, "-c", trustCwdArgument(root))
+		} else {
+			_, _ = fmt.Fprintf(platform.Stderr, "spawn: trust_cwd: %s; '%s' starts without a trust override (codex may ask to trust the folder)\n", reason, o.name)
+		}
+	}
 	if native != "" {
 		args = append(args, strings.Fields(native)...)
 	}
