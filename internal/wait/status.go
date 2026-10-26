@@ -227,7 +227,7 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 					}
 				} else {
 					p = provider.ProviderDetectTexts(orig, herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40)), core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
-					if p != nil && p.Status == "provider-error" && p.Auth {
+					if p != nil && ((p.Status == "provider-error" && p.Auth) || p.Status == "provider-refusal" || p.Cause == provider.LostConnectionCause) {
 						if WaitRank(14) > WaitRank(rc) {
 							rc = 14
 						}
@@ -265,6 +265,10 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		activityChanged := false
 		if state == "working" {
 			screen := herdr.AgentRead(env, agent, "visible", nil)
+			p = provider.LostConnection(screen)
+			if p != nil && WaitRank(14) > WaitRank(rc) {
+				rc = 14
+			}
 			age, changed := ActivityAgeSeconds(sd, agent, screen, platform.Now().Unix())
 			if age != nil {
 				activityS = *age
@@ -283,7 +287,16 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		if quota {
 			statusJson(agent, "quota", report, append([]any{"lane", lane, "kind", kind, "model", model, "match", match, "renewal", renewal}, ageFields...)...)
 		} else if p != nil {
-			statusJson(agent, p.Status, report, append([]any{"cause", p.Cause}, ageFields...)...)
+			if p.Status == "provider-refusal" || p.Cause == provider.LostConnectionCause {
+				fields := strings.Split(core.RosterLine(sd, agent), "\t")
+				lane = field(fields, 11)
+				if lane == "" {
+					lane = core.LaneOfRole(ctx, field(fields, 3), env)
+				}
+				statusJson(agent, p.Status, report, append([]any{"cause", p.Cause, "lane", lane, "kind", field(fields, 2), "model", field(fields, 8)}, ageFields...)...)
+			} else {
+				statusJson(agent, p.Status, report, append([]any{"cause", p.Cause}, ageFields...)...)
+			}
 		} else if question != "" {
 			statusJson(agent, "question", report, append([]any{"question", question}, ageFields...)...)
 		} else {

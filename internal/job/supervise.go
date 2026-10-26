@@ -992,7 +992,7 @@ func (s *Supervisor) checkOrchestrator() (int, bool, error) {
 		if code, done, err := s.blockOrchestrator(st, st.Orchestrator, "quota"); err != nil || done {
 			return code, done, err
 		}
-	case "provider-error", "capacity":
+	case "provider-error", "provider-refusal", "capacity":
 		if code, done, err := s.blockOrchestrator(st, st.Orchestrator, "provider_error"); err != nil || done {
 			return code, done, err
 		}
@@ -1016,7 +1016,7 @@ func (s *Supervisor) checkOrchestrator() (int, bool, error) {
 			return ExitFailed, true, nil
 		}
 		return 0, false, nil
-	case "working", "no-report-yet", "idle", "compacting", "blocked", "question", "quota", "provider-error", "capacity":
+	case "working", "no-report-yet", "idle", "compacting", "blocked", "question", "quota", "provider-error", "provider-refusal", "capacity":
 		return 0, false, nil
 	default:
 		s.frictionUnknown(state)
@@ -1069,7 +1069,7 @@ func (s *Supervisor) blockOrchestrator(st State, name, motivo string) (int, bool
 var aliveOrchestratorState = map[string]bool{
 	"working": true, "no-report-yet": true, "idle": true, "compacting": true,
 	"blocked": true, "question": true, "quota": true,
-	"provider-error": true, "capacity": true,
+	"provider-error": true, "provider-refusal": true, "capacity": true,
 }
 
 // orchestratorMotivos are the stored motivos this function sets on a block;

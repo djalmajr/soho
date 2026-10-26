@@ -638,9 +638,9 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 			// check does not advance observation before the composer retry.
 			if !nonEmpty(report) {
 				d := core.ProviderDetectTexts(arrivalState, screen, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
-				if d != nil && core.IsModelPlanError(d.Cause) {
+				if d != nil && (core.IsModelPlanError(d.Cause) || d.Status == "provider-refusal" || d.Cause == provider.LostConnectionCause) {
 					recordDispatchTask(sd, agent, role, brief, amend, env)
-					return emitDispatchResult(agent, role, kind, composed, report, taskReport, "provider-error", amend, jsonjs.O("status", "provider-error", "lane", lane, "model", model, "cause", d.Cause), 14, sd, false, false)
+					return emitDispatchResult(agent, role, kind, composed, report, taskReport, d.Status, amend, jsonjs.O("status", d.Status, "lane", lane, "model", model, "cause", d.Cause), 14, sd, false, false)
 				}
 			}
 			if firstEnterReady(kind, screen, composed) {
@@ -1362,11 +1362,19 @@ func emitDispatchResult(agent, role, kind, composed, report, taskReport, status 
 		return 11
 	case "provider-error":
 		cause, _ := out.Get("cause")
+		if fmt.Sprint(cause) == provider.LostConnectionCause {
+			core.Warn(fmt.Sprintf("agent '%s': %v", agent, cause), frictionLogPath, "dispatch")
+			return 14
+		}
 		if fmt.Sprint(cause) == provider.HarnessModuleCause {
 			core.Warn(fmt.Sprintf("agent '%s' stopped on a harness error: its CLI could not load one of its own files (Error: Cannot find module), often after the CLI was updated while it ran. It is idle without a report; restart it (release --close, then spawn --fresh) and resend the brief.", agent), frictionLogPath, "dispatch")
 			return 14
 		}
 		core.Warn(fmt.Sprintf("agent '%s' stopped on a provider error: %v. It is idle without a report; ask the user whether to resend the brief, switch the assistant, or wait.", agent, cause), frictionLogPath, "dispatch")
+		return 14
+	case "provider-refusal":
+		cause, _ := out.Get("cause")
+		core.Warn(fmt.Sprintf("agent '%s' stopped on a provider content filter: %v; switch the reviewer's assistant; resending does not help", agent, cause), frictionLogPath, "dispatch")
 		return 14
 	case "capacity":
 		cause, _ := out.Get("cause")

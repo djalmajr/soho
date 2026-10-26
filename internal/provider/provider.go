@@ -67,6 +67,9 @@ func ProviderDetect(state, screen string) *Detection {
 // provider-error stop even without the Error prefix. The existing rules win;
 // an empty text changes nothing.
 func ProviderDetectTexts(state, screen, capacityTexts, errorTexts string) *Detection {
+	if d := LostConnection(screen); d != nil {
+		return d
+	}
 	if state == "working" || screen == "" {
 		return nil
 	}
@@ -85,6 +88,9 @@ func ProviderDetectTexts(state, screen, capacityTexts, errorTexts string) *Detec
 	for i := len(nonEmpty) - 1; i >= 0; i-- {
 		line := nonEmpty[i]
 		lowerLine := text.ASCIILower(line)
+		if strings.HasPrefix(configuredTextLine(line), "we take extra care with some cybersecurity requests") {
+			return &Detection{Status: "provider-refusal", Cause: text.SanitizeCause(text.RedactSecrets(line))}
+		}
 		if retryingRE.MatchString(lowerLine) || QuotaLineIsCode(line) {
 			continue
 		}
@@ -112,6 +118,29 @@ func ProviderDetectTexts(state, screen, capacityTexts, errorTexts string) *Detec
 		}
 		if equalsText(stripped, errTexts) {
 			return &Detection{Status: "provider-error", Cause: text.SanitizeCause(text.RedactSecrets(line))}
+		}
+	}
+	return nil
+}
+
+const LostConnectionCause = "codex lost its server connection; run soho reopen <agent> --force and dispatch the task again with a resume note (the worktree keeps its diff)"
+
+// LostConnection detects only a terminal reconnect failure, including while working.
+// Other provider rules must retain their non-working guard.
+func LostConnection(screen string) *Detection {
+	lines := strings.Split(strings.ReplaceAll(screen, "\r\n", "\n"), "\n")
+	count := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isJSEmpty(lines[i]) {
+			continue
+		}
+		count++
+		if count > 10 {
+			break
+		}
+		line := configuredTextLine(lines[i])
+		if strings.HasPrefix(line, "server connection could not be restored") || strings.HasPrefix(line, "automatic reconnect could not restore this session") {
+			return &Detection{Status: "provider-error", Cause: LostConnectionCause}
 		}
 	}
 	return nil
