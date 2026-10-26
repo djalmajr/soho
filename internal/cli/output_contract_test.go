@@ -65,8 +65,12 @@ func assertRetirementJSON(t *testing.T, output string, documents []map[string]an
 		} else {
 			for _, key := range []string{"composed_prompt", "report", "task_report"} {
 				value, ok := got[key].(string)
-				if !ok || !strings.Contains(value, "/reports/") {
-					t.Fatalf("dispatch %s=%v: expected report-directory path", key, got[key])
+				wantDir := "/reports/"
+				if key == "composed_prompt" && got["report_volatile"] != true {
+					wantDir = "/briefs/"
+				}
+				if !ok || !strings.Contains(value, wantDir) {
+					t.Fatalf("dispatch %s=%v: expected %s path", key, got[key], wantDir)
 				}
 			}
 		}

@@ -1,6 +1,7 @@
 package wait
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"math"
@@ -830,6 +831,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 		pending := []string{}
 		for _, agent := range remaining {
 			report := core.LastReport(sd, agent)
+			report = observeReport(sd, agent, report, ctx, env, cwd)
 			// An active collaboration owns the pane: the stale report is an
 			// artifact only, and the probe is skipped — no retry, no provider
 			// resume, no keys or prompts sent while the pane is idle.
@@ -1112,57 +1114,203 @@ func readQuotaFile(sd, agent string) (string, string) {
 	return field(parts, 0), field(parts, 1)
 }
 
-func mirrorReport(sd, agent, report string, ctx *core.Config, env platform.Env, cwd string) {
+// observeReport recovers the protected state mirror only when scratch is gone.
+// Observing an unfinished report never publishes a mirror.
+func observeReport(sd, agent, report string, ctx *core.Config, env platform.Env, cwd string) string {
+	dir := filepath.Dir(report)
+	if filepath.Base(dir) != "reports" || filepath.Base(filepath.Dir(filepath.Dir(dir))) != "soho" || dir == filepath.Join(sd, "reports") {
+		return report
+	}
+	if _, err := core.StatScratchReport(report); !errors.Is(err, os.ErrNotExist) {
+		return report
+	}
 	ws := core.WorkspaceID(ctx, env, cwd)
-	dir := core.ScratchReportsDir(env, ws)
-	if !strings.HasPrefix(report, dir+string(os.PathSeparator)) {
+	if filepath.Base(filepath.Dir(dir)) != ws {
+		return report
+	}
+	state, err := os.OpenRoot(sd)
+	if err != nil {
+		return report
+	}
+	defer state.Close()
+	reports, err := mirrorDirectory(state, "reports", false)
+	if err != nil {
+		return report
+	}
+	defer reports.Close()
+	name := filepath.Base(report)
+	if info, err := reports.Lstat(name); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+		uid := os.Getuid()
+		owner, known := core.ScratchOwnerOf(info)
+		if uid < 0 || (known && owner == uid) {
+			return filepath.Join(sd, "reports", name)
+		}
+	}
+	return report
+}
+
+// mirrorDirectory refuses final directory links before opening a confined root.
+func mirrorDirectory(state *os.Root, name string, create bool) (*os.Root, error) {
+	info, err := state.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) && create {
+		if err = state.Mkdir(name, 0777); err != nil && !os.IsExist(err) {
+			return nil, err
+		}
+		info, err = state.Lstat(name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%s is not a real directory; links are not followed", name)
+	}
+	if mirrorBeforeOpenDir != nil {
+		mirrorBeforeOpenDir(state, name)
+	}
+	dir, err := state.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	// The name may have been swapped for a link between the Lstat and the
+	// open: only the very directory that was checked is used.
+	opened, err := dir.Stat(".")
+	if err != nil || !os.SameFile(info, opened) {
+		_ = dir.Close()
+		return nil, fmt.Errorf("%s changed while it was being opened; links are not followed", name)
+	}
+	return dir, nil
+}
+
+// mirrorBeforeOpenDir lets a test act between the directory check and the
+// open; nil in production.
+var mirrorBeforeOpenDir func(state *os.Root, name string)
+
+// linkMirrorFile is the native no-replace publication operation. Tests can
+// interleave an operator writer at this boundary without replacing its result.
+var linkMirrorFile = (*os.Root).Link
+
+func publishMirror(dir *os.Root, name string, data []byte) error {
+	tmp := ".soho-mirror-" + rand.Text() + ".tmp"
+	file, err := dir.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer dir.Remove(tmp)
+	_, writeErr := file.Write(data)
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return linkMirrorFile(dir, tmp, name)
+}
+
+// mirrorReport publishes complete artifacts once, only after the caller settles.
+func mirrorReport(sd, agent, report string, ctx *core.Config, env platform.Env, cwd string) {
+	if core.Nowrite(env) {
 		return
 	}
-	// The scratch reports dir is read only when its three levels are
-	// directories private to this user (an own level open to the group or
-	// the others is narrowed; a missing one is nothing to read), and each
-	// file only when it is a regular file of this user, never through a
-	// link (DJA-443). A refusal is said on stderr, never taken for a
-	// missing report.
+	dir := filepath.Dir(report)
+	if filepath.Base(dir) != "reports" || filepath.Base(filepath.Dir(filepath.Dir(dir))) != "soho" || dir == filepath.Join(sd, "reports") {
+		return
+	}
+	ws := core.WorkspaceID(ctx, env, cwd)
+	scratch := core.ScratchReportsDir(env, ws)
+	if !strings.HasPrefix(report, scratch+string(os.PathSeparator)) {
+		return
+	}
 	if _, err := core.PrivateScratchReports(env, ws, core.ScratchFix); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			sendWarning("wait: the report of '" + agent + "' was refused and not copied to the state dir (" + err.Error() + ")")
 		}
 		return
 	}
-	base := filepath.Base(report)
-	stem := strings.TrimSuffix(base, filepath.Ext(base))
-	jobs := [][3]string{{report, filepath.Join(sd, "reports", base), ""}, {filepath.Join(filepath.Dir(report), stem+".brief.md"), filepath.Join(sd, "briefs", stem+".md"), ""}, {filepath.Join(filepath.Dir(report), stem+".dispatch.json"), filepath.Join(sd, "briefs", stem+".dispatch.json"), "optional"}}
-	for _, job := range jobs {
-		src, dst := job[0], job[1]
-		data, err := core.ReadScratchReport(src)
-		if job[2] != "" && errors.Is(err, os.ErrNotExist) {
-			continue
-		}
+	data, err := core.ReadScratchReport(report)
+	if err != nil {
 		var refused *core.ScratchRefusedError
 		if errors.As(err, &refused) {
-			if src == report {
-				sendWarning("wait: the report of '" + agent + "' was refused and not copied to the state dir (" + err.Error() + ")")
+			sendWarning("wait: the report of '" + agent + "' was refused and not copied to the state dir (" + err.Error() + ")")
+		} else {
+			sendWarning("mirror: could not copy " + filepath.Base(report) + " of '" + agent + "' to the state dir: " + err.Error())
+		}
+		return
+	}
+	if len(data) == 0 {
+		return
+	}
+	if err := os.MkdirAll(sd, 0777); err != nil {
+		return
+	}
+	state, err := os.OpenRoot(sd)
+	if err != nil {
+		return
+	}
+	defer state.Close()
+	reports, err := mirrorDirectory(state, "reports", true)
+	if err != nil {
+		sendWarning("mirror: could not use the state reports dir: " + err.Error())
+		return
+	}
+	dirs := map[string]*os.Root{"reports": reports}
+	defer func() {
+		for _, root := range dirs {
+			_ = root.Close()
+		}
+	}()
+	base := filepath.Base(report)
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	jobs := [][4]string{{report, "reports", base, ""}, {filepath.Join(dir, stem+".brief.md"), "briefs", stem + ".md", ""}, {filepath.Join(dir, stem+".dispatch.json"), "briefs", stem + ".dispatch.json", "optional"}}
+	for _, job := range jobs {
+		src, folder, name := job[0], job[1], job[2]
+		dst := filepath.Join(sd, folder, name)
+		body := data
+		if src != report {
+			body, err = core.ReadScratchReport(src)
+			if job[3] != "" && errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				var refused *core.ScratchRefusedError
+				if errors.As(err, &refused) {
+					sendWarning("mirror: refused " + filepath.Base(src) + " of '" + agent + "', not copied to the state dir (" + err.Error() + ")")
+				} else {
+					sendWarning("mirror: could not copy " + filepath.Base(src) + " of '" + agent + "' to the state dir: " + err.Error())
+				}
+				continue
+			}
+		}
+		target := dirs[folder]
+		if target == nil {
+			target, err = mirrorDirectory(state, folder, true)
+			if err != nil {
+				sendWarning("mirror: could not use state " + folder + ": " + err.Error())
+				continue
+			}
+			dirs[folder] = target
+		}
+		keep := func() {
+			if info, e := target.Lstat(name); e == nil && info.Mode().IsRegular() {
+				if existing, e := target.ReadFile(name); e == nil && string(existing) == string(body) {
+					return
+				}
+			}
+			sendWarning("kept " + dst + ": it differs from " + src + ", which was not copied over it")
+		}
+		if _, err := target.Lstat(name); err == nil {
+			keep()
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			sendWarning("mirror: could not inspect " + dst + ": " + err.Error())
+			continue
+		}
+		if err := publishMirror(target, name, body); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				keep()
 			} else {
-				sendWarning("mirror: refused " + filepath.Base(src) + " of '" + agent + "', not copied to the state dir (" + err.Error() + ")")
+				sendWarning("mirror: could not copy " + filepath.Base(src) + " of '" + agent + "' to the state dir: " + err.Error())
 			}
-			continue
-		}
-		if err != nil {
-			sendWarning("mirror: could not copy " + filepath.Base(src) + " of '" + agent + "' to the state dir: " + err.Error())
-			continue
-		}
-		if existing, e := os.ReadFile(dst); e == nil {
-			if string(existing) != string(data) {
-				sendWarning("kept " + dst + ": it differs from " + src + ", which was not copied over it")
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o777); err == nil {
-			err = os.WriteFile(dst, data, 0o666)
-		}
-		if err != nil {
-			sendWarning("mirror: could not copy " + filepath.Base(src) + " of '" + agent + "' to the state dir: " + err.Error())
 		}
 	}
 }

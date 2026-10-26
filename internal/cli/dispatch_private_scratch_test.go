@@ -50,7 +50,7 @@ func newScratchDispatchFixture(t *testing.T) *scratchDispatchFixture {
 	if err := os.WriteFile(f.brief, []byte("# Goal\n\nrun the slice\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	roster := "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\nworker\tp1\tclaude\timplementer\tanthropic\t\t/work\tnow\tmodel-x\t\timplementer\tbuild\n"
+	roster := "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\nworker\tp1\tcodex\timplementer\tanthropic\t\t/work\tnow\tmodel-x\tfull\timplementer\tbuild\n"
 	if err := os.WriteFile(filepath.Join(f.state, "ws", "agents.tsv"), []byte(roster), 0o600); err != nil {
 		t.Fatal(err)
 	}

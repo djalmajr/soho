@@ -136,6 +136,7 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	workspaceEnv := derivedWorkspaceEnv(ctx, env, cwd)
 	for _, agent := range argv {
 		report := core.LastReport(sd, agent)
+		report = observeReport(sd, agent, report, ctx, env, cwd)
 		// F11: a recorded compact phase outranks every other state, including a
 		// stale complete report: while its marker stands, the brief was not
 		// sent, so no report for it can exist. The marker is only read; an
@@ -171,6 +172,7 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		var p *provider.Detection
 		if reportNonEmpty(report) {
 			state = "done"
+			mirrorReport(sd, agent, report, ctx, env, cwd)
 		} else if core.RosterLine(sd, agent) == "" {
 			// D11: an agent outside this workspace's roster that Herdr knows —
 			// a local `agent get`, or the reference machine's, succeeds (find

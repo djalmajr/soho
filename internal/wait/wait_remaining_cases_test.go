@@ -141,17 +141,21 @@ func TestWaitRemainingMirrorAndStuckSinceCases(t *testing.T) {
 			t.Fatalf("mirror=%q err=%v", data, err)
 		}
 	})
-	t.Run("wait: the mirror keeps a different existing state file and warns", func(t *testing.T) { // JS: "wait: the mirror keeps a different existing state file and warns"
-		// Mutation captured: overwriting a conflicting state copy destroys the operator's preserved report.
+	t.Run("wait: a mirror once written is never overwritten", func(t *testing.T) {
+		// DJA-538 round 4: a settled mirror remains the original snapshot.
 		ctx, env, state, srcDir, dstDir := newMirror(t)
 		if err := os.MkdirAll(dstDir, 0o700); err != nil {
 			t.Fatal(err)
 		}
 		src, dst := filepath.Join(srcDir, "worker-report.md"), filepath.Join(dstDir, "worker-report.md")
-		for path, body := range map[string]string{src: "new report\n", dst: "preserved report\n"} {
+		for path, body := range map[string]string{src: "preserved report\n", filepath.Join(srcDir, "worker-report.brief.md"): "brief\n"} {
 			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 				t.Fatal(err)
 			}
+		}
+		mirrorReport(state, "worker", src, ctx, env, "")
+		if err := os.WriteFile(src, []byte("new report\n"), 0o600); err != nil {
+			t.Fatal(err)
 		}
 		var stderr strings.Builder
 		oldErr := platform.Stderr
