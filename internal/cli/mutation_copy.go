@@ -68,6 +68,15 @@ func runMutationCopy(args []string, env platform.Env) int {
 		}
 		return mutationCopyRefuse("destination", destGiven, reason)
 	}
+	// Refuse a repository destination before copying files, creating links
+	// or writing an origin marker. Never remove a caller-owned directory.
+	if detail := mutationRepositoryRefusal(dest, source, env); detail != "" {
+		if destCreated {
+			_ = os.RemoveAll(dest)
+		}
+		_, _ = fmt.Fprintln(platform.Stderr, "fail copy-outside-repository: "+detail)
+		return 1
+	}
 	// The origin marker goes beside the copies this command creates in
 	// TMPDIR (no --dest: gc never scans the other paths). It is written
 	// right after the destination exists and before the file copy, so an
