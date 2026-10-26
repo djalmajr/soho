@@ -399,7 +399,7 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	if instrAfter == nil {
 		platform.DieFriction(fmt.Sprintf("setup --plan: could not produce the instruction block for %s (setup would refuse it and leave the file untouched)", target), 4)
 	}
-	settingsFile := filepath.Join(root, ".claude", "settings.json")
+	settingsFile := claudeSettingsPath(root, modeLocal)
 	var settingsBefore *string
 	settingsRaw, e := platform.ReadTextFile(settingsFile)
 	if e == nil {
@@ -426,6 +426,16 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	}
 	if hooks {
 		_, _ = io.WriteString(platform.Stdout, planFileDiff(settingsFile, stringValue(settingsBefore), *settingsAfter))
+		if modeLocal {
+			shared, after := sharedHooksMigration(root)
+			if after != nil {
+				if warning := sharedHooksTrackingWarning(trackingStatus(root, ".claude/settings.json", env)); warning != "" {
+					_, _ = io.WriteString(platform.Stdout, "# "+warning+"\n")
+				} else {
+					_, _ = io.WriteString(platform.Stdout, planFileDiff(shared, readOrEmpty(shared), *after))
+				}
+			}
+		}
 	}
 	if modeLocal {
 		if localPlan != nil && localPlan.path != "" && localPlan.after != localPlan.before {
