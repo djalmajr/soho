@@ -253,7 +253,7 @@ func TestSetupDetectTM5PolicyCases(t *testing.T) {
 	})
 	t.Run(`// JS: "detectRoleKindsJson: frontmatter, config overrides per layer, first dir wins"`, func(t *testing.T) {
 		root, home, env, ctx := tm5DetectFixture(t)
-		roleDir := filepath.Join(root, ".agents", "herdr-roles")
+		roleDir := filepath.Join(root, ".agents", "soho-roles")
 		if err := os.MkdirAll(roleDir, 0o700); err != nil {
 			t.Fatal(err)
 		}

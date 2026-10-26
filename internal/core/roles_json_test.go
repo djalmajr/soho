@@ -35,7 +35,7 @@ func rolesTextRow(t *testing.T, line string) (name, kind, model, effort, mode, f
 	return
 }
 
-var rolesFromRE = regexp.MustCompile(`^kind: (.+); model: (.+); effort: (.+); file: (.+)$`)
+var rolesFromRE = regexp.MustCompile(`^source: (skill(?:\+append)?|project(?:\+append)?); kind: (.+); model: (.+); effort: (.+); file: (.+)$`)
 
 func TestCmdRolesJSONMatchesTheTextTable(t *testing.T) {
 	// A lane config with roles and a project role that no lane claims: the
@@ -44,7 +44,7 @@ func TestCmdRolesJSONMatchesTheTextTable(t *testing.T) {
 	env, repo := fixture(t)
 	conf := filepath.Join(repo, ".agents", "soho.conf")
 	write(t, conf, "lane.build.roles=designer,tasker\nlane.build.kind=pi\nlane.build.model=lane-model\nlane.build.effort=xhigh\n")
-	customFile := filepath.Join(repo, ".agents", "herdr-roles", "custom.md")
+	customFile := filepath.Join(repo, ".agents", "soho-roles", "custom.md")
 	write(t, customFile, "---\nmode: edit\n---\n")
 
 	textOut, textErr := capture(t, func() { CmdRoles(env, repo) })
@@ -85,7 +85,7 @@ func TestCmdRolesJSONMatchesTheTextTable(t *testing.T) {
 		t.Fatalf("roles JSON has %d roles, text table has %d rows:\n%s", len(arr), len(textRows), jsonOut)
 	}
 
-	wantFirst := `{"role":"custom","kind":"","model":"","effort":"","mode":"edit","lane":"","kind_from":"default","model_from":"default","effort_from":"default","file":` + jsonjs.Stringify(customFile) + `}`
+	wantFirst := `{"role":"custom","kind":"","model":"","effort":"","mode":"edit","lane":"","kind_from":"default","model_from":"default","effort_from":"default","file":` + jsonjs.Stringify(customFile) + `,"source":"project"}`
 	if !strings.Contains(jsonOut, wantFirst) {
 		t.Fatalf("first JSON role does not pin the key order and the empty values as \"\":\ngot  %s\nwant it to contain %s", jsonOut, wantFirst)
 	}
@@ -98,7 +98,7 @@ func TestCmdRolesJSONMatchesTheTextTable(t *testing.T) {
 		if !ok {
 			t.Fatalf("roles[%d] is %T, want object", i, entry)
 		}
-		if keys := role.Keys(); strings.Join(keys, ",") != "role,kind,model,effort,mode,lane,kind_from,model_from,effort_from,file" {
+		if keys := role.Keys(); strings.Join(keys, ",") != "role,kind,model,effort,mode,lane,kind_from,model_from,effort_from,file,source" {
 			t.Fatalf("roles[%d] key order = %v", i, keys)
 		}
 		name, kind, model, effort, mode, from := rolesTextRow(t, textRows[i])
@@ -123,9 +123,9 @@ func TestCmdRolesJSONMatchesTheTextTable(t *testing.T) {
 			t.Fatalf("roles[%d] diverges from the text row:\ngot   role=%q kind=%q model=%q effort=%q mode=%q\nwant role=%q kind=%q model=%q effort=%q mode=%q",
 				i, got("role"), got("kind"), got("model"), got("effort"), got("mode"), name, uncell(kind), uncell(model), uncell(effort), uncell(mode))
 		}
-		if got("kind_from") != fromFields[1] || got("model_from") != fromFields[2] || got("effort_from") != fromFields[3] || got("file") != fromFields[4] {
-			t.Fatalf("roles[%d] from fields diverge:\ngot   kind_from=%q model_from=%q effort_from=%q file=%q\nwant kind_from=%q model_from=%q effort_from=%q file=%q",
-				i, got("kind_from"), got("model_from"), got("effort_from"), got("file"), fromFields[1], fromFields[2], fromFields[3], fromFields[4])
+		if got("source") != fromFields[1] || got("kind_from") != fromFields[2] || got("model_from") != fromFields[3] || got("effort_from") != fromFields[4] || got("file") != fromFields[5] {
+			t.Fatalf("roles[%d] from fields diverge:\ngot   source=%q kind_from=%q model_from=%q effort_from=%q file=%q\nwant source=%q kind_from=%q model_from=%q effort_from=%q file=%q",
+				i, got("source"), got("kind_from"), got("model_from"), got("effort_from"), got("file"), fromFields[1], fromFields[2], fromFields[3], fromFields[4], fromFields[5])
 		}
 		wantLane := ""
 		if name == "designer" || name == "tasker" {

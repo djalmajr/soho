@@ -200,7 +200,7 @@ func TestTM9ConfigAndSessionCommands(t *testing.T) {
 	})
 	t.Run("roles command: table lists project roles first with the project file as source", func(t *testing.T) { // JS: "roles command: table lists project roles first with the project file as source"
 		env, cwd := tm9CommandFixture(t)
-		roleFile := filepath.Join(cwd, ".agents", "herdr-roles", "implementer.md")
+		roleFile := filepath.Join(cwd, ".agents", "soho-roles", "implementer.md")
 		if err := os.MkdirAll(filepath.Dir(roleFile), 0o700); err != nil {
 			t.Fatal(err)
 		}

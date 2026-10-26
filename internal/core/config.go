@@ -918,7 +918,7 @@ func DottedKeyName(key string, ctx *Config, env platform.Env, cwd string) string
 				}
 				for _, entry := range entries {
 					name := entry.Name()
-					if strings.HasSuffix(name, ".md") {
+					if strings.HasSuffix(name, ".md") && !strings.HasSuffix(name, ".append.md") {
 						role := strings.TrimSuffix(name, ".md")
 						norm := strings.ReplaceAll(role, "-", "_")
 						if _, exists := known[norm]; !exists {

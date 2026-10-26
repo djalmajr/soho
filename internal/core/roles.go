@@ -20,7 +20,7 @@ var repeatedSpacesRE = regexp.MustCompile(` +`)
 
 func RoleDirs(env platform.Env, cwd string) []string {
 	dirs := make([]string, 0, 3)
-	project := filepath.Join(platform.ProjectRoot(env, cwd), ".agents", "herdr-roles")
+	project := filepath.Join(platform.ProjectRoot(env, cwd), ".agents", "soho-roles")
 	if isDir(project) {
 		dirs = append(dirs, project)
 	}
@@ -34,6 +34,9 @@ func RoleDirs(env platform.Env, cwd string) []string {
 }
 
 func RoleFile(role string, env platform.Env, cwd string) string {
+	if strings.HasSuffix(role, ".append") {
+		return ""
+	}
 	for _, dir := range RoleDirs(env, cwd) {
 		file := filepath.Join(dir, role+".md")
 		if isFile(file) {
@@ -58,6 +61,9 @@ func isFile(path string) bool {
 }
 
 func FmGet(file, key string) string {
+	if strings.HasSuffix(file, ".append.md") {
+		return ""
+	}
 	text, err := platform.ReadTextFile(file)
 	if err != nil {
 		return ""
@@ -109,6 +115,46 @@ func RoleBody(file string) string {
 		}
 	}
 	return ""
+}
+
+// RoleBodyFor composes a resolved base and the project's body-only extension.
+// ComposePrompt may supply its already-resolved base, preserving its explicit
+// file contract. An absent base never turns an append into a standalone role.
+func RoleBodyFor(role string, env platform.Env, cwd string, base ...string) string {
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	file := ""
+	if len(base) > 0 {
+		file = base[0]
+	} else {
+		file = RoleFile(role, env, cwd)
+	}
+	if file == "" || !isFile(file) {
+		return ""
+	}
+	body := RoleBody(file)
+	appendFile := filepath.Join(platform.ProjectRoot(env, cwd), ".agents", "soho-roles", role+".append.md")
+	if !isFile(appendFile) {
+		return body
+	}
+	extension := RoleBody(appendFile)
+	if extension == "" {
+		return body
+	}
+	return strings.TrimRight(body, "\r\n") + "\n\n" + extension
+}
+
+func roleSource(role, file string, env platform.Env, cwd string) string {
+	project := filepath.Join(platform.ProjectRoot(env, cwd), ".agents", "soho-roles")
+	source := "skill"
+	if filepath.Clean(file) == filepath.Join(project, role+".md") {
+		source = "project"
+	}
+	if isFile(filepath.Join(project, role+".append.md")) {
+		source += "+append"
+	}
+	return source
 }
 
 func RoleIsEdit(role string, env platform.Env, cwd string) bool {
@@ -168,10 +214,11 @@ func stringsToAny(values []string) []any {
 // text order: the role dirs in priority order, the names sorted UTF16 per
 // dir, one entry per role name (the first dir wins).
 type roleTableRow struct {
-	Role string
-	File string
-	Res  RoleSettings
-	Mode string
+	Role   string
+	File   string
+	Res    RoleSettings
+	Mode   string
+	Source string
 }
 
 func collectRoles(env platform.Env, cwd string) []roleTableRow {
@@ -185,7 +232,7 @@ func collectRoles(env platform.Env, cwd string) []roleTableRow {
 		}
 		names := make([]string, 0, len(entries))
 		for _, entry := range entries {
-			if strings.HasSuffix(entry.Name(), ".md") {
+			if strings.HasSuffix(entry.Name(), ".md") && !strings.HasSuffix(entry.Name(), ".append.md") {
 				names = append(names, entry.Name())
 			}
 		}
@@ -200,7 +247,7 @@ func collectRoles(env platform.Env, cwd string) []roleTableRow {
 				continue
 			}
 			seen[role] = true
-			rows = append(rows, roleTableRow{Role: role, File: file, Res: ResolveRoleSettings(role, &ctx, env, cwd, RoleFlags{}), Mode: FmGet(file, "mode")})
+			rows = append(rows, roleTableRow{Role: role, File: file, Res: ResolveRoleSettings(role, &ctx, env, cwd, RoleFlags{}), Mode: FmGet(file, "mode"), Source: roleSource(role, file, env, cwd)})
 		}
 	}
 	return rows
@@ -216,7 +263,7 @@ func CmdRoles(env platform.Env, cwd string) {
 	}
 	for _, row := range collectRoles(env, cwd) {
 		res := row.Res
-		from := fmt.Sprintf("kind: %s; model: %s; effort: %s; file: %s", res.KindFrom, res.ModelFrom, res.EffortFrom, row.File)
+		from := fmt.Sprintf("source: %s; kind: %s; model: %s; effort: %s; file: %s", row.Source, res.KindFrom, res.ModelFrom, res.EffortFrom, row.File)
 		lines = append(lines, padUTF16(row.Role, 18)+" "+padUTF16(cell(res.Kind), 8)+" "+padUTF16(cell(res.ModelSpec), 24)+" "+padUTF16(cell(res.Effort), 8)+" "+padUTF16(cell(row.Mode), 10)+" "+from)
 	}
 	_, _ = fmt.Fprintln(platform.Stdout, strings.Join(lines, "\n"))
@@ -241,6 +288,7 @@ func CmdRolesJSON(env platform.Env, cwd string) {
 			"model_from", res.ModelFrom,
 			"effort_from", res.EffortFrom,
 			"file", row.File,
+			"source", row.Source,
 		))
 	}
 	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O("roles", roles)))
