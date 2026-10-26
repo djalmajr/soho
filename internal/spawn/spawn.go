@@ -609,6 +609,10 @@ func warnStartupBlocked(name, kind, state string, ev startup.Evaluation, ctx *co
 	case ev.Reason == startup.ReasonStateUnavailable:
 		what = "the agent state could not be read"
 	}
+	if hint := ev.TrustHint(name); hint != "" {
+		Warn(fmt.Sprintf("agent '%s' (%s) startup is not ready: %s (state %s); no input was sent — read the pane (herdr agent read %s --source visible); %s", name, kind, what, state, name, hint), ctx, env, "spawn")
+		return
+	}
 	Warn(fmt.Sprintf("agent '%s' (%s) startup is not ready: %s (state %s); no input was sent — read the pane (herdr agent read %s --source visible) and answer it yourself (herdr agent send-keys %s <keys>; herdr agent wait %s --timeout 60000)", name, kind, what, state, name, name, name), ctx, env, "spawn")
 }
 
@@ -1419,13 +1423,17 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		// here; doctor names it.
 		value := core.Cfg(ctx, core.ContextWindowKey("grok"), "", env)
 		typing := value != "" && core.ContextWindowValueOk(value)
-		if typing && isGrokTrustDialog(herdr.AgentRead(env, o.name, "visible", intPtr(40))) {
-			// The pre-typing re-read sees the trust dialog: the same block as
-			// the first check — no text is typed and the start exits 7 with
-			// the screen. Only the path that types the command spends this
-			// read, so a grok without a configured window keeps its call
-			// pattern and the frozen parity goldens stay untouched.
-			blocked = true
+		if typing {
+			screen := herdr.AgentRead(env, o.name, "visible", intPtr(40))
+			if isGrokTrustDialog(screen) {
+				// The pre-typing re-read sees the trust dialog: the same block as
+				// the first check — no text is typed and the start exits 7 with
+				// the screen. Only the path that types the command spends this
+				// read, so a grok without a configured window keeps its call
+				// pattern and the frozen parity goldens stay untouched.
+				lastScreen = screen
+				blocked = true
+			}
 		}
 		if !blocked && typing {
 			if confirmed := confirmGrokContextWindow(o, value, env); confirmed {
@@ -1469,7 +1477,11 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		} else if !cursorGate {
 			// The gate already printed the precise warning when it refused
 			// the start; the generic line names the other startup dialogs.
-			Warn(fmt.Sprintf("agent '%s' is blocked during startup (update prompt, login, trust dialog…). Screen follows; ask the user before answering it, then: herdr agent send-keys %s <keys>; herdr agent wait %s --timeout 60000", o.name, o.name, o.name), ctx, env, "spawn")
+			if hint := startup.TrustHint(o.name, kind, lastScreen); hint != "" {
+				Warn(fmt.Sprintf("agent '%s' is blocked during startup (update prompt, login, trust dialog…). Screen follows; %s", o.name, hint), ctx, env, "spawn")
+			} else {
+				Warn(fmt.Sprintf("agent '%s' is blocked during startup (update prompt, login, trust dialog…). Screen follows; ask the user before answering it, then: herdr agent send-keys %s <keys>; herdr agent wait %s --timeout 60000", o.name, o.name, o.name), ctx, env, "spawn")
+			}
 		}
 		lines := intPtr(40)
 		if kind == "cursor" {

@@ -31,6 +31,10 @@ Cursor's active `MCP Server Approval Required` title followed by at least one `[
 - **Cause:** a startup dialog: Codex update prompt, login, workspace trust.
 - **Now:** `spawn` records the agent, returns focus to the pane that had it when focus is still on the new pane, prints the visible screen, exits 7. Ask the user, then `herdr agent send-keys <name> …` and `herdr agent wait <name>`. The roster entry is valid; `dispatch` works after the dialog is cleared.
 
+| Recognized dialog | Cursor workspace trust | Grok first-run trust | Codex hooks review |
+| --- | --- | --- | --- |
+| Hint names the key; ask the user first | `a`: Trust this workspace | `y`: Yes, proceed (y) | `2`: Trust all and continue |
+
 ## Codex CLI updates itself at start; the pane exits right after `spawn`
 
 - **Symptom:** the pane exits right after `spawn`; the screen shows the update lines (`Updating Codex via …`, `Please restart Codex`).

@@ -1180,6 +1180,10 @@ func warnCursorStartupRefusal(agent, kind, state string, ev startup.Evaluation) 
 	case ev.Reason == startup.ReasonStateUnavailable:
 		what = "the agent state could not be read"
 	}
+	if hint := ev.TrustHint(agent); hint != "" {
+		core.Warn(fmt.Sprintf("dispatch: '%s' (%s) startup is not ready: %s (state %s); nothing was typed or sent — read the pane (herdr agent read %s --source visible); %s", agent, kind, what, state, agent, hint), frictionLogPath, "dispatch")
+		return
+	}
 	core.Warn(fmt.Sprintf("dispatch: '%s' (%s) startup is not ready: %s (state %s); nothing was typed or sent — read the pane (herdr agent read %s --source visible) and answer it yourself, then dispatch again", agent, kind, what, state, agent), frictionLogPath, "dispatch")
 }
 

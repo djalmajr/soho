@@ -445,7 +445,11 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 				sendWarning(fmt.Sprintf("agent '%s' requires approval of MCP servers; no input is sent — the operator must answer in the pane", agent))
 				return "blocked"
 			}
-			sendWarning(fmt.Sprintf("agent '%s' is on the cursor workspace trust dialog; no approval key is sent — read the pane and answer it yourself (herdr agent send-keys %s <keys>)", agent, agent))
+			if hint := ev.TrustHint(agent); hint != "" {
+				sendWarning(fmt.Sprintf("agent '%s' is on the cursor workspace trust dialog; no approval key is sent — read the pane; %s", agent, hint))
+			} else {
+				sendWarning(fmt.Sprintf("agent '%s' is on the cursor workspace trust dialog; no approval key is sent — read the pane and answer it yourself (herdr agent send-keys %s <keys>)", agent, agent))
+			}
 			return "blocked"
 		}
 	}
