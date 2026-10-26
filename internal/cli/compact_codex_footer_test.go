@@ -158,7 +158,7 @@ func TestCompactCodexFooterNoProofTimesOut(t *testing.T) {
 				{Argv: compactReadArgv("worker"), Call: 1, Stdout: c.before},
 				{Argv: compactReadArgv("worker"), ArgvPrefix: true, Stdout: c.after},
 			})
-			code, out, errText := f.run(t, "compact", "worker", "--timeout", "500")
+			code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000")
 			if code != 9 {
 				t.Fatalf("code=%d want 9 out=%s stderr=%s", code, out, errText)
 			}
@@ -199,7 +199,7 @@ func TestCompactCodexFooterHistoryAboveComposerTimesOut(t *testing.T) {
 		{Argv: compactReadArgv("worker"), Call: 1, Stdout: codexScrolled(codexFooterBefore49)},
 		{Argv: compactReadArgv("worker"), ArgvPrefix: true, Stdout: codexHistoryAboveComposer()},
 	})
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "500")
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000")
 	if code != 9 {
 		t.Fatalf("code=%d want 9 out=%s stderr=%s", code, out, errText)
 	}

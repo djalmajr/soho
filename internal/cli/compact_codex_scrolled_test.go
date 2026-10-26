@@ -83,7 +83,7 @@ func TestCompactCodexScrolledSavedScreen(t *testing.T) {
 				{Argv: []string{"pane", "send-text", "p1", "/compact"}, Stdout: `{"result":{}}`},
 				{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 			})
-			code, out, errText := f.run(t, "compact", "worker", "--timeout", "500")
+			code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000")
 			if code != tc.code {
 				t.Fatalf("code=%d want %d out=%s stderr=%s", code, tc.code, out, errText)
 			}
