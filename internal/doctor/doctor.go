@@ -1285,22 +1285,29 @@ func checkSetup(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 			s.Warning(fmt.Sprintf("an older instruction block in CLAUDE.md: run '%s setup --target CLAUDE.md' to rename it in place (its text is kept)", entry))
 		}
 	}
-	settings := filepath.Join(root, ".claude", "settings.json")
-	hook := settingsDoctorHook(settings)
-	if hook == "native" {
-		s.Ok("Claude hooks present in .claude/settings.json")
-	} else if hook == "old" {
-		if ll || setupLocal {
-			s.Warning(fmt.Sprintf("old herdr-soho shell hooks in .claude/settings.json: run '%s setup --local' to replace them with the native hook commands", entry))
-		} else {
-			s.Warning(fmt.Sprintf("old herdr-soho shell hooks in .claude/settings.json: run '%s setup' to replace them with the native hook commands", entry))
+	var nativeFiles []string
+	obsolete := false
+	for _, rel := range []string{".claude/settings.json", ".claude/settings.local.json"} {
+		hook := settingsDoctorHook(filepath.Join(root, filepath.FromSlash(rel)))
+		localArg := ""
+		if ll || setupLocal || strings.HasSuffix(rel, "settings.local.json") {
+			localArg = " --local"
 		}
-	} else if hook == "legacy" {
-		if ll || setupLocal {
-			s.Warning(fmt.Sprintf("an older version of the hooks in .claude/settings.json: run '%s setup --local' to replace them", entry))
-		} else {
-			s.Warning(fmt.Sprintf("an older version of the hooks in .claude/settings.json: run '%s setup' to replace them", entry))
+		switch hook {
+		case "native":
+			nativeFiles = append(nativeFiles, rel)
+		case "old":
+			obsolete = true
+			s.Warning(fmt.Sprintf("old herdr-soho shell hooks in %s: run '%s setup%s' to replace them with the native hook commands", rel, entry, localArg))
+		case "legacy":
+			obsolete = true
+			s.Warning(fmt.Sprintf("an older version of the hooks in %s: run '%s setup%s' to replace them", rel, entry, localArg))
 		}
+	}
+	if len(nativeFiles) > 0 {
+		s.Ok("Claude hooks present in " + strings.Join(nativeFiles, ", "))
+	} else if obsolete {
+		// Each obsolete file already has its own migration warning.
 	} else if ln || setupLocal {
 		s.Warning(fmt.Sprintf("no soho hooks in .claude/settings.json: run '%s setup --local' (UserPromptSubmit reminder + SessionStart doctor)", entry))
 	} else {

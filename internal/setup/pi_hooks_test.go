@@ -91,8 +91,8 @@ func TestSetupPiPlanNoHooksAndLocal(t *testing.T) {
 		code, _, warning = runSetupWrite([]string{"--local"}, ctx, env, root)
 		after, err := os.ReadFile(exclude)
 		generated, readErr := os.ReadFile(piFile(root))
-		// DJA-462 adds exactly the two untracked hooks to the local excludes.
-		want := string(before) + "/.pi/extensions/soho-inbound.ts\n/.codex/hooks.json\n"
+		// DJA-342 also excludes the untracked local Claude hooks.
+		want := string(before) + "/.claude/settings.local.json\n/.pi/extensions/soho-inbound.ts\n/.codex/hooks.json\n"
 		if code != 0 || err != nil || readErr != nil || want != string(after) || string(generated) != setuptext.PiInboundExtension() {
 			t.Fatalf("code=%d err=%v read=%v warning=%s", code, err, readErr, warning)
 		}

@@ -87,8 +87,9 @@ func doctorPeerInbound(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 		s.Warning("peer key permissions are not checked on Windows; keep the peer-keys directory readable by your user only")
 	}
 	settings := filepath.Join(platform.ProjectRoot(env, cwd), ".claude", "settings.json")
-	if !userPromptSubmitProtected(settings) {
-		s.Warning(fmt.Sprintf("%s has no 'soho hook reminder' or 'soho hook inbound' in UserPromptSubmit: the Claude Code panes of this project do not check peer messages (run 'soho setup')", settings))
+	localSettings := filepath.Join(platform.ProjectRoot(env, cwd), ".claude", "settings.local.json")
+	if !userPromptSubmitProtected(settings) && !userPromptSubmitProtected(localSettings) {
+		s.Warning(fmt.Sprintf("%s and %s have no 'soho hook reminder' or 'soho hook inbound' in UserPromptSubmit: the Claude Code panes of this project do not check peer messages (run 'soho setup')", settings, localSettings))
 	}
 	if policy.Mode == peerauth.ModeEnforce {
 		doctorUnprotectedAgents(ctx, env, cwd, s)

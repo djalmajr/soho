@@ -105,10 +105,14 @@ func markedLines(text string) string {
 	return strings.Join(out, "\n") + "\n"
 }
 
-func writeHooksSection(root string, env platform.Env) []string {
+func writeHooksSection(root string, env platform.Env, local bool) []string {
 	var ready []string
-	settings := filepath.Join(root, ".claude", "settings.json")
+	settings := claudeSettingsPath(root, local)
 	setupWriteHooks(settings)
+	if local {
+		ready = append(ready, claudeLocalHookRel)
+		migrateSharedHooks(root, env)
+	}
 	_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder, SessionStart doctor)\n", settings)
 	if writePiInboundExtension(root) {
 		ready = append(ready, piInboundRel)
@@ -311,7 +315,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		platform.DieFriction(fmt.Sprintf("setup: produced an incomplete file for %s (file left untouched)", dest), 4)
 	}
 	if hooks {
-		settings := filepath.Join(root, ".claude", "settings.json")
+		settings := claudeSettingsPath(root, modeLocal)
 		var old *string
 		if raw, err := platform.ReadTextFile(settings); err == nil {
 			old = &raw
@@ -335,7 +339,16 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			_, _ = fmt.Fprint(platform.Stdout, setuptext.SetupBlock())
 		}
 		if hooks {
-			_, _ = fmt.Fprintf(platform.Stdout, "\n# would merge into %s/.claude/settings.json: UserPromptSubmit + SessionStart hooks\n", root)
+			_, _ = fmt.Fprintf(platform.Stdout, "\n# would merge into %s: UserPromptSubmit + SessionStart hooks\n", claudeSettingsPath(root, modeLocal))
+			if modeLocal {
+				if shared, after := sharedHooksMigration(root); after != nil {
+					if warning := sharedHooksTrackingWarning(trackingStatus(root, ".claude/settings.json", env)); warning != "" {
+						_, _ = fmt.Fprintln(platform.Stdout, "# "+warning)
+					} else {
+						_, _ = fmt.Fprintf(platform.Stdout, "# would remove soho-managed hooks from %s\n", shared)
+					}
+				}
+			}
 			_, _ = fmt.Fprintf(platform.Stdout, "# would merge into %s/.codex/hooks.json: UserPromptSubmit hook (codex)\n", root)
 			_, _ = fmt.Fprintf(platform.Stdout, "# would write %s/.pi/extensions/soho-inbound.ts: input extension (pi)\n", root)
 		}
@@ -364,7 +377,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			_, _ = fmt.Fprintf(platform.Stdout, "local excludes updated: %s (%s)\n", path, strings.Join(added, ", "))
 		}
 		if hooks {
-			ready := writeHooksSection(root, env)
+			ready := writeHooksSection(root, env, true)
 			hookPath, hookAdded := ensureLocalExcludes(root, untrackedLocalHooks(root, ready, env), env, "setup")
 			if len(hookAdded) > 0 {
 				_, _ = fmt.Fprintf(platform.Stdout, "local excludes updated: %s (%s)\n", hookPath, strings.Join(hookAdded, ", "))
@@ -396,7 +409,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 	}
 	if hooks {
-		writeHooksSection(root, env)
+		writeHooksSection(root, env, false)
 	}
 	writeCanonicalStateIgnore(ctx, env, cwd)
 	_, _ = fmt.Fprintf(platform.Stdout, "state dir ignored: %s/\n", core.StateDirSetting(ctx, env, cwd))

@@ -323,8 +323,8 @@ func TestSetupCodexPlanNoHooksAndLocal(t *testing.T) {
 		}
 		code, _, msg = runSetupWrite([]string{"--local"}, ctx, env, root)
 		after, e := os.ReadFile(exclude)
-		// DJA-462 adds exactly the two untracked hooks to the local excludes.
-		want := string(before) + "/.pi/extensions/soho-inbound.ts\n/.codex/hooks.json\n"
+		// DJA-342 also excludes the untracked local Claude hooks.
+		want := string(before) + "/.claude/settings.local.json\n/.pi/extensions/soho-inbound.ts\n/.codex/hooks.json\n"
 		if code != 0 || e != nil || want != string(after) || codexHookCount(t, codexFile(root)) != 1 {
 			t.Fatalf("code=%d exclude=%s err=%v msg=%s", code, after, e, msg)
 		}

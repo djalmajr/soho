@@ -19,6 +19,32 @@ const localInstructionFile = "CLAUDE.local.md"
 const codexHookRel = ".codex/hooks.json"
 const piInboundRel = ".pi/extensions/soho-inbound.ts"
 
+type fileTracking uint8
+
+const (
+	trackingUnknown fileTracking = iota
+	trackingTracked
+	trackingUntracked
+)
+
+func trackingStatus(root, rel string, env platform.Env) fileTracking {
+	git, ok := platform.FindExecutable("git", env, platform.Current())
+	if !ok {
+		return trackingUnknown
+	}
+	cmd := exec.Command(git, "-C", root, "ls-files", "--error-unmatch", "--", rel)
+	cmd.Env = append(env.List(), "LC_ALL=C", "LANG=C")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 && strings.HasPrefix(stderr.String(), fmt.Sprintf("error: pathspec '%s' did not match any file(s) known to git\n", rel)) {
+			return trackingUntracked
+		}
+		return trackingUnknown
+	}
+	return trackingTracked
+}
+
 func hasCompleteSetupBlock(text string) bool {
 	currentStarted, legacyStarted := false, false
 	for _, line := range strings.Split(text, "\n") {
@@ -56,7 +82,7 @@ func refuseImplicitCanonicalSetup(args []string, ctx *core.Config, env platform.
 func untrackedLocalHooks(root string, rels []string, env platform.Env) []string {
 	var untracked []string
 	for _, rel := range rels {
-		if _, tracked := gitOutput(env, root, "ls-files", "--error-unmatch", "--", rel); !tracked {
+		if trackingStatus(root, rel, env) == trackingUntracked {
 			untracked = append(untracked, rel)
 		}
 	}
@@ -70,7 +96,7 @@ func localHookRels(root string, env platform.Env) []string {
 	for _, hook := range []struct {
 		rel   string
 		merge func(*string) *string
-	}{{codexHookRel, setuptext.CodexHooksResult}, {piInboundRel, setuptext.PiInboundResult}} {
+	}{{claudeLocalHookRel, setuptext.SettingsHooksResult}, {codexHookRel, setuptext.CodexHooksResult}, {piInboundRel, setuptext.PiInboundResult}} {
 		var content *string
 		if raw, err := platform.ReadTextFile(filepath.Join(root, filepath.FromSlash(hook.rel))); err == nil {
 			content = &raw

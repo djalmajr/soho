@@ -222,7 +222,7 @@ func TestDoctorInboundKeyChecks(t *testing.T) {
 func TestDoctorInboundProjectWithoutTheHook(t *testing.T) {
 	settings := func(d *inboundDoctor) string { return filepath.Join(d.cwd, ".claude", "settings.json") }
 	want := func(d *inboundDoctor) string {
-		return fmt.Sprintf("%s has no 'soho hook reminder' or 'soho hook inbound' in UserPromptSubmit: the Claude Code panes of this project do not check peer messages (run 'soho setup')", settings(d))
+		return fmt.Sprintf("%s and %s have no 'soho hook reminder' or 'soho hook inbound' in UserPromptSubmit: the Claude Code panes of this project do not check peer messages (run 'soho setup')", settings(d), filepath.Join(d.cwd, ".claude", "settings.local.json"))
 	}
 	cases := map[string]struct {
 		body    string
