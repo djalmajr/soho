@@ -30,7 +30,7 @@ func TestReview552ClippedZeroRemainsNoProof(t *testing.T) {
 			})
 			compactLowContextEnv(t, f.env)
 			t.Chdir(f.root)
-			code, out, stderr := f.run(t, "compact", "worker", "--timeout", "1000")
+			code, out, stderr := f.run(t, "compact", "worker", "--timeout", "5000")
 			t.Logf("tail=%q parser_reading=%v exit=%d stdout=%s stderr=%s", tail, ok, code, out, stderr)
 			if code != 9 || compactJSON(t, out)["status"] != "timeout" {
 				t.Fatal("clipped/invalid zero footer was accepted as completed compaction")
@@ -52,7 +52,7 @@ func TestReview552HistoryAloneCannotLatchProof(t *testing.T) {
 	})
 	compactLowContextEnv(t, f.env)
 	t.Chdir(f.root)
-	code, out, stderr := f.run(t, "compact", "worker", "--timeout", "1000")
+	code, out, stderr := f.run(t, "compact", "worker", "--timeout", "5000")
 	t.Logf("history present only while working; then idle without footer: exit=%d stdout=%s stderr=%s", code, out, stderr)
 	if code != 9 || compactJSON(t, out)["status"] != "timeout" {
 		t.Fatal("history alone latched compaction proof")

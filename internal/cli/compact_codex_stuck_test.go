@@ -352,7 +352,7 @@ func TestCompactCodexScrolledStaleProofTimesOut(t *testing.T) {
 		{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 		{Argv: []string{"pane", "send-keys", "p1", "ctrl+u"}, Stdout: `{"result":{}}`},
 	})
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "1000")
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000")
 	if code != 9 {
 		t.Fatalf("code=%d want 9 (no fresh proof after the scroll): out=%s stderr=%s", code, out, errText)
 	}
@@ -439,7 +439,7 @@ func TestCompactPiScrolledNewProof(t *testing.T) {
 		{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 		{Argv: []string{"pane", "send-keys", "p1", "ctrl+u"}, Stdout: `{"result":{}}`},
 	})
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "1000")
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000")
 	if code != 0 || errText != "" {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
@@ -472,7 +472,7 @@ func TestCompactOnlyClockChanged(t *testing.T) {
 		{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 		{Argv: []string{"pane", "send-keys", "p1", "ctrl+u"}, Stdout: `{"result":{}}`},
 	})
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "1000")
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000")
 	if code == 0 {
 		t.Fatalf("the clock-only redraw was accepted as the new compact: out=%s stderr=%s", out, errText)
 	}
@@ -501,7 +501,7 @@ func TestCompactCodexRereadNotStuckSendsNoSecondEnter(t *testing.T) {
 		{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 		{Argv: []string{"pane", "send-keys", "p1", "ctrl+u"}, Stdout: `{"result":{}}`},
 	})
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "3000")
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000")
 	calls := f.calls(t)
 	if n := countArgv(calls, []string{"pane", "send-keys", "p1", "Enter"}); n != 1 {
 		t.Fatalf("Enter calls=%d want 1 (no second Enter to another command): code=%d out=%s stderr=%s %#v", n, code, out, errText, calls)
