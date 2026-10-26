@@ -1,5 +1,11 @@
 # Troubleshooting and lessons learned
 
+## `wait` or `collect` warns that a worker left a local commit or switched branches
+
+- **Symptom:** `wait` or `collect` prints `left a local commit` or `switched ... from branch ...` and settled `wait` JSON includes `head_moved`; status and exit code remain unchanged.
+- **Cause:** the tree recorded after dispatch changed branch or moved to a HEAD absent from all local `refs/remotes/*` refs; the check reads ref containment, without fetching or reading commit contents, and remote-ref freshness limits that distinction.
+- **Do:** inspect the recorded tree before integrating and let the orchestrator decide how to keep or undo the change. Never ask the worker to reset it automatically; workers still must not commit. Exclusive creation of `<sidecar>.git-checked` permits one comparison attempt, and `git_checked` in the sidecar records a successful comparison. Existing markers, creation failures and unavailable Git are silent; the permanent marker prevents retries even if the creator dies before warning. `clean` removes it with its sidecar.
+
 `spawn` skips Codex's active startup update menu with one `Escape` and reads the screen again; a persistent menu remains `blocked_at_startup` (exit 7), while a menu quoted above the composer receives no key. Update Codex yourself when no Codex agent is running.
 
 Observed failures while building and validating this skill (2026-09-20, Herdr 0.9.1, macOS). Each entry: symptom → cause → what the skill does now → what you should do. Read this before changing the script or adding a kind.

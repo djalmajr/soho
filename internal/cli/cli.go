@@ -374,7 +374,11 @@ func Run(args []string, env platform.Env) (code int) {
 	case "metrics":
 		return metrics.CmdMetrics(args[1:], metrics.CommandContext{Config: ctx, Env: decisionEnv, Cwd: commandCwd, FrictionLog: frictionLogPath})
 	case "collect":
-		return stats.CmdCollect(args[1:], stats.CommandContext{Config: ctx, Env: decisionEnv, Cwd: commandCwd, FrictionLog: frictionLogPath})
+		code := stats.CmdCollect(args[1:], stats.CommandContext{Config: ctx, Env: decisionEnv, Cwd: commandCwd, FrictionLog: frictionLogPath})
+		if code == 0 {
+			collectGitCheck(args[1:], ctx, decisionEnv, commandCwd, frictionLogPath)
+		}
+		return code
 	case "wait":
 		core.PressureWarnThrottled(ctx, decisionEnv, commandCwd)
 		return waitpkg.CmdWait(args[1:], ctx, decisionEnv, commandCwd)
