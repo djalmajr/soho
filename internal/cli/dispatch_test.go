@@ -209,7 +209,7 @@ func TestDispatchWaitEmptyExitErrorRecordsFriction(t *testing.T) { // Mutation c
 
 func TestDispatchAmendPortedCases(t *testing.T) {
 	// Amendments submit normally and reject retired author selection options.
-	h := newTM3bHarness(t, tm3bFullBrief())
+	h := newTM3bHarness(t, strings.Replace(tm3bFullBrief(), "# Owned files\ninternal/a.go\n\n", "", 1))
 	rolesDir := filepath.Dir(h.role)
 	if err := os.WriteFile(filepath.Join(rolesDir, "reviewer.md"), []byte("---\nname: Reviewer\nmode: review\n---\nRole body.\n"), 0o600); err != nil {
 		t.Fatal(err)

@@ -237,6 +237,7 @@ func TestDispatchRemainingCases(t *testing.T) {
 	t.Run(`JS: "dispatch: the role comes from column 4 of the roster"`, func(t *testing.T) {
 		f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
 		role := filepath.Join(f.root, "roles", "researcher.md")
+		writeRoleFixture(t, f.brief, strings.Replace(mustRead(t, f.brief), "# Owned files\n\nnone\n", "# Owned files\n\n", 1))
 		if err := os.WriteFile(role, []byte("---\nname: Researcher\nmode: read\n---\nResearch role.\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -824,6 +825,7 @@ func TestDispatchReviewerFamilyIsMetadata(t *testing.T) {
 	for _, role := range []string{"reviewer", "security-reviewer"} {
 		t.Run(role, func(t *testing.T) {
 			f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
+			writeRoleFixture(t, f.brief, strings.Replace(mustRead(t, f.brief), "# Owned files\n\nnone\n", "# Owned files\n\n", 1))
 			fakeDir := t.TempDir()
 			if _, err := fakecli.Install(t, fakeDir, "herdr", []fakecli.Rule{
 				{Argv: []string{"agent", "list"}, ArgvPrefix: true, Stdout: `{"result":{"agents":[{"name":"ex","pane_id":"w0test:p0a","agent":"codex","agent_status":"working"}]}}`},

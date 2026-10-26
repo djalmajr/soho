@@ -102,7 +102,7 @@ func memberComposedPath(sd, member string) (string, bool) {
 // to be sent. A sidecar without the fields (an old dispatch) never matches:
 // the re-send keeps happening for it, and an already-reported member never
 // matches either: its task is closed and the same brief starts a new task.
-func findDispatchDuplicate(sd, agent, briefSHA string, amend bool) *dispatchDuplicate {
+func findDispatchDuplicate(sd, agent, briefSHA, role string, amend bool) *dispatchDuplicate {
 	if briefSHA == "" {
 		return nil
 	}
@@ -174,6 +174,9 @@ func findDispatchDuplicate(sd, agent, briefSHA string, amend bool) *dispatchDupl
 				}
 			}
 			return ""
+		}
+		if recorded := field("role"); recorded != "" && recorded != role {
+			continue
 		}
 		if field("task_report") != taskReport || field("brief_sha256") != briefSHA || field("submission") != "accepted" || field("arrival") == "not-received" {
 			continue

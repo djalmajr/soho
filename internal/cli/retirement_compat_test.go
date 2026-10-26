@@ -718,8 +718,6 @@ Confirm which role the composed prompt uses.
 
 # Owned files
 
-skills/soho/scripts/soho
-
 # Forbidden
 
 Do not commit or push.

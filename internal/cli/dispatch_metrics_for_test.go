@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/dispatch"
@@ -15,7 +16,7 @@ import (
 // effort columns).
 func newDispatchMetricsForFixture(t *testing.T) tm3bHarness {
 	t.Helper()
-	h := newTM3bHarness(t, tm3bFullBrief())
+	h := newTM3bHarness(t, strings.Replace(tm3bFullBrief(), "# Owned files\ninternal/a.go\n\n", "", 1))
 	rolesDir := filepath.Dir(h.role)
 	if err := os.WriteFile(filepath.Join(rolesDir, "reviewer.md"), []byte("---\nname: Reviewer\nmode: review\n---\nRole body.\n"), 0o600); err != nil {
 		t.Fatal(err)

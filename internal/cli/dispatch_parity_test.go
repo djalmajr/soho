@@ -51,6 +51,7 @@ func TestDispatchParityPortedCases(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(f.state, "ws", "agents.tsv"), []byte(roster), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		writeRoleFixture(t, f.brief, strings.Replace(mustRead(t, f.brief), "# Owned files\n\nnone\n", "# Owned files\n\n", 1))
 		code, out, errText := f.run(t, "rev", f.brief, "--no-wait")
 		if code != 0 || !strings.Contains(out, `"wait_status":"submitted"`) || strings.Contains(errText, "family") {
 			t.Fatalf("review dispatch code=%d out=%q stderr=%q", code, out, errText)
@@ -58,7 +59,7 @@ func TestDispatchParityPortedCases(t *testing.T) {
 		// The reviewer is submitted even with a matching implementer in the roster.
 
 		badBrief := filepath.Join(f.root, "bad.md")
-		if err := os.WriteFile(badBrief, []byte("# Goal\nDo it.\n# Owned files\nx.go\n# Forbidden\nNo commit or push.\n# Report\ndone.\n"), 0o600); err != nil {
+		if err := os.WriteFile(badBrief, []byte("# Goal\nDo it.\n# Owned files\n\n# Forbidden\nNo commit or push.\n# Report\ndone.\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		f.env["SOHO_BRIEF_LINT"] = "strict"

@@ -240,7 +240,7 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 					match, renewal = q[0], q[1]
 					kind, model, lane = field(fields, 2), field(fields, 8), field(fields, 11)
 					if lane == "" {
-						lane = core.LaneOfRole(ctx, field(fields, 3), env)
+						lane = core.LaneOfRole(ctx, TaskRole(sd, agent), env)
 					}
 					core.Warn(fmt.Sprintf("quota: agent '%s' lane=%s kind=%s model=%s : %s%s", agent, showOr(lane, "?"), kind, showOr(model, "?"), match, renewalSuffix(renewal)), frictionLogFile, "status")
 					rc = 11

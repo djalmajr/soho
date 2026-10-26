@@ -110,9 +110,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 			core.DieFriction("dispatch: unknown option "+a, 2, frictionLogPath, "dispatch")
 		}
 	}
-	if amend && role != "" {
-		core.DieFriction("dispatch: --amend keeps the current role; drop --role", 2, frictionLogPath, "dispatch")
-	}
+	explicitRole := role != ""
 	if st, err := os.Stat(brief); err != nil || !st.Mode().IsRegular() {
 		core.DieFriction("brief not found: "+brief, 2, frictionLogPath, "dispatch")
 	}
@@ -143,36 +141,11 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 		}
 		return ""
 	}
+	if role == "" && amend {
+		role = openDispatchRole(sd, agent)
+	}
 	if role == "" {
 		role = at(3)
-	}
-	// The report and the composed prompt follow the state dir only when the
-	// worker can reach it: a sandboxed worker writes inside its own cwd, so
-	// with a non-empty worker cwd the files go to the soho scratch dir
-	// whenever sd is not inside that cwd — the caller's project root no
-	// longer decides. Comparing the worker's cwd with the caller's root
-	// routed a worktree caller's report into the main checkout's sd, which
-	// the worker there cannot write (DJA-379).
-	// The scratch reports dir is used only when its three levels are
-	// directories private to this user (created 0o700, an own level open
-	// to the group or the others narrowed; another owner's or a link is
-	// refused), and the files written there never follow a link (DJA-443).
-	// The check of the levels that exist runs here, right after the roster
-	// line (ScratchFix: another owner's level or a link is refused, an own
-	// level is narrowed, nothing is created), so a refusal comes before any
-	// collaboration read, herdr call, compact-marker cleanup or state write.
-	// The missing levels are created later, right before the first write
-	// (ScratchCreate, which checks every level again), so a dispatch refused
-	// in between leaves no scratch tree.
-	workerCwd := at(6)
-	scratch := workerCwd != "" && !dispatch.PathWithin(sd, workerCwd, platform.Current())
-	scratchRefusal := func(err error) {
-		core.DieFriction(fmt.Sprintf("dispatch: the scratch reports dir cannot be used (%v); nothing was sent to '%s'", err, agent), 4, frictionLogPath, "dispatch")
-	}
-	if scratch {
-		if _, err := core.PrivateScratchReports(env, core.WorkspaceID(ctx, env, cwd), core.ScratchFix); err != nil && !errors.Is(err, os.ErrNotExist) {
-			scratchRefusal(err)
-		}
 	}
 	active, stateErr := (collaboration.Store{StateDir: sd}).ActiveFor(at(1))
 	if stateErr != nil {
@@ -196,6 +169,38 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	roleFile := core.RoleFile(role, env, cwd)
 	if roleFile == "" {
 		core.DieFriction(fmt.Sprintf("unknown role '%s' (run: soho roles)", role), 3, frictionLogPath, "dispatch")
+	}
+	briefRaw, err := platform.ReadTextFile(brief)
+	if err != nil {
+		core.DieFriction("could not read brief: "+brief, 2, frictionLogPath, "dispatch")
+	}
+	refuseReadOnlyEditBrief(briefRaw, brief, agent, role, explicitRole, ctx, env, cwd)
+	// The report and the composed prompt follow the state dir only when the
+	// worker can reach it: a sandboxed worker writes inside its own cwd, so
+	// with a non-empty worker cwd the files go to the soho scratch dir
+	// whenever sd is not inside that cwd — the caller's project root no
+	// longer decides. Comparing the worker's cwd with the caller's root
+	// routed a worktree caller's report into the main checkout's sd, which
+	// the worker there cannot write (DJA-379).
+	// The scratch reports dir is used only when its three levels are
+	// directories private to this user (created 0o700, an own level open
+	// to the group or the others narrowed; another owner's or a link is
+	// refused), and the files written there never follow a link (DJA-443).
+	// Existing levels are checked after the read-only role preflight and
+	// collaboration validation (ScratchFix may narrow an own directory's mode).
+	// No scratch tree is created during this check.
+	// The missing levels are created later, right before the first write
+	// (ScratchCreate, which checks every level again), so a dispatch refused
+	// in between leaves no scratch tree.
+	workerCwd := at(6)
+	scratch := workerCwd != "" && !dispatch.PathWithin(sd, workerCwd, platform.Current())
+	scratchRefusal := func(err error) {
+		core.DieFriction(fmt.Sprintf("dispatch: the scratch reports dir cannot be used (%v); nothing was sent to '%s'", err, agent), 4, frictionLogPath, "dispatch")
+	}
+	if scratch {
+		if _, err := core.PrivateScratchReports(env, core.WorkspaceID(ctx, env, cwd), core.ScratchFix); err != nil && !errors.Is(err, os.ErrNotExist) {
+			scratchRefusal(err)
+		}
 	}
 	// F11: before any state change or send, the recorded compact phase decides
 	// the dispatch: a live or unverifiable owner for this pane refuses the
@@ -348,17 +353,13 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	// brief's raw input bytes, read before the decision, so nothing is
 	// written when a member already carries the brief; the normalized text
 	// still serves the prompt composition.
-	briefRaw, err := platform.ReadTextFile(brief)
-	if err != nil {
-		panic(err)
-	}
 	rawBrief, err := os.ReadFile(brief)
 	if err != nil {
 		panic(err)
 	}
 	briefSHA := sha256Hex(rawBrief)
-	if !resend {
-		if dup := findDispatchDuplicate(sd, agent, briefSHA, amend); dup != nil {
+	if !resend && (openDispatchRole(sd, agent) == "" || openDispatchRole(sd, agent) == role) {
+		if dup := findDispatchDuplicate(sd, agent, briefSHA, role, amend); dup != nil {
 			return dispatchDuplicateResult(agent, role, kind, dup, noWait, timeoutRaw, sd, ctx, env, cwd)
 		}
 	}
@@ -400,7 +401,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	// amendment).
 	priorPointer := taskreport.ReadTaskReportPointer(sd, agent)
 	taskReport := taskReportAfterDispatch(sd, report, amend, priorPointer)
-	if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "attempted", "", session); err != nil {
+	if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "attempted", "", session, role); err != nil {
 		return writeDispatchError(agent, role, kind, composed, report, taskReport, "couldn't write the attempt sidecar: "+sanitizeDispatchCause(err.Error()), 4,
 			fmt.Sprintf("could not write the attempt sidecar %s: %s", sidecar, sanitizeDispatchCause(err.Error())))
 	}
@@ -411,6 +412,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	prompt := dispatch.ComposePrompt(roleFile, role, agent, briefRaw, report, ctx, env, kind, args, approvals, shared)
 	if amend {
 		prompt = dispatch.ComposeAmendment(briefRaw, report, ctx, env, kind, args, approvals, shared, agent)
+		prompt = strings.Replace(prompt, "# Amendment to your current brief\n\n", "# Amendment to your current brief\n\n"+amendmentRoleHeader(roleFile, role, agent), 1)
 	}
 	writeComposed := func() error { return os.WriteFile(composed, []byte(prompt), 0o666) }
 	if scratch {
@@ -439,7 +441,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 			history = append(history, oldReport)
 		}
 	}
-	pointer := jsonjs.O("version", 1, "task_report", taskReport, "current", report, "history", history)
+	pointer := jsonjs.O("version", 1, "task_report", taskReport, "current", report, "history", history, "role", role)
 	if err := taskreport.WriteTaskReportPointer(sd, agent, pointer); err != nil {
 		panic(err)
 	}
@@ -605,13 +607,13 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 				}
 			}
 		}
-		if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, restoredReport, briefSHA, "failed", "", session); err != nil {
+		if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, restoredReport, briefSHA, "failed", "", session, role); err != nil {
 			core.Warn(fmt.Sprintf("could not record the failed submission in the attempt sidecar %s: %s", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 		}
 		return writeDispatchError(agent, role, kind, composed, report, taskReport, p.Raw, 4,
 			"prompt submission failed; inspect with: herdr agent get "+agent+" && herdr agent read "+agent+". Do not resend blindly.")
 	}
-	if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session); err != nil {
+	if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session, role); err != nil {
 		core.Warn(fmt.Sprintf("could not record the accepted submission in the attempt sidecar %s: %s; the prompt went out", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 	}
 	status, resent, enterSent := "submitted", false, false
@@ -776,7 +778,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 				warnNotReceived(agent, whyWorkingNoEvidence, true, true)
 			} else if st := herdr.AgentState(agent, env, herdr.Timeout, nil); !(nonEmpty(report) || ((st.State == "working" || st.State == "blocked") && preSeq != "" && seqString(st.Seq) != "" && preSeq != seqString(st.Seq))) {
 				status = "queued"
-				if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "queued", session); err != nil {
+				if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "queued", session, role); err != nil {
 					core.Warn(fmt.Sprintf("could not record the queued arrival in the attempt sidecar %s: %s; the dispatch result stands", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 				}
 				seq := seqString(st.Seq)
@@ -941,16 +943,20 @@ func compactPhaseDispatch(opts compactPhaseDispatchOptions) compactStepResult {
 
 // writeDispatchSidecarWithTask records the attempt and its durable task report
 // and brief hash on every submission update.
-func writeDispatchSidecarWithTask(path, kind, model, effort, taskReport, briefSHA, submission, arrival, session string) error {
+func writeDispatchSidecarWithTask(path, kind, model, effort, taskReport, briefSHA, submission, arrival, session string, roles ...string) error {
+	role := dispatchSidecarRole(path)
+	if len(roles) > 0 {
+		role = roles[0]
+	}
 	if err := writeDispatchSidecar(path, kind, model, effort, submission, arrival, session); err != nil {
 		return err
 	}
-	return addTaskToSidecar(path, taskReport, briefSHA)
+	return addTaskToSidecar(path, taskReport, briefSHA, role)
 }
 
 // addTaskToSidecar preserves the durable task report and brief hash on the
 // sidecar just written by dispatch.WriteSidecar.
-func addTaskToSidecar(path string, taskReport, briefSHA string) error {
+func addTaskToSidecar(path string, taskReport, briefSHA string, roles ...string) error {
 	if taskReport == "" && briefSHA == "" {
 		return nil
 	}
@@ -973,6 +979,9 @@ func addTaskToSidecar(path string, taskReport, briefSHA string) error {
 	}
 	if briefSHA != "" {
 		obj.Set("brief_sha256", briefSHA)
+	}
+	if len(roles) > 0 && roles[0] != "" {
+		obj.Set("role", roles[0])
 	}
 	return core.WriteScratchFile(path, jsonjs.Stringify(obj)+"\n")
 }
@@ -1214,6 +1223,9 @@ func recordDispatchTask(sd, agent, role, brief string, amend bool, env platform.
 			b = strings.TrimSuffix(b, " ✓")
 			if b != "" {
 				title = b
+				if colon := strings.Index(title, ":"); colon >= 0 {
+					title = role + title[colon:]
+				}
 			} else {
 				title = fmt.Sprintf("%s: %s", role, core.BriefTask(brief))
 			}

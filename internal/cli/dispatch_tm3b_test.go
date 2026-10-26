@@ -581,17 +581,16 @@ func TestDispatchTM3bAmendCommandCases(t *testing.T) {
 		}()
 		h.run(t, "build", h.brief, "--amend", "--no-wait")
 	})
-	// JS: "dispatch --amend: --role together with --amend exits 2 (exact text)"
-	t.Run("dispatch --amend: --role together with --amend exits 2 (exact text)", func(t *testing.T) {
-		h := newTM3bHarness(t, tm3bFullBrief())
-		defer func() {
-			v := recover()
-			x, ok := v.(*platform.ExitError)
-			if !ok || x.Code != 2 || !strings.Contains(x.Msg, "keeps the current role") {
-				t.Fatalf("panic=%#v", v)
-			}
-		}()
-		h.run(t, "build", h.brief, "--amend", "--role", "reviewer", "--no-wait")
+	t.Run("dispatch --amend accepts --role on an open task", func(t *testing.T) {
+		h := newTM3bHarness(t, strings.Replace(tm3bFullBrief(), "# Owned files\ninternal/a.go\n\n", "", 1))
+		writeRoleFixture(t, filepath.Join(filepath.Dir(h.role), "reviewer.md"), "---\nname: Reviewer\nmode: read-only\n---\nReview.\n")
+		if code, out, msg := h.run(t, "build", h.brief, "--no-wait"); code != 0 {
+			t.Fatalf("initial exit=%d out=%s stderr=%s", code, out, msg)
+		}
+		code, out, msg := h.run(t, "build", h.brief, "--amend", "--role", "reviewer", "--no-wait")
+		if code != 0 || !strings.Contains(out, `"role":"reviewer"`) || strings.Contains(out, "duplicate_of") {
+			t.Fatalf("amend exit=%d out=%s stderr=%s", code, out, msg)
+		}
 	})
 }
 

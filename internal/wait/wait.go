@@ -915,7 +915,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 						sendWarning(fmt.Sprintf("report of '%s': findings %s but P0..P3 add up to %s", agent, numberString(header.Findings), numberString(sum)))
 					}
 				} else {
-					role := field(strings.Split(core.RosterLine(sd, agent), "\t"), 3)
+					role := TaskRole(sd, agent)
 					if core.IsReviewRole(role) {
 						sendWarning(fmt.Sprintf("report of '%s' has no 'findings: N (P0 a, P1 b, P2 c, P3 d) | verdict: pass|fail' first line", agent))
 					}
@@ -969,7 +969,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			case "quota":
 				match, renewal := readQuotaFile(sd, agent)
 				fields := strings.Split(core.RosterLine(sd, agent), "\t")
-				kind, model, lane, role := field(fields, 2), field(fields, 8), field(fields, 11), field(fields, 3)
+				kind, model, lane, role := field(fields, 2), field(fields, 8), field(fields, 11), TaskRole(sd, agent)
 				if lane == "" {
 					lane = core.LaneOfRole(ctx, role, env)
 				}
@@ -987,7 +987,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			case "provider-error", "provider-refusal", "capacity":
 				cause, _ := readWaitFile(sd, agent, "provider-cause")
 				fields := strings.Split(core.RosterLine(sd, agent), "\t")
-				kind, model, lane, role := field(fields, 2), field(fields, 8), field(fields, 11), field(fields, 3)
+				kind, model, lane, role := field(fields, 2), field(fields, 8), field(fields, 11), TaskRole(sd, agent)
 				if lane == "" {
 					lane = core.LaneOfRole(ctx, role, env)
 				}
@@ -1205,7 +1205,7 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	}
 	if math.IsNaN(timeout) {
 		for _, agent := range agents {
-			role := field(strings.Split(core.RosterLine(sd, agent), "\t"), 3)
+			role := TaskRole(sd, agent)
 			if ms := core.RoleTimeoutMs(role, ctx, env, cwd); float64(ms) > timeout || math.IsNaN(timeout) {
 				timeout = float64(ms)
 			}
