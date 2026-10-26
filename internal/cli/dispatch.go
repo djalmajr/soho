@@ -15,6 +15,7 @@ import (
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
+	"github.com/djalmajr/soho/internal/gittree"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
@@ -616,6 +617,11 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session, role); err != nil {
 		core.Warn(fmt.Sprintf("could not record the accepted submission in the attempt sidecar %s: %s; the prompt went out", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 	}
+	gitFields := dispatchGitFields(briefRaw, workerCwd, cwd, sd, amend, priorPointer, env)
+	gittree.Preserve(sidecar, gitFields)
+	// Arrival updates rewrite the sidecar. Preserve the first identity on
+	// early returns too, without replacing a check made by blocking wait.
+	defer func() { gittree.Preserve(sidecar, gitFields) }()
 	status, resent, enterSent := "submitted", false, false
 	if checkOn {
 		window := time.Duration(checkSecs) * time.Second
@@ -791,6 +797,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 		}
 	}
 	recordDispatchTask(sd, agent, role, brief, amend, env)
+	gittree.Preserve(sidecar, gitFields)
 	var last *jsonjs.Object
 	if noWait && checkOn && status != "queued" {
 		status, last = noWaitObservation(agent, role, kind, lane, model, report, env, sd, ctx, priorAuth)
@@ -1326,7 +1333,7 @@ func emitDispatchResult(agent, role, kind, composed, report, taskReport, status 
 	}
 	out.Set("auto_approved", approved)
 	if last != nil {
-		for _, key := range []string{"question", "lane", "model", "match", "renewal", "cause", "retries", "startup_evidence"} {
+		for _, key := range []string{"question", "lane", "model", "match", "renewal", "cause", "retries", "startup_evidence", "head_moved"} {
 			if v, ok := last.Get(key); ok {
 				out.Set(key, v)
 			}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/gittree"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
@@ -868,6 +869,9 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				partial := reportscan.PartialCount(text)
 				header := reportscan.ReviewHeader(text)
 				line := jsonjs.O("agent", agent, "status", "done", "report", report)
+				if moved := gittree.Check(gittree.Sidecar(sd, report), agent, env, frictionLogFile, "wait"); moved != nil {
+					line.Set("head_moved", moved)
+				}
 				pointer := taskreport.ReadTaskReportPointer(sd, agent)
 				if pointer != nil {
 					current, _ := pointer.Get("current")
