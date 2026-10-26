@@ -224,7 +224,22 @@ func Run(args []string, env platform.Env) (code int) {
 		frictionLogPath = ""
 		if !core.Nowrite(decisionEnv) {
 			if _, found := platform.FindExecutable("herdr", decisionEnv, platform.Current()); found {
-				frictionLogPath = filepath.Join(core.StateDir(commandConfig, decisionEnv, commandCwd), "friction.log")
+				if command == "release" || command == "reopen" {
+					// Preserve StateDir's existing safety refusals, which run
+					// before any initialization or gitignore update.
+					_, _, formerWaiting := core.FormerStateWaiting(commandConfig, decisionEnv, commandCwd)
+					if core.StateInSkill(commandConfig, decisionEnv, commandCwd) != "" || formerWaiting {
+						core.StateDir(commandConfig, decisionEnv, commandCwd)
+					}
+					// An unknown worker must not initialize state just to log
+					// the refusal. Existing state keeps its friction log.
+					sd := core.StateDirPath(commandConfig, decisionEnv, commandCwd)
+					if info, err := os.Stat(sd); err == nil && info.IsDir() {
+						frictionLogPath = filepath.Join(sd, "friction.log")
+					}
+				} else {
+					frictionLogPath = filepath.Join(core.StateDir(commandConfig, decisionEnv, commandCwd), "friction.log")
+				}
 			}
 		}
 	}

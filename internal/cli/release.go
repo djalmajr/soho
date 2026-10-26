@@ -37,7 +37,7 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 		}
 	}
 
-	sd := core.StateDir(ctx, env, cwd)
+	sd := core.StateDirPath(ctx, env, cwd)
 	line := core.RosterLine(sd, agent)
 	if line == "" {
 		if closePane && releaseOrphan(agent, force, ctx, env, cwd) {
