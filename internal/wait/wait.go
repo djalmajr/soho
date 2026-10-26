@@ -479,6 +479,13 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 		}
 	}
 	if st.State == "blocked" {
+		p := provider.ProviderDetectTexts(st.State, herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40)), "", "")
+		if p != nil && (p.Status == "provider-refusal" || p.Cause == provider.LostConnectionCause) {
+			_ = os.Remove(queuedFile)
+			_ = os.Remove(retryFile)
+			writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
+			return p.Status
+		}
 		_ = os.Remove(retryFile)
 		clearQueued := func() {
 			if queuedTerminal {
@@ -541,6 +548,10 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 	}
 	if st.State == "working" {
 		text := visible()
+		if p := provider.LostConnection(text); p != nil {
+			writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
+			return "provider-error"
+		}
 		hash := strconv.FormatUint(uint64(CksumField(NormalizeScreen(text))), 10)
 		now := platform.Now().Unix()
 		prev, hasPrev := readWaitFile(sd, agent, "stuck-hash")
@@ -587,12 +598,12 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 		ptext := herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40))
 		p := core.ProviderDetectTexts(st.State, ptext, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
 		if p != nil {
-			if p.Status == "provider-error" && p.Auth {
+			if (p.Status == "provider-error" && p.Auth) || p.Status == "provider-refusal" || p.Cause == provider.LostConnectionCause {
 				_ = os.Remove(queuedFile)
 				_ = os.Remove(retryFile)
 				clearProvider()
 				writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
-				return "provider-error"
+				return p.Status
 			}
 			target := fmt.Sprintf("%d\n%s", CksumField(ptext), p.Status)
 			prev, _ := readWaitFile(sd, agent, "provider")
@@ -973,14 +984,14 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				if WaitRank(15) > WaitRank(rc) {
 					rc = 15
 				}
-			case "provider-error", "capacity":
+			case "provider-error", "provider-refusal", "capacity":
 				cause, _ := readWaitFile(sd, agent, "provider-cause")
 				fields := strings.Split(core.RosterLine(sd, agent), "\t")
 				kind, model, lane, role := field(fields, 2), field(fields, 8), field(fields, 11), field(fields, 3)
 				if lane == "" {
 					lane = core.LaneOfRole(ctx, role, env)
 				}
-				if tag == "provider-error" {
+				if tag != "capacity" {
 					jsonLine(jsonjs.O("agent", agent, "status", tag, "report", report, "lane", lane, "kind", kind, "model", model, "cause", cause))
 					sendWarning(fmt.Sprintf("provider error: agent '%s' lane=%s kind=%s model=%s : %s", agent, showOr(lane, "?"), kind, showOr(model, "?"), cause))
 				} else {
