@@ -145,7 +145,7 @@ func TestSetupReadCommands(t *testing.T) {
 
 func TestDetectRoleConfigKeyNormalizesDotsAndDashes(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".agents", "herdr-roles")
+	dir := filepath.Join(root, ".agents", "soho-roles")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

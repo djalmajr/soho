@@ -91,6 +91,7 @@ func migrateNames(ctx *core.Config, env platform.Env, cwd string, dry bool) []st
 	// once the first one is moved (or projected in dry) the second finds
 	// the new file in place.
 	root := platform.ProjectRoot(env, cwd)
+	lines = append(lines, migrateProjectRoles(root, dry)...)
 	novoProject := filepath.Join(root, ".agents", "soho.conf")
 	for _, base := range formerProjectConfNames {
 		antigo := filepath.Join(root, ".agents", base)

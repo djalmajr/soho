@@ -29,7 +29,7 @@ func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Con
 	cooperative := cooperativePrompt(agent, report, ctx, env)
 	fmt.Fprintf(&out, "# Role: %s\n\n", core.FmGet(roleFile, "name"))
 	fmt.Fprintf(&out, "You are running as the `%s` role, agent name `%s`, inside a multi-agent run coordinated by an orchestrator that cannot see your terminal.\n\n", role, agent)
-	out.WriteString(core.RoleBody(roleFile))
+	out.WriteString(core.RoleBodyFor(role, env, "", roleFile))
 	out.WriteString("\n\n# Brief\n\n")
 	out.WriteString(briefRaw)
 	out.WriteString("\n\n# Report contract\n\n")

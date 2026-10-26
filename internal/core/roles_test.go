@@ -16,7 +16,7 @@ func TestRoleFilesAndFrontmatter(t *testing.T) {
 	// JS: "fmGet: frontmatter with CRLF lines parses like LF (decision 7)"
 	// JS: "roleBody: after the closing ---, whole file without frontmatter, empty when unclosed"
 	env, repo := fixture(t)
-	projectRoles := filepath.Join(repo, ".agents", "herdr-roles")
+	projectRoles := filepath.Join(repo, ".agents", "soho-roles")
 	write(t, filepath.Join(projectRoles, "implementer.md"), "---\r\nname: local\r\nalternatives: [one, two]\r\nmode: edit\r\n---\r\nbody\r\n")
 	projectRoles, _ = filepath.EvalSymlinks(projectRoles)
 	if got := RoleFile("implementer", env, repo); got != filepath.Join(projectRoles, "implementer.md") {

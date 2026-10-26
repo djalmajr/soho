@@ -101,7 +101,7 @@ func detectRoles(ctx *core.Config, env platform.Env, cwd string) []any {
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, ent := range entries {
 			n := ent.Name()
-			if ent.IsDir() || len(n) < 4 || n[0] == '.' || filepath.Ext(n) != ".md" {
+			if ent.IsDir() || len(n) < 4 || n[0] == '.' || filepath.Ext(n) != ".md" || strings.HasSuffix(n, ".append.md") {
 				continue
 			}
 			name := n[:len(n)-3]

@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/djalmajr/soho/internal/codexenv"
 	"github.com/djalmajr/soho/internal/core"
@@ -462,6 +464,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	} else {
 		s.Ok("config: lanes=off (per-role reuse unchanged)")
 	}
+	doctorProjectRoles(env, cwd, s)
 	doctorOrphans(ctx, env, cwd, s)
 	doctorDiscardedModels(ctx, env, cwd, s)
 	doctorModelPairs(ctx, env, cwd, s)
@@ -706,7 +709,7 @@ func usedKinds(ctx *core.Config, env platform.Env, cwd string) []string {
 			entries, _ := os.ReadDir(d)
 			for _, entry := range entries {
 				n := strings.TrimSuffix(entry.Name(), ".md")
-				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") || seen[n] || n == "documenter" || n == "planner" {
+				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") || strings.HasSuffix(entry.Name(), ".append.md") || seen[n] || n == "documenter" || n == "planner" {
 					continue
 				}
 				seen[n] = true
@@ -947,6 +950,48 @@ func doctorOrphans(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 	}
 }
 
+func doctorProjectRoles(env platform.Env, cwd string, s *Say) {
+	root := platform.ProjectRoot(env, cwd)
+	if _, err := os.Lstat(filepath.Join(root, ".agents", "herdr-roles")); err == nil {
+		s.Warning(".agents/herdr-roles/ is the old project roles directory; run soho setup to move it to .agents/soho-roles/")
+	}
+	project := filepath.Join(root, ".agents", "soho-roles")
+	entries, _ := os.ReadDir(project)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		path := filepath.Join(project, entry.Name())
+		if strings.HasSuffix(entry.Name(), ".append.md") {
+			body, err := os.ReadFile(path)
+			if err == nil && strings.Split(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n")[0] == "---" {
+				s.Warning("project role append " + entry.Name() + " has frontmatter; it is ignored and only the body is appended")
+			}
+			role := strings.TrimSuffix(entry.Name(), ".append.md")
+			if isFile(filepath.Join(project, role+".md")) {
+				s.Warning("project role " + role + " has both an override and an append; the pair is redundant")
+			}
+			continue
+		}
+		role := strings.TrimSuffix(entry.Name(), ".md")
+		skill := filepath.Join(platform.SkillDir(env), "roles", role+".md")
+		skillInfo, err := os.Stat(skill)
+		if err != nil {
+			continue
+		}
+		projectInfo, err := os.Stat(path)
+		if err != nil || !projectInfo.ModTime().Before(skillInfo.ModTime()) {
+			continue
+		}
+		projectBody, pe := os.ReadFile(path)
+		skillBody, se := os.ReadFile(skill)
+		if pe != nil || se != nil || bytes.Equal(projectBody, skillBody) {
+			continue
+		}
+		s.Warning(fmt.Sprintf("project role %s overrides the skill's and is older than it (%s < %s); diff them or move your additions to .agents/soho-roles/%s.append.md", role, projectInfo.ModTime().UTC().Format(time.RFC3339), skillInfo.ModTime().UTC().Format(time.RFC3339), role))
+	}
+}
+
 func doctorDiscardedModels(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 	if core.LanesEnabled(ctx, env) {
 		for _, lane := range core.LaneNames(ctx, env) {
@@ -961,7 +1006,7 @@ func doctorDiscardedModels(ctx *core.Config, env platform.Env, cwd string, s *Sa
 	for _, dir := range core.RoleDirs(env, cwd) {
 		entries, _ := os.ReadDir(dir)
 		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") || strings.HasSuffix(entry.Name(), ".append.md") {
 				continue
 			}
 			role := strings.TrimSuffix(entry.Name(), ".md")
@@ -1052,7 +1097,7 @@ func doctorModelPairs(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 		for _, dir := range core.RoleDirs(env, cwd) {
 			entries, _ := os.ReadDir(dir)
 			for _, e := range entries {
-				if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") || strings.HasSuffix(e.Name(), ".append.md") {
 					continue
 				}
 				role := strings.TrimSuffix(e.Name(), ".md")
@@ -1220,7 +1265,7 @@ func doctorCodexApprovalOverrides(ctx *core.Config, env platform.Env, cwd string
 	for _, dir := range core.RoleDirs(env, cwd) {
 		entries, _ := os.ReadDir(dir)
 		for _, entry := range entries {
-			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") && !strings.HasSuffix(entry.Name(), ".append.md") {
 				roles[strings.TrimSuffix(entry.Name(), ".md")] = true
 			}
 		}
