@@ -456,6 +456,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	}
 	if core.LanesEnabled(ctx, env) {
 		doctorLaneWarnings(ctx, env, cwd, s)
+		doctorLaneEfforts(ctx, env, cwd, s)
 	} else {
 		s.Ok("config: lanes=off (per-role reuse unchanged)")
 	}
@@ -1083,6 +1084,31 @@ func doctorFeedback(ctx *core.Config, env platform.Env, s *Say) {
 	info, err := os.Stat(dir)
 	if dir == "" || !filepath.IsAbs(dir) || err != nil || !info.IsDir() {
 		s.Warning("config: feedback=local but feedback_dir is empty, relative or not a directory; set feedback_dir to the maintainer's directory, as an absolute path (feedback send dies 2 until then)")
+	}
+}
+
+func doctorLaneEfforts(ctx *core.Config, env platform.Env, cwd string, s *Say) {
+	for _, lane := range core.LaneNames(ctx, env) {
+		seen := map[string]bool{}
+		for _, role := range doctorLaneRoles(core.LaneRolesCSV(ctx, lane, env)) {
+			if seen[role] {
+				continue
+			}
+			seen[role] = true
+			res := core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{})
+			if res.Lane != lane || !strings.HasPrefix(res.EffortFrom, "lane ") {
+				continue
+			}
+			model := res.ModelSpec
+			if model != "" {
+				effort := kinds.ClampTo(kinds.ClampTo(res.Effort, kinds.KindEffortCeiling(res.Kind)), core.Cfg(ctx, "max_effort", "max", env))
+				model, _ = kinds.ResolveModel(res.Kind, model, effort, env, func(string) {})
+			}
+			effective := spawn.ResolveSpawnEffort(role, lane, res.Kind, res.KindLayer, ctx, env, cwd, model)
+			if requested, _ := spawn.LaneRoleEffortConflict(role, res.Kind, model, effective, ctx, env, cwd); requested != "" {
+				s.Warning(fmt.Sprintf("lane %s runs %s at %s; the role asks for %s", lane, role, effective, requested))
+			}
+		}
 	}
 }
 
