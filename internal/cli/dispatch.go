@@ -128,6 +128,13 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 		if _, err := os.Stat(filepath.Join(sd, "last-report-"+agent)); err != nil {
 			core.DieFriction(fmt.Sprintf("dispatch: --amend needs an earlier dispatch to '%s' (nothing to amend)", agent), 2, frictionLogPath, "dispatch")
 		}
+		// A retired pointer (release, reopen, fresh spawn) has no open task:
+		// its last task ended with the instance that ran it.
+		if ptr := taskreport.ReadTaskReportPointer(sd, agent); ptr != nil {
+			if cur, ok := ptr.Get("current"); ok && cur == "" {
+				core.DieFriction(fmt.Sprintf("dispatch: --amend needs an open task on '%s'; its last task was retired with the worker that ran it (nothing to amend)", agent), 2, frictionLogPath, "dispatch")
+			}
+		}
 	}
 	cols := strings.Split(line, "\t")
 	at := func(i int) string {

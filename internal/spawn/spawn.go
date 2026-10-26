@@ -1276,6 +1276,11 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			placement = "split"
 		}
 	}
+	// Reuse paths returned above. This path starts a new agent, including
+	// fresh spawns reusing an old name whose pointer predates retirement.
+	if err := taskreport.RetireTaskReportPointer(sd, o.name); err != nil {
+		core.DieFriction("spawn: could not retire task pointer: "+err.Error(), 4, "", "")
+	}
 	blocked := startAgent(o, kind, env, created, agentArgs)
 	layout.RestoreFocusIfStolen(focusBefore, o.pane, o.direction, env)
 	family := kinds.AgentFamily(kind, o.model)
