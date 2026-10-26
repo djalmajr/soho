@@ -86,8 +86,15 @@ jobs:
         run: |
           $files = @(git ls-files '*.go')
           if ($LASTEXITCODE -ne 0) { throw "git ls-files failed" }
-          $formatting = @(gofmt -l $files)
-          if ($LASTEXITCODE -ne 0 -or $formatting.Count -ne 0) { throw "gofmt failed: $formatting" }
+          # Batches keep each gofmt command line under Windows' 32767-character
+          # limit; one call with every file overflows it as the tree grows.
+          $formatting = @()
+          for ($i = 0; $i -lt $files.Count; $i += 200) {
+            $batch = $files[$i..([Math]::Min($i + 199, $files.Count - 1))]
+            $formatting += @(gofmt -l $batch)
+            if ($LASTEXITCODE -ne 0) { throw "gofmt failed on a batch starting at $($batch[0])" }
+          }
+          if ($formatting.Count -ne 0) { throw "gofmt failed: $formatting" }
           go vet ./...
           if ($LASTEXITCODE -ne 0) { throw "go vet failed" }
       - name: Native tests
