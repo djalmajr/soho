@@ -479,6 +479,13 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 	if kind == "codex" {
 		footerBase, footerOK = compactCodexContext(before)
 	}
+	// A low codex gauge cannot prove a useful footer drop: skip all input
+	// and polling, then use the existing nothing-to-compact result below.
+	lowContext := kind == "codex" && footerOK && footerBase < compactCodexFooterMinBefore
+	endStatus := ""
+	if lowContext {
+		endStatus = "nothing-to-compact"
+	}
 	footerDropped := func(screen string) bool {
 		return footerOK && compactCodexContextDropped(footerBase, screen)
 	}
@@ -560,13 +567,12 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 			}
 		}
 	}
-	if !budget.sendText(pane, "/compact") {
+	if !lowContext && !budget.sendText(pane, "/compact") {
 		core.DieFriction(fmt.Sprintf("compact: could not send /compact to pane '%s'; release --close and spawn --fresh instead", pane), 4, frictionLogPath, "compact")
 	}
 	// opencode pops up a command menu above the input box when the /compact
 	// text is sent; Enter runs the top item, so only press it when /compact is
 	// on top.
-	endStatus := ""
 	endLine := ""
 	compacted := false
 	// proofObserved latches the first positive evidence of this attempt — a
@@ -575,7 +581,7 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 	// transient transcript error) while the idle wait is still running must
 	// not lose evidence already seen. The latch never skips the return to idle.
 	proofObserved := false
-	proceedToWait := true
+	proceedToWait := !lowContext
 	if kind == "opencode" {
 		switch compactOpenCodeMenuSelection(agent, env, budget) {
 		case openCodeMenuNothing:
@@ -705,7 +711,11 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 		}
 		if inDispatch && endStatus == "nothing-to-compact" {
 			// The dispatch keeps one JSON line on stdout: its own result.
-			fmt.Fprintf(platform.Stderr, "soho: dispatch: '%s' had nothing to compact\n", agent)
+			if lowContext {
+				fmt.Fprintf(platform.Stderr, "soho: dispatch: '%s' had nothing to compact (context %d%% is already low)\n", agent, footerBase)
+			} else {
+				fmt.Fprintf(platform.Stderr, "soho: dispatch: '%s' had nothing to compact\n", agent)
+			}
 			return compactStepResult{}
 		}
 		fmt.Fprintln(platform.Stdout, resultJSON(endStatus))
