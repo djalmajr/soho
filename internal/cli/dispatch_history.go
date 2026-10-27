@@ -298,7 +298,7 @@ func emitDuplicateDispatchResult(agent, role, kind string, dup *dispatchDuplicat
 	}
 	out.Set("auto_approved", approved)
 	if last != nil {
-		for _, key := range []string{"question", "lane", "model", "match", "renewal", "cause", "retries", "head_moved"} {
+		for _, key := range []string{"question", "lane", "model", "match", "renewal", "cause", "retries", "head_moved", "diff_stat", "outside_owned", "cited_unchanged"} {
 			if v, ok := last.Get(key); ok {
 				out.Set(key, v)
 			}

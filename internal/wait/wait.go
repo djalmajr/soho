@@ -874,6 +874,12 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				if moved := gittree.Check(gittree.Sidecar(sd, report), agent, env, frictionLogFile, "wait"); moved != nil {
 					line.Set("head_moved", moved)
 				}
+				if diff := gittree.DiffReport(gittree.Sidecar(sd, report), agent, report, env, frictionLogFile, "wait"); diff != nil {
+					for _, key := range diff.Keys() {
+						value, _ := diff.Get(key)
+						line.Set(key, value)
+					}
+				}
 				pointer := taskreport.ReadTaskReportPointer(sd, agent)
 				if pointer != nil {
 					current, _ := pointer.Get("current")
