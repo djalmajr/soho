@@ -1,0 +1,27 @@
+
+ ```
+   ## Recomendação
+
+   - Parse de `spend` ... (1)
+   - Levantar em `AnthropicSnapshot.spend` ... (2)
+   - Renderizar `Section::Block` ... (3)
+   - Linhas (inglês), só com valor real ... (4)
+   - Com `spend` presente ... (5)
+   - Fixtures: ... (6)
+   - Alternativas descartadas: ... (7)
+ ```
+
+ 7 content lines + header. No problem.
+
+ Now, I'll reply with the exact path of the report and nothing else.
+
+ /project/.soho/w96/reports/build-10-20261026T121523.md
+
+
+ [compaction]                  ↓ Jump to latest message · Ctrl+End
+
+──────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────
+~/project (main)
+↑325k ↓48k R4.7M CH99.8% ?/262k (auto)                         model • thinking off

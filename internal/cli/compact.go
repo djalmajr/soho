@@ -185,6 +185,42 @@ var compactProofByKind = map[string]string{
 // so a word like `cutoff` does not read as `off`.
 var compactThinkingFooterRE = regexp.MustCompile(`(^|[\s•:])(off|minimal|low|medium|high|xhigh|max)\s*$`)
 
+var compactPiFooterRE = regexp.MustCompile(`(?:^|\s)(\d{1,3}(?:\.\d+)?%|\?)/\d+(?:\.\d+)?[kKmM](?:\s|$)`)
+
+// compactPiContext reads only below the last input-box border, within the
+// two-line pi footer. A gauge in the scrolled history is not a reading.
+func compactPiContext(screen string) (percent float64, unknown, ok bool) {
+	lines := compactLines(screen)
+	tail := make([]string, 0, 3)
+	for i := len(lines) - 1; i >= 0 && len(tail) < 3; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			tail = append(tail, line)
+		}
+	}
+	for i, line := range tail {
+		if len([]rune(line)) >= 3 && strings.Trim(line, "─━") == "" {
+			for _, footer := range tail[:i] {
+				if m := compactPiFooterRE.FindStringSubmatch(footer); m != nil {
+					if m[1] == "?" {
+						return 0, true, true
+					}
+					value, err := strconv.ParseFloat(strings.TrimSuffix(m[1], "%"), 64)
+					return value, false, err == nil && value <= 100
+				}
+			}
+			return 0, false, false
+		}
+	}
+	return 0, false, false
+}
+
+// compactPiRestoreReserve leaves the larger of 15 seconds or 10% of the
+// total deadline for restoration, but never more than half of what remains
+// after the Enter, so a short budget still polls for the proof.
+func compactPiRestoreReserve(timeout, remaining time.Duration) time.Duration {
+	return max(0, min(max(15*time.Second, timeout/10), remaining/2))
+}
+
 func compactProof(kind string) string {
 	return compactProofByKind[kind]
 }
@@ -519,6 +555,7 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 	// proves the compaction. Without a gauge before the send the footer proof
 	// does not apply.
 	footerBase, footerOK := 0, false
+	piFooterBase, piFooterUnknown, piFooterOK := compactPiContext(before)
 	if kind == "codex" {
 		footerBase, footerOK = compactCodexContext(before)
 	}
@@ -530,6 +567,18 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 		endStatus = "nothing-to-compact"
 	}
 	footerDropped := func(screen string) bool {
+		if kind == "pi" {
+			if !piFooterOK || piFooterUnknown || piFooterBase < 10 || strings.Contains(screen, compactPiRunning) {
+				return false
+			}
+			value, unknown, ok := compactPiContext(screen)
+			if !ok || (!unknown && value > piFooterBase/2) {
+				return false
+			}
+			state := budget.state(agent)
+			compactDieOnDeadWorker(agent, state)
+			return state.State == "idle" || state.State == "done"
+		}
 		if footerOK && compactCodexContextDropped(footerBase, screen) {
 			return true
 		}
@@ -572,12 +621,16 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 	}
 	thinkingBefore := ""
 	thinkingChanged := false
+	thinkingOff := false
 	restoreDone := false
 	// A failure after the thinking went off (a send that fails, a worker that
 	// becomes unavailable or dies) exits through DieFriction; the level still
 	// goes back first, so the next brief does not run with thinking off.
 	defer func() {
 		original := recover()
+		// The proof context expires before the overall deadline. Cleanup
+		// must use the remaining overall budget even after a proof timeout.
+		budget.ctx = budgetCtx
 		func() {
 			// Cleanup shares the budget, but its expiry must not replace an
 			// operational exit. Any unexpected cleanup panic must escape before
@@ -615,6 +668,8 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 			budget.thinkingChanged = true
 			if level := compactThinkingLevel(agent, pane, env, "off", budget); level != "off" {
 				core.Warn(fmt.Sprintf("compact: could not turn '%s' thinking off before compacting (still '%s'); compacting anyway", agent, level), frictionLogPath, "compact")
+			} else {
+				thinkingOff = true
 			}
 		}
 	}
@@ -653,6 +708,12 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 	if proceedToWait {
 		if !budget.sendKeys(pane, "Enter") {
 			core.DieFriction(fmt.Sprintf("compact: could not send Enter to pane '%s'; release --close and spawn --fresh instead", pane), 4, frictionLogPath, "compact")
+		}
+		if kind == "pi" && thinkingOff {
+			end, _ := budgetCtx.Deadline()
+			proofCtx, stopProof := context.WithDeadline(budgetCtx, end.Add(-compactPiRestoreReserve(time.Duration(timeoutMS)*time.Millisecond, time.Until(end))))
+			defer stopProof()
+			budget.ctx = proofCtx
 		}
 		deadline := start.Add(time.Duration(timeoutMS) * time.Millisecond)
 		for {
@@ -730,6 +791,7 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 		}
 	}
 	elapsed := platform.Now().Sub(start).Milliseconds()
+	budget.ctx = budgetCtx
 	thinkingRestored := false
 	if thinkingChanged {
 		restoreDone = true
