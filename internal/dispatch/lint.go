@@ -1,11 +1,15 @@
 package dispatch
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -400,6 +404,7 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 		bodyBytes = nil
 	}
 	body := strings.ToValidUTF8(string(bodyBytes), "\uFFFD")
+	result.MissingMessage = strings.Join(referenceLintFindings(body, env), "; ")
 	if options.WorkerCwd != "" {
 		project := platform.ProjectRoot(env, options.OrchestratorCwd)
 		state := platform.StateProjectRoot(env, options.OrchestratorCwd)
@@ -444,7 +449,10 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 	if reasons := MissingSectionsReasons(missingList); reasons != "" {
 		message += " — " + reasons
 	}
-	result.MissingMessage = message
+	if result.MissingMessage != "" {
+		result.MissingMessage += "; "
+	}
+	result.MissingMessage += message
 	return result
 }
 
@@ -469,6 +477,65 @@ func lineCitesPath(line, path string) bool {
 // pathRune reports whether r can continue a path token.
 func pathRune(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r) || strings.ContainsRune("._-/\\~", r)
+}
+
+// ReferenceGit removes inherited Git routing/configuration and never relies on
+// the caller's repository selection. All callers supply read-only Git commands.
+func ReferenceGit(env platform.Env, args ...string) platform.RunResult {
+	clean := env.Clone()
+	for key := range clean {
+		if strings.HasPrefix(strings.ToUpper(key), "GIT_") {
+			delete(clean, key)
+		}
+	}
+	clean["GIT_CONFIG_NOSYSTEM"], clean["GIT_CONFIG_GLOBAL"], clean["GIT_OPTIONAL_LOCKS"] = "1", os.DevNull, "0"
+	resolved, ok := platform.FindExecutable("git", clean, platform.Current())
+	if !ok {
+		return platform.RunResult{NotFound: true}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, resolved, append([]string{"--no-pager", "--literal-pathspecs", "-c", "color.ui=false"}, args...)...)
+	cmd.Env = clean.List()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	result := platform.RunResult{Resolved: resolved, Stdout: string(stdout.Bytes()), Stderr: string(stderr.Bytes()), TimedOut: ctx.Err() != nil}
+	if err != nil {
+		result.Error = err.Error()
+	}
+	if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() >= 0 {
+		status := cmd.ProcessState.ExitCode()
+		result.Status = &status
+	}
+	return result
+}
+
+func referenceLintFindings(body string, env platform.Env) []string {
+	refs, bad := declaredReferences(body)
+	var findings []string
+	for _, line := range bad {
+		findings = append(findings, fmt.Sprintf("malformed Reference: declaration (line %d)", line))
+	}
+	for _, ref := range refs {
+		repo := ReferenceGit(env, "-C", ref.Repo, "rev-parse", "--git-dir")
+		if repo.Status == nil || *repo.Status != 0 {
+			findings = append(findings, "Reference: not a readable git repository: "+ref.Repo)
+			continue
+		}
+		commit := ReferenceGit(env, "-C", ref.Repo, "cat-file", "-e", ref.Commit+"^{commit}")
+		if commit.Status == nil || *commit.Status != 0 {
+			findings = append(findings, "Reference: commit does not exist: "+ref.Commit)
+			continue
+		}
+		for _, p := range ref.Paths {
+			r := ReferenceGit(env, "-C", ref.Repo, "cat-file", "-e", ref.Commit+":"+p)
+			if r.Status == nil || *r.Status != 0 {
+				findings = append(findings, "Reference: path does not exist at commit: "+p)
+			}
+		}
+	}
+	return findings
 }
 
 func unseenPathWarnings(brief, body, workerCwd string, roots []string) []string {

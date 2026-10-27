@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/collaboration"
@@ -183,6 +184,67 @@ func DeclaredWorktree(body string) string {
 	}
 	return ""
 }
+
+// Reference identifies immutable source material for a mirror task.
+type Reference struct {
+	Repo   string
+	Commit string
+	Paths  []string
+}
+
+var referenceLineRE = regexp.MustCompile(`^Reference:\s+(.+)@([a-fA-F0-9]{7,40})(?::(.+))?$`)
+
+// ReferencePathOK excludes traversal, absolute paths and platform separators.
+func ReferencePathOK(value string) bool {
+	if value == "" || strings.ContainsAny(value, "\\\x00\r\n") || strings.HasPrefix(value, "-") || strings.HasPrefix(value, "/") || (len(value) > 1 && value[1] == ':') {
+		return false
+	}
+	for _, part := range strings.Split(value, "/") {
+		if part == ".." || part == "." || part == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func declaredReferences(body string) ([]Reference, []int) {
+	lines := strings.Split(body, "\n")
+	fenced := briefFenceMask(lines)
+	var refs []Reference
+	var malformed []int
+	for i, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if fenced[i] || !strings.HasPrefix(line, "Reference:") {
+			continue
+		}
+		m := referenceLineRE.FindStringSubmatch(line)
+		if m == nil || !filepath.IsAbs(m[1]) || strings.ContainsAny(m[1], "\x00\r\n") {
+			malformed = append(malformed, i+1)
+			continue
+		}
+		ref := Reference{Repo: m[1], Commit: m[2]}
+		valid := true
+		if m[3] != "" {
+			for _, p := range strings.Split(m[3], ",") {
+				p = strings.TrimSpace(p)
+				if !ReferencePathOK(p) {
+					valid = false
+				}
+				ref.Paths = append(ref.Paths, p)
+			}
+		}
+		if !valid {
+			malformed = append(malformed, i+1)
+			continue
+		}
+		refs = append(refs, ref)
+	}
+	return refs, malformed
+}
+
+// DeclaredReferences reads valid declarations outside fenced examples.
+// Malformed declarations are diagnosed separately by brief lint.
+func DeclaredReferences(body string) []Reference { refs, _ := declaredReferences(body); return refs }
 
 func SamePath(left, right, goos string) bool {
 	if goos == "win32" {

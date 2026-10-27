@@ -10,6 +10,7 @@
 package wait
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -141,7 +142,9 @@ func metricsLine(sd, agent, report, text string, header *reportscan.ReviewHeader
 // stats command reads for this report: the composed brief in the state dir
 // when it exists, else the .brief.md beside the report. The first `Type:`
 // line decides; a value outside the accepted set keeps the field out.
-func metricsBriefType(sd, report string) string {
+func metricsBriefType(sd, report string) string { return BriefType(composedBriefBody(sd, report)) }
+
+func composedBriefBody(sd, report string) string {
 	base := strings.TrimSuffix(filepath.Base(report), ".md")
 	file := filepath.Join(filepath.Dir(report), base+".brief.md")
 	if _, err := os.Stat(filepath.Join(sd, "briefs", base+".md")); err == nil {
@@ -151,7 +154,97 @@ func metricsBriefType(sd, report string) string {
 	if err != nil {
 		return ""
 	}
-	return BriefType(text)
+	return text
+}
+
+var parityItem = regexp.MustCompile(`^\s*(?:[-*+]\s+|[0-9]+[.)]\s+|\|)`)
+var paritySame = regexp.MustCompile(`\[same\]`)
+var parityNA = regexp.MustCompile(`\[n/a\]`)
+var parityDiverges = regexp.MustCompile(`\[diverges:([^\]]*)\]`)
+
+func markedReferenceDivergence(raw string) bool {
+	match := parityDiverges.FindStringSubmatch(raw)
+	return match != nil && strings.TrimSpace(match[1]) != ""
+}
+
+func checkReferenceParity(sd, agent, report, text string, line *jsonjs.Object) {
+	body := composedBriefBody(sd, report)
+	fence := ""
+	hasReference := false
+	for _, raw := range strings.Split(body, "\n") {
+		if fence != "" {
+			if close := metricsFenceClose.FindStringSubmatch(raw); close != nil && close[1][0] == fence[0] && len(close[1]) >= len(fence) {
+				fence = ""
+			}
+			continue
+		}
+		if open := metricsFenceOpen.FindStringSubmatch(raw); open != nil {
+			fence = open[1]
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(raw), "Reference:") {
+			hasReference = true
+			break
+		}
+	}
+	if !hasReference {
+		return
+	}
+	same, diverges, na, unmarked := 0, 0, 0, 0
+	found, inSection := false, false
+	fence = ""
+	for _, raw := range strings.Split(text, "\n") {
+		if fence != "" {
+			if close := metricsFenceClose.FindStringSubmatch(raw); close != nil && close[1][0] == fence[0] && len(close[1]) >= len(fence) {
+				fence = ""
+			}
+			continue
+		}
+		if open := metricsFenceOpen.FindStringSubmatch(raw); open != nil {
+			fence = open[1]
+			continue
+		}
+		trim := strings.TrimSpace(raw)
+		if strings.HasPrefix(trim, "## ") {
+			inSection = trim == "## Reference parity"
+			if inSection {
+				found = true
+			}
+			continue
+		}
+		if strings.HasPrefix(trim, "# ") {
+			inSection = false
+		}
+		if !inSection || !parityItem.MatchString(raw) {
+			continue
+		}
+		// Table separators and header rows are structure, not parity items.
+		if strings.HasPrefix(trim, "|") && (strings.Contains(trim, "---") || strings.EqualFold(strings.Trim(trim, "| "), "item | parity")) {
+			continue
+		}
+		marks := 0
+		if paritySame.MatchString(raw) {
+			same++
+			marks++
+		}
+		if markedReferenceDivergence(raw) {
+			diverges++
+			marks++
+		}
+		if parityNA.MatchString(raw) {
+			na++
+			marks++
+		}
+		if marks != 1 {
+			unmarked++
+		}
+	}
+	line.Set("reference_parity", jsonjs.O("same", same, "diverges", diverges, "na", na, "unmarked", unmarked))
+	if !found {
+		sendWarning(fmt.Sprintf("report of '%s' has no Reference parity section", agent))
+	} else if unmarked > 0 {
+		sendWarning(fmt.Sprintf("report of '%s' has %d parity item(s) without a mark", agent, unmarked))
+	}
 }
 
 // BriefType shares the settled-metrics Type vocabulary with dispatch.

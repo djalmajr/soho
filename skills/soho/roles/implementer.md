@@ -82,4 +82,6 @@ Example:
 
 <report>
 For every item in the brief: `done` / `partial` / `skipped + reason`. Then: files changed (path + one line), tests added or updated, checks run with their result, decisions you had to make, and open questions for the orchestrator.
+
+When the brief declares `Reference:`, include a `## Reference parity` section with one bullet per compared behavior or reference path. Mark each bullet `[same]`, `[diverges: <concrete reason>]` or `[n/a]`; explain every intentional difference and cite the source behavior and the local check. A bare `[diverges]` or an empty reason is unmarked. Read the pinned reference before claiming parity; do not modify the reference repository. The wait checks the section and marks when the report settles, warns about omissions and publishes counts without changing its status or exit code.
 </report>

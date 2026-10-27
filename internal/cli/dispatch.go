@@ -440,6 +440,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		prompt = dispatch.ComposeAmendment(briefRaw, report, ctx, env, kind, args, approvals, shared, agent)
 		prompt = strings.Replace(prompt, "# Amendment to your current brief\n\n", "# Amendment to your current brief\n\n"+amendmentRoleHeader(roleFile, role, agent), 1)
 	}
+	prompt = dispatchReferencePrompt(prompt, briefRaw, role, sd, report, env)
 	writeComposed := func() error { return os.WriteFile(composed, []byte(prompt), 0o666) }
 	if scratch {
 		// A fresh O_EXCL temporary renamed over the name: a link planted
@@ -1369,7 +1370,7 @@ func emitDispatchResult(agent, role, kind, composed, report, taskReport, status 
 		out.Set("amend", true)
 	}
 	if last != nil {
-		for _, key := range []string{"dialog", "verdict", "findings", "severity", "partial", "verdict_effective"} {
+		for _, key := range []string{"dialog", "verdict", "findings", "severity", "partial", "verdict_effective", "reference_parity"} {
 			if v, ok := last.Get(key); ok {
 				out.Set(key, v)
 			}

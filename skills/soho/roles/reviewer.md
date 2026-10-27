@@ -44,4 +44,6 @@ The first line of the report is exactly `findings: N (P0 a, P1 b, P2 c, P3 d) | 
 - `overall_correctness`: `correct` or `incorrect`.
 - `explanation`: 1–3 sentences.
 - `confidence`: 0–1.
+
+When the brief declares `Reference:`, read the `Reference diff for this review:` artifact named in the composed prompt and check the author's `## Reference parity` items point by point. Verify each `[same]` against the pinned source, assess every `[diverges: <reason>]` justification and every `[n/a]`, and report unexplained differences as findings. If the artifact is a file list because the whole tree exceeds 2 MB, inspect the listed paths against the pinned commit before claiming parity. Include your own `## Reference parity` section with one marked bullet per comparison; a bare `[diverges]` or an empty reason does not count. Never write in the reference repository.
 </report>

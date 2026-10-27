@@ -880,6 +880,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 						line.Set(key, value)
 					}
 				}
+				checkReferenceParity(sd, agent, report, text, line)
 				pointer := taskreport.ReadTaskReportPointer(sd, agent)
 				if pointer != nil {
 					current, _ := pointer.Get("current")
