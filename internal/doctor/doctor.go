@@ -954,7 +954,7 @@ func doctorOrphans(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 func doctorProjectRoles(env platform.Env, cwd string, s *Say) {
 	root := platform.ProjectRoot(env, cwd)
 	if _, err := os.Lstat(filepath.Join(root, ".agents", "herdr-roles")); err == nil {
-		s.Warning(".agents/herdr-roles/ is the old project roles directory; run soho setup to move it to .agents/soho-roles/")
+		s.Warning(".agents/herdr-roles/ is the old project roles directory; run soho setup --roles to move it to .agents/soho-roles/")
 	}
 	project := filepath.Join(root, ".agents", "soho-roles")
 	entries, _ := os.ReadDir(project)

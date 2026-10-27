@@ -30,7 +30,7 @@ func cmdLint(args []string, ctx *core.Config, env platform.Env, cwd string) int 
 		platform.DieFriction(fmt.Sprintf("lint: brief not found: %s", brief), 2)
 	}
 	if core.RoleFile(role, env, cwd) == "" {
-		platform.DieFriction(fmt.Sprintf("lint: unknown role '%s'", role), 3)
+		platform.DieFriction(fmt.Sprintf("lint: unknown role '%s'", role)+core.UnknownRoleHint(role, env, cwd), 3)
 	}
 	result := dispatch.BriefLintFindings(brief, ctx, env, dispatch.BriefLintOptions{ReadOnly: !core.RoleIsEdit(role, env, cwd)})
 	if result.Mode == "off" {
