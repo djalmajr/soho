@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -260,13 +261,43 @@ func WithRosterLock(dir string, fn func()) {
 	fn()
 }
 
+// RosterE2EPort reads the optional trailing column without changing old rows.
+func RosterE2EPort(fields []string) string {
+	if len(fields) <= 16 {
+		return ""
+	}
+	port, err := strconv.Atoi(fields[16])
+	if err != nil || port < 1024 || port > 65535 {
+		return ""
+	}
+	return strconv.Itoa(port)
+}
+
 func RosterAppend(dir string, fields []string) {
 	WithRosterLock(dir, func() {
 		f, err := os.OpenFile(filepath.Join(dir, "agents.tsv"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
 		if err != nil {
 			panic(err)
 		}
-		_, err = f.WriteString(strings.Join(fields, "\t") + "\n")
+		// Append a schema comment rather than rewrite any existing row/header.
+		// Off-mode keeps the original bytes and column count exactly.
+		if RosterE2EPort(fields) != "" {
+			hasHeader, hasPortHeader := false, false
+			for _, line := range tsvLines(dir) {
+				if strings.HasPrefix(line, "#") {
+					hasHeader = true
+					if strings.HasSuffix(line, "\te2e_port") {
+						hasPortHeader = true
+					}
+				}
+			}
+			if hasHeader && !hasPortHeader {
+				_, err = f.WriteString("# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\tburst\targs\teffort\tmcp\te2e_port\n")
+			}
+		}
+		if err == nil {
+			_, err = f.WriteString(strings.Join(fields, "\t") + "\n")
+		}
 		if closeErr := f.Close(); err == nil {
 			err = closeErr
 		}

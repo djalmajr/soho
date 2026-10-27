@@ -318,6 +318,12 @@ func explainPrintRunning(rows []explainRow, stateDir string, ctx *core.Config, e
 			out = append(out, explainRowLine(row))
 		}
 	}
+	for _, line := range core.RosterRows(stateDir) {
+		fields := strings.Split(line, "\t")
+		if port := core.RosterE2EPort(fields); port != "" {
+			out = append(out, fields[0]+": E2E_PORT="+port)
+		}
+	}
 	// The footprint line, when it is due, sits after the lane lines and
 	// before the blank line.
 	if line := explainFootprintLine(stateDir, ctx, env, cwd); line != "" {

@@ -204,6 +204,9 @@ report_working_max=600
 # Minutes without new working output before a wait alert; 0 disables it.
 idle_alert_minutes=20
 
+# Optional first per-worker E2E port (1024..65000); empty disables reservation.
+e2e_port_base=
+
 # One regular expression (RE2) per kind: a still screen whose last 15
 # non-empty lines match it is not settled. Each line is tried, and also each
 # line joined to the next one by a space, so a footer a narrow pane wraps in

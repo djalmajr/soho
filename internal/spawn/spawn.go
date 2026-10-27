@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -609,6 +610,9 @@ func EmitReuse(name, role, kind string, ctx *core.Config, env platform.Env, cwd 
 	// model, effort and agent_args are the roster columns the spawn recorded
 	// (8, 14, 13); a missing value comes out as "".
 	out := jsonjs.O("name", name, "pane_id", fieldAt(f, 1), "kind", kind, "role", role, "family", fieldAt(f, 4), "reused", true, "previous_role", prev, "effort", fieldAt(f, 14), "model", fieldAt(f, 8), "agent_args", fieldAt(f, 13), "status", "ready")
+	if port := core.RosterE2EPort(f); port != "" {
+		out.Set("e2e_port", port)
+	}
 	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.StringifyIndent(out, 2))
 	return true
 }
@@ -674,6 +678,9 @@ func gateReuse(name, role, kind string, ctx *core.Config, env platform.Env, cwd 
 	}
 	f := strings.Split(line, "\t")
 	out := jsonjs.O("name", name, "pane_id", fieldAt(f, 1), "kind", kind, "role", role, "family", fieldAt(f, 4), "reused", true, "previous_role", fieldAt(f, 3), "effort", fieldAt(f, 14), "model", fieldAt(f, 8), "agent_args", fieldAt(f, 13), "status", "blocked_at_startup")
+	if port := core.RosterE2EPort(f); port != "" {
+		out.Set("e2e_port", port)
+	}
 	out.Set("startup_evidence", jsonjs.O(startup.FieldState, st.State, startup.FieldReason, ev.Reason, startup.FieldSource, ev.Source))
 	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.StringifyIndent(out, 2))
 	warnStartupBlocked(name, kind, st.State, ev, ctx, env)
@@ -1252,6 +1259,13 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	if resume := ResumeArg(kind, agentArgs); resume != "" {
 		core.DieFriction(fmt.Sprintf("spawn: '%s' would make %s resume an earlier session instead of starting a new one (for claude, -c is --continue: it resumes the orchestrator's conversation in this cwd). Remove it from the native args; codex-only flags belong in args.codex", resume, kind), 2, "", "")
 	}
+	e2ePort := ""
+	var unlockE2E func()
+	defer func() {
+		if unlockE2E != nil {
+			unlockE2E()
+		}
+	}()
 	created, placement, autoRegrid := false, "given", false
 	layoutMode := core.Cfg(ctx, "layout", "split", env)
 	focusBefore := layout.UIFocusedPane(env)
@@ -1263,6 +1277,19 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		// configuration or session lookup when its cwd is another project.
 		paneEnv := env.Clone()
 		paneEnv["SOHO_REGISTRY_DIR"] = sd
+		// An inherited caller port is not a reservation for this worker.
+		paneEnv["SOHO_SPAWN_E2E_PORT"] = ""
+		delete(paneEnv, "SOHO_CREATED_E2E_PANE")
+		reserveForNewShell := func() {
+			if e2ePort != "" || core.Cfg(ctx, "e2e_port_base", "", env) == "" {
+				return
+			}
+			// Placement has selected creation, not adoption. Keep the port
+			// selection serialized until the worker's roster row records it.
+			unlockE2E = lockE2EPorts(sd)
+			e2ePort = reserveE2EPort(sd, ctx, env)
+			paneEnv["SOHO_SPAWN_E2E_PORT"] = e2ePort
+		}
 		if lane != "" {
 			// The M1 idle-other-kind scan and the released-orphan scan share
 			// the live read the name check just made; a named spawn (o.name
@@ -1296,7 +1323,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			if layoutMode != "tab" && o.tabLabel == "" {
 				Warn(fmt.Sprintf("caller tab has no room for another pane (%s); placing '%s' in a herd tab", autoDir, o.name), ctx, env, "spawn")
 			}
-			t := layout.HerdTabPane(ctx, o.cwd, o.tabLabel, o.role, paneEnv, cwd)
+			t := layout.HerdTabPane(ctx, o.cwd, o.tabLabel, o.role, paneEnv, cwd, reserveForNewShell)
 			o.pane = t.Pane
 			created = true
 			o.direction = ""
@@ -1313,6 +1340,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			if ratio == "" {
 				ratio = "0.5"
 			}
+			reserveForNewShell()
 			s := herdr.PaneSplit(anchor, o.direction, o.cwd, paneEnv, &ratio)
 			if !s.Ok {
 				core.DieFriction("pane split failed", 4, "", "")
@@ -1320,6 +1348,11 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			o.pane = s.Pane
 			created = true
 			placement = "split"
+		}
+		// Herd placement can adopt an existing empty root without creating a
+		// shell. Only an actual create/split exported this new reservation.
+		if e2ePort != "" && paneEnv.Get("SOHO_CREATED_E2E_PANE") != o.pane {
+			e2ePort = ""
 		}
 	}
 	// Reuse paths returned above. This path starts a new agent, including
@@ -1361,7 +1394,11 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	// DJA-392 fatia 2 R2: the effective MCP choice (inherit|none) is the
 	// row's last field; reopen reads it and passes --mcp <value> to the
 	// respawn, so a worker keeps the MCP it was opened with.
-	core.RosterAppend(sd, []string{o.name, o.pane, kind, o.role, family, boolInt(created), o.cwd, core.NowStamp(platform.Now()), o.model, defaultValue(o.approvals, "auto"), o.role, lane, boolText(burst), native, o.effort, o.mcp})
+	row := []string{o.name, o.pane, kind, o.role, family, boolInt(created), o.cwd, core.NowStamp(platform.Now()), o.model, defaultValue(o.approvals, "auto"), o.role, lane, boolText(burst), native, o.effort, o.mcp}
+	if e2ePort != "" {
+		row = append(row, e2ePort)
+	}
+	core.RosterAppend(sd, row)
 	// A spawn that re-rosters a released pane (spawn --pane on it) retires
 	// the pane's released-panes row.
 	if placement == "given" {
@@ -1492,6 +1529,9 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 		return "ready"
 	}())
+	if e2ePort != "" {
+		out.Set("e2e_port", e2ePort)
+	}
 	if contextWindow != "" {
 		out.Set("context_window", contextWindow)
 	}
@@ -2027,4 +2067,53 @@ func PollIntervalMs(env platform.Env) int {
 		return 500
 	}
 	return int(d.Milliseconds())
+}
+
+// e2ePortAvailable is the native host-free probe; tests may inject host outcomes
+// while exercising the public spawn path when the sandbox forbids listeners.
+var e2ePortAvailable = func(port int) error {
+	listener, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	if err != nil {
+		return err
+	}
+	return listener.Close()
+}
+
+func lockE2EPorts(sd string) func() {
+	path := filepath.Join(sd, "e2e-ports.lock")
+	for tries := 0; ; tries++ {
+		err := os.Mkdir(path, 0700)
+		if err == nil {
+			return func() { _ = os.Remove(path) }
+		}
+		if !os.IsExist(err) || tries >= 199 {
+			core.DieFriction("spawn: "+err.Error(), 4, "", "spawn")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func reserveE2EPort(sd string, ctx *core.Config, env platform.Env) string {
+	raw := core.Cfg(ctx, "e2e_port_base", "", env)
+	if !core.ConfigValueOk("e2e_port_base", raw, env, "") {
+		core.DieFriction("spawn: invalid e2e_port_base", 2, "", "spawn")
+	}
+	base, _ := strconv.Atoi(raw)
+	used := map[string]bool{}
+	for _, row := range core.RosterRows(sd) {
+		fields := strings.Split(row, "\t")
+		if port := core.RosterE2EPort(fields); port != "" && herdr.AgentState(fieldAt(fields, 0), env, herdr.Timeout, nil).State != "gone" {
+			used[port] = true
+		}
+	}
+	for port := base; port < base+200; port++ {
+		if used[strconv.Itoa(port)] {
+			continue
+		}
+		if err := e2ePortAvailable(port); err == nil {
+			return strconv.Itoa(port)
+		}
+	}
+	core.DieFriction("spawn: no free E2E port in the 200-port range from e2e_port_base="+raw, 4, "", "spawn")
+	return ""
 }

@@ -307,7 +307,7 @@ func frictionPath(ctx *core.Config, env platform.Env, cwd string) string {
 	return filepath.Join(core.StateDirPath(ctx, env, cwd), "friction.log")
 }
 
-func HerdTabSplit(ctx *core.Config, tab, workerCwd string, env platform.Env, cwd string) herdr.PaneSplitResult {
+func HerdTabSplit(ctx *core.Config, tab, workerCwd string, env platform.Env, cwd string, beforeCreate ...func()) herdr.PaneSplitResult {
 	live := herdr.PaneList(env, core.WorkspaceID(ctx, env, cwd))
 	anchor := ""
 	for _, v := range live {
@@ -327,6 +327,9 @@ func HerdTabSplit(ctx *core.Config, tab, workerCwd string, env platform.Env, cwd
 	if anchor == "" {
 		return herdr.PaneSplitResult{Ok: true, Pane: herdr.TabGet(tab, env).Root}
 	}
+	for _, prepare := range beforeCreate {
+		prepare()
+	}
 	s := herdr.PaneSplit(anchor, AutoDirectionFor(env, anchor), workerCwd, env, nil)
 	if !s.Ok {
 		platform.DieFriction("pane split failed", 4)
@@ -334,7 +337,9 @@ func HerdTabSplit(ctx *core.Config, tab, workerCwd string, env platform.Env, cwd
 	return s
 }
 
-func HerdTabPane(ctx *core.Config, workerCwd, label, role string, env platform.Env, cwd string) herdr.PaneSplitResult {
+// beforeCreate runs only after placement selects a new shell, before its create
+// call. Adopting an existing empty tab root does not invoke it.
+func HerdTabPane(ctx *core.Config, workerCwd, label, role string, env platform.Env, cwd string, beforeCreate ...func()) herdr.PaneSplitResult {
 	ws := core.WorkspaceID(ctx, env, cwd)
 	cap := SplitCap(ctx, env)
 	live := herdr.PaneList(env, ws)
@@ -355,7 +360,7 @@ func HerdTabPane(ctx *core.Config, workerCwd, label, role string, env platform.E
 			}
 			if len(rosterPanes(ctx, live, match.Tab, env, cwd)) < cap {
 				HerdTabSet(ctx, match.Tab, cand, "manual", env, cwd)
-				return HerdTabSplit(ctx, match.Tab, workerCwd, env, cwd)
+				return HerdTabSplit(ctx, match.Tab, workerCwd, env, cwd, beforeCreate...)
 			}
 			cand = fmt.Sprintf("%s ·%d", label, k)
 		}
@@ -364,7 +369,7 @@ func HerdTabPane(ctx *core.Config, workerCwd, label, role string, env platform.E
 		entries := HerdTabEntries(ctx, env, cwd)
 		for _, e := range entries {
 			if e.Tab != "" && len(rosterPanes(ctx, live, e.Tab, env, cwd)) < cap {
-				return HerdTabSplit(ctx, e.Tab, workerCwd, env, cwd)
+				return HerdTabSplit(ctx, e.Tab, workerCwd, env, cwd, beforeCreate...)
 			}
 		}
 		taken := make([]string, len(entries))
@@ -376,6 +381,9 @@ func HerdTabPane(ctx *core.Config, workerCwd, label, role string, env platform.E
 			abbr = RoleAbbrev(role)
 		}
 		newLabel, newMode = HerdAutoLabel(abbr, taken, ctx, env), "auto"
+	}
+	for _, prepare := range beforeCreate {
+		prepare()
 	}
 	t := herdr.TabCreate(env, ws, workerCwd, newLabel)
 	if !t.Ok {
