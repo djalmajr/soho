@@ -838,12 +838,21 @@ func TestDispatchCompactSigKILLKeepsTheInterruptedMarker(t *testing.T) {
 		treeKilled = exec.Command("taskkill", "/T", "/F", "/PID", fmt.Sprint(cmd.Process.Pid)).Run() == nil
 	}
 	if !treeKilled {
-		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) && runtime.GOOS != "windows" {
 			t.Fatal(err)
 		}
 	}
-	if err := cmd.Wait(); err == nil {
-		t.Fatal("the child survived the kill")
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+	timer := time.NewTimer(15 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-waitDone:
+		if err == nil {
+			t.Fatal("the child survived the kill")
+		}
+	case <-timer.C:
+		t.Fatal("the child did not exit within 15 seconds after the kill")
 	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("the marker was removed by the killed dispatch: %v", err)
