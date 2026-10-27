@@ -447,11 +447,27 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 	return result
 }
 
+// lineCitesPath reports whether a brief line already spells out the absolute
+// path: the warning would only repeat it.
+func lineCitesPath(line, path string) bool {
+	for rest := line; ; {
+		i := strings.Index(rest, path)
+		if i < 0 {
+			return false
+		}
+		end := i + len(path)
+		if end == len(rest) || !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-/\\", rune(rest[end])) {
+			return true
+		}
+		rest = rest[end:]
+	}
+}
+
 func unseenPathWarnings(brief, body, workerCwd string, roots []string) []string {
 	lines := strings.Split(body, "\n")
 	out := []string{}
 	seen := map[string]bool{}
-	add := func(value string, line int, inline bool) {
+	add := func(value string, line int, inline bool, text string) {
 		candidate := strings.TrimRight(strings.TrimSpace(value), "),.;:")
 		if candidate == "" || filepath.IsAbs(candidate) {
 			return
@@ -474,7 +490,7 @@ func unseenPathWarnings(brief, body, workerCwd string, roots []string) []string 
 				}
 			}
 		}
-		if absolute == "" {
+		if absolute == "" || lineCitesPath(text, absolute) {
 			return
 		}
 		key := fmt.Sprintf("%d\x00%s", line, candidate)
@@ -486,10 +502,10 @@ func unseenPathWarnings(brief, body, workerCwd string, roots []string) []string 
 	}
 	for i, line := range lines {
 		for _, m := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(line, -1) {
-			add(m[1], i+1, true)
+			add(m[1], i+1, true, line)
 		}
 		for _, m := range regexp.MustCompile(`(?:^|[\s"'(])([^\s"'<>`+"`"+`]+)`).FindAllStringSubmatch(line, -1) {
-			add(m[1], i+1, false)
+			add(m[1], i+1, false, line)
 		}
 	}
 	return out
