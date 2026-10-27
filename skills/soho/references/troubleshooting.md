@@ -18,6 +18,10 @@ If a Codex worker opened with `spawn --cwd` registers copies or processes in ano
 - **Cause:** Codex's `workspace-write` sandbox allows the repo root, `/tmp` and `$TMPDIR` but **denies its own config roots `.agents/` and `.codex/`** (tested: `.claude`, `.cache`, `.tmp`, `.worktrees`, `node_modules/.cache` and `.soho` are writable).
 - **Now:** state lives in `<repo>/.soho/`. Never move it under `.agents/`. With `SOHO_DIR`, make sure every kind can write there.
 
+## A working worker has no new output
+
+`wait` samples working output at most once per minute for its idle alert, ignores timer, spinner, token/context and clock changes, and warns once per task per process after `idle_alert_minutes` (default `20`, `0` disables); its terminal JSON includes `idle_alerts`. Read the pane with `herdr agent read <agent> --source visible` to decide whether a long command is stuck; the alert sends no input and does not stop the worker. A state or substantive output change resets the observation timer. The older `stuck_warn_minutes` probe warning remains independent and can also appear.
+
 ## `dispatch --wait` returns `done` while the worker is still working
 
 - **Symptom:** `wait_status: done`, `report_exists: false`; the pane shows the agent still calling tools (Codex during MCP calls).

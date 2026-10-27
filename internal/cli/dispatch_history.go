@@ -286,7 +286,7 @@ func emitDuplicateDispatchResult(agent, role, kind string, dup *dispatchDuplicat
 		out.Set("amend", true)
 	}
 	if last != nil {
-		for _, key := range []string{"dialog", "verdict", "findings", "severity", "partial", "verdict_effective", "reference_parity", "env"} {
+		for _, key := range []string{"dialog", "verdict", "findings", "severity", "partial", "verdict_effective", "reference_parity", "env", "idle_alerts"} {
 			if v, ok := last.Get(key); ok {
 				out.Set(key, v)
 			}

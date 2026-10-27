@@ -396,6 +396,25 @@ func reportAgentState(sd, agent string, ctx *core.Config, env platform.Env, stab
 }
 
 func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) string {
+	return probeAgent(sd, agent, report, ctx, env, nil)
+}
+
+type probeScreen struct {
+	frames        []string
+	read          bool
+	nativeWorking bool
+}
+
+func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sample *probeScreen) string {
+	capture := func(text string, ok bool) string {
+		if sample != nil {
+			sample.read = true
+			if ok {
+				sample.frames = append(sample.frames, text)
+			}
+		}
+		return text
+	}
 	grace, _ := strconv.ParseFloat(core.Cfg(ctx, "settled_grace", "45", env), 64)
 	if reportNonEmpty(report) {
 		removeWaitFile(sd, agent, "queued")
@@ -442,6 +461,7 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 	probeKind := field(strings.Split(core.RosterLine(sd, agent), "\t"), 2)
 	if startup.Enabled(probeKind) {
 		cursorScreen, cursorScreenOK := herdr.AgentReadOK(env, agent, "visible", nil)
+		capture(cursorScreen, cursorScreenOK)
 		if ev := cursorapproval.Evaluate(probeKind, st.State, cursorScreen, cursorScreenOK); ev.Verdict == startup.VerdictBlocked || ev.Reason == startup.ReasonScreenIncomplete {
 			if ev.Reason == "mcp-approval" {
 				sendWarning(fmt.Sprintf("agent '%s' requires approval of MCP servers; no input is sent — the operator must answer in the pane", agent))
@@ -501,7 +521,7 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 			if len(line) > 2 {
 				kind = line[2]
 			}
-			visible := herdr.AgentRead(env, agent, "visible", intPtr(40))
+			visible := capture(herdr.AgentReadOK(env, agent, "visible", intPtr(40)))
 			if provider.DialogKind(kind, visible) == "question" {
 				writeWaitFile(sd, agent, "question", provider.QuestionText(visible)+"\n")
 				clearQueued()
@@ -543,7 +563,7 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 	screenRead := false
 	visible := func() string {
 		if !screenRead {
-			screen = herdr.AgentRead(env, agent, "visible", nil)
+			screen = capture(herdr.AgentReadOK(env, agent, "visible", nil))
 			screenRead = true
 		}
 		return screen
@@ -727,6 +747,11 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 	last, ok := readWaitFile(sd, agent, "screen")
 	now := platform.Now().Unix()
 	if st.State == "working" || !ok || hash != last {
+		if sample != nil {
+			// Synthetic working tags from startup, blocked and approval paths
+			// must not authorize an additional idle-monitor screen read.
+			sample.nativeWorking = st.State == "working"
+		}
 		writeWaitFile(sd, agent, "screen", hash+"\n")
 		writeWaitFile(sd, agent, "since", fmt.Sprintf("%d\n", now))
 		return "working"
@@ -827,6 +852,22 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 	// The phase last announced per agent, so a phase change is reported once
 	// and a stable phase is not repeated on every poll.
 	seenCollab := map[string]string{}
+	idleAlerts := map[string]*idleAlert{}
+	idleMinutes := idleAlertMinutes(ctx, env)
+	emit := jsonLine
+	jsonLine := func(line *jsonjs.Object) {
+		agent, _ := line.Get("agent")
+		count := 0
+		if alert := idleAlerts[fmt.Sprint(agent)]; alert != nil {
+			count = alert.count
+		}
+		// Additive and only when an alert fired: a quiet run keeps the
+		// settled JSON byte-identical to what consumers already parse.
+		if count > 0 {
+			line.Set("idle_alerts", count)
+		}
+		emit(line)
+	}
 	for {
 		pending := []string{}
 		for _, agent := range remaining {
@@ -836,6 +877,9 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			// artifact only, and the probe is skipped — no retry, no provider
 			// resume, no keys or prompts sent while the pane is idle.
 			if cs, ok := readCollaboration(sd, field(strings.Split(core.RosterLine(sd, agent), "\t"), 1), ctx, workspaceEnv); ok {
+				if alert := idleAlerts[agent]; alert != nil {
+					alert.sampleDue(idleTask(sd, agent, report), "collaborating", platform.Now(), idleMinutes)
+				}
 				switch {
 				case cs.state == "collaboration-unavailable" || cs.state == "collaboration-disabled":
 					// The active assignment cannot be verified, or the policy is
@@ -863,8 +907,30 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				}
 				continue
 			}
-			state := ProbeAgent(sd, agent, report, ctx, env)
+			var sample probeScreen
+			state := probeAgent(sd, agent, report, ctx, env, &sample)
 			tag := strings.SplitN(state, "\t", 2)[0]
+			alert := idleAlerts[agent]
+			if alert == nil {
+				alert = &idleAlert{}
+				idleAlerts[agent] = alert
+			}
+			// Observe every successful probe frame in capture order. Only paths
+			// without a visible read may use the once-per-minute fallback only
+			// when the probe confirmed the native working state for this poll.
+			now := platform.Now()
+			due := alert.sampleDue(idleTask(sd, agent, report), tag, now, idleMinutes)
+			if idleMinutes > 0 && tag == "working" && (sample.read || sample.nativeWorking && due) {
+				if !sample.read {
+					if text, ok := herdr.AgentReadOK(env, agent, "visible", nil); ok {
+						sample.frames = append(sample.frames, text)
+					}
+				}
+				kind := rosterKind(sd, agent)
+				for _, frame := range sample.frames {
+					alert.observe(frame, agent, now, idleMinutes, kind)
+				}
+			}
 			switch tag {
 			case "done":
 				text, _ := platform.ReadTextFile(report)
