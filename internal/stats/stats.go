@@ -18,6 +18,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/dispatch"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
@@ -56,7 +57,7 @@ func shaDropComment(p string) (string, []byte, bool) {
 	return p, nil, false
 }
 
-var dimensions = []string{"role", "kind", "model", "kind-model", "agent", "effort"}
+var dimensions = []string{"role", "kind", "model", "kind-model", "agent", "effort", "author-model", "type"}
 var reviewRoles = strings.Fields(core.ReviewRolesAll)
 
 type CommandContext struct {
@@ -66,7 +67,7 @@ type CommandContext struct {
 	FrictionLog string
 }
 
-type sidecar struct{ submission, kind, model, effort, arrival, session, taskReport, briefSHA string }
+type sidecar struct{ submission, kind, model, effort, arrival, session, taskReport, briefSHA, authorModel, authorType string }
 type sessionInfo struct{ session, kind, model string }
 
 // sameSession decides whether two counted non-amendment pairs of the same
@@ -297,7 +298,9 @@ func readSidecar(p *prompt, logFile string) {
 	if sp {
 		ses = session
 	}
-	p.snapshot = &sidecar{sub, kind, model, effort, ar, ses, taskReport, briefSHA}
+	authorModel, _ := get("author_model")
+	authorType, _ := get("author_type")
+	p.snapshot = &sidecar{sub, kind, model, effort, ar, ses, taskReport, briefSHA, authorModel, authorType}
 	p.counted = sub == "accepted"
 }
 func invalidSidecar(p *prompt, logFile string) {
@@ -478,7 +481,7 @@ func CmdStats(args []string, command CommandContext) int {
 			}
 		}
 		if !ok {
-			die("stats: --by expects one of role, kind, model, kind-model, agent, effort (got '"+by+"')", 2, "stats", logFile)
+			die("stats: --by expects one of role, kind, model, kind-model, agent, effort, author-model, type (got '"+by+"')", 2, "stats", logFile)
 		}
 	}
 	var since time.Time
@@ -642,6 +645,9 @@ func CmdStats(args []string, command CommandContext) int {
 		}
 		pairs = filtered
 	}
+	if by == "author-model" || by == "type" {
+		return printAuthorStats(pairs, by, asJSON, logFile)
+	}
 	roster := map[string]bool{}
 	for _, line := range core.RosterRows(sd) {
 		f := strings.Split(line, "\t")
@@ -728,6 +734,75 @@ func addReview(r *review, h *reportscan.ReviewHeaderResult) {
 	r.p1 += int(h.Severity["P1"])
 	r.p2 += int(h.Severity["P2"])
 	r.p3 += int(h.Severity["P3"])
+}
+
+// Author views count completed review reports, rather than implementer tasks.
+func printAuthorStats(pairs []prompt, by string, asJSON bool, logFile string) int {
+	type authorReview struct {
+		review
+		reviews int
+		slices  map[string]bool
+	}
+	groups := map[string]*authorReview{}
+	missing := 0
+	for _, p := range pairs {
+		if !p.counted || !p.hasReport || !core.IsReviewRole(p.resolved) {
+			continue
+		}
+		if p.snapshot == nil || p.snapshot.authorModel == "" {
+			missing++
+			continue
+		}
+		key := p.snapshot.authorModel
+		if by == "type" {
+			key = p.snapshot.authorType
+			if key == "" {
+				key = "(unknown)"
+			}
+		}
+		a := groups[key]
+		if a == nil {
+			a = &authorReview{slices: map[string]bool{}}
+			groups[key] = a
+		}
+		a.reviews++
+		addReview(&a.review, p.header)
+		body, err := readStatsFile(&p, p.path, logFile)
+		if err == nil {
+			if tree := dispatch.DeclaredWorktree(string(body)); tree != "" {
+				// Mutual PathWithin uses the shared symlink resolution and
+				// SamePath case/separator rules to identify one slice.
+				for known := range a.slices {
+					if dispatch.PathWithin(tree, known, platform.Current()) && dispatch.PathWithin(known, tree, platform.Current()) {
+						tree = known
+						break
+					}
+				}
+				a.slices[tree] = true
+			}
+		}
+	}
+	rows := [][]string{}
+	jsonRows := jsonjs.O()
+	for _, key := range sortedKeys(groups) {
+		a := groups[key]
+		failRate := float64(a.fail) / float64(a.reviews)
+		rounds := 0.0
+		if len(a.slices) > 0 {
+			rounds = float64(a.reviews) / float64(len(a.slices))
+		}
+		severity := jsonjs.O("P0", a.p0, "P1", a.p1, "P2", a.p2, "P3", a.p3)
+		perReview := jsonjs.O("P0", float64(a.p0)/float64(a.reviews), "P1", float64(a.p1)/float64(a.reviews), "P2", float64(a.p2)/float64(a.reviews), "P3", float64(a.p3)/float64(a.reviews))
+		jsonRows.Set(key, jsonjs.O("reviews", a.reviews, "pass", a.pass, "fail", a.fail, "fail_rate", failRate, "severity", severity, "severity_per_review", perReview, "rounds_per_slice", rounds))
+		rows = append(rows, []string{key, strconv.Itoa(a.reviews), strconv.Itoa(a.pass), strconv.Itoa(a.fail), fmt.Sprintf("%.1f%%", 100*failRate), strconv.Itoa(a.p0), strconv.Itoa(a.p1), strconv.Itoa(a.p2), strconv.Itoa(a.p3), fmt.Sprintf("%.1f", float64(a.p0)/float64(a.reviews)), fmt.Sprintf("%.1f", float64(a.p1)/float64(a.reviews)), fmt.Sprintf("%.1f", float64(a.p2)/float64(a.reviews)), fmt.Sprintf("%.1f", float64(a.p3)/float64(a.reviews)), fmt.Sprintf("%.1f", rounds)})
+	}
+	if asJSON {
+		output(jsonjs.Stringify(jsonjs.O("by", by, "groups", jsonRows, "reviews_without_author", missing)) + "\n")
+		return 0
+	}
+	output("reviews by " + by + ":\n" + table([]string{by, "reviews", "pass", "fail", "fail rate", "P0", "P1", "P2", "P3", "P0/review", "P1/review", "P2/review", "P3/review", "rounds/slice"}, rows) + "\n")
+	output(fmt.Sprintf("%d reviews have no author record (older dispatches)\n", missing))
+	return 0
 }
 
 func printStatsJSON(groups map[string]*aggregate, reviews map[string]*review, bySet bool, by string, groupOrder []string) int {

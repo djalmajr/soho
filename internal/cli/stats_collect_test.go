@@ -1094,7 +1094,7 @@ func TestStatsKindModelDimension(t *testing.T) {
 	t.Run("invalid by dimension lists kind-model", func(t *testing.T) {
 		f := newCommandFixture(t)
 		_, stderr, code := f.invoke("stats", "--by", "banana")
-		if code != 2 || !strings.Contains(stderr, "stats: --by expects one of role, kind, model, kind-model, agent, effort (got 'banana')") {
+		if code != 2 || !strings.Contains(stderr, "stats: --by expects one of role, kind, model, kind-model, agent, effort, author-model, type (got 'banana')") {
 			t.Fatalf("code=%d stderr=%q", code, stderr)
 		}
 	})
