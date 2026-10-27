@@ -50,7 +50,7 @@ func TestReview545TimedOutListingExitZero(t *testing.T) {
 		t.Fatal(e)
 	}
 	listing := fixtureGit(t, f.mutationCopyFixture, f.source, "worktree", "list", "--porcelain", "-z")
-	if !strings.Contains(listing, "worktree "+obj["snapshot"]+"\x00") {
+	if !review545WorktreeRegistered(listing, obj["snapshot"]) {
 		t.Fatal("fixture is not registered")
 	}
 	original := map[string]string{}

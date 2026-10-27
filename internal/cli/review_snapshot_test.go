@@ -3,10 +3,13 @@ package cli
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
@@ -301,5 +304,30 @@ func TestReviewSnapshotGcKeepsInvalidWorktree(t *testing.T) {
 			}
 			t.Logf("invalid worktree preserved: %s", stderr)
 		})
+	}
+}
+
+// review545WorktreeRegistered reads unquoted NUL-delimited Git porcelain fields.
+func review545WorktreeRegistered(listing, path string) bool {
+	for _, field := range strings.Split(listing, "\x00") {
+		if candidate, ok := strings.CutPrefix(field, "worktree "); ok && snapshotPathsEqual(candidate, path, runtime.GOOS == "windows") {
+			return true
+		}
+	}
+	return false
+}
+
+func review545SwapHeldParent(t *testing.T, from, to string) {
+	t.Helper()
+	err := os.Rename(from, to)
+	if runtime.GOOS == "windows" {
+		// Windows' open os.Root handle prevents the swap itself (ERROR_SHARING_VIOLATION).
+		if !errors.Is(err, syscall.Errno(32)) {
+			t.Fatalf("held-root rename must be refused with a sharing violation: from=%q to=%q error=%v", from, to, err)
+		}
+		t.Skipf("held os.Root prevents the parent swap on Windows; refusal verified: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
 	}
 }

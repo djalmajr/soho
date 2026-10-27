@@ -33,9 +33,7 @@ func TestReview545R4CleanupParentSwap(t *testing.T) {
 				snapshotCleanupBeforeRemove = func() {
 					reached = true
 					if swap {
-						if e := os.Rename(patchDir, patchDir+"-held"); e != nil {
-							t.Fatal(e)
-						}
+						review545SwapHeldParent(t, patchDir, patchDir+"-held")
 						if e := os.Symlink(outside, patchDir); e != nil {
 							t.Fatal(e)
 						}
@@ -57,9 +55,9 @@ func TestReview545R4CleanupParentSwap(t *testing.T) {
 					original[suffix] = string(b)
 				}
 				code, out, msg := f.run(t, args...)
-				listing := fixtureGit(t, f.mutationCopyFixture, f.source, "worktree", "list", "--porcelain")
+				listing := fixtureGit(t, f.mutationCopyFixture, f.source, "worktree", "list", "--porcelain", "-z")
 				rows, e := readReviewSnapshots(f.sd)
-				t.Logf("action=%s swap=%v reached=%v exit=%d rows=%d git_registered=%v stdout=%s stderr=%s", action, swap, reached, code, len(rows), strings.Contains(listing, "worktree "+obj["snapshot"]+"\n"), out, msg)
+				t.Logf("action=%s swap=%v reached=%v exit=%d rows=%d git_registered=%v stdout=%s stderr=%s", action, swap, reached, code, len(rows), review545WorktreeRegistered(listing, obj["snapshot"]), out, msg)
 				if code != 0 || !reached || e != nil {
 					t.Fatalf("cleanup not reached %v", e)
 				}
@@ -119,9 +117,7 @@ func TestReview545R5RetryGcAfterRefusal(t *testing.T) {
 			reached := false
 			snapshotCleanupBeforeRemove = func() {
 				reached = true
-				if e := os.Rename(dir, dir+"-held"); e != nil {
-					t.Fatal(e)
-				}
+				review545SwapHeldParent(t, dir, dir+"-held")
 				if e := os.Symlink(outside, dir); e != nil {
 					t.Fatal(e)
 				}
@@ -140,8 +136,8 @@ func TestReview545R5RetryGcAfterRefusal(t *testing.T) {
 			if !reached || code != 0 || e != nil || len(rows) != 1 || !strings.Contains(msg, "kept snapshot ") || !os.IsNotExist(worktreeErr) {
 				t.Fatal("required refusal state not reached")
 			}
-			listing := fixtureGit(t, f.mutationCopyFixture, f.source, "worktree", "list", "--porcelain")
-			if strings.Contains(listing, "worktree "+obj["snapshot"]+"\n") {
+			listing := fixtureGit(t, f.mutationCopyFixture, f.source, "worktree", "list", "--porcelain", "-z")
+			if review545WorktreeRegistered(listing, obj["snapshot"]) {
 				t.Fatal("first cleanup left worktree registered")
 			}
 			snapshotCleanupBeforeRemove = old
@@ -252,9 +248,7 @@ func TestReview545R5LateCleanupParentSwap(t *testing.T) {
 			reached := false
 			snapshotCleanupAfterIdentity = func() {
 				reached = true
-				if e := os.Rename(dir, dir+"-held"); e != nil {
-					t.Fatal(e)
-				}
+				review545SwapHeldParent(t, dir, dir+"-held")
 				if e := os.Symlink(outside, dir); e != nil {
 					t.Fatal(e)
 				}

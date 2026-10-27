@@ -58,7 +58,7 @@ func TestReview545WindowsMissingRegistered(t *testing.T) {
 	}
 	listing := fixtureGit(t, f.mutationCopyFixture, f.source, "worktree", "list", "--porcelain", "-z")
 	t.Logf("registry_native=%q git_listing=%q", obj["snapshot"], listing)
-	if !strings.Contains(listing, "worktree "+filepath.ToSlash(obj["snapshot"])+"\x00") {
+	if !review545WorktreeRegistered(listing, obj["snapshot"]) {
 		t.Fatal("Git producer did not emit the expected registered path")
 	}
 	if e := os.WriteFile(filepath.Join(f.sd, "agents.tsv"), []byte("# no owners\n"), 0600); e != nil {
@@ -91,6 +91,10 @@ func TestReview545PorcelainPaths(t *testing.T) {
 		{"unix literal backslash", `/repo/snap\a`, "/repo/snap/a", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// filepath treats backslashes as separators on Windows, so this case requires a Unix host.
+			if runtime.GOOS == "windows" && tc.name == "unix literal backslash" {
+				t.Skip("literal Unix backslash semantics require a Unix host")
+			}
 			if got := snapshotPathsEqual(tc.a, tc.b, tc.windows); got != tc.want {
 				t.Fatalf("a=%q b=%q windows=%t got=%t want=%t", tc.a, tc.b, tc.windows, got, tc.want)
 			}

@@ -43,9 +43,9 @@ func TestReview545RollbackAfterPatchFailure(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	listing := fixtureGit(t, f.mutationCopyFixture, f.source, "worktree", "list", "--porcelain")
-	t.Logf("after failure: snapshot_exists=%t registry_rows=%d git_registered=%t", pathErr == nil, len(rows), strings.Contains(listing, "worktree "+obj["snapshot"]+"\n"))
-	if !os.IsNotExist(pathErr) || len(rows) != 0 || strings.Contains(listing, "worktree "+obj["snapshot"]+"\n") {
+	listing := fixtureGit(t, f.mutationCopyFixture, f.source, "worktree", "list", "--porcelain", "-z")
+	t.Logf("after failure: snapshot_exists=%t registry_rows=%d git_registered=%t", pathErr == nil, len(rows), review545WorktreeRegistered(listing, obj["snapshot"]))
+	if !os.IsNotExist(pathErr) || len(rows) != 0 || review545WorktreeRegistered(listing, obj["snapshot"]) {
 		t.Fatal("rollback left snapshot directory, registry row or Git registration")
 	}
 	blocker := filepath.Join(obj["patch"], "blocker")
@@ -61,10 +61,10 @@ func TestReview545RollbackAfterPatchFailure(t *testing.T) {
 	snapshotBeforeArtifact = old
 	retry, retryOut, retryErr := f.run(t, "review-snapshot", f.src, "--name", "Review Slice")
 	rows, e = readReviewSnapshots(f.sd)
-	listing = fixtureGit(t, f.mutationCopyFixture, f.source, "worktree", "list", "--porcelain")
+	listing = fixtureGit(t, f.mutationCopyFixture, f.source, "worktree", "list", "--porcelain", "-z")
 	_, retryPathErr := os.Stat(obj["snapshot"])
 	t.Logf("retry exit=%d stdout=%s stderr=%s registry_rows=%d", retry, retryOut, retryErr, len(rows))
-	if retry != 0 || e != nil || len(rows) != 1 || retryPathErr != nil || !strings.Contains(listing, "worktree "+obj["snapshot"]+"\n") {
+	if retry != 0 || e != nil || len(rows) != 1 || retryPathErr != nil || !review545WorktreeRegistered(listing, obj["snapshot"]) {
 		t.Fatal("retry did not create and register snapshot")
 	}
 	temps, e := filepath.Glob(filepath.Join(f.env["TMPDIR"], "soho-review-index-*"))
@@ -127,8 +127,8 @@ func assertSnapshotRolledBack(t *testing.T, f snapshotFixture, obj map[string]st
 	t.Helper()
 	rows, err := readReviewSnapshots(f.sd)
 	_, pathErr := os.Lstat(obj["snapshot"])
-	listing := fixtureGit(t, f.mutationCopyFixture, f.source, "worktree", "list", "--porcelain")
-	if err != nil || len(rows) != 0 || !os.IsNotExist(pathErr) || strings.Contains(listing, "worktree "+obj["snapshot"]+"\n") {
+	listing := fixtureGit(t, f.mutationCopyFixture, f.source, "worktree", "list", "--porcelain", "-z")
+	if err != nil || len(rows) != 0 || !os.IsNotExist(pathErr) || review545WorktreeRegistered(listing, obj["snapshot"]) {
 		t.Fatalf("rollback: rows=%v err=%v pathErr=%v git=%s", rows, err, pathErr, listing)
 	}
 }
@@ -208,9 +208,7 @@ func TestReview545R3OutsideParentSwap(t *testing.T) {
 	swapped := false
 	snapshotBeforeArtifact = func(_ *os.Root, name string) error {
 		if name == filepath.Base(obj["patch"])+".sha256" {
-			if e := os.Rename(patchDir, patchDir+"-owned-backup"); e != nil {
-				t.Fatal(e)
-			}
+			review545SwapHeldParent(t, patchDir, patchDir+"-owned-backup")
 			if e := os.Symlink(outside, patchDir); e != nil {
 				t.Fatal(e)
 			}
@@ -317,8 +315,8 @@ func TestReview545RollbackRemoveFailure(t *testing.T) {
 	if code != 4 || !locked || len(lines) < 2 || !strings.Contains(lines[0], cause.Error()) || !strings.Contains(lines[1], "rollback left worktree "+obj["snapshot"]) {
 		t.Fatal("original error or leftover path diagnostic missing")
 	}
-	listing := fixtureGit(t, f.mutationCopyFixture, f.source, "worktree", "list", "--porcelain")
-	if !strings.Contains(listing, "worktree "+obj["snapshot"]+"\n") {
+	listing := fixtureGit(t, f.mutationCopyFixture, f.source, "worktree", "list", "--porcelain", "-z")
+	if !review545WorktreeRegistered(listing, obj["snapshot"]) {
 		t.Fatal("locked fixture did not leave registered worktree")
 	}
 	rows, e := readReviewSnapshots(f.sd)
