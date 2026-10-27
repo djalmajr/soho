@@ -34,7 +34,7 @@ func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Con
 	out.WriteString("\n\n# Brief\n\n")
 	out.WriteString(briefRaw)
 	out.WriteString("\n\n# Report contract\n\n")
-	fmt.Fprintf(&out, "- Write your report as Markdown to `%s` (create parent directories if needed) following the `<report>` section of your role. Give every item its state as `[done]`, `[partial]` or `[skipped]`, followed by the reason.\n", report)
+	fmt.Fprintf(&out, "- Write your report as Markdown to `%s` (create parent directories if needed) following the `<report>` section of your role. Give every item its state as `[done]`, `[partial]`, `[env]` or `[skipped]`, followed by the reason.\n", report)
 	out.WriteString("- This report path is authoritative: if the brief names a different report path, ignore it and write to this path; a brief can be hand-written or reused with a stale path, and the dispatch's report path never follows the brief's.\n")
 	if lang := core.Cfg(ctx, "report_language", "", env); lang != "" {
 		fmt.Fprintf(&out, "- Write the report in %s.\n", lang)
@@ -67,7 +67,7 @@ func ComposeAmendment(raw, report string, ctx *core.Config, env platform.Env, ki
 	out.WriteString(raw)
 	out.WriteString("\n\n# Report contract\n\n")
 	fmt.Fprintf(&out, "- This amendment overrides your current brief where they differ; the rest of that brief still holds.\n- Check every item again against the files as they are now: rerun the checks it needs, and never copy findings, outputs or states from your earlier report.\n- Write your report as Markdown to `%s` (create parent directories if needed). If you have not written the report of your current brief yet, write one report there that covers the brief and this amendment; otherwise report only on the amendment.\n", report)
-	out.WriteString("- This report path is authoritative: if your current brief names a different report path, ignore it and write to this path; a brief can be hand-written or reused with a stale path, and the dispatch's report path never follows the brief's.\n- Give every item its state as `[done]`, `[partial]` or `[skipped]`, followed by the reason.\n")
+	out.WriteString("- This report path is authoritative: if your current brief names a different report path, ignore it and write to this path; a brief can be hand-written or reused with a stale path, and the dispatch's report path never follows the brief's.\n- Give every item its state as `[done]`, `[partial]`, `[env]` or `[skipped]`, followed by the reason.\n")
 	if lang := core.Cfg(ctx, "report_language", "", env); lang != "" {
 		fmt.Fprintf(&out, "- Write the report in %s.\n", lang)
 	}

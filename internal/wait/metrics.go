@@ -112,7 +112,11 @@ func metricsLine(sd, agent, report, text string, header *reportscan.ReviewHeader
 	if arrival != "" {
 		line.Set("arrival", arrival)
 	}
-	line.Set("items", jsonjs.O("done", metricsMarkerCount(text, "[done]"), "partial", partial, "skipped", metricsMarkerCount(text, "[skipped]")))
+	items := jsonjs.O("done", metricsMarkerCount(text, "[done]"), "partial", partial, "skipped", metricsMarkerCount(text, "[skipped]"))
+	if envCount := reportscan.EnvCount(text); envCount > 0 {
+		items.Set("env", envCount)
+	}
+	line.Set("items", items)
 	// The review roles take the review fields with exactly the values the
 	// wait line prints (verdict/findings/severity from the header, the
 	// effective verdict from the header or a partial item). The "for" field
@@ -365,6 +369,9 @@ func amendmentReport(sd, agent, report string) bool {
 // a line counts at most once, and a line that names both [done] and
 // [skipped] is ambiguous and counts neither.
 func metricsMarkerCount(text, marker string) int {
+	if marker == "[env]" {
+		return reportscan.EnvCount(text)
+	}
 	if text == "" {
 		return 0
 	}

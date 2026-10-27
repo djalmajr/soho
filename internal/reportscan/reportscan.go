@@ -5,12 +5,15 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/djalmajr/soho/internal/platform"
 )
 
 var (
 	partialMarker  = regexp.MustCompile("[`*]*\\[partial\\][`*]*")
+	envMarker      = regexp.MustCompile("[`*]*\\[env\\][`*]*")
+	anyItemState   = regexp.MustCompile(`\[(?:done|partial|env|skipped)\]`)
 	stateBefore    = regexp.MustCompile(`^[ \t]*(?:[-*+][ \t]+|[0-9]+\.[ \t]+|#{1,6}[ \t]+|>[ \t]*|\[[ xX]\][ \t]+)?[ \t]*$`)
 	cellBefore     = regexp.MustCompile(`\|[ \t]*$`)
 	cellAfter      = regexp.MustCompile(`^[ \t]*(?:\||$)`)
@@ -26,10 +29,20 @@ var (
 // PartialCount counts report lines that state a [partial] item outside fenced
 // code blocks. A line counts at most once.
 func PartialCount(text string) int {
+	partial, _ := limitCounts(text)
+	return partial
+}
+
+// EnvCount counts reason-bearing environment limitations in item positions.
+func EnvCount(text string) int {
+	_, env := limitCounts(text)
+	return env
+}
+
+func limitCounts(text string) (partial, env int) {
 	if text == "" {
-		return 0
+		return
 	}
-	count := 0
 	inFence, fenceChar, fenceLen := false, byte(0), 0
 	for _, line := range strings.Split(text, "\n") {
 		open := fenceOpen.FindStringSubmatch(line)
@@ -45,14 +58,42 @@ func PartialCount(text string) int {
 			continue
 		}
 		line = lowerASCII(line)
-		if !anyPartial.MatchString(line) || (anyDone.MatchString(line) && anySkipped.MatchString(line)) {
+		if anyDone.MatchString(line) && anySkipped.MatchString(line) {
 			continue
 		}
-		if markerInStatePosition(line) {
-			count++
+		isPartial := anyPartial.MatchString(line) && markerInStatePosition(line)
+		for _, loc := range envMarker.FindAllStringIndex(line, -1) {
+			before, after := line[:loc[0]], line[loc[1]:]
+			if stateBefore.MatchString(before) || (cellBefore.MatchString(before) && cellAfter.MatchString(after)) || dashBefore.MatchString(before) {
+				if envReason(after) {
+					env++
+				} else {
+					isPartial = true
+				}
+				break // Like partial, a line counts at most once per state.
+			}
+		}
+		if isPartial {
+			partial++
 		}
 	}
-	return count
+	return
+}
+
+// EnvHasReason checks the text after the first env marker. Callers own fence
+// and item-position validation; formatting or another state is not a reason.
+func EnvHasReason(line string) bool {
+	loc := envMarker.FindStringIndex(lowerASCII(line))
+	return loc != nil && envReason(line[loc[1]:])
+}
+
+func envReason(after string) bool {
+	reason := anyItemState.ReplaceAllString(lowerASCII(after), "")
+	// A reason names something: it holds at least one letter or digit, so
+	// whitespace, formatting or punctuation alone is no reason.
+	return strings.IndexFunc(reason, func(r rune) bool {
+		return unicode.IsLetter(r) || unicode.IsDigit(r)
+	}) >= 0
 }
 
 func markerInStatePosition(line string) bool {

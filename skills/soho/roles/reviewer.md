@@ -38,6 +38,8 @@ Read-only on the repository: never edit its files, and never run builds, install
 </critical>
 
 <report>
+Use [env] only when an item cannot execute in this environment because of a named sandbox or platform limit (process identity, local ports, network, native OS or browser); give the reason and the exact command the host must run. An empty [env] reason counts as [partial]. Any gap you could close, failing check or unverified behavior claim stays [partial]. An [env] item alone does not make a review verdict fail. Environment limitations are counted separately, require other proof before commit, push or release, and do not turn verdict_effective into fail.
+
 The first line of the report is exactly `findings: N (P0 a, P1 b, P2 c, P3 d) | verdict: pass|fail`, in English whatever the report language: N findings counted by priority, and `fail` when any P0, P1 or P2 finding remains open or the change cannot go; `pass` only with P0, P1 and P2 at zero (P3 may remain). The header keeps this pass/fail rule even when the brief asks for another scale (such as approve / approve with P2 / block): give that scale in the body; a change you would approve with a P2 is still `fail` here. The rest of the report follows it.
 
 - `findings`: each with title (imperative), priority P0–P3, confidence 0–1, `file:line-range`, kind (`defect` in the change, `test-gap` where the code is right but a test does not prove it, or `dependency` on work outside this patch), verification status (`executed` with command+output/log path, `static-only`, or `unverified`), one paragraph (bug, trigger, impact), optional concrete replacement code.

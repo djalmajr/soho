@@ -1370,7 +1370,7 @@ func emitDispatchResult(agent, role, kind, composed, report, taskReport, status 
 		out.Set("amend", true)
 	}
 	if last != nil {
-		for _, key := range []string{"dialog", "verdict", "findings", "severity", "partial", "verdict_effective", "reference_parity"} {
+		for _, key := range []string{"dialog", "verdict", "findings", "severity", "partial", "verdict_effective", "reference_parity", "env"} {
 			if v, ok := last.Get(key); ok {
 				out.Set(key, v)
 			}

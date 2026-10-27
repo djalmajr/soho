@@ -474,7 +474,7 @@ func reportResumo(text string) string {
 }
 
 // reportItems extracts the orchestrator report items: the lines outside
-// fenced code blocks that carry exactly one of the [done], [partial] or
+// fenced code blocks that carry exactly one of the [done], [partial], [env] or
 // [skipped] markers, numbered in file order. The item text is the line with
 // the marker, the leading list and table syntax and the surrounding
 // whitespace removed, cut to 280 code points.
@@ -507,7 +507,7 @@ func reportItems(text string) []Item {
 // marker, or "" for a line with none or with two or more (a doubled marker
 // of the same kind included), which the brief skips.
 func singleItemMarker(line string) string {
-	total := strings.Count(line, "[done]") + strings.Count(line, "[partial]") + strings.Count(line, "[skipped]")
+	total := strings.Count(line, "[done]") + strings.Count(line, "[partial]") + strings.Count(line, "[env]") + strings.Count(line, "[skipped]")
 	if total != 1 {
 		return ""
 	}
@@ -515,6 +515,11 @@ func singleItemMarker(line string) string {
 	case strings.Contains(line, "[done]"):
 		return "done"
 	case strings.Contains(line, "[partial]"):
+		return "partial"
+	case strings.Contains(line, "[env]"):
+		if reportscan.EnvHasReason(line) {
+			return "env"
+		}
 		return "partial"
 	default:
 		return "skipped"
