@@ -31,6 +31,10 @@ func TestUnseenPathWarningsSkipALineWithTheAbsolutePath(t *testing.T) {
 		{"another file's absolute", "See design/x.png (" + y + ").\n", true},
 		{"a longer path sharing the prefix", "See design/x.png (" + x + ".bak).\n", true},
 		{"absolute on another line", "See design/x.png.\nThe file is " + x + ".\n", true},
+		{"another root ending in the same path", "See design/x.png (/elsewhere" + x + ").\n", true},
+		{"a longer path with a non-ASCII letter", "See design/x.png (" + x + "é).\n", true},
+		{"a combining mark after the path", "See design/x.png (" + x + "\u0301).\n", true},
+		{"absolute after a colon", "See design/x.png:" + x + "\n", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := unseenPathWarnings("brief.md", tc.body, worker, []string{root})

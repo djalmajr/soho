@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
@@ -448,19 +449,26 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 }
 
 // lineCitesPath reports whether a brief line already spells out the absolute
-// path: the warning would only repeat it.
+// path, as a whole path token: the warning would only repeat it.
 func lineCitesPath(line, path string) bool {
-	for rest := line; ; {
-		i := strings.Index(rest, path)
+	for from := 0; ; {
+		i := strings.Index(line[from:], path)
 		if i < 0 {
 			return false
 		}
-		end := i + len(path)
-		if end == len(rest) || !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-/\\", rune(rest[end])) {
+		start, end := from+i, from+i+len(path)
+		before, _ := utf8.DecodeLastRuneInString(line[:start])
+		after, _ := utf8.DecodeRuneInString(line[end:])
+		if (start == 0 || !pathRune(before)) && (end == len(line) || !pathRune(after)) {
 			return true
 		}
-		rest = rest[end:]
+		from = start + 1
 	}
+}
+
+// pathRune reports whether r can continue a path token.
+func pathRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r) || strings.ContainsRune("._-/\\~", r)
 }
 
 func unseenPathWarnings(brief, body, workerCwd string, roots []string) []string {
