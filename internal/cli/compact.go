@@ -312,6 +312,28 @@ func compactCodexContextDropped(base int, screen string) bool {
 	return ok && now <= base/2
 }
 
+// compactCodexBelowThreshold is an idle-aware candidate when the summary
+// floor prevents a near-threshold baseline from dropping by half. The caller
+// must read idle or done in this observation before accepting the candidate.
+func compactCodexBelowThreshold(base int, screen string) bool {
+	now, ok := compactCodexContext(screen)
+	if !ok || base < compactCodexFooterMinBefore || now >= compactCodexFooterMinBefore || now >= base {
+		return false
+	}
+	lines := compactLines(screen)
+	nonEmpty := 0
+	for i := len(lines) - 1; i >= 0 && nonEmpty < 15; i-- {
+		if strings.TrimSpace(lines[i]) == "" {
+			continue
+		}
+		nonEmpty++
+		if strings.Contains(lines[i], "• Compacting context (") {
+			return false
+		}
+	}
+	return true
+}
+
 // compactCodexWindowlessZero is a candidate for idle-aware proof, never a
 // parser reading. Codex 0.164 keeps this footer after a compaction; while
 // working, or with a running marker in the last 15 non-empty lines, it is
@@ -582,7 +604,7 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 		if footerOK && compactCodexContextDropped(footerBase, screen) {
 			return true
 		}
-		if !footerOK || footerBase < compactCodexFooterMinBefore || !compactCodexWindowlessZero(screen) {
+		if !footerOK || footerBase < compactCodexFooterMinBefore || (!compactCodexBelowThreshold(footerBase, screen) && !compactCodexWindowlessZero(screen)) {
 			return false
 		}
 		state := budget.state(agent)
