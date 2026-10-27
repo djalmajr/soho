@@ -82,7 +82,7 @@ var ConfigScalarKeys = []string{
 	"auto_approve", "max_auto_approvals", "max_effort",
 	"settled_grace", "report_working_max", "trust_cwd", "spawn_timeout", "dispatch_timeout", "compact_timeout", "provider_retries",
 	"provider_retry_delay", "provider_capacity_texts", "provider_error_texts",
-	"prompt_check_seconds", "prompt_settle_seconds", "stuck_warn_minutes", "context_warn_percent", "state_dir",
+	"prompt_check_seconds", "prompt_settle_seconds", "stuck_warn_minutes", "context_warn_percent", "context_fresh_percent", "state_dir",
 	"report_language", "notify", "feedback", "feedback_repo", "feedback_dir", "feedback_to",
 	"setup_target", "inbound", "caller_check", "worker_messages", "metrics",
 	"pressure_disk_free_percent", "pressure_swap_percent",
@@ -427,6 +427,9 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return false
 	}
 	switch {
+	case key == "context_fresh_percent":
+		_, err := strconv.ParseInt(value, 10, 64)
+		return decimalRE.MatchString(value) && err == nil
 	case key == "report_working_max":
 		// The wait reader parses an int64 and falls back to 600 on overflow:
 		// refuse a value it would not honor.

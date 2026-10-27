@@ -54,7 +54,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				options = append(options, argv[i])
 			}
 		case len(a) > 1 && strings.HasPrefix(a, "-"):
-			if !containsWord("--no-wait --amend --compact --resend --queue", a) {
+			if !containsWord("--no-wait --amend --compact --resend --queue --allow-full-context", a) {
 				core.DieFriction("dispatch: unknown option "+a, 2, frictionLogPath, "dispatch")
 			}
 			options = append(options, a)
@@ -75,7 +75,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	}
 	agent, brief := positional[0], positional[1]
 	role, timeoutRaw := "", ""
-	noWait, amend, compact, resend, queue := false, false, false, false, false
+	noWait, amend, compact, resend, queue, allowFullContext := false, false, false, false, false, false
 	argv = options
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
@@ -100,6 +100,8 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 					core.WarnShortTimeout("dispatch", frictionLogPath, int64(parseTimeout(v)))
 				}
 			}
+		case "--allow-full-context":
+			allowFullContext = true
 		case "--no-wait":
 			noWait = true
 		case "--amend":
@@ -323,7 +325,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		compactTimeoutMS := core.CompactTimeoutMS(ctx, env)
 		if compactProof(kind) == "" {
 			core.Warn(fmt.Sprintf("dispatch: --compact skipped: kind '%s' has no verified compact command", kind), frictionLogPath, "dispatch")
-		} else if result := compactPhaseDispatch(compactPhaseDispatchOptions{
+		} else if result := dispatchCompactPhase(compactPhaseDispatchOptions{
 			Agent: agent, Pane: at(1), Kind: kind, Role: role, Lane: lane, Model: model,
 			Brief: brief, SD: sd, TimeoutMS: compactTimeoutMS, Ctx: ctx, Env: env, Cwd: cwd,
 		}); result.Code != 0 {
@@ -343,18 +345,26 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			return code
 		}
 	}
-	// Context check before any task state is written: at long context opencode
-	// can end its turn empty. The footer read is opencode-only for now.
-	if kind == "opencode" {
-		warnPercent := 60
-		if raw := core.Cfg(ctx, "context_warn_percent", "60", env); raw != "60" {
-			if v, e := strconv.Atoi(raw); e == nil {
-				warnPercent = v
-			}
+	// Context check after any compact step (a compaction is the remedy for a
+	// full context, so the post-compact footer decides) and before any task
+	// state is written or the brief is sent. pi and opencode only; an unknown
+	// footer is never evidence to refuse a dispatch.
+	if kind == "pi" || kind == "opencode" {
+		warnPercent, err := strconv.Atoi(core.Cfg(ctx, "context_warn_percent", "60", env))
+		if err != nil {
+			warnPercent = 60
 		}
-		if warnPercent > 0 {
-			if pct := dispatchContextPercent(herdr.AgentRead(env, agent, "visible", nil)); pct >= warnPercent {
-				core.Warn(fmt.Sprintf("dispatch: '%s' is at %d%% of its context; a long context can end its turn empty (opencode): release --close it and spawn a fresh worker for a new task", agent, pct), frictionLogPath, "dispatch")
+		freshPercent, err := strconv.ParseInt(core.Cfg(ctx, "context_fresh_percent", "0", env), 10, 64)
+		if err != nil {
+			freshPercent = 0
+		}
+		if warnPercent > 0 || (freshPercent > 0 && !allowFullContext) {
+			pct := dispatchContextPercentFor(kind, herdr.AgentRead(env, agent, "visible", nil))
+			if !allowFullContext && freshPercent > 0 && pct >= 0 && int64(pct) >= freshPercent {
+				core.DieFriction(fmt.Sprintf("dispatch: '%s' is at %d%% of its context (context_fresh_percent=%d); nothing was sent. Release it with --close and spawn a fresh worker, or pass --allow-full-context to send anyway", agent, pct, freshPercent), 10, frictionLogPath, "dispatch")
+			}
+			if warnPercent > 0 && pct >= warnPercent {
+				core.Warn(fmt.Sprintf("dispatch: '%s' is at %d%% of its context; a long context can end its turn empty (%s): release --close it and spawn a fresh worker for a new task", agent, pct, kind), frictionLogPath, "dispatch")
 			}
 		}
 	}
@@ -919,6 +929,10 @@ type compactPhaseDispatchOptions struct {
 // could not be removed (a later token, an unreadable file, a lock panic)
 // aborts with 4 before the brief: the standing marker still denies the send,
 // and a different token never authorizes this dispatch's send.
+// dispatchCompactPhase is the phase dispatch runs; tests replace it to control
+// the screen the context check reads after the compaction.
+var dispatchCompactPhase = compactPhaseDispatch
+
 func compactPhaseDispatch(opts compactPhaseDispatchOptions) compactStepResult {
 	absBrief := opts.Brief
 	if p, err := filepath.Abs(opts.Brief); err == nil {
@@ -1481,32 +1495,6 @@ func warnOwnedOverlap(brief, role, agent, sd string, ctx *core.Config, env platf
 		}
 		core.Warn(message, frictionLogPath, "dispatch")
 	}
-}
-
-var dispatchContextFooterRE = regexp.MustCompile(`\d+(?:\.\d+)?K \((\d+)%\)\s+ctrl\+p commands$`)
-
-// dispatchContextPercent scans the visible screen bottom-up over the last
-// non-empty lines and returns the context percent the opencode footer shows
-// (<number>K (NN%) on the line ending in ctrl+p commands); -1 when there is
-// no such line or the pattern does not match.
-func dispatchContextPercent(screen string) int {
-	lines := strings.Split(strings.ReplaceAll(screen, "\r\n", "\n"), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
-			continue
-		}
-		if !strings.HasSuffix(line, "ctrl+p commands") {
-			continue
-		}
-		if m := dispatchContextFooterRE.FindStringSubmatch(line); m != nil {
-			if pct, e := strconv.Atoi(m[1]); e == nil {
-				return pct
-			}
-		}
-		return -1
-	}
-	return -1
 }
 
 var ownershipStopwords = map[string]bool{"nenhum": true, "none": true}

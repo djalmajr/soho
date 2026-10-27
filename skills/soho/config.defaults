@@ -258,8 +258,11 @@ prompt_settle_seconds=20
 # the wait logs a "may be stuck in one tool call" warning, once. 0 = off.
 stuck_warn_minutes=20
 
-# Percent of context use at which `dispatch` warns for an opencode worker (a long context can end the turn empty). 0 = off.
+# Percent of context use at which `dispatch` warns for a pi or opencode worker (a long context can end the turn empty). 0 = off.
 context_warn_percent=60
+
+# Percent of context use at which `dispatch` refuses a pi or opencode worker before any task file or prompt. With --compact, compaction runs first and the post-compaction footer decides. Non-negative integer; 0 = off. Retry with --compact, spawn a fresh worker, or use --allow-full-context to bypass only this refusal; warnings still print.
+context_fresh_percent=0
 
 # Percent of disk free on the state dir's filesystem at which `spawn`, `wait`, and `status` warn. 0 = off.
 pressure_disk_free_percent=15
