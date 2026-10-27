@@ -181,7 +181,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	kind := at(2)
 	roleFile := core.RoleFile(role, env, cwd)
 	if roleFile == "" {
-		core.DieFriction(fmt.Sprintf("unknown role '%s' (run: soho roles)", role), 3, frictionLogPath, "dispatch")
+		core.DieFriction(fmt.Sprintf("unknown role '%s' (run: soho roles)", role)+core.UnknownRoleHint(role, env, cwd), 3, frictionLogPath, "dispatch")
 	}
 	briefRaw, err := platform.ReadTextFile(brief)
 	if err != nil {

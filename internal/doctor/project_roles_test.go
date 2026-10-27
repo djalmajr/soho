@@ -70,7 +70,7 @@ func TestDoctorProjectRoles(t *testing.T) {
 			if (say.Warn > 0) != tc.warn {
 				t.Fatalf("warnings=%d out=%s", say.Warn, out.String())
 			}
-			if tc.old && !strings.Contains(out.String(), ".agents/herdr-roles/ is the old project roles directory; run soho setup to move it to .agents/soho-roles/") {
+			if tc.old && !strings.Contains(out.String(), ".agents/herdr-roles/ is the old project roles directory; run soho setup --roles to move it to .agents/soho-roles/") {
 				t.Fatal(out.String())
 			}
 			if tc.name == "stale override" && !strings.Contains(out.String(), "project role reviewer overrides the skill's and is older than it (2026-10-20T11:00:00Z < 2026-10-20T12:00:00Z); diff them or move your additions to .agents/soho-roles/reviewer.append.md") {

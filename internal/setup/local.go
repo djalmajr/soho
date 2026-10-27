@@ -436,29 +436,39 @@ func commonGitDir(root string, env platform.Env) string {
 }
 
 func refuseSymlinkedExclude(root string, env platform.Env, cmdName string) {
+	if reason := excludeRedirect(root, env); reason != "" {
+		platform.DieFriction(cmdName+": "+reason, 4)
+	}
+}
+
+// excludeRedirect reports why the git exclude file cannot be written safely:
+// it is a symlink, lies outside the git metadata, or is reached through a
+// symlinked directory. An empty string means it is safe to write.
+func excludeRedirect(root string, env platform.Env) string {
 	excl := excludePath(root, env)
 	if excl == "" {
-		return
+		return ""
 	}
 	if info, err := os.Lstat(excl); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		platform.DieFriction(fmt.Sprintf("%s: the git exclude file at %s is a symlink; refusing to write local excludes through it (file left untouched; replace it with a regular file, then re-run)", cmdName, excl), 4)
+		return fmt.Sprintf("the git exclude file at %s is a symlink; refusing to write local excludes through it (file left untouched; replace it with a regular file, then re-run)", excl)
 	}
 	common := commonGitDir(root, env)
 	if common == "" {
-		return
+		return ""
 	}
 	rel, err := filepath.Rel(common, excl)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		platform.DieFriction(fmt.Sprintf("%s: the git exclude file at %s is not inside the git metadata at %s; refusing to write local excludes outside it (file left untouched)", cmdName, excl, common), 4)
+		return fmt.Sprintf("the git exclude file at %s is not inside the git metadata at %s; refusing to write local excludes outside it (file left untouched)", excl, common)
 	}
 	parts := strings.Split(rel, string(filepath.Separator))
 	cur := common
 	for _, part := range parts[:max(0, len(parts)-1)] {
 		cur = filepath.Join(cur, part)
 		if info, err := os.Lstat(cur); err == nil && info.Mode()&os.ModeSymlink != 0 {
-			platform.DieFriction(fmt.Sprintf("%s: the git exclude file at %s is redirected through a symlink at %s (outside the git metadata); refusing to write local excludes through it (file left untouched; replace the symlink with a real directory, then re-run)", cmdName, excl, cur), 4)
+			return fmt.Sprintf("the git exclude file at %s is redirected through a symlink at %s (outside the git metadata); refusing to write local excludes through it (file left untouched; replace the symlink with a real directory, then re-run)", excl, cur)
 		}
 	}
+	return ""
 }
 
 func insideWorkTree(root string, env platform.Env) bool {

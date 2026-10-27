@@ -50,7 +50,20 @@ func ResolveRole(role string, env platform.Env, cwd string) string {
 	if file := RoleFile(role, env, cwd); file != "" {
 		return file
 	}
-	platform.Die(fmt.Sprintf("unknown role '%s' (run: soho roles)", role), 3)
+	platform.Die(fmt.Sprintf("unknown role '%s' (run: soho roles)", role)+UnknownRoleHint(role, env, cwd), 3)
+	return ""
+}
+
+// UnknownRoleHint inspects only the legacy file's metadata. Role resolution
+// continues to read exclusively from RoleDirs' current locations.
+func UnknownRoleHint(role string, env platform.Env, cwd string) string {
+	if role == "" || strings.ContainsAny(role, `/\`) || filepath.Base(role) != role {
+		return ""
+	}
+	legacy := filepath.Join(platform.ProjectRoot(env, cwd), ".agents", "herdr-roles", role+".md")
+	if _, err := os.Lstat(legacy); err == nil {
+		return fmt.Sprintf("; .agents/herdr-roles/%s.md is the old location: run soho setup --roles to move it to .agents/soho-roles/", role)
+	}
 	return ""
 }
 

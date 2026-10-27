@@ -180,6 +180,10 @@ func writePiInboundExtension(root string) bool {
 var BuildVersion = "dev"
 
 func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
+	if containsSetupArg(args, "--roles") {
+		cmdSetupRoles(args, env, cwd)
+		return
+	}
 	wantPlan, wantProbe := false, false
 	for _, arg := range args {
 		wantPlan = wantPlan || arg == "--plan"
