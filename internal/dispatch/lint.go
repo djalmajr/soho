@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
@@ -447,11 +448,34 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 	return result
 }
 
+// lineCitesPath reports whether a brief line already spells out the absolute
+// path, as a whole path token: the warning would only repeat it.
+func lineCitesPath(line, path string) bool {
+	for from := 0; ; {
+		i := strings.Index(line[from:], path)
+		if i < 0 {
+			return false
+		}
+		start, end := from+i, from+i+len(path)
+		before, _ := utf8.DecodeLastRuneInString(line[:start])
+		after, _ := utf8.DecodeRuneInString(line[end:])
+		if (start == 0 || !pathRune(before)) && (end == len(line) || !pathRune(after)) {
+			return true
+		}
+		from = start + 1
+	}
+}
+
+// pathRune reports whether r can continue a path token.
+func pathRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r) || strings.ContainsRune("._-/\\~", r)
+}
+
 func unseenPathWarnings(brief, body, workerCwd string, roots []string) []string {
 	lines := strings.Split(body, "\n")
 	out := []string{}
 	seen := map[string]bool{}
-	add := func(value string, line int, inline bool) {
+	add := func(value string, line int, inline bool, text string) {
 		candidate := strings.TrimRight(strings.TrimSpace(value), "),.;:")
 		if candidate == "" || filepath.IsAbs(candidate) {
 			return
@@ -474,7 +498,7 @@ func unseenPathWarnings(brief, body, workerCwd string, roots []string) []string 
 				}
 			}
 		}
-		if absolute == "" {
+		if absolute == "" || lineCitesPath(text, absolute) {
 			return
 		}
 		key := fmt.Sprintf("%d\x00%s", line, candidate)
@@ -486,10 +510,10 @@ func unseenPathWarnings(brief, body, workerCwd string, roots []string) []string 
 	}
 	for i, line := range lines {
 		for _, m := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(line, -1) {
-			add(m[1], i+1, true)
+			add(m[1], i+1, true, line)
 		}
 		for _, m := range regexp.MustCompile(`(?:^|[\s"'(])([^\s"'<>`+"`"+`]+)`).FindAllStringSubmatch(line, -1) {
-			add(m[1], i+1, false)
+			add(m[1], i+1, false, line)
 		}
 	}
 	return out
