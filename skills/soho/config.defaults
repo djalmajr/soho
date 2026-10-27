@@ -201,6 +201,8 @@ settled_grace=45
 
 # Seconds to wait on a stable report while its pane is working; 0 disables the wait.
 report_working_max=600
+# Minutes without new working output before a wait alert; 0 disables it.
+idle_alert_minutes=20
 
 # One regular expression (RE2) per kind: a still screen whose last 15
 # non-empty lines match it is not settled. Each line is tried, and also each
