@@ -1,0 +1,40 @@
+     3 +func main(){
+    + Show details
+
+• Ran GOCACHE=$TMPDIR/gocache-review GOTMPDIR=$TMPDIR go run .so…
+  └ (no output)
+    + Show details
+
+• Explored
+  └ Read build-6-20261026T223024.probe.identity.log, build-6-
+         20261026T223024.probe.windows-vet.log, build-6-
+         20261026T223024.probe.final-status.log, build-6-
+    + Show details
+
+• The no-op mutation failed at the 15-second deadline, and
+  cleanup reaped the child. A direct run of the fixture confirmed
+  the full test’s blocker: the sandbox refuses /bin/ps, so
+  dispatch cannot read its process identity. I’ll mark that gate
+  [partial] [env] and include the host rerun command.
+
+• Added .soho/w6X/reports/build-6-
+20261026T223024.probe.publish.go (+39 -0)
+     1 +package main
+     2 +import("bytes";"crypto/sha256";"fmt";"go/format";"os";"os
+        /exec";"path/filepath";"strings";"time")
+    + Show details
+
+• Ran GOCACHE=$TMPDIR/gocache-review GOTMPDIR=$TMPDIR go run .so…
+  └ (no output)
+    + Show details
+
+• /home/user/project/.soho/w6X/
+  reports/build-6-20261026T223024.md
+
+  Worked for 7m 45s • 22:39
+
+
+› Ask Codex to do anything
+
+  GPT-6.1-Sol medium · Context 11% used · 475K window · weekly 6…
+  ? for shortcuts                       ⚠ 1 warning · f2 to view
