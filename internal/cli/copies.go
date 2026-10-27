@@ -1093,6 +1093,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	// measured values; a metric that could not be measured shows as
 	// "<metric> not measured". No throttle, no stamp.
 	_, _ = fmt.Fprintln(platform.Stdout, gcPressureLine(ctx, env, sd))
+	snapshotActivity := sweepReviewSnapshots(sd, yes, env, cwd)
 	incorporatePendingCopies("gc", sd, env, cwd)
 	incorporatePendingProcs("gc", sd, env)
 	rows, err := core.ReadCopies(sd)
@@ -1153,7 +1154,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		orphan := gcOrphanProcs(procRows, sd, env)
 		// Nothing to remove or stop: only the line itself, no total and no
 		// hint (G1).
-		if len(candidates) == 0 && len(unregistered) == 0 && len(orphan) == 0 && !gcOrphansWouldStop(orphanProcs, threshold, now) {
+		if !snapshotActivity && len(candidates) == 0 && len(unregistered) == 0 && len(orphan) == 0 && !gcOrphansWouldStop(orphanProcs, threshold, now) {
 			_, _ = fmt.Fprintln(platform.Stdout, "nothing to remove")
 			gcPrintOrphanProcs(orphanProcs, threshold, now)
 			return 0
@@ -1362,7 +1363,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	if procsHandled > 0 {
 		_, _ = fmt.Fprintf(platform.Stdout, "process lines handled: %d\n", procsHandled)
 	}
-	if !removedAny && procsHandled == 0 && orphansStopped == 0 {
+	if !snapshotActivity && !removedAny && procsHandled == 0 && orphansStopped == 0 {
 		// --yes with nothing removed or stopped: the dry run's closing line.
 		_, _ = fmt.Fprintln(platform.Stdout, "nothing to remove")
 	}
