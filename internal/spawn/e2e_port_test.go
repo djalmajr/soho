@@ -212,6 +212,13 @@ func TestE2EPortNativeListenerSkipped(t *testing.T) {
 		t.Skipf("[env] fixture port 47000 unavailable: %v", err)
 	}
 	t.Cleanup(func() { listener.Close() })
+	// The next port must be free for the expected value; Windows Server, for
+	// one, holds 47001 for WinRM.
+	next, err := net.Listen("tcp", "127.0.0.1:47001")
+	if err != nil {
+		t.Skipf("[env] fixture port 47001 unavailable: %v", err)
+	}
+	next.Close()
 	f := e2eFixture(t, "split")
 	value, calls := e2eSpawn(t, f, "worker", "--fresh")
 	if value["e2e_port"] != "47001" {
