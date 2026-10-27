@@ -90,9 +90,11 @@ func cmdClean(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			if !entry.Type().IsRegular() || strings.HasSuffix(entry.Name(), ".current.md") {
 				return nil
 			}
-			if strings.HasSuffix(file, ".dispatch.json.git-checked") {
-				if _, err := os.Lstat(strings.TrimSuffix(file, ".git-checked")); err == nil || !os.IsNotExist(err) {
-					return nil // The marker shares its sidecar's lifetime.
+			for _, marker := range []string{".git-checked", ".diff-checked"} {
+				if strings.HasSuffix(file, ".dispatch.json"+marker) {
+					if _, err := os.Lstat(strings.TrimSuffix(file, marker)); err == nil || !os.IsNotExist(err) {
+						return nil // The marker shares its sidecar's lifetime.
+					}
 				}
 			}
 			info, statErr := entry.Info()
@@ -104,8 +106,12 @@ func cmdClean(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			}
 			if os.Remove(file) == nil {
 				removed++
-				if strings.HasSuffix(file, ".dispatch.json") && os.Remove(file+".git-checked") == nil {
-					removed++
+				if strings.HasSuffix(file, ".dispatch.json") {
+					for _, marker := range []string{".git-checked", ".diff-checked"} {
+						if os.Remove(file+marker) == nil {
+							removed++
+						}
+					}
 				}
 			}
 			return nil

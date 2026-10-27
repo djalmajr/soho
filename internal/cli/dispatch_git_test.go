@@ -30,6 +30,16 @@ func headGit(t *testing.T, env platform.Env, tree string, args ...string) string
 func headInit(t *testing.T, env platform.Env, tree string) string {
 	t.Helper()
 	headGit(t, env, tree, "init", "-b", "main")
+	// The fixture's own scaffolding (fake herdr logs, state, config) lives in
+	// the tree, the way a real project keeps .soho/ ignored: exclude it so the
+	// settle audit (DJA-543) sees only the worker's changes.
+	exclude := filepath.Join(tree, ".git", "info", "exclude")
+	if err := os.MkdirAll(filepath.Dir(exclude), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exclude, []byte("bin/\nstate/\nhome/\nconf/\nroles/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	headGit(t, env, tree, "config", "user.name", "Test Worker")
 	headGit(t, env, tree, "config", "user.email", "worker@example.invalid")
 	headGit(t, env, tree, "config", "core.hooksPath", filepath.Join(tree, "no-hooks"))

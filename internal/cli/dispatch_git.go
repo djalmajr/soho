@@ -60,5 +60,6 @@ func collectGitCheck(args []string, ctx *core.Config, env platform.Env, cwd, log
 	}
 	if st, err := os.Stat(report); err == nil && st.Size() > 0 {
 		gittree.Check(gittree.Sidecar(sd, report), agent, env, logFile, "collect")
+		gittree.DiffReport(gittree.Sidecar(sd, report), agent, report, env, logFile, "collect")
 	}
 }

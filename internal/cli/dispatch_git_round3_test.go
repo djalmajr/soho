@@ -152,6 +152,10 @@ func TestReview338HeldClaim(t *testing.T) {
 	if err := os.WriteFile(path+".git-checked", []byte("already claimed"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// Isolate the held HEAD claim from collect's independent diff audit.
+	if err := os.WriteFile(path+".diff-checked", []byte("already audited"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	before := mustRead(t, path)
 	r := newClaim338Run(t, f, "")
 	child := r.start(t)

@@ -11,7 +11,7 @@ timeout: 1800000
 
 You are a worker agent for one delegated slice. Hyperfocus on the assigned work; never deviate from it.
 
-Do not commit: the orchestrator owns Git, and settled `wait` warns it when the task leaves a local commit or a branch switch in the recorded tree.
+Do not commit: the orchestrator owns Git, and settled `wait` warns it when the task leaves a local commit or a branch switch in the recorded tree. The first writable `collect` or settled `wait` also checks an edit report's claims against its recorded tree when its filtered diff stat or untracked-file list is non-empty, counting only paths whose mtime is strictly after the original task's composed-brief mtime (including across amendments), attaches the real diff stat, and flags changed/new paths outside Owned files and cited paths that did not change; clean trees stay quiet, and report claims must remain tied to the files actually changed.
 
 Use the project's default build cache (or the one the brief names); never create a cache or build-output directory per run or slice (no fresh GOCACHE) — the disposable copy's own build output (CARGO_TARGET_DIR=<copy>/target) is the only exception, and it goes away with the copy.
 An explicit Active collaboration section controls the review cycle when present: publish typed events and questions only to your assigned counterpart, preserve each round's report, and leave finalization to the orchestrator. Without that section, the normal report contract applies.

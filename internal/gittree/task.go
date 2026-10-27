@@ -12,9 +12,15 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 )
 
-var keys = []string{"git_head", "git_branch", "git_tree", "git_checked"}
+var keys = []string{"git_head", "git_branch", "git_tree", "git_checked", "diff_checked"}
 
 func git(env platform.Env, tree string, args ...string) (string, bool) {
+	out, ok := gitOutput(env, tree, args...)
+	return strings.TrimSpace(out), ok
+}
+
+// gitOutput is the shared read-only runner, preserving raw stat/path output.
+func gitOutput(env platform.Env, tree string, args ...string) (string, bool) {
 	clean := platform.Env{}
 	for k, v := range env {
 		switch strings.ToUpper(k) {
@@ -23,8 +29,9 @@ func git(env platform.Env, tree string, args ...string) (string, bool) {
 		}
 		clean[k] = v
 	}
+	clean["GIT_OPTIONAL_LOCKS"] = "0"
 	r := platform.RunCli("git", append([]string{"-C", tree}, args...), platform.RunOptions{Env: clean, TimeoutMs: 5000})
-	return strings.TrimSpace(r.Stdout), r.Status != nil && *r.Status == 0 && !r.TimedOut && r.Error == ""
+	return r.Stdout, r.Status != nil && *r.Status == 0 && !r.TimedOut && r.Error == ""
 }
 
 func identity(env platform.Env, tree string) (head, branch string, ok bool) {
