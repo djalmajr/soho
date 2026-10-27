@@ -76,7 +76,7 @@ Cursor's active `MCP Server Approval Required` title followed by at least one `[
 
 ## A worker sandbox cannot run a required external runtime
 
-A runtime that works in the orchestrator shell can still be missing or denied in a sandboxed worker. `full` tool approvals do not lift the Codex `workspace-write` sandbox. Request a minimal capability probe explicitly in the brief, keep the exact command and error, and stop repeating identical denied attempts. Run the blocked gates externally against the same source revision and attach command/hash/log evidence in an amendment. The reviewer must verify that evidence; unresolved `[partial]` gates still fail the effective verdict. See [Windows Codex runtime gates](kinds.md#windows-codex-runtime-gates).
+A runtime that works in the orchestrator shell can still be missing or denied in a sandboxed worker. `full` tool approvals do not lift the Codex `workspace-write` sandbox. Request a minimal capability probe explicitly in the brief, keep the exact command and error, and stop repeating identical denied attempts. Run the blocked gates externally against the same source revision and attach command/hash/log evidence in an amendment. The reviewer must verify that evidence; unresolved `[partial]` gates still fail the effective verdict. A reason-bearing `[env]` item records an environment-only limit and the exact host command without that verdict change; the softer env warning still requires host, CI or native proof, and failing checks remain partial. See [Windows Codex runtime gates](kinds.md#windows-codex-runtime-gates).
 
 ## Cursor on Windows has not drawn its interactive UI
 

@@ -81,7 +81,9 @@ Example:
 </checkpoint>
 
 <report>
-For every item in the brief: `done` / `partial` / `skipped + reason`. Then: files changed (path + one line), tests added or updated, checks run with their result, decisions you had to make, and open questions for the orchestrator.
+Use [env] only when an item cannot execute in this environment because of a named sandbox or platform limit (process identity, local ports, network, native OS or browser); give the reason and the exact command the host must run. An empty [env] reason counts as [partial]. Any gap you could close, failing check or unverified behavior claim stays [partial]. An [env] item alone does not make a review verdict fail. Environment limitations are counted separately, require other proof before commit, push or release, and do not turn verdict_effective into fail.
+
+For every item in the brief: `[done]` / `[partial]` / `[env]` / `[skipped]` + reason. Then: files changed (path + one line), tests added or updated, checks run with their result, decisions you had to make, and open questions for the orchestrator.
 
 When the brief declares `Reference:`, include a `## Reference parity` section with one bullet per compared behavior or reference path. Mark each bullet `[same]`, `[diverges: <concrete reason>]` or `[n/a]`; explain every intentional difference and cite the source behavior and the local check. A bare `[diverges]` or an empty reason is unmarked. Read the pinned reference before claiming parity; do not modify the reference repository. The wait checks the section and marks when the report settles, warns about omissions and publishes counts without changing its status or exit code.
 </report>

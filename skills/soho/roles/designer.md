@@ -45,5 +45,7 @@ Example:
 </checkpoint>
 
 <report>
-Per item in the brief: `[done]` / `[partial]` / `[skipped]` + reason. List files touched, tokens or primitives added, states implemented, a11y checks performed, and anything left for the orchestrator (missing tokens, unresolved design questions). Add `ui_verification`: how the UI was exercised — a browser session or an e2e run, with the command and its output — or `not run` and why (for example, a sandbox that cannot open a local port), so the orchestrator plans the browser check before the commit.
+Use [env] only when an item cannot execute in this environment because of a named sandbox or platform limit (process identity, local ports, network, native OS or browser); give the reason and the exact command the host must run. An empty [env] reason counts as [partial]. Any gap you could close, failing check or unverified behavior claim stays [partial]. An [env] item alone does not make a review verdict fail. Environment limitations are counted separately, require other proof before commit, push or release, and do not turn verdict_effective into fail.
+
+Per item in the brief: `[done]` / `[partial]` / `[env]` / `[skipped]` + reason. List files touched, tokens or primitives added, states implemented, a11y checks performed, and anything left for the orchestrator (missing tokens, unresolved design questions). Add `ui_verification`: how the UI was exercised — a browser session or an e2e run, with the command and its output — or `not run` and why (for example, a sandbox that cannot open a local port), so the orchestrator plans the browser check before the commit.
 </report>

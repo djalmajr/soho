@@ -869,6 +869,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			case "done":
 				text, _ := platform.ReadTextFile(report)
 				partial := reportscan.PartialCount(text)
+				envCount := reportscan.EnvCount(text)
 				header := reportscan.ReviewHeader(text)
 				line := jsonjs.O("agent", agent, "status", "done", "report", report)
 				if moved := gittree.Check(gittree.Sidecar(sd, report), agent, env, frictionLogFile, "wait"); moved != nil {
@@ -900,6 +901,9 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				if partial > 0 {
 					line.Set("partial", partial)
 				}
+				if envCount > 0 {
+					line.Set("env", envCount)
+				}
 				if header != nil || partial > 0 {
 					effective := "pass"
 					if partial > 0 || header.Verdict == "fail" || header.Severity["P0"]+header.Severity["P1"]+header.Severity["P2"] > 0 {
@@ -913,6 +917,13 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					if prev != report {
 						sendWarning(fmt.Sprintf("report of '%s' marks %d item(s) partial: a partial item is not a pass; read them before commit, push or release", agent, partial))
 						writeWaitFile(sd, agent, "partial-warned", report+"\n")
+					}
+				}
+				if envCount > 0 {
+					prev, _ := readWaitFile(sd, agent, "env-warned")
+					if prev != report {
+						sendWarning(fmt.Sprintf("report of '%s' marks %d item(s) env-limited: the orchestrator must cover them by other proof (host run, CI, native platform) before commit, push or release", agent, envCount))
+						writeWaitFile(sd, agent, "env-warned", report+"\n")
 					}
 				}
 				recordMetrics(sd, agent, report, text, header, partial, ctx, env)

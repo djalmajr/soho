@@ -7,7 +7,7 @@ import (
 )
 
 const sandboxGitNote = "- Your sandbox cannot write under .git: do not run git mv, git checkout, git add or git commit. Describe renames and restores in the report; the orchestrator runs them.\n"
-const sandboxNetNote = "- Your sandbox has no network, local ports included: tests that start a local server fail with \"Operation not permitted\". Mark them [partial] and say so; the orchestrator runs them. Still write the integration tests the brief asks for, even if you cannot run them here; do not replace them with unit tests of helpers, and add a test seam (an injectable value) when the code depends on something fixed, such as the build type.\n"
+const sandboxNetNote = "- Your sandbox has no network, local ports included: tests that start a local server fail with \"Operation not permitted\". Mark environment-only limits [env] with the reason and exact host command; the orchestrator covers them. Failing checks remain [partial]. Still write the integration tests the brief asks for, even if you cannot run them here; do not replace them with unit tests of helpers, and add a test seam (an injectable value) when the code depends on something fixed, such as the build type.\n"
 
 // Issue 60: full approvals do not guarantee that a sandboxed Windows
 // worker can execute Node/Bun. The note says the required runtimes may be
@@ -19,7 +19,7 @@ const sandboxNetNote = "- Your sandbox has no network, local ports included: tes
 // orchestrator-produced log of the same revision, keeps the proof
 // [partial] until resolved, and requires external evidence to be checked
 // for command/source/revision before it may resolve the item.
-const sandboxWinRuntimeNote = "- Your sandbox may not have the runtimes your brief requires (node, bun or another) or may deny them even with full approvals, so a check on the host PATH is not proof about this sandbox. If your brief carries a `## Runtime capability probe` section naming the required commands, run at most one minimal version probe per required runtime in this worker sandbox and record the exact command, exit code and result; never repeat an identical denied probe. A denied or missing runtime keeps its item [partial]; route the blocked gate to the orchestrator for an orchestrator-produced log of the same revision; check any external evidence for the same command, source and revision before letting it resolve the item, and it must never silently turn an unresolved [partial] into a pass.\n"
+const sandboxWinRuntimeNote = "- Your sandbox may not have the runtimes your brief requires (node, bun or another) or may deny them even with full approvals, so a check on the host PATH is not proof about this sandbox. If your brief carries a `## Runtime capability probe` section naming the required commands, run at most one minimal version probe per required runtime in this worker sandbox and record the exact command, exit code and result; never repeat an identical denied probe. A denied or missing runtime is [env] with its reason and exact host command; route the blocked gate to the orchestrator for an orchestrator-produced log of the same revision; check any external evidence for the same command, source and revision before letting it resolve the item, and it must never silently turn an unresolved [partial] into a pass.\n"
 
 // currentPlatform is the platform seam of the composed prompts: the
 // runtime boundary (platform.Current, win32 on Windows) the composition

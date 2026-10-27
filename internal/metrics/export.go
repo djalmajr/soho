@@ -35,8 +35,9 @@ var exportCopyKeys = []string{
 var exportForKeys = []string{"kind", "model", "effort", "family"}
 
 // exportItemsKeys are the only keys kept from the input `items` object (the
-// done/partial/skipped counters part 1 writes).
-var exportItemsKeys = []string{"done", "partial", "skipped"}
+// done/partial/skipped counters part 1 writes, and env for environment-limited
+// items, DJA-340).
+var exportItemsKeys = []string{"done", "partial", "skipped", "env"}
 
 // exportSeverityKeys are the only keys kept from the input `severity` object
 // (the P0..P3 finding counters).
