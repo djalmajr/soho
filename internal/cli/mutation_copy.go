@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/core"
@@ -109,6 +110,7 @@ func runMutationCopy(args []string, env platform.Env) int {
 
 	// 2. Links: validate up front, create them after the copy.
 	links := make([]mutationCopyLink, 0, len(parsed.links))
+	explicitLinks := map[string]bool{}
 	for _, raw := range parsed.links {
 		rel, target, ok := strings.Cut(raw, "=")
 		if !ok {
@@ -147,6 +149,7 @@ func runMutationCopy(args []string, env platform.Env) int {
 			return refuse("link", raw, "target is inside the source; install the dependencies in the copy instead (an offline install from the package manager's store)")
 		}
 		links = append(links, mutationCopyLink{Path: filepath.Clean(rel), Target: targetPath})
+		explicitLinks[filepath.Clean(rel)] = true
 	}
 
 	// 3. The repository's files, from the worktree's disk state.
@@ -192,12 +195,51 @@ func runMutationCopy(args []string, env platform.Env) int {
 			return failIO(err.Error())
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
+			// An explicit dependency link replaces the source link without
+			// resolving or reading that source link's target.
+			if explicitLinks[filepath.Clean(rel)] {
+				continue
+			}
 			target, err := os.Readlink(srcPath)
 			if err != nil {
 				return failIO(err.Error())
 			}
 			if filepath.IsAbs(target) {
-				return refuse("symlink", rel, "absolute symlink")
+				// Index membership is independent of ignore rules: a trailing
+				// slash ignore pattern does not hide a directory symlink.
+				tracked := platform.RunCli("git", []string{"-C", source, "ls-files", "-z", "--cached", "--", ":(literal)" + rel}, platform.RunOptions{Env: env, Cwd: source, TimeoutMs: 30_000})
+				if tracked.Status == nil || *tracked.Status != 0 {
+					return failIO("git ls-files index check failed: " + strings.TrimSpace(tracked.Stderr))
+				}
+				if tracked.Stdout != "" {
+					return refuse("symlink", rel, "absolute symlink")
+				}
+				reads, err := mutationGuardReadPaths(dest, env)
+				if err != nil {
+					return failIO("guard read paths cannot be resolved: " + err.Error())
+				}
+				for _, readPath := range reads.paths() {
+					if mutationPathContains(dstPath, readPath) {
+						return refuse("symlink", rel, "a path the guard reads")
+					}
+				}
+				resolved, err := canonicalPath(target)
+				if err != nil {
+					return refuse("symlink", rel, "absolute symlink target cannot be resolved: "+err.Error())
+				}
+				if _, err := os.Stat(resolved); err != nil {
+					return refuse("symlink", rel, "absolute symlink target does not exist: "+err.Error())
+				}
+				if mutationPathContains(source, resolved) || mutationPathContains(resolved, source) {
+					return refuse("symlink", rel, "target contains the source")
+				}
+				if mutationPathContains(resolved, dest) {
+					return refuse("symlink", rel, "target contains the copy")
+				}
+				// Recreate the link itself after copying regular files; never
+				// visit its target's contents, and preserve its exact text.
+				links = append(links, mutationCopyLink{Path: filepath.Clean(rel), Target: target, Implicit: true})
+				continue
 			}
 			// The target is evaluated from the link's place in the copy: it
 			// must land inside the copy, not in the source tree.
@@ -278,6 +320,15 @@ func runMutationCopy(args []string, env platform.Env) int {
 	registerMutationCopy(env, source, dest)
 	_, _ = fmt.Fprintln(platform.Stdout, string(encoded))
 	return 0
+}
+
+// Mirror dispatch.SamePath's case folding, extending it to Darwin as required
+// by this refusal policy, with component containment and no symlink resolution.
+func mutationPathContains(parent, child string) bool {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		parent, child = strings.ToLower(parent), strings.ToLower(child)
+	}
+	return inside(parent, child)
 }
 
 // registerMutationCopy records the finished copy in the per-workspace
@@ -397,8 +448,9 @@ func validMutationCopyExclude(pattern string) bool {
 }
 
 type mutationCopyLink struct {
-	Path   string `json:"path"`
-	Target string `json:"target"`
+	Path     string `json:"path"`
+	Target   string `json:"target"`
+	Implicit bool   `json:"implicit,omitempty"`
 }
 
 type mutationCopyResult struct {
