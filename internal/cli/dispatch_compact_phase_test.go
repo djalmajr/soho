@@ -802,6 +802,10 @@ func TestDispatchCompactSigKILLKeepsTheInterruptedMarker(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Cleanup(func() { compactRemoveWithRetry(filepath.Join(root, "bin"), 10*time.Second) })
 	}
+	// The child's fake send-text waits for root/never. A fake herdr that
+	// outlives the kill (a partial taskkill on Windows leaves it orphaned)
+	// is released here, before the removals above, so it exits (DJA-566).
+	t.Cleanup(func() { _ = os.WriteFile(filepath.Join(root, "never"), nil, 0o600) })
 	stateDir := filepath.Join(root, "state", "ws")
 	marker := core.CompactPendingPath(stateDir, "worker")
 	bin, err := os.Executable()
