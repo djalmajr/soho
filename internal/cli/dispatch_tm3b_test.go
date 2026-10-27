@@ -719,9 +719,10 @@ func TestDispatchTM3bStrictLintOverlapAndMarkerCases(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(h.ws, "last-report-other"), []byte(otherReport+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		workerCwd := t.TempDir()
 		roster := "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\tmode\targs\teffort\n" +
-			"other\tw0test:p0b\tcodex\timplementer\topenai\t0\t/different/worker\tnow\tgpt-5\ttask\timplementer\t\t\t\t\n" +
-			"build\tw0test:p0a\tcodex\timplementer\topenai\t0\t/different/worker\tnow\tgpt-5\ttask\timplementer\t\t\t\t\n"
+			"other\tw0test:p0b\tcodex\timplementer\topenai\t0\t" + workerCwd + "\tnow\tgpt-5\ttask\timplementer\t\t\t\t\n" +
+			"build\tw0test:p0a\tcodex\timplementer\topenai\t0\t" + workerCwd + "\tnow\tgpt-5\ttask\timplementer\t\t\t\t\n"
 		if err := os.WriteFile(filepath.Join(h.ws, "agents.tsv"), []byte(roster), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -751,10 +752,11 @@ func TestDispatchTM3bStrictLintOverlapAndMarkerCases(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		otherCwd, workerCwd := t.TempDir(), t.TempDir()
 		roster := "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\tmode\targs\teffort\n" +
-			"other\tw0test:p0b\tcodex\timplementer\topenai\t0\t/worktree/other\tnow\tgpt-5\ttask\timplementer\t\t\t\t\n" +
-			"same\tw0test:p0c\tcodex\timplementer\topenai\t0\t/worktree/build\tnow\tgpt-5\ttask\timplementer\t\t\t\t\n" +
-			"build\tw0test:p0a\tcodex\timplementer\topenai\t0\t/worktree/build\tnow\tgpt-5\ttask\timplementer\t\t\t\t\n"
+			"other\tw0test:p0b\tcodex\timplementer\topenai\t0\t" + otherCwd + "\tnow\tgpt-5\ttask\timplementer\t\t\t\t\n" +
+			"same\tw0test:p0c\tcodex\timplementer\topenai\t0\t" + workerCwd + "\tnow\tgpt-5\ttask\timplementer\t\t\t\t\n" +
+			"build\tw0test:p0a\tcodex\timplementer\topenai\t0\t" + workerCwd + "\tnow\tgpt-5\ttask\timplementer\t\t\t\t\n"
 		if err := os.WriteFile(filepath.Join(h.ws, "agents.tsv"), []byte(roster), 0o600); err != nil {
 			t.Fatal(err)
 		}

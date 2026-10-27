@@ -146,7 +146,7 @@ func TestDispatchRemainingParityPortedCases(t *testing.T) {
 	t.Run(`JS: "parity dispatch: denied, through the $TMPDIR routing (test-status.sh)"`, func(t *testing.T) {
 		f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0", fakecli.Rule{Argv: []string{"agent", "get", "worker"}, ArgvPrefix: true, Code: 1, Stderr: "permission denied"})
 		f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
-		roster := "worker\tw0test:p0a\tcodex\timplementer\topenai\t0\t/elsewhere\tnow\tgpt-5\ttask\timplementer\t\t\t\thigh\n"
+		roster := "worker\tw0test:p0a\tcodex\timplementer\topenai\t0\t" + t.TempDir() + "\tnow\tgpt-5\ttask\timplementer\t\t\t\thigh\n"
 		if err := os.WriteFile(filepath.Join(f.state, "ws", "agents.tsv"), []byte(roster), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -255,7 +255,7 @@ func TestDispatchRemainingCases(t *testing.T) {
 	})
 	t.Run(`JS: "dispatch: a worker outside the repo root routes the report through $TMPDIR"`, func(t *testing.T) {
 		f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
-		roster := "worker\tw0test:p0a\tcodex\timplementer\topenai\t0\t/worker-root\tnow\tgpt-5\ttask\timplementer\t\t\t\thigh\n"
+		roster := "worker\tw0test:p0a\tcodex\timplementer\topenai\t0\t" + t.TempDir() + "\tnow\tgpt-5\ttask\timplementer\t\t\t\thigh\n"
 		if err := os.WriteFile(filepath.Join(f.state, "ws", "agents.tsv"), []byte(roster), 0o600); err != nil {
 			t.Fatal(err)
 		}

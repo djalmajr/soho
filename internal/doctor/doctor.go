@@ -466,6 +466,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	}
 	doctorProjectRoles(env, cwd, s)
 	doctorOrphans(ctx, env, cwd, s)
+	doctorWorkerCwds(ctx, env, cwd, s)
 	doctorDiscardedModels(ctx, env, cwd, s)
 	doctorModelPairs(ctx, env, cwd, s)
 	doctorLaneArgs(ctx, env, s)
@@ -1486,4 +1487,36 @@ func doctorRestartNotices(ctx *core.Config, env platform.Env, cwd string, out io
 	}
 	readEnv["SOHO_NOWRITE"] = "1"
 	waitpkg.RestartNotices(core.StateDirPath(ctx, readEnv, cwd), readEnv, out, nil)
+}
+
+// Worker cwd warnings are a read-only, best-effort workspace probe.
+func doctorWorkerCwds(ctx *core.Config, env platform.Env, cwd string, s *Say) {
+	if env.Get("HERDR_ENV") != "1" {
+		return
+	}
+	defer func() {
+		if value := recover(); value != nil {
+			if _, ok := value.(*platform.ExitError); !ok {
+				panic(value)
+			}
+		}
+	}()
+	readEnv := env.Clone()
+	readEnv["SOHO_NOWRITE"] = "1"
+	sd := core.StateDirPath(ctx, readEnv, cwd)
+	seen := map[string]bool{}
+	for _, row := range core.RosterRows(sd) {
+		cols := strings.Split(row, "\t")
+		if len(cols) <= 6 || seen[cols[0]] {
+			continue
+		}
+		seen[cols[0]] = true
+		if !waitpkg.WorkerCwdGone(cols[6]) {
+			continue
+		}
+		state := herdr.AgentState(cols[0], readEnv, herdr.Timeout, nil).State
+		if state != "" && state != "gone" && state != "unavailable" {
+			s.Warning(fmt.Sprintf("worker '%s' runs in %s, which no longer exists; release it with --close", cols[0], cols[6]))
+		}
+	}
 }

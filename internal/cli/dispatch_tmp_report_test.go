@@ -38,9 +38,9 @@ func TestDispatchTmpSohoReportIsReadByWait(t *testing.T) {
 	if err := os.WriteFile(brief, []byte("# Goal\n\nrun the slice\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// The worker's cwd is /work: outside the fixture repo, so the report
+	// The worker's cwd is a directory outside the fixture repo, so the report
 	// routes through the TMPDIR scratch directory.
-	roster := "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\nworker\tp1\tcodex\timplementer\tanthropic\t\t/work\tnow\tmodel-x\tfull\timplementer\tbuild\n"
+	roster := "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\nworker\tp1\tcodex\timplementer\tanthropic\t\t" + t.TempDir() + "\tnow\tmodel-x\tfull\timplementer\tbuild\n"
 	if err := os.WriteFile(filepath.Join(state, "ws", "agents.tsv"), []byte(roster), 0o600); err != nil {
 		t.Fatal(err)
 	}
