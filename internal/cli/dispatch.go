@@ -441,6 +441,9 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		prompt = strings.Replace(prompt, "# Amendment to your current brief\n\n", "# Amendment to your current brief\n\n"+amendmentRoleHeader(roleFile, role, agent), 1)
 	}
 	prompt = dispatchReferencePrompt(prompt, briefRaw, role, sd, report, env)
+	if port := core.RosterE2EPort(cols); port != "" {
+		prompt += "\nUse E2E_PORT=" + port + " (already exported in your shell) for any local server or e2e run; never the project's default port.\n"
+	}
 	writeComposed := func() error { return os.WriteFile(composed, []byte(prompt), 0o666) }
 	if scratch {
 		// A fresh O_EXCL temporary renamed over the name: a link planted

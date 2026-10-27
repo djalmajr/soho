@@ -422,8 +422,14 @@ func TabCreate(env platform.Env, ws, cwd, label string) TabCreateResult {
 	if registryDir := env.Get("SOHO_REGISTRY_DIR"); registryDir != "" {
 		args = append(args, "--env", "SOHO_REGISTRY_DIR="+registryDir)
 	}
+	if port := env.Get("SOHO_SPAWN_E2E_PORT"); port != "" {
+		args = append(args, "--env", "E2E_PORT="+port)
+	}
 	r := run(args, env)
 	v := parsed(r.Stdout)
+	if env.Get("SOHO_SPAWN_E2E_PORT") != "" && ok(r) {
+		env["SOHO_CREATED_E2E_PANE"] = str(get(v, "result", "root_pane", "pane_id"))
+	}
 	return TabCreateResult{ok(r), str(get(v, "result", "tab", "tab_id")), str(get(v, "result", "root_pane", "pane_id"))}
 }
 func PaneSplit(anchor, direction, cwd string, env platform.Env, ratio *string) PaneSplitResult {
@@ -434,7 +440,13 @@ func PaneSplit(anchor, direction, cwd string, env platform.Env, ratio *string) P
 	if registryDir := env.Get("SOHO_REGISTRY_DIR"); registryDir != "" {
 		args = append(args, "--env", "SOHO_REGISTRY_DIR="+registryDir)
 	}
+	if port := env.Get("SOHO_SPAWN_E2E_PORT"); port != "" {
+		args = append(args, "--env", "E2E_PORT="+port)
+	}
 	r := run(args, env)
+	if env.Get("SOHO_SPAWN_E2E_PORT") != "" && ok(r) {
+		env["SOHO_CREATED_E2E_PANE"] = str(get(parsed(r.Stdout), "result", "pane", "pane_id"))
+	}
 	return PaneSplitResult{ok(r), str(get(parsed(r.Stdout), "result", "pane", "pane_id"))}
 }
 
