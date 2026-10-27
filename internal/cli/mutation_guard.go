@@ -335,7 +335,7 @@ func symlinkIntoSource(copyPath, sourcePath string) (string, error) {
 					}
 					return "", err
 				}
-				if inside(sourcePath, target) {
+				if mutationPathContains(sourcePath, target) || mutationPathContains(target, sourcePath) {
 					return fmt.Sprintf("symlink %s -> %s", relative, target), nil
 				}
 			} else if info.IsDir() && entry.Name() != ".git" {
@@ -363,9 +363,75 @@ func envPointingIntoSource(env platform.Env, names []string, copyPath, sourcePat
 	return strings.Join(offenders, "; ")
 }
 
+type mutationGuardConfigPaths struct {
+	Directory, TargetBase string
+	Files                 []string
+}
+
+type mutationGuardReadSet struct {
+	Manifest  string
+	Ancestors []mutationGuardConfigPaths
+	CargoHome mutationGuardConfigPaths
+}
+
+func (reads mutationGuardReadSet) paths() []string {
+	paths := []string{reads.Manifest}
+	for _, config := range reads.Ancestors {
+		paths = append(paths, config.Files...)
+	}
+	return append(paths, reads.CargoHome.Files...)
+}
+
+// mutationGuardReadPaths returns the guard's absolute content-read paths without
+// resolving symlinks. Relative CARGO_HOME is relative to the calling process's
+// cwd, just like the guard's original ReadTextFile calls; TargetBase preserves
+// its existing relative target-dir interpretation and diagnostic spelling.
+func mutationGuardReadPaths(copyPath string, env platform.Env) (mutationGuardReadSet, error) {
+	var reads mutationGuardReadSet
+	root, err := filepath.Abs(copyPath)
+	if err != nil {
+		return reads, err
+	}
+	reads.Manifest = filepath.Join(root, "Cargo.toml")
+	configPaths := func(directory, targetBase string) (mutationGuardConfigPaths, error) {
+		config := mutationGuardConfigPaths{Directory: directory, TargetBase: targetBase}
+		for _, name := range []string{"config", "config.toml"} {
+			path, err := filepath.Abs(filepath.Join(directory, name))
+			if err != nil {
+				return config, err
+			}
+			config.Files = append(config.Files, path)
+		}
+		return config, nil
+	}
+	for dir := root; ; dir = filepath.Dir(dir) {
+		config, err := configPaths(filepath.Join(dir, ".cargo"), dir)
+		if err != nil {
+			return reads, err
+		}
+		reads.Ancestors = append(reads.Ancestors, config)
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	cargoHome := env.Get("CARGO_HOME")
+	if cargoHome == "" {
+		home := env.Get("HOME")
+		if home == "" {
+			home, _ = os.UserHomeDir()
+		}
+		cargoHome = filepath.Join(home, ".cargo")
+	}
+	reads.CargoHome, err = configPaths(cargoHome, filepath.Dir(cargoHome))
+	return reads, err
+}
+
 func cargoTargetInsideSource(copyPath, sourcePath string, env platform.Env) string {
-	manifest := filepath.Join(copyPath, "Cargo.toml")
-	if _, err := os.Stat(manifest); err != nil {
+	reads, err := mutationGuardReadPaths(copyPath, env)
+	if err != nil {
+		return "cargo metadata failed; target-dir cannot be resolved safely"
+	}
+	if _, err := os.Stat(reads.Manifest); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return ""
 		}
@@ -374,7 +440,7 @@ func cargoTargetInsideSource(copyPath, sourcePath string, env platform.Env) stri
 	if cargo, ok := cargoExecutable(env); ok {
 		return cargoMetadataTargetInsideSource(cargo, copyPath, sourcePath, env)
 	}
-	return textualCargoTargetInsideSource(copyPath, sourcePath, env)
+	return textualCargoTargetInsideSource(copyPath, sourcePath, reads)
 }
 
 func cargoExecutable(env platform.Env) (string, bool) {
@@ -427,7 +493,7 @@ func cargoMetadataTargetInsideSource(cargo, copyPath, sourcePath string, env pla
 	return ""
 }
 
-func textualCargoTargetInsideSource(copyPath, sourcePath string, env platform.Env) string {
+func textualCargoTargetInsideSource(copyPath, sourcePath string, reads mutationGuardReadSet) string {
 	parse := func(contents string) (string, bool, bool) {
 		inBuild := false
 		foundUnreadable := false
@@ -465,9 +531,9 @@ func textualCargoTargetInsideSource(copyPath, sourcePath string, env platform.En
 		}
 		return "", false, true
 	}
-	for dir := copyPath; ; dir = filepath.Dir(dir) {
-		for _, name := range []string{"config", "config.toml"} {
-			file := filepath.Join(dir, ".cargo", name)
+	for _, config := range reads.Ancestors {
+		dir := config.TargetBase
+		for _, file := range config.Files {
 			relative, _ := filepath.Rel(copyPath, file)
 			contents, err := platform.ReadTextFile(file)
 			if err != nil {
@@ -495,22 +561,10 @@ func textualCargoTargetInsideSource(copyPath, sourcePath string, env platform.En
 			}
 			return ""
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
 	}
-	cargoHome := env.Get("CARGO_HOME")
-	if cargoHome == "" {
-		home := env.Get("HOME")
-		if home == "" {
-			home, _ = os.UserHomeDir()
-		}
-		cargoHome = filepath.Join(home, ".cargo")
-	}
-	for _, name := range []string{"config", "config.toml"} {
-		file := filepath.Join(cargoHome, name)
-		contents, err := platform.ReadTextFile(file)
+	for _, path := range reads.CargoHome.Files {
+		file := filepath.Join(reads.CargoHome.Directory, filepath.Base(path))
+		contents, err := platform.ReadTextFile(path)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
@@ -527,7 +581,7 @@ func textualCargoTargetInsideSource(copyPath, sourcePath string, env platform.En
 		if value == "" {
 			break
 		}
-		resolved, err := canonicalPath(resolveRelative(filepath.Dir(cargoHome), value))
+		resolved, err := canonicalPath(resolveRelative(reads.CargoHome.TargetBase, value))
 		if err != nil {
 			return file + " target-dir cannot be resolved safely"
 		}
