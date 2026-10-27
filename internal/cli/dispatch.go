@@ -426,7 +426,8 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	priorPointer := taskreport.ReadTaskReportPointer(sd, agent)
 	taskReport := taskReportAfterDispatch(sd, report, amend, priorPointer)
 	taskReport = filepath.Join(reportDir, filepath.Base(taskReport))
-	if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "attempted", "", session, role); err != nil {
+	authorContext := dispatchAuthorContext{stateDir: sd, env: env, cwd: cwd}
+	if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, taskReport, briefSHA, "attempted", "", session, role); err != nil {
 		return writeDispatchError(agent, role, kind, composed, report, taskReport, sd, "couldn't write the attempt sidecar: "+sanitizeDispatchCause(err.Error()), 4,
 			fmt.Sprintf("could not write the attempt sidecar %s: %s", sidecar, sanitizeDispatchCause(err.Error())))
 	}
@@ -632,13 +633,13 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				}
 			}
 		}
-		if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, restoredReport, briefSHA, "failed", "", session, role); err != nil {
+		if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, restoredReport, briefSHA, "failed", "", session, role); err != nil {
 			core.Warn(fmt.Sprintf("could not record the failed submission in the attempt sidecar %s: %s", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 		}
 		return writeDispatchError(agent, role, kind, composed, report, taskReport, sd, p.Raw, 4,
 			"prompt submission failed; inspect with: herdr agent get "+agent+" && herdr agent read "+agent+". Do not resend blindly.")
 	}
-	if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session, role); err != nil {
+	if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session, role); err != nil {
 		core.Warn(fmt.Sprintf("could not record the accepted submission in the attempt sidecar %s: %s; the prompt went out", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 	}
 	gitFields := dispatchGitFields(briefRaw, workerCwd, cwd, sd, amend, priorPointer, env)
@@ -811,7 +812,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				warnNotReceived(agent, whyWorkingNoEvidence, true, true)
 			} else if st := herdr.AgentState(agent, env, herdr.Timeout, nil); !(nonEmpty(report) || ((st.State == "working" || st.State == "blocked") && preSeq != "" && seqString(st.Seq) != "" && preSeq != seqString(st.Seq))) {
 				status = "queued"
-				if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "queued", session, role); err != nil {
+				if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "queued", session, role); err != nil {
 					core.Warn(fmt.Sprintf("could not record the queued arrival in the attempt sidecar %s: %s; the dispatch result stands", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 				}
 				seq := seqString(st.Seq)
@@ -982,14 +983,20 @@ func compactPhaseDispatch(opts compactPhaseDispatchOptions) compactStepResult {
 // writeDispatchSidecarWithTask records the attempt and its durable task report
 // and brief hash on every submission update.
 func writeDispatchSidecarWithTask(path, kind, model, effort, taskReport, briefSHA, submission, arrival, session string, roles ...string) error {
+	return writeDispatchSidecarWithAuthorContext(dispatchAuthorContext{}, path, kind, model, effort, taskReport, briefSHA, submission, arrival, session, roles...)
+}
+
+func writeDispatchSidecarWithAuthorContext(ctx dispatchAuthorContext, path, kind, model, effort, taskReport, briefSHA, submission, arrival, session string, roles ...string) error {
 	role := dispatchSidecarRole(path)
 	if len(roles) > 0 {
 		role = roles[0]
 	}
-	if err := writeDispatchSidecar(path, kind, model, effort, submission, arrival, session); err != nil {
-		return err
-	}
-	return addTaskToSidecar(path, taskReport, briefSHA, role)
+	return withDispatchAuthor(path, role, func() error {
+		if err := writeDispatchSidecar(path, kind, model, effort, submission, arrival, session); err != nil {
+			return err
+		}
+		return addTaskToSidecar(path, taskReport, briefSHA, role)
+	}, ctx)
 }
 
 // addTaskToSidecar preserves the durable task report and brief hash on the
@@ -1289,7 +1296,8 @@ func dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, si
 // markNotReceived records the not-received arrival in the attempt sidecar and
 // writes wait/<agent>.not-received, which the next wait reads.
 func markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA string, env platform.Env, wasWorking bool) {
-	if err := writeDispatchSidecarWithTask(sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "not-received", session); err != nil {
+	cwd, _ := os.Getwd()
+	if err := writeDispatchSidecarWithAuthorContext(dispatchAuthorContext{stateDir: sd, env: env, cwd: cwd}, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "not-received", session); err != nil {
 		core.Warn(fmt.Sprintf("could not record the not-received arrival in the attempt sidecar %s: %s; the dispatch result stands", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 	}
 	seq := seqString(herdr.AgentState(agent, env, herdr.Timeout, nil).Seq)
