@@ -100,6 +100,7 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 	}
 	core.RosterRemove(sd, agent)
 	releaseCopies(sd, agent, keepCopies, env, cwd)
+	releaseReviewSnapshots(sd, agent, keepCopies, env, cwd)
 	releaseProcs(sd, agent, keepProcs, env)
 	_ = os.Remove(core.LastReportPath(sd, agent))
 	_ = os.Remove(filepath.Join(sd, "task-"+agent))

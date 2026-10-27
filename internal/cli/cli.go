@@ -33,7 +33,7 @@ var knownCommands = map[string]bool{
 	"send": true, "stats": true, "release": true, "clean": true, "setup": true,
 	"doctor": true, "explain": true, "init": true, "title": true, "regrid": true,
 	"roster": true, "friction": true, "feedback": true, "tab-label": true,
-	"layout-plan": true, "env": true, "mutation-guard": true, "mutation-copy": true,
+	"layout-plan": true, "env": true, "mutation-guard": true, "mutation-copy": true, "review-snapshot": true,
 	"reopen": true, "compact": true, "metrics": true, "copies": true, "gc": true,
 	"procs": true, "install": true, "promote": true,
 	"collaborate": true, "capabilities": true, "hook": true, "job": true, "peer-key": true,
@@ -148,7 +148,7 @@ func Run(args []string, env platform.Env) (code int) {
 	}
 	var commandConfig *core.Config
 	readOnlyRejectedDoctor := command == "doctor" && decisionEnv.Get("SOHO_NOWRITE") == "1" && len(args) > 1
-	if !readOnlyRejectedDoctor && (command == "config" || command == "session" || command == "roles" || command == "role" || command == "explain" || command == "layout-plan" || command == "regrid" || command == "promote" || command == "tab-label" || command == "stats" || command == "metrics" || command == "collect" || command == "setup" || command == "release" || command == "doctor" || command == "init" || command == "spawn" || command == "dispatch" || command == "resume" || command == "run" || command == "lint" || command == "wait" || command == "status") {
+	if !readOnlyRejectedDoctor && (command == "review-snapshot" || command == "config" || command == "session" || command == "roles" || command == "role" || command == "explain" || command == "layout-plan" || command == "regrid" || command == "promote" || command == "tab-label" || command == "stats" || command == "metrics" || command == "collect" || command == "setup" || command == "release" || command == "doctor" || command == "init" || command == "spawn" || command == "dispatch" || command == "resume" || command == "run" || command == "lint" || command == "wait" || command == "status") {
 		ctx := core.LoadConfigFor(decisionEnv, commandCwd, userSel)
 		configCtx = &ctx
 	}
@@ -256,6 +256,9 @@ func Run(args []string, env platform.Env) (code int) {
 	}
 	if command == "resume" {
 		return cmdResume(args[1:], configCtx, decisionEnv, commandCwd)
+	}
+	if command == "review-snapshot" {
+		return cmdReviewSnapshot(args[1:], configCtx, decisionEnv, commandCwd)
 	}
 	if command == "mutation-guard" {
 		return runMutationGuard(args[1:], decisionEnv)
