@@ -26,7 +26,7 @@ func TestBriefMissingSections(t *testing.T) {
 		}{
 			{"Goal", []string{"Goal"}},
 			{"Expected result", []string{"Expected result", "Acceptance", "Definition of done"}},
-			{"Owned files", []string{"Owned files", "Owned", "Scope"}},
+			{"Owned files", []string{"Owned files", "Owned"}},
 			{"Forbidden", []string{"Forbidden", "Non-goals", "Constraints"}},
 			{"Report", []string{"Report"}},
 		}
@@ -82,7 +82,7 @@ func TestBriefMissingSections(t *testing.T) {
 	t.Run("// JS: \"lint: canonical NFD headings match before JavaScript lowercasing\"", func(t *testing.T) {
 		for _, tc := range []struct{ name, body string }{
 			{"macron Goal", strings.Replace(full, "# Goal", "# Gōal", 1)},
-			{"caron Scope", strings.Replace(full, "# Owned files", "# Šcope", 1)},
+			{"caron Owned", strings.Replace(full, "# Owned files", "# Ōwned", 1)},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				if got := BriefMissingSections(tc.body, false, nil); got != "" {
