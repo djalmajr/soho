@@ -23,6 +23,7 @@ import (
 	"github.com/djalmajr/soho/internal/provider"
 	"github.com/djalmajr/soho/internal/sessionref"
 	"github.com/djalmajr/soho/internal/spawn/codexhooks"
+	"github.com/djalmajr/soho/internal/taskreport"
 	textutil "github.com/djalmajr/soho/internal/text"
 )
 
@@ -1150,6 +1151,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	if t.ResolvedFrom != "" {
 		fmt.Fprintf(platform.Stderr, "soho: send: %s resolved to %s (%s)\n", t.ResolvedFrom, t.RefShown, t.ResolvedName)
 	}
+	warnFinishedWorker(stateDir, t)
 	if t.Machine == sessionref.LocalMachine {
 		policyCwd := t.Cwd
 		policyTmp := ""
@@ -1824,6 +1826,30 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	}
 	platform.Die(fmt.Sprintf("send: %s did not confirm taking the message (%s); delivery is uncertain; %s for #%s or a reply before sending again", t.RefShown, lostCause, readPaneHint(t), id), 15)
 	return 15
+}
+
+// warnFinishedWorker uses the resolved pane and the caller's local roster;
+// it never probes Herdr or follows a roster name into another workspace.
+func warnFinishedWorker(stateDir string, target resolvedTarget) {
+	if stateDir == "" || target.Machine != sessionref.LocalMachine || target.Workspace != filepath.Base(stateDir) {
+		return
+	}
+	for _, row := range core.RosterRows(stateDir) {
+		fields := strings.Split(row, "\t")
+		if len(fields) < 4 || fields[1] == "" || fields[1] != target.TargetArg || fields[3] == "-" || fields[3] == "sub-orchestrator" {
+			continue
+		}
+		pointer := taskreport.ReadTaskReportPointer(stateDir, fields[0])
+		if pointer == nil {
+			return
+		}
+		current, _ := pointer.Get("current")
+		path, _ := current.(string)
+		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+			fmt.Fprintf(platform.Stderr, "soho: send: '%s' is a worker of this team and its report is written; this message puts it to work outside a task, and a dispatch to it is refused while it works. For new work use soho dispatch <agent> <brief>, or --amend to add to its task\n", fields[0])
+		}
+		return
+	}
 }
 
 // piInputRegion returns the visible screen's lines between the last two lines

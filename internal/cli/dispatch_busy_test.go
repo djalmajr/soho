@@ -193,7 +193,7 @@ func TestDispatchBusyRefusesANewBrief(t *testing.T) {
 		if code != 10 {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errText)
 		}
-		want := "soho: dispatch: 'worker' is still working on its open task (no report at " + f.openReport + "); wait for it (soho wait worker), send an amendment (--amend), or pass --queue to type this brief now (its CLI may read it mid-turn and drop the open task)\n"
+		want := "soho: dispatch: 'worker' is still working on its open task (no report at " + f.openReport + "); wait for it (soho wait worker), send an amendment (--amend), or pass --queue to type this brief now (its CLI may read it mid-turn and drop the open task), or pass --when-idle to wait for it and send then\n"
 		if errText != want {
 			t.Fatalf("stderr=%q; want %q", errText, want)
 		}
@@ -235,7 +235,7 @@ func TestDispatchBusyRefusesANewBrief(t *testing.T) {
 		if code != 10 {
 			t.Fatalf("code=%d err=%q", code, errText)
 		}
-		want := "soho: dispatch: 'worker' is still working on its open task (no report at " + f.openReport + "); wait for it (soho wait worker), send an amendment (--amend), or pass --queue to type this brief now (its CLI may read it mid-turn and drop the open task)\n"
+		want := "soho: dispatch: 'worker' is still working on its open task (no report at " + f.openReport + "); wait for it (soho wait worker), send an amendment (--amend), or pass --queue to type this brief now (its CLI may read it mid-turn and drop the open task), or pass --when-idle to wait for it and send then\n"
 		if errText != want {
 			t.Fatalf("stderr=%q; want %q", errText, want)
 		}
@@ -397,7 +397,7 @@ func TestDispatchBusyWithAReportStillRefuses(t *testing.T) {
 			if code != 10 || out != "" {
 				t.Fatalf("code=%d out=%q err=%q; want refusal 10 with empty stdout", code, out, errText)
 			}
-			want := "soho: dispatch: 'worker' is still working although its report exists at " + f.openReport + " (it may be a draft); nothing was sent. Retry once its pane is idle (herdr agent get worker; after report_working_max, soho wait returns done without waiting for the pane), send an amendment (--amend), or pass --queue to type this brief now (its CLI may read it mid-turn)\n"
+			want := "soho: dispatch: 'worker' is still working although its report exists at " + f.openReport + " (it may be a draft); nothing was sent. Retry once its pane is idle (herdr agent get worker; after report_working_max, soho wait returns done without waiting for the pane), send an amendment (--amend), or pass --queue to type this brief now (its CLI may read it mid-turn), or pass --when-idle to wait for it and send then\n"
 			if errText != want {
 				t.Fatalf("stderr=%q; want %q", errText, want)
 			}
