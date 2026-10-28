@@ -425,10 +425,13 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				waitTimeout = float64(core.RoleTimeoutMs(waitpkg.TaskRole(sd, agent), ctx, env, cwd))
 			}
 			deadline := started.Add(time.Duration(waitTimeout) * time.Millisecond)
+			timedOut := func() {
+				core.DieFriction(fmt.Sprintf("dispatch: '%s' was still working after %s; nothing was sent (--when-idle)", agent, platform.Now().Sub(started)), 9, frictionLogPath, "dispatch")
+			}
 			for {
 				left := deadline.Sub(platform.Now())
 				if left <= 0 {
-					core.DieFriction(fmt.Sprintf("dispatch: '%s' was still working after %s; nothing was sent (--when-idle)", agent, platform.Now().Sub(started)), 9, frictionLogPath, "dispatch")
+					timedOut()
 				}
 				if before.State != "working" {
 					break
@@ -442,8 +445,16 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			}
 			// Re-read before resuming the normal busy check: a settled pane
 			// may have started another turn or opened a dialog meanwhile.
+			// The read stays inside the budget, and nothing is sent past it.
 			if before.State == "idle" || before.State == "done" {
-				before = herdr.AgentState(agent, env, herdr.Timeout, nil)
+				left := deadline.Sub(platform.Now())
+				if left <= 0 {
+					timedOut()
+				}
+				before = herdr.AgentState(agent, env, min(herdr.Timeout, left), nil)
+				if deadline.Sub(platform.Now()) <= 0 {
+					timedOut()
+				}
 			}
 		}
 		if !amend && !queue && (before.State == "working" || before.State == "blocked") {

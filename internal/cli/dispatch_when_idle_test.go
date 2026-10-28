@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
@@ -210,5 +211,31 @@ func TestDispatchWhenIdleConflictingFlags(t *testing.T) {
 				t.Fatalf("usage called Herdr: %v", err)
 			}
 		})
+	}
+}
+
+// The confirming read after the pane settles is bounded by the remaining
+// budget: a slow read past the deadline exits 9 with nothing sent.
+func TestDispatchWhenIdleConfirmationKeepsTheDeadline(t *testing.T) {
+	f := newBusyDispatchFixture(t)
+	f.openPointer(t)
+	f.env["SOHO_WAIT_POLL_MS"] = "1"
+	oldNow := platform.Now
+	base, start := time.Date(2026, 10, 3, 15, 26, 48, 0, time.UTC), time.Now()
+	platform.Now = func() time.Time { return base.Add(time.Since(start)) }
+	t.Cleanup(func() { platform.Now = oldNow })
+	rules := []fakecli.Rule{
+		{Argv: []string{"agent", "get", "worker"}, Call: 1, Stdout: busyStateJSON("working", 1)},
+		{Argv: []string{"agent", "get", "worker"}, Call: 2, Stdout: busyStateJSON("done", 1)},
+		{Argv: []string{"agent", "get", "worker"}, Call: 3, Delay: 600, Stdout: busyStateJSON("done", 1)},
+		{Argv: []string{"agent", "get", "worker"}, Stdout: busyStateJSON("working", 2)},
+	}
+	f.install(t, append(rules, f.queuedRules()...))
+	before := snapshotTree(t, f.stateDir)
+	code, out, stderr := f.run(t, "worker", f.brief, "--when-idle", "--no-wait", "--timeout", "200ms")
+	after := snapshotTree(t, f.stateDir)
+	delete(after, "friction.log")
+	if prompts := countArgvPrefix(f.calls(t), []string{"agent", "prompt"}); code != 9 || prompts != 0 || !reflect.DeepEqual(before, after) {
+		t.Fatalf("code=%d prompts=%d state_unchanged=%v stdout=%q stderr=%q", code, prompts, reflect.DeepEqual(before, after), out, stderr)
 	}
 }
