@@ -889,6 +889,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 	// and a stable phase is not repeated on every poll.
 	seenCollab := map[string]string{}
 	idleAlerts := map[string]*idleAlert{}
+	queuedAlerts := map[queuedAlertIdentity]bool{}
 	idleMinutes := idleAlertMinutes(ctx, env)
 	emit := jsonLine
 	jsonLine := func(line *jsonjs.Object) {
@@ -955,6 +956,9 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			// without a visible read may use the once-per-minute fallback only
 			// when the probe confirmed the native working state for this poll.
 			now := platform.Now()
+			if tag == "working" && sample.nativeWorking {
+				observeQueuedPrompt(queuedAlerts, sd, agent, now, idleMinutes)
+			}
 			due := alert.sampleDue(idleTask(sd, agent, report), tag, now, idleMinutes)
 			if idleMinutes > 0 && tag == "working" && (sample.read || sample.nativeWorking && due) {
 				if !sample.read {
