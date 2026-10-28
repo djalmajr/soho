@@ -227,6 +227,10 @@ The operator moved the sol reviews to `low` on 2026-10-01. There is no evidence 
   - a file the build embeds with `include_bytes!` left out of the build (infra, the P1 the grok review caught);
   - installed `pyyaml` with `pip --user` without authorization (infra);
   - a regression it did not see: three stale fixed-count tests stayed masked behind tests that already failed by platform on Windows (infra).
+- **Weak, seen on 2026-10-28** (`lbvllm/qwen3.8-27b`): it left the formatter unrun on files it had edited, and blamed the failing check on something else.
+  - Twice in a row it blamed a failing `bun run check` on a file it had not touched and on the biome version. The cause was the formatting of its own files, even with the brief quoting the exact file and rule from biome's output (kashes).
+  - It left `cargo fmt` pending in a file and attributed it to the base commit (ai-usagebar). There the diagnosis was right, but the pattern is the same.
+  - The implementer role now asks for the project's formatter on the edited files before the check is reported.
 
 **As scouter or researcher** (9 tasks; median 10 to 15 min): with the lookup directive, the surveys were ready for a decision. It once claimed an absence without searching. A survey of 173 files was very useful (infra on Windows, 2026-10-01).
 
