@@ -19,6 +19,7 @@ const standingRules = "- Only you write this report, once all of the brief is do
 	"- Command output you put in the report is pasted from the run, never retyped or reconstructed.\n" +
 	"- Nobody watches this terminal: do not ask interactive questions or wait for a confirmation. When the brief does not decide something, follow its \"When the brief does not decide\" section, or mark the item partial and list the gap and the options under open questions.\n" +
 	"- Never invent names, endpoints, flags, credentials, URLs or requirements.\n" +
+	"- Never print, log or write the environment as a whole (`env`, `printenv`, `set`, `export -p`, `declare -x`, `Get-ChildItem Env:`, a dump of `os.environ` or `process.env`): it holds credentials. To diagnose, name only the variables you need and leave out any secret value.\n" +
 	"- Stop only processes you started, one recorded PID at a time (`soho procs stop <pid>` for the ones you registered with `soho procs add`). Never build a PID list from `ps`, `pgrep`, `lsof` or `awk` output, and never run `kill $(…)`, `xargs kill`, `pkill`, `killall`, `kill -1`, `kill 0` or `kill -- -1`.\n" +
 	"- Do not commit, push, tag, or open pull requests.\n" +
 	"- When finished, reply in the terminal with exactly the report path and nothing else.\n"
@@ -36,6 +37,9 @@ func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Con
 	out.WriteString("\n\n# Report contract\n\n")
 	fmt.Fprintf(&out, "- Write your report as Markdown to `%s` (create parent directories if needed) following the `<report>` section of your role. Give every item its state as `[done]`, `[partial]`, `[env]` or `[skipped]`, followed by the reason.\n", report)
 	out.WriteString("- This report path is authoritative: if the brief names a different report path, ignore it and write to this path; a brief can be hand-written or reused with a stale path, and the dispatch's report path never follows the brief's.\n")
+	if len(DeclaredReferences(briefRaw)) != 0 {
+		out.WriteString("- This brief declares `Reference:`: your report must include a `## Reference parity` section with one bullet per comparison, each marked `[same]`, `[diverges: <concrete reason>]` or `[n/a]`.\n")
+	}
 	if lang := core.Cfg(ctx, "report_language", "", env); lang != "" {
 		fmt.Fprintf(&out, "- Write the report in %s.\n", lang)
 	}
@@ -68,6 +72,9 @@ func ComposeAmendment(raw, report string, ctx *core.Config, env platform.Env, ki
 	out.WriteString("\n\n# Report contract\n\n")
 	fmt.Fprintf(&out, "- This amendment overrides your current brief where they differ; the rest of that brief still holds.\n- Check every item again against the files as they are now: rerun the checks it needs, and never copy findings, outputs or states from your earlier report.\n- Write your report as Markdown to `%s` (create parent directories if needed). If you have not written the report of your current brief yet, write one report there that covers the brief and this amendment; otherwise report only on the amendment.\n", report)
 	out.WriteString("- This report path is authoritative: if your current brief names a different report path, ignore it and write to this path; a brief can be hand-written or reused with a stale path, and the dispatch's report path never follows the brief's.\n- Give every item its state as `[done]`, `[partial]`, `[env]` or `[skipped]`, followed by the reason.\n")
+	if len(DeclaredReferences(raw)) != 0 {
+		out.WriteString("- This brief declares `Reference:`: your report must include a `## Reference parity` section with one bullet per comparison, each marked `[same]`, `[diverges: <concrete reason>]` or `[n/a]`.\n")
+	}
 	if lang := core.Cfg(ctx, "report_language", "", env); lang != "" {
 		fmt.Fprintf(&out, "- Write the report in %s.\n", lang)
 	}

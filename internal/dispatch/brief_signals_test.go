@@ -14,7 +14,7 @@ func TestBriefTypeOutsideFences(t *testing.T) {
 
 func TestBriefOwnedSignalAliases(t *testing.T) {
 	aliases := map[string][]string{"Owned files": {"My paths"}}
-	for _, heading := range []string{"Owned files", "Owned", "Scope", "Arquivos", "Escopo", "My paths"} {
+	for _, heading := range []string{"Owned files", "Owned", "Arquivos", "My paths"} {
 		if !BriefHasOwnedItems("## "+heading+"\n- app.go\n", aliases) {
 			t.Fatalf("alias not recognized: %s", heading)
 		}

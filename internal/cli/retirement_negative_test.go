@@ -44,8 +44,8 @@ func TestRetirementNegativeContracts(t *testing.T) {
 			want []string
 		}{
 			{"## Arquivos proibidos\n\n- src/secret.ts\n\n## Arquivos — donos\n\n- src/mine.ts\n", []string{"src/mine.ts"}},
-			{"## Escopo fora\n\n- src/secret.ts\n\n## Escopo:\n\n- src/mine.ts\n", []string{"src/mine.ts"}},
-			{"## Escopo\n\n- src/a.ts\n", []string{"src/a.ts"}}, // control: a real ownership heading is still owned
+			{"## Escopo fora\n\n- src/secret.ts\n\n## Arquivos:\n\n- src/mine.ts\n", []string{"src/mine.ts"}},
+			{"## Arquivos\n\n- src/a.ts\n", []string{"src/a.ts"}}, // control: a real ownership heading is still owned
 		}
 		for _, tc := range cases {
 			if got := ownedPaths(tc.body, nil); !reflect.DeepEqual(got, tc.want) {

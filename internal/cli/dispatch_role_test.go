@@ -17,9 +17,9 @@ func roleDispatchFixture(t *testing.T) *dispatchArrivalFixture {
 	t.Helper()
 	f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
 	f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
-	for _, role := range []string{"scouter", "reviewer", "implementer", "designer", "documenter", "tasker"} {
+	for _, role := range []string{"scouter", "reviewer", "security-reviewer", "implementer", "designer", "documenter", "tasker"} {
 		mode, body := "edit", "Edit role instructions."
-		if role == "scouter" || role == "reviewer" {
+		if role == "scouter" || role == "reviewer" || role == "security-reviewer" {
 			mode, body = "read-only", "Read-only. Never write, edit, or modify files."
 		}
 		writeRoleFixture(t, filepath.Join(f.root, "roles", role+".md"), fmt.Sprintf("---\nname: %s\nmode: %s\n---\n%s\n", role, mode, body))
@@ -64,6 +64,8 @@ func TestDispatchRoleEditSignals(t *testing.T) {
 		{name: "mechanical", body: "Type: mechanical\n", signal: "Type: mechanical", suggest: "tasker", word: "runs", refuse: true},
 		{name: "review", body: "Type: review\n", explicit: "reviewer"},
 		{name: "security", body: "Type: security\n", explicit: "reviewer"},
+		{name: "review-scope", body: "Type: review\n## Scope\n- app.go\n## Escopo\n- other.go\n", explicit: "reviewer"},
+		{name: "security-scope", body: "Type: security\n## Scope\n- app.go\n## Escopo\n- other.go\n", explicit: "security-reviewer"},
 		{name: "empty-owned", body: "# Owned files\n\n# Report\nDone\n"},
 		{name: "fenced-owned", body: "```md\nType: backend\n# Owned files\n- app.go\n```\nType: review\n"},
 	} {
@@ -94,6 +96,12 @@ func TestDispatchRoleEditSignals(t *testing.T) {
 					t.Fatalf("code=%d out=%s msg=%s", code, out, msg)
 				}
 				p, _ := dispatchOutputField(t, out, "composed_prompt")
+				if tc.name == "review-scope" || tc.name == "security-scope" {
+					calls, err := fakecli.ReadCallsForConfig(filepath.Join(f.bin, "herdr.json"))
+					if err != nil || countArgvPrefix(calls, []string{"agent", "prompt"}) != 1 {
+						t.Fatalf("review scope was not sent exactly once: calls=%v err=%v", calls, err)
+					}
+				}
 				if tc.explicit == "implementer" && strings.Contains(mustRead(t, p), "Read-only") {
 					t.Fatal("readonly header in edit prompt")
 				}

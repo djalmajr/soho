@@ -106,7 +106,7 @@ func TestDispatchJavaScriptHelperCases(t *testing.T) {
 				}
 			})
 		}
-		for _, tc := range []struct{ from, to string }{{"Expected result", "Acceptance"}, {"Expected result", "Definition of done"}, {"Owned files", "Owned"}, {"Owned files", "Scope"}, {"Forbidden", "Non-goals"}, {"Forbidden", "Constraints"}} {
+		for _, tc := range []struct{ from, to string }{{"Expected result", "Acceptance"}, {"Expected result", "Definition of done"}, {"Owned files", "Owned"}, {"Forbidden", "Non-goals"}, {"Forbidden", "Constraints"}} {
 			body := strings.Replace(full, "# "+tc.from, "# "+tc.to, 1)
 			if got := BriefMissingSections(body, false, nil); got != "" {
 				t.Errorf("alternative %s: missing=%q", tc.to, got)

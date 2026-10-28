@@ -21,7 +21,7 @@ import (
 var briefSectionHeadings = map[string][]string{
 	"Goal":            {"Goal"},
 	"Expected result": {"Expected result", "Acceptance", "Definition of done"},
-	"Owned files":     {"Owned files", "Owned", "Scope"},
+	"Owned files":     {"Owned files", "Owned"},
 	"Forbidden":       {"Forbidden", "Non-goals", "Constraints"},
 	"Report":          {"Report"},
 }
@@ -29,7 +29,7 @@ var briefSectionHeadings = map[string][]string{
 var briefSectionPortugueseHeadings = map[string][]string{
 	"Goal":            {"Objetivo", "Meta"},
 	"Expected result": {"Resultado esperado", "Critérios de aceitação", "Critérios de aceite", "Pronto quando"},
-	"Owned files":     {"Arquivos", "Escopo"},
+	"Owned files":     {"Arquivos"},
 	"Forbidden":       {"Proibido", "Fora do escopo", "Restrições"},
 	"Report":          {"Relatório"},
 }
