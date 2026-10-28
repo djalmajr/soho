@@ -2,6 +2,7 @@ package wait
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
@@ -1420,7 +1421,22 @@ func mirrorReport(sd, agent, report string, ctx *core.Config, env platform.Env, 
 					return
 				}
 			}
-			sendWarning("kept " + dst + ": it differs from " + src + ", which was not copied over it")
+			pair := fmt.Sprintf("%s\t%x", dst, sha256.Sum256(body))
+			kept, _ := readWaitFile(sd, agent, "mirror-kept")
+			for _, line := range strings.Split(kept, "\n") {
+				if line == pair {
+					return
+				}
+			}
+			sendWarning("kept " + dst + ": it differs from " + src + ", which was not copied over it; the state dir keeps its first copy. To take the new one, compare the two and delete " + dst + ": the next wait or status copies it again")
+			if kept != "" {
+				kept += "\n"
+			}
+			// The marker only spares a repeated warning: a failed write leaves
+			// the mirror best-effort, so the warning may repeat.
+			if os.MkdirAll(filepath.Join(sd, "wait"), 0o777) == nil {
+				_ = os.WriteFile(filepath.Join(sd, "wait", agent+".mirror-kept"), []byte(kept+pair+"\n"), 0o666)
+			}
 		}
 		if _, err := target.Lstat(name); err == nil {
 			keep()
