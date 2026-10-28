@@ -926,10 +926,30 @@ func TestWaitReportMirrorCommandCases(t *testing.T) {
 				t.Fatalf("%s=%q err=%v", path, got, err)
 			}
 		}
-		for _, msg := range []string{"kept " + stateReport + ": it differs from " + report + ", which was not copied over it", "kept " + stateBrief + ": it differs from " + composed + ", which was not copied over it"} {
+		for _, msg := range []string{"kept " + stateReport + ": it differs from " + report + ", which was not copied over it; the state dir keeps its first copy. To take the new one, compare the two and delete " + stateReport + ": the next wait or status copies it again", "kept " + stateBrief + ": it differs from " + composed + ", which was not copied over it; the state dir keeps its first copy. To take the new one, compare the two and delete " + stateBrief + ": the next wait or status copies it again"} {
 			if strings.Count(string(log), msg) != 1 {
 				t.Fatalf("warn %q count=%d log=%q", msg, strings.Count(string(log), msg), log)
 			}
+		}
+		for _, command := range []string{"release", "clean"} {
+			marker := filepath.Join(f.state, "wait", "worker.mirror-kept")
+			if err := os.WriteFile(marker, []byte("saved pair\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if command == "clean" {
+				if err := os.WriteFile(filepath.Join(f.state, "agents.tsv"), []byte(row), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := []string{command}
+			if command == "release" {
+				args = append(args, "worker")
+			}
+			code, out, stderr := f.runCommand(t, args...)
+			if _, err := os.Stat(marker); code != 0 || !os.IsNotExist(err) {
+				t.Fatalf("%s marker cleanup code=%d out=%q stderr=%q err=%v", command, code, out, stderr, err)
+			}
+			t.Logf("%s removes wait/worker.mirror-kept", command)
 		}
 	})
 	t.Run("wait: the mirror copies the dispatch sidecar (identical kept, different stands)", func(t *testing.T) { // JS: "wait: the mirror copies the dispatch sidecar (identical kept, different stands)"
@@ -974,7 +994,7 @@ func TestWaitReportMirrorCommandCases(t *testing.T) {
 		if got, err := os.ReadFile(stateSidecar); err != nil || string(got) != "different content\n" {
 			t.Fatalf("sidecar=%q err=%v", got, err)
 		}
-		warn := "kept " + stateSidecar + ": it differs from " + sidecar + ", which was not copied over it"
+		warn := "kept " + stateSidecar + ": it differs from " + sidecar + ", which was not copied over it; the state dir keeps its first copy. To take the new one, compare the two and delete " + stateSidecar + ": the next wait or status copies it again"
 		if strings.Count(string(log), warn) != 1 {
 			t.Fatalf("warn count=%d log=%q", strings.Count(string(log), warn), log)
 		}
