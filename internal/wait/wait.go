@@ -345,18 +345,21 @@ func reportStableAt(sd, agent, identity string) (int64, bool) {
 
 // reportAgentState checks report completion for wait and blocking dispatch.
 // Failed or missing panes preserve the report's authority.
-func reportAgentState(sd, agent string, ctx *core.Config, env platform.Env, stable bool, identity string) string {
-	max, err := strconv.ParseInt(core.Cfg(ctx, "report_working_max", "600", env), 10, 64)
-	if err != nil || max < 0 {
-		max = 600
-	}
+func reportAgentState(sd, agent, report string, ctx *core.Config, env platform.Env, stable bool, identity string) string {
+	max := reportWorkingMax(ctx, env)
 	done := func() string {
 		if !core.Nowrite(env) {
 			removeWaitFile(sd, agent, "report-stable-at")
+			removeWaitFile(sd, agent, "report-files-held")
+			writeWaitFile(sd, agent, "report-settled", identity+"\n")
 		}
 		return "done"
 	}
 	at, hasTimer := reportStableAt(sd, agent, identity)
+	settled, _ := readWaitFile(sd, agent, "report-settled")
+	if settled != identity && !core.Nowrite(env) {
+		removeWaitFile(sd, agent, "report-settled")
+	}
 	final, _ := readWaitFile(sd, agent, "report-working-final")
 	if final != identity {
 		if !core.Nowrite(env) {
@@ -367,14 +370,41 @@ func reportAgentState(sd, agent string, ctx *core.Config, env platform.Env, stab
 	}
 	if !hasTimer && !core.Nowrite(env) {
 		removeWaitFile(sd, agent, "report-stable-at")
+		removeWaitFile(sd, agent, "report-files-held")
 	}
 	if max == 0 {
 		return done()
 	}
 	st := herdr.AgentState(agent, env, herdr.Timeout, nil)
 	switch st.State {
-	case "idle", "done", "gone", "unavailable":
+	case "gone", "unavailable":
 		return done()
+	case "idle", "done":
+		if settled == identity {
+			return done()
+		}
+		newer := reportFilesAfter(sd, agent, report, env)
+		if len(newer) == 0 {
+			return done()
+		}
+		now := platform.Now().Unix()
+		if hasTimer && now-at > max {
+			if !core.Nowrite(env) {
+				writeWaitFile(sd, agent, "report-working-final", identity+"\n")
+			}
+			fmt.Fprintf(platform.Stderr, "soho: wait: '%s' kept changing files after its report for %ds; treating the report as final\n", agent, now-at)
+			return done()
+		}
+		if !core.Nowrite(env) {
+			if !hasTimer {
+				writeWaitFile(sd, agent, "report-stable-at", strconv.FormatInt(now, 10)+"\t"+identity+"\n")
+			}
+			held, _ := readWaitFile(sd, agent, "report-files-held")
+			if held != identity {
+				fmt.Fprintf(platform.Stderr, "soho: wait: '%s' changed files after writing its report (%s, %d in total); waiting for it to finish\n", agent, newer[0], len(newer))
+				writeWaitFile(sd, agent, "report-files-held", identity+"\n")
+			}
+		}
 	case "working":
 		if !stable && !hasTimer {
 			return "pending"
@@ -427,15 +457,20 @@ func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sa
 		identity := reportIdentity(report, info)
 		_, hasTimer := reportStableAt(sd, agent, identity)
 		final, _ := readWaitFile(sd, agent, "report-working-final")
-		if (ok && strings.TrimSpace(prev) == size) || hasTimer || final == identity {
-			return reportAgentState(sd, agent, ctx, env, true, identity)
+		settled, _ := readWaitFile(sd, agent, "report-settled")
+		if (ok && strings.TrimSpace(prev) == size) || hasTimer || final == identity || settled == identity {
+			return reportAgentState(sd, agent, report, ctx, env, true, identity)
 		}
 		removeWaitFile(sd, agent, "report-stable-at")
 		removeWaitFile(sd, agent, "report-working-final")
+		removeWaitFile(sd, agent, "report-files-held")
+		removeWaitFile(sd, agent, "report-settled")
 		return "pending"
 	}
 	removeWaitFile(sd, agent, "report-stable-at")
 	removeWaitFile(sd, agent, "report-working-final")
+	removeWaitFile(sd, agent, "report-files-held")
+	removeWaitFile(sd, agent, "report-settled")
 	st := herdr.AgentState(agent, env, herdr.Timeout, nil)
 	nrFile := filepath.Join(sd, "wait", agent+".not-received")
 	queuedFile := filepath.Join(sd, "wait", agent+".queued")

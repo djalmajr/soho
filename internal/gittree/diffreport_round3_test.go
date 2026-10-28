@@ -39,7 +39,41 @@ func diffAfterCurrentDispatch(f *diffFixture, report string, outside bool) error
 			return err
 		}
 	}
-	return nil
+	if err := os.WriteFile(report, []byte("Completed `src/a.go` and `src/b.go`.\n"), 0600); err != nil {
+		return err
+	}
+	return diffReportAfterEdits(f, report)
+}
+
+// Finish the fixture's report after its last edit without moving the original
+// composed-brief cutoff. Keep an already-final mtime stable across repeat waits.
+func diffReportAfterEdits(f *diffFixture, report string) error {
+	info, err := os.Stat(report)
+	if err != nil {
+		return err
+	}
+	latest := time.Time{}
+	err = filepath.WalkDir(f.tree, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Name() == ".git" && entry.IsDir() {
+			return filepath.SkipDir
+		}
+		stat, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if stat.ModTime().After(latest) {
+			latest = stat.ModTime()
+		}
+		return nil
+	})
+	if err != nil || info.ModTime().After(latest) {
+		return err
+	}
+	when := latest.Add(time.Second)
+	return os.Chtimes(report, when, when)
 }
 
 func diffTime(t *testing.T, file string, when time.Time) {

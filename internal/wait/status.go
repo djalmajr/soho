@@ -178,8 +178,10 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		quota := false
 		var p *provider.Detection
 		if reportNonEmpty(report) {
-			state = "done"
-			mirrorReport(sd, agent, report, ctx, env, cwd)
+			state, cause = reportStatus(sd, agent, report, ctx, env)
+			if state == "done" {
+				mirrorReport(sd, agent, report, ctx, env, cwd)
+			}
 		} else if core.RosterLine(sd, agent) == "" {
 			// D11: an agent outside this workspace's roster that Herdr knows —
 			// a local `agent get`, or the reference machine's, succeeds (find

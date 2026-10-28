@@ -158,10 +158,10 @@ func TestRetirementNegativeContracts(t *testing.T) {
 			})
 		}
 	})
-	t.Run("status: an authoritative ready report settles done without an agent get", func(t *testing.T) { // JS: "collect with the report already present never queries herdr" (scripts/test-status.sh:277,323)
+	t.Run("status: an authoritative ready report settles done when the agent get is denied", func(t *testing.T) {
 		rows := "worker\tw0test:p0a\tcodex\timplementer\topenai\t0\t/d\tnow\tgpt-5\ttask\timplementer\tbuild\n"
-		// The fixture denies agent get: had status queried it, the run would
-		// end 4 with a friction warning instead of the ready-report done.
+		// The denied query makes the pane unavailable; the ready report
+		// keeps its authority without adding a warning.
 		f := newWaitStatusFixture(t, rows, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Code: 1, Stderr: "PermissionDenied"}})
 		reportPath := filepath.Join(f.state, "reports", "worker.md")
 		if err := os.MkdirAll(filepath.Dir(reportPath), 0o700); err != nil {
@@ -175,17 +175,15 @@ func TestRetirementNegativeContracts(t *testing.T) {
 			t.Fatal(err)
 		}
 		code, out, stderr := f.run(t, "worker")
-		if code != 0 || !strings.Contains(out, "worker\tdone\t"+reportPath+"\t") || strings.Contains(stderr, "agent get failed") {
+		if code != 0 || !strings.Contains(out, "worker\tdone\t"+reportPath+"\t") || stderr != "" {
 			t.Fatalf("code=%d stdout=%q stderr=%q; want code=0, done line with the report, no get failure", code, out, stderr)
 		}
 		calls, err := fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil {
 			t.Fatal(err)
 		}
-		for _, call := range calls {
-			if len(call.Argv) > 1 && call.Argv[1] == "get" {
-				t.Fatalf("status queried herdr even though the report is ready: %#v", call)
-			}
+		if len(calls) != 1 || !reflect.DeepEqual(calls[0].Argv, []string{"agent", "get", "worker"}) {
+			t.Fatalf("want exactly one denied pane query, got %#v", calls)
 		}
 		raw, err := os.ReadFile(marker)
 		if err != nil || string(raw) != reportPath+"\n" {

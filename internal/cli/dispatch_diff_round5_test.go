@@ -61,6 +61,7 @@ func TestReview543R5ScopeChain(t *testing.T) {
 				}
 			}
 			reopenDispatchWrite(t, report, "Completed.\n")
+			reportAfterFixtureEdits(t, report, original.ModTime().Add(time.Second))
 			code, out, msg := reopenDispatchRun(t, f.env, "wait", "worker", "--timeout", "2s")
 			t.Logf("wait code=%d out=%s stderr=%s", code, out, msg)
 			var v map[string]any

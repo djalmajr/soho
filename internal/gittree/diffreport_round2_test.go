@@ -156,9 +156,6 @@ func TestDiffFreshAndDuplicateDispatchForward(t *testing.T) {
 				var writeErr error
 				trigger := &diffDuplicateWriter{trigger: func() {
 					writeErr = diffAfterCurrentDispatch(f, report, true)
-					if writeErr == nil {
-						writeErr = os.WriteFile(report, []byte("Completed `src/a.go` and `src/b.go`.\n"), 0600)
-					}
 				}}
 				code, output = diffRound2Run(t, f, trigger, args...)
 				if !trigger.fired || writeErr != nil {
@@ -182,7 +179,6 @@ func TestDiffFreshAndDuplicateDispatchForward(t *testing.T) {
 									if err := diffAfterCurrentDispatch(f, report, true); err != nil {
 										return
 									}
-									_ = os.WriteFile(report, []byte("Completed `src/a.go` and `src/b.go`.\n"), 0600)
 									return
 								}
 							}

@@ -14,7 +14,7 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 )
 
-const standingRules = "- Only you write this report, once all of the brief is done, including any part you handed to subagents or background tasks; a subagent never writes it. Report every item as it stands in the files, not as a subagent summarized it.\n" +
+const standingRules = "- Only you write this report, once all of the brief is done, including any part you handed to subagents or background tasks; a subagent never writes it. Before you write it, wait until every subagent and background task you started has finished, and change no file after it. Report every item as it stands in the files, not as a subagent summarized it.\n" +
 	"- Report only the current brief and its explicit amendments; do not import unrelated work from earlier briefs retained in a reused session. Mention prior work only when it directly affects this brief, stating the relationship.\n" +
 	"- Command output you put in the report is pasted from the run, never retyped or reconstructed.\n" +
 	"- Nobody watches this terminal: do not ask interactive questions or wait for a confirmation. When the brief does not decide something, follow its \"When the brief does not decide\" section, or mark the item partial and list the gap and the options under open questions.\n" +

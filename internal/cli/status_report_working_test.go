@@ -26,11 +26,12 @@ func TestWaitStatusReportWorking(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out, stderr := f.run(t, "worker")
-	if code != 0 || !strings.Contains(out, "worker\tdone\t") || stderr != "" {
+	if code != 0 || !strings.Contains(out, "worker\tworking\t"+report) || !strings.Contains(out, "report draft: pane working") || stderr != "" {
 		t.Fatalf("status code=%d out=%s stderr=%s", code, out, stderr)
 	}
-	if _, err := os.Stat(filepath.Join(f.bin, "herdr.calls.jsonl")); !os.IsNotExist(err) {
-		t.Fatalf("status queried Herdr with a ready report: %v", err)
+	calls, err := fakecli.ReadCallsForConfig(filepath.Join(f.bin, "herdr.json"))
+	if err != nil || len(calls) == 0 || strings.Join(calls[0].Argv, " ") != "agent get worker" {
+		t.Fatalf("status did not query the pane: calls=%v err=%v", calls, err)
 	}
 	if _, err := os.Stat(filepath.Join(f.state, "wait", "worker.report-stable-at")); !os.IsNotExist(err) {
 		t.Fatalf("status created a stability clock: %v", err)
@@ -54,7 +55,7 @@ func TestStatusReportWorkingNowrite(t *testing.T) {
 	}
 	nr.f.env["PATH"], nr.f.env["SOHO_FAKECLI_CONFIG"] = bin, bin
 	code, out, stderr := nr.runNowrite(t, "status", "worker")
-	if code != 0 || !strings.Contains(out, "worker\tdone\t") || stderr != "" {
+	if code != 0 || !strings.Contains(out, "worker\tworking\t"+nr.report) || !strings.Contains(out, "report draft: pane working") || stderr != "" {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, stderr)
 	}
 }
