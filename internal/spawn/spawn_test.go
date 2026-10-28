@@ -329,6 +329,7 @@ func TestResumeArgumentsAreRejectedBeforeOpeningPane(t *testing.T) {
 }
 
 func TestConfigNativeArgsStayBoundToResolvedKind(t *testing.T) {
+	stubCodexHelp(t, false)
 	// JS: "configNativeArgs: drops a scoped value when a kind flag switches the CLI"
 	// Mutation captured: forwarding role args resolved for another CLI can resume or broaden the wrong process.
 	ctx := &core.Config{Entries: map[string]core.ConfigEntry{"role_worker_args": {Value: "--continue"}, "role_worker_kind": {Value: "claude"}}}

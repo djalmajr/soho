@@ -3,6 +3,7 @@ package spawn
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/core"
@@ -33,7 +34,33 @@ func ConfigNativeArgs(kind, lane, role string, ctx *core.Config, env platform.En
 			tokens = append(tokens, strings.Fields(value)...)
 		}
 	}
+	if kind == "codex" && !hasNativeToken(tokens, "--no-daemon") && !hasNativeToken(tokens, "--remote") && CodexSupportsNoDaemon(env, cwd) {
+		// An option goes before a configured "--", never into the prompt.
+		tokens = slices.Insert(tokens, optionsEnd(tokens), "--no-daemon")
+	}
 	return strings.Join(tokens, " ")
+}
+
+// optionsEnd is the index of the first "--" in tokens, or their length.
+func optionsEnd(tokens []string) int {
+	if i := slices.Index(tokens, "--"); i >= 0 {
+		return i
+	}
+	return len(tokens)
+}
+
+// hasNativeToken reports an option among tokens. A "--" ends the options:
+// what follows it is the prompt, never a flag.
+func hasNativeToken(tokens []string, want string) bool {
+	for _, token := range tokens {
+		if token == "--" {
+			return false
+		}
+		if token == want || strings.HasPrefix(token, want+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 // RosterCaller reports the row of this project's roster that holds pane, when

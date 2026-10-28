@@ -100,7 +100,11 @@ func procsStop(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 			continue
 		}
 		if owner == "" {
-			refuse("no calling agent in the roster")
+			pane := env.Get("HERDR_PANE_ID")
+			if pane == "" {
+				pane = "unset"
+			}
+			refuse(fmt.Sprintf("no calling agent in the roster (pane %s, state dir %s)", pane, sd))
 			continue
 		}
 		matched, owned := false, false

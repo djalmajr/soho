@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1253,7 +1254,15 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 	}
 	if native != "" {
-		args = append(args, strings.Fields(native)...)
+		tokens := strings.Fields(native)
+		// Trailing native args win: a --remote there cannot run with
+		// --no-daemon, and a --no-daemon there needs no second one. Only
+		// the options go; a configured prompt after "--" stays as written.
+		if kind == "codex" && (hasNativeToken(o.native, "--remote") || hasNativeToken(o.native, "--no-daemon")) {
+			end := optionsEnd(tokens)
+			tokens = append(slices.DeleteFunc(slices.Clone(tokens[:end]), func(token string) bool { return token == "--no-daemon" }), tokens[end:]...)
+		}
+		args = append(args, tokens...)
 	}
 	agentArgs := append(args, o.native...)
 	if resume := ResumeArg(kind, agentArgs); resume != "" {
