@@ -54,7 +54,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				options = append(options, argv[i])
 			}
 		case len(a) > 1 && strings.HasPrefix(a, "-"):
-			if !containsWord("--no-wait --amend --compact --resend --queue --allow-full-context", a) {
+			if !containsWord("--no-wait --amend --compact --resend --queue --when-idle --allow-full-context", a) {
 				core.DieFriction("dispatch: unknown option "+a, 2, frictionLogPath, "dispatch")
 			}
 			options = append(options, a)
@@ -76,6 +76,8 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	agent, brief := positional[0], positional[1]
 	role, timeoutRaw := "", ""
 	noWait, amend, compact, resend, queue, allowFullContext := false, false, false, false, false, false
+	whenIdle := false
+	timeoutGiven := false
 	argv = options
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
@@ -91,6 +93,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				role = v
 			case "--timeout":
 				timeoutRaw = v
+				timeoutGiven = true
 				if _, ok := core.ParseTimeoutMS(v); !ok {
 					core.DieFriction(fmt.Sprintf("dispatch: --timeout expects milliseconds or a duration such as 90s, 30m or 2h, got '%s'", v), 2, frictionLogPath, "dispatch")
 				}
@@ -112,12 +115,21 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			resend = true
 		case "--queue":
 			queue = true
+		case "--when-idle":
+			whenIdle = true
 		case "--cwd":
 			// dispatch never opens a worker: its cwd is fixed when spawn opens it.
 			core.DieFriction("dispatch: unknown option --cwd (the worker's directory is set when it is opened: spawn <role> --cwd <dir>, then dispatch to it)", 2, frictionLogPath, "dispatch")
 		default:
 			core.DieFriction("dispatch: unknown option "+a, 2, frictionLogPath, "dispatch")
 		}
+	}
+	if whenIdle && (amend || queue) {
+		other := "--queue"
+		if amend {
+			other = "--amend"
+		}
+		core.DieFriction("dispatch: --when-idle cannot be combined with "+other, 2, frictionLogPath, "dispatch")
 	}
 	explicitRole := role != ""
 	if st, err := os.Stat(brief); err != nil || !st.Mode().IsRegular() {
@@ -405,14 +417,54 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	var before herdr.AgentStateResult
 	if checkOn {
 		before = herdr.AgentState(agent, env, herdr.Timeout, nil)
+		if whenIdle && before.State == "working" {
+			fmt.Fprintf(platform.Stderr, "soho: dispatch: '%s' is still working; waiting for it to finish before sending (--when-idle)\n", agent)
+			started := platform.Now()
+			waitTimeout := parseTimeout(timeoutRaw)
+			if !timeoutGiven {
+				waitTimeout = float64(core.RoleTimeoutMs(waitpkg.TaskRole(sd, agent), ctx, env, cwd))
+			}
+			deadline := started.Add(time.Duration(waitTimeout) * time.Millisecond)
+			timedOut := func() {
+				core.DieFriction(fmt.Sprintf("dispatch: '%s' was still working after %s; nothing was sent (--when-idle)", agent, platform.Now().Sub(started)), 9, frictionLogPath, "dispatch")
+			}
+			for {
+				left := deadline.Sub(platform.Now())
+				if left <= 0 {
+					timedOut()
+				}
+				if before.State != "working" {
+					break
+				}
+				time.Sleep(min(time.Duration(waitpkg.PollIntervalMs(env))*time.Millisecond, left))
+				left = deadline.Sub(platform.Now())
+				if left <= 0 {
+					continue
+				}
+				before = herdr.AgentState(agent, env, min(herdr.Timeout, left), nil)
+			}
+			// Re-read before resuming the normal busy check: a settled pane
+			// may have started another turn or opened a dialog meanwhile.
+			// The read stays inside the budget, and nothing is sent past it.
+			if before.State == "idle" || before.State == "done" {
+				left := deadline.Sub(platform.Now())
+				if left <= 0 {
+					timedOut()
+				}
+				before = herdr.AgentState(agent, env, min(herdr.Timeout, left), nil)
+				if deadline.Sub(platform.Now()) <= 0 {
+					timedOut()
+				}
+			}
+		}
 		if !amend && !queue && (before.State == "working" || before.State == "blocked") {
 			if ptr := taskreport.ReadTaskReportPointer(sd, agent); ptr != nil {
 				if cur, ok := ptr.Get("current"); ok {
 					if s, isStr := cur.(string); isStr && s != "" {
 						if nonEmpty(s) {
-							core.DieFriction(fmt.Sprintf("dispatch: '%s' is still working although its report exists at %s (it may be a draft); nothing was sent. Retry once its pane is idle (herdr agent get %s; after report_working_max, soho wait returns done without waiting for the pane), send an amendment (--amend), or pass --queue to type this brief now (its CLI may read it mid-turn)", agent, s, agent), 10, frictionLogPath, "dispatch")
+							core.DieFriction(fmt.Sprintf("dispatch: '%s' is still working although its report exists at %s (it may be a draft); nothing was sent. Retry once its pane is idle (herdr agent get %s; after report_working_max, soho wait returns done without waiting for the pane), send an amendment (--amend), or pass --queue to type this brief now (its CLI may read it mid-turn), or pass --when-idle to wait for it and send then", agent, s, agent), 10, frictionLogPath, "dispatch")
 						}
-						core.DieFriction(fmt.Sprintf("dispatch: '%s' is still working on its open task (no report at %s); wait for it (soho wait %s), send an amendment (--amend), or pass --queue to type this brief now (its CLI may read it mid-turn and drop the open task)", agent, s, agent), 10, frictionLogPath, "dispatch")
+						core.DieFriction(fmt.Sprintf("dispatch: '%s' is still working on its open task (no report at %s); wait for it (soho wait %s), send an amendment (--amend), or pass --queue to type this brief now (its CLI may read it mid-turn and drop the open task), or pass --when-idle to wait for it and send then", agent, s, agent), 10, frictionLogPath, "dispatch")
 					}
 				}
 			}
