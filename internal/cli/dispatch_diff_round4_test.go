@@ -46,6 +46,7 @@ func TestReview543AmendmentRetainsOwned(t *testing.T) {
 				t.Fatal(e)
 			}
 			reopenDispatchWrite(t, current, "Completed.\n")
+			reportAfterFixtureEdits(t, current, cutoff)
 			after, e := os.Stat(composed)
 			if e != nil {
 				t.Fatal(e)
@@ -72,6 +73,23 @@ func TestReview543AmendmentRetainsOwned(t *testing.T) {
 				t.Fatal("amendment dropped the original task's Owned files scope")
 			}
 		})
+	}
+}
+
+// Preserve the fixture's dispatch/edit cutoffs and timestamp only its final
+// report, after both the real writes and any synthetic edit mtime.
+func reportAfterFixtureEdits(t *testing.T, report string, editedAt time.Time) {
+	t.Helper()
+	info, err := os.Stat(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ModTime().After(editedAt) {
+		editedAt = info.ModTime()
+	}
+	final := editedAt.Add(time.Second)
+	if err := os.Chtimes(report, final, final); err != nil {
+		t.Fatal(err)
 	}
 }
 

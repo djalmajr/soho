@@ -905,7 +905,7 @@ type compactPhaseStatusFixture struct {
 	briefPath   string
 }
 
-func newCompactPhaseStatusFixture(t *testing.T, withStaleReport bool) *compactPhaseStatusFixture {
+func newCompactPhaseStatusFixture(t *testing.T, withStaleReport bool, paneState ...string) *compactPhaseStatusFixture {
 	t.Helper()
 	root := t.TempDir()
 	state := filepath.Join(root, "state")
@@ -958,8 +958,12 @@ func newCompactPhaseStatusFixture(t *testing.T, withStaleReport bool) *compactPh
 	if err := os.Chtimes(filepath.Join(state, "ws", "last-report-worker"), lastMod, lastMod); err != nil {
 		t.Fatal(err)
 	}
+	status := "working"
+	if len(paneState) > 0 {
+		status = paneState[0]
+	}
 	if _, err := fakecli.Install(t, bin, "herdr", []fakecli.Rule{
-		{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"agent_status":"working"}}}`},
+		{Argv: []string{"agent", "get", "worker"}, Stdout: fmt.Sprintf(`{"result":{"agent":{"agent_status":%q}}}`, status)},
 		{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},
 		{Argv: []string{"agent", "read", "worker", "--source", "visible"}, ArgvPrefix: true, Stdout: "busy on the task\n"},
 		{Argv: []string{"agent", "get", "ghost"}, Code: 1, Stderr: `{"error":{"code":"agent_not_found","message":"agent target ghost not found"},"id":"cli:agent:get"}`},
@@ -1007,7 +1011,7 @@ func TestStatusCompactPhaseLines(t *testing.T) {
 	}
 	dead := compactPhaseDeadPID(t)
 	t.Run("compacting outranks a stale complete report", func(t *testing.T) {
-		f := newCompactPhaseStatusFixture(t, true)
+		f := newCompactPhaseStatusFixture(t, true, "idle")
 		marker := f.writeMarker(t, "worker", markerJSON(t, "tok", "p1", os.Getpid(), selfStarted(t)))
 		code, out, errText := f.runStatus(t, f.env, []string{"worker"})
 		if code != 0 {
@@ -1017,7 +1021,7 @@ func TestStatusCompactPhaseLines(t *testing.T) {
 		if out != want {
 			t.Fatalf("status line:\n got:  %q\nwant: %q (the stale done report must not show)", out, want)
 		}
-		// The control without the marker keeps the old done line.
+		// The idle-pane control without the marker keeps the same done line.
 		if err := os.Remove(marker); err != nil {
 			t.Fatal(err)
 		}
@@ -1119,7 +1123,7 @@ func TestStatusCompactPhaseLines(t *testing.T) {
 		}
 	})
 	t.Run("a switched pane keeps the old behavior", func(t *testing.T) {
-		f := newCompactPhaseStatusFixture(t, true)
+		f := newCompactPhaseStatusFixture(t, true, "idle")
 		f.writeMarker(t, "worker", markerJSON(t, "tok", "p-other", os.Getpid(), selfStarted(t)))
 		code, out, errText := f.runStatus(t, f.env, []string{"worker"})
 		if code != 0 {

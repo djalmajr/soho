@@ -197,6 +197,13 @@ func newDiffFixture(t *testing.T, owned, report, role string) *diffFixture {
 
 func (f *diffFixture) wait(t *testing.T) (map[string]any, string, string) {
 	t.Helper()
+	last, err := os.ReadFile(filepath.Join(f.state, "last-report-worker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := diffReportAfterEdits(f, strings.TrimSpace(string(last))); err != nil {
+		t.Fatal(err)
+	}
 	oldOut, oldErr := platform.Stdout, platform.Stderr
 	var out, stderr bytes.Buffer
 	platform.Stdout, platform.Stderr = &out, &stderr
@@ -485,7 +492,6 @@ func TestDiffReportWaitingDispatchProducer(t *testing.T) {
 						if err := diffAfterCurrentDispatch(f, report, false); err != nil {
 							return
 						}
-						_ = os.WriteFile(report, []byte("Completed `src/a.go` and `src/b.go`.\n"), 0600)
 						return
 					}
 				}

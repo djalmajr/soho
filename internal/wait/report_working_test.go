@@ -163,8 +163,8 @@ func TestStatusReportWorking(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sd, "last-report-worker"), []byte(report+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// A malformed clock would be unusable by wait; status must ignore it
-	// entirely and leave it untouched, even with the pane still working.
+	// A malformed clock does not authorize completion; status leaves it
+	// untouched while showing the working pane as a report draft.
 	timer := filepath.Join(sd, "wait", "worker.report-stable-at")
 	const original = "not a stability clock\n"
 	if err := os.WriteFile(timer, []byte(original), 0600); err != nil {
@@ -172,7 +172,7 @@ func TestStatusReportWorking(t *testing.T) {
 	}
 	for i := 0; i < 2; i++ {
 		rc, out, stderr := f.run(t, []string{"worker"})
-		if rc != 0 || !strings.Contains(out, "worker\tdone\t") || stderr != "" {
+		if rc != 0 || !strings.Contains(out, "worker\tworking\t"+report) || !strings.Contains(out, "report draft: pane working") || stderr != "" {
 			t.Fatalf("probe=%d rc=%d out=%s stderr=%s", i, rc, out, stderr)
 		}
 	}
@@ -180,7 +180,5 @@ func TestStatusReportWorking(t *testing.T) {
 	if err != nil || string(raw) != original {
 		t.Fatalf("status changed clock: %q err=%v", raw, err)
 	}
-	if _, err := os.Stat(filepath.Join(f.env["PATH"], "herdr.calls.jsonl")); !os.IsNotExist(err) {
-		t.Fatalf("status queried Herdr despite its ready report: %v", err)
-	}
+	wantLog(t, f.callLog(t), "agent\x00get\x00worker", "agent\x00read\x00worker\x00--source\x00visible", "agent\x00get\x00worker", "agent\x00read\x00worker\x00--source\x00visible")
 }

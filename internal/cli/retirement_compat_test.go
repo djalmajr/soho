@@ -512,8 +512,8 @@ func retireStatusCase(t *testing.T, name string) retireStatusScenario {
 	case "status-report-wins":
 		return retireStatusScenario{
 			rules: []fakecli.Rule{
-				// The denied mode would apply if herdr were queried at all;
-				// the ready report must win first.
+				// A denied pane query is unavailable; the ready report keeps
+				// its authority after exactly that one query.
 				{Argv: []string{"agent", "get", "worker"}, Code: 1, Stderr: retireDeniedOS + "\n"},
 				retireScreenRule("worker", "terminal-fallback"),
 			},
@@ -541,8 +541,8 @@ func retireStatusCase(t *testing.T, name string) retireStatusScenario {
 			},
 			extra: func(t *testing.T, f *retirementFixture) {
 				lines := f.herdrLogLines(t)
-				if len(lines) != 0 {
-					t.Fatalf("a ready report wins without any herdr call; got %d calls: %v", len(lines), lines)
+				if !reflect.DeepEqual(lines, []string{"agent get worker"}) {
+					t.Fatalf("a ready report wins after one denied pane query; got %d calls: %v", len(lines), lines)
 				}
 			},
 		}
