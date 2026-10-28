@@ -31,6 +31,7 @@ import (
 var dispatchWaitFiles = []string{"size", "screen", "since", "blocked", "approvals", "quota", "provider", "provider-cause", "capacity-retries", "capacity-at", "question", "stuck-hash", "stuck-since", "stuck-warned", "activity-at", "probe-at", "not-received", "queued", "enter-retry", "approve-screen"}
 var dispatchWaitFor = waitpkg.WaitFor
 var writeDispatchSidecar = dispatch.WriteSidecar
+var dispatchCodexSupportsNoDaemon = spawn.CodexSupportsNoDaemon
 
 func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	return cmdDispatchWithOptions(argv, ctx, env, cwd, dispatchOptions{})
@@ -191,6 +192,9 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		}
 	}
 	kind := at(2)
+	if kind == "codex" && !dispatchNativeArg(at(13), "--no-daemon") && !dispatchNativeArg(at(13), "--remote") && dispatchCodexSupportsNoDaemon(env, cwd) {
+		fmt.Fprintf(platform.Stderr, "soho: dispatch: '%s' was started without --no-daemon: codex runs its commands through a shared server that may carry another pane's identity, so its procs, copies and send can land in another workspace. Release it with --close and spawn it again\n", agent)
+	}
 	roleFile := core.RoleFile(role, env, cwd)
 	if roleFile == "" {
 		core.DieFriction(fmt.Sprintf("unknown role '%s' (run: soho roles)", role)+core.UnknownRoleHint(role, env, cwd), 3, frictionLogPath, "dispatch")
@@ -920,6 +924,20 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	}
 	resultCode := emitDispatchResult(agent, role, kind, composed, report, taskReport, status, amend, last, waitCode, sd, enterSent, resent)
 	return resultCode
+}
+
+// dispatchNativeArg reports an option in a roster args column, up to the
+// "--" that ends the options.
+func dispatchNativeArg(args, want string) bool {
+	for _, token := range strings.Fields(args) {
+		if token == "--" {
+			return false
+		}
+		if token == want || strings.HasPrefix(token, want+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 func containsWord(list, word string) bool {

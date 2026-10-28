@@ -139,7 +139,7 @@ func TestProcsStopOwnerResolution(t *testing.T) {
 					t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
 				}
 			} else {
-				cause := "no calling agent in the roster"
+				cause := fmt.Sprintf("no calling agent in the roster (pane not-in-roster, state dir %s)", f.state)
 				if mode == "unknown-agent" {
 					cause = "--agent ghost does not match the calling pane's agent "
 				}

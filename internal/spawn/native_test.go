@@ -10,6 +10,7 @@ import (
 )
 
 func TestConfigNativeArgsCombinesKindAndRoleArgs(t *testing.T) {
+	stubCodexHelp(t, false)
 	root := t.TempDir()
 	roles := filepath.Join(root, "roles")
 	if err := os.MkdirAll(roles, 0o755); err != nil {
