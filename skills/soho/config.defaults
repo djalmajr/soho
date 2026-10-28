@@ -202,6 +202,7 @@ settled_grace=45
 # Seconds to wait on a stable report while its pane is working; 0 disables the wait.
 report_working_max=600
 # Minutes without new working output before a wait alert; 0 disables it.
+# The same threshold bounds how long a prompt may sit queued behind a working turn before wait warns.
 idle_alert_minutes=20
 
 # Optional first per-worker E2E port (1024..65000); empty disables reservation.
