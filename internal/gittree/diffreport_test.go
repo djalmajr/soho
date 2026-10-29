@@ -136,11 +136,18 @@ func diffRepository(t *testing.T, tree string, files map[string]string) string {
 }
 
 func newDiffFixture(t *testing.T, owned, report, role string) *diffFixture {
+	return newDiffFixtureFiles(t, owned, report, role, map[string]string{"src/a.go": "package a\n", "src/b.go": "package b\n", "forbidden.go": "package forbidden\n", "README.md": "fixture\n"})
+}
+
+// newDiffFixtureFiles is newDiffFixture over a caller-chosen initial file
+// set, so a test can track files the fixed set does not (a test file the
+// new-tests Owned item case studies).
+func newDiffFixtureFiles(t *testing.T, owned, report, role string, files map[string]string) *diffFixture {
 	t.Helper()
 	root := t.TempDir()
 	tree := filepath.Join(root, "tree with spaces")
 	state := filepath.Join(root, "state", "ws")
-	head := diffRepository(t, tree, map[string]string{"src/a.go": "package a\n", "src/b.go": "package b\n", "forbidden.go": "package forbidden\n", "README.md": "fixture\n"})
+	head := diffRepository(t, tree, files)
 	bin := filepath.Join(root, "bin")
 	if _, err := fakecli.Install(t, bin, "herdr", []fakecli.Rule{
 		{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"agent_status":"idle"}}}`},

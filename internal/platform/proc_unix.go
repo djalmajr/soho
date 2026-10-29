@@ -84,6 +84,32 @@ func SameStarted(a, b string) bool {
 	return strings.Join(strings.Fields(a), " ") == strings.Join(strings.Fields(b), " ")
 }
 
+// procReadDenied reports whether a failed ps read failed on a permission
+// denial: the exec itself was denied (an EPERM/EACCES or
+// "operation not permitted" error) or ps ran but the system refused its
+// table read (the denial on its stderr). A missing binary, a timeout or
+// any other failure is not a denial.
+func procReadDenied(r RunResult) bool {
+	lower := strings.ToLower(r.Error + "\n" + r.Stderr)
+	for _, marker := range []string{"eperm", "eacces", "operation not permitted", "permission denied", "access denied"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// deniedCause is the cause of an unreadable read: only a ps read that
+// failed on a permission denial names one. The kernel probe never does:
+// its EPERM is a pid owned by another user, not a denied table read, and
+// a pid it proves gone has no unreadable read to explain.
+func deniedCause(live ProcLiveness, r RunResult) error {
+	if live != ProcUnknown || !procReadDenied(r) {
+		return nil
+	}
+	return ErrProcReadPermissionDenied
+}
+
 // procInfoFull reads the start time, the command base name and the
 // liveness of one pid with `ps -o lstart=,state=,comm= -p <pid>`
 // (LC_ALL=C, a 5 s ceiling): only that pid, never a command-line listing
@@ -96,23 +122,27 @@ func SameStarted(a, b string) bool {
 // known live or zombie state, the read is confirmed with kill(pid, 0) —
 // ESRCH is the proven absence, any other result (nil or EPERM among them)
 // is unknown. A zombie (a dead process left unreaped by its parent) is
-// not running.
-func procInfoFull(pid int, env Env) (string, string, ProcLiveness) {
+// not running. The cause is ErrProcReadPermissionDenied when an unknown
+// read failed because ps was denied, nil otherwise.
+func procInfoFull(pid int, env Env) (string, string, ProcLiveness, error) {
 	r := RunCli("ps", []string{"-o", "lstart=,state=,comm=", "-p", strconv.Itoa(pid)}, RunOptions{Env: procLocale(env), TimeoutMs: 5000})
 	if r.NotFound || r.TimedOut || r.Error != "" || r.Status == nil || *r.Status != 0 {
-		return "", "", procKernelGone(pid)
+		live := procKernelGone(pid)
+		return "", "", live, deniedCause(live, r)
 	}
 	m := procStartRe.FindStringSubmatch(strings.TrimSpace(r.Stdout))
 	if m == nil {
-		return "", "", procKernelGone(pid)
+		live := procKernelGone(pid)
+		return "", "", live, deniedCause(live, r)
 	}
 	switch {
 	case procStateGone(m[2]):
-		return "", "", ProcGone
+		return "", "", ProcGone, nil
 	case procStateRunning(m[2]):
-		return m[1], basePath(m[3]), ProcRunning
+		return m[1], basePath(m[3]), ProcRunning, nil
 	}
-	return "", "", procKernelGone(pid)
+	live := procKernelGone(pid)
+	return "", "", live, deniedCause(live, r)
 }
 
 // procKernelGone confirms a failed ps read against the kernel: kill(pid,
@@ -137,6 +167,15 @@ func procKernelGone(pid int) ProcLiveness {
 // collapsing both into the dead-process refusal, and the one snapshot
 // never races a second read to name the first read's failure.
 func ReadProcFull(pid int, env Env) (string, string, ProcLiveness) {
+	started, name, live, _ := procInfoFull(pid, env)
+	return started, name, live
+}
+
+// ReadProcFullCause is ReadProcFull with the cause of an unreadable read
+// when the read can name one: ErrProcReadPermissionDenied when an
+// unknown read failed because the ps read was denied, nil otherwise. The
+// single snapshot and the three-way liveness are unchanged.
+func ReadProcFullCause(pid int, env Env) (string, string, ProcLiveness, error) {
 	return procInfoFull(pid, env)
 }
 

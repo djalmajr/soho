@@ -109,10 +109,14 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 	}
 	outside := []string{}
 	if hasOwned {
+		freshSet := make(map[string]bool, len(fresh))
+		for _, name := range fresh {
+			freshSet[name] = true
+		}
 		for file := range changed {
 			covered := false
 			for _, pattern := range owned {
-				if diffOwnedMatch(pattern, file) {
+				if diffOwnedCover(pattern, file, freshSet) {
 					covered = true
 					break
 				}
@@ -273,6 +277,11 @@ var diffFenceRE = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
 var diffTokenRE = regexp.MustCompile("`([^`\r\n]+)`")
 var diffBulletRE = regexp.MustCompile(`^\s*(?:[-+*]|[0-9]+[.)])\s+`)
 
+// diffNewTestsItemRE matches the prose Owned item that covers new test
+// files: "new tests" or "new test files", case-insensitive, with an
+// optional trailing period.
+var diffNewTestsItemRE = regexp.MustCompile(`(?i)^new (?:tests|test files)\.?$`)
+
 // diffMarkdown blanks fenced lines, including longer/tilde fences, before
 // headings or inline path tokens are interpreted.
 func diffMarkdown(text string) []string {
@@ -354,13 +363,55 @@ func diffOwned(text string) ([]string, bool) {
 				push(m[1])
 			}
 		} else if item := strings.TrimSpace(diffBulletRE.ReplaceAllString(line, "")); item != "" {
-			push(strings.Fields(item)[0])
+			if diffNewTestsItemRE.MatchString(item) {
+				// The prose item names a kind of file, not a path: it maps
+				// to the new-tests pattern, not the first-word pattern a
+				// path item yields.
+				items = append(items, diffOwnedNewTests)
+			} else {
+				push(strings.Fields(item)[0])
+			}
 		}
 	}
 	return items, found
 }
 
+// diffOwnedNewTests is the Owned pattern the prose items "new tests" and
+// "new test files" map to. It is in-memory only: the NUL byte is not a
+// path character, so it never collides with a listed file.
+const diffOwnedNewTests = "\x00new tests"
+
+// diffNewTestFile reports whether the file's name (its last slash
+// segment) is a test file: *_test.go, *.test.*, *.spec.*, test_*.py or
+// *_test.py.
+func diffNewTestFile(file string) bool {
+	base := path.Base(file)
+	for _, pattern := range []string{"*_test.go", "*.test.*", "*.spec.*", "test_*.py", "*_test.py"} {
+		if matched, err := filepath.Match(pattern, base); err == nil && matched {
+			return true
+		}
+	}
+	return false
+}
+
+// diffOwnedCover is diffOwnedMatch with the new-tests rule of the audit:
+// the pattern the prose Owned items "new tests" / "new test files" map
+// to covers a changed file only when the file is new and untracked and
+// its name is a test file; a modified tracked test file still counts as
+// outside.
+func diffOwnedCover(pattern, file string, fresh map[string]bool) bool {
+	if pattern == diffOwnedNewTests {
+		return fresh[file] && diffNewTestFile(file)
+	}
+	return diffOwnedMatch(pattern, file)
+}
+
 func diffOwnedMatch(pattern, file string) bool {
+	if pattern == diffOwnedNewTests {
+		// Without the fresh-file context (the ChangedPaths delta) the
+		// pattern covers by test-file name alone.
+		return diffNewTestFile(file)
+	}
 	directory := strings.HasSuffix(pattern, "/")
 	parts, names := strings.Split(strings.TrimSuffix(pattern, "/"), "/"), strings.Split(file, "/")
 	if (!directory && len(parts) != len(names)) || (directory && len(names) <= len(parts)) {
