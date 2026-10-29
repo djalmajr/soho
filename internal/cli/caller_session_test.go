@@ -21,15 +21,18 @@ import (
 // environment is built by the test: the CLAUDE_CODE_SESSION_ID of the
 // process that runs the tests never reaches it.
 func TestTitleCallerSessionCheck(t *testing.T) {
+	shell, _ := callerShellPIDs()
 	const (
 		pane     = "w1:p9"
 		own      = "66bf36b5-9b48-4b58-88a3-5da128ff288b" // S
 		hosted   = "d630d58c-2c56-4147-9bdb-206cba98b68e" // A, hosted by the claimed pane
 		stranger = "33333333-3333-4333-8333-333333333333"
-		prefix   = "HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. "
 		linkless = "This process is Claude Code session " + own + "; the pane hosts session " + hosted + ", and no continued-in record links them. "
 		fix      = " Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn"
 	)
+	// DJA-569: the shell pid is this run's collision-free scripted value,
+	// never the walk's start pid (the test process's own pid).
+	prefix := fmt.Sprintf("HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell %d); the id was inherited from another process, such as a forked session. ", shell)
 
 	paneGet := func(session string) fakecli.Rule {
 		return fakecli.Rule{Argv: []string{"pane", "get", pane}, Stdout: fmt.Sprintf(`{"result":{"pane":{"pane_id":%q,"agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":%q}}}}`, pane, session)}
@@ -50,7 +53,7 @@ func TestTitleCallerSessionCheck(t *testing.T) {
 		herdr.ResetCallerCheck()
 		dir := t.TempDir()
 		rules = append([]fakecli.Rule{
-			{Argv: []string{"pane", "process-info", "--pane", pane}, Stdout: `{"result":{"process_info":{"shell_pid":4000}}}`},
+			{Argv: []string{"pane", "process-info", "--pane", pane}, Stdout: fmt.Sprintf(`{"result":{"process_info":{"shell_pid":%d}}}`, shell)},
 			{Argv: []string{"pane", "report-metadata", pane, "--source", "soho", "--title", "orchestrator: goal"}},
 		}, rules...)
 		if _, err := fakecli.Install(t, dir, "herdr", rules); err != nil {
