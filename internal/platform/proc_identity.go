@@ -1,6 +1,16 @@
 package platform
 
-import "math"
+import (
+	"errors"
+	"math"
+)
+
+// ErrProcReadPermissionDenied is the cause ReadProcFullCause attaches to
+// an unreadable read (ProcUnknown) the platform can attribute to a
+// permission denial: the process table is not readable from this shell,
+// as when a sandbox denies ps. The liveness is unchanged — the denial
+// names the failure, not the liveness.
+var ErrProcReadPermissionDenied = errors.New("the process table is not readable from this shell")
 
 // ProcStartIdentity reads, in one snapshot, a process's start identity and
 // its executable base name, with the three-way liveness of ReadProcFull.

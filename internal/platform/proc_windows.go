@@ -18,6 +18,7 @@ const (
 	windowsTH32CS_SNAPPROCESS             = 0x00000002
 	windowsErrorInsufficientBuffer        = 122
 	windowsErrorInvalidParameter          = 87
+	windowsErrorAccessDenied              = 5
 )
 
 // ProcLiveness is the outcome of one by-pid liveness read:
@@ -156,6 +157,23 @@ func windowsBaseName(value string) string {
 	return value
 }
 
+// windowsAccessDenied reports whether the kernel32 failure is
+// ERROR_ACCESS_DENIED (5): the process (or its table entry) exists but
+// this shell may not read it.
+func windowsAccessDenied(err error) bool {
+	e, ok := err.(syscall.Errno)
+	return ok && int(e) == windowsErrorAccessDenied
+}
+
+// windowsDeniedCause is the cause a denied kernel32 read names, nil
+// when the failure is not an access denial.
+func windowsDeniedCause(err error) error {
+	if windowsAccessDenied(err) {
+		return ErrProcReadPermissionDenied
+	}
+	return nil
+}
+
 // ReadProcFull reads one pid's creation time, image base name and the
 // three-way liveness in one snapshot (the single OpenProcess read, the
 // windows counterpart of the unix single ps read): the creation time is
@@ -168,20 +186,30 @@ func windowsBaseName(value string) string {
 // of collapsing both into the dead-process refusal, and the one snapshot
 // never races a second read to name the first read's failure.
 func ReadProcFull(pid int, env Env) (string, string, ProcLiveness) {
-	handle, live := windowsOpenProc(pid)
+	started, name, live, _ := ReadProcFullCause(pid, env)
+	return started, name, live
+}
+
+// ReadProcFullCause is ReadProcFull with the cause of an unreadable read
+// when the read can tell it: ErrProcReadPermissionDenied when the open,
+// the times query or the image query failed with ERROR_ACCESS_DENIED,
+// nil otherwise. The single snapshot and the three-way liveness are
+// unchanged.
+func ReadProcFullCause(pid int, env Env) (string, string, ProcLiveness, error) {
+	handle, live, cause := windowsOpenProcCause(pid)
 	if live != ProcRunning {
-		return "", "", live
+		return "", "", live, cause
 	}
 	defer windowsProcCloseHandle.Call(handle)
 	ticks, err := windowsCreationTicks(handle)
 	if err != nil {
-		return "", "", ProcUnknown
+		return "", "", ProcUnknown, windowsDeniedCause(err)
 	}
 	name, err := windowsImageName(handle)
 	if err != nil {
-		return "", "", ProcUnknown
+		return "", "", ProcUnknown, windowsDeniedCause(err)
 	}
-	return strconv.FormatInt(ticks, 10), windowsBaseName(name), ProcRunning
+	return strconv.FormatInt(ticks, 10), windowsBaseName(name), ProcRunning, nil
 }
 
 // ProcInfo reads the creation time and the image base name of one pid
@@ -212,22 +240,30 @@ func windowsGoneOpen(err error) bool {
 // process stays openable while a handle to it is open, so the exit code
 // decides, not the open).
 func windowsOpenProc(pid int) (uintptr, ProcLiveness) {
+	handle, live, _ := windowsOpenProcCause(pid)
+	return handle, live
+}
+
+// windowsOpenProcCause is windowsOpenProc with the access-denied open
+// named: an OpenProcess failure with ERROR_ACCESS_DENIED is the pid
+// existing while its information is not readable from this shell.
+func windowsOpenProcCause(pid int) (uintptr, ProcLiveness, error) {
 	handle, err := windowsOpenProcess(windowsProcessQueryLimitedInformation, pid)
 	if err != nil {
 		if windowsGoneOpen(err) {
-			return 0, ProcGone
+			return 0, ProcGone, nil
 		}
-		return 0, ProcUnknown
+		return 0, ProcUnknown, windowsDeniedCause(err)
 	}
 	switch windowsExitState(handle) {
 	case ProcRunning:
-		return handle, ProcRunning
+		return handle, ProcRunning, nil
 	case ProcGone:
 		windowsProcCloseHandle.Call(handle)
-		return 0, ProcGone
+		return 0, ProcGone, nil
 	default:
 		windowsProcCloseHandle.Call(handle)
-		return 0, ProcUnknown
+		return 0, ProcUnknown, nil
 	}
 }
 

@@ -230,15 +230,26 @@ func procsAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) int
 	if agentSeen && core.RosterLine(sd, agent) == "" {
 		core.DieFriction(fmt.Sprintf("procs add: agent '%s' is not in the roster (state dir: %s)", agent, sd), 3, frictionLogPath, "procs")
 	}
-	started, name, live := platform.ReadProcFull(pid, env)
+	started, name, live, cause := readProcFull(pid, env)
 	switch live {
 	case platform.ProcGone:
 		return refuse("no process with that pid is running")
 	case platform.ProcUnknown:
 		// The one snapshot did not resolve the pid: the ps query failed
 		// (or its line did not parse) and the kernel did not report the
-		// absence. It is a friction, not the dead-process refusal.
-		core.DieFriction(fmt.Sprintf("procs add: the identity of pid %s is unreadable (the system state read failed and the kernel did not report it gone); not registered", pidArg), 4, frictionLogPath, "procs")
+		// absence. It is a friction, not the dead-process refusal. A
+		// permission denial appends the probable cause and the ways out;
+		// the exit, the friction and the refusal to register stay the
+		// same, and any other failure keeps today's text.
+		message := "procs add: the identity of pid %s is unreadable (the system state read failed and the kernel did not report it gone); not registered"
+		if errors.Is(cause, platform.ErrProcReadPermissionDenied) {
+			agentHint := "--agent <name>"
+			if agentSeen {
+				agentHint = "--agent " + agent
+			}
+			message += ": the process table is not readable from this shell (a sandbox may deny it); run soho procs add outside the sandbox (an approved command), or ask the orchestrator to register the pid with " + agentHint
+		}
+		core.DieFriction(fmt.Sprintf(message, pidArg), 4, frictionLogPath, "procs")
 	}
 	pane := env.Get("HERDR_PANE_ID")
 	owner := "-"
@@ -278,6 +289,10 @@ func procsAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) int
 // upsertProc is the registry write of procs add; tests swap it to inject
 // the permission error of a sandbox that cannot write the state dir.
 var upsertProc = core.UpsertProc
+
+// readProcFull is the by-pid identity read of procs add; tests swap it
+// to inject an unreadable read and its cause.
+var readProcFull = platform.ReadProcFullCause
 
 func procsUsageError() int {
 	_, _ = fmt.Fprintf(platform.Stderr, "soho: %s\n", procsUsage)
