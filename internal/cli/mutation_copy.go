@@ -148,6 +148,11 @@ func runMutationCopy(args []string, env platform.Env) int {
 		if inside(source, targetPath) {
 			return refuse("link", raw, "target is inside the source; install the dependencies in the copy instead (an offline install from the package manager's store)")
 		}
+		// A target that is the copy, or an ancestor of it, would leave the copy
+		// holding a link loop; refuse it like the implicit links.
+		if mutationPathContains(targetPath, dest) {
+			return refuse("link", raw, "target contains the copy")
+		}
 		links = append(links, mutationCopyLink{Path: filepath.Clean(rel), Target: targetPath})
 		explicitLinks[filepath.Clean(rel)] = true
 	}

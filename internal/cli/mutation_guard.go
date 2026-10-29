@@ -335,7 +335,10 @@ func symlinkIntoSource(copyPath, sourcePath string) (string, error) {
 					}
 					return "", err
 				}
-				if mutationPathContains(sourcePath, target) || mutationPathContains(target, sourcePath) {
+				// A target that contains the copy is a link loop: the copy holds
+				// a link back to itself or an ancestor of itself, so the scan
+				// cannot prove the copy is isolated and the guard refuses it.
+				if mutationPathContains(sourcePath, target) || mutationPathContains(target, sourcePath) || mutationPathContains(target, copyPath) {
 					return fmt.Sprintf("symlink %s -> %s", relative, target), nil
 				}
 			} else if info.IsDir() && entry.Name() != ".git" {
