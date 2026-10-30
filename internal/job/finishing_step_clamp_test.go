@@ -32,9 +32,9 @@ var clampScale = 1
 
 // spawnAllowance is the Windows margin of the step-consuming command: it
 // runs for its scenario proportion of the scaled step minus the allowance
-// (0.9 x the step for the 2 s scenarios), so the next command still opens
-// inside the step. It is 3 s on Windows and zero on Unix, where the
-// durations are unchanged.
+// (0.6 x the scaled step for the 2 s scenarios, 0.8 for the 5 s one), so
+// the next command still opens inside the step. It is 3 s on Windows and
+// zero on Unix, where the durations are unchanged.
 var spawnAllowance = 0 * time.Second
 
 func init() {
@@ -202,6 +202,14 @@ func TestFinishingGhStepBoundsTheSecondCommandByTheRemainder(t *testing.T) {
 // that delays `add`, reports a staged diff and hangs on `commit`.
 func TestCheckpointBoundsTheLaterCommandsByTheStepRemainder(t *testing.T) {
 	for _, tc := range []struct {
+		// The 2 s cases run the add for 60% of the step (1.2 s, down from
+		// 1.8 s): opening the fake git and running the add can take close
+		// to half a second under the race detector and CI load, and the old
+		// 200 ms remainder let the step end before `diff` (or `commit`)
+		// opened inside it. 60% keeps the intent — the add uses most of the
+		// step, and diff and commit run on what is left — with a remainder
+		// wider than that start cost; the 5 s case keeps its 4 s add (80%),
+		// whose 1 s remainder already is.
 		name  string
 		step  time.Duration
 		delay int
@@ -209,9 +217,9 @@ func TestCheckpointBoundsTheLaterCommandsByTheStepRemainder(t *testing.T) {
 		// instead of hanging `commit`.
 		hangDiff bool
 	}{
-		{"step 2s, add 1.8s, commit hangs", 2 * time.Second, 1800, false},
+		{"step 2s, add 1.2s, commit hangs", 2 * time.Second, 1200, false},
 		{"step 5s, add 4s, commit hangs", 5 * time.Second, 4000, false},
-		{"step 2s, add 1.8s, diff hangs", 2 * time.Second, 1800, true},
+		{"step 2s, add 1.2s, diff hangs", 2 * time.Second, 1200, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			step := scaledDuration(tc.step)
