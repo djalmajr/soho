@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/core"
@@ -16,6 +18,7 @@ import (
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/spawn"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 var promoteProcRowState = core.ProcRowState
@@ -71,22 +74,23 @@ func cmdPromote(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 		platform.Die("promote: acts on the calling sub-orchestrator and takes no arguments (no target, no bypass flags)", 2)
 	}
 	herdr.RequireEnv(env, platform.Current(), os.Getpid(), nil)
+	svc := herdr.New(env)
 
 	// Canonical caller scope: the native server's view of this process's
 	// pane, not the inherited HERDR_* ids (they stay stale for a moved
 	// pane). Unavailable or missing context is a refusal before any
 	// mutation: no guessing.
-	actual := herdr.PaneCurrent(env)
-	if !actual.Ok {
+	rep := svc.Runtime.Current(context.Background(), transport.Call{})
+	if rep.Err != nil {
 		platform.Die("promote: cannot resolve the native caller context (herdr pane current failed); nothing was changed", promoteScope)
 	}
-	if actual.PaneID == "" || actual.WorkspaceID == "" {
+	if rep.Value.PaneID == "" || rep.Value.WorkspaceID == "" {
 		platform.Die("promote: the native caller context has no pane id or workspace id; nothing was changed", promoteScope)
 	}
-	if inheritedWs := env.Get("HERDR_WORKSPACE_ID"); inheritedWs != "" && inheritedWs != actual.WorkspaceID {
-		platform.Die(fmt.Sprintf("promote: stale cross-workspace context: the inherited workspace '%s' does not match the native workspace '%s' of pane '%s'; finish or hand off the work in both workspaces before promoting; nothing was changed", inheritedWs, actual.WorkspaceID, actual.PaneID), promoteScope)
+	if inheritedWs := svc.Runtime.Caller().WorkspaceID; inheritedWs != "" && inheritedWs != rep.Value.WorkspaceID {
+		platform.Die(fmt.Sprintf("promote: stale cross-workspace context: the inherited workspace '%s' does not match the native workspace '%s' of pane '%s'; finish or hand off the work in both workspaces before promoting; nothing was changed", inheritedWs, rep.Value.WorkspaceID, rep.Value.PaneID), promoteScope)
 	}
-	pane, tab, ws := actual.PaneID, actual.TabID, actual.WorkspaceID
+	pane, tab, ws := rep.Value.PaneID, rep.Value.TabID, rep.Value.WorkspaceID
 
 	sd := filepath.Join(core.StateRootPath(ctx, env, cwd), ws)
 	want := core.Cfg(ctx, "orchestrator_name", "orchestrator", env)
@@ -137,7 +141,7 @@ func cmdPromote(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 	// Live identity and scope, fail closed: the live agent must answer for
 	// the actual pane, the actual workspace, and this invocation's project
 	// root.
-	liveName, liveStatus := promoteLiveAgent(pane, ws, cwd, env)
+	liveName, liveStatus := promoteLiveAgent(pane, ws, cwd, env, svc)
 	if matches == 1 {
 		if liveName != registeredName {
 			platform.Die(fmt.Sprintf("promote: sub-orchestrator identity changed: the roster row holds '%s' but the live agent is '%s'; nothing was changed; inspect the pane", registeredName, liveName), promoteScope)
@@ -186,11 +190,11 @@ func cmdPromote(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 	name := liveName
 	if !promoteNameIsOrchestrator(name, want) {
 		newName := spawn.UniqueName(want, env)
-		r := platform.RunCli("herdr", []string{"agent", "rename", pane, newName}, platform.RunOptions{Env: env, TimeoutMs: int(herdr.Timeout.Milliseconds())})
-		if r.NotFound || r.Status == nil || *r.Status != 0 {
-			cause := strings.TrimSpace(r.Stderr)
+		ren := svc.Legacy.Rename(context.Background(), transport.Target{ID: pane}, newName, transport.Call{Timeout: herdr.Timeout})
+		if ren.Err != nil {
+			cause := strings.TrimSpace(ren.Process.Stderr)
 			if cause == "" {
-				cause = strings.TrimSpace(r.Stdout)
+				cause = strings.TrimSpace(ren.Process.Stdout)
 			}
 			if cause == "" {
 				cause = "herdr agent rename failed"
@@ -200,7 +204,7 @@ func cmdPromote(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 		name = newName
 	}
 
-	title, kept := promoteApplyOrchestratorTitle(pane, cwd, rowResult, env)
+	title, kept := promoteApplyOrchestratorTitle(pane, cwd, rowResult, env, svc)
 	out := jsonjs.O("pane_id", pane, "tab_id", tab, "name", name, "status", liveStatus, "role", "orchestrator", "roster_row", rowResult, "title", title, "title_kept", kept)
 	if matches == 0 {
 		out.Set("already_promoted", true)
@@ -304,12 +308,12 @@ func promoteProcPreflight(sd, liveName, pane string, env platform.Env) (string, 
 // promoteLiveAgent returns the live agent's name and status for pane,
 // failing closed when the agent cannot be read or reports a different pane,
 // workspace or project root (an unavailable, stale or mismatched scope).
-func promoteLiveAgent(pane, ws, cwd string, env platform.Env) (name, status string) {
-	r := platform.RunCli("herdr", []string{"agent", "get", pane}, platform.RunOptions{Env: env, TimeoutMs: 5000})
-	if r.NotFound {
+func promoteLiveAgent(pane, ws, cwd string, env platform.Env, svc transport.Services) (name, status string) {
+	r := svc.Legacy.AgentGetRaw(context.Background(), transport.Target{ID: pane}, transport.Call{Timeout: 5 * time.Second})
+	if r.Process.NotFound {
 		platform.Die("herdr CLI not found in PATH", 2)
 	}
-	if r.TimedOut || r.Status == nil || *r.Status != 0 {
+	if r.Process.TimedOut || r.Err != nil {
 		platform.Die(fmt.Sprintf("promote: cannot verify the live agent of pane %s (herdr agent get failed); nothing was changed; retry", pane), promoteScope)
 	}
 	var payload struct {
@@ -323,7 +327,7 @@ func promoteLiveAgent(pane, ws, cwd string, env platform.Env) (name, status stri
 			} `json:"agent"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal([]byte(r.Stdout), &payload); err != nil {
+	if err := json.Unmarshal([]byte(r.Value), &payload); err != nil {
 		platform.Die(fmt.Sprintf("promote: cannot parse the live agent of pane %s (unparseable agent get output); nothing was changed", pane), promoteScope)
 	}
 	ag := payload.Result.Agent
@@ -506,10 +510,10 @@ func promoteTitle(existing, projectName string) (title string, changed bool) {
 // promoteApplyOrchestratorTitle reads the pane title and applies
 // promoteTitle. A read or set failure is reported precisely as a partial,
 // retryable action and never closes the caller.
-func promoteApplyOrchestratorTitle(pane, cwd, rowResult string, env platform.Env) (title string, kept bool) {
+func promoteApplyOrchestratorTitle(pane, cwd, rowResult string, env platform.Env, svc transport.Services) (title string, kept bool) {
 	projectName := filepath.Base(platform.ProjectRoot(env, cwd))
-	r := platform.RunCli("herdr", []string{"pane", "get", pane}, platform.RunOptions{Env: env, TimeoutMs: 30_000})
-	if r.Status == nil || *r.Status != 0 {
+	r := svc.Legacy.PaneGetRaw(context.Background(), transport.Target{ID: pane}, transport.Call{Timeout: herdr.Timeout})
+	if r.Err != nil {
 		platform.Die(fmt.Sprintf("promote: partial — the roster row is %s, but the pane title could not be read (herdr pane get failed); retry promote to set the title; nothing was closed or moved", rowResult), promotePartial)
 	}
 	var payload struct {
@@ -519,7 +523,7 @@ func promoteApplyOrchestratorTitle(pane, cwd, rowResult string, env platform.Env
 			} `json:"pane"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal([]byte(r.Stdout), &payload); err != nil {
+	if err := json.Unmarshal([]byte(r.Value), &payload); err != nil {
 		platform.Die(fmt.Sprintf("promote: partial — the roster row is %s, but the pane title could not be read (unparseable pane get output); retry promote to set the title; nothing was closed or moved", rowResult), promotePartial)
 	}
 	existing := payload.Result.Pane.Title
@@ -527,7 +531,7 @@ func promoteApplyOrchestratorTitle(pane, cwd, rowResult string, env platform.Env
 	if !changed {
 		return next, true
 	}
-	if !herdr.PaneTitle(pane, &next, env) {
+	if !svc.Window.Title(context.Background(), pane, &next, transport.Call{}).Value {
 		platform.Die(fmt.Sprintf("promote: partial — the roster row is %s and the name is set, but the title set failed (herdr pane report-metadata); retry promote; nothing was closed or moved", rowResult), promotePartial)
 	}
 	return next, false

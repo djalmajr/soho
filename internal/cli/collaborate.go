@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,17 +9,22 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/communication"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/peer"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd string) int {
 	fail := func(err error) int { fmt.Fprintf(platform.Stderr, "soho: collaborate: %s\n", err); return 2 }
+	svc := herdr.New(env)
+	caller := svc.Runtime.Caller()
 	if len(argv) == 0 {
 		return fail(errors.New("expected start, status, event, stop or finalize"))
 	}
@@ -61,7 +67,7 @@ func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd strin
 			return fail(errors.New("start requires --brief"))
 		}
 		core.CallerGate("collaborate", cfg, env, cwd)
-		if err := collaborationOrchestrator(store.StateDir, cfg, env, cwd); err != nil {
+		if err := collaborationOrchestrator(store.StateDir, cfg, env, svc, cwd); err != nil {
 			return fail(err)
 		}
 		brief, err = filepath.Abs(brief)
@@ -101,7 +107,7 @@ func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd strin
 		if _, err := collaboration.Fingerprint(author.Cwd, paths); err != nil {
 			return fail(err)
 		}
-		a = collaboration.Assignment{Author: author, Reviewer: reviewer, Workspace: env.Get("HERDR_WORKSPACE_ID"), Root: root, Brief: brief, BriefHash: collaboration.Hash(raw), Paths: paths, MaxRounds: rounds}
+		a = collaboration.Assignment{Author: author, Reviewer: reviewer, Workspace: caller.WorkspaceID, Root: root, Brief: brief, BriefHash: collaboration.Hash(raw), Paths: paths, MaxRounds: rounds}
 		// Validate both directions needed by a review cycle before publishing.
 		for _, request := range []struct {
 			from, to collaboration.Participant
@@ -120,7 +126,7 @@ func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd strin
 		if err != nil {
 			return fail(err)
 		}
-		if env.Get("HERDR_WORKSPACE_ID") != a.Workspace || platform.StateProjectRoot(env, cwd) != a.Root {
+		if caller.WorkspaceID != a.Workspace || platform.StateProjectRoot(env, cwd) != a.Root {
 			return fail(errors.New("assignment belongs to another workspace or repository"))
 		}
 		var revision string
@@ -170,7 +176,7 @@ func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd strin
 		if err := collaboration.CheckParticipants(a, store.StateDir, env); err != nil {
 			return fail(err)
 		}
-		actor, member := a.Member(env.Get("HERDR_PANE_ID"))
+		actor, member := a.Member(caller.PaneID)
 		if !member {
 			return fail(errors.New("event sender is not an assigned worker"))
 		}
@@ -215,14 +221,14 @@ func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd strin
 			return fail(errors.New("verdict must be accept or reject"))
 		}
 		core.CallerGate("collaborate", cfg, env, cwd)
-		if err := collaborationOrchestrator(store.StateDir, cfg, env, cwd); err != nil {
+		if err := collaborationOrchestrator(store.StateDir, cfg, env, svc, cwd); err != nil {
 			return fail(err)
 		}
 		a, err = store.Read(argv[1])
 		if err != nil {
 			return fail(err)
 		}
-		if a.Workspace != env.Get("HERDR_WORKSPACE_ID") || a.Root != platform.StateProjectRoot(env, cwd) {
+		if a.Workspace != caller.WorkspaceID || a.Root != platform.StateProjectRoot(env, cwd) {
 			return fail(errors.New("assignment belongs to another workspace or repository"))
 		}
 		if argv[0] == "stop" {
@@ -264,8 +270,8 @@ func collaborationPermission(cfg *core.Config, env platform.Env, a collaboration
 	return policy.Authorize(communication.Request{From: communication.Participant{Name: from.Name, Role: from.Role, Lane: from.Lane}, To: communication.Participant{Name: to.Name, Role: to.Role, Lane: to.Lane}, Type: typ, AssignmentID: id, Assigned: true, Inbound: "auto"})
 }
 
-func collaborationOrchestrator(sd string, cfg *core.Config, env platform.Env, cwd string) error {
-	pane := env.Get("HERDR_PANE_ID")
+func collaborationOrchestrator(sd string, cfg *core.Config, env platform.Env, svc transport.Services, cwd string) error {
+	pane := svc.Runtime.Caller().PaneID
 	if pane == "" {
 		return errors.New("orchestrator requires a verified current pane")
 	}
@@ -279,7 +285,7 @@ func collaborationOrchestrator(sd string, cfg *core.Config, env platform.Env, cw
 			registeredName = fields[0]
 		}
 	}
-	r := platform.RunCli("herdr", []string{"agent", "get", pane}, platform.RunOptions{Env: env, TimeoutMs: 5000})
+	r := svc.Legacy.AgentGetRaw(context.Background(), transport.Target{ID: pane}, transport.Call{Timeout: 5 * time.Second})
 	var response struct {
 		Result struct {
 			Agent struct {
@@ -290,11 +296,11 @@ func collaborationOrchestrator(sd string, cfg *core.Config, env platform.Env, cw
 			} `json:"agent"`
 		} `json:"result"`
 	}
-	if r.Status == nil || *r.Status != 0 || r.TimedOut || json.Unmarshal([]byte(r.Stdout), &response) != nil {
+	if r.Err != nil || r.Process.TimedOut || json.Unmarshal([]byte(r.Value), &response) != nil {
 		return errors.New("cannot verify current orchestrator")
 	}
 	ag := response.Result.Agent
-	if ag.Pane != pane || ag.Workspace != env.Get("HERDR_WORKSPACE_ID") || !filepath.IsAbs(ag.Cwd) || platform.StateProjectRoot(env, ag.Cwd) != platform.StateProjectRoot(env, cwd) {
+	if ag.Pane != pane || ag.Workspace != svc.Runtime.Caller().WorkspaceID || !filepath.IsAbs(ag.Cwd) || platform.StateProjectRoot(env, ag.Cwd) != platform.StateProjectRoot(env, cwd) {
 		return errors.New("current orchestrator context changed")
 	}
 	if registeredName != "" {

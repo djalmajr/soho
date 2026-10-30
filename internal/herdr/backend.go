@@ -496,6 +496,30 @@ func (b *backend) AgentGetRaw(ctx context.Context, target transport.Target, call
 	return transport.Reply[string]{Value: r.Stdout, Valid: true, Process: processResult(r)}
 }
 
+// PaneCurrentRaw runs `pane current --current` once with the call's timeout
+// and returns the raw process result: Value carries the stdout and the
+// caller owns the exit-status handling. It never retries and does not parse
+// the body.
+func (b *backend) PaneCurrentRaw(ctx context.Context, call transport.Call) transport.Reply[string] {
+	r := runWithTimeout([]string{"pane", "current", "--current"}, b.env, timeoutFor(call), ctxArgs(ctx)...)
+	if !ok(r) {
+		return transport.Reply[string]{Value: r.Stdout, Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
+	}
+	return transport.Reply[string]{Value: r.Stdout, Valid: true, Process: processResult(r)}
+}
+
+// PaneGetRaw runs one `pane get <id>` with the call's timeout and returns
+// the raw process result: Value carries the stdout (possibly empty) and the
+// caller owns the exit-status and body-parsing handling. It never retries
+// and does not parse the body.
+func (b *backend) PaneGetRaw(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[string] {
+	r := runWithTimeout([]string{"pane", "get", target.ID}, b.env, timeoutFor(call), ctxArgs(ctx)...)
+	if !ok(r) {
+		return transport.Reply[string]{Value: r.Stdout, Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
+	}
+	return transport.Reply[string]{Value: r.Stdout, Valid: true, Process: processResult(r)}
+}
+
 // ClaudeTranscriptPath resolves the target's Claude Code session transcript
 // path: the adapter's one agent get (its fixed timeout) plus the local file
 // derivation; "" when any data is missing.

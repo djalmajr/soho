@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"github.com/djalmajr/soho/internal/doctor"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/job"
+	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/metrics"
 	"github.com/djalmajr/soho/internal/peer"
@@ -20,6 +23,7 @@ import (
 	"github.com/djalmajr/soho/internal/setup"
 	"github.com/djalmajr/soho/internal/spawn"
 	"github.com/djalmajr/soho/internal/stats"
+	"github.com/djalmajr/soho/internal/transport"
 	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
 
@@ -68,9 +72,11 @@ func vcsRevision() string {
 	return ""
 }
 
-// liveAgentsFriction adapts herdr.LiveAgents' DieError-equivalent panics at
-// living command boundaries. The JS entry records non-empty DieErrors for
+// liveAgentsFriction adapts the raw agent list's DieError-equivalent panics
+// at living command boundaries. The JS entry records non-empty DieErrors for
 // these commands, while an empty message only preserves Herdr's exit code.
+// The signature keeps env (its callers in other files pass it), so the
+// service is built here, one per invocation.
 func liveAgentsFriction(env platform.Env) []any {
 	defer func() {
 		if value := recover(); value != nil {
@@ -81,7 +87,22 @@ func liveAgentsFriction(env platform.Env) []any {
 			platform.DieFriction(exitErr.Msg, exitErr.Code)
 		}
 	}()
-	return herdr.LiveAgents(env, herdr.Timeout)
+	svc := herdr.New(env)
+	raw := svc.Legacy.AgentListRaw(context.Background(), transport.Call{Timeout: herdr.Timeout}).Value
+	return rawObjects(raw)
+}
+
+// rawObjects re-parses the raw JSON values a legacy raw listing returns, so
+// callers that read the projection-free objects get the same tree the
+// adapter's parsed result held. The values are the backend's own
+// re-stringified objects, so a parse failure is unreachable.
+func rawObjects(raw []json.RawMessage) []any {
+	out := make([]any, 0, len(raw))
+	for _, value := range raw {
+		parsed, _ := jsonjs.Parse(value)
+		out = append(out, parsed)
+	}
+	return out
 }
 
 // Run routes the commands implemented natively; any other command dies 2

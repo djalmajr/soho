@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	herdrtext "github.com/djalmajr/soho/internal/text"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 func valueString(v any, fallback string) string {
@@ -60,6 +62,20 @@ func tabLabelString(label any) string {
 	return cutUTF16(jsonjs.Stringify(label), 16)
 }
 
+// windowObjects re-projects a window listing back into the raw JSON objects
+// the roster reader consumes: View.Raw carries the backend's original object
+// re-stringified, so re-parsing it restores the exact field access the
+// reader has always done (a parse failure is unreachable: Raw is the
+// backend's own stringify of the same object).
+func windowObjects(views []transport.View) []any {
+	out := make([]any, 0, len(views))
+	for _, view := range views {
+		parsed, _ := jsonjs.Parse(view.Raw)
+		out = append(out, parsed)
+	}
+	return out
+}
+
 // rosterArgs parses the roster arguments: no args, an optional --json and
 // an optional --scope <workspace|server>, each in any order, at most once;
 // every other shape is invalid.
@@ -94,16 +110,17 @@ func cmdRoster(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		platform.Die("usage: roster [--scope workspace|server] [--json]", 2)
 	}
 	sd := core.StateDir(ctx, env, cwd)
+	svc := herdr.New(env)
 	live := liveAgentsFriction(env)
 	ws := core.WorkspaceID(ctx, env, cwd)
-	panes := herdr.PaneList(env, ws)
-	tabs := herdr.TabList(env, ws)
+	panes := windowObjects(svc.Window.ListPanes(context.Background(), transport.Scope{WorkspaceID: ws}, transport.Call{}).Value)
+	tabs := windowObjects(svc.Window.ListTabs(context.Background(), ws, transport.Call{}).Value)
 	workspaceOf := map[string]string{}
 	for _, p := range panes {
 		workspaceOf[valueString(field(p, "pane_id"), "")] = ws
 	}
 	if scope == "server" {
-		for _, p := range herdr.PaneListAll(env) {
+		for _, p := range windowObjects(svc.Window.ListPanes(context.Background(), transport.Scope{All: true}, transport.Call{}).Value) {
 			workspaceOf[valueString(field(p, "pane_id"), "")] = valueString(field(p, "workspace_id"), "unknown")
 		}
 	}
