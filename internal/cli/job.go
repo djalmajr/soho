@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/job"
 	"github.com/djalmajr/soho/internal/platform"
 )
@@ -899,7 +900,7 @@ func jobSupervise(args []string, env platform.Env, launch job.LaunchLocators) in
 	if hasRepo && !jobRepoPattern.MatchString(repo) {
 		platform.Die("job supervise: invalid --repo '"+repo+"'", 2)
 	}
-	if env.Get("HERDR_ENV") != "1" {
+	if !herdr.New(env).Runtime.Caller().Inside {
 		platform.Die("job supervise: run it inside the job's Herdr workspace", 2)
 	}
 	// The job start's private launch context (locator.go): absent, the

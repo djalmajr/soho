@@ -759,6 +759,74 @@ func (b *backend) MachineListRaw(ctx context.Context, call transport.Call) trans
 	return b.rawStep([]string{"machine", "list", "--json"}, call, ctx)
 }
 
+// VersionRaw runs one `--version` with no deadline (the call's zero or
+// negative timeout keeps the unbounded run, the doctor's legacy contract)
+// and returns the raw process result (Value carries the stdout): the caller
+// keeps its own exit-status and output handling. One attempt, no retries,
+// no parsing.
+func (b *backend) VersionRaw(ctx context.Context, call transport.Call) transport.Reply[string] {
+	return b.jobStep([]string{"--version"}, call, ctx)
+}
+
+// StatusServerRaw runs one `status server` with no deadline (a zero or
+// negative call timeout keeps the unbounded run, the doctor's legacy
+// contract) and returns the raw process result (Value carries the stdout):
+// the caller keeps its own exit-status and version parsing. One attempt, no
+// retries, no parsing.
+func (b *backend) StatusServerRaw(ctx context.Context, call transport.Call) transport.Reply[string] {
+	return b.jobStep([]string{"status", "server"}, call, ctx)
+}
+
+// SkillRaw runs one `--skill` with no deadline (a zero or negative call
+// timeout keeps the unbounded run, the doctor's legacy contract) and returns
+// the raw process result (Value carries the stdout): the caller keeps its
+// own exit-status and file comparison. One attempt, no retries, no parsing.
+func (b *backend) SkillRaw(ctx context.Context, call transport.Call) transport.Reply[string] {
+	return b.jobStep([]string{"--skill"}, call, ctx)
+}
+
+// PluginListRaw runs one `plugin list --json` with the call's timeout
+// (rounded up; a zero or negative one keeps no deadline) and returns the raw
+// process result (Value carries the stdout): the caller keeps its own
+// exit-status and list parsing. One attempt, no retries, no parsing.
+func (b *backend) PluginListRaw(ctx context.Context, call transport.Call) transport.Reply[string] {
+	return b.jobStep([]string{"plugin", "list", "--json"}, call, ctx)
+}
+
+// PluginInstallRefRaw runs one `plugin install djalmajr/soho/plugin
+// --ref <ref> --yes` with the call's timeout (rounded up; a zero or negative
+// one keeps no deadline) and returns the raw process result (Value carries
+// the stdout): the caller keeps its own exit-status handling. One attempt,
+// no retries, no parsing.
+func (b *backend) PluginInstallRefRaw(ctx context.Context, ref string, call transport.Call) transport.Reply[string] {
+	return b.jobStep([]string{"plugin", "install", "djalmajr/soho/plugin", "--ref", ref, "--yes"}, call, ctx)
+}
+
+// PluginConfigDirRaw runs one `plugin config-dir <pluginID>` with the call's
+// timeout (rounded up; a zero or negative one keeps no deadline) and returns
+// the raw process result (Value carries the stdout): the caller keeps its
+// own exit-status and dir parsing. One attempt, no retries, no parsing.
+func (b *backend) PluginConfigDirRaw(ctx context.Context, pluginID string, call transport.Call) transport.Reply[string] {
+	return b.jobStep([]string{"plugin", "config-dir", pluginID}, call, ctx)
+}
+
+// PluginRemoveRaw runs one `plugin <verb> <pluginID>` (verb is the caller's
+// uninstall/unlink choice) with the call's timeout (rounded up; a zero or
+// negative one keeps no deadline) and returns the raw process result (Value
+// carries the stdout): the caller keeps its own exit-status handling. One
+// attempt, no retries, no parsing.
+func (b *backend) PluginRemoveRaw(ctx context.Context, verb, pluginID string, call transport.Call) transport.Reply[string] {
+	return b.jobStep([]string{"plugin", verb, pluginID}, call, ctx)
+}
+
+// ServerReloadConfigRaw runs one `server reload-config` with the call's
+// timeout (rounded up; a zero or negative one keeps no deadline) and returns
+// the raw process result (Value carries the stdout): the caller keeps its
+// own exit-status handling. One attempt, no retries, no parsing.
+func (b *backend) ServerReloadConfigRaw(ctx context.Context, call transport.Call) transport.Reply[string] {
+	return b.jobStep([]string{"server", "reload-config"}, call, ctx)
+}
+
 // rawStep is the raw one-step run of the peer's Herdr steps: one herdr CLI
 // call with exactly the given argv under the call's timeout (the backend's
 // default when the call names none), the per-call context forwarded, and no

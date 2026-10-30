@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -60,7 +61,7 @@ func procsStop(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		sd = core.StateDir(ctx, env, cwd)
 	}
 	incorporatePendingProcs("procs stop", sd, env)
-	paneAgent := rosterAgentForPane(sd, env.Get("HERDR_PANE_ID"))
+	paneAgent := rosterAgentForPane(sd, herdr.New(env).Runtime.Caller().PaneID)
 	owner := paneAgent
 	if agentSeen {
 		if core.RosterLine(sd, agent) == "" || (paneAgent != "" && paneAgent != agent) {
@@ -100,7 +101,7 @@ func procsStop(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 			continue
 		}
 		if owner == "" {
-			pane := env.Get("HERDR_PANE_ID")
+			pane := herdr.New(env).Runtime.Caller().PaneID
 			if pane == "" {
 				pane = "unset"
 			}
@@ -251,7 +252,7 @@ func procsAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) int
 		}
 		core.DieFriction(fmt.Sprintf(message, pidArg), 4, frictionLogPath, "procs")
 	}
-	pane := env.Get("HERDR_PANE_ID")
+	pane := herdr.New(env).Runtime.Caller().PaneID
 	owner := "-"
 	if agentSeen {
 		owner = agent

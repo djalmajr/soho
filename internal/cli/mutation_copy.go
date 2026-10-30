@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -369,7 +370,7 @@ func registerMutationCopy(env platform.Env, source, dest string) {
 			return
 		}
 	}
-	pane := env.Get("HERDR_PANE_ID")
+	pane := herdr.New(env).Runtime.Caller().PaneID
 	owner := rosterAgentForPane(sd, pane)
 	if pane == "" {
 		pane = "-"
