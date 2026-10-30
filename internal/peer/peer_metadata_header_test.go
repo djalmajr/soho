@@ -155,27 +155,45 @@ func TestPeerHeaderAssignmentBytes(t *testing.T) {
 	assertMetadataOnly(t, "assignment", got)
 }
 
-// TestReceiptLineInNewHeaderOpening proves receipt recognition of the new
-// metadata-only opening line: the unquoted line of this id (plain, indented,
-// or with the history "›") is the receipt, and a quoted copy of it is
-// payload, never the receipt.
+// TestReceiptLineInNewHeaderOpening pins the DJA-610 part B amendment
+// contract: the new metadata-only opening line alone is not a receipt — it
+// is the composer marker the retry Enter uses — so only the message's exact
+// closing line proves delivery on the screen and in the recent history;
+// a quoted copy of either, a longer id, or the previous format's opening
+// line proves nothing.
 func TestReceiptLineInNewHeaderOpening(t *testing.T) {
 	id := "01020304"
 	open := "[soho:peer:" + id + "]"
-	if !receiptLineIn(open, id) {
-		t.Fatalf("the new opening line of this id is not a receipt: %q", open)
+	close := "[/soho:peer:" + id + "]"
+	if !receiptLineIn(close, id) {
+		t.Fatalf("the exact closing line of this id is not a receipt: %q", close)
 	}
-	if !receiptLineIn("  "+open, id) {
-		t.Fatalf("the indented opening line is not a receipt: %q", open)
+	if !receiptLineIn("  "+close, id) {
+		t.Fatalf("the indented closing line is not a receipt: %q", close)
 	}
-	if !receiptLineIn("› "+open, id) {
-		t.Fatalf("the history-prefixed opening line is not a receipt: %q", open)
+	if !receiptLineIn("› "+close, id) {
+		t.Fatalf("the history-prefixed closing line is not a receipt: %q", close)
+	}
+	if receiptLineIn(open, id) {
+		t.Fatalf("the opening line alone proved receipt: %q", open)
+	}
+	if receiptLineIn("  "+open, id) {
+		t.Fatalf("the indented opening line proved receipt: %q", open)
+	}
+	if receiptLineIn("› "+open, id) {
+		t.Fatalf("the history-prefixed opening line proved receipt: %q", open)
 	}
 	if receiptLineIn("> "+open, id) {
 		t.Fatalf("a quoted copy of the opening line proved receipt: %q", open)
 	}
 	if receiptLineIn("  > "+open, id) {
 		t.Fatalf("an indented quoted copy proved receipt: %q", open)
+	}
+	if receiptLineIn("> "+close, id) {
+		t.Fatalf("a quoted copy of the closing line proved receipt: %q", close)
+	}
+	if receiptLineIn("status ok."+close, id) {
+		t.Fatalf("a closing line glued to other text proved receipt: %q", close)
 	}
 	if receiptLineIn("[soho:peer:01020304abcd]", id) {
 		t.Fatal("a longer id with this one as a prefix proved receipt")

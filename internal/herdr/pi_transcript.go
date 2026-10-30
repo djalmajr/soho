@@ -88,3 +88,46 @@ func CountPiUserMarkerLines(path, marker string) (int, bool) {
 	}
 	return n, true
 }
+
+// CountPiUserClosingLines counts the session's user records that carry the
+// message's exact closing line as one of the record's own content lines
+// (peerClosingUserContent, on the decoded content). A line counts only when
+// it decodes as a "type":"message" entry whose message role is "user", like
+// CountPiUserMarkerLines: the role is read from the message itself, never
+// located as a substring. The opening line alone — and a quoted,
+// previous-format, or glued closing line — is not a receipt and is not
+// counted. ok is false when the file cannot be read.
+func CountPiUserClosingLines(path, closing string) (int, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+	// Session lines hold whole messages and run far past the scanner's
+	// 64 KiB default token, so the buffer may grow before a line counts.
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 64*1024*1024)
+	closingBytes := []byte(closing)
+	n := 0
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !bytes.Contains(line, closingBytes) {
+			continue
+		}
+		entry := parsed(string(line))
+		if str(get(entry, "type")) != "message" {
+			continue
+		}
+		message := get(entry, "message")
+		if str(get(message, "role")) != "user" {
+			continue
+		}
+		if content := get(message, "content"); content != nil {
+			n += peerClosingUserContent(content, closing)
+		}
+	}
+	if scanner.Err() != nil {
+		return 0, false
+	}
+	return n, true
+}

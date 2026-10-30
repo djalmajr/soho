@@ -249,3 +249,47 @@ func TestCountPiUserMarkerLines(t *testing.T) {
 		}
 	})
 }
+
+// TestCountPiUserClosingLines pins the receipt contract of the pi closing
+// line counter (DJA-610 part B amendment, F2): a user message record counts
+// only when it carries the message's exact closing line as one of its own
+// lines. The role is read from the message itself, and the opening line
+// alone, the previous format's closing line, a quoted line and a marker
+// glued to other text are payload, not a receipt.
+func TestCountPiUserClosingLines(t *testing.T) {
+	const closing = "[/soho:peer:01020304]"
+	cases := []struct {
+		name   string
+		record string
+		want   int
+	}{
+		{"a user line with the complete prompt", `{"type":"message","id":"a","parentId":"0","message":{"role":"user","content":"line one\n` + closing + `\nlast line"}}`, 1},
+		{"a user line holding the whole content", `{"type":"message","id":"b","parentId":"a","message":{"role":"user","content":"` + closing + `"}}`, 1},
+		{"a user text block", `{"type":"message","id":"c","parentId":"b","message":{"role":"user","content":[{"type":"text","text":"x\n` + closing + `"}]}}`, 1},
+		{"a user line with the opening line alone", `{"type":"message","id":"d","parentId":"c","message":{"role":"user","content":"[soho:peer:01020304]"}}`, 0},
+		{"a user line with the previous format's closing line", `{"type":"message","id":"e","parentId":"d","message":{"role":"user","content":"[/soho:peer] #01020304 end of message"}}`, 0},
+		{"a user line with a quoted closing line", `{"type":"message","id":"f","parentId":"e","message":{"role":"user","content":"> ` + closing + `"}}`, 0},
+		{"a user line with a glued closing line", `{"type":"message","id":"g","parentId":"f","message":{"role":"user","content":"status ok."` + closing + `"}}`, 0},
+		{"an assistant reply citing the closing line", `{"type":"message","id":"h","parentId":"g","message":{"role":"assistant","content":[{"type":"text","text":"done\n` + closing + `"}]}}`, 0},
+		{"a tool result citing the closing line", `{"type":"message","id":"i","parentId":"h","message":{"role":"toolResult","content":[{"type":"text","text":"the prompt ends with ` + closing + `"}]}}`, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, piSessionFile)
+			content := `{"type":"message","id":"0","message":{"role":"user","content":"earlier conversation"}}` + "\n" + c.record + "\n"
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			n, ok := CountPiUserClosingLines(path, closing)
+			if !ok || n != c.want {
+				t.Fatalf("count=(%d,%v) want (%d,true)", n, ok, c.want)
+			}
+		})
+	}
+	t.Run("a record missing or unreadable", func(t *testing.T) {
+		if n, ok := CountPiUserClosingLines(filepath.Join(t.TempDir(), piSessionFile), closing); ok || n != 0 {
+			t.Fatalf("count=(%d,%v) want (0,false)", n, ok)
+		}
+	})
+}

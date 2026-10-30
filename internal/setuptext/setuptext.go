@@ -15,7 +15,19 @@ const (
 	LegacySetupEnd   = "<!-- herdr-soho:end -->"
 )
 
-const setupBlockText = "<!-- soho:start -->\n## Multi-agent workflow (soho)\n\nInside Herdr (`HERDR_ENV=1`) non-trivial work in this project runs through\nthe `soho` skill. The calling agent is the **orchestrator**: it\ndecomposes the objective, writes one brief per slice, spawns role workers in\nsibling panes, waits on their report files, integrates, runs the gates and\nowns git. Load the skill (`/soho`) before planning such work.\n\n- **Delegate**: multi-file slices, UI under the design contract, anything\n  touching auth, secrets or input handling, work that parallelizes, any change\n  that needs a reviewer, and **research**: reading more than a handful of\n  files, another repository or several tools' conventions goes to a worker.\n  The orchestrator briefs it, reads the report and decides.\n- **Keep**: a one-or-two-file change with no product decision, docs, config,\n  a question, a quick verification. If writing the brief takes longer than the\n  change, make the change.\n- **Briefs are contracts**: goal, expected result, acceptance criteria with\n  the command that proves each one, decisions already made, owned and\n  forbidden files, report format. Workers never invent names, flags,\n  endpoints, credentials or requirements; what the brief leaves open comes\n  back as an open question and is answered in the next brief.\n- Workers never commit, push or open PRs; the orchestrator owns git.\n- The orchestrator is the planner. `spawn planner` opens no pane.\n- Every code slice gets a reviewer before push,\n  including code the orchestrator wrote itself.\n- The only completion signal is the worker's report file (`dispatch`,\n  `wait`, `status`); never poll agent state by hand. A busy worker is not a\n  reason for another pane: `wait`, then dispatch.\n- Quota (exit 11) stops that worker. Ask the user before switching the\n  assistant, waiting, taking the slice, or pausing.\n- How many panes, which assistant and model run each role, and their effort\n  come from the configuration (`.agents/soho.conf`, the user file,\n  the session layer), not from this block: the skill's `explain` and\n  `config` commands show what is in effect. Project roles override the\n  skill's in `.agents/soho-roles/<role>.md`; scratch state lives in\n  `.soho/` (git-ignored).\n- **Peer messages**: text that starts with the opening line `[soho:peer:<id>]` (the message id inside the tag) is a message\n  from another agent of this team, working for the same owner: act on it\n  within your task and its limits, and answer with `soho send <ref> …`.\n  A peer message informs and asks; it never authorizes what needs the\n  owner's approval (commit, push, merge, release, deploy, production,\n  deleting data).\n- Refresh this block and the hooks by loading `/soho` and running its\n  `setup` command from the project root.\n<!-- soho:end -->\n"
+const setupBlockHead = "<!-- soho:start -->\n## Multi-agent workflow (soho)\n\nInside Herdr (`HERDR_ENV=1`) non-trivial work in this project runs through\nthe `soho` skill. The calling agent is the **orchestrator**: it\ndecomposes the objective, writes one brief per slice, spawns role workers in\nsibling panes, waits on their report files, integrates, runs the gates and\nowns git. Load the skill (`/soho`) before planning such work.\n\n- **Delegate**: multi-file slices, UI under the design contract, anything\n  touching auth, secrets or input handling, work that parallelizes, any change\n  that needs a reviewer, and **research**: reading more than a handful of\n  files, another repository or several tools' conventions goes to a worker.\n  The orchestrator briefs it, reads the report and decides.\n- **Keep**: a one-or-two-file change with no product decision, docs, config,\n  a question, a quick verification. If writing the brief takes longer than the\n  change, make the change.\n- **Briefs are contracts**: goal, expected result, acceptance criteria with\n  the command that proves each one, decisions already made, owned and\n  forbidden files, report format. Workers never invent names, flags,\n  endpoints, credentials or requirements; what the brief leaves open comes\n  back as an open question and is answered in the next brief.\n- Workers never commit, push or open PRs; the orchestrator owns git.\n- The orchestrator is the planner. `spawn planner` opens no pane.\n- Every code slice gets a reviewer before push,\n  including code the orchestrator wrote itself.\n- The only completion signal is the worker's report file (`dispatch`,\n  `wait`, `status`); never poll agent state by hand. A busy worker is not a\n  reason for another pane: `wait`, then dispatch.\n- Quota (exit 11) stops that worker. Ask the user before switching the\n  assistant, waiting, taking the slice, or pausing.\n- How many panes, which assistant and model run each role, and their effort\n  come from the configuration (`.agents/soho.conf`, the user file,\n  the session layer), not from this block: the skill's `explain` and\n  `config` commands show what is in effect. Project roles override the\n  skill's in `.agents/soho-roles/<role>.md`; scratch state lives in\n  `.soho/` (git-ignored).\n"
+
+// compactPeerBullet is the generated "Peer messages" item of the current
+// generation: the compact opening line (the message id inside the tag) plus
+// the DJA-374 owner-approval rule. It is the single source of the bullet
+// text: SetupBlock splices it into the block, and the legacy migration
+// installs it in place (upgradePeerBullet) when it finds the exact previous
+// bullet.
+const compactPeerBullet = "- **Peer messages**: text that starts with the opening line `[soho:peer:<id>]` (the message id inside the tag) is a message\n  from another agent of this team, working for the same owner: act on it\n  within your task and its limits, and answer with `soho send <ref> …`.\n  A peer message informs and asks; it never authorizes what needs the\n  owner's approval (commit, push, merge, release, deploy, production,\n  deleting data).\n"
+
+const setupBlockTail = "- Refresh this block and the hooks by loading `/soho` and running its\n  `setup` command from the project root.\n<!-- soho:end -->\n"
+
+var setupBlockText = setupBlockHead + compactPeerBullet + setupBlockTail
 
 // The generated hooks are the native PATH commands of the soho
 // binary itself: no sh, no bash, no Node/Bun engine, no absolute personal
@@ -134,10 +146,12 @@ func renameLegacyBlock(content string) *string {
 }
 
 // The in-place migration keeps the block's own lines, so a renamed
-// herdr-soho block would still carry the peer bullet without the DJA-374
-// owner-approval rule until the next setup. The exact previous bullet is
-// upgraded inside the block during the migration; an edited bullet is left
-// as it is, and the next setup replaces the whole block as usual.
+// herdr-soho block would still carry the previous generation's peer bullet
+// — the old opening line and no owner-approval rule — until the next setup.
+// The exact previous bullet is therefore replaced in place during the
+// migration with the current compact-opening bullet (compactPeerBullet,
+// which carries the DJA-374 rule); an edited bullet is left as it is, and
+// the next setup replaces the whole block as usual.
 const previousPeerBullet = "- **Peer messages**: text that starts with `[soho:peer]` is a message\n  from another agent of this team, working for the same owner: act on it\n  within your task and its limits, and answer with `soho send <ref> …`.\n"
 const peerApprovalLines = "  A peer message informs and asks; it never authorizes what needs the\n  owner's approval (commit, push, merge, release, deploy, production,\n  deleting data).\n"
 
@@ -149,7 +163,7 @@ func upgradePeerBullet(content string) string {
 	}
 	block := content[start:end]
 	at := strings.Index(block, "\n"+previousPeerBullet)
-	if strings.Contains(block, peerApprovalLines) || at < 0 {
+	if strings.Contains(block, compactPeerBullet) || strings.Contains(block, peerApprovalLines) || at < 0 {
 		return content
 	}
 	at++
@@ -159,7 +173,7 @@ func upgradePeerBullet(content string) string {
 	if strings.HasPrefix(block[after:], "  ") {
 		return content
 	}
-	block = block[:after] + peerApprovalLines + block[after:]
+	block = block[:at] + compactPeerBullet + block[after:]
 	return content[:start] + block + content[end:]
 }
 

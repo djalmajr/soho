@@ -263,7 +263,11 @@ func TestSendReadsTheTooLargeRefusalFromTheTranscript(t *testing.T) {
 		requireTooLargeRefusal(t, code, out, stderr, f)
 	})
 	t.Run("an entry before the send began is an old refusal", func(t *testing.T) {
-		code, out, stderr, f := run(t, userLine+"\n"+systemLine+"\n", `{"type":"user","message":{"content":"`+peer.PeerOpenTag(signID)+`"}}`)
+		// The taken record holds the whole prompt: the exact closing line of
+		// this message proves the growth — the opening tag alone no longer
+		// does (DJA-610 part B amendment).
+		_, prompt := stalledID(t)
+		code, out, stderr, f := run(t, userLine+"\n"+systemLine+"\n", transcriptUserLine(t, prompt))
 		if code != 0 || out != "sent to local/w0test:p0a\n" {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 		}
@@ -297,7 +301,12 @@ func TestSendReadsTheTooLargeRefusalFromAReplacedTranscript(t *testing.T) {
 		}
 		return string(raw)
 	}
-	user := `{"type":"user","message":{"content":"` + peer.PeerOpenTag(signID) + `"}}`
+	// The transcript record of the taken message holds the whole prompt, the
+	// way Claude Code writes it: the exact closing line of this message —
+	// the opening tag alone is not receipt (DJA-610 part B amendment).
+	_, fullPrompt := stalledID(t)
+	user := transcriptUserLine(t, fullPrompt)
+	longer := strings.TrimSuffix(user, "}") + `,"pad":"` + strings.Repeat("new padding ", 1000) + `"}`
 	now := func() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 	old := func() string { return time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano) }
 	// run seeds a long transcript, then, once the prompt call is logged, either
@@ -353,12 +362,10 @@ func TestSendReadsTheTooLargeRefusalFromAReplacedTranscript(t *testing.T) {
 	// no longer end as they did, so the offset is not trusted.
 	for _, replace := range []string{"truncate", "rotate"} {
 		t.Run(replace+" to a longer file: a new refusal is seen", func(t *testing.T) {
-			longer := `{"type":"user","message":{"content":"` + peer.PeerOpenTag(signID) + `"},"pad":"` + strings.Repeat("new padding ", 1000) + `"}`
 			code, out, stderr, f := run(t, replace, system(now())+"\n"+longer+"\n")
 			requireTooLargeRefusal(t, code, out, stderr, f)
 		})
 		t.Run(replace+" to a longer file: a refusal from before the send began does not count", func(t *testing.T) {
-			longer := `{"type":"user","message":{"content":"` + peer.PeerOpenTag(signID) + `"},"pad":"` + strings.Repeat("new padding ", 1000) + `"}`
 			code, out, stderr, f := run(t, replace, system(old())+"\n"+longer+"\n")
 			if code != 0 || out != "sent to local/w0test:p0a\n" {
 				t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)

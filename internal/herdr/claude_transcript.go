@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -103,6 +104,88 @@ func CountClaudeUserMarkerLines(path, marker string) (int, bool) {
 	for scanner.Scan() {
 		if bytes.Contains(scanner.Bytes(), claudeTranscriptUserTypeBytes) && bytes.Contains(scanner.Bytes(), markerBytes) {
 			n++
+		}
+	}
+	if scanner.Err() != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// peerClosingLineInText reports whether one of the text's lines is the
+// message's exact closing line: after trimming the line is the closing line
+// itself, or the same line under a leading history "›". A quoted line
+// ("> " plus the marker), the marker glued to other text, a previous-format
+// line and a longer id are payload, never the receipt — the same rule the
+// screen and history receipt checks apply.
+func peerClosingLineInText(text, closing string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == closing || line == "›"+closing {
+			return true
+		}
+	}
+	return false
+}
+
+// peerClosingUserContent reports, as 1 or 0, whether a user record's content
+// carries the message's exact closing line as one of its own lines
+// (peerClosingLineInText), in the content string or in one of its text
+// blocks. The opening line alone — and a quoted, previous-format, or glued
+// closing line — is not a receipt and leaves the count unchanged.
+func peerClosingUserContent(content any, closing string) int {
+	switch c := content.(type) {
+	case string:
+		if peerClosingLineInText(c, closing) {
+			return 1
+		}
+	case []any:
+		for _, item := range c {
+			obj, isObj := item.(*jsonjs.Object)
+			if !isObj {
+				continue
+			}
+			if t, ok := obj.Get("text"); ok {
+				if s, isStr := t.(string); isStr && peerClosingLineInText(s, closing) {
+					return 1
+				}
+			}
+			if cc, ok := obj.Get("content"); ok {
+				if s, isStr := cc.(string); isStr && peerClosingLineInText(s, closing) {
+					return 1
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// CountClaudeUserClosingLines counts the transcript's user records that
+// carry the message's exact closing line as one of the record's own content
+// lines (peerClosingUserContent). The opening line alone is not a receipt
+// and is not counted. Like CountClaudeUserMarkerLines it streams the file
+// line by line and returns only the number: it does not retain, log, or
+// return the content of any line, matching or not. ok is false when the file
+// cannot be read.
+func CountClaudeUserClosingLines(path, closing string) (int, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+	// Transcript lines hold whole messages and run far past the scanner's
+	// 64 KiB default token, so the buffer may grow before a line counts.
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 64*1024*1024)
+	n := 0
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !bytes.Contains(line, claudeTranscriptUserTypeBytes) {
+			continue
+		}
+		entry := parsed(string(line))
+		if content := get(get(entry, "message"), "content"); content != nil {
+			n += peerClosingUserContent(content, closing)
 		}
 	}
 	if scanner.Err() != nil {

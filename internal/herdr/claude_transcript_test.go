@@ -346,3 +346,48 @@ func TestCountClaudeCompactBoundaries(t *testing.T) {
 		}
 	})
 }
+
+// TestCountClaudeUserClosingLines pins the receipt contract of the closing
+// line counter (DJA-610 part B amendment, F2): a user record counts only
+// when it carries the message's exact closing line as one of its own lines.
+// The opening line alone, the previous format's closing line, a quoted
+// line and a marker glued to other text are payload, not a receipt.
+func TestCountClaudeUserClosingLines(t *testing.T) {
+	const closing = "[/soho:peer:01020304]"
+	cases := []struct {
+		name   string
+		record string
+		want   int
+	}{
+		{"the complete prompt", `{"type":"user","message":{"content":"line one\n` + closing + `\nlast line"}}`, 1},
+		{"the whole content", `{"type":"user","message":{"content":"` + closing + `"}}`, 1},
+		{"the history-prefixed line", `{"type":"user","message":{"content":"` + "›" + closing + `"}}`, 1},
+		{"a text block", `{"type":"user","message":{"content":[{"type":"text","text":"x\n` + closing + `"}]}}`, 1},
+		{"a tool result", `{"type":"user","message":{"content":[{"type":"tool_result","content":"` + closing + `"}]}}`, 1},
+		{"the opening line alone", `{"type":"user","message":{"content":"[soho:peer:01020304]"}}`, 0},
+		{"the previous format's closing line", `{"type":"user","message":{"content":"[/soho:peer] #01020304 end of message"}}`, 0},
+		{"a quoted closing line", `{"type":"user","message":{"content":"> ` + closing + `"}}`, 0},
+		{"a closing line glued to other text", `{"type":"user","message":{"content":"status ok."` + closing + `"}}`, 0},
+		{"a longer id", `{"type":"user","message":{"content":"[/soho:peer:01020304abcd]"}}`, 0},
+		{"an assistant reply citing the closing line", `{"type":"assistant","message":{"content":"done` + "\n" + closing + `"}}`, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "session.jsonl")
+			content := `{"type":"user","message":{"content":"earlier conversation"}}` + "\n" + c.record + "\n"
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			n, ok := CountClaudeUserClosingLines(path, closing)
+			if !ok || n != c.want {
+				t.Fatalf("count=(%d,%v) want (%d,true)", n, ok, c.want)
+			}
+		})
+	}
+	t.Run("a record missing or unreadable", func(t *testing.T) {
+		if n, ok := CountClaudeUserClosingLines(filepath.Join(t.TempDir(), "absent.jsonl"), closing); ok || n != 0 {
+			t.Fatalf("count=(%d,%v) want (0,false)", n, ok)
+		}
+	})
+}

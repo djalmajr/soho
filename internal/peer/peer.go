@@ -109,7 +109,7 @@ type transcriptProof struct {
 	path   string
 	pre    int
 	armed  bool
-	count  func(path, marker string) (int, bool)
+	count  func(path, closing string) (int, bool)
 	queued func(visible, id string) bool
 }
 
@@ -1358,12 +1358,12 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	tooLargeBefore := countTooLarge(vScreen)
 	if t.Machine == sessionref.LocalMachine || t.Machine == "" {
 		if t.Kind == "claude" {
-			transcript = transcriptProof{path: herdr.ClaudeTranscriptPath(t.TargetArg, env), count: herdr.CountClaudeUserMarkerLines, queued: claudeQueued}
+			transcript = transcriptProof{path: herdr.ClaudeTranscriptPath(t.TargetArg, env), count: herdr.CountClaudeUserClosingLines, queued: claudeQueued}
 		} else if t.Kind == "pi" && preGet.OK && preGet.SessionKind != "" {
-			transcript = transcriptProof{path: herdr.PiSessionPath(t.TargetArg, env), count: herdr.CountPiUserMarkerLines, queued: steeringQueued}
+			transcript = transcriptProof{path: herdr.PiSessionPath(t.TargetArg, env), count: herdr.CountPiUserClosingLines, queued: steeringQueued}
 		}
 		if transcript.path != "" {
-			if pre, ok := transcript.count(transcript.path, PeerOpenTag(id)); ok {
+			if pre, ok := transcript.count(transcript.path, PeerEndLine(id)); ok {
 				transcript.pre = pre
 				transcript.armed = true
 				// The too-large refusal has no id: only a system entry written after
@@ -1450,7 +1450,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 				result.LastCause = curGet.Cause
 			}
 			if transcript.armed {
-				if count, ok := transcript.count(transcript.path, PeerOpenTag(id)); ok && count > transcript.pre {
+				if count, ok := transcript.count(transcript.path, PeerEndLine(id)); ok && count > transcript.pre {
 					// The target also writes the taken message to the transcript
 					// while it sits unread in its open queue: the count growth is
 					// not proof while the visible queue line still holds the id.
@@ -1467,9 +1467,10 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			recent, readErr := readAfter("recent-unwrapped", recentLines, HerdrCallTimeoutMS)
 			if readErr == "" {
 				result.RecentReadSucceeded = true
-				// The recent gate requires this message's receipt marker (header
-				// opening or closing line, either closing form, unquoted, exact
-				// id): a bare "#id" a reply or a footer can cite is not it.
+				// The recent gate requires this message's receipt line: its exact
+				// closing line, unquoted and the id complete — the opening line
+				// alone proves nothing, and a bare "#id" a reply or a footer can
+				// cite is not it.
 				if receiptLineInText(recent, id) {
 					visible, visibleErr := readAfter("visible", 0, HerdrCallTimeoutMS)
 					if visibleErr == "" {
@@ -1534,12 +1535,13 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		}
 		// The transcript proof, like pollWindow's, applies before the screen
 		// rules and presses no key: the target writes the taken message to the
-		// transcript as a user line, so the count of those lines holding this
-		// id growing is delivery — unless the visible queue line still holds
-		// the id, which is queued, not taken (the same growth-not-proof rule
-		// the window applies).
+		// transcript as a user line, so the count of the user lines carrying
+		// the message's exact closing line growing is delivery — unless the
+		// visible queue line still holds the id, which is queued, not taken
+		// (the same growth-not-proof rule the window applies). The opening
+		// line alone is not the receipt.
 		if transcript.armed {
-			if count, ok := transcript.count(transcript.path, PeerOpenTag(id)); ok && count > transcript.pre {
+			if count, ok := transcript.count(transcript.path, PeerEndLine(id)); ok && count > transcript.pre {
 				return !transcript.queued(visible, id)
 			}
 		}
@@ -1557,8 +1559,8 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			return !isDialogScreen(visible, t.Kind, curGet.Status)
 		}
 		// Like pollWindow's recent gate, the marker must be this message's
-		// receipt marker (header opening or closing line, either closing form,
-		// unquoted, exact id), not a bare "#id" a reply can cite.
+		// receipt line — its exact closing line, unquoted and the id complete
+		// — not a bare "#id" a reply can cite.
 		recent, readErr := readAfter("recent-unwrapped", recentLines, stalledCheckBudget(deadline))
 		if readErr != "" || !receiptLineInText(recent, id) {
 			return false
@@ -1699,7 +1701,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 					_, _ = fmt.Fprintf(platform.Stderr, "send: %s is busy; waiting for its transcript to show the message (up to %ss)\n", t.RefShown, numberSeconds(timeoutMS))
 				}
 			}
-			if count, ok := herdr.CountClaudeUserMarkerLines(transcript.path, PeerOpenTag(id)); !(ok && count > transcript.pre) {
+			if count, ok := herdr.CountClaudeUserClosingLines(transcript.path, PeerEndLine(id)); !(ok && count > transcript.pre) {
 				warnBusy()
 			}
 			// The queue line, like the count growth, proves the queued outcome
@@ -1721,7 +1723,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 					_, _ = fmt.Fprintf(platform.Stdout, "queued for %s: it takes the message when its current turn ends\n", t.RefShown)
 					return 0
 				}
-				if count, ok := herdr.CountClaudeUserMarkerLines(transcript.path, PeerOpenTag(id)); ok && count > transcript.pre {
+				if count, ok := herdr.CountClaudeUserClosingLines(transcript.path, PeerEndLine(id)); ok && count > transcript.pre {
 					// As in the window's transcript check, the count growth is
 					// not proof while the visible queue line still holds the id.
 					if visible, visibleErr := readAfter("visible", 0, HerdrCallTimeoutMS); visibleErr == "" {
@@ -1932,27 +1934,17 @@ func isHexRune(r rune) bool {
 	return r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F'
 }
 
-// receiptLineIn reports whether the line carries a receipt marker of this
-// message: its closing line (peerEndLineIn, anchored to the whole line) or
-// the opening of its header ("[soho:peer:<id>]"), anchored the same way:
-// after NormalizeScreen the real line starts with the marker (an optional
-// leading history "›" stripped); the tag's closing bracket sits right after
-// the id, so a longer id that only has this one as a prefix is not it. A
-// quoted line never counts: the quoted body of a peer message is payload and
-// can carry a spoofed opening or closing line, no matter how the terminal
-// drew it. The id must be this message's exact id in both: an unrelated id is
-// not the receipt of this send. This is the marker the recent-history gate
-// of the proof window and the stalled check require: a bare "#<id>" a
-// reply, a footer, a prose line or another message can cite is not it.
+// receiptLineIn reports whether the line carries the receipt of this
+// message: its exact closing line (peerEndLineIn — anchored to the whole
+// line, unquoted, the id complete inside the closing bracket, so a longer
+// id that only has this one as a prefix is not it). The opening line is not
+// a receipt: it is the composer marker the retry Enter uses, and a screen or
+// a recent read that only holds it (a quoted payload, a reply, a footer or
+// an older transcript) has not shown the message taken. This is the marker
+// the recent-history gate of the proof window and the stalled check require:
+// a bare "#<id>" a reply, a footer, a prose line or another message can
+// cite is not it.
 func receiptLineIn(line, id string) bool {
-	norm := NormalizeScreen(line)
-	if !strings.HasPrefix(norm, ">") {
-		rest := strings.TrimPrefix(norm, "›")
-		open := PeerOpenTag(id)
-		if strings.HasPrefix(rest, open) {
-			return true // the header opens the line; the id is complete
-		}
-	}
 	return peerEndLineIn(line, id)
 }
 

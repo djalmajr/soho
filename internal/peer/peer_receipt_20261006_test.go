@@ -117,8 +117,12 @@ func TestReceiptLineIn(t *testing.T) {
 		found bool
 	}{
 		{"current closing line", receiptNewEnd, receiptID, true},
-		{"current opening line", receiptNewOpen, receiptID, true},
-		{"current opening line with text after the tag", receiptNewOpen + " hello", receiptID, true},
+		{"the current opening line alone is not a receipt (DJA-610 part B)", receiptNewOpen, receiptID, false},
+		{"the current opening line with text after the tag is not a receipt (DJA-610 part B)", receiptNewOpen + " hello", receiptID, false},
+		{"the current opening line quoted is not a receipt (DJA-610 part B)", "> " + receiptNewOpen, receiptID, false},
+		{"the current opening line indented is not a receipt (DJA-610 part B)", "  " + receiptNewOpen, receiptID, false},
+		{"a closing line glued to other text is not a receipt", "status ok." + receiptNewEnd, receiptID, false},
+		{"a quoted closing line is not a receipt even when indented", "  > " + receiptNewEnd, receiptID, false},
 		{"the previous format's closing line is not a receipt (DJA-610)", receiptPreviousEnd, receiptID, false},
 		{"the previous format's opening line is not a receipt (DJA-610)", receiptPreviousOpen, receiptID, false},
 		{"former closing line is not a receipt (DJA-318)", receiptLegacyEnd, receiptID, false},

@@ -72,9 +72,9 @@ func TestSohoPeerLegacyMarkersNotAccepted(t *testing.T) {
 		}
 	})
 	t.Run("the soho marker still proves delivery (control)", func(t *testing.T) {
-		if !peerEndLineIn(currentEnd, id) || !receiptLineIn(currentOpen, id) || !composerHeaderLineIn(currentOpen, id) || !peerMessageInHistory(currentScreen, id) {
-			t.Fatalf("the soho marker stopped proving delivery: end=%v header=%v composer=%v history=%v",
-				peerEndLineIn(currentEnd, id), receiptLineIn(currentOpen, id), composerHeaderLineIn(currentOpen, id), peerMessageInHistory(currentScreen, id))
+		if !peerEndLineIn(currentEnd, id) || !receiptLineIn(currentEnd, id) || !composerHeaderLineIn(currentOpen, id) || !peerMessageInHistory(currentScreen, id) {
+			t.Fatalf("the soho marker stopped proving delivery: end=%v receipt=%v composer=%v history=%v",
+				peerEndLineIn(currentEnd, id), receiptLineIn(currentEnd, id), composerHeaderLineIn(currentOpen, id), peerMessageInHistory(currentScreen, id))
 		}
 	})
 	t.Run("the previous format's lines are not proof of a new-format send", func(t *testing.T) {
