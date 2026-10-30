@@ -297,7 +297,7 @@ func HerdTabsRelabel(ctx *core.Config, env platform.Env, cwd string) {
 		if e.Mode == "auto" {
 			roles := rosterRoles(ctx, live, e.Tab, env, cwd)
 			want := HerdAutoLabel(ComposeHerdLabel(tpl, roles, index, orch), taken, ctx, env)
-			cur := svc.Window.Tab(nil, e.Tab, transport.Call{}).Value.Label
+			cur := svc.Legacy.TabGetRaw(nil, e.Tab, transport.Call{}).Value.Label
 			if want != cur && !svc.Window.RenameTab(nil, e.Tab, want, transport.Call{}).Value {
 				core.Warn(fmt.Sprintf("tab rename %s → '%s' failed", e.Tab, want), frictionPath(ctx, env, cwd))
 			}
@@ -330,7 +330,7 @@ func HerdTabSplit(ctx *core.Config, tab, workerCwd string, env platform.Env, cwd
 		}
 	}
 	if anchor == "" {
-		return herdr.PaneSplitResult{Ok: true, Pane: svc.Window.Tab(nil, tab, transport.Call{}).Value.RootPane}
+		return herdr.PaneSplitResult{Ok: true, Pane: svc.Legacy.TabGetRaw(nil, tab, transport.Call{}).Value.Root}
 	}
 	for _, prepare := range beforeCreate {
 		prepare()
