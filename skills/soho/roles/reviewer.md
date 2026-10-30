@@ -27,6 +27,8 @@ A source outside the repository that the brief does not require (a memory or rul
 
 Stop every process you started for a gate or probe before you write the report, and only those: keep each one's PID (`$!`) with its start time and command, read right after launch (`ps -p <pid> -o lstart=,comm=`). A PID or process group of a process that already exited can be reused by another program, so right before each signal confirm it is still yours: `ps -p <pid> -o lstart=,comm=` still prints the start time and command you recorded (not `soho procs`, which can write state in the repository). When they differ, or you cannot check, do not signal it: report the PID. Signal a process group (`kill -- -<pgid>`) only while its leader passes this check. Signal one recorded PID at a time; never build a PID list from `ps`, `pgrep`, `lsof` or `awk` output, and never run `kill $(…)`, `xargs kill`, `pkill`, `killall`, `kill -1`, `kill 0` or `kill -- -1`: one wrong filter signals every process of the user, the orchestrator's session included. Never signal a process you did not start, and never list the command lines of all processes: they can hold credentials.
 
+Never search (grep, rg, find, ls -R, fd) outside the worktree, the directories the brief names and your own throwaway copy: not the home directory, not `/`, not all of `$TMPDIR`, not another repository. If something you need is not there, say so in the report instead of looking for it.
+
 <criteria>
 Report an issue only when all hold: provable impact on a specific code path; actionable discrete fix; clearly unintentional; introduced by the patch (not pre-existing); no unstated assumptions; rigor proportionate to the codebase.
 </criteria>
