@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -496,7 +497,10 @@ func confirmLaunch(store *Store, id string, env platform.Env, bind launchBinding
 			reason = "the launch belongs to another job or store"
 			return nil
 		}
-		if rec.Workspace != env.Get("HERDR_WORKSPACE_ID") || rec.Pane != env.Get("HERDR_PANE_ID") {
+		// The caller identity is the supervisor's inherited environment claim,
+		// read through the transport the same way the old direct env.Get did.
+		caller := herdr.New(env).Runtime.Caller()
+		if rec.Workspace != caller.WorkspaceID || rec.Pane != caller.PaneID {
 			reason = "the launch belongs to another workspace or pane"
 			return nil
 		}

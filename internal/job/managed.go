@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -191,10 +192,13 @@ func validLaunchNonce(nonce string) bool {
 
 // launchMismatch names why rec is not this supervisor's launch, or "".
 func launchMismatch(rec launchRecord, id string, store *Store, env platform.Env, sel core.UserSelection) string {
+	// The caller identity is the supervisor's inherited environment claim,
+	// read through the transport the same way the old direct env.Get did.
+	caller := herdr.New(env).Runtime.Caller()
 	switch {
 	case rec.ID != id || rec.Store != filepath.Clean(store.Root):
 		return "the launch belongs to another job or store"
-	case rec.Workspace == "" || rec.Workspace != env.Get("HERDR_WORKSPACE_ID") || rec.Pane == "" || rec.Pane != env.Get("HERDR_PANE_ID"):
+	case rec.Workspace == "" || rec.Workspace != caller.WorkspaceID || rec.Pane == "" || rec.Pane != caller.PaneID:
 		return "the launch belongs to another workspace or pane"
 	case rec.ConfigBase != sel.Base || rec.Home != sel.Home:
 		return "the launch carries another configuration selection"
@@ -290,8 +294,11 @@ func ManagedSelection(args []string, launch LaunchLocators, env platform.Env, cw
 // bindingHolds runs steps 3 to 6 of ManagedSelection for an identified
 // supervisor parent.
 func bindingHolds(parent managedParentInfo, sel core.UserSelection, env platform.Env, cwd string) bool {
-	workspace, pane := env.Get("HERDR_WORKSPACE_ID"), env.Get("HERDR_PANE_ID")
-	if env.Get("HERDR_ENV") != "1" || workspace == "" || pane == "" {
+	// The caller identity is the supervisor's inherited environment claim,
+	// read through the transport the same way the old direct env.Get did.
+	caller := herdr.New(env).Runtime.Caller()
+	workspace, pane := caller.WorkspaceID, caller.PaneID
+	if !caller.Inside || workspace == "" || pane == "" {
 		return false
 	}
 	cfg := core.LoadConfigFor(env, cwd, sel)

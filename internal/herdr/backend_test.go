@@ -1108,3 +1108,322 @@ func TestBackendPaneGetRaw(t *testing.T) {
 		}
 	})
 }
+
+// TestBackendJobStepTimeoutRoundsUp: the job step's deadline is the call's
+// timeout rounded up to whole milliseconds (never truncated), and an
+// explicit zero stays 0, which the platform reads as "no deadline" — the
+// exact conversion the job's runStep applies.
+func TestBackendJobStepTimeoutRoundsUp(t *testing.T) {
+	if got := timeoutMsUp(0); got != 0 {
+		t.Fatalf("zero stays 0 (no deadline), got %d", got)
+	}
+	if got := timeoutMsUp(-time.Millisecond); got != 0 {
+		t.Fatalf("negative stays 0 (no deadline), got %d", got)
+	}
+	if got := timeoutMsUp(30 * time.Second); got != 30000 {
+		t.Fatalf("whole milliseconds stay exact, got %d", got)
+	}
+	if got := timeoutMsUp(30*time.Second + time.Microsecond); got != 30001 {
+		t.Fatalf("a fraction of a millisecond rounds up, got %d", got)
+	}
+	if got := timeoutMsUp(1500*time.Millisecond + 999*time.Microsecond); got != 1501 {
+		t.Fatalf("a fraction of a millisecond rounds up, got %d", got)
+	}
+}
+
+// TestBackendWorkspaceCreateRaw: the legacy raw workspace create issues the
+// exact `workspace create` argv once — the --env pairs sorted by key, then
+// --no-focus — with the call's round-up timeout, returns the raw stdout,
+// and never parses the body or retries.
+func TestBackendWorkspaceCreateRaw(t *testing.T) {
+	const body = `{"result":{"workspace":{"workspace_id":"w1","root_pane":{"pane_id":"w1:p1"}}}}`
+	// Five pairs: a non-sorted map order misses the rule with odds near
+	// (1/120)^3 across the subtests below.
+	createArgv := []string{"workspace", "create", "--cwd", "/repo", "--label", "job-x", "--env", "A=1", "--env", "B=2", "--env", "C=3", "--env", "D=4", "--env", "E=5", "--no-focus"}
+	createEnv := map[string]string{"E": "5", "C": "3", "A": "1", "B": "2", "D": "4"}
+	t.Run("exit 0 returns the raw stdout, env pairs sorted by key, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: createArgv, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.WorkspaceCreateRaw(context.Background(), "/repo", "job-x", createEnv, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid || got.Err != nil || got.Process.Status == nil || *got.Process.Status != 0 {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{createArgv})
+	})
+	t.Run("no env pairs leaves the argv without --env and keeps --no-focus", func(t *testing.T) {
+		argv := []string{"workspace", "create", "--cwd", "/repo", "--label", "job-x", "--no-focus"}
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.WorkspaceCreateRaw(context.Background(), "/repo", "job-x", nil, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || got.Err != nil {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{argv})
+	})
+	t.Run("a failed call keeps the raw process result and never retries", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: createArgv, Call: 1, Code: 1, Stderr: `{"error":{"code":"server_down","message":"down"}}`},
+			{Argv: createArgv, Call: 2, Stdout: body},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.WorkspaceCreateRaw(context.Background(), "/repo", "job-x", createEnv, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != "" || got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+	t.Run("the call's timeout bounds the run", func(t *testing.T) {
+		timeout := fakeTimeout(25 * time.Millisecond)
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: createArgv, Delay: timeoutDelay(timeout), Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.WorkspaceCreateRaw(context.Background(), "/repo", "job-x", createEnv, transport.Call{Timeout: timeout})
+		if !got.Process.TimedOut || got.Err == nil {
+			t.Fatalf("got=%#v; the deadline must cut the run", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one attempt expected, got %#v", calls)
+		}
+	})
+	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
+		env := platform.Env{"PATH": t.TempDir(), "TMPDIR": t.TempDir()}
+		svc := New(env)
+		got := svc.Legacy.WorkspaceCreateRaw(context.Background(), "/repo", "job-x", nil, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if !got.Process.NotFound || got.Err == nil {
+			t.Fatalf("got=%#v", got)
+		}
+	})
+}
+
+// TestBackendWorkspaceCloseRaw: the legacy raw workspace close issues one
+// `workspace close <id>` with the call's timeout, returns the raw stdout
+// (or the raw process result on failure) so the caller keeps its own exit
+// handling, and never retries.
+func TestBackendWorkspaceCloseRaw(t *testing.T) {
+	const body = `{"result":{"closed":"w1"}}`
+	t.Run("exit 0 returns the raw stdout, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"workspace", "close", "w1"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.WorkspaceCloseRaw(context.Background(), "w1", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid || got.Err != nil || got.Process.Status == nil || *got.Process.Status != 0 {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"workspace", "close", "w1"}})
+	})
+	t.Run("a failed call keeps the raw process result and never retries", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"workspace", "close", "w1"}, Call: 1, Code: 1, Stderr: `{"error":{"code":"workspace_not_found","message":"gone"}}`},
+			{Argv: []string{"workspace", "close", "w1"}, Call: 2, Stdout: body},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.WorkspaceCloseRaw(context.Background(), "w1", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != "" || got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+	t.Run("the call's timeout bounds the run", func(t *testing.T) {
+		timeout := fakeTimeout(25 * time.Millisecond)
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"workspace", "close", "w1"}, Delay: timeoutDelay(timeout), Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.WorkspaceCloseRaw(context.Background(), "w1", transport.Call{Timeout: timeout})
+		if !got.Process.TimedOut || got.Err == nil {
+			t.Fatalf("got=%#v; the deadline must cut the run", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one attempt expected, got %#v", calls)
+		}
+	})
+	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
+		env := platform.Env{"PATH": t.TempDir(), "TMPDIR": t.TempDir()}
+		svc := New(env)
+		got := svc.Legacy.WorkspaceCloseRaw(context.Background(), "w1", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if !got.Process.NotFound || got.Err == nil {
+			t.Fatalf("got=%#v", got)
+		}
+	})
+}
+
+// TestBackendWorkspaceListRaw: the legacy raw workspace list issues one
+// `workspace list` with the call's timeout, returns the raw stdout (or the
+// raw process result on failure) so the caller keeps its own exit and body
+// handling, and never retries.
+func TestBackendWorkspaceListRaw(t *testing.T) {
+	const body = `{"result":{"workspaces":[{"workspace_id":"w1","label":"job-x","pane_count":1}]}}`
+	t.Run("exit 0 returns the raw stdout, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"workspace", "list"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.WorkspaceListRaw(context.Background(), transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid || got.Err != nil || got.Process.Status == nil || *got.Process.Status != 0 {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"workspace", "list"}})
+	})
+	t.Run("a failed call keeps the raw process result and never retries", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"workspace", "list"}, Call: 1, Code: 1, Stderr: `{"error":{"code":"server_down","message":"down"}}`},
+			{Argv: []string{"workspace", "list"}, Call: 2, Stdout: body},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.WorkspaceListRaw(context.Background(), transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != "" || got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+	t.Run("the call's timeout bounds the run", func(t *testing.T) {
+		timeout := fakeTimeout(25 * time.Millisecond)
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"workspace", "list"}, Delay: timeoutDelay(timeout), Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.WorkspaceListRaw(context.Background(), transport.Call{Timeout: timeout})
+		if !got.Process.TimedOut || got.Err == nil {
+			t.Fatalf("got=%#v; the deadline must cut the run", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one attempt expected, got %#v", calls)
+		}
+	})
+	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
+		env := platform.Env{"PATH": t.TempDir(), "TMPDIR": t.TempDir()}
+		svc := New(env)
+		got := svc.Legacy.WorkspaceListRaw(context.Background(), transport.Call{Timeout: fakeTimeout(time.Second)})
+		if !got.Process.NotFound || got.Err == nil {
+			t.Fatalf("got=%#v", got)
+		}
+	})
+}
+
+// TestBackendPaneListRaw: the legacy raw pane list issues one
+// `pane list --workspace <id>` with the call's timeout, returns the raw
+// stdout (or the raw process result on failure) so the caller keeps its own
+// exit and body handling, and never retries.
+func TestBackendPaneListRaw(t *testing.T) {
+	const body = `{"result":{"panes":[{"pane_id":"w1:p1","revision":3}]}}`
+	t.Run("exit 0 returns the raw stdout, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"pane", "list", "--workspace", "w1"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.PaneListRaw(context.Background(), "w1", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid || got.Err != nil || got.Process.Status == nil || *got.Process.Status != 0 {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"pane", "list", "--workspace", "w1"}})
+	})
+	t.Run("a failed call keeps the raw process result and never retries", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"pane", "list", "--workspace", "w1"}, Call: 1, Code: 1, Stderr: `{"error":{"code":"workspace_not_found","message":"gone"}}`},
+			{Argv: []string{"pane", "list", "--workspace", "w1"}, Call: 2, Stdout: body},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.PaneListRaw(context.Background(), "w1", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != "" || got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+	t.Run("the call's timeout bounds the run", func(t *testing.T) {
+		timeout := fakeTimeout(25 * time.Millisecond)
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"pane", "list", "--workspace", "w1"}, Delay: timeoutDelay(timeout), Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.PaneListRaw(context.Background(), "w1", transport.Call{Timeout: timeout})
+		if !got.Process.TimedOut || got.Err == nil {
+			t.Fatalf("got=%#v; the deadline must cut the run", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one attempt expected, got %#v", calls)
+		}
+	})
+	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
+		env := platform.Env{"PATH": t.TempDir(), "TMPDIR": t.TempDir()}
+		svc := New(env)
+		got := svc.Legacy.PaneListRaw(context.Background(), "w1", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if !got.Process.NotFound || got.Err == nil {
+			t.Fatalf("got=%#v", got)
+		}
+	})
+}
+
+// TestBackendPaneRunRaw: the legacy raw pane run issues one
+// `pane run <pane> <argv...>` with the call's timeout, returns the raw
+// stdout (or the raw process result on failure) so the caller keeps its own
+// exit handling, and never retries.
+func TestBackendPaneRunRaw(t *testing.T) {
+	const body = `{"result":{"pane":"w1:p1"}}`
+	argv := []string{"pane", "run", "w1:p1", "soho", "wait", "--id", "job1"}
+	t.Run("exit 0 returns the raw stdout, argv after the pane, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.PaneRunRaw(context.Background(), "w1:p1", []string{"soho", "wait", "--id", "job1"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid || got.Err != nil || got.Process.Status == nil || *got.Process.Status != 0 {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{argv})
+	})
+	t.Run("an empty argv runs the bare pane run", func(t *testing.T) {
+		bare := []string{"pane", "run", "w1:p1"}
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: bare, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.PaneRunRaw(context.Background(), "w1:p1", nil, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || got.Err != nil {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{bare})
+	})
+	t.Run("a failed call keeps the raw process result and never retries", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: argv, Call: 1, Code: 1, Stderr: `{"error":{"code":"pane_not_found","message":"gone"}}`},
+			{Argv: argv, Call: 2, Stdout: body},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.PaneRunRaw(context.Background(), "w1:p1", []string{"soho", "wait", "--id", "job1"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != "" || got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+	t.Run("the call's timeout bounds the run", func(t *testing.T) {
+		timeout := fakeTimeout(25 * time.Millisecond)
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.PaneRunRaw(context.Background(), "w1:p1", []string{"soho", "wait", "--id", "job1"}, transport.Call{Timeout: timeout})
+		if !got.Process.TimedOut || got.Err == nil {
+			t.Fatalf("got=%#v; the deadline must cut the run", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one attempt expected, got %#v", calls)
+		}
+	})
+	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
+		env := platform.Env{"PATH": t.TempDir(), "TMPDIR": t.TempDir()}
+		svc := New(env)
+		got := svc.Legacy.PaneRunRaw(context.Background(), "w1:p1", nil, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if !got.Process.NotFound || got.Err == nil {
+			t.Fatalf("got=%#v", got)
+		}
+	})
+}

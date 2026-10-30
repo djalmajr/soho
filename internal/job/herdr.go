@@ -1,15 +1,17 @@
 package job
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 // ExitHerdr is a Herdr failure in the job family: a workspace create or
@@ -49,11 +51,11 @@ type herdrPanes interface {
 	Run(paneID string, argv []string) error
 }
 
-// herdrCLI implements herdrWorkspaces and herdrPanes through the herdr CLI,
-// every call via runStep (argv only, context deadline and WaitDelay, and an
-// error that never carries subprocess output). A zero Timeout means 30 s. A
-// nil Friction drops friction messages and a nil RawFriction drops raw
-// friction lines.
+// herdrCLI implements herdrWorkspaces and herdrPanes through the herdr CLI:
+// every call is one raw job step on the transport backend (the exact argv,
+// the round-up context deadline, one attempt, and an error that never
+// carries subprocess output). A zero Timeout means 30 s. A nil Friction drops
+// friction messages and a nil RawFriction drops raw friction lines.
 type herdrCLI struct {
 	Env         platform.Env
 	Timeout     time.Duration
@@ -69,6 +71,13 @@ var (
 	_ herdrWorkspaces = (*herdrCLI)(nil)
 	_ herdrPanes      = (*herdrCLI)(nil)
 )
+
+// legacy returns the job's one raw job-step surface: the transport backend
+// built on the adapter's env, whose methods run the exact one-step herdr
+// calls the adapter used to make through runStep.
+func (c *herdrCLI) legacy() transport.LegacyTransport {
+	return herdr.New(c.Env).Legacy
+}
 
 func (c *herdrCLI) timeout() time.Duration {
 	if c.Timeout <= 0 {
@@ -86,28 +95,18 @@ func herdrExit(msg string) error {
 // --no-focus`, with the --env pairs sorted by key. A non-zero exit, a
 // timeout, invalid JSON, or a missing id or pane is exit 4.
 func (c *herdrCLI) Create(cwd, label string, env map[string]string) (string, string, error) {
-	args := []string{"workspace", "create", "--cwd", cwd, "--label", label}
-	keys := make([]string, 0, len(env))
-	for key := range env {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		args = append(args, "--env", key+"="+env[key])
-	}
-	args = append(args, "--no-focus")
-	out, err := runStep("herdr", args, c.timeout(), c.Env)
-	if err != nil {
+	rep := c.legacy().WorkspaceCreateRaw(context.Background(), cwd, label, env, transport.Call{Timeout: c.timeout()})
+	if rep.Err != nil {
 		return "", "", herdrExit("job: herdr workspace create failed")
 	}
-	workspaceID, rootPaneID, ok := parseWorkspaceCreateResult(out)
+	workspaceID, rootPaneID, ok := parseWorkspaceCreateResult(rep.Value)
 	if !ok {
 		// The raw envelope goes only to the raw friction sink, sanitized
 		// and cut; when that sink is absent it is dropped. It never
 		// reaches stdout, stderr, the error message, or the normal
 		// friction callback.
 		if c.RawFriction != nil {
-			c.RawFriction("job: herdr workspace create returned an unknown result: " + cutFriction(core.FrictionSafe(out)))
+			c.RawFriction("job: herdr workspace create returned an unknown result: " + cutFriction(core.FrictionSafe(rep.Value)))
 		}
 		return "", "", herdrExit("job: herdr workspace create returned an unknown result")
 	}
@@ -183,7 +182,7 @@ func (c *herdrCLI) Close(workspaceID string) error {
 	if !validWorkspaceID(workspaceID) {
 		return errUsage("job: invalid workspace id")
 	}
-	if _, err := runStep("herdr", []string{"workspace", "close", workspaceID}, c.timeout(), c.Env); err != nil {
+	if rep := c.legacy().WorkspaceCloseRaw(context.Background(), workspaceID, transport.Call{Timeout: c.timeout()}); rep.Err != nil {
 		return herdrExit("job: herdr workspace close failed")
 	}
 	return nil
@@ -196,12 +195,12 @@ func (c *herdrCLI) Close(workspaceID string) error {
 //
 // TODO(DJA-194): verify on Windows that an SSH session reaches the desktop-session server and that workspace list never starts one (premise 1).
 func (c *herdrCLI) ServerReachable() bool {
-	out, err := runStep("herdr", []string{"workspace", "list"}, c.timeout(), c.Env)
-	if err != nil {
+	rep := c.legacy().WorkspaceListRaw(context.Background(), transport.Call{Timeout: c.timeout()})
+	if rep.Err != nil {
 		return false
 	}
 	var doc map[string]any
-	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+	if err := json.Unmarshal([]byte(rep.Value), &doc); err != nil {
 		return false
 	}
 	_, ok := doc["result"]
@@ -216,11 +215,11 @@ func (c *herdrCLI) ServerReachable() bool {
 // recovery never decides from a partial list. Like ServerReachable, it
 // never runs a command that could start a server.
 func (c *herdrCLI) List() ([]herdrWorkspace, error) {
-	out, err := runStep("herdr", []string{"workspace", "list"}, c.timeout(), c.Env)
-	if err != nil {
+	rep := c.legacy().WorkspaceListRaw(context.Background(), transport.Call{Timeout: c.timeout()})
+	if rep.Err != nil {
 		return nil, herdrExit("job: herdr workspace list failed")
 	}
-	rows, ok := parseWorkspaceList(out)
+	rows, ok := parseWorkspaceList(rep.Value)
 	if !ok {
 		return nil, herdrExit("job: herdr workspace list returned an unknown result")
 	}
@@ -262,11 +261,11 @@ func (c *herdrCLI) Panes(workspaceID string) ([]herdrPane, error) {
 	if !validWorkspaceID(workspaceID) {
 		return nil, errUsage("job: invalid workspace id")
 	}
-	out, err := runStep("herdr", []string{"pane", "list", "--workspace", workspaceID}, c.timeout(), c.Env)
-	if err != nil {
+	rep := c.legacy().PaneListRaw(context.Background(), workspaceID, transport.Call{Timeout: c.timeout()})
+	if rep.Err != nil {
 		return nil, herdrExit("job: herdr pane list failed")
 	}
-	rows, ok := parsePanes(out)
+	rows, ok := parsePanes(rep.Value)
 	if !ok {
 		return nil, herdrExit("job: herdr pane list returned an unknown result")
 	}
@@ -318,15 +317,12 @@ func (c *herdrCLI) Run(paneID string, argv []string) error {
 	if !safePaneRunArg.MatchString(paneID) {
 		return herdrExit("job: herdr pane run refused an unsafe argument")
 	}
-	args := make([]string, 0, len(argv)+3)
-	args = append(args, "pane", "run", paneID)
 	for _, arg := range argv {
 		if !safePaneRunArg.MatchString(arg) {
 			return herdrExit("job: herdr pane run refused an unsafe argument")
 		}
-		args = append(args, arg)
 	}
-	if _, err := runStep("herdr", args, c.timeout(), c.Env); err != nil {
+	if rep := c.legacy().PaneRunRaw(context.Background(), paneID, argv, transport.Call{Timeout: c.timeout()}); rep.Err != nil {
 		return herdrExit("job: herdr pane run failed")
 	}
 	return nil

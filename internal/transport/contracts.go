@@ -296,9 +296,10 @@ type Window interface {
 // projection-free objects, the raw one-attempt agent get with caller-owned
 // fail-open handling, the raw pane current and pane get reads with
 // caller-owned exit and body handling, the local session-transcript path
-// resolutions (one agent get plus a local file), and the local transcript
-// compact-boundary and user-marker counts; snapshot and run-in-pane join it
-// in the slice that moves their caller.
+// resolutions (one agent get plus a local file), the local transcript
+// compact-boundary and user-marker counts, and the raw job workspace and
+// pane steps with the job's round-up timeout and caller-owned parsing;
+// snapshot and run-in-pane join it in the slice that moves their caller.
 type LegacyTransport interface {
 	// ProcessInfo returns the raw process info a backend reports for a pane.
 	ProcessInfo(ctx context.Context, target Target, call Call) Reply[json.RawMessage]
@@ -370,6 +371,47 @@ type LegacyTransport interface {
 	// carry the given peer marker in a message entry — a local read with no
 	// herdr call; Err is set when the file cannot be read.
 	CountPiUserMarkerLines(ctx context.Context, path, marker string) Reply[int]
+	// WorkspaceCreateRaw runs one `workspace create --cwd <cwd> --label
+	// <label> [--env KEY=VALUE ...] --no-focus` with the --env pairs sorted
+	// by key, the call's timeout rounded up to whole milliseconds (an
+	// explicit zero keeps "no deadline"), and returns the raw process result
+	// (Value carries the stdout) so the caller keeps its own exit-status and
+	// body-parsing handling. It never retries, does not parse the body, and
+	// fails exactly when the job's one-step run fails: a not-found binary,
+	// a timeout, a nil status or a non-zero status.
+	WorkspaceCreateRaw(ctx context.Context, cwd, label string, env map[string]string, call Call) Reply[string]
+	// WorkspaceCloseRaw runs one `workspace close <id>` with the call's
+	// timeout rounded up to whole milliseconds (an explicit zero keeps "no
+	// deadline") and returns the raw process result (Value carries the
+	// stdout) so the caller keeps its own exit-status handling. It never
+	// retries, does not parse the body, and fails exactly when the job's
+	// one-step run fails: a not-found binary, a timeout, a nil status or a
+	// non-zero status.
+	WorkspaceCloseRaw(ctx context.Context, id string, call Call) Reply[string]
+	// WorkspaceListRaw runs one `workspace list` with the call's timeout
+	// rounded up to whole milliseconds (an explicit zero keeps "no
+	// deadline") and returns the raw process result (Value carries the
+	// stdout) so the caller keeps its own exit-status and body-parsing
+	// handling. It never retries, does not parse the body, and fails exactly
+	// when the job's one-step run fails: a not-found binary, a timeout, a
+	// nil status or a non-zero status.
+	WorkspaceListRaw(ctx context.Context, call Call) Reply[string]
+	// PaneListRaw runs one `pane list --workspace <id>` with the call's
+	// timeout rounded up to whole milliseconds (an explicit zero keeps "no
+	// deadline") and returns the raw process result (Value carries the
+	// stdout) so the caller keeps its own exit-status and body-parsing
+	// handling. It never retries, does not parse the body, and fails exactly
+	// when the job's one-step run fails: a not-found binary, a timeout, a
+	// nil status or a non-zero status.
+	PaneListRaw(ctx context.Context, workspaceID string, call Call) Reply[string]
+	// PaneRunRaw runs one `pane run <pane> <argv...>` with the call's
+	// timeout rounded up to whole milliseconds (an explicit zero keeps "no
+	// deadline") and returns the raw process result (Value carries the
+	// stdout) so the caller keeps its own exit-status handling. It never
+	// retries, does not parse the body, and fails exactly when the job's
+	// one-step run fails: a not-found binary, a timeout, a nil status or a
+	// non-zero status.
+	PaneRunRaw(ctx context.Context, paneID string, argv []string, call Call) Reply[string]
 }
 
 // Runtime is the second runtime capability: the operations whose caller
