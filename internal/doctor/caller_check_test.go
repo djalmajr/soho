@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,10 +9,16 @@ import (
 
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
-const callerDoctorWarn = "warn   Herdr context invalid: HERDR_PANE_ID='w0test:p0a' is live but this process does not run in it (its process tree does not reach shell pid 4000); fix the inherited HERDR_* environment\n"
+// callerDoctorWarn is the mismatch warning for the scripted shell pid,
+// kept off this process and pid 1 (testutil.CallerShellPIDs, DJA-569).
+func callerDoctorWarn() string {
+	shell, _ := testutil.CallerShellPIDs()
+	return fmt.Sprintf("warn   Herdr context invalid: HERDR_PANE_ID='w0test:p0a' is live but this process does not run in it (its process tree does not reach shell pid %d); fix the inherited HERDR_* environment\n", shell)
+}
 
 // callerDoctorFixture extends the pane-context fixture with the
 // process-info read of the claimed pane and the scripted ancestry
@@ -24,7 +31,8 @@ func callerDoctorFixture(t *testing.T, withProcessInfo bool, parents map[int]int
 		{Argv: []string{"pane", "get", "w0test:p0a"}, Stdout: `{"result":{"pane":{"title":"orchestrator","workspace_id":"ws"}}}`},
 	}
 	if withProcessInfo {
-		rules = append(rules, fakecli.Rule{Argv: []string{"pane", "process-info", "--pane", "w0test:p0a"}, Stdout: `{"result":{"process_info":{"shell_pid":4000}}}`})
+		shell, _ := testutil.CallerShellPIDs()
+		rules = append(rules, fakecli.Rule{Argv: []string{"pane", "process-info", "--pane", "w0test:p0a"}, Stdout: fmt.Sprintf(`{"result":{"process_info":{"shell_pid":%d}}}`, shell)})
 	}
 	env, root := paneContextFixture(t, rules)
 	t.Cleanup(platform.OverrideAncestorParents(parents))
@@ -34,14 +42,16 @@ func callerDoctorFixture(t *testing.T, withProcessInfo bool, parents map[int]int
 }
 
 // forkedDoctorPS is an ancestry table that reaches the root without the
-// pane's shell (4000).
+// pane's shell.
 func forkedDoctorPS() map[int]int {
-	return map[int]int{os.Getpid(): 3000, 3000: 1}
+	_, fork := testutil.CallerShellPIDs()
+	return map[int]int{os.Getpid(): fork, fork: 1}
 }
 
 // verifiedDoctorPS is an ancestry table that reaches the pane's shell.
 func verifiedDoctorPS() map[int]int {
-	return map[int]int{os.Getpid(): 4000, 4000: 1}
+	shell, _ := testutil.CallerShellPIDs()
+	return map[int]int{os.Getpid(): shell, shell: 1}
 }
 
 // doctorProcessInfoCalls counts the fake herdr's process-info calls.
@@ -65,7 +75,7 @@ func TestDoctorCallerPaneWarning(t *testing.T) {
 		herdr.ResetCallerCheck()
 		env, root := callerDoctorFixture(t, true, forkedDoctorPS())
 		got := doctorCheckOutput(t, env, root)
-		if !strings.Contains(got, callerDoctorWarn) {
+		if !strings.Contains(got, callerDoctorWarn()) {
 			t.Fatalf("doctor output missing the warning:\n%s", got)
 		}
 		if n := doctorProcessInfoCalls(t, root); n != 1 {
@@ -77,7 +87,7 @@ func TestDoctorCallerPaneWarning(t *testing.T) {
 		env, root := callerDoctorFixture(t, true, forkedDoctorPS())
 		env["SOHO_CALLER_CHECK"] = "warn"
 		got := doctorCheckOutput(t, env, root)
-		if !strings.Contains(got, callerDoctorWarn) {
+		if !strings.Contains(got, callerDoctorWarn()) {
 			t.Fatalf("doctor output missing the warning:\n%s", got)
 		}
 	})

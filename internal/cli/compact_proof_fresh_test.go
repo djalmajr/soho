@@ -248,7 +248,11 @@ func TestCompactProofObservedBeforeScrollKeepsCompacted(t *testing.T) {
 // the capped idle wait after the deadline, so the result is the timeout (9),
 // with no resend.
 func TestCompactProofObservedLatchStillTimesOutWhenNeverIdle(t *testing.T) {
-	fakeFastClock(t, 6*time.Second)
+	// The step outlives the capped idle wait (ten 2 s polls, compact.go),
+	// so that wait ends on the first clock tick, without spending a real
+	// poll pause; the generous real budget (DJA-556) cannot expire
+	// mid-choreography, a slow fake Herdr included (DJA-557).
+	fakeFastClock(t, 30*time.Second)
 	const before = "old conversation\n› Ask Codex to do anything\n"
 	const proof = "old conversation\n› /compact\nContext compacted\n› Ask Codex to do anything\n"
 	const scrolled = "reply A\nreply B\n› Ask Codex to do anything\n"
@@ -265,7 +269,7 @@ func TestCompactProofObservedLatchStillTimesOutWhenNeverIdle(t *testing.T) {
 		{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 		{Argv: []string{"pane", "send-keys", "p1", "ctrl+u"}, Stdout: `{"result":{}}`},
 	})
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "1000")
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000")
 	if code != 9 || errText != "" {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}

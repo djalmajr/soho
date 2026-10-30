@@ -3,6 +3,7 @@ package peer_test
 import (
 	"bytes"
 	"crypto/rand"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,26 +12,36 @@ import (
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/peer"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
-const sendRefuseLine = "soho: send: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Nothing was changed. Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn\n"
+// callerShellPIDs is testutil.CallerShellPIDs: the scripted shell and
+// fork pids, kept off this process and pid 1 (DJA-569).
+func callerShellPIDs() (shell, fork int) { return testutil.CallerShellPIDs() }
+
+func sendRefuseLine() string {
+	shell, _ := callerShellPIDs()
+	return fmt.Sprintf("soho: send: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell %d); the id was inherited from another process, such as a forked session. Nothing was changed. Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn\n", shell)
+}
 
 // callerSendRules are the process-info rules of the claimed caller pane
 // (the send target is w0test:p0a; the caller claims w1:p9).
 func callerSendRules() []fakecli.Rule {
+	shell, _ := callerShellPIDs()
 	return []fakecli.Rule{
-		{Argv: []string{"pane", "process-info", "--pane", "w1:p9"}, Stdout: `{"result":{"process_info":{"shell_pid":4000}}}`},
+		{Argv: []string{"pane", "process-info", "--pane", "w1:p9"}, Stdout: fmt.Sprintf(`{"result":{"process_info":{"shell_pid":%d}}}`, shell)},
 	}
 }
 
 // installForkedTree scripts the ancestry of a process that is NOT in the
-// claimed pane: the walk reaches the root without the pane's shell (4000).
+// claimed pane: the walk reaches the root without the pane's shell.
 // It goes through platform.OverrideAncestorParents, the same test point on
 // every system (no ps, no process snapshot).
 func installForkedTree(t *testing.T) {
 	t.Helper()
-	t.Cleanup(platform.OverrideAncestorParents(map[int]int{os.Getpid(): 3000, 3000: 1}))
+	_, fork := callerShellPIDs()
+	t.Cleanup(platform.OverrideAncestorParents(map[int]int{os.Getpid(): fork, fork: 1}))
 }
 
 // callerSendPrompt is the deterministic prompt the send delivers to the
@@ -85,8 +96,8 @@ func TestCmdSendCallerPaneCheck(t *testing.T) {
 		if code != 2 {
 			t.Fatalf("code=%d stderr=%q", code, stderr)
 		}
-		if stderr != sendRefuseLine {
-			t.Fatalf("stderr=%q want %q", stderr, sendRefuseLine)
+		if want := sendRefuseLine(); stderr != want {
+			t.Fatalf("stderr=%q want %q", stderr, want)
 		}
 		if n := sendCallCount(t, f, "agent", "prompt"); n != 0 {
 			t.Fatalf("agent prompt called %d times", n)
@@ -122,7 +133,8 @@ func TestCmdSendCallerPaneCheck(t *testing.T) {
 		if code != 0 || !strings.HasPrefix(out, "queued for local/w0test:p0a") {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 		}
-		if !strings.Contains(stderr, "soho: warning: send: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell 4000); the id was inherited from another process, such as a forked session. Continuing because caller_check=warn. Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn") {
+		shell, _ := callerShellPIDs()
+		if !strings.Contains(stderr, fmt.Sprintf("soho: warning: send: HERDR_PANE_ID='w1:p9' is a live pane but this process does not run in it (its process tree does not reach the pane's shell %d); the id was inherited from another process, such as a forked session. Continuing because caller_check=warn. Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn", shell)) {
 			t.Fatalf("stderr missing the warn line: %q", stderr)
 		}
 		friction, err := os.ReadFile(filepath.Join(f.env["SOHO_DIR"], "ws-test", "friction.log"))

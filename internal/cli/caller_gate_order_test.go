@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -21,8 +22,9 @@ import (
 
 const forkedClaim = "HERDR_PANE_ID='%s' is a live pane but this process does not run in it"
 
-// claimShell gives the claimed pane its shell (4000) in the fake herdr that
-// the config file drives, and scripts the ancestry (OverrideAncestorParents): forked is a
+// claimShell gives the claimed pane its shell (the collision-free scripted
+// pid, callerShellPIDs) in the fake herdr that the config file drives, and
+// scripts the ancestry (OverrideAncestorParents): forked is a
 // process tree that never reaches the shell.
 func claimShell(t *testing.T, config, pane string, forked bool) {
 	t.Helper()
@@ -37,7 +39,8 @@ func claimShell(t *testing.T, config, pane string, forked bool) {
 	if err := json.Unmarshal(raw, &c); err != nil {
 		t.Fatal(err)
 	}
-	c.Rules = append([]fakecli.Rule{{Argv: []string{"pane", "process-info", "--pane", pane}, Stdout: `{"result":{"process_info":{"shell_pid":4000}}}`}}, c.Rules...)
+	shell, _ := callerShellPIDs()
+	c.Rules = append([]fakecli.Rule{{Argv: []string{"pane", "process-info", "--pane", pane}, Stdout: fmt.Sprintf(`{"result":{"process_info":{"shell_pid":%d}}}`, shell)}}, c.Rules...)
 	raw, err = json.Marshal(c)
 	if err != nil {
 		t.Fatal(err)
@@ -49,13 +52,15 @@ func claimShell(t *testing.T, config, pane string, forked bool) {
 }
 
 // callerGateEnv is a command fixture whose fake herdr answers the
-// process-info of w1:p9 (shell 4000) and whose ancestry is a forked tree.
+// process-info of w1:p9 (the collision-free scripted shell pid) and whose
+// ancestry is a forked tree.
 func callerGateEnv(t *testing.T) (platform.Env, string, string) {
 	t.Helper()
 	env, cwd := commandFixture(t)
 	dir := t.TempDir()
+	shell, _ := callerShellPIDs()
 	rules := []fakecli.Rule{
-		{Argv: []string{"pane", "process-info"}, ArgvPrefix: true, Stdout: `{"result":{"process_info":{"shell_pid":4000}}}`},
+		{Argv: []string{"pane", "process-info"}, ArgvPrefix: true, Stdout: fmt.Sprintf(`{"result":{"process_info":{"shell_pid":%d}}}`, shell)},
 		{Argv: []string{"pane", "report-metadata"}, ArgvPrefix: true},
 	}
 	if _, err := fakecli.Install(t, dir, "herdr", rules); err != nil {

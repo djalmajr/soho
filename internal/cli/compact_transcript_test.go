@@ -285,7 +285,11 @@ func TestCompactClaudeTranscriptLatchSurvivesLostTranscript(t *testing.T) {
 	const boundary = `{"type":"system","subtype":"compact_boundary","summary":"SENTINEL-BOUNDARY"}
 `
 	runCase := func(t *testing.T, wantCode int, idleAfterDeadline bool) {
-		fakeFastClock(t, 6*time.Second)
+		// The step outlives the capped idle wait (ten 2 s polls, compact.go),
+		// so that wait ends on the first clock tick, without spending a real
+		// poll pause; the generous real budget (DJA-556) cannot expire
+		// mid-choreography, a slow fake Herdr included (DJA-557).
+		fakeFastClock(t, 30*time.Second)
 		state := "working"
 		if idleAfterDeadline {
 			state = "idle"
@@ -323,7 +327,7 @@ func TestCompactClaudeTranscriptLatchSurvivesLostTranscript(t *testing.T) {
 		var out, errText string
 		done := make(chan struct{})
 		go func() {
-			code, out, errText = f.run(t, "compact", "worker", "--timeout", "1000")
+			code, out, errText = f.run(t, "compact", "worker", "--timeout", "5000")
 			close(done)
 		}()
 		// The baseline count ran before the send: once the Enter reached the
