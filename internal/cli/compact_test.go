@@ -775,7 +775,12 @@ func TestCompactPiTimeoutWhileStillCompacting(t *testing.T) {
 			{Argv: []string{"pane", "send-text", "p1", "/compact"}, Stdout: `{"result":{}}`},
 			{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 		})
-		code, out, errText := f.run(t, "compact", "worker", "--timeout", "500")
+		// The deadline passes once the fake has logged the pre-send read and
+		// the first poll, whatever the host load: a loaded runner can no
+		// longer spend the whole real budget starting the fakes before the
+		// wait runs out (DJA-634).
+		compactDeadlineAfterReads(t, f, 2)
+		code, out, errText := f.run(t, "compact", "worker", "--timeout", "30s")
 		return code, compactJSON(t, out), errText
 	}
 	code, value, errText := run(t, "old output line\nCompacting context...\n")
@@ -894,7 +899,11 @@ func TestCompactPiStillCompactingKeepsWaiting(t *testing.T) {
 		{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 		{Argv: compactReadArgv("worker"), ArgvPrefix: true, Stdout: compactScreens.piCompacting},
 	})
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "500")
+	// The deadline passes once the fake has logged the pre-send read and the
+	// first poll, whatever the host load: the wait still runs it out, on the
+	// seam's clock (DJA-634).
+	compactDeadlineAfterReads(t, f, 2)
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "30s")
 	if code != 9 {
 		t.Fatalf("code=%d want 9 out=%s stderr=%s", code, out, errText)
 	}
@@ -905,8 +914,8 @@ func TestCompactPiStillCompactingKeepsWaiting(t *testing.T) {
 	if !strings.Contains(errText, "is still compacting") {
 		t.Fatalf("stderr=%q", errText)
 	}
-	if elapsed, ok := value["elapsed_ms"].(float64); !ok || elapsed < 500 {
-		t.Fatalf("elapsed_ms=%v want >= 500 (the wait ran out the deadline)", value["elapsed_ms"])
+	if elapsed, ok := value["elapsed_ms"].(float64); !ok || elapsed < 30000 {
+		t.Fatalf("elapsed_ms=%v want >= 30000 (the wait ran out the deadline)", value["elapsed_ms"])
 	}
 }
 
@@ -1163,7 +1172,10 @@ func TestCompactClaudeTimeoutTranscriptField(t *testing.T) {
 		if claudeDir != "" {
 			f.env["CLAUDE_CONFIG_DIR"] = claudeDir
 		}
-		code, out, errText := f.run(t, "compact", "worker", "--timeout", "500")
+		// The deadline passes once the fake has logged the pre-send read and
+		// the first poll, whatever the host load (DJA-634).
+		compactDeadlineAfterReads(t, f, 2)
+		code, out, errText := f.run(t, "compact", "worker", "--timeout", "30s")
 		if code != 9 || withoutShortTimeoutWarning(errText) != "" {
 			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 		}
@@ -1403,8 +1415,13 @@ func TestCompactLaterMentionDoesNotAnchor(t *testing.T) {
 		{Argv: compactReadArgv("worker"), Call: 1, Stdout: codexClearedComposer},
 		{Argv: compactReadArgv("worker"), Call: 2, Stdout: compactScreens.codexLaterMention},
 	})
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "500")
-	if code != 0 || errText != "soho: warning: compact: --timeout is in milliseconds; 500 is under a second (for 500 seconds pass 500000)\n" {
+	// A generous real budget: the proof lands on the first poll, long before
+	// the deadline, whatever the host load spends starting the fakes
+	// (DJA-634). The sub-second timeout warning this fixture used to pin
+	// stays pinned by internal/core's timeout-warn tests (the shared
+	// mechanism compact's warning goes through).
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "30000")
+	if code != 0 || errText != "" {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
 	value := compactJSON(t, out)

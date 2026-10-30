@@ -169,6 +169,30 @@ func canaryContent(t *testing.T, path string) string {
 	return string(data)
 }
 
+// fakePsWarm drives the fake ps with a discarded env (its own canary)
+// until one call is answered inside the production reader's 2 s deadline.
+// The compiled fake's cold start (a Go binary: page-in plus runtime init)
+// can outlive that deadline under host load; a TimedOut answer takes the
+// reader's conservative path and the fake appends no canary line, so the
+// subtests would then exercise the deadline path, not the failed-ps path
+// (DJA-634). Once the fake has answered once, its binary pages are
+// resident and the subtest calls start fast on any load.
+func fakePsWarm(t *testing.T, bin string, pid int) {
+	t.Helper()
+	until := time.Now().Add(30 * time.Second)
+	for {
+		env, canary := procFlagsFakePsEnv(t, bin, "alive:FAIL")
+		procAliveStates([]int{pid}, env)
+		if _, err := os.Stat(canary); err == nil {
+			return
+		}
+		if time.Now().After(until) {
+			t.Fatal("the fake ps never answered inside the reader's 2 s deadline; the host load is too high to exercise the failed-ps path")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // TestProcFlagsSessionSleeper is the re-executed helper entry: when the
 // marker env is set the process calls setsid (becoming the session
 // leader, the native stand-in for the session-leader ps flag s) and
@@ -489,6 +513,10 @@ func TestProcFlagsFailedPsAliveStates(t *testing.T) {
 	if procAliveStates([]int{deadPid}, real)[deadPid] {
 		t.Fatalf("the reaped fixture %d still reads alive through the real ps", deadPid)
 	}
+	// Warm the compiled fake before the subtests assert on its canary:
+	// under host load its cold start can outlive the reader's 2 s
+	// deadline (DJA-634).
+	fakePsWarm(t, bin, livePid)
 	t.Run("an empty failed ps keeps a live pid alive and confirms a dead pid gone", func(t *testing.T) {
 		env, canary := procFlagsFakePsEnv(t, bin, "full:FAIL;ident:FAIL;alive:FAIL")
 		if !procAliveStates([]int{livePid}, env)[livePid] {
