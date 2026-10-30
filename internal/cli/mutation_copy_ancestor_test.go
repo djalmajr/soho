@@ -63,14 +63,15 @@ func TestMutationSourceAncestorExplicitAndGuard(t *testing.T) {
 			}
 			dest := filepath.Join(f.root, "copy")
 			if mode == "explicit-copy" {
-				// The explicit-link HOME refusal is independent of source overlap.
-				// Keep HOME outside R so this case reaches the guard's boundary.
+				// DJA-567: a target that contains the copy is refused up front,
+				// before the copy and the guard. Keep HOME outside R so the
+				// refusal proven is the copy-containment one, not the HOME one.
 				f.env["HOME"] = t.TempDir()
 				f.env["USERPROFILE"] = f.env["HOME"]
 				code, out, stderr := runMutationCopyCmd(t, f, f.root, nil, "--source", f.source, "--dest", dest, "--link", "deps="+f.root)
 				t.Logf("mode=%s exit=%d stdout=%s stderr=%s", mode, code, out, stderr)
-				if code != 1 || out != "" || !strings.Contains(stderr, "fail no-symlink-into-source: symlink deps -> ") {
-					t.Errorf("explicit ancestor escaped guard: exit=%d stdout=%s stderr=%s", code, out, stderr)
+				if code != 2 || out != "" || !strings.Contains(stderr, "mutation-copy: refusing link 'deps="+f.root+"'") || !strings.Contains(stderr, "target contains the copy") {
+					t.Errorf("explicit ancestor link not refused up front: exit=%d stdout=%s stderr=%s", code, out, stderr)
 				}
 			} else {
 				if err := os.Mkdir(dest, 0700); err != nil {
