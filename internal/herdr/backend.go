@@ -3,6 +3,7 @@ package herdr
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"time"
 
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -567,6 +568,90 @@ func (b *backend) CountPiUserMarkerLines(ctx context.Context, path, marker strin
 		return transport.Reply[int]{Err: &transport.Failure{Kind: transport.FailureCommand, Message: "the transcript is unreadable"}}
 	}
 	return transport.Reply[int]{Value: n, Valid: true}
+}
+
+// timeoutMsUp is the subprocess deadline in whole milliseconds with the job
+// semantics: a positive duration is rounded up (never truncated) and a zero
+// or negative one stays 0, which the platform reads as "no deadline". It is
+// the same conversion the job's runStep applies to its subprocess timeouts.
+func timeoutMsUp(d time.Duration) int {
+	if d <= 0 {
+		return 0
+	}
+	ms := d / time.Millisecond
+	if d%time.Millisecond != 0 {
+		ms++
+	}
+	return int(ms)
+}
+
+// jobStep is the raw one-step run of the job's Herdr adapter: one herdr CLI
+// call with exactly the given argv under the call's timeout rounded up to
+// whole milliseconds, never retried and never parsed. It returns the raw
+// stdout plus the raw process result and reports Err exactly when the job's
+// one-step run fails: a not-found binary, a timeout, a nil status or a
+// non-zero status. An explicit zero timeout keeps "no deadline", the job's
+// reading of a zero millisecond bound.
+func (b *backend) jobStep(args []string, call transport.Call, ctx context.Context) transport.Reply[string] {
+	r := platform.RunCli("herdr", args, platform.RunOptions{Env: b.env, Context: ctx, TimeoutMs: timeoutMsUp(call.Timeout)})
+	if r.NotFound || r.TimedOut || r.Status == nil || *r.Status != 0 {
+		return transport.Reply[string]{Value: r.Stdout, Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
+	}
+	return transport.Reply[string]{Value: r.Stdout, Valid: true, Process: processResult(r)}
+}
+
+// WorkspaceCreateRaw runs one `workspace create --cwd <cwd> --label <label>
+// [--env KEY=VALUE ...] --no-focus` with the --env pairs sorted by key and
+// returns the raw process result (Value carries the stdout); the caller
+// keeps its own exit-status and body-parsing handling. It never retries and
+// does not parse the body; see jobStep for the timeout and failure contract.
+func (b *backend) WorkspaceCreateRaw(ctx context.Context, cwd, label string, env map[string]string, call transport.Call) transport.Reply[string] {
+	args := []string{"workspace", "create", "--cwd", cwd, "--label", label}
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		args = append(args, "--env", key+"="+env[key])
+	}
+	args = append(args, "--no-focus")
+	return b.jobStep(args, call, ctx)
+}
+
+// WorkspaceCloseRaw runs one `workspace close <id>` and returns the raw
+// process result (Value carries the stdout); the caller keeps its own
+// exit-status handling. It never retries and does not parse the body; see
+// jobStep for the timeout and failure contract.
+func (b *backend) WorkspaceCloseRaw(ctx context.Context, id string, call transport.Call) transport.Reply[string] {
+	return b.jobStep([]string{"workspace", "close", id}, call, ctx)
+}
+
+// WorkspaceListRaw runs one `workspace list` and returns the raw process
+// result (Value carries the stdout); the caller keeps its own exit-status
+// and body-parsing handling. It never retries and does not parse the body;
+// see jobStep for the timeout and failure contract.
+func (b *backend) WorkspaceListRaw(ctx context.Context, call transport.Call) transport.Reply[string] {
+	return b.jobStep([]string{"workspace", "list"}, call, ctx)
+}
+
+// PaneListRaw runs one `pane list --workspace <id>` and returns the raw
+// process result (Value carries the stdout); the caller keeps its own
+// exit-status and body-parsing handling. It never retries and does not parse
+// the body; see jobStep for the timeout and failure contract.
+func (b *backend) PaneListRaw(ctx context.Context, workspaceID string, call transport.Call) transport.Reply[string] {
+	return b.jobStep([]string{"pane", "list", "--workspace", workspaceID}, call, ctx)
+}
+
+// PaneRunRaw runs one `pane run <pane> <argv...>` and returns the raw
+// process result (Value carries the stdout); the caller keeps its own
+// exit-status handling. It never retries and does not parse the body; see
+// jobStep for the timeout and failure contract.
+func (b *backend) PaneRunRaw(ctx context.Context, paneID string, argv []string, call transport.Call) transport.Reply[string] {
+	args := make([]string, 0, len(argv)+3)
+	args = append(args, "pane", "run", paneID)
+	args = append(args, argv...)
+	return b.jobStep(args, call, ctx)
 }
 
 // Runtime.
