@@ -1799,6 +1799,7 @@ func startAgent(o spawnOptions, kind string, env platform.Env, created bool, arg
 			if !read || strings.TrimSpace(scr) == "" {
 				scr = herdr.AgentRead(env, o.pane, "visible", intPtr(40))
 			}
+			startDiagnoseShellNotFound(scr, kind)
 			tail := lastLines(scr, 5)
 			closed := herdr.PaneClose(o.pane, env)
 			if closed {
