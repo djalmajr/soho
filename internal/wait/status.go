@@ -1,6 +1,7 @@
 package wait
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -21,89 +22,43 @@ import (
 	"github.com/djalmajr/soho/internal/provider"
 	"github.com/djalmajr/soho/internal/sessionref"
 	"github.com/djalmajr/soho/internal/taskreport"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 // probeNotInRoster runs the D11 agent get for an agent outside the roster
 // and reports whether Herdr knows it (the call succeeds with an
 // agent_status), plus the command form that worked, for the hint. A
 // reference is resolved with sessionref.ParseRef like send: a remote
-// machine is queried with `herdr --machine <m> agent get <pane>`, and a
-// local reference (or a bare name) takes the local query
+// machine is queried with `herdr --machine <m> agent get <pane>` (one
+// attempt, no retry pause, known only for exit 0 with an agent_status in
+// the body), and a local reference (or a bare name) takes the local query
 // `herdr agent get <x>` — the pane id for a reference. A value that does
 // not parse as a reference keeps the local name behavior.
-func probeNotInRoster(agent string, env platform.Env) (bool, string) {
+func probeNotInRoster(agent string, svc transport.Services) (bool, string) {
 	target, machine := agent, sessionref.LocalMachine
 	if ref := sessionref.ParseRef(agent); ref != nil {
 		target, machine = ref.PaneID, ref.Machine
 	}
 	if args := sessionref.HerdrMachineArgs(machine); len(args) > 0 {
 		query := append(append([]string{}, args...), "agent", "get", target)
-		return remoteAgentGetOK(query, env), "herdr " + strings.Join(query, " ")
+		known := svc.Legacy.AgentGetKnown(context.Background(), transport.Target{Machine: machine, ID: target}, transport.Call{Timeout: herdr.Timeout}).Value
+		return known, "herdr " + strings.Join(query, " ")
 	}
-	st := herdr.AgentState(target, env, herdr.Timeout, nil)
+	st := readState(svc, target)
 	return st.State != "gone" && st.State != "unavailable", "herdr agent get " + target
 }
 
-// remoteAgentGetOK reports whether a `herdr --machine <m> agent get <pane>`
-// succeeds with an agent_status — the remote half of the D11 probe. It
-// classifies like herdr.AgentState (a success with an agent_status is
-// known; agent_not_found and every failed call are not) but spends no
-// retry pause: a machine that does not answer reads as unknown-agent.
-func remoteAgentGetOK(args []string, env platform.Env) bool {
-	r := platform.RunCli("herdr", args, platform.RunOptions{Env: env, TimeoutMs: int(herdr.Timeout.Milliseconds())})
-	if r.TimedOut || r.Error == "ETIMEDOUT" || r.NotFound || r.Status == nil || *r.Status != 0 {
-		return false
-	}
-	v, err := jsonjs.Parse([]byte(r.Stdout))
-	if err != nil {
-		return false
-	}
-	o, okObj := v.(*jsonjs.Object)
-	if !okObj {
-		return false
-	}
-	res, okGet := o.Get("result")
-	if !okGet {
-		return false
-	}
-	ro, okObj := res.(*jsonjs.Object)
-	if !okObj {
-		return false
-	}
-	ag, okGet := ro.Get("agent")
-	if !okGet {
-		return false
-	}
-	ao, okObj := ag.(*jsonjs.Object)
-	if !okObj {
-		return false
-	}
-	status, okGet := ao.Get("agent_status")
-	if !okGet {
-		return false
-	}
-	s, okStr := status.(string)
-	return okStr && s != ""
-}
-
-func aliveInOtherPane(name, pane string, env platform.Env) (alive bool) {
+func aliveInOtherPane(name, pane string, svc transport.Services) (alive bool) {
 	defer func() {
 		if recover() != nil {
 			alive = false
 		}
 	}()
-	for _, raw := range herdr.LiveAgents(env, herdr.Timeout) {
-		obj, ok := raw.(*jsonjs.Object)
-		if !ok {
+	for _, term := range svc.Runtime.List(context.Background(), transport.Scope{}, transport.Call{Timeout: herdr.Timeout}).Value {
+		if term.Name != name {
 			continue
 		}
-		agentName, _ := obj.Get("name")
-		if agentName != name {
-			continue
-		}
-		paneValue, _ := obj.Get("pane_id")
-		livePane, _ := paneValue.(string)
-		if livePane == pane {
+		if term.PaneID == pane {
 			return false
 		}
 		alive = true
@@ -130,11 +85,12 @@ func rosterNames(sd string) []string {
 
 func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	sd := core.StateDir(ctx, env, cwd)
-	restartStates := map[string]herdr.AgentStateResult{}
+	svc := herdr.New(env)
+	restartStates := map[string]stateProbe{}
 	if len(argv) == 0 {
 		argv = rosterNames(sd)
 		if len(argv) == 0 {
-			restartNotices(sd, env, platform.Stderr, nil, restartStates)
+			restartNotices(sd, env, platform.Stderr, nil, restartStates, svc)
 			fmt.Fprintf(platform.Stderr, "status: no agents in the roster (state dir: %s)\n", sd)
 			return 0
 		}
@@ -178,7 +134,7 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		quota := false
 		var p *provider.Detection
 		if reportNonEmpty(report) {
-			state, cause = reportStatus(sd, agent, report, ctx, env)
+			state, cause = reportStatus(sd, agent, report, ctx, svc, env)
 			if state == "done" {
 				mirrorReport(sd, agent, report, ctx, env, cwd)
 			}
@@ -193,7 +149,7 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 			// (machine/pane) is resolved like send: the query goes to the
 			// reference's machine, and a local reference or a bare name takes
 			// the local query; the hint cites the command form that worked.
-			if known, cmd := probeNotInRoster(agent, env); known {
+			if known, cmd := probeNotInRoster(agent, svc); known {
 				state = "not-in-roster"
 				fmt.Fprintf(platform.Stderr, "soho: status: '%s' is not a worker of this workspace's team; %s shows its state\n", agent, cmd)
 			} else {
@@ -202,10 +158,10 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		} else {
 			fields := strings.Split(core.RosterLine(sd, agent), "\t")
 			pane := field(fields, 1)
-			st := herdr.AgentState(agent, env, herdr.Timeout, nil)
+			st := readState(svc, agent)
 			state, cause = st.State, st.Cause
 			orig := state
-			stale := pane != "" && state != "gone" && state != "unavailable" && aliveInOtherPane(agent, pane, env)
+			stale := pane != "" && state != "gone" && state != "unavailable" && aliveInOtherPane(agent, pane, svc)
 			if stale {
 				state = "gone"
 				cause = ""
@@ -223,21 +179,22 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 				if WaitRank(15) > WaitRank(rc) {
 					rc = 15
 				}
-			} else if !stale && markerExists(sd, agent, "queued") && orig != "working" && orig != "blocked" && queuedPromptIsUnresolved(sd, agent, orig, ctx, env) {
+			} else if !stale && markerExists(sd, agent, "queued") && orig != "working" && orig != "blocked" && queuedPromptIsUnresolved(sd, agent, orig, ctx, env, svc) {
 				state = "not-received"
 				if WaitRank(15) > WaitRank(rc) {
 					rc = 15
 				}
 			} else if !stale && orig == "blocked" {
 				kindNow := field(fields, 2)
-				visible := herdr.AgentRead(env, agent, "visible", intPtr(40))
+				visible, _ := readScreen(svc, agent, "visible", intPtr(40))
 				if provider.DialogKind(kindNow, visible) == "question" {
 					question = provider.QuestionText(visible)
 					if WaitRank(7) > WaitRank(rc) {
 						rc = 7
 					}
 				} else {
-					p = provider.ProviderDetectTexts(orig, herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40)), core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
+					blockedRecent, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
+					p = provider.ProviderDetectTexts(orig, blockedRecent, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
 					if p != nil && ((p.Status == "provider-error" && p.Auth) || p.Status == "provider-refusal" || p.Cause == provider.LostConnectionCause) {
 						if WaitRank(14) > WaitRank(rc) {
 							rc = 14
@@ -245,7 +202,8 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 					}
 				}
 			} else if !stale && orig != "working" && orig != "gone" && orig != "blocked" && orig != "unavailable" {
-				q := provider.QuotaDetect(orig, herdr.AgentRead(env, agent, "visible", intPtr(20)))
+				quotaVisible, _ := readScreen(svc, agent, "visible", intPtr(20))
+				q := provider.QuotaDetect(orig, quotaVisible)
 				if q != nil {
 					quota = true
 					match, renewal = q[0], q[1]
@@ -256,7 +214,8 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 					core.Warn(fmt.Sprintf("quota: agent '%s' lane=%s kind=%s model=%s : %s%s", agent, showOr(lane, "?"), kind, showOr(model, "?"), match, renewalSuffix(renewal)), frictionLogFile, "status")
 					rc = 11
 				} else {
-					p = provider.ProviderDetectTexts(orig, herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40)), core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
+					unresolvedRecent, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
+					p = provider.ProviderDetectTexts(orig, unresolvedRecent, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
 					if p != nil && WaitRank(14) > WaitRank(rc) {
 						rc = 14
 					}
@@ -278,7 +237,7 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		}
 		activityChanged := false
 		if state == "working" {
-			screen := herdr.AgentRead(env, agent, "visible", nil)
+			screen, _ := readScreen(svc, agent, "visible", nil)
 			p = provider.LostConnection(screen)
 			if p != nil && WaitRank(14) > WaitRank(rc) {
 				rc = 14
@@ -330,7 +289,7 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 			}
 		}
 	}
-	restartNotices(sd, env, platform.Stderr, argv, restartStates)
+	restartNotices(sd, env, platform.Stderr, argv, restartStates, svc)
 	return rc
 }
 
@@ -500,17 +459,18 @@ func markerRead(sd, agent, name string) string {
 	value, _ := platform.ReadTextFile(filepath.Join(sd, "wait", agent+"."+name))
 	return value
 }
-func queuedPromptIsUnresolved(sd, agent, state string, ctx *core.Config, env platform.Env) bool {
+func queuedPromptIsUnresolved(sd, agent, state string, ctx *core.Config, env platform.Env, svc transport.Services) bool {
 	marker := markerRead(sd, agent, "queued")
-	visible := herdr.AgentRead(env, agent, "visible", nil)
-	recent := herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40))
+	visible, _ := readScreen(svc, agent, "visible", nil)
+	recent, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
 	if !QueuedPromptSitsInInput(marker, recent, sd, agent) {
 		return false
 	}
 	if provider.QuotaDetect(state, visible) != nil {
 		return false
 	}
-	return provider.ProviderDetectTexts(state, herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40)), core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env)) == nil
+	unresolvedRecent, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
+	return provider.ProviderDetectTexts(state, unresolvedRecent, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env)) == nil
 }
 
 // RestartTask describes the existing task; notices never change its pointer.
@@ -524,10 +484,10 @@ var restartReportStamp = regexp.MustCompile(`-(\d{8}T\d{6})(?:-\d+)?\.md$`)
 // InspectRestartTask uses the local timestamp dispatch puts in the report name.
 // The dispatch sidecar has submission state, but no submission timestamp.
 func InspectRestartTask(agent, sd string, boot time.Time, env platform.Env) RestartTask {
-	return inspectRestartTask(agent, sd, boot, env, nil)
+	return inspectRestartTask(agent, sd, boot, herdr.New(env), nil)
 }
 
-func inspectRestartTask(agent, sd string, boot time.Time, env platform.Env, knownState *herdr.AgentStateResult) RestartTask {
+func inspectRestartTask(agent, sd string, boot time.Time, svc transport.Services, knownState *stateProbe) RestartTask {
 	task := RestartTask{Agent: agent, Code: 2, Reason: "task is not interrupted"}
 	if core.RosterLine(sd, agent) == "" {
 		task.Reason = "agent is not in the roster"
@@ -559,11 +519,11 @@ func inspectRestartTask(agent, sd string, boot time.Time, env platform.Env, know
 	if !dispatched.Before(boot) {
 		return task
 	}
-	var state herdr.AgentStateResult
+	var state stateProbe
 	if knownState != nil {
 		state = *knownState
 	} else {
-		state = herdr.AgentState(agent, env, herdr.Timeout, nil)
+		state = readState(svc, agent)
 	}
 	task.State = state.State
 	if state.State == "working" || state.State == "blocked" {
@@ -588,11 +548,11 @@ func inspectRestartTask(agent, sd string, boot time.Time, env platform.Env, know
 
 // RestartNotices adds advisory text only; stdout status rows remain unchanged.
 func RestartNotices(sd string, env platform.Env, out io.Writer, agents []string) {
-	restartNotices(sd, env, out, agents, nil)
+	restartNotices(sd, env, out, agents, nil, herdr.New(env))
 }
 
 // A non-nil cache limits status notices to its normal-output state reads.
-func restartNotices(sd string, env platform.Env, out io.Writer, agents []string, states map[string]herdr.AgentStateResult) {
+func restartNotices(sd string, env platform.Env, out io.Writer, agents []string, states map[string]stateProbe, svc transport.Services) {
 	boot, err := platform.BootTime()
 	if err != nil || boot.IsZero() || boot.After(platform.Now()) {
 		return
@@ -601,7 +561,7 @@ func restartNotices(sd string, env platform.Env, out io.Writer, agents []string,
 		agents = rosterNames(sd)
 	}
 	for _, agent := range agents {
-		var knownState *herdr.AgentStateResult
+		var knownState *stateProbe
 		if states != nil {
 			cached, ok := states[agent]
 			if !ok {
@@ -609,7 +569,7 @@ func restartNotices(sd string, env platform.Env, out io.Writer, agents []string,
 			}
 			knownState = &cached
 		}
-		if task := inspectRestartTask(agent, sd, boot, env, knownState); task.Code == 0 {
+		if task := inspectRestartTask(agent, sd, boot, svc, knownState); task.Code == 0 {
 			fmt.Fprintf(out, "'%s': its task was dispatched before the machine restarted (%s); run soho resume %s\n", agent, boot.Local().Format(time.RFC3339), agent)
 		}
 	}

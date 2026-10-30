@@ -7,8 +7,8 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/gittree"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 func reportWorkingMax(ctx *core.Config, env platform.Env) int64 {
@@ -37,7 +37,7 @@ func reportFilesAfter(sd, agent, report string, env platform.Env) []string {
 
 // reportStatus reads the same completion evidence as wait, without advancing
 // clocks or writing settlement markers. Pane failure preserves report authority.
-func reportStatus(sd, agent, report string, ctx *core.Config, env platform.Env) (string, string) {
+func reportStatus(sd, agent, report string, ctx *core.Config, svc transport.Services, env platform.Env) (string, string) {
 	info, err := os.Stat(report)
 	if err != nil {
 		return "done", ""
@@ -51,7 +51,7 @@ func reportStatus(sd, agent, report string, ctx *core.Config, env platform.Env) 
 	if at, ok := reportStableAt(sd, agent, identity); ok && platform.Now().Unix()-at > max {
 		return "done", ""
 	}
-	st := herdr.AgentState(agent, env, herdr.Timeout, nil)
+	st := readState(svc, agent)
 	switch st.State {
 	case "gone", "unavailable":
 		return "done", ""

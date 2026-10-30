@@ -7,6 +7,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/sessionref"
 	"github.com/djalmajr/soho/internal/transport"
 )
 
@@ -436,6 +437,37 @@ func (b *backend) AgentGetOK(ctx context.Context, target transport.Target, call 
 		return transport.Reply[bool]{Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
 	}
 	return transport.Reply[bool]{Value: true, Valid: true, Process: processResult(r)}
+}
+
+// AgentGetKnown is the raw one-attempt knowledge check: one agent get, with
+// the machine prefix the session reference names for a non-local target's
+// machine, Value true only when the call exits 0 and its body carries a
+// non-empty string agent_status. A timeout, a lookup failure and every
+// failed call report false with the cause; an exit-0 body without a usable
+// agent_status is a well-formed observation of false, not an error.
+func (b *backend) AgentGetKnown(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[bool] {
+	args := append(append([]string{}, sessionref.HerdrMachineArgs(target.Machine)...), "agent", "get", target.ID)
+	r := runWithTimeout(args, b.env, timeoutFor(call), ctxArgs(ctx)...)
+	if r.TimedOut || r.Error == "ETIMEDOUT" || r.NotFound || r.Status == nil || *r.Status != 0 {
+		return transport.Reply[bool]{Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
+	}
+	status, _ := get(parsed(r.Stdout), "result", "agent", "agent_status").(string)
+	if status == "" {
+		return transport.Reply[bool]{Valid: true, Process: processResult(r)}
+	}
+	return transport.Reply[bool]{Value: true, Valid: true, Process: processResult(r)}
+}
+
+// AgentReadRaw runs the exact `agent read <id> --source <source>
+// --lines <lines>` call once with the call's timeout and returns the raw
+// process result: Value carries the stdout (possibly partial) and the
+// caller owns the fallback output and exit-code handling.
+func (b *backend) AgentReadRaw(ctx context.Context, target transport.Target, source, lines string, call transport.Call) transport.Reply[string] {
+	r := runWithTimeout([]string{"agent", "read", target.ID, "--source", source, "--lines", lines}, b.env, timeoutFor(call), ctxArgs(ctx)...)
+	if !ok(r) {
+		return transport.Reply[string]{Value: r.Stdout, Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
+	}
+	return transport.Reply[string]{Value: r.Stdout, Valid: true, Process: processResult(r)}
 }
 
 // Runtime.
