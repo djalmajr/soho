@@ -183,7 +183,13 @@ func CountClaudeUserClosingLines(path, closing string) (int, bool) {
 		if !bytes.Contains(line, claudeTranscriptUserTypeBytes) {
 			continue
 		}
+		// The raw substring is only a prefilter: "type":"user" may sit in
+		// a nested object of an assistant or tool record, so the record
+		// counts only when its own root type is user.
 		entry := parsed(string(line))
+		if str(get(entry, "type")) != "user" {
+			continue
+		}
 		if content := get(get(entry, "message"), "content"); content != nil {
 			n += peerClosingUserContent(content, closing)
 		}
