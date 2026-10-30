@@ -217,11 +217,15 @@ func TestCompactCodexIgnoresTranscriptBoundary(t *testing.T) {
 	f, transcript := newCompactTranscriptFixture(t, "codex", cwd,
 		`{"type":"user","content":"old line"}
 `, rules)
+	// The deadline passes once the fake has logged the pre-send read and the
+	// first poll — after the transcript append below, whatever the host load
+	// spends starting the fakes (DJA-634).
+	compactDeadlineAfterReads(t, f, 2)
 	var code int
 	var out, errText string
 	done := make(chan struct{})
 	go func() {
-		code, out, errText = f.run(t, "compact", "worker", "--timeout", "500")
+		code, out, errText = f.run(t, "compact", "worker", "--timeout", "30s")
 		close(done)
 	}()
 	waitForCall(t, f, []string{"pane", "send-keys", "p1", "Enter"})

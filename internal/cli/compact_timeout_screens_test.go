@@ -21,8 +21,11 @@ func timeoutScreensRules(sentinel bool) []fakecli.Rule {
 	rules := []fakecli.Rule{}
 	if sentinel {
 		// Expire the real phase budget during the liveness read, after both
-		// the pre-send screen and a distinct successful poll were captured.
-		rules = append(rules, fakecli.Rule{Argv: []string{"agent", "get", "worker"}, Call: 2, Delay: 2500, Stdout: compactStateJSON("idle", 1)})
+		// the pre-send screen and a distinct successful poll were captured:
+		// the 8 s delay outlives the 5 s budget on any host load, so the
+		// budget gives the pre-send choreography room to start the fakes
+		// before it must expire during the liveness read (DJA-634).
+		rules = append(rules, fakecli.Rule{Argv: []string{"agent", "get", "worker"}, Call: 2, Delay: 8000, Stdout: compactStateJSON("idle", 1)})
 	}
 	return append(rules,
 		fakecli.Rule{Argv: []string{"agent", "get", "worker"}, Stdout: compactStateJSON("idle", 1)},
@@ -40,7 +43,7 @@ func TestCompactTimeoutScreensPaths(t *testing.T) {
 			name = "deadline_sentinel"
 		}
 		t.Run(name, func(t *testing.T) {
-			limit := "1s"
+			limit := "5s"
 			if !sentinel {
 				fakeFastClock(t, time.Hour)
 				limit = "30s" // Real budget remains available for the final read.
@@ -60,7 +63,7 @@ func TestCompactTimeoutScreensPaths(t *testing.T) {
 				t.Fatalf("reads=%d want %d for %s: %#v", got, wantReads, name, calls)
 			}
 			elapsed := value["elapsed_ms"].(float64)
-			if (sentinel && (elapsed < 900 || elapsed > 5000)) || (!sentinel && elapsed < float64(time.Hour.Milliseconds())) {
+			if (sentinel && (elapsed < 4000 || elapsed > 60000)) || (!sentinel && elapsed < float64(time.Hour.Milliseconds())) {
 				t.Fatalf("wrong timeout path elapsed_ms=%v sentinel=%v", elapsed, sentinel)
 			}
 			wait := filepath.Join(f.root, "state", "ws", "wait")
@@ -251,7 +254,7 @@ func TestCompactTimeoutScreensFailureIsNotTimeout(t *testing.T) {
 func TestCompactTimeoutScreensReturnedPath(t *testing.T) {
 	for _, sentinel := range []bool{false, true} {
 		t.Run(fmt.Sprint(sentinel), func(t *testing.T) {
-			limit := int64(1000)
+			limit := int64(5000)
 			if !sentinel {
 				fakeFastClock(t, time.Hour)
 				limit = 30000
