@@ -17,6 +17,7 @@ func TestComposeEnvironmentAndReferenceContract(t *testing.T) {
 	ctx := &core.Config{Entries: map[string]core.ConfigEntry{"report_language": {Value: "English"}}}
 	env := composeEnv(t)
 	const environment = "- Never print, log or write the environment as a whole (`env`, `printenv`, `set`, `export -p`, `declare -x`, `Get-ChildItem Env:`, a dump of `os.environ` or `process.env`): it holds credentials. To diagnose, name only the variables you need and leave out any secret value.\n"
+	const search = "- Never search (grep, rg, find, ls -R, fd) outside the worktree, the directories the brief names and your own throwaway copy: not the home directory, not `/`, not all of `$TMPDIR`, not another repository. If something you need is not there, say so in the report instead of looking for it.\n"
 	const parity = "- This brief declares `Reference:`: your report must include a `## Reference parity` section with one bullet per comparison, each marked `[same]`, `[diverges: <concrete reason>]` or `[n/a]`.\n"
 	// Native absolute roots: a POSIX-only path is not absolute on Windows,
 	// and the parser rejects it there.
@@ -37,8 +38,8 @@ func TestComposeEnvironmentAndReferenceContract(t *testing.T) {
 				"prompt":    ComposePrompt(role, "reviewer", "worker", tc.body, "/report.md", ctx, env, "codex", "", "", false),
 				"amendment": ComposeAmendment(tc.body, "/report.md", ctx, env, "codex", "", "", false),
 			} {
-				if strings.Count(prompt, environment) != 1 || !strings.Contains(prompt, "- Never invent names, endpoints, flags, credentials, URLs or requirements.\n"+environment+"- Stop only processes") {
-					t.Errorf("%s: environment rule missing, duplicated or misplaced", name)
+				if strings.Count(prompt, environment) != 1 || strings.Count(prompt, search) != 1 || !strings.Contains(prompt, "- Never invent names, endpoints, flags, credentials, URLs or requirements.\n"+environment+search+"- Stop only processes") {
+					t.Errorf("%s: environment or search rule missing, duplicated or misplaced", name)
 				}
 				if got := strings.Count(prompt, parity); got != tc.want {
 					t.Fatalf("%s: parity count=%d want=%d", name, got, tc.want)

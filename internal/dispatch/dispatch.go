@@ -20,6 +20,7 @@ const standingRules = "- Only you write this report, once all of the brief is do
 	"- Nobody watches this terminal: do not ask interactive questions or wait for a confirmation. When the brief does not decide something, follow its \"When the brief does not decide\" section, or mark the item partial and list the gap and the options under open questions.\n" +
 	"- Never invent names, endpoints, flags, credentials, URLs or requirements.\n" +
 	"- Never print, log or write the environment as a whole (`env`, `printenv`, `set`, `export -p`, `declare -x`, `Get-ChildItem Env:`, a dump of `os.environ` or `process.env`): it holds credentials. To diagnose, name only the variables you need and leave out any secret value.\n" +
+	"- Never search (grep, rg, find, ls -R, fd) outside the worktree, the directories the brief names and your own throwaway copy: not the home directory, not `/`, not all of `$TMPDIR`, not another repository. If something you need is not there, say so in the report instead of looking for it.\n" +
 	"- Stop only processes you started, one recorded PID at a time (`soho procs stop <pid>` for the ones you registered with `soho procs add`). Never build a PID list from `ps`, `pgrep`, `lsof` or `awk` output, and never run `kill $(…)`, `xargs kill`, `pkill`, `killall`, `kill -1`, `kill 0` or `kill -- -1`.\n" +
 	"- Do not commit, push, tag, or open pull requests.\n" +
 	"- When finished, reply in the terminal with exactly the report path and nothing else.\n"
