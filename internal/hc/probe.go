@@ -12,8 +12,11 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 )
 
-// versionRE matches the `hc --version` stdout line, `hc X.Y.Z`.
-var versionRE = regexp.MustCompile(`^hc\s+([0-9][0-9A-Za-z.-]*)\s*$`)
+// versionRE matches the `hc --version` stdout line, `hc X.Y.Z`: three
+// numeric components, optionally followed by a pre-release or build suffix,
+// which the comparison ignores. Anything else stops the probe before
+// `server status`, which may start a core.
+var versionRE = regexp.MustCompile(`^hc\s+([0-9]+\.[0-9]+\.[0-9]+)(?:[-+][0-9A-Za-z.-]+)?\s*$`)
 
 // HelloLine is the JSON-RPC hello request sent through `hc connect` asking
 // for protocol generation 1. The line is written to hc's stdin terminated

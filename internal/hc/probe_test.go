@@ -106,8 +106,16 @@ func TestProbeOlderVersionStopsAtStepOne(t *testing.T) {
 // not `hc X.Y.Z` is a step-one failure — an *Error with Kind "" and the
 // output in the message — and no later step ran.
 func TestProbeUnparsableVersionStopsAtStepOne(t *testing.T) {
+	// "hc 1" and "hc 0.1" are not X.Y.Z: they must stop the probe like any
+	// other text, before server status, which may start a core.
+	for _, output := range []string{"hello there", "hc 1", "hc 0.1", "hc 0.1.x"} {
+		t.Run(output, func(t *testing.T) { probeStopsAtUnparsableVersion(t, output) })
+	}
+}
+
+func probeStopsAtUnparsableVersion(t *testing.T, output string) {
 	env, dir := newHCFake(t, []fakecli.Rule{
-		versionRule("hello there\n"),
+		versionRule(output + "\n"),
 		statusRule(probeStatusJSON+"\n", 0, ""),
 		connectRule(probeHelloOKJSON + "\n"),
 	})
@@ -119,7 +127,7 @@ func TestProbeUnparsableVersionStopsAtStepOne(t *testing.T) {
 	if !errors.As(cap.Err, &e) {
 		t.Fatalf("Err = %v, want the wrapped *Error", cap.Err)
 	}
-	if e.Kind != "" || !strings.Contains(e.Message, "not 'hc X.Y.Z'") || !strings.Contains(e.Message, "hello there") {
+	if e.Kind != "" || !strings.Contains(e.Message, "not 'hc X.Y.Z'") || !strings.Contains(e.Message, output) {
 		t.Fatalf("got kind=%q message=%q", e.Kind, e.Message)
 	}
 	if cap.Version != "" || cap.VersionOK {
@@ -255,5 +263,9 @@ func TestVersionParsesTheHCLine(t *testing.T) {
 	}
 	if v != "0.1.14" {
 		t.Fatalf("version = %q, want 0.1.14", v)
+	}
+	env, _ = newHCFake(t, []fakecli.Rule{versionRule("hc 0.1.15-rc.1\n")})
+	if v, err := Version(context.Background(), env); err != nil || v != "0.1.15" {
+		t.Fatalf("pre-release: version = %q, err = %v; want 0.1.15 and nil", v, err)
 	}
 }

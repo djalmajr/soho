@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -54,7 +55,8 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("hc exited %d: %s: %s", e.Exit, e.Kind, e.Message)
 }
 
-// Run runs hc with the given sub-arguments and --json appended, without
+// Run runs hc with the given sub-arguments and --json appended (once: an
+// argument list that already holds it is passed as is), without
 // stdin input. It returns the stdout text on exit 0; a missing binary is
 // ErrNotInstalled; every other non-zero exit is an *Error decoded from the
 // stderr.
@@ -64,7 +66,10 @@ func Run(ctx context.Context, env platform.Env, args ...string) (string, error) 
 
 // RunInput is Run with one line written to hc's stdin before it is closed.
 func RunInput(ctx context.Context, env platform.Env, input string, args ...string) (string, error) {
-	argv := append(append([]string{}, args...), "--json")
+	argv := append([]string{}, args...)
+	if !slices.Contains(argv, "--json") {
+		argv = append(argv, "--json")
+	}
 	res := platform.RunCli("hc", argv, platform.RunOptions{Context: ctx, Env: env, Input: input})
 	if res.NotFound {
 		return "", ErrNotInstalled

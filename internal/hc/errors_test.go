@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -125,5 +126,20 @@ func TestRunSuccessReturnsStdout(t *testing.T) {
 	calls, err := fakecli.ReadCalls(filepath.Join(dir, "hc.calls.jsonl"))
 	if err != nil || len(calls) != 1 {
 		t.Fatalf("calls = %+v, %v; want exactly one", calls, err)
+	}
+}
+
+// TestRunPassesJSONOnce: --json is appended when the arguments lack it and
+// not added again when the caller already passed it.
+func TestRunPassesJSONOnce(t *testing.T) {
+	for _, args := range [][]string{{"server", "status"}, {"server", "status", "--json"}} {
+		env, dir := newHCFake(t, []fakecli.Rule{{Argv: []string{"server", "status", "--json"}, Stdout: "{}\n"}})
+		if _, err := Run(context.Background(), env, args...); err != nil {
+			t.Fatalf("%v: err = %v, want nil", args, err)
+		}
+		calls, err := fakecli.ReadCalls(filepath.Join(dir, "hc.calls.jsonl"))
+		if err != nil || len(calls) != 1 || !reflect.DeepEqual(calls[0].Argv, []string{"server", "status", "--json"}) {
+			t.Fatalf("%v: calls = %+v, %v; want one call with server status --json", args, calls, err)
+		}
 	}
 }
