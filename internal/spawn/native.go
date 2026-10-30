@@ -1,6 +1,7 @@
 package spawn
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 // ConfigNativeArgs returns configured args for the CLI the worker will run.
@@ -88,16 +90,21 @@ func RosterCaller(ctx *core.Config, env platform.Env, cwd, pane string) (name, r
 // written to stderr naming it (command is the calling command, "init" or
 // "spawn"), and the agent's current name is returned.
 func EnsureOrchestratorName(ctx *core.Config, env platform.Env, cwd, command string) string {
-	pane := env.Get("HERDR_PANE_ID")
+	svc := herdr.New(env)
+	pane := svc.Runtime.Caller().PaneID
 	if pane == "" {
 		return ""
 	}
 	want := core.Cfg(ctx, "orchestrator_name", "orchestrator", env)
-	r := platform.RunCli("herdr", []string{"agent", "get", pane}, platform.RunOptions{Env: env, TimeoutMs: int(herdr.Timeout.Milliseconds())})
-	if r.NotFound || r.Status == nil || *r.Status != 0 {
+	// The gate is the pre-transport raw existence check, one attempt: it
+	// looks only at the exit status — never at the parsed body — so a get
+	// that exits 0 without an agent_status still passes, and a killed or
+	// failed get leaves the caller unnamed.
+	gate := svc.Legacy.AgentGetOK(context.Background(), transport.Target{ID: pane}, transport.Call{})
+	if !gate.Value {
 		return ""
 	}
-	cur := herdr.CallerAgentName(env)
+	cur := svc.Terminal.CallerAgentName(context.Background(), transport.Call{}).Value
 	// The roster comes first: a worker named like an orchestrator is still a
 	// worker, and it gets the same stderr line.
 	if name, role, inRoster := RosterCaller(ctx, env, cwd, pane); inRoster {
@@ -117,8 +124,7 @@ func EnsureOrchestratorName(ctx *core.Config, env platform.Env, cwd, command str
 		return cur
 	}
 	name := UniqueName(want, env)
-	r = platform.RunCli("herdr", []string{"agent", "rename", pane, name}, platform.RunOptions{Env: env, TimeoutMs: int(herdr.Timeout.Milliseconds())})
-	if r.NotFound || r.Status == nil || *r.Status != 0 {
+	if !svc.Legacy.Rename(context.Background(), transport.Target{ID: pane}, name, transport.Call{}).Value {
 		Warn("could not rename the caller agent to '"+name+"'", ctx, env, "spawn")
 		return ""
 	}

@@ -23,11 +23,11 @@ type backend struct {
 }
 
 // New builds the Herdr transport services for one invocation over env. It
-// returns the Transport, Window, and LegacyTransport implementations; the
-// caller holds them for the duration of the invocation.
+// returns the Transport, Window, LegacyTransport, and Runtime implementations;
+// the caller holds them for the duration of the invocation.
 func New(env platform.Env) transport.Services {
 	b := &backend{env: env}
-	return transport.Services{Runtime: b, Window: b, Legacy: b}
+	return transport.Services{Runtime: b, Window: b, Legacy: b, Terminal: b}
 }
 
 // Compile-time proof that the backend implements the contracts.
@@ -35,6 +35,7 @@ var (
 	_ transport.Transport       = (*backend)(nil)
 	_ transport.Window          = (*backend)(nil)
 	_ transport.LegacyTransport = (*backend)(nil)
+	_ transport.Runtime         = (*backend)(nil)
 )
 
 // timeoutFor returns call.Timeout when it is positive, else the adapter's
@@ -412,4 +413,68 @@ func (b *backend) ProcessInfo(ctx context.Context, target transport.Target, call
 		return transport.Reply[json.RawMessage]{Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
 	}
 	return transport.Reply[json.RawMessage]{Value: json.RawMessage(r.Stdout), Valid: true, Process: processResult(r)}
+}
+
+// Rename renames the agent the backend resolves for the target's id with the
+// exact `agent rename` call; the raw process result stays on the reply for
+// callers that parse its error output.
+func (b *backend) Rename(ctx context.Context, target transport.Target, name string, call transport.Call) transport.Reply[bool] {
+	r := runWithTimeout([]string{"agent", "rename", target.ID, name}, b.env, timeoutFor(call), ctxArgs(ctx)...)
+	if !ok(r) {
+		return transport.Reply[bool]{Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
+	}
+	return transport.Reply[bool]{Value: true, Valid: true, Process: processResult(r)}
+}
+
+// AgentGetOK is the raw one-attempt existence check: one agent get on the
+// target's id with the same timeout, Value true only when the call is not a
+// lookup failure and exits 0. It never retries and does not parse the body,
+// so an exit-0 answer without an agent_status still reports true.
+func (b *backend) AgentGetOK(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[bool] {
+	r := runWithTimeout([]string{"agent", "get", target.ID}, b.env, timeoutFor(call), ctxArgs(ctx)...)
+	if !ok(r) {
+		return transport.Reply[bool]{Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
+	}
+	return transport.Reply[bool]{Value: true, Valid: true, Process: processResult(r)}
+}
+
+// Runtime.
+
+// Start starts the requested agent in its pane:
+// `agent start <name> --kind <kind> --pane <pane> --timeout <timeout>`, with
+// the request's args after a "--" when there are any, under the per-call
+// wrapper timeout. The merged output comes back on Value so the caller can
+// read the backend's start markers from it.
+func (b *backend) Start(ctx context.Context, start transport.Start, call transport.Call) transport.Reply[string] {
+	args := []string{"agent", "start", start.Name, "--kind", start.Kind, "--pane", start.PaneID, "--timeout", start.Timeout}
+	if len(start.Args) > 0 {
+		args = append(args, "--")
+		args = append(args, start.Args...)
+	}
+	r := platform.RunCli("herdr", args, platform.RunOptions{Env: b.env, Context: ctx, TimeoutMs: int(timeoutFor(call) / time.Millisecond), MergeOutput: true})
+	if !ok(r) {
+		return transport.Reply[string]{Value: r.Stdout + r.Stderr, Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
+	}
+	return transport.Reply[string]{Value: r.Stdout + r.Stderr, Valid: true, Process: processResult(r)}
+}
+
+// CallerAgentName returns the agent that hosts the caller's claimed pane, with
+// the same agent get on that pane the adapter's CallerAgentName runs.
+func (b *backend) CallerAgentName(ctx context.Context, call transport.Call) transport.Reply[string] {
+	name := CallerAgentName(b.env)
+	if name == "" {
+		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureNotFound, Message: "the caller pane hosts no readable agent"}}
+	}
+	return transport.Reply[string]{Value: name, Valid: true}
+}
+
+// SendText sends raw text to the pane the target names, without submitting.
+func (b *backend) SendText(ctx context.Context, target transport.Target, text string, call transport.Call) transport.Reply[bool] {
+	return transport.Reply[bool]{Value: PaneSendText(target.ID, text, b.env, ctxArgs(ctx)...), Valid: true}
+}
+
+// GetGone re-queries the pane the target names: true only when the query
+// fails with the pane-not-found code.
+func (b *backend) GetGone(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[bool] {
+	return transport.Reply[bool]{Value: PaneGetGone(target.ID, b.env), Valid: true}
 }

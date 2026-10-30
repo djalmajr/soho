@@ -2,6 +2,7 @@
 package spawn
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -27,6 +28,7 @@ import (
 	"github.com/djalmajr/soho/internal/startup"
 	"github.com/djalmajr/soho/internal/taskreport"
 	"github.com/djalmajr/soho/internal/text"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 var busyRetryDelay = time.Second
@@ -319,7 +321,38 @@ func approvalsRank(mode string) int {
 	}
 }
 
-func liveAgents(env platform.Env) []any { return herdr.LiveAgents(env, herdr.Timeout) }
+func liveAgents(env platform.Env) []transport.Terminal {
+	return herdr.New(env).Runtime.List(context.Background(), transport.Scope{}, transport.Call{}).Value
+}
+
+// agentGetState reads one agent's state through the transport, mirroring the
+// adapter's AgentStateResult: the reported state, and the cause the backend
+// carried on the failure when the state read is unavailable.
+func agentGetState(rt transport.Transport, name string) (state, cause string) {
+	reply := rt.Get(context.Background(), transport.Target{ID: name}, transport.Call{})
+	if reply.Err != nil {
+		return reply.Value.State, reply.Err.Message
+	}
+	return reply.Value.State, ""
+}
+
+// agentReadText returns the agent screen the transport read, "" on a failed
+// read — the adapter's AgentRead result.
+func agentReadText(rt transport.Transport, agent, source string, lines *int) string {
+	return rt.Read(context.Background(), transport.Target{ID: agent}, transport.Read{Source: source, Lines: lines}, transport.Call{}).Value
+}
+
+// paneReadText returns the pane screen the transport read and whether the
+// read succeeded — the adapter's PaneRead result.
+func paneReadText(rt transport.Transport, pane, source string, lines *int) (string, bool) {
+	reply := rt.Read(context.Background(), transport.Target{ID: pane}, transport.Read{Source: source, Lines: lines, Pane: true}, transport.Call{})
+	return reply.Value, reply.Err == nil
+}
+
+// agentKeys sends raw keys to the agent channel — the adapter's AgentSendKeys.
+func agentKeys(rt transport.Transport, agent, key string) bool {
+	return rt.Keys(context.Background(), transport.Target{ID: agent}, key, false, transport.Call{}).Value
+}
 
 func AgentNameTaken(name string, env platform.Env) bool {
 	return AgentNameTakenIn(name, liveAgents(env))
@@ -328,9 +361,9 @@ func AgentNameTaken(name string, env platform.Env) bool {
 // AgentNameTakenIn is AgentNameTaken over an already-read live list, so the
 // read can be shared with the lane-orphan warning that runs after the name
 // check without making a second agent list call.
-func AgentNameTakenIn(name string, agents []any) bool {
+func AgentNameTakenIn(name string, agents []transport.Terminal) bool {
 	for _, a := range agents {
-		if fieldString(a, "name") == name {
+		if a.Name == name {
 			return true
 		}
 	}
@@ -444,6 +477,7 @@ func mcpMatches(f []string, want string) bool {
 // choice to match wantMcp (DJA-392): a session opened without the user's
 // MCP servers cannot serve a role that needs them, nor the reverse.
 func FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort string, ctx *core.Config, env platform.Env, cwd string) (string, string, bool) {
+	rt := herdr.New(env).Runtime
 	multi := core.Cfg(ctx, "multi_role", "on", env)
 	sd := core.StateDirPath(ctx, env, cwd)
 	blockedName, blockedCause, crossHit := "", "", ""
@@ -510,14 +544,14 @@ func FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, want
 				continue
 			}
 		}
-		st := herdr.AgentState(nm, env, herdr.Timeout, nil)
-		if st.State == "unavailable" {
+		state, cause := agentGetState(rt, nm)
+		if state == "unavailable" {
 			if isSame && blockedName == "" {
-				blockedName, blockedCause = nm, st.Cause
+				blockedName, blockedCause = nm, cause
 			}
 			continue
 		}
-		if st.State == "idle" || st.State == "done" {
+		if state == "idle" || state == "done" {
 			if isSame {
 				return nm, "", false
 			}
@@ -581,14 +615,15 @@ func laneApprovalsMatch(f []string, approvals string) bool {
 // first idle worker that is a reuse candidate for the request, or "" when no
 // idle worker matches (each mismatched idle then counts as occupied).
 func laneReusePick(sd, lane, role, kind, model, effort, approvals, mcp, workerCwd string, env platform.Env, cwd string) string {
+	rt := herdr.New(env).Runtime
 	for _, row := range core.LaneWorkers(sd, lane) {
 		f := strings.Split(row, "\t")
 		nm := fieldAt(f, 0)
 		if nm == "" {
 			continue
 		}
-		st := herdr.AgentState(nm, env, herdr.Timeout, nil)
-		if laneReuseCandidate(f, st.State, role, kind, model, effort, approvals, mcp, workerCwd, sd, env, cwd) {
+		state, _ := agentGetState(rt, nm)
+		if laneReuseCandidate(f, state, role, kind, model, effort, approvals, mcp, workerCwd, sd, env, cwd) {
 			return nm
 		}
 	}
@@ -662,7 +697,7 @@ func warnStartupBlocked(name, kind, state string, ev startup.Evaluation, ctx *co
 // Every other kind or platform skips it without any herdr read, and a
 // name without a roster row is left to the fresh path (emitReuse says the
 // same and returns false).
-func gateReuse(name, role, kind string, ctx *core.Config, env platform.Env, cwd string) {
+func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config, env platform.Env, cwd string) {
 	if !startup.Enabled(kind) {
 		return
 	}
@@ -671,9 +706,10 @@ func gateReuse(name, role, kind string, ctx *core.Config, env platform.Env, cwd 
 	if line == "" {
 		return
 	}
-	st := herdr.AgentState(name, env, herdr.Timeout, nil)
-	screen, screenOK := herdr.AgentReadOK(env, name, "visible", nil)
-	ev := EvaluateCursorStartup(kind, st.State, screen, screenOK)
+	state, _ := agentGetState(svc.Runtime, name)
+	reply := svc.Runtime.Read(context.Background(), transport.Target{ID: name}, transport.Read{Source: "visible"}, transport.Call{})
+	screen, screenOK := reply.Value, reply.Err == nil
+	ev := EvaluateCursorStartup(kind, state, screen, screenOK)
 	if !ev.Refuses() {
 		return
 	}
@@ -682,21 +718,22 @@ func gateReuse(name, role, kind string, ctx *core.Config, env platform.Env, cwd 
 	if port := core.RosterE2EPort(f); port != "" {
 		out.Set("e2e_port", port)
 	}
-	out.Set("startup_evidence", jsonjs.O(startup.FieldState, st.State, startup.FieldReason, ev.Reason, startup.FieldSource, ev.Source))
+	out.Set("startup_evidence", jsonjs.O(startup.FieldState, state, startup.FieldReason, ev.Reason, startup.FieldSource, ev.Source))
 	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.StringifyIndent(out, 2))
-	warnStartupBlocked(name, kind, st.State, ev, ctx, env)
-	_, _ = fmt.Fprint(platform.Stdout, herdr.AgentRead(env, name, "visible", nil))
+	warnStartupBlocked(name, kind, state, ev, ctx, env)
+	_, _ = fmt.Fprint(platform.Stdout, agentReadText(svc.Runtime, name, "visible", nil))
 	platform.Die("", 7)
 }
 
 // renameLaneWorker renames the reused worker's agent to newName with the same
 // herdr agent rename call EnsureOrchestratorName uses; it returns the cause
 // extracted from the result when the rename failed, empty on success.
-func renameLaneWorker(newName, pane string, env platform.Env) string {
-	r := platform.RunCli("herdr", []string{"agent", "rename", pane, newName}, platform.RunOptions{Env: env, TimeoutMs: int(herdr.Timeout.Milliseconds())})
-	if !r.NotFound && r.Status != nil && *r.Status == 0 {
+func renameLaneWorker(svc transport.Services, newName, pane string) string {
+	rep := svc.Legacy.Rename(context.Background(), transport.Target{ID: pane}, newName, transport.Call{})
+	if rep.Value {
 		return ""
 	}
+	r := rep.Process
 	raw := r.Stderr
 	if raw == "" {
 		raw = r.Stdout
@@ -774,14 +811,6 @@ func moveNameStateFiles(sd, oldName, newName string, ctx *core.Config, env platf
 			move("wait/"+entry.Name(), filepath.Join(sd, "wait", entry.Name()), filepath.Join(sd, "wait", newName+"."+rest))
 		}
 	}
-}
-func fieldString(value any, key string) string {
-	if o, ok := value.(*jsonjs.Object); ok {
-		v, _ := o.Get(key)
-		s, _ := v.(string)
-		return s
-	}
-	return ""
 }
 func defaultValue(value, fallback string) string {
 	if value == "" {
@@ -877,6 +906,7 @@ func effortOk(value string) bool {
 }
 
 func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
+	svc := herdr.New(env)
 	// Machine under pressure: warn before opening more work (stderr only;
 	// the spawn proceeds as usual).
 	core.PressureWarn(ctx, env, cwd)
@@ -1034,8 +1064,8 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 						continue
 					}
 					named = true
-					st := herdr.AgentState(o.name, env, herdr.Timeout, nil)
-					if laneReuseCandidate(rf, st.State, o.role, kind, o.model, o.effort, o.approvals, o.mcp, o.cwd, sd, env, cwd) {
+					state, _ := agentGetState(svc.Runtime, o.name)
+					if laneReuseCandidate(rf, state, o.role, kind, o.model, o.effort, o.approvals, o.mcp, o.cwd, sd, env, cwd) {
 						selected = o.name
 					}
 					break
@@ -1105,7 +1135,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			name := selected
 			renamedTo := ""
 			if o.name != "" && o.name != selected {
-				if cause := renameLaneWorker(o.name, fieldAt(f, 1), env); cause != "" {
+				if cause := renameLaneWorker(svc, o.name, fieldAt(f, 1)); cause != "" {
 					core.DieFriction(fmt.Sprintf("spawn: could not rename worker '%s' to '%s': %s", selected, o.name, cause), 4, "", "")
 				}
 				core.RosterRename(sd, selected, o.name)
@@ -1113,7 +1143,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 				name = o.name
 				renamedTo = o.name
 			}
-			gateReuse(name, o.role, actual, ctx, env, cwd)
+			gateReuse(svc, name, o.role, actual, ctx, env, cwd)
 			warnLaneRoleEffort(name, o.role, lane, actual, fieldAt(f, 8), fieldAt(f, 14), strings.HasPrefix(res.EffortFrom, "lane "), ctx, env, cwd)
 			EmitReuse(name, o.role, actual, ctx, env, cwd)
 			sameTreeEditors(name, o.role, fieldAt(f, 6), sd, env, cwd, ctx)
@@ -1151,7 +1181,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		reused, unavailable, _ := FindReusableMcp(o.role, kind, o.cwd, o.name, o.model, o.approvals, o.mcp, o.effort, ctx, env, cwd)
 		if reused != "" {
 			previous := fieldAt(strings.Split(core.RosterLine(sd, reused), "\t"), 3)
-			gateReuse(reused, o.role, kind, ctx, env, cwd)
+			gateReuse(svc, reused, o.role, kind, ctx, env, cwd)
 			EmitReuse(reused, o.role, kind, ctx, env, cwd)
 			sameTreeEditors(reused, o.role, o.cwd, sd, env, cwd, ctx)
 			if previous == o.role {
@@ -1177,7 +1207,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		platform.Die(fmt.Sprintf("spawn: refusing to open a new pane under resource pressure: %s; close idle panes or run 'soho gc', or pass --force", strings.Join(refuseParts, "; ")), 25)
 	}
 	core.EnforceWorkerCap(ctx, env, cwd)
-	var orphanLive []any
+	var orphanLive []transport.Terminal
 	if o.name != "" {
 		if AgentNameTaken(o.name, env) {
 			taken := o.name
@@ -1296,7 +1326,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			// Placement has selected creation, not adoption. Keep the port
 			// selection serialized until the worker's roster row records it.
 			unlockE2E = lockE2EPorts(sd)
-			e2ePort = reserveE2EPort(sd, ctx, env)
+			e2ePort = reserveE2EPort(svc, sd, ctx, env)
 			paneEnv["SOHO_SPAWN_E2E_PORT"] = e2ePort
 		}
 		if lane != "" {
@@ -1326,7 +1356,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			}
 		}
 		if anchor == "overflow" && o.direction != "" && o.tabLabel == "" {
-			anchor = env.Get("HERDR_PANE_ID")
+			anchor = svc.Runtime.Caller().PaneID
 		}
 		if anchor == "overflow" || anchor == "" {
 			if layoutMode != "tab" && o.tabLabel == "" {
@@ -1350,11 +1380,13 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 				ratio = "0.5"
 			}
 			reserveForNewShell()
-			s := herdr.PaneSplit(anchor, o.direction, o.cwd, paneEnv, &ratio)
-			if !s.Ok {
+			// The split runs with the pane's registry/E2E env, and its
+			// SOHO_CREATED_E2E_PANE write-back lands in that same env.
+			s := herdr.New(paneEnv).Window.Split(context.Background(), transport.Open{Anchor: anchor, Direction: o.direction, Cwd: o.cwd, Ratio: &ratio}, transport.Call{})
+			if s.Err != nil {
 				core.DieFriction("pane split failed", 4, "", "")
 			}
-			o.pane = s.Pane
+			o.pane = s.Value.PaneID
 			created = true
 			placement = "split"
 		}
@@ -1378,11 +1410,11 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	}
 	if kind == "codex" {
 		if blocked {
-			lastScreen = herdr.AgentRead(env, o.name, "visible", intPtr(40))
+			lastScreen = agentReadText(svc.Runtime, o.name, "visible", intPtr(40))
 		}
 		if isCodexUpdatePrompt(lastScreen) {
 			versions := codexUpdateVersions(lastScreen)
-			sent := herdr.AgentSendKeys(o.name, "Escape", env)
+			sent := agentKeys(svc.Runtime, o.name, "Escape")
 			time.Sleep(pollMillis(env))
 			lastState, lastScreen, blocked = checkStartWindow(o, kind, env, created, agentArgs, ctx)
 			blocked = blocked || !sent || strings.TrimSpace(lastScreen) == "" || isCodexUpdatePrompt(lastScreen) || lastState == "blocked" || lastState == "unavailable"
@@ -1452,8 +1484,8 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		mode := core.HooksReviewMode(ctx, env)
 		if mode == "trust" {
 			io := codexhooks.IO{
-				SendKey: func(key string) bool { return herdr.AgentSendKeys(o.name, key, env) },
-				Read:    func() string { return herdr.AgentRead(env, o.name, "visible", intPtr(40)) },
+				SendKey: func(key string) bool { return agentKeys(svc.Runtime, o.name, key) },
+				Read:    func() string { return agentReadText(svc.Runtime, o.name, "visible", intPtr(40)) },
 				Pause:   pollMillis(env),
 			}
 			if _, ok := codexhooks.Approve(lastScreen, io); ok {
@@ -1485,7 +1517,8 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		if screen == "" {
 			// The window never saw a non-empty screen: one fresh read tells
 			// an empty screen (the TUI did not draw) from a failed read.
-			screen, screenOK = herdr.AgentReadOK(env, o.name, "visible", nil)
+			reply := svc.Runtime.Read(context.Background(), transport.Target{ID: o.name}, transport.Read{Source: "visible"}, transport.Call{})
+			screen, screenOK = reply.Value, reply.Err == nil
 		}
 		cursorGateEv = EvaluateCursorStartup(kind, lastState, screen, screenOK)
 		cursorGate = true
@@ -1504,7 +1537,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		value := core.Cfg(ctx, core.ContextWindowKey("grok"), "", env)
 		typing := value != "" && core.ContextWindowValueOk(value)
 		if typing {
-			screen := herdr.AgentRead(env, o.name, "visible", intPtr(40))
+			screen := agentReadText(svc.Runtime, o.name, "visible", intPtr(40))
 			if isGrokTrustDialog(screen) {
 				// The pre-typing re-read sees the trust dialog: the same block as
 				// the first check — no text is typed and the start exits 7 with
@@ -1516,9 +1549,9 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			}
 		}
 		if !blocked && typing {
-			if confirmed := confirmGrokContextWindow(o, value, env); confirmed {
+			if confirmed := confirmGrokContextWindow(svc, o, value, env); confirmed {
 				contextWindow = value
-			} else if herdr.AgentState(o.name, env, herdr.Timeout, nil).State == "gone" {
+			} else if state, _ := agentGetState(svc.Runtime, o.name); state == "gone" {
 				// The confirmation failed and the agent is gone
 				// (agent_not_found), whatever the confirmation window's reads
 				// showed: it quit during the window — the typed text answered
@@ -1570,7 +1603,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		if kind == "cursor" {
 			lines = nil
 		}
-		_, _ = fmt.Fprint(platform.Stdout, herdr.AgentRead(env, o.name, "visible", lines))
+		_, _ = fmt.Fprint(platform.Stdout, agentReadText(svc.Runtime, o.name, "visible", lines))
 		platform.Die("", 7)
 	}
 }
@@ -1583,7 +1616,7 @@ func clampSpawnEffort(effort, kind, maxEffort string) string {
 // without --close, recorded in the released-panes registry — before the
 // spawn opens a new pane; it only warns, the spawn proceeds and the orphan is
 // left alone. With an empty registry it makes no extra herdr reads at all.
-func warnLaneOrphans(ctx *core.Config, env platform.Env, cwd string, live []any) {
+func warnLaneOrphans(ctx *core.Config, env platform.Env, cwd string, live []transport.Terminal) {
 	if live == nil {
 		live = liveAgents(env)
 	}
@@ -1596,7 +1629,7 @@ func warnLaneOrphans(ctx *core.Config, env platform.Env, cwd string, live []any)
 	candidate := false
 	for _, row := range released {
 		for _, agent := range live {
-			if fieldString(agent, "name") == row.Name && fieldString(agent, "pane_id") == row.Pane {
+			if agent.Name == row.Name && agent.PaneID == row.Pane {
 				candidate = true
 				break
 			}
@@ -1608,7 +1641,13 @@ func warnLaneOrphans(ctx *core.Config, env platform.Env, cwd string, live []any)
 	if !candidate {
 		return
 	}
-	for _, orphan := range core.OrphansOf(ctx, env, cwd, live) {
+	// core.OrphansOf still reads the live list as field objects: rebuild it
+	// from the transport terminals with the field names that function reads.
+	rows := make([]any, 0, len(live))
+	for _, a := range live {
+		rows = append(rows, jsonjs.O("name", a.Name, "pane_id", a.PaneID, "agent_status", a.State))
+	}
+	for _, orphan := range core.OrphansOf(ctx, env, cwd, rows) {
 		if orphan.State == "idle" || orphan.State == "done" {
 			_, _ = fmt.Fprintf(platform.Stderr, "soho: spawn: '%s' is idle outside the roster (%s); close it with: soho release %s --close\n", orphan.Name, orphan.Pane, orphan.Name)
 		}
@@ -1624,13 +1663,13 @@ func warnLaneOrphans(ctx *core.Config, env platform.Env, cwd string, live []any)
 // working, blocked, or of the lane's own kind) is not named. It reads the
 // live list the name check just made (passed in) and fetches it at most once
 // for a named spawn, so the check spends no per-worker agent get.
-func warnLaneIdleOtherKind(sd, lane, kind string, env platform.Env, live []any) {
+func warnLaneIdleOtherKind(sd, lane, kind string, env platform.Env, live []transport.Terminal) {
 	if live == nil {
 		live = liveAgents(env)
 	}
 	statusByName := map[string]string{}
 	for _, a := range live {
-		statusByName[fieldString(a, "name")] = fieldString(a, "agent_status")
+		statusByName[a.Name] = a.State
 	}
 	for _, row := range core.LaneWorkers(sd, lane) {
 		f := strings.Split(row, "\t")
@@ -1766,20 +1805,18 @@ func mismatchSimple(name, lane, actual, want string, ctx *core.Config, env platf
 }
 
 func startAgent(o spawnOptions, kind string, env platform.Env, created bool, args []string) bool {
+	svc := herdr.New(env)
+	rt := svc.Terminal
 	for tries := 0; ; tries++ {
 		if startup.CurrentPlatform() != "win32" && (!created || tries > 0) {
 			// Send the raw character as text: a key event can still be
 			// encoded by a departing agent's kitty keyboard mode.
-			_ = platform.RunCli("herdr", []string{"pane", "send-text", o.pane, "\x15"}, platform.RunOptions{Env: env, TimeoutMs: int(herdr.Timeout / time.Millisecond)})
+			_ = rt.SendText(context.Background(), transport.Target{ID: o.pane}, "\x15", transport.Call{})
 		}
-		argv := []string{"agent", "start", o.name, "--kind", kind, "--pane", o.pane, "--timeout", o.timeout}
-		if len(args) > 0 {
-			argv = append(argv, "--")
-			argv = append(argv, args...)
-		}
-		r := platform.RunCli("herdr", argv, platform.RunOptions{Env: env, TimeoutMs: int(startWrapperTimeoutMs(o.timeout)), MergeOutput: true})
-		out := r.Stdout + r.Stderr
-		if !r.NotFound && r.Status != nil && *r.Status == 0 {
+		rep := rt.Start(context.Background(), transport.Start{Name: o.name, Kind: kind, PaneID: o.pane, Timeout: o.timeout, Args: args}, transport.Call{Timeout: time.Duration(startWrapperTimeoutMs(o.timeout)) * time.Millisecond})
+		out := rep.Value
+		proc := rep.Process
+		if !proc.NotFound && proc.Status != nil && *proc.Status == 0 {
 			return false
 		}
 		if strings.Contains(out, "agent_not_ready") {
@@ -1795,17 +1832,17 @@ func startAgent(o spawnOptions, kind string, env platform.Env, created bool, arg
 		if created {
 			// DJA-416: an agent that never registered leaves nothing for
 			// `agent read`; the pane read shows what the CLI printed.
-			scr, read := herdr.PaneRead(env, o.pane, "recent-unwrapped", intPtr(40))
+			scr, read := paneReadText(svc.Runtime, o.pane, "recent-unwrapped", intPtr(40))
 			if !read || strings.TrimSpace(scr) == "" {
-				scr = herdr.AgentRead(env, o.pane, "visible", intPtr(40))
+				scr = agentReadText(svc.Runtime, o.pane, "visible", intPtr(40))
 			}
 			startDiagnoseShellNotFound(scr, kind)
 			tail := lastLines(scr, 5)
-			closed := herdr.PaneClose(o.pane, env)
+			closed := svc.Runtime.Close(context.Background(), transport.Target{ID: o.pane}, transport.Call{}).Value
 			if closed {
 				core.DieFriction(fmt.Sprintf("agent start failed for %s (%s) in pane %s; closed the pane this spawn opened (last screen lines: %s)", o.name, kind, o.pane, tail), 4, "", "")
 			}
-			if herdr.PaneGetGone(o.pane, env) {
+			if rt.GetGone(context.Background(), transport.Target{ID: o.pane}, transport.Call{}).Value {
 				core.DieFriction(fmt.Sprintf("agent start failed for %s (%s) in pane %s; the pane close failed but the pane is already gone (last screen lines: %s)", o.name, kind, o.pane, tail), 4, "", "")
 			}
 			core.DieFriction(fmt.Sprintf("agent start failed for %s (%s) in pane %s; pane close failed and the pane is still open, check it for a running agent (last screen lines: %s)", o.name, kind, o.pane, tail), 4, "", "")
@@ -1866,14 +1903,14 @@ func isGrokTrustDialog(screen string) bool {
 // the exit warning, a live one or a transient state read keeps the generic
 // warning. Callers run it on the new-spawn path only, after the start
 // window; a reused or working grok never gets it.
-func confirmGrokContextWindow(o spawnOptions, value string, env platform.Env) bool {
-	_ = herdr.PaneSendText(o.pane, "/context-window "+value, env)
+func confirmGrokContextWindow(svc transport.Services, o spawnOptions, value string, env platform.Env) bool {
+	_ = svc.Terminal.SendText(context.Background(), transport.Target{ID: o.pane}, "/context-window "+value, transport.Call{})
 	time.Sleep(contextWindowSettle)
-	_ = herdr.PaneSendKeys(o.pane, "Enter", env)
+	_ = svc.Runtime.Keys(context.Background(), transport.Target{ID: o.pane}, "Enter", true, transport.Call{})
 	needle := "Context window set to " + value
 	until := time.Now().Add(contextWindowWindow)
 	for {
-		if strings.Contains(herdr.AgentRead(env, o.name, "visible", intPtr(40)), needle) {
+		if strings.Contains(agentReadText(svc.Runtime, o.name, "visible", intPtr(40)), needle) {
 			return true
 		}
 		if !time.Now().Before(until) {
@@ -1898,6 +1935,7 @@ func pollMillis(env platform.Env) time.Duration {
 	return 500 * time.Millisecond
 }
 func checkStartWindow(o spawnOptions, kind string, env platform.Env, created bool, args []string, ctx *core.Config) (string, string, bool) {
+	rt := herdr.New(env).Runtime
 	poll := time.Duration(PollIntervalMs(env)) * time.Millisecond
 	canRelaunch := true
 	blocked := false
@@ -1906,31 +1944,30 @@ func checkStartWindow(o spawnOptions, kind string, env platform.Env, created boo
 		lastScreen, lastState := "", ""
 		marker := false
 		for {
-			st := herdr.AgentState(o.name, env, herdr.Timeout, nil)
-			lastState = st.State
+			lastState, _ = agentGetState(rt, o.name)
 			lines := intPtr(40)
 			if kind == "cursor" {
 				lines = nil
 			}
-			screen := herdr.AgentRead(env, o.name, "visible", lines)
+			screen := agentReadText(rt, o.name, "visible", lines)
 			if screen != "" {
 				lastScreen = screen
 			}
 			if kind == "codex" && (strings.Contains(screen, "Updating Codex via") || strings.Contains(screen, "Please restart Codex")) {
 				marker = true
 			}
-			if st.State == "gone" {
+			if lastState == "gone" {
 				if canRelaunch && marker {
 					break
 				}
 				if len(strings.TrimSpace(lastScreen)) == 0 {
-					lastScreen = herdr.AgentRead(env, o.name, "visible", intPtr(40))
+					lastScreen = agentReadText(rt, o.name, "visible", intPtr(40))
 				}
 				// DJA-416: still nothing from the agent; read the pane.
 				// Only a pane this spawn opened: a given --pane may show
 				// another occupant's screen.
 				if len(strings.TrimSpace(lastScreen)) == 0 && created && o.pane != "" {
-					if pane, read := herdr.PaneRead(env, o.pane, "recent-unwrapped", intPtr(40)); read {
+					if pane, read := paneReadText(rt, o.pane, "recent-unwrapped", intPtr(40)); read {
 						lastScreen = pane
 					}
 				}
@@ -1959,13 +1996,13 @@ func checkStartWindow(o spawnOptions, kind string, env platform.Env, created boo
 		}
 		to := updateGoneWaitMs(o.timeout)
 		until := time.Now().Add(time.Duration(to * float64(time.Millisecond)))
-		st := herdr.AgentState(o.name, env, herdr.Timeout, nil)
-		for st.State != "gone" && time.Now().Before(until) {
+		state, _ := agentGetState(rt, o.name)
+		for state != "gone" && time.Now().Before(until) {
 			time.Sleep(poll)
-			st = herdr.AgentState(o.name, env, herdr.Timeout, nil)
+			state, _ = agentGetState(rt, o.name)
 		}
-		if st.State != "gone" {
-			return st.State, lastScreen, blocked
+		if state != "gone" {
+			return state, lastScreen, blocked
 		}
 		blocked = startAgent(o, kind, env, created, args)
 		Warn(fmt.Sprintf("'%s' (%s) updated itself at start and exited; started it again", o.name, kind), ctx, env, "spawn")
@@ -2021,14 +2058,14 @@ func sameTreeEditors(thisName, role, workerCwd, sd string, env platform.Env, cwd
 	if len(candidates) == 0 {
 		return
 	}
-	var agents []any
+	var agents []transport.Terminal
 	func() {
 		defer func() { _ = recover() }()
-		agents = herdr.LiveAgents(env, herdr.Timeout)
+		agents = liveAgents(env)
 	}()
 	for _, cand := range candidates {
 		for _, agent := range agents {
-			if fieldString(agent, "name") != cand.name || cand.pane != "" && fieldString(agent, "pane_id") != cand.pane {
+			if agent.Name != cand.name || cand.pane != "" && agent.PaneID != cand.pane {
 				continue
 			}
 			if !sharedTreeWarnDue(sd, thisName, cand.name, workerCwd, ctx, env) {
@@ -2103,7 +2140,7 @@ func lockE2EPorts(sd string) func() {
 	}
 }
 
-func reserveE2EPort(sd string, ctx *core.Config, env platform.Env) string {
+func reserveE2EPort(svc transport.Services, sd string, ctx *core.Config, env platform.Env) string {
 	raw := core.Cfg(ctx, "e2e_port_base", "", env)
 	if !core.ConfigValueOk("e2e_port_base", raw, env, "") {
 		core.DieFriction("spawn: invalid e2e_port_base", 2, "", "spawn")
@@ -2112,8 +2149,11 @@ func reserveE2EPort(sd string, ctx *core.Config, env platform.Env) string {
 	used := map[string]bool{}
 	for _, row := range core.RosterRows(sd) {
 		fields := strings.Split(row, "\t")
-		if port := core.RosterE2EPort(fields); port != "" && herdr.AgentState(fieldAt(fields, 0), env, herdr.Timeout, nil).State != "gone" {
-			used[port] = true
+		if port := core.RosterE2EPort(fields); port != "" {
+			state, _ := agentGetState(svc.Runtime, fieldAt(fields, 0))
+			if state != "gone" {
+				used[port] = true
+			}
 		}
 	}
 	for port := base; port < base+200; port++ {
