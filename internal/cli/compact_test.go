@@ -919,6 +919,49 @@ func TestCompactPiStillCompactingKeepsWaiting(t *testing.T) {
 	}
 }
 
+// TestCompactPiDeadlineSentinelStillCompacting (DJA-634): the real context
+// deadline, not the logical clock, expires inside a budgeted call while pi is
+// still compacting: the fake first shows the still-compacting screen, then
+// the liveness read stalls 8 s — much longer than the 5 s budget — so the
+// context deadline fires inside that call and the recovered deadline handler
+// must report the timeout with still_compacting and the do-not-resend
+// warning. The clock-seam cases keep the logical deadline proof; this
+// sentinel keeps the real-budget expiry contract the old 500 ms cases pinned
+// (review P2: removing the recovered handler's field and warning must fail
+// this test).
+func TestCompactPiDeadlineSentinelStillCompacting(t *testing.T) {
+	f := newCompactFixture(t, "pi", []fakecli.Rule{
+		{Argv: []string{"agent", "get", "worker"}, Call: 2, Delay: 8000, Stdout: compactStateJSON("idle", 1)},
+		{Argv: []string{"agent", "get", "worker"}, Stdout: compactStateJSON("idle", 1)},
+		{Argv: compactReadArgv("worker"), Call: 1, Stdout: "old output line\n"},
+		{Argv: compactReadArgv("worker"), ArgvPrefix: true, Stdout: compactScreens.piCompacting},
+		{Argv: []string{"pane", "send-text", "p1", "/compact"}, Stdout: `{"result":{}}`},
+		{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
+	})
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "5s")
+	if code != 9 || errText == "" {
+		t.Fatalf("code=%d out=%s stderr=%s; the real context deadline must end the run as a timeout with the warning", code, out, errText)
+	}
+	value := compactJSON(t, out)
+	if value["status"] != "timeout" || value["still_compacting"] != true {
+		t.Fatalf("json=%v; the recovered context-deadline handler must report the timeout with still_compacting", value)
+	}
+	if len(value) != 5 {
+		t.Fatalf("json=%v; the recovered pi timeout JSON has exactly agent, kind, status, elapsed_ms, still_compacting", value)
+	}
+	// The 5 s budget is the real context deadline: it expires inside the
+	// stalled liveness read (8 s), so the elapsed time is real and cannot
+	// come from a fast logical clock; under load the pre-send choreography
+	// may push it up, but the 8 s stall cannot finish before the deadline.
+	if elapsed, ok := value["elapsed_ms"].(float64); !ok || elapsed < 4000 || elapsed > 60000 {
+		t.Fatalf("elapsed_ms=%v; the real 5 s budget must expire inside the stalled call", value["elapsed_ms"])
+	}
+	const want = "is still compacting (\"Compacting context\" on the last screen); do not send /compact again"
+	if !strings.Contains(errText, want) {
+		t.Fatalf("stderr=%q; the recovered handler's do-not-resend warning is missing", errText)
+	}
+}
+
 // TestCompactOpenCodeMenuCompacted verifies opencode's verified compact path
 // with a conversation: the command menu with /compact on top gets the Enter,
 // and the done line with the duration ends the wait as compacted.
