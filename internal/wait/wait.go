@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -229,7 +230,27 @@ func readState(svc transport.Services, agent string) stateProbe {
 	if rep.Err != nil {
 		cause = rep.Err.Message
 	}
-	return stateProbe{State: rep.Value.State, Cause: cause, Seq: string(rep.Value.Sequence)}
+	return stateProbe{State: rep.Value.State, Cause: cause, Seq: seqText(rep.Value.Sequence)}
+}
+
+// seqText renders the transported state_change_seq as jsString rendered the
+// value herdr.AgentState returned: an int64 in decimal, and a larger
+// integral value in plain decimal notation, never the exponent form JSON
+// gives it (1e21 is 1000000000000000000000), so a persisted marker keeps
+// matching an unchanged sequence.
+func seqText(raw json.RawMessage) string {
+	s := string(raw)
+	if s == "" {
+		return ""
+	}
+	if _, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return s
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return s
+	}
+	return jsString(f)
 }
 
 // sendAgentKey sends one raw key to the agent through the transport's
