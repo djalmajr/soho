@@ -6,11 +6,14 @@
 // delegates to the existing adapter function with the same argv, timeout, and
 // parsing, so nothing observable changes.
 //
-// A method with no existing adapter function (a terminal start or wait, the
-// job workspace calls, the diagnostic probes) is deliberately not part of
-// these interfaces yet. A future backend may return an *Failure of kind
-// FailureUnsupported before any action instead of pretending an absent
-// capability succeeded.
+// A method with no existing adapter function (a terminal wait, the job
+// workspace calls, the diagnostic probes) is deliberately not part of these
+// interfaces yet. Operations join the contracts as the slices that move
+// their callers land: the stage-1 Transport and LegacyTransport keep their
+// method sets stable so existing consumers and test fakes keep compiling,
+// and each new capability gets its own interface (Runtime today). A future
+// backend may return an *Failure of kind FailureUnsupported before any
+// action instead of pretending an absent capability succeeded.
 package transport
 
 import (
@@ -150,6 +153,19 @@ type Send struct {
 	Text string
 }
 
+// Start names an agent-start request. The Herdr backend encodes it as
+// `agent start <name> --kind <kind> --pane <pane> --timeout <timeout>`, with
+// Args after a "--" when there are any. Timeout is the agent timeout in
+// milliseconds, passed through unchanged; the wrapper timeout the caller may
+// set is the per-call Call.Timeout.
+type Start struct {
+	Name    string
+	Kind    string
+	PaneID  string
+	Timeout string
+	Args    []string
+}
+
 // CallerCheck is the outcome of the caller-pane check: whether this process
 // actually runs in the pane the caller claims. State is "verified",
 // "mismatch", or "unknown".
@@ -219,7 +235,7 @@ type Focus struct {
 // identity, roster, per-terminal input and reads, and close. The stage-1
 // Herdr backend is the only implementation. A method is present only when an
 // existing adapter function backs it; operations without one (a terminal
-// start or wait) join the interface in the slice that moves their caller.
+// wait) join the contracts in the slice that moves their caller.
 type Transport interface {
 	// Caller returns the identity claimed from the inherited environment.
 	// It is pure and never queries a server.
@@ -274,19 +290,54 @@ type Window interface {
 }
 
 // LegacyTransport holds operations with no equivalent in a second backend.
-// Stage 1 exposes the process-info read; the exact rename/snapshot/run-in-
-// pane contracts join it in the slice that moves their caller.
+// Stage 1 exposes the process-info read, the exact rename contract, and the
+// raw agent existence check; snapshot and run-in-pane join it in the slice
+// that moves their caller.
 type LegacyTransport interface {
 	// ProcessInfo returns the raw process info a backend reports for a pane.
 	ProcessInfo(ctx context.Context, target Target, call Call) Reply[json.RawMessage]
+	// Rename renames the agent the backend resolves for the target's id with
+	// its exact rename call, and reports whether it succeeded. The raw
+	// process result stays on the reply for callers that parse its error
+	// output.
+	Rename(ctx context.Context, target Target, name string, call Call) Reply[bool]
+	// AgentGetOK is the raw one-attempt existence check: one agent get on
+	// the target's id, Value true only when the call is not a lookup
+	// failure and exits 0. It never retries and does not parse the body,
+	// so an exit-0 answer without an agent_status still reports true.
+	AgentGetOK(ctx context.Context, target Target, call Call) Reply[bool]
+}
+
+// Runtime is the second runtime capability: the operations whose caller
+// slices are landing, kept apart from Transport so the stage-1 method set
+// (and the consumers and test fakes pinned to it) stay stable. The Herdr
+// backend implements it; a second backend may report an unsupported failure
+// before acting.
+type Runtime interface {
+	// Start starts an agent of the request's kind in its pane with its
+	// timeout and optional args, and returns the merged output the backend
+	// captured, so the caller can read the backend's start markers from it.
+	Start(ctx context.Context, start Start, call Call) Reply[string]
+	// CallerAgentName returns the agent that hosts the caller's claimed
+	// pane, read with one agent get on that pane; a pane without a readable
+	// agent is a failure with an empty value.
+	CallerAgentName(ctx context.Context, call Call) Reply[string]
+	// SendText sends raw text to the pane the target names, without
+	// submitting, and reports whether the send succeeded.
+	SendText(ctx context.Context, target Target, text string, call Call) Reply[bool]
+	// GetGone reports whether the pane the target names is already gone: the
+	// pane get fails with the pane-not-found code. A present pane, or a
+	// failure for another reason, reports false.
+	GetGone(ctx context.Context, target Target, call Call) Reply[bool]
 }
 
 // Services is the set of capabilities a backend provides, built once per
-// invocation. Window or Legacy may be nil when a backend lacks them. There is
-// no package singleton and no global active backend: a caller holds the
-// Services it was given for this invocation.
+// invocation. Window, Legacy or Terminal may be nil when a backend lacks
+// them. There is no package singleton and no global active backend: a
+// caller holds the Services it was given for this invocation.
 type Services struct {
-	Runtime Transport
-	Window  Window
-	Legacy  LegacyTransport
+	Runtime  Transport
+	Window   Window
+	Legacy   LegacyTransport
+	Terminal Runtime
 }

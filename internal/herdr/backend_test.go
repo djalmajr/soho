@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -538,6 +539,147 @@ func TestBackendProcessInfo(t *testing.T) {
 	wantArgv(t, backendCalls(t, env), [][]string{
 		{"pane", "process-info", "--pane", "p1"},
 		{"pane", "process-info", "--pane", "p2"},
+	})
+}
+
+// TestBackendAgentGetOK: the legacy raw existence check issues one agent get
+// and reads only the exit status — an exit-0 answer without an agent_status
+// still reports true, and neither a killed run nor a missing binary is
+// retried.
+func TestBackendAgentGetOK(t *testing.T) {
+	t.Run("exit 0 without an agent_status reports true, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "p1"}, Stdout: `{"result":{"agent":{"name":"reviewer"}}}`}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentGetOK(context.Background(), transport.Target{ID: "p1"}, transport.Call{})
+		if !got.Value || !got.Valid || got.Err != nil || got.Process.Status == nil || *got.Process.Status != 0 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one call expected, got %#v", calls)
+		}
+	})
+	t.Run("a killed run reports false, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"agent", "get", "p1"}, Call: 1, Code: 143},
+			{Argv: []string{"agent", "get", "p1"}, Call: 2, Stdout: `{"result":{"agent":{"name":"reviewer","agent_status":"working"}}}`},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentGetOK(context.Background(), transport.Target{ID: "p1"}, transport.Call{})
+		if got.Value || got.Err == nil || got.Process.Status == nil || *got.Process.Status != 143 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+	t.Run("a missing binary reports false without reaching the CLI", func(t *testing.T) {
+		env := platform.Env{"PATH": t.TempDir(), "TMPDIR": t.TempDir()}
+		svc := New(env)
+		got := svc.Legacy.AgentGetOK(context.Background(), transport.Target{ID: "p1"}, transport.Call{})
+		if got.Value || !got.Process.NotFound {
+			t.Fatalf("got=%#v", got)
+		}
+	})
+}
+
+// TestBackendSpawnRuntime: the spawn-slice capabilities (the Runtime methods
+// Start, CallerAgentName, SendText, GetGone and the LegacyTransport's Rename)
+// issue the exact argv the pre-transport spawn path used, with the same
+// output handling: Start's merged output on the value, Rename's raw process
+// result on the reply.
+func TestBackendSpawnRuntime(t *testing.T) {
+	t.Run("start: the agent start argv, args after --, the merged output", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"agent", "start", "worker", "--kind", "codex", "--pane", "p1", "--timeout", "90000"}, Stdout: `{"result":{"started":true}}`},
+			{Argv: []string{"agent", "start", "w2", "--kind", "pi", "--pane", "p2", "--timeout", "120", "--", "-m", "fast"}, Stdout: "out", Stderr: "err", Code: 1},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Terminal.Start(context.Background(), transport.Start{Name: "worker", Kind: "codex", PaneID: "p1", Timeout: "90000"}, transport.Call{})
+		if !got.Valid || got.Value != `{"result":{"started":true}}` || got.Err != nil || got.Process.Status == nil || *got.Process.Status != 0 {
+			t.Fatalf("got=%#v", got)
+		}
+		got = svc.Terminal.Start(context.Background(), transport.Start{Name: "w2", Kind: "pi", PaneID: "p2", Timeout: "120", Args: []string{"-m", "fast"}}, transport.Call{Timeout: fakeTimeout(90 * time.Second)})
+		if got.Value != "outerr" || got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{
+			{"agent", "start", "worker", "--kind", "codex", "--pane", "p1", "--timeout", "90000"},
+			{"agent", "start", "w2", "--kind", "pi", "--pane", "p2", "--timeout", "120", "--", "-m", "fast"},
+		})
+	})
+	t.Run("caller agent name: the agent get on the caller pane, and a failure without one", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"agent", "get", "p1"}, Stdout: `{"result":{"agent":{"name":"orchestrator"}}}`},
+			{Argv: []string{"agent", "get", "p9"}, Code: 1, Stderr: `{"error":{"code":"agent_not_found","message":"no agent"}}`},
+		})
+		env["HERDR_PANE_ID"] = "p1"
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Terminal.CallerAgentName(context.Background(), transport.Call{})
+		if !got.Valid || got.Value != "orchestrator" || got.Err != nil {
+			t.Fatalf("got=%#v", got)
+		}
+		env["HERDR_PANE_ID"] = "p9"
+		svc = New(env)
+		got = svc.Terminal.CallerAgentName(context.Background(), transport.Call{})
+		if got.Valid || got.Value != "" || got.Err == nil || got.Err.Kind != transport.FailureNotFound {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"agent", "get", "p1"}, {"agent", "get", "p9"}})
+	})
+	t.Run("send text: the pane send-text argv, without submitting", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"pane", "send-text", "p1", "hello world"}},
+			{Argv: []string{"pane", "send-text", "p9", "x"}, Code: 1},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		if got := svc.Terminal.SendText(context.Background(), transport.Target{ID: "p1"}, "hello world", transport.Call{}); !got.Value || !got.Valid {
+			t.Fatalf("got=%#v", got)
+		}
+		if got := svc.Terminal.SendText(context.Background(), transport.Target{ID: "p9"}, "x", transport.Call{}); got.Value {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"pane", "send-text", "p1", "hello world"}, {"pane", "send-text", "p9", "x"}})
+	})
+	t.Run("get gone: only the pane-not-found code reports gone", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"pane", "get", "p1"}, Stdout: `{"result":{"pane":{"pane_id":"p1"}}}`},
+			{Argv: []string{"pane", "get", "p9"}, Code: 1, Stderr: `{"error":{"code":"pane_not_found","message":"gone"}}`},
+			{Argv: []string{"pane", "get", "p8"}, Code: 1, Stderr: `{"error":{"code":"boom","message":"other"}}`},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		if got := svc.Terminal.GetGone(context.Background(), transport.Target{ID: "p1"}, transport.Call{}); got.Value {
+			t.Fatalf("present pane=%#v", got)
+		}
+		if got := svc.Terminal.GetGone(context.Background(), transport.Target{ID: "p9"}, transport.Call{}); !got.Value {
+			t.Fatalf("gone pane=%#v", got)
+		}
+		if got := svc.Terminal.GetGone(context.Background(), transport.Target{ID: "p8"}, transport.Call{}); got.Value {
+			t.Fatalf("other failure=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"pane", "get", "p1"}, {"pane", "get", "p9"}, {"pane", "get", "p8"}})
+	})
+	t.Run("rename: the agent rename argv and the raw process result", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"agent", "rename", "p1", "worker"}},
+			{Argv: []string{"agent", "rename", "p9", "taken"}, Code: 1, Stderr: `{"error":{"code":"agent_name_taken","message":"name taken"}}`},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.Rename(context.Background(), transport.Target{ID: "p1"}, "worker", transport.Call{})
+		if !got.Value || !got.Valid || got.Err != nil || got.Process.Status == nil || *got.Process.Status != 0 {
+			t.Fatalf("got=%#v", got)
+		}
+		got = svc.Legacy.Rename(context.Background(), transport.Target{ID: "p9"}, "taken", transport.Call{})
+		if got.Value || got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 || !strings.Contains(got.Process.Stderr, "agent_name_taken") {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"agent", "rename", "p1", "worker"}, {"agent", "rename", "p9", "taken"}})
 	})
 }
 
