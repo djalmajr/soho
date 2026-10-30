@@ -95,7 +95,7 @@ To change a brief a worker already has, busy or finished, write the amendment to
 - `gc` without `--yes`;
 - `collaborate status <assignment> [--json]` (the read of an active collaboration; the other `collaborate` operations write);
 - `capabilities --json`;
-- `hook reminder`, `hook doctor` and `hook inbound` (a prompt with a peer header makes the hook write the receiver's peer log and replay cache in the user configuration directory, and nothing else).
+- `hook reminder`, `hook doctor` and `hook inbound` (a refused peer message makes the hook append one line to the receiver's peer log in the user configuration directory, and nothing else; an accepted message writes nothing).
 
 The CLI then never writes to the project or the state: no `.gitignore` entry, no state directory, no friction log and no task-report sync. A state directory that does not exist reads as empty. Every other invocation exits 2 with a message that lists the accepted ones. Without the env, the CLI behaves exactly as before.
 
