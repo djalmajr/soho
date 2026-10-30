@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 func normalizeObjective(value string) string {
@@ -36,7 +38,8 @@ func cmdTitle(argv []string, cfg *core.Config, env platform.Env, cwd string) {
 			rest = append(rest, arg)
 		}
 	}
-	pane := env.Get("HERDR_PANE_ID")
+	svc := herdr.New(env)
+	pane := svc.Runtime.Caller().PaneID
 	var title *string
 	if clear {
 		if len(rest) > 0 {
@@ -56,7 +59,7 @@ func cmdTitle(argv []string, cfg *core.Config, env platform.Env, cwd string) {
 	// usage error never touches Herdr, and a forked session must not
 	// write the title of the pane its environment claims.
 	core.CallerGate("title", cfg, env, cwd)
-	if !herdr.PaneTitle(pane, title, env) {
+	if !svc.Window.Title(context.Background(), pane, title, transport.Call{}).Value {
 		core.DieFriction("title: herdr pane report-metadata failed", 4, frictionLogPath, "title")
 	}
 	value := ""

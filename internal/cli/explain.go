@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/provider"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 type explainStateDirResult struct {
@@ -57,8 +59,8 @@ func cmdExplain(args []string, ctx *core.Config, env platform.Env, cwd string) {
 func explainFootprintLine(stateDir string, ctx *core.Config, env platform.Env, cwd string) string {
 	// The workspace id of the state dir (its directory name): the
 	// env-var-only rule, so explain never dies on a missing herdr the way
-	// core.WorkspaceID can.
-	workspaceID := env.Get("HERDR_WORKSPACE_ID")
+	// core.WorkspaceID can. Caller() is that same pure environment read.
+	workspaceID := herdr.New(env).Runtime.Caller().WorkspaceID
 	if stateDir != "" {
 		workspaceID = filepath.Base(stateDir)
 	}
@@ -99,12 +101,15 @@ func explainFootprintText(fp *core.Footprint) string {
 }
 
 func explainStateDir(ctx *core.Config, env platform.Env, cwd string) explainStateDirResult {
-	if env.Get("HERDR_WORKSPACE_ID") != "" {
+	svc := herdr.New(env)
+	if svc.Runtime.Caller().WorkspaceID != "" {
 		return explainStateDirDirect(ctx, env, cwd)
 	}
 	if _, ok := platform.FindExecutable("herdr", env, platform.Current()); ok {
-		r := platform.RunCli("herdr", []string{"pane", "current", "--current"}, platform.RunOptions{Env: env, TimeoutMs: 30000})
-		if r.Status != nil && *r.Status == 0 {
+		// The exit-status-only check keeps its 30 s bound through the raw
+		// call: a body the check does not read cannot change the branch.
+		rep := svc.Legacy.PaneCurrentRaw(context.Background(), transport.Call{Timeout: herdr.Timeout})
+		if rep.Err == nil {
 			return explainStateDirDirect(ctx, env, cwd)
 		}
 	}
@@ -171,13 +176,14 @@ func explainActivity(name, sd string, ctx *core.Config, env platform.Env, cwd st
 		}
 		return "idle"
 	}
-	orig := herdr.AgentState(name, env, herdr.Timeout, nil).State
+	svc := herdr.New(env)
+	orig := readState(svc, name, transport.Call{Timeout: herdr.Timeout}).State
 	if orig == "working" {
 		return "working"
 	}
 	if orig != "blocked" && orig != "gone" && orig != "unavailable" {
 		n := 20
-		screen := herdr.AgentRead(env, name, "visible", &n)
+		screen, _ := readScreen(svc, name, "visible", &n)
 		if provider.QuotaDetect(orig, screen) != nil {
 			return "out of quota"
 		}

@@ -17,6 +17,7 @@ import (
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/taskreport"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 const (
@@ -383,6 +384,7 @@ func cmdCopies(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 // <state>". It is read-only: it removes nothing and writes nothing, and it
 // does not show sizes.
 func copiesList(ctx *core.Config, env platform.Env, cwd string) int {
+	svc := herdr.New(env)
 	sd := core.StateDir(ctx, env, cwd)
 	incorporatePendingCopies("copies", sd, env, cwd)
 	rows, err := core.ReadCopies(sd)
@@ -396,7 +398,7 @@ func copiesList(ctx *core.Config, env platform.Env, cwd string) int {
 	}
 	now := platform.Now()
 	for _, row := range rows {
-		_, _ = fmt.Fprintf(platform.Stdout, "%s  %s  %s  %s\n", row.Path, row.Owner, humanAge(copyAge(row, now)), copyRowState(row, sd, env))
+		_, _ = fmt.Fprintf(platform.Stdout, "%s  %s  %s  %s\n", row.Path, row.Owner, humanAge(copyAge(row, now)), copyRowState(row, sd, svc))
 	}
 	return 0
 }
@@ -405,11 +407,11 @@ func copiesList(ctx *core.Config, env platform.Env, cwd string) int {
 // gone, owned when the owner is a live roster agent, orphan otherwise (the
 // owner is "-", is not in the roster, or is gone). An owner Herdr cannot
 // answer for stays owned: gc must not drop a copy it cannot prove orphaned.
-func copyRowState(row core.CopyRow, sd string, env platform.Env) string {
+func copyRowState(row core.CopyRow, sd string, svc transport.Services) string {
 	if _, err := os.Stat(row.Path); err != nil {
 		return "missing"
 	}
-	if row.Owner != "-" && core.RosterLine(sd, row.Owner) != "" && herdr.AgentState(row.Owner, env, herdr.Timeout, nil).State != "gone" {
+	if row.Owner != "-" && core.RosterLine(sd, row.Owner) != "" && readState(svc, row.Owner, transport.Call{Timeout: herdr.Timeout}).State != "gone" {
 		return "owned"
 	}
 	return "orphan"
@@ -419,21 +421,21 @@ func copyRowState(row core.CopyRow, sd string, env platform.Env) string {
 // owner is a live roster agent — the copies' rule, never touched), orphan
 // (running, the owner is not live), or gone/reused (any owner: --yes drops
 // the line, and a reused pid is never signalled).
-func gcProcState(row core.ProcRow, sd string, env platform.Env) string {
+func gcProcState(row core.ProcRow, sd string, env platform.Env, svc transport.Services) string {
 	if st := core.ProcRowState(row, env); st != "running" {
 		return st
 	}
-	if row.Owner != "-" && core.RosterLine(sd, row.Owner) != "" && herdr.AgentState(row.Owner, env, herdr.Timeout, nil).State != "gone" {
+	if row.Owner != "-" && core.RosterLine(sd, row.Owner) != "" && readState(svc, row.Owner, transport.Call{Timeout: herdr.Timeout}).State != "gone" {
 		return "owned"
 	}
 	return "orphan"
 }
 
 // gcOrphanProcs is the dry-run list: the running lines gc would stop.
-func gcOrphanProcs(rows []core.ProcRow, sd string, env platform.Env) []core.ProcRow {
+func gcOrphanProcs(rows []core.ProcRow, sd string, env platform.Env, svc transport.Services) []core.ProcRow {
 	out := []core.ProcRow{}
 	for _, row := range rows {
-		if gcProcState(row, sd, env) == "orphan" {
+		if gcProcState(row, sd, env, svc) == "orphan" {
 			out = append(out, row)
 		}
 	}
@@ -579,7 +581,7 @@ type gcIdleClosed struct {
 // (its current report is a non-empty file); and both the line's created and
 // the newest modification of any entry of the copy, symlinks not followed,
 // are at least threshold old. ok is false when any of them fails.
-func gcIdleOwnerCopy(row core.CopyRow, sd string, env platform.Env, now time.Time, threshold time.Duration) (gcIdleClosed, bool) {
+func gcIdleOwnerCopy(row core.CopyRow, sd string, svc transport.Services, now time.Time, threshold time.Duration) (gcIdleClosed, bool) {
 	if row.Owner == "-" || core.RosterLine(sd, row.Owner) == "" {
 		return gcIdleClosed{}, false
 	}
@@ -589,7 +591,7 @@ func gcIdleOwnerCopy(row core.CopyRow, sd string, env platform.Env, now time.Tim
 	if copyAge(row, now) < threshold {
 		return gcIdleClosed{}, false
 	}
-	state := herdr.AgentState(row.Owner, env, herdr.Timeout, nil).State
+	state := readState(svc, row.Owner, transport.Call{Timeout: herdr.Timeout}).State
 	if state != "idle" && state != "done" {
 		return gcIdleClosed{}, false
 	}
@@ -610,8 +612,8 @@ func gcIdleOwnerCopy(row core.CopyRow, sd string, env platform.Env, now time.Tim
 // gcIdleOwnerStillClosed re-reads the owner's state and task pointer right
 // before the removal: the copy goes only when the rule still holds and
 // neither the state nor the pointer changed since gc offered it.
-func gcIdleOwnerStillClosed(row core.CopyRow, seen gcIdleClosed, sd string, env platform.Env, now time.Time, threshold time.Duration) bool {
-	fresh, ok := gcIdleOwnerCopy(row, sd, env, now, threshold)
+func gcIdleOwnerStillClosed(row core.CopyRow, seen gcIdleClosed, sd string, svc transport.Services, now time.Time, threshold time.Duration) bool {
+	fresh, ok := gcIdleOwnerCopy(row, sd, svc, now, threshold)
 	return ok && fresh == seen
 }
 
@@ -650,8 +652,8 @@ var gcIdleSectionHook func(path string)
 // the lock is released. A removal that fails leaves the discard directory,
 // with its kept line (gcDiscardLeft). It reports whether the copy was
 // removed.
-func gcRemoveIdleOwnerCopy(cand gcCandidate, sd string, env platform.Env, cwd string, threshold time.Duration) bool {
-	if !gcIdleOwnerStillClosed(cand.row, *cand.idle, sd, env, platform.Now(), threshold) {
+func gcRemoveIdleOwnerCopy(cand gcCandidate, sd string, env platform.Env, svc transport.Services, cwd string, threshold time.Duration) bool {
+	if !gcIdleOwnerStillClosed(cand.row, *cand.idle, sd, svc, platform.Now(), threshold) {
 		_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, gcIdleOwnerChanged)
 		return false
 	}
@@ -840,7 +842,7 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		sd = core.StateDir(ctx, env, cwd)
 	}
 	incorporatePendingCopies("copies add", sd, env, cwd)
-	pane := env.Get("HERDR_PANE_ID")
+	pane := herdr.New(env).Runtime.Caller().PaneID
 	owner := "-"
 	if agentSeen {
 		line := core.RosterLine(sd, agent)
@@ -1060,6 +1062,7 @@ func (v *gcVolumes) print() {
 // project are listed in their own block and only stopped with
 // --include-unregistered-procs --yes.
 func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
+	svc := herdr.New(env)
 	yes, includeUnregistered, includeProcs := false, false, false
 	hours := "2"
 	for i := 0; i < len(argv); i++ {
@@ -1109,7 +1112,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 
 	candidates := []gcCandidate{}
 	for _, row := range rows {
-		switch copyRowState(row, sd, env) {
+		switch copyRowState(row, sd, svc) {
 		case "missing":
 			candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: copyAge(row, now), missing: true})
 		case "orphan":
@@ -1120,7 +1123,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		case "owned":
 			// A live owner's copy is offered only when the owner is idle
 			// and the copy's task and its current one are closed.
-			if seen, ok := gcIdleOwnerCopy(row, sd, env, now, threshold); ok {
+			if seen, ok := gcIdleOwnerCopy(row, sd, svc, now, threshold); ok {
 				candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: copyAge(row, now), row: row, idle: &seen})
 			}
 		}
@@ -1151,7 +1154,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		// roster agent (the copies' rule). Gone and reused lines are not
 		// listed; --yes drops them with a note. Processes of live owners
 		// are never candidates.
-		orphan := gcOrphanProcs(procRows, sd, env)
+		orphan := gcOrphanProcs(procRows, sd, env, svc)
 		// Nothing to remove or stop: only the line itself, no total and no
 		// hint (G1).
 		if !snapshotActivity && len(candidates) == 0 && len(unregistered) == 0 && len(orphan) == 0 && !gcOrphansWouldStop(orphanProcs, threshold, now) {
@@ -1247,7 +1250,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		if cand.idle != nil {
 			// The line's drop runs in a short section under the registry
 			// lock, apart from the batch below.
-			if gcRemoveIdleOwnerCopy(cand, sd, env, cwd, threshold) {
+			if gcRemoveIdleOwnerCopy(cand, sd, env, svc, cwd, threshold) {
 				volumes.removed(cand.path)
 				removedAny = true
 				freed += cand.size
@@ -1328,7 +1331,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			unlock()
 		}
 		for _, row := range cands {
-			if gcProcState(row, sd, env) == "owned" {
+			if gcProcState(row, sd, env, svc) == "owned" {
 				continue
 			}
 			res := core.StopProcRow(sd, row, env)

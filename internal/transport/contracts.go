@@ -294,10 +294,11 @@ type Window interface {
 // agent existence check, the raw one-attempt knowledge probe, the raw agent
 // read with caller-owned exit handling, the raw agent list with the
 // projection-free objects, the raw one-attempt agent get with caller-owned
-// fail-open handling, the local session-transcript path resolutions (one
-// agent get plus a local file), and the local transcript compact-boundary
-// and user-marker counts; snapshot and run-in-pane join it in the slice that
-// moves their caller.
+// fail-open handling, the raw pane current and pane get reads with
+// caller-owned exit and body handling, the local session-transcript path
+// resolutions (one agent get plus a local file), and the local transcript
+// compact-boundary and user-marker counts; snapshot and run-in-pane join it
+// in the slice that moves their caller.
 type LegacyTransport interface {
 	// ProcessInfo returns the raw process info a backend reports for a pane.
 	ProcessInfo(ctx context.Context, target Target, call Call) Reply[json.RawMessage]
@@ -335,6 +336,16 @@ type LegacyTransport interface {
 	// empty) so the caller keeps its own fail-open and body-parsing
 	// handling. It never retries and does not parse the body.
 	AgentGetRaw(ctx context.Context, target Target, call Call) Reply[string]
+	// PaneCurrentRaw runs `pane current --current` once with the call's
+	// timeout and returns the raw process result (Value carries the stdout)
+	// so the caller keeps its own exit-status handling. It never retries and
+	// does not parse the body.
+	PaneCurrentRaw(ctx context.Context, call Call) Reply[string]
+	// PaneGetRaw runs one `pane get <id>` with the call's timeout and
+	// returns the raw process result (Value carries the stdout, possibly
+	// empty) so the caller keeps its own exit-status and body-parsing
+	// handling. It never retries and does not parse the body.
+	PaneGetRaw(ctx context.Context, target Target, call Call) Reply[string]
 	// ClaudeTranscriptPath resolves the Claude Code session transcript path
 	// the target's agent get reports (one agent get, the backend's fixed
 	// timeout, the backend's path derivation), Value "" when any data is

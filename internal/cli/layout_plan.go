@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/layout"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 type layoutCandidate struct {
@@ -40,7 +42,8 @@ func splitCap(ctx *core.Config, env platform.Env) int { return layout.SplitCap(c
 func splitMin(ctx *core.Config, env platform.Env) float64 { return layout.SplitMin(ctx, env) }
 
 func cmdLayoutPlan(args []string, ctx *core.Config, env platform.Env, cwd string) int {
-	file, me, mine := "", env.Get("HERDR_PANE_ID"), ""
+	svc := herdr.New(env)
+	file, me, mine := "", svc.Runtime.Caller().PaneID, ""
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a != "--layout" && a != "--me" && a != "--mine" {
@@ -88,11 +91,11 @@ func cmdLayoutPlan(args []string, ctx *core.Config, env platform.Env, cwd string
 		}
 	} else {
 		herdr.RequireEnv(env, platform.Current(), os.Getpid(), nil)
-		r := herdr.PaneLayout(env, "")
-		if r.NotFound || r.Status == nil || *r.Status != 0 {
+		rep := svc.Window.Layout(context.Background(), "", transport.Call{})
+		if rep.Err != nil {
 			platform.Die("pane layout failed", 4)
 		}
-		raw = []byte(r.Stdout)
+		raw = []byte(rep.Value)
 		if mine == "" {
 			dir := core.StateDirPath(ctx, env, cwd)
 			for _, row := range core.RosterRows(dir) {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -14,9 +15,11 @@ import (
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	herdrtext "github.com/djalmajr/soho/internal/text"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 func cmdFeedback(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
+	svc := herdr.New(env)
 	sub := ""
 	words := []string{}
 	for _, arg := range argv {
@@ -87,10 +90,10 @@ func cmdFeedback(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	noticeErr := ""
 	if to != "" {
 		message := fmt.Sprintf("soho feedback from %s (%s): %s — %s", project, core.WorkspaceID(ctx, env, cwd), summary, dest)
-		result := herdr.AgentPrompt(to, message, env)
-		if !result.Ok {
+		rep := svc.Runtime.Send(context.Background(), transport.Target{ID: to}, transport.Send{Text: message}, transport.Call{})
+		if rep.Err != nil {
 			noticeFailed = true
-			noticeErr = result.Raw
+			noticeErr = rep.Err.Message
 		}
 	}
 	sd := core.StateDir(ctx, env, cwd)
