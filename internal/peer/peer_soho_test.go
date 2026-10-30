@@ -14,12 +14,15 @@ func TestSohoPeerMarkers(t *testing.T) {
 	}
 	id := "01020304"
 	end := PeerEndLine(id)
-	if end != "[/soho:peer] #01020304 end of message" {
+	if end != "[/soho:peer:01020304]" {
 		t.Fatalf("PeerEndLine(%q)=%q", id, end)
 	}
+	if open := PeerOpenTag(id); open != "[soho:peer:01020304]" {
+		t.Fatalf("PeerOpenTag(%q)=%q", id, open)
+	}
 	header := PeerHeaderFor(PeerSender{Ref: "local/w1:p1"}, id)
-	if !strings.HasPrefix(header, "[soho:peer] #01020304 Message from another agent") {
-		t.Fatalf("sent header does not open with the soho marker:\n%s", header)
+	if !strings.HasPrefix(header, "[soho:peer:01020304]\n") {
+		t.Fatalf("sent header does not open with the soho opening line:\n%s", header)
 	}
 	if !strings.Contains(header, "soho send local/w1:p1") {
 		t.Fatalf("sent header reply line is not the soho send command:\n%s", header)
@@ -36,8 +39,12 @@ func TestSohoPeerLegacyMarkersNotAccepted(t *testing.T) {
 	legacyOpen := "[herdr-soho:peer] #" + id + " Message from another agent — local/w1:p1."
 	plainEnd := "Some other text #" + id + " end of message"
 	plainOpen := "Some other text #" + id + " Message from another agent — local/w1:p1."
-	currentEnd := "[/soho:peer] #" + id + " end of message"
-	currentOpen := "[soho:peer] #" + id + " Message from another agent — local/w1:p1."
+	currentEnd := "[/soho:peer:" + id + "]"
+	currentOpen := "[soho:peer:" + id + "]"
+	// The previous format's lines are not the current closing or opening
+	// line of a new-format send: the receipt checks do not read them.
+	previousEnd := "[/soho:peer] #" + id + " end of message"
+	previousOpen := "[soho:peer] #" + id + " Message from another agent — local/w1:p1."
 	legacyScreen := "› " + legacyOpen + "\n• working\n" + legacyEnd + "\n• done\n"
 	plainScreen := "› " + plainOpen + "\n• working\n" + plainEnd + "\n• done\n"
 	currentScreen := "› " + currentOpen + "\n• working\n" + currentEnd + "\n• done\n"
@@ -65,9 +72,14 @@ func TestSohoPeerLegacyMarkersNotAccepted(t *testing.T) {
 		}
 	})
 	t.Run("the soho marker still proves delivery (control)", func(t *testing.T) {
-		if !peerEndLineIn(currentEnd, id) || !receiptLineIn(currentOpen, id) || !composerHeaderLineIn(currentOpen, id) || !peerMessageInHistory(currentScreen, id) {
-			t.Fatalf("the soho marker stopped proving delivery: end=%v header=%v composer=%v history=%v",
-				peerEndLineIn(currentEnd, id), receiptLineIn(currentOpen, id), composerHeaderLineIn(currentOpen, id), peerMessageInHistory(currentScreen, id))
+		if !peerEndLineIn(currentEnd, id) || !receiptLineIn(currentEnd, id) || !composerHeaderLineIn(currentOpen, id) || !peerMessageInHistory(currentScreen, id) {
+			t.Fatalf("the soho marker stopped proving delivery: end=%v receipt=%v composer=%v history=%v",
+				peerEndLineIn(currentEnd, id), receiptLineIn(currentEnd, id), composerHeaderLineIn(currentOpen, id), peerMessageInHistory(currentScreen, id))
+		}
+	})
+	t.Run("the previous format's lines are not proof of a new-format send", func(t *testing.T) {
+		if peerEndLineIn(previousEnd, id) || receiptLineIn(previousEnd, id) || receiptLineIn(previousOpen, id) || composerHeaderLineIn(previousOpen, id) {
+			t.Fatalf("the previous format's lines proved a new-format send: end=%q header=%q", previousEnd, previousOpen)
 		}
 	})
 }

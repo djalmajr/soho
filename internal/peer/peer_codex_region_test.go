@@ -111,7 +111,7 @@ func TestCodexSendScreenMarkers(t *testing.T) {
 		}
 	})
 	t.Run("the same screen with the marker typed in the composer is still on screen and in the composer", func(t *testing.T) {
-		typed := withCodexComposerLine(screen, "› [soho:peer] #"+id+" …")
+		typed := withCodexComposerLine(screen, "› "+PeerOpenTag(id)+" …")
 		if !messageStillInScreen("codex", typed, endLine, id) {
 			t.Fatal("the id in the composer must block the screen proof")
 		}
@@ -123,7 +123,7 @@ func TestCodexSendScreenMarkers(t *testing.T) {
 		}
 	})
 	t.Run("a follow-up queue line above the composer is queued, not on screen", func(t *testing.T) {
-		queued := withCodexComposerLine(screen, "↳ [soho:peer] #"+id+" Message from another agent\n› Ask Codex to do anything")
+		queued := withCodexComposerLine(screen, "↳ "+PeerOpenTag(id)+" Message from another agent\n› Ask Codex to do anything")
 		if !codexQueued(queued, id) {
 			t.Fatal("the '↳ #id' line above the composer must be the follow-up queue")
 		}
@@ -132,13 +132,13 @@ func TestCodexSendScreenMarkers(t *testing.T) {
 		}
 	})
 	t.Run("a queue line at or below the composer is not queued", func(t *testing.T) {
-		below := withCodexComposerLine(screen, "› x") + "\n↳ [soho:peer] #" + id + " Message from another agent"
+		below := withCodexComposerLine(screen, "› x") + "\n↳ " + PeerOpenTag(id) + " Message from another agent"
 		if codexQueued(below, id) {
 			t.Fatal("only lines above the composer count as the queue")
 		}
 	})
 	t.Run("a queue line with another id is not queued for this id", func(t *testing.T) {
-		other := withCodexComposerLine(screen, "↳ [soho:peer] #01020304 Message from another agent\n› Ask Codex to do anything")
+		other := withCodexComposerLine(screen, "↳ "+PeerOpenTag("01020304")+" Message from another agent\n› Ask Codex to do anything")
 		if codexQueued(other, id) {
 			t.Fatal("a queue line of another message must not match")
 		}
@@ -173,11 +173,16 @@ func TestCodexSendScreenMarkers(t *testing.T) {
 		}
 	})
 	t.Run("every other kind keeps the whole-screen behavior", func(t *testing.T) {
-		if !messageStillInScreen("claude", screen, endLine, id) {
+		// The frozen capture holds the former generation's marker, which the
+		// probes no longer recognize; the claude screen of this send holds
+		// the new closing line in its history instead, and without the
+		// claude box borders the whole visible screen counts.
+		claude := screen + "\n" + endLine + "\n"
+		if !messageStillInScreen("claude", claude, endLine, id) {
 			t.Fatal("a non-codex marker on screen still blocks the proof")
 		}
-		if idInInputBox("claude", screen, id) {
-			t.Fatal("the real screen's last 15 lines do not hold the id")
+		if idInInputBox("claude", claude, id) {
+			t.Fatal("a claude screen without the recognized box presses no Enter")
 		}
 	})
 }

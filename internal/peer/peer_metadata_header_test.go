@@ -32,17 +32,19 @@ func assertMetadataOnly(t *testing.T, label, header string) {
 }
 
 // TestPeerHeaderMetadataOnlyBytes pins the exact emitted header bytes for
-// every field-knownness shape: the Sender line lists only the known
-// name/kind/role/model items and is omitted when nothing is known, the send
-// time on the opening line is the pinned instant, and unknown fields are
-// never placeholders.
+// every field-knownness shape: the opening line is the tag that carries the
+// message id, the Sender line lists the name (or the reference alone when
+// no name is known) and the known kind/role/model items, the send time on
+// its own Sent line is the pinned instant, and unknown fields are never
+// placeholders.
 func TestPeerHeaderMetadataOnlyBytes(t *testing.T) {
 	t.Run("local header with all four sender fields known", func(t *testing.T) {
 		got := peer.PeerHeaderFor(peer.PeerSender{Ref: "local/w14:p1", Name: "soho-s4", Kind: "pi", Role: "sub-orchestrator", Model: "gpt-5.1"}, "01020304")
-		want := "[soho:peer] #01020304 Message from another agent — local/w14:p1, sent " + peerTestSentTime + ".\n" +
-			"Sender: name soho-s4; kind pi; role sub-orchestrator; model gpt-5.1.\n" +
+		want := "[soho:peer:01020304]\n" +
+			"Sender: soho-s4 (local/w14:p1); kind pi; role sub-orchestrator; model gpt-5.1.\n" +
+			"Sent: " + peerTestSentTime + "\n" +
 			`Reply with: soho send local/w14:p1 "<your reply>"` + "\n" +
-			`The message follows, each line quoted with "> ".`
+			`A message from another agent follows, each line quoted with "> ".`
 		if got != want {
 			t.Fatalf("header=%q want=%q", got, want)
 		}
@@ -50,20 +52,23 @@ func TestPeerHeaderMetadataOnlyBytes(t *testing.T) {
 	})
 	t.Run("local header with only some fields known omits the unknown ones", func(t *testing.T) {
 		got := peer.PeerHeaderFor(peer.PeerSender{Ref: "local/w14:p1", Name: "soho-s4", Kind: "pi", Role: "-", Model: "unknown"}, "01020304")
-		want := "[soho:peer] #01020304 Message from another agent — local/w14:p1, sent " + peerTestSentTime + ".\n" +
-			"Sender: name soho-s4; kind pi.\n" +
+		want := "[soho:peer:01020304]\n" +
+			"Sender: soho-s4 (local/w14:p1); kind pi.\n" +
+			"Sent: " + peerTestSentTime + "\n" +
 			`Reply with: soho send local/w14:p1 "<your reply>"` + "\n" +
-			`The message follows, each line quoted with "> ".`
+			`A message from another agent follows, each line quoted with "> ".`
 		if got != want {
 			t.Fatalf("header=%q want=%q", got, want)
 		}
 		assertMetadataOnly(t, "local", got)
 	})
-	t.Run("local header with nothing known has no Sender line and the local/- ref", func(t *testing.T) {
+	t.Run("local header with nothing but the reference known starts the Sender line with the ref", func(t *testing.T) {
 		got := peer.PeerHeaderFor(peer.PeerSender{Ref: "local/-", Name: "-", Kind: "-", Role: "-", Model: "-"}, "01020304")
-		want := "[soho:peer] #01020304 Message from another agent — local/-, sent " + peerTestSentTime + ".\n" +
+		want := "[soho:peer:01020304]\n" +
+			"Sender: local/-.\n" +
+			"Sent: " + peerTestSentTime + "\n" +
 			`Reply with: soho send local/- "<your reply>"` + "\n" +
-			`The message follows, each line quoted with "> ".`
+			`A message from another agent follows, each line quoted with "> ".`
 		if got != want {
 			t.Fatalf("header=%q want=%q", got, want)
 		}
@@ -71,10 +76,11 @@ func TestPeerHeaderMetadataOnlyBytes(t *testing.T) {
 	})
 	t.Run("remote header with a hostname", func(t *testing.T) {
 		got := peer.PeerHeaderRemoteFor(peer.PeerSender{Name: "orchestrator-2", Kind: "claude", Role: "-", Model: "claude-opus-5"}, "w14:p1", "Run2Biz.local", "01020304")
-		want := "[soho:peer] #01020304 Message from another agent — w14:p1 on Run2Biz.local, sent " + peerTestSentTime + ".\n" +
-			"Sender: name orchestrator-2; kind claude; model claude-opus-5.\n" +
+		want := "[soho:peer:01020304]\n" +
+			"Sender: orchestrator-2 (w14:p1 on Run2Biz.local); kind claude; model claude-opus-5.\n" +
+			"Sent: " + peerTestSentTime + "\n" +
 			`Reply with: soho send <this machine's name in your herdr machine list>/w14:p1 "<your reply>" (this machine is Run2Biz.local)` + "\n" +
-			`The message follows, each line quoted with "> ".`
+			`A message from another agent follows, each line quoted with "> ".`
 		if got != want {
 			t.Fatalf("header=%q want=%q", got, want)
 		}
@@ -82,24 +88,24 @@ func TestPeerHeaderMetadataOnlyBytes(t *testing.T) {
 	})
 	t.Run("remote header with an empty hostname has no machine part or parenthetical", func(t *testing.T) {
 		got := peer.PeerHeaderRemoteFor(peer.PeerSender{Name: "orchestrator-2", Kind: "claude", Role: "-", Model: "-"}, "w14:p1", "", "01020304")
-		want := "[soho:peer] #01020304 Message from another agent — w14:p1, sent " + peerTestSentTime + ".\n" +
-			"Sender: name orchestrator-2; kind claude.\n" +
+		want := "[soho:peer:01020304]\n" +
+			"Sender: orchestrator-2 (w14:p1); kind claude.\n" +
+			"Sent: " + peerTestSentTime + "\n" +
 			`Reply with: soho send <this machine's name in your herdr machine list>/w14:p1 "<your reply>"` + "\n" +
-			`The message follows, each line quoted with "> ".`
+			`A message from another agent follows, each line quoted with "> ".`
 		if got != want {
 			t.Fatalf("header=%q want=%q", got, want)
 		}
 		assertMetadataOnly(t, "remote", got)
 	})
-	t.Run("the send time on the opening line is the pinned instant in UTC RFC 3339 seconds", func(t *testing.T) {
+	t.Run("the send time on its own Sent line is the pinned instant in UTC RFC 3339 seconds", func(t *testing.T) {
 		got := peer.PeerHeaderFor(peer.PeerSender{Ref: "local/w14:p1", Name: "-", Kind: "-", Role: "-", Model: "-"}, "01020304")
 		lines := strings.Split(got, "\n")
-		wantFirst := "[soho:peer] #01020304 Message from another agent — local/w14:p1, sent " + peerTestSentTime + "."
-		if len(lines) != 3 || lines[0] != wantFirst || peerTestSentTime != "2026-10-09T14:22:05Z" {
-			t.Fatalf("header=%q (the opening line must carry the pinned send time %q)", got, wantFirst)
+		if len(lines) != 5 || lines[0] != "[soho:peer:01020304]" || lines[2] != "Sent: "+peerTestSentTime || peerTestSentTime != "2026-10-09T14:22:05Z" {
+			t.Fatalf("header=%q (the Sent line must carry the pinned send time %q)", got, peerTestSentTime)
 		}
 	})
-	t.Run("the header is at most four lines on every path", func(t *testing.T) {
+	t.Run("the header is at most five lines on every path", func(t *testing.T) {
 		headers := []string{
 			peer.PeerHeaderFor(peer.PeerSender{Ref: "local/w14:p1", Name: "soho-s4", Kind: "pi", Role: "sub-orchestrator", Model: "gpt-5.1"}, "01020304"),
 			peer.PeerHeaderFor(peer.PeerSender{Ref: "local/-", Name: "-", Kind: "-", Role: "-", Model: "-"}, "01020304"),
@@ -108,15 +114,15 @@ func TestPeerHeaderMetadataOnlyBytes(t *testing.T) {
 			peer.PeerHeaderAssignment(peer.PeerSender{Ref: "local/ws:p1", Name: "author", Kind: "codex", Role: "implementer", Model: "gpt-5.4"}, "author", "c-0102030405060708", "01020304"),
 		}
 		for i, h := range headers {
-			if lines := strings.Count(h, "\n") + 1; lines > 4 {
-				t.Fatalf("header %d has %d lines (the codex composer only recognizes the opening line among the last 8 non-empty screen lines): %q", i+1, lines, h)
+			if lines := strings.Count(h, "\n") + 1; lines > 5 {
+				t.Fatalf("header %d has %d lines: %q", i+1, lines, h)
 			}
 		}
 	})
-	t.Run("an empty id keeps the opening line without the id", func(t *testing.T) {
+	t.Run("an empty id keeps the opening line without a message id", func(t *testing.T) {
 		got := peer.PeerHeaderFor(peer.PeerSender{Ref: "local/w14:p1", Name: "soho-s4", Kind: "pi", Role: "-", Model: "-"}, "")
-		if !strings.HasPrefix(got, "[soho:peer] Message from another agent — local/w14:p1, sent ") {
-			t.Fatalf("header=%q (no id, no \"#\")", got)
+		if !strings.HasPrefix(got, "[soho:peer:]\nSender: soho-s4 (local/w14:p1); kind pi.\n") {
+			t.Fatalf("header=%q (the opening tag is built from the empty id, as the previous format built its marker without a #)", got)
 		}
 	})
 	t.Run("the legacy PeerHeader produces the new format without a model", func(t *testing.T) {
@@ -138,31 +144,44 @@ func TestPeerHeaderMetadataOnlyBytes(t *testing.T) {
 func TestPeerHeaderAssignmentBytes(t *testing.T) {
 	s := peer.PeerSender{Ref: "local/ws:p1", Name: "author", Kind: "codex", Role: "implementer", Model: "gpt-5.4"}
 	got := peer.PeerHeaderAssignment(s, "author", "c-0102030405060708", "01020304")
-	want := "[soho:peer] #01020304 Message from another agent — local/ws:p1, sent " + peerTestSentTime + ".\n" +
-		"Sender: name author; kind codex; role implementer; model gpt-5.4.\n" +
+	want := "[soho:peer:01020304]\n" +
+		"Sender: author (local/ws:p1); kind codex; role implementer; model gpt-5.4.\n" +
+		"Sent: " + peerTestSentTime + "\n" +
 		`Reply within this assignment: soho send author --assignment c-0102030405060708 --type review.question "<your reply>"` + "\n" +
-		`The message follows, each line quoted with "> ".`
+		`A message from another agent follows, each line quoted with "> ".`
 	if got != want {
 		t.Fatalf("header=%q want=%q", got, want)
 	}
 	assertMetadataOnly(t, "assignment", got)
 }
 
-// TestReceiptLineInNewHeaderOpening proves receipt recognition of the new
-// metadata-only opening line: the unquoted line of this id (plain, indented,
-// or with the history "›") is the receipt, and a quoted copy of it is
-// payload, never the receipt.
+// TestReceiptLineInNewHeaderOpening pins the DJA-610 part B amendment
+// contract: the new metadata-only opening line alone is not a receipt — it
+// is the composer marker the retry Enter uses — so only the message's exact
+// closing line proves delivery on the screen and in the recent history;
+// a quoted copy of either, a longer id, or the previous format's opening
+// line proves nothing.
 func TestReceiptLineInNewHeaderOpening(t *testing.T) {
 	id := "01020304"
-	open := "[soho:peer] #" + id + " Message from another agent — local/w14:p1, sent " + peerTestSentTime + "."
-	if !receiptLineIn(open, id) {
-		t.Fatalf("the new opening line of this id is not a receipt: %q", open)
+	open := "[soho:peer:" + id + "]"
+	close := "[/soho:peer:" + id + "]"
+	if !receiptLineIn(close, id) {
+		t.Fatalf("the exact closing line of this id is not a receipt: %q", close)
 	}
-	if !receiptLineIn("  "+open, id) {
-		t.Fatalf("the indented opening line is not a receipt: %q", open)
+	if !receiptLineIn("  "+close, id) {
+		t.Fatalf("the indented closing line is not a receipt: %q", close)
 	}
-	if !receiptLineIn("› "+open, id) {
-		t.Fatalf("the history-prefixed opening line is not a receipt: %q", open)
+	if !receiptLineIn("› "+close, id) {
+		t.Fatalf("the history-prefixed closing line is not a receipt: %q", close)
+	}
+	if receiptLineIn(open, id) {
+		t.Fatalf("the opening line alone proved receipt: %q", open)
+	}
+	if receiptLineIn("  "+open, id) {
+		t.Fatalf("the indented opening line proved receipt: %q", open)
+	}
+	if receiptLineIn("› "+open, id) {
+		t.Fatalf("the history-prefixed opening line proved receipt: %q", open)
 	}
 	if receiptLineIn("> "+open, id) {
 		t.Fatalf("a quoted copy of the opening line proved receipt: %q", open)
@@ -170,8 +189,19 @@ func TestReceiptLineInNewHeaderOpening(t *testing.T) {
 	if receiptLineIn("  > "+open, id) {
 		t.Fatalf("an indented quoted copy proved receipt: %q", open)
 	}
-	if receiptLineIn("[soho:peer] #01020304abcd Message from another agent — local/w14:p9.", id) {
+	if receiptLineIn("> "+close, id) {
+		t.Fatalf("a quoted copy of the closing line proved receipt: %q", close)
+	}
+	if receiptLineIn("status ok."+close, id) {
+		t.Fatalf("a closing line glued to other text proved receipt: %q", close)
+	}
+	if receiptLineIn("[soho:peer:01020304abcd]", id) {
 		t.Fatal("a longer id with this one as a prefix proved receipt")
+	}
+	// The previous format's opening line is not the receipt of a new-format
+	// send (DJA-610 part B).
+	if receiptLineIn("[soho:peer] #"+id+" Message from another agent — local/w14:p1, sent "+peerTestSentTime+".", id) {
+		t.Fatal("the previous format's opening line proved receipt")
 	}
 }
 
@@ -190,11 +220,11 @@ func TestSendHeaderModelFromRoster(t *testing.T) {
 		{"a roster row carrying a model puts it in the Sender line",
 			"soho-s4\tw0test:p0b\tpi\t-\topenai\t\tstate-dir\t2026-10-09T14:00:00Z\tgpt-5.1\n",
 			peer.PeerSender{Ref: "local/w0test:p0b", Name: "soho-s4", Kind: "pi", Model: "gpt-5.1"},
-			"Sender: name soho-s4; kind pi; model gpt-5.1."},
+			"Sender: soho-s4 (local/w0test:p0b); kind pi; model gpt-5.1."},
 		{"a roster row without a model column emits no model item",
 			"soho-s4\tw0test:p0b\tpi\t-\n",
 			peer.PeerSender{Ref: "local/w0test:p0b", Name: "soho-s4", Kind: "pi"},
-			"Sender: name soho-s4; kind pi."},
+			"Sender: soho-s4 (local/w0test:p0b); kind pi."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			id := "01020304"
@@ -257,13 +287,14 @@ func TestAssignmentDeliveryHeaderIsMetadataOnly(t *testing.T) {
 	if len(prompts) != 1 {
 		t.Fatalf("delivery=%+v", prompts)
 	}
-	wantMessage := "[soho:peer] #" + id + " Message from another agent — local/ws:p1, sent " + peerTestSentTime + ".\n" +
-		"Sender: name author; kind codex; role implementer; model gpt-5.4.\n" +
+	wantMessage := "[soho:peer:" + id + "]\n" +
+		"Sender: author (local/ws:p1); kind codex; role implementer; model gpt-5.4.\n" +
+		"Sent: " + peerTestSentTime + "\n" +
 		fmt.Sprintf("Reply within this assignment: soho send author --assignment %s --type review.question \"<your reply>\"\n", a.ID) +
-		`The message follows, each line quoted with "> ".` + "\n" +
+		`A message from another agent follows, each line quoted with "> ".` + "\n" +
 		fmt.Sprintf("Assignment: %s; type: review.question; round: %d; revision: %s.\n\n", a.ID, a.Round, a.Revision) +
 		"> question\n" +
-		"[/soho:peer] #" + id + " end of message"
+		"[/soho:peer:" + id + "]"
 	if prompts[0].Argv[3] != wantMessage {
 		t.Fatalf("message=%q want=%q", prompts[0].Argv[3], wantMessage)
 	}

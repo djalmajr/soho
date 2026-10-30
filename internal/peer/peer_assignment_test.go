@@ -98,10 +98,10 @@ func TestAssignedSendSubmitsOnceToWorkingRecipient(t *testing.T) {
 		t.Fatalf("unexpected delivery: %+v", prompts)
 	}
 	message := prompts[0].Argv[3]
-	headerID := strings.Fields(strings.SplitN(message, "\n", 2)[0])[1]
-	// The closing line closes the peer marker with a slash (PeerEndPrefix);
+	headerID := strings.TrimSuffix(strings.TrimPrefix(strings.SplitN(message, "\n", 2)[0], "[soho:peer:"), "]")
+	// The closing line is the tag with the slash and the id inside it;
 	// the assignment message keeps its header, metadata and quoted body.
-	wantTail := "> First line with \"quotes\" and \\path\n> Segunda linha Ω\n>\n> Last line\n[/soho:peer] " + headerID + " end of message"
+	wantTail := "> First line with \"quotes\" and \\path\n> Segunda linha Ω\n>\n> Last line\n[/soho:peer:" + headerID + "]"
 	if !strings.HasSuffix(message, wantTail) {
 		t.Fatalf("multiline body or closing marker was changed: %q", message)
 	}

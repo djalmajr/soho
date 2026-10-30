@@ -309,10 +309,10 @@ func TestSendClaudeComposerBorders(t *testing.T) {
 // the arrival over the window: sent, exit 0, no key.
 func TestSendClaudeStalledRealScreen(t *testing.T) {
 	id, prompt := stalledID(t)
-	// DJA-318: the frozen rc.14 capture holds the former generation's
-	// markers; the stalled check proves the arrival over the current ones,
-	// so the capture's marker lines are mapped to the soho forms.
-	screen := strings.ReplaceAll(strings.ReplaceAll(rc14ClaudeScreen, "[herdr-soho:peer]", "[/soho:peer]"), "debf6313", id)
+	// The frozen rc.14 capture holds the former generation's marker; the
+	// stalled check proves the arrival over the current closing line, so
+	// the capture's marker line is mapped to it.
+	screen := strings.Replace(rc14ClaudeScreen, "[herdr-soho:peer] #debf6313 end of message", "[/soho:peer:"+id+"]", 1)
 	pre := claudeBoxSep + "\n❯\n" + claudeBoxSep + "\n  [Opus 5.5] ██████░░░░ 67% [5h:8% 2h56m] [7d:54% 3d10h] [main*]\n"
 	rules := []fakecli.Rule{
 		{Argv: []string{"agent", "get", "w0test:p0a"}, Call: 1, Stdout: agentJSONKind("claude", "done", "1")},
@@ -359,7 +359,7 @@ func TestSendClaudeStalledTranscript(t *testing.T) {
 	configRoot := t.TempDir()
 	transcriptPath := claudeTranscriptPath(t, configRoot, cwd)
 	writeClaudeTranscript(t, transcriptPath, `{"type":"user","message":{"content":"earlier conversation"}}`+"\n")
-	userLine := `{"type":"user","message":{"content":"` + peer.PeerEndLine(id) + `"}}`
+	userLine := transcriptUserLine(t, prompt)
 	working := "✻ Fluttering… (9s · ↓ 135 tokens)\n"
 	rules := []fakecli.Rule{
 		{Argv: []string{"agent", "get", "w0test:p0a"}, ArgvPrefix: true, Stdout: claudeSessionAgentJSON("done", "1", cwd)},
@@ -393,7 +393,7 @@ func TestSendPiStalledTranscript(t *testing.T) {
 	sessionsRoot := t.TempDir()
 	sessionPath := piTranscriptSessionPath(sessionsRoot)
 	writePiSessionFile(t, sessionPath, piSessionLine("user", "earlier conversation")+"\n")
-	userLine := piSessionLine("user", peer.PeerEndLine(id))
+	userLine := piSessionLine("user", prompt)
 	working := "working on the task…\n"
 	rules := []fakecli.Rule{
 		{Argv: []string{"agent", "get", "w0test:p0a"}, ArgvPrefix: true, Stdout: piSessionAgentJSON("done", "1", sessionPath)},
@@ -429,7 +429,7 @@ func TestSendClaudeStalledQueueNotProof(t *testing.T) {
 	configRoot := t.TempDir()
 	transcriptPath := claudeTranscriptPath(t, configRoot, cwd)
 	writeClaudeTranscript(t, transcriptPath, `{"type":"user","message":{"content":"earlier conversation"}}`+"\n")
-	userLine := `{"type":"user","message":{"content":"` + peer.PeerEndLine(id) + `"}}`
+	userLine := transcriptUserLine(t, prompt)
 	// The message sits in the open queue above the box borders: the box
 	// itself holds a bare ❯, so the stalled Enter branch is not taken.
 	queued := "✻ Fluttering… (9s · ↓ 135 tokens)\n" + prompt + "\nPress up to edit queued messages\n" +
@@ -514,15 +514,15 @@ func TestClaudeAlternatePromptBelowHistoryPair(t *testing.T) {
 		border,
 		"❯ old row",
 		border,
-		"› [soho:peer] #" + id + " Message from another agent",
+		"› " + peer.PeerOpenTag(id),
 		"  > hello",
-		"  [/soho:peer] #" + id + " end of message",
+		"  " + peer.PeerEndLine(id),
 		"  status footer",
 	}, "\n") + "\n"
 	if !idInInputBox("claude", screen, id) {
 		t.Fatalf("a typed marker under a history '─' pair must stay in the box:\n%s", screen)
 	}
-	if !messageStillInScreen("claude", screen, "[/soho:peer] #"+id+" end of message", id) {
+	if !messageStillInScreen("claude", screen, peer.PeerEndLine(id), id) {
 		t.Fatalf("messageStillInScreen must keep the typed message:\n%s", screen)
 	}
 	if idInInputBox("claude", rc14ClaudeScreen, "debf6313") {
@@ -537,9 +537,9 @@ func TestClaudeFooterBareIDIsNotTyped(t *testing.T) {
 	const id = "01020304"
 	border := strings.Repeat("─", 40)
 	screen := strings.Join([]string{
-		"❯ [soho:peer] #" + id + " Message from another agent",
+		"❯ " + peer.PeerOpenTag(id),
 		"  > hello",
-		"  [/soho:peer] #" + id + " end of message",
+		"  " + peer.PeerEndLine(id),
 		"✻ Working… (3s)",
 		border,
 		"❯",

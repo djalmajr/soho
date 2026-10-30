@@ -110,7 +110,7 @@ func TestSendPiTranscriptProof(t *testing.T) {
 		}
 		f := newFixture(t, rules)
 		f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
-		userLine := piSessionLine("user", peer.PeerEndLine(id))
+		userLine := piSessionLine("user", prompt)
 		done := appendAfterPrompt(t, filepath.Join(filepath.Dir(f.bin), "herdr.calls.jsonl"), sessionPath, id, userLine)
 		code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "hello"})
 		if code != 0 || out != "sent to local/w0test:p0a\n" || stderr != "" {
@@ -220,7 +220,7 @@ func TestSendPiTranscriptProof(t *testing.T) {
 		// The session already holds a user line with this marker before the
 		// send: the pre-send count is one, and a line that does not move the
 		// count is not delivery.
-		writePiSessionFile(t, sessionPath, piSessionLine("user", peer.PeerEndLine(id))+"\n")
+		writePiSessionFile(t, sessionPath, piSessionLine("user", peer.PeerOpenTag(id))+"\n")
 		rules := []fakecli.Rule{
 			{Argv: []string{"agent", "get", "w0test:p0a"}, ArgvPrefix: true, Stdout: piSessionAgentJSON("working", "1", sessionPath)},
 			{Argv: []string{"agent", "read", "w0test:p0a", "--source", "visible"}, ArgvPrefix: true, Stdout: piWorkingScreen},
@@ -245,7 +245,7 @@ func TestSendPiTranscriptProof(t *testing.T) {
 		// The message sits in the Steering queue above the input box: the
 		// session already holds the taken line, but the message is not read
 		// yet, so the count growth is not arrival.
-		screen := piSendScreen("old turn output\nSteering: [soho:peer] #01020304 Message from another agent", "")
+		screen := piSendScreen("old turn output\nSteering: "+peer.PeerOpenTag("01020304")+" Message from another agent", "")
 		rules := []fakecli.Rule{
 			{Argv: []string{"agent", "get", "w0test:p0a"}, ArgvPrefix: true, Stdout: piSessionAgentJSON("working", "1", sessionPath)},
 			{Argv: []string{"agent", "read", "w0test:p0a", "--source", "visible"}, ArgvPrefix: true, Stdout: screen},
@@ -254,7 +254,7 @@ func TestSendPiTranscriptProof(t *testing.T) {
 		}
 		f := newFixture(t, rules)
 		f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
-		userLine := piSessionLine("user", peer.PeerEndLine(id))
+		userLine := piSessionLine("user", prompt)
 		done := appendAfterPrompt(t, filepath.Join(filepath.Dir(f.bin), "herdr.calls.jsonl"), sessionPath, id, userLine)
 		code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "hello"})
 		if code != 0 || !strings.HasPrefix(out, "queued for local/w0test:p0a") || stderr != "" {
@@ -345,7 +345,7 @@ func TestSendRemotePiTranscriptNotArmed(t *testing.T) {
 	// D7: a remote target cannot resolve "local/-" back to this machine, so
 	// the header names the pane on the sender's hostname.
 	prompt := peer.PeerHeaderRemote("-", "Run2Biz.local", "-", "-", "-", id) + "\n\n> hello\n" + peer.PeerEndLine(id)
-	userLine := piSessionLine("user", peer.PeerEndLine(id))
+	userLine := piSessionLine("user", prompt)
 	preScreen := "❯ \n"
 	// The local pane with the same id: a wrongly armed proof would consult it.
 	// Its session file holds the delivered marker line (appended by the

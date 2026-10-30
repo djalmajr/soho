@@ -81,7 +81,11 @@ function checkPeer(text) {
 
 export default function (pi) {
   pi.on("input", async (event, ctx) => {
-    if (typeof event.text !== "string" || !event.text.includes("[soho:peer]")) {
+    // The prefilter accepts the current format's opening tag
+    // [soho:peer:<id>] and the previous format's marker [soho:peer]
+    // (accepted for one release); the exact check runs in the soho hook
+    // inbound --pi command.
+    if (typeof event.text !== "string" || !event.text.includes("[soho:peer")) {
       return { action: "continue" };
     }
     const result = await checkPeer(event.text);

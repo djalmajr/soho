@@ -34,7 +34,7 @@ func TestSendRemoteClaudeTranscriptNotArmed(t *testing.T) {
 	// D7: a remote target cannot resolve "local/-" back to this machine, so
 	// the header names the pane on the sender's hostname.
 	prompt := peer.PeerHeaderRemote("-", "Run2Biz.local", "-", "-", "-", id) + "\n\n> hello\n" + peer.PeerEndLine(id)
-	userLine := `{"type":"user","message":{"content":"` + peer.PeerEndLine(id) + `"}}`
+	userLine := transcriptUserLine(t, prompt)
 	preScreen := "❯ \n"
 	rules := []fakecli.Rule{
 		{Argv: []string{"--machine", "windows", "agent", "get", "w0test:p0a"}, ArgvPrefix: true, Stdout: agentJSONKind("claude", "idle", "1")},

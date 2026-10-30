@@ -19,9 +19,6 @@ func TestSendArrivalBusyR3GrowthUnreadableWarning(t *testing.T) {
 	// after the 500 ms window must prove the arrival before the deadline.
 	const id = "01020304"
 	const cwd = "/tmp/claude-work"
-	// The transcript line holds the real peer end line (with the # marker),
-	// the way Claude Code records the taken message.
-	userLine := `{"type":"user","message":{"content":"` + peer.PeerEndLine(id) + `"}}`
 	newPrompt := func(t *testing.T) string {
 		t.Helper()
 		oldReader := rand.Reader
@@ -34,6 +31,9 @@ func TestSendArrivalBusyR3GrowthUnreadableWarning(t *testing.T) {
 	}
 
 	prompt := newPrompt(t)
+	// The transcript line holds the whole peer prompt (the opening tag
+	// line included), the way Claude Code records the taken message.
+	userLine := transcriptUserLine(t, prompt)
 	configRoot := t.TempDir()
 	transcriptPath := claudeTranscriptPath(t, configRoot, cwd)
 	writeClaudeTranscript(t, transcriptPath, `{"type":"user","message":{"content":"earlier conversation"}}`+"\n")

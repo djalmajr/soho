@@ -23,19 +23,32 @@ const maxTranscriptScan = 8 << 20
 
 // refusalLineIn reports whether the line is the receiver's refusal of this
 // message: a line that, normalized as receiptLineIn normalizes, and not
-// quoted, starts with `[soho:peer-refused] #<id>` followed by something that
-// is not hex. result is the refusal's name ("refused" when the line names
-// none). Another message's id is not this refusal.
+// quoted, starts with `[soho:peer-refused:<id>]` followed by something that
+// is not hex — the marker a current receiver prints — or with the previous
+// generation's `[soho:peer-refused] #<id>` followed by a non-hex character,
+// which an older receiver still prints. result is the refusal's name
+// ("refused" when the line names none). Another message's id is not this
+// refusal.
 func refusalLineIn(line, id string) (result string, ok bool) {
 	rest := refusalText(line)
-	open := strings.ReplaceAll(peerauth.RefusalMarker, " ", "") + id
-	if !strings.HasPrefix(rest, open) {
-		return "", false
+	if open := "[soho:peer-refused:" + id + "]"; strings.HasPrefix(rest, open) {
+		// The tag's closing bracket sits right after the id, so a longer id
+		// is not this message's refusal.
+		return refusalResult(rest[len(open):])
 	}
-	after := rest[len(open):]
-	if after != "" && isHexRune(rune(after[0])) {
-		return "", false
+	if open := "[soho:peer-refused]#" + id; strings.HasPrefix(rest, open) {
+		after := rest[len(open):]
+		if after != "" && isHexRune(rune(after[0])) {
+			return "", false // a longer id is not this refusal
+		}
+		return refusalResult(after)
 	}
+	return "", false
+}
+
+// refusalResult names the refusal a line carries after its marker: the
+// result word when it names one, "refused" when it names none.
+func refusalResult(after string) (string, bool) {
 	if named := refusalResultRE.FindString(after); named != "" {
 		return named, true
 	}

@@ -91,7 +91,7 @@ func TestSendCodexHistory(t *testing.T) {
 		lines := strings.Split(codexEvidenceScreen(t), "\n")
 		for i := range lines {
 			if strings.HasPrefix(lines[i], "›") {
-				lines[i] = "› [soho:peer] #" + id + " …"
+				lines[i] = "› " + peer.PeerOpenTag(id) + " …"
 			}
 		}
 		box := strings.Join(lines, "\n")
@@ -135,7 +135,7 @@ func TestSendCodexHistory(t *testing.T) {
 		// The real screen with the message enqueued above the composer,
 		// waiting for the turn to end.
 		queue := strings.Replace(codexEvidenceScreen(t), "› Ask Codex to do anything",
-			"↳ [soho:peer] #"+id+" Message from another agent\n\n› Ask Codex to do anything", 1)
+			"↳ "+peer.PeerOpenTag(id)+" Message from another agent\n\n› Ask Codex to do anything", 1)
 		rules := []fakecli.Rule{
 			{Argv: []string{"agent", "get", "w0test:p0a"}, Call: 1, Stdout: agentJSONKind("codex", "working", "1")},
 			{Argv: []string{"agent", "read", "w0test:p0a", "--source", "visible"}, Call: 1, Stdout: codexPreScreen(t)},
