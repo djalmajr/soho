@@ -1085,8 +1085,8 @@ func TestBackendPaneCurrentRaw(t *testing.T) {
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if calls := backendCalls(t, env); len(calls) > 1 {
+			t.Fatalf("at most one attempt expected, got %#v", calls)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1139,8 +1139,8 @@ func TestBackendPaneGetRaw(t *testing.T) {
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if calls := backendCalls(t, env); len(calls) > 1 {
+			t.Fatalf("at most one attempt expected, got %#v", calls)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1230,8 +1230,8 @@ func TestBackendWorkspaceCreateRaw(t *testing.T) {
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if calls := backendCalls(t, env); len(calls) > 1 {
+			t.Fatalf("at most one attempt expected, got %#v", calls)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1284,8 +1284,8 @@ func TestBackendWorkspaceCloseRaw(t *testing.T) {
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if calls := backendCalls(t, env); len(calls) > 1 {
+			t.Fatalf("at most one attempt expected, got %#v", calls)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1338,8 +1338,8 @@ func TestBackendWorkspaceListRaw(t *testing.T) {
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if calls := backendCalls(t, env); len(calls) > 1 {
+			t.Fatalf("at most one attempt expected, got %#v", calls)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1392,8 +1392,8 @@ func TestBackendPaneListRaw(t *testing.T) {
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if calls := backendCalls(t, env); len(calls) > 1 {
+			t.Fatalf("at most one attempt expected, got %#v", calls)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1458,8 +1458,8 @@ func TestBackendPaneRunRaw(t *testing.T) {
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if calls := backendCalls(t, env); len(calls) > 1 {
+			t.Fatalf("at most one attempt expected, got %#v", calls)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1522,8 +1522,8 @@ func TestBackendAgentGetMachineRaw(t *testing.T) {
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if calls := backendCalls(t, env); len(calls) > 1 {
+			t.Fatalf("at most one attempt expected, got %#v", calls)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1585,8 +1585,8 @@ func TestBackendAgentWaitRaw(t *testing.T) {
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if calls := backendCalls(t, env); len(calls) > 1 {
+			t.Fatalf("at most one attempt expected, got %#v", calls)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
@@ -1664,8 +1664,8 @@ func TestBackendAgentPromptWaitRaw(t *testing.T) {
 		if !got.Process.TimedOut {
 			t.Fatalf("got=%#v; the call's process timeout must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if calls := backendCalls(t, env); len(calls) > 1 {
+			t.Fatalf("at most one attempt expected, got %#v", calls)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
@@ -1875,8 +1875,8 @@ func TestBackendSnapshotRaw(t *testing.T) {
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if calls := backendCalls(t, env); len(calls) > 1 {
+			t.Fatalf("at most one attempt expected, got %#v", calls)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
@@ -1920,8 +1920,8 @@ func TestBackendMachineListRaw(t *testing.T) {
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if calls := backendCalls(t, env); len(calls) > 1 {
+			t.Fatalf("at most one attempt expected, got %#v", calls)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {

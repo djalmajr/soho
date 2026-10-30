@@ -2,6 +2,7 @@ package collaboration
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,7 +30,7 @@ func TestResolveParticipantForwardsThePerCallContext(t *testing.T) {
 	}
 	stateDir := t.TempDir()
 	core.RosterAppend(stateDir, []string{"worker", "w1:p9", "grok", "implementer", "xai", "pane-1", repo, "now", "grok-4.7", "task", "implementer", "review"})
-	agent := `{"result":{"agent":{"name":"worker","pane_id":"w1:p9","agent":"grok","workspace_id":"ws-1","cwd":"` + repo + `","agent_session":{"kind":"claude","value":"sess-1"}}}}`
+	agent := `{"result":{"agent":{"name":"worker","pane_id":"w1:p9","agent":"grok","workspace_id":"ws-1","cwd":` + jsonString(t, repo) + `,"agent_session":{"kind":"claude","value":"sess-1"}}}}`
 	bin := t.TempDir()
 	if _, err := fakecli.Install(t, bin, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agent}}); err != nil {
 		t.Fatal(err)
@@ -58,4 +59,14 @@ func TestResolveParticipantForwardsThePerCallContext(t *testing.T) {
 	if _, err := ResolveParticipant(stateDir, "worker", env, cancelled); err == nil {
 		t.Fatal("a pre-cancelled per-call context must fail the participant check; the context is not forwarded to the agent get")
 	}
+}
+
+// jsonString quotes s as a JSON string: a Windows path holds backslashes.
+func jsonString(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
