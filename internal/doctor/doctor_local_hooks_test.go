@@ -21,8 +21,6 @@ func TestDoctorLocalAndSharedHooks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newInboundDoctor(t)
 			d.env["TMPDIR"] = t.TempDir()
-			d.user("inbound_auth=warn\n")
-			d.key("local")
 			for file, command := range map[string]string{"settings.json": tc.shared, "settings.local.json": tc.local} {
 				if command != "" {
 					d.write(filepath.Join(d.cwd, ".claude", file), `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":`+quoteCommand(command)+`}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder"}]}]}}`, 0600)

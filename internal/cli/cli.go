@@ -36,7 +36,7 @@ var knownCommands = map[string]bool{
 	"layout-plan": true, "env": true, "mutation-guard": true, "mutation-copy": true, "review-snapshot": true,
 	"reopen": true, "compact": true, "metrics": true, "copies": true, "gc": true,
 	"procs": true, "install": true, "promote": true,
-	"collaborate": true, "capabilities": true, "hook": true, "job": true, "peer-key": true,
+	"collaborate": true, "capabilities": true, "hook": true, "job": true,
 }
 
 var frictionLogPath string
@@ -312,8 +312,6 @@ func Run(args []string, env platform.Env) (code int) {
 		// The job family loads no Herdr environment, never calls Herdr and
 		// leaves frictionLogPath empty (it runs outside Herdr).
 		return cmdJob(args[1:], decisionEnv, commandCwd, launch)
-	case "peer-key":
-		return cmdPeerKey(args[1:], decisionEnv)
 	case "kinds":
 		kinds.CmdKinds(decisionEnv, platform.Current())
 		return 0

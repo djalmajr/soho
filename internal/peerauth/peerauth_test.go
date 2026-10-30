@@ -1,8 +1,6 @@
 package peerauth_test
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,34 +11,32 @@ import (
 	"github.com/djalmajr/soho/internal/peerauth"
 )
 
-// secretMarker is a fake secret placed in message bodies: it must never reach
-// a block reason, the receiver's log or the replay cache.
-const secretMarker = "SECRET-DJA196-BODY"
-
 var testNow = time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 
-func sent(at time.Time) string { return at.UTC().Format(time.RFC3339) }
+func sentAt(at time.Time) string { return at.UTC().Format(time.RFC3339) }
 
 // spec describes a peer message the way the sender builds it.
 type spec struct {
-	id      string
-	remote  bool
-	host    string // remote opening: `<pane> on <host>`
-	ref     string // local opening: the sender reference
-	pane    string
-	name    string
-	kind    string
-	role    string
-	model   string
-	from    string
-	sent    time.Time
-	replyTo string
-	body    []string
+	id     string
+	remote bool
+	host   string // remote opening: `<pane> on <host>`
+	ref    string // local opening: the sender reference
+	pane   string
+	name   string
+	kind   string
+	role   string
+	model  string
+	sent   time.Time
+	body   []string
+	// tail is appended to the Sender line, after the last item, before the
+	// period: the items an older sender adds (`from <label>`,
+	// `sig v1:<hex>`).
+	tail string
 }
 
 func (s spec) senderItems() []string {
 	var items []string
-	for _, kv := range [][2]string{{"name", s.name}, {"kind", s.kind}, {"role", s.role}, {"model", s.model}, {"from", s.from}} {
+	for _, kv := range [][2]string{{"name", s.name}, {"kind", s.kind}, {"role", s.role}, {"model", s.model}} {
 		if kv[1] != "" {
 			items = append(items, kv[0]+" "+kv[1])
 		}
@@ -48,7 +44,8 @@ func (s spec) senderItems() []string {
 	return items
 }
 
-// unsigned is the message as `soho send` assembles it before signing.
+// unsigned is the message as `soho send` assembles it (the sender no longer
+// adds a signature; spec.tail carries one when it models an older sender).
 func (s spec) unsigned() string {
 	id := s.id
 	if id == "" {
@@ -68,27 +65,28 @@ func (s spec) unsigned() string {
 		if host == "" {
 			host = "mac.local"
 		}
-		opening = fmt.Sprintf("[soho:peer] #%s Message from another agent — %s on %s, sent %s.", id, pane, host, sent(at))
+		opening = fmt.Sprintf("[soho:peer] #%s Message from another agent — %s on %s, sent %s.", id, pane, host, sentAt(at))
 		reply = fmt.Sprintf("Reply with: soho send <this machine's name in your herdr machine list>/%s \"<your reply>\" (this machine is %s)", pane, host)
 	} else {
 		ref := s.ref
 		if ref == "" {
 			ref = "local/w6X:p1"
 		}
-		opening = fmt.Sprintf("[soho:peer] #%s Message from another agent — %s, sent %s.", id, ref, sent(at))
+		opening = fmt.Sprintf("[soho:peer] #%s Message from another agent — %s, sent %s.", id, ref, sentAt(at))
 		reply = fmt.Sprintf("Reply with: soho send %s \"<your reply>\"", ref)
-	}
-	if s.replyTo != "" {
-		reply = s.replyTo
 	}
 	lines := []string{opening}
 	if items := s.senderItems(); len(items) > 0 {
-		lines = append(lines, "Sender: "+strings.Join(items, "; ")+".")
+		line := "Sender: " + strings.Join(items, "; ")
+		if s.tail != "" {
+			line += "; " + s.tail
+		}
+		lines = append(lines, line+".")
 	}
 	lines = append(lines, reply, `The message follows, each line quoted with "> ".`, "")
 	body := s.body
 	if len(body) == 0 {
-		body = []string{"hello " + secretMarker, "second line"}
+		body = []string{"hello", "second line"}
 	}
 	for _, line := range body {
 		lines = append(lines, "> "+line)
@@ -97,57 +95,34 @@ func (s spec) unsigned() string {
 	return strings.Join(lines, "\n")
 }
 
-func mustKey(t *testing.T, dir, name string) []byte {
-	t.Helper()
-	path, err := peerauth.NewKey(dir, name)
-	if err != nil {
-		t.Fatalf("NewKey(%s): %v", name, err)
-	}
-	key, status := peerauth.ReadKey(dir, name)
-	if status != peerauth.KeyOK {
-		t.Fatalf("ReadKey(%s) after NewKey(%s) = %v", name, path, status)
-	}
-	return key
-}
-
-func mustSign(t *testing.T, key []byte, message string) string {
-	t.Helper()
-	signed, err := peerauth.Sign(key, message)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return signed
-}
-
-// wrap puts a message the way Claude Code delivers a paste: with the
-// \n\n prefix and the pasted_content wrapper whose id repeats.
+// wrap puts a message the way Claude Code delivers a paste: with the \n\n
+// prefix and the pasted_content wrapper whose id repeats.
 func wrap(message string) string {
 	return "\n\n<pasted_content id=\"c967\">\n" + message + "\n</pasted_content id=\"c967\">\n"
 }
 
 type fixture struct {
-	t      *testing.T
-	dir    string
-	policy peerauth.Policy
+	t   *testing.T
+	dir string
 	// projectOff is the target project's inbound=off.
-	projectOff bool
-	now        time.Time
-	pane       string
-	reads      map[string]int
+	projectOff   bool
+	projectErr   error
+	now          time.Time
+	pane         string
+	projectReads int
 }
 
-func newFixture(t *testing.T, mode peerauth.Mode, allow ...string) *fixture {
+func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	return &fixture{t: t, dir: filepath.Join(t.TempDir(), "soho"), policy: peerauth.Policy{Mode: mode, Allow: allow}, now: testNow, pane: "w6X:p2", reads: map[string]int{}}
+	return &fixture{t: t, dir: filepath.Join(t.TempDir(), "soho"), now: testNow, pane: "w6X:p2"}
 }
 
 func (f *fixture) source() peerauth.Source {
 	return peerauth.Source{
-		Dir:    f.dir,
-		Policy: func() (peerauth.Policy, error) { f.reads["policy"]++; return f.policy, nil },
+		Dir: f.dir,
 		ProjectInboundOff: func() (bool, error) {
-			f.reads["project"]++
-			return f.projectOff, nil
+			f.projectReads++
+			return f.projectOff, f.projectErr
 		},
 		Pane: f.pane,
 		Now:  func() time.Time { return f.now },
@@ -182,13 +157,4 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(raw)
-}
-
-func randomHex(t *testing.T, n int) string {
-	t.Helper()
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		t.Fatal(err)
-	}
-	return hex.EncodeToString(b)
 }

@@ -2,9 +2,10 @@ package cli
 
 import (
 	"encoding/json"
-	"github.com/djalmajr/soho/internal/peerauth"
 	"strings"
 	"testing"
+
+	"github.com/djalmajr/soho/internal/peerauth"
 )
 
 func runCodexHook(t *testing.T, h *hookFix, prompt string) (int, string, string) {
@@ -22,12 +23,13 @@ func runCodexHookInput(t *testing.T, h *hookFix, input string) (int, string, str
 	defer func() { hookStdin = old }()
 	return runIn(t, []string{"hook", "inbound", "--codex"}, h.env, h.cwd)
 }
-func TestHookCodexInboundBlockJSON(t *testing.T) {
-	h := newHookFix(t, "enforce", "allowed")
+func TestHookCodexInboundProjectOffBlocks(t *testing.T) {
+	h := newHookFix(t)
+	h.projectOff()
 	id := nextID()
-	message := remoteMessage(t, id, "denied", h.key("denied"))
+	message := localMessage(id)
 	code, out, _ := runCodexHook(t, h, message)
-	reason := "[soho:peer-refused] #" + id + " refused-not-allowed\nThe message did not reach the model; nothing needs clearing."
+	reason := refusedLine(id, peerauth.RefusedInboundOff) + "\nThe message did not reach the model; nothing needs clearing."
 	raw, _ := json.Marshal(map[string]string{"decision": "block", "reason": reason})
 	if code != 0 || out != string(raw)+"\n" {
 		t.Fatalf("code=%d output=%q want=%s", code, out, raw)
@@ -38,19 +40,12 @@ func TestHookCodexInboundBlockJSON(t *testing.T) {
 	}
 }
 func TestHookCodexInboundPasses(t *testing.T) {
-	for _, name := range []string{"valid", "plain", "auth off"} {
+	for _, name := range []string{"peer message", "plain"} {
 		t.Run(name, func(t *testing.T) {
-			mode := "enforce"
-			if name == "auth off" {
-				mode = "off"
-			}
-			h := newHookFix(t, mode)
+			h := newHookFix(t)
 			message := "ordinary prompt"
-			if name == "valid" {
-				message = localMessage(t, nextID(), h.key("local"))
-			}
-			if name == "auth off" {
-				message = localMessage(t, nextID(), nil)
+			if name == "peer message" {
+				message = localMessage(nextID())
 			}
 			code, out, stderr := runCodexHook(t, h, message)
 			if code != 0 || out != "" || stderr != "" {
@@ -60,10 +55,10 @@ func TestHookCodexInboundPasses(t *testing.T) {
 	}
 }
 func TestHookCodexInboundProjectOffMatchesClaude(t *testing.T) {
-	h := newHookFix(t, "off")
+	h := newHookFix(t)
 	h.env["SOHO_INBOUND"] = "off"
 	id := nextID()
-	message := localMessage(t, id, nil)
+	message := localMessage(id)
 	code, out, _ := runCodexHook(t, h, message)
 	if code != 0 || !strings.Contains(out, string(peerauth.RefusedInboundOff)) {
 		t.Fatalf("project off: code=%d out=%s", code, out)
@@ -74,7 +69,7 @@ func TestHookCodexInboundProjectOffMatchesClaude(t *testing.T) {
 	}
 }
 func TestHookCodexInboundTooLarge(t *testing.T) {
-	h := newHookFix(t, "enforce")
+	h := newHookFix(t)
 	code, out, _ := runCodexHookInput(t, h, strings.Repeat("x", hookInputLimit+1))
 	want := map[string]string{"decision": "block", "reason": "[soho:peer-refused] prompt-too-large\nThe prompt is larger than 4 MiB, so its peer messages could not be checked; send it in smaller parts.\nThe message did not reach the model; nothing needs clearing."}
 	raw, _ := json.Marshal(want)

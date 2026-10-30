@@ -3,7 +3,6 @@ package peerauth
 import (
 	"sort"
 	"strings"
-	"time"
 	"unicode/utf8"
 )
 
@@ -140,10 +139,4 @@ func openingShape(line string) (remote bool, sent string) {
 	}
 	sent = strings.TrimSuffix(strings.TrimRight(line[at+len(sentSep):], " \t"), ".")
 	return remote, sent
-}
-
-// parseSent reads the send time; it is RFC 3339, as the sender writes it.
-func parseSent(sent string) (time.Time, bool) {
-	t, err := time.Parse(time.RFC3339, sent)
-	return t, err == nil
 }

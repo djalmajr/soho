@@ -143,8 +143,6 @@ type PeerSender struct {
 	Kind  string
 	Role  string
 	Model string
-	// From is the sender machine's label, set only on a signed remote message.
-	From string
 }
 
 // knownPeerField reports whether a cleaned header field is a value the
@@ -152,10 +150,10 @@ type PeerSender struct {
 func knownPeerField(v string) bool { return v != "" && v != "-" && v != "unknown" }
 
 // peerSenderLine is the header's Sender line: the known name/kind/role/model
-// items and the sender machine's `from` label, "; "-separated, ending with a
-// period (a signature, when the message has one, is added after the last item
-// by peerauth.Sign). It is "" when nothing is
-// known, and the header then omits the line.
+// items, "; "-separated, ending with a period. It is "" when nothing is
+// known, and the header then omits the line. A message from an older sender
+// may still carry a `from` and a `sig v1:` item on its Sender line; the
+// receiver treats those items as plain text.
 func peerSenderLine(s PeerSender) string {
 	items := []string{}
 	if knownPeerField(s.Name) {
@@ -169,9 +167,6 @@ func peerSenderLine(s PeerSender) string {
 	}
 	if knownPeerField(s.Model) {
 		items = append(items, "model "+s.Model)
-	}
-	if knownPeerField(s.From) {
-		items = append(items, "from "+s.From)
 	}
 	if len(items) == 0 {
 		return ""
@@ -1172,16 +1167,6 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			platform.Die(fmt.Sprintf("send: %s does not accept peer messages (inbound=off)", t.RefShown), 18)
 		}
 	}
-	// A key that exists but is not valid stops the send before anything is
-	// typed: the message never goes out unsigned in its place.
-	signing, signNote, signRefusal := planSigning(t.Machine, env)
-	if signRefusal != "" {
-		log(SenderRefOf(env), t.RefShown, "error")
-		platform.Die("send: "+signRefusal, 2)
-	}
-	if signNote != "" {
-		_, _ = fmt.Fprintln(platform.Stderr, signNote)
-	}
 	currentStatus := t.Status
 	if !now && (t.Status == "working" || t.Status == "blocked") {
 		// The agent_not_ready wait above already spent part of the send's
@@ -1332,7 +1317,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	quotedBody := QuotePeerBody(clean(body))
 	endLine := PeerEndLine(id)
 	field := HeaderField
-	sender := PeerSender{Ref: field(senderRef), Name: field(senderName), Kind: field(senderKind), Role: field(senderRole), Model: field(senderModel), From: signing.from}
+	sender := PeerSender{Ref: field(senderRef), Name: field(senderName), Kind: field(senderKind), Role: field(senderRole), Model: field(senderModel)}
 	header := PeerHeaderFor(sender, id)
 	if t.Machine != sessionref.LocalMachine {
 		// A remote target would resolve the sender's "local/<pane>" back to
@@ -1342,11 +1327,6 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			field(senderHostname()), id)
 	}
 	message := header + "\n\n" + quotedBody + "\n" + endLine
-	message, signErr := signMessage(signing, message)
-	if signErr != nil {
-		log(senderRef, t.RefShown, "error")
-		platform.Die("send: could not sign the message; nothing was sent", 2)
-	}
 	msgLines := strings.Count(message, "\n") + 1
 	recentLines := msgLines + 60
 	// A local Claude Code or pi target writes every taken message to its
