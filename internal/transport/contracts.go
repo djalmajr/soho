@@ -297,9 +297,12 @@ type Window interface {
 // fail-open handling, the raw pane current and pane get reads with
 // caller-owned exit and body handling, the local session-transcript path
 // resolutions (one agent get plus a local file), the local transcript
-// compact-boundary and user-marker counts, and the raw job workspace and
-// pane steps with the job's round-up timeout and caller-owned parsing;
-// snapshot and run-in-pane join it in the slice that moves their caller.
+// compact-boundary and user-marker counts, the raw job workspace and pane
+// steps with the job's round-up timeout and caller-owned parsing, and the
+// raw peer agent steps (the machine-prefixed agent get, the agent wait, the
+// waiting and bare agent prompts, the agent read with a source and an
+// optional line count, the agent send-keys) plus the raw session snapshot
+// and machine list with the caller's context, timeout and parsing.
 type LegacyTransport interface {
 	// ProcessInfo returns the raw process info a backend reports for a pane.
 	ProcessInfo(ctx context.Context, target Target, call Call) Reply[json.RawMessage]
@@ -412,6 +415,65 @@ type LegacyTransport interface {
 	// one-step run fails: a not-found binary, a timeout, a nil status or a
 	// non-zero status.
 	PaneRunRaw(ctx context.Context, paneID string, argv []string, call Call) Reply[string]
+	// AgentGetMachineRaw runs one `agent get <id>` with the machine prefix
+	// the target's machine names (no prefix when the machine is empty or
+	// local) and the call's timeout, and returns the raw process result
+	// (Value carries the stdout, possibly empty) so the caller keeps its own
+	// fail-open, timeout and body-parsing handling. It never retries and
+	// does not parse the body.
+	AgentGetMachineRaw(ctx context.Context, target Target, call Call) Reply[string]
+	// AgentWaitRaw runs one `agent wait <id> --until idle --until done
+	// --timeout <timeoutMS>` with the machine prefix the target's machine
+	// names and the call's timeout as the process timeout, and returns the
+	// raw process result (Value carries the stdout) so the caller keeps its
+	// own TimedOut, structured-error and exit-status handling. timeoutMS is
+	// the logical wait bound rendered into the argv; the process timeout is
+	// the call's, which the caller sums. It never retries and does not parse
+	// the body.
+	AgentWaitRaw(ctx context.Context, target Target, timeoutMS int, call Call) Reply[string]
+	// AgentPromptWaitRaw runs one `agent prompt <id> <body> --wait --until
+	// working --until blocked --until idle --until done --timeout
+	// <timeoutMS>` with the machine prefix the target's machine names, the
+	// call's timeout as the process timeout, and merged output (the raw
+	// result's stdout holds the merged stream), and returns the raw process
+	// result (Value carries the stdout) so the caller keeps its own TimedOut,
+	// structured-error and exit-status handling. timeoutMS is the logical
+	// wait bound rendered into the argv; the process timeout is the call's,
+	// which the caller sums. It never retries and does not parse the body.
+	AgentPromptWaitRaw(ctx context.Context, target Target, body string, timeoutMS int, call Call) Reply[string]
+	// AgentPromptRaw runs one bare `agent prompt <id> <body>` (no wait
+	// flags) with the machine prefix the target's machine names and the
+	// call's timeout, and returns the raw process result (Value carries the
+	// stdout) so the caller keeps its own exit-status, timeout and
+	// structured-error handling. It never retries and does not parse the
+	// body.
+	AgentPromptRaw(ctx context.Context, target Target, body string, call Call) Reply[string]
+	// AgentReadSourceRaw runs one `agent read <id> --source <source>` with
+	// the machine prefix the target's machine names, an optional `--lines
+	// <n>` when lines is non-nil, and the call's timeout, and returns the
+	// raw process result (Value carries the stdout) so the caller keeps its
+	// own fallback and exit-status handling. It never retries and does not
+	// parse the body.
+	AgentReadSourceRaw(ctx context.Context, target Target, source string, lines *int, call Call) Reply[string]
+	// AgentSendKeysRaw runs one `agent send-keys <id> <key>` with the machine
+	// prefix the target's machine names and the call's timeout, and returns
+	// the raw process result: Value is true only when the call is not a
+	// lookup failure and exits 0, and the raw result stays on the reply for
+	// the caller's own exit-status judgment. It never retries and does not
+	// parse the output.
+	AgentSendKeysRaw(ctx context.Context, target Target, key string, call Call) Reply[bool]
+	// SnapshotRaw runs one `api snapshot` with the machine prefix the
+	// target's machine names and the call's timeout, and returns the raw
+	// process result (Value carries the stdout) so the caller keeps its own
+	// exit-status and body-parsing handling. The per-call context bounds the
+	// run. It never retries and does not parse the body.
+	SnapshotRaw(ctx context.Context, target Target, call Call) Reply[string]
+	// MachineListRaw runs one `machine list --json` with the call's timeout
+	// and returns the raw process result (Value carries the stdout) so the
+	// caller keeps its own exit-status and body-parsing handling. The
+	// per-call context bounds the run. It never retries and does not parse
+	// the body.
+	MachineListRaw(ctx context.Context, call Call) Reply[string]
 }
 
 // Runtime is the second runtime capability: the operations whose caller

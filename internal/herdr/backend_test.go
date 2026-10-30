@@ -1427,3 +1427,459 @@ func TestBackendPaneRunRaw(t *testing.T) {
 		}
 	})
 }
+
+// TestBackendAgentGetMachineRaw: the legacy raw machine-prefixed agent get
+// issues one `agent get <id>` (with --machine when the target names a
+// non-local machine) with the call's timeout, returns the raw stdout and the
+// raw process result, and never retries or parses the body.
+func TestBackendAgentGetMachineRaw(t *testing.T) {
+	const body = `{"result":{"agent":{"agent_status":"working"}}}`
+	t.Run("local argv: one call, raw stdout", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "p1"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentGetMachineRaw(context.Background(), transport.Target{ID: "p1"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid || got.Err != nil || got.Process.Status == nil || *got.Process.Status != 0 {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"agent", "get", "p1"}})
+	})
+	t.Run("a named machine keeps the --machine prefix, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"--machine", "box1", "agent", "get", "w9:p1"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentGetMachineRaw(context.Background(), transport.Target{Machine: "box1", ID: "w9:p1"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"--machine", "box1", "agent", "get", "w9:p1"}})
+	})
+	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"agent", "get", "p9"}, Call: 1, Code: 1, Stderr: `{"error":{"code":"agent_not_found","message":"gone"}}`},
+			{Argv: []string{"agent", "get", "p9"}, Call: 2, Stdout: body},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentGetMachineRaw(context.Background(), transport.Target{ID: "p9"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 || got.Process.Stderr == "" {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+	t.Run("the call's timeout bounds the run", func(t *testing.T) {
+		timeout := fakeTimeout(25 * time.Millisecond)
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "p1"}, Delay: timeoutDelay(timeout), Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentGetMachineRaw(context.Background(), transport.Target{ID: "p1"}, transport.Call{Timeout: timeout})
+		if !got.Process.TimedOut || got.Err == nil {
+			t.Fatalf("got=%#v; the deadline must cut the run", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one attempt expected, got %#v", calls)
+		}
+	})
+	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
+		env := platform.Env{"PATH": t.TempDir(), "TMPDIR": t.TempDir()}
+		svc := New(env)
+		got := svc.Legacy.AgentGetMachineRaw(context.Background(), transport.Target{ID: "p1"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if !got.Process.NotFound {
+			t.Fatalf("got=%#v", got)
+		}
+	})
+}
+
+// TestBackendAgentWaitRaw: the legacy raw agent wait issues one
+// `agent wait <id> --until idle --until done --timeout <timeoutMS>` (with
+// --machine when the target names a non-local machine) under the call's
+// timeout as the process timeout, returns the raw result, and never retries.
+func TestBackendAgentWaitRaw(t *testing.T) {
+	const body = `{"result":{}}`
+	const logical = 1234
+	waitArgv := []string{"agent", "wait", "w0:p1", "--until", "idle", "--until", "done", "--timeout", "1234"}
+	t.Run("local argv with the logical bound, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: waitArgv, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentWaitRaw(context.Background(), transport.Target{ID: "w0:p1"}, logical, transport.Call{Timeout: fakeTimeout(2 * time.Second)})
+		if got.Value != body || !got.Valid || got.Err != nil {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{waitArgv})
+	})
+	t.Run("a named machine keeps the --machine prefix, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: append([]string{"--machine", "box1"}, waitArgv...), Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentWaitRaw(context.Background(), transport.Target{Machine: "box1", ID: "w0:p1"}, logical, transport.Call{Timeout: fakeTimeout(2 * time.Second)})
+		if got.Value != body || !got.Valid {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{append([]string{"--machine", "box1"}, waitArgv...)})
+	})
+	t.Run("the process timeout is the call's, not the logical bound", func(t *testing.T) {
+		// The call budget (2s) exceeds the fake's 1.2s sleep while the
+		// logical bound (100ms) does not: only a process timeout taken from
+		// the call lets the run finish.
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "wait", "w0:p1", "--until", "idle", "--until", "done", "--timeout", "100"}, Delay: 1200, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentWaitRaw(context.Background(), transport.Target{ID: "w0:p1"}, 100, transport.Call{Timeout: fakeTimeout(2 * time.Second)})
+		if got.Process.TimedOut || !got.Valid {
+			t.Fatalf("got=%#v; the 1.2s run must fit the call's 2s process timeout", got)
+		}
+	})
+	t.Run("a timed-out run keeps the raw TimedOut result, one call", func(t *testing.T) {
+		timeout := fakeTimeout(25 * time.Millisecond)
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: waitArgv, Delay: timeoutDelay(timeout), Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentWaitRaw(context.Background(), transport.Target{ID: "w0:p1"}, logical, transport.Call{Timeout: timeout})
+		if !got.Process.TimedOut || got.Err == nil {
+			t.Fatalf("got=%#v; the deadline must cut the run", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one attempt expected, got %#v", calls)
+		}
+	})
+	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: waitArgv, Call: 1, Code: 3, Stderr: `{"error":{"code":"herdr_down","message":"socket"}}`},
+			{Argv: waitArgv, Call: 2, Stdout: body},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentWaitRaw(context.Background(), transport.Target{ID: "w0:p1"}, logical, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 3 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+}
+
+// TestBackendAgentPromptWaitRaw: the legacy raw waiting agent prompt issues
+// one `agent prompt <id> <body> --wait --until working --until blocked
+// --until idle --until done --timeout <timeoutMS>` with merged output, under
+// the call's timeout as the process timeout, and never retries or parses.
+func TestBackendAgentPromptWaitRaw(t *testing.T) {
+	const body = `{"result":{"sent":true}}`
+	const logical = 15000
+	promptArgv := []string{"agent", "prompt", "w0:p1", "hello world", "--wait", "--until", "working", "--until", "blocked", "--until", "idle", "--until", "done", "--timeout", "15000"}
+	t.Run("local argv with the wait flags, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: promptArgv, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentPromptWaitRaw(context.Background(), transport.Target{ID: "w0:p1"}, "hello world", logical, transport.Call{Timeout: fakeTimeout(2 * time.Second)})
+		if got.Value != body || !got.Valid || got.Err != nil {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{promptArgv})
+	})
+	t.Run("a named machine keeps the --machine prefix, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: append([]string{"--machine", "box1"}, promptArgv...), Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentPromptWaitRaw(context.Background(), transport.Target{Machine: "box1", ID: "w0:p1"}, "hello world", logical, transport.Call{Timeout: fakeTimeout(2 * time.Second)})
+		if got.Value != body || !got.Valid {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{append([]string{"--machine", "box1"}, promptArgv...)})
+	})
+	t.Run("the output is merged into the raw stdout", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: promptArgv, Stdout: "out-marker", Stderr: "err-marker"}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentPromptWaitRaw(context.Background(), transport.Target{ID: "w0:p1"}, "hello world", logical, transport.Call{Timeout: fakeTimeout(2 * time.Second)})
+		if !strings.Contains(got.Process.Stdout, "out-marker") || !strings.Contains(got.Process.Stdout, "err-marker") {
+			t.Fatalf("merged stdout=%q; both streams must reach the raw stdout", got.Process.Stdout)
+		}
+		if got.Process.Stderr != "" {
+			t.Fatalf("merged stderr=%q; the merged run keeps one stream", got.Process.Stderr)
+		}
+	})
+	t.Run("the process timeout is the call's, not the logical bound", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "prompt", "w0:p1", "slow", "--wait", "--until", "working", "--until", "blocked", "--until", "idle", "--until", "done", "--timeout", "100"}, Delay: 1200, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentPromptWaitRaw(context.Background(), transport.Target{ID: "w0:p1"}, "slow", 100, transport.Call{Timeout: fakeTimeout(2 * time.Second)})
+		if got.Process.TimedOut || !got.Valid {
+			t.Fatalf("got=%#v; the 1.2s run must fit the call's 2s process timeout", got)
+		}
+	})
+	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: promptArgv, Call: 1, Code: 1, Stderr: `{"error":{"code":"agent_blocked","message":"busy"}}`},
+			{Argv: promptArgv, Call: 2, Stdout: body},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentPromptWaitRaw(context.Background(), transport.Target{ID: "w0:p1"}, "hello world", logical, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+}
+
+// TestBackendAgentPromptRaw: the legacy bare agent prompt issues one
+// `agent prompt <id> <body>` with no wait flags and no merged output, with
+// the machine prefix when the target names a non-local machine, and never
+// retries or parses the body.
+func TestBackendAgentPromptRaw(t *testing.T) {
+	const body = `{"result":{"sent":true}}`
+	t.Run("local argv without wait flags, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "prompt", "w0:p1", "deliver"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentPromptRaw(context.Background(), transport.Target{ID: "w0:p1"}, "deliver", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid || got.Err != nil {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"agent", "prompt", "w0:p1", "deliver"}})
+	})
+	t.Run("a named machine keeps the --machine prefix, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"--machine", "box1", "agent", "prompt", "w9:p1", "deliver"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentPromptRaw(context.Background(), transport.Target{Machine: "box1", ID: "w9:p1"}, "deliver", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"--machine", "box1", "agent", "prompt", "w9:p1", "deliver"}})
+	})
+	t.Run("the streams stay separate", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "prompt", "w0:p1", "deliver"}, Stdout: "out-marker", Stderr: "err-marker"}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentPromptRaw(context.Background(), transport.Target{ID: "w0:p1"}, "deliver", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Process.Stdout != "out-marker" || got.Process.Stderr != "err-marker" {
+			t.Fatalf("got=%#v; the bare prompt keeps the streams separate", got.Process)
+		}
+	})
+	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"agent", "prompt", "w0:p1", "deliver"}, Call: 1, Code: 1, Stderr: `{"error":{"code":"agent_not_found","message":"gone"}}`},
+			{Argv: []string{"agent", "prompt", "w0:p1", "deliver"}, Call: 2, Stdout: body},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentPromptRaw(context.Background(), transport.Target{ID: "w0:p1"}, "deliver", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+}
+
+// TestBackendAgentReadSourceRaw: the legacy raw agent read issues one
+// `agent read <id> --source <source>` with an optional `--lines <n>` (omitted
+// for a nil count) and the machine prefix when the target names a non-local
+// machine, and never retries.
+func TestBackendAgentReadSourceRaw(t *testing.T) {
+	const body = "screen-lines"
+	t.Run("no line count omits the flag, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "read", "w0:p1", "--source", "visible"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentReadSourceRaw(context.Background(), transport.Target{ID: "w0:p1"}, "visible", nil, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid || got.Err != nil {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"agent", "read", "w0:p1", "--source", "visible"}})
+	})
+	t.Run("a line count is rendered as --lines <n>, one call", func(t *testing.T) {
+		lines := 67
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "read", "w0:p1", "--source", "recent-unwrapped", "--lines", "67"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentReadSourceRaw(context.Background(), transport.Target{ID: "w0:p1"}, "recent-unwrapped", &lines, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"agent", "read", "w0:p1", "--source", "recent-unwrapped", "--lines", "67"}})
+	})
+	t.Run("a named machine keeps the --machine prefix, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"--machine", "box1", "agent", "read", "w9:p1", "--source", "visible"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentReadSourceRaw(context.Background(), transport.Target{Machine: "box1", ID: "w9:p1"}, "visible", nil, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"--machine", "box1", "agent", "read", "w9:p1", "--source", "visible"}})
+	})
+	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"agent", "read", "w0:p1", "--source", "recent"}, Call: 1, Code: 1, Stderr: `{"error":{"code":"agent_not_idle","message":"working"}}`},
+			{Argv: []string{"agent", "read", "w0:p1", "--source", "recent"}, Call: 2, Stdout: body},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentReadSourceRaw(context.Background(), transport.Target{ID: "w0:p1"}, "recent", nil, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+}
+
+// TestBackendAgentSendKeysRaw: the legacy raw agent send-keys issues one
+// `agent send-keys <id> <key>` with the machine prefix when the target names
+// a non-local machine, reports success on the reply and the raw result on it,
+// and never retries.
+func TestBackendAgentSendKeysRaw(t *testing.T) {
+	t.Run("local argv, exit 0 is success, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "send-keys", "w0:p1", "enter"}}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentSendKeysRaw(context.Background(), transport.Target{ID: "w0:p1"}, "enter", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if !got.Value || !got.Valid || got.Err != nil {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"agent", "send-keys", "w0:p1", "enter"}})
+	})
+	t.Run("a named machine keeps the --machine prefix, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"--machine", "box1", "agent", "send-keys", "w9:p1", "escape"}}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentSendKeysRaw(context.Background(), transport.Target{Machine: "box1", ID: "w9:p1"}, "escape", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if !got.Value || !got.Valid {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"--machine", "box1", "agent", "send-keys", "w9:p1", "escape"}})
+	})
+	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"agent", "send-keys", "w0:p1", "enter"}, Call: 1, Code: 1, Stderr: "gone"},
+			{Argv: []string{"agent", "send-keys", "w0:p1", "enter"}, Call: 2},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentSendKeysRaw(context.Background(), transport.Target{ID: "w0:p1"}, "enter", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value || got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
+		env := platform.Env{"PATH": t.TempDir(), "TMPDIR": t.TempDir()}
+		svc := New(env)
+		got := svc.Legacy.AgentSendKeysRaw(context.Background(), transport.Target{ID: "w0:p1"}, "enter", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if !got.Process.NotFound || got.Value {
+			t.Fatalf("got=%#v", got)
+		}
+	})
+}
+
+// TestBackendSnapshotRaw: the legacy raw session snapshot issues one
+// `api snapshot` (with --machine when the target names a non-local machine)
+// under the call's timeout, returns the raw result, and never retries.
+func TestBackendSnapshotRaw(t *testing.T) {
+	const body = `{"result":{"snapshot":{"panes":[]}}}`
+	t.Run("local argv, one call, raw stdout", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"api", "snapshot"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.SnapshotRaw(context.Background(), transport.Target{}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid || got.Err != nil {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"api", "snapshot"}})
+	})
+	t.Run("a named machine keeps the --machine prefix, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"--machine", "box1", "api", "snapshot"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.SnapshotRaw(context.Background(), transport.Target{Machine: "box1"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"--machine", "box1", "api", "snapshot"}})
+	})
+	t.Run("the call's timeout bounds the run", func(t *testing.T) {
+		timeout := fakeTimeout(25 * time.Millisecond)
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"api", "snapshot"}, Delay: timeoutDelay(timeout), Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.SnapshotRaw(context.Background(), transport.Target{}, transport.Call{Timeout: timeout})
+		if !got.Process.TimedOut || got.Err == nil {
+			t.Fatalf("got=%#v; the deadline must cut the run", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one attempt expected, got %#v", calls)
+		}
+	})
+	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"api", "snapshot"}, Call: 1, Code: 1, Stderr: "socket gone"},
+			{Argv: []string{"api", "snapshot"}, Call: 2, Stdout: body},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.SnapshotRaw(context.Background(), transport.Target{}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+}
+
+// TestBackendMachineListRaw: the legacy raw machine list issues one
+// `machine list --json` under the call's timeout, returns the raw result, and
+// never retries.
+func TestBackendMachineListRaw(t *testing.T) {
+	const body = `[{"label":"local"},{"label":"box1"}]`
+	t.Run("local argv, one call, raw stdout", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"machine", "list", "--json"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.MachineListRaw(context.Background(), transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid || got.Err != nil {
+			t.Fatalf("got=%#v", got)
+		}
+		wantArgv(t, backendCalls(t, env), [][]string{{"machine", "list", "--json"}})
+	})
+	t.Run("the call's timeout bounds the run", func(t *testing.T) {
+		timeout := fakeTimeout(25 * time.Millisecond)
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"machine", "list", "--json"}, Delay: timeoutDelay(timeout), Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.MachineListRaw(context.Background(), transport.Call{Timeout: timeout})
+		if !got.Process.TimedOut || got.Err == nil {
+			t.Fatalf("got=%#v; the deadline must cut the run", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one attempt expected, got %#v", calls)
+		}
+	})
+	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"machine", "list", "--json"}, Call: 1, Code: 1, Stderr: "herdr down"},
+			{Argv: []string{"machine", "list", "--json"}, Call: 2, Stdout: body},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.MachineListRaw(context.Background(), transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+}
