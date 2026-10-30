@@ -109,6 +109,12 @@ var peerInboundKeys = []string{"inbound_auth", "inbound_allow"}
 // frozen parity oracle; config set and config get accept them.
 var startupDialogKeys = []string{"hooks_review"}
 
+// transportKeys selects soho's worker transport (DJA-603 stage 2a): herdr,
+// the default, or hc, the herdr-core CLI. Like startupDialogKeys it stays
+// out of ConfigScalarKeys, so `soho config` keeps the row order pinned by
+// the frozen parity oracle; config set and config get accept it.
+var transportKeys = []string{"transport"}
+
 var KnownKinds = []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode"}
 var EffortLadder = []string{"low", "medium", "high", "xhigh", "max"}
 
@@ -323,6 +329,12 @@ func HooksReviewModeOk(value string) bool {
 	return value == "trust" || value == "block"
 }
 
+// TransportValueOk reports whether a transport value is one of the two the
+// key accepts (herdr, hc).
+func TransportValueOk(value string) bool {
+	return value == "herdr" || value == "hc"
+}
+
 // TrustCwdMode fails closed on invalid config or environment values.
 func TrustCwdMode(ctx *Config, env platform.Env) string {
 	if Cfg(ctx, "trust_cwd", "on", env) == "on" {
@@ -352,6 +364,41 @@ func HooksReviewMode(ctx *Config, env platform.Env) string {
 		}
 	}
 	return "trust"
+}
+
+// TransportMode resolves the worker transport (DJA-603 stage 2a): herdr by
+// default — an absent or invalid value counts as herdr — or hc, the
+// herdr-core CLI. The SOHO_TRANSPORT environment layer wins over the file
+// layers, the way Cfg reads every key. Only doctor reads it so far: spawn,
+// dispatch and wait still use herdr.
+func TransportMode(ctx *Config, env platform.Env) string {
+	value := "herdr"
+	if ctx != nil {
+		value = Cfg(ctx, "transport", "herdr", env)
+	} else if raw := env.Get("SOHO_TRANSPORT"); raw != "" {
+		value = raw
+	}
+	if value == "hc" {
+		return "hc"
+	}
+	return "herdr"
+}
+
+// TransportModeAt is TransportMode for cwd without the defaults layer, whose
+// transport is the default anyway: finding that layer needs the skill
+// directory, which dies when there is none and materializes the bundled
+// skill otherwise, and capabilities --json must neither fail nor write. The
+// user, project and session layers load as LoadConfig loads them.
+func TransportModeAt(env platform.Env, cwd string) string {
+	ctx := Config{Entries: make(map[string]ConfigEntry), Order: make([]string, 0)}
+	loadConfigFile(EffectiveUserConfigFile(platform.Current(), env, UserSelection{}), "user", &ctx)
+	if file := ProjectConfigFileUsed(env, cwd); file != "" {
+		loadConfigFile(file, "project", &ctx)
+	}
+	if file := SessionConfPath(&ctx, env, cwd); file != "" {
+		loadConfigFile(file, "session", &ctx)
+	}
+	return TransportMode(&ctx, env)
 }
 
 // CompactTimeoutDefaultMS is the compact phase's timeout when the
@@ -406,6 +453,11 @@ func ConfigKeyOk(key string) bool {
 			return true
 		}
 	}
+	for _, scalar := range transportKeys {
+		if scalar == key {
+			return true
+		}
+	}
 	return dottedKeyRE.MatchString(key)
 }
 
@@ -454,6 +506,8 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return callerCheckModeOk(value)
 	case key == "hooks_review":
 		return HooksReviewModeOk(value)
+	case key == "transport":
+		return TransportValueOk(value)
 	case key == "worker_messages":
 		return value == "off" || value == "policy"
 	case key == "panes":

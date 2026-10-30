@@ -445,3 +445,7 @@ job_auto_cleanup=on
 # job_human_input_minutes is the minutes a job waits for human input before its automatic close, from 1 to 1440; the value in effect at job start is recorded with the job and a restart keeps it.
 job_human_input_minutes=5
 job_wake_cmd=
+# Worker transport: `herdr` (the default; spawn, dispatch and wait and every
+# other check today) or `hc`, the herdr-core CLI. Only `doctor` reads hc so
+# far; the other commands still use herdr.
+transport=herdr

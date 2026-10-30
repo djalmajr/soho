@@ -2,6 +2,8 @@ package doctor
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"github.com/djalmajr/soho/internal/codexenv"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
+	"github.com/djalmajr/soho/internal/hc"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/kinds"
@@ -297,6 +300,12 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	} else {
 		s.Warning("herdr CLI not in PATH")
 	}
+	// The transport=hc check sits next to the herdr version check it will
+	// join: with the default transport it runs nothing and prints nothing
+	// new.
+	if core.TransportMode(ctx, env) == "hc" {
+		doctorHcTransport(env, s)
+	}
 	home := platform.HomeDir(platform.Current(), env)
 	skill := ""
 	for _, p := range []string{filepath.Join(home, ".agents", "skills", "herdr", "SKILL.md"), filepath.Join(home, ".claude", "skills", "herdr", "SKILL.md")} {
@@ -491,6 +500,46 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	doctorPeerInbound(ctx, env, cwd, s)
 	doctorFootprint(ctx, env, cwd, s)
 	fmt.Fprintf(out, "first_run: %t\n%d ok, %d warning(s)\n", ProjectIsFirstRun(ctx, env, cwd), s.OK, s.Warn)
+}
+
+// doctorHcTransport is the transport=hc doctor check (DJA-603 stage 2a):
+// it runs the hc capability probe and prints exactly one line for the
+// outcome it reaches, plus the experimental warning in every case. It is
+// the only reader of transport so far: spawn, dispatch and wait still use
+// herdr.
+func doctorHcTransport(env platform.Env, s *Say) {
+	probe := hc.Probe(context.Background(), env)
+	var hcErr *hc.Error
+	switch {
+	case errors.Is(probe.Err, hc.ErrNotInstalled):
+		s.Warning("transport=hc but the hc CLI is not in PATH")
+	case errors.As(probe.Err, &hcErr) && hcErr.Kind == "unsupported_generation":
+		s.Warning(fmt.Sprintf("hc core speaks another protocol generation (%s); this soho speaks generation 1", hcErr.Hint))
+	case probe.Version != "" && !probe.VersionOK:
+		s.Warning(fmt.Sprintf("hc %s is older than %s, the oldest version this soho supports with transport=hc: update hc", probe.Version, hc.MinVersion))
+	case probe.Err != nil:
+		// A decoded error carries its kind ("" when the stderr was not the
+		// error JSON or the step failed to parse); the line keeps the
+		// format readable without inventing a kind.
+		kind, message := "", ""
+		if errors.As(probe.Err, &hcErr) {
+			kind = hcErr.Kind
+			message = hcErr.Message
+			if hcErr.Hint != "" {
+				message += " (" + hcErr.Hint + ")"
+			}
+		} else {
+			message = probe.Err.Error()
+		}
+		line := "hc core unavailable: "
+		if kind != "" {
+			line += kind + ": "
+		}
+		s.Warning(line + message)
+	default:
+		s.Ok(fmt.Sprintf("hc %s, core %s running, protocol generation 1", probe.Version, probe.CoreName))
+	}
+	s.Warning("transport=hc is experimental: only doctor reads it so far; spawn, dispatch and wait still use herdr")
 }
 
 // doctorFootprint warns when the team's total on-disk footprint (the
