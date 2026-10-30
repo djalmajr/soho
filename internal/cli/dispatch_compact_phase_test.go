@@ -798,10 +798,10 @@ func TestDispatchCompactSigKILLKeepsTheInterruptedMarker(t *testing.T) {
 	// Registered after t.TempDir, so it runs first: on Windows a fake herdr
 	// the killed child started can hold its exe for a moment after the kill,
 	// and the TempDir cleanup would fail with "Access is denied" (DJA-553).
-	// Other platforms remove an exited process's files at once.
-	if runtime.GOOS == "windows" {
-		t.Cleanup(func() { compactRemoveWithRetry(filepath.Join(root, "bin"), 10*time.Second) })
-	}
+	// On every platform the orphaned fake released below can still write its
+	// call log into bin while the cleanup removes it ("directory not empty",
+	// DJA-608), so bin is removed with retries everywhere.
+	t.Cleanup(func() { compactRemoveWithRetry(filepath.Join(root, "bin"), 10*time.Second) })
 	// The child's fake send-text waits for root/never. A fake herdr that
 	// outlives the kill (a partial taskkill on Windows leaves it orphaned)
 	// is released here, before the removals above, so it exits (DJA-566).
