@@ -166,7 +166,7 @@ func TestTrustRoot(t *testing.T) {
 				t.Fatalf("root=%q reason=%q want=%q cwd=%q", got, reason, want, cwd)
 			}
 			if name == "quote" {
-				if got := trustCwdArgument(got); got != `projects={"`+trustTOMLBasic(want)+`"={trust_level="trusted"}}` {
+				if got := trustCwdArgument(got); got != `projects={"`+trustTOMLBasic(want)+`"={trust_level='trusted'}}` {
 					t.Fatalf("argument=%q", got)
 				}
 			}
@@ -181,11 +181,24 @@ func TestTrustRoot(t *testing.T) {
 
 func TestTrustCwdArgument(t *testing.T) {
 	for _, tc := range []struct{ root, want string }{
-		{`/repo.with dots`, `projects={'/repo.with dots'={trust_level="trusted"}}`},
-		{`C:\O'Brien\a"b`, `projects={"C:\\O'Brien\\a\"b"={trust_level="trusted"}}`},
+		{`/repo.with dots`, `projects={'/repo.with dots'={trust_level='trusted'}}`},
+		{`C:\O'Brien\a"b`, `projects={"C:\\O'Brien\\a\"b"={trust_level='trusted'}}`},
+		{`C:\Users\dev\repo.git\team\app`, `projects={'C:\Users\dev\repo.git\team\app'={trust_level='trusted'}}`},
 	} {
 		if got := trustCwdArgument(tc.root); got != tc.want {
 			t.Fatalf("got=%q want=%q", got, tc.want)
+		}
+	}
+}
+
+// TestTrustCwdArgumentHasNoDoubleQuoteForAPlainRoot: PowerShell drops the
+// embedded double quotes of an argument it hands to a .cmd shim (npm's
+// codex.cmd on Windows), so the override of a root without a single quote
+// must carry none.
+func TestTrustCwdArgumentHasNoDoubleQuoteForAPlainRoot(t *testing.T) {
+	for _, root := range []string{`C:\Users\dev\repo.git\team\app`, `/Users/dev/repo`, `/repo with spaces`} {
+		if got := trustCwdArgument(root); strings.Contains(got, `"`) {
+			t.Fatalf("trustCwdArgument(%q) = %q holds a double quote", root, got)
 		}
 	}
 }
@@ -246,7 +259,7 @@ func TestSpawnTrustCwd(t *testing.T) {
 			}
 			enabled := tc.kind == "codex" && tc.mode == "on" && !tc.refused
 			if enabled {
-				wantTrust := `projects={"` + trustTOMLBasic(root) + `"={trust_level="trusted"}}`
+				wantTrust := `projects={"` + trustTOMLBasic(root) + `"={trust_level='trusted'}}`
 				if index < 1 || tail[index-1] != "-c" || tail[index] != wantTrust || !reflect.DeepEqual(tail[index+1:], []string{"--owner-config", "--owner-role", "--owner-cli"}) {
 					t.Fatalf("argv=%q", tail)
 				}

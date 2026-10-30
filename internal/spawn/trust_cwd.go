@@ -99,10 +99,17 @@ func trustWithin(parent, child string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// trustCwdArgument is the codex -c override that trusts root. The value is
+// a TOML literal string ('trusted'), not a basic one: PowerShell hands the
+// arguments of a .cmd shim (npm's codex.cmd on Windows) to cmd.exe in its
+// legacy mode, which drops embedded double quotes, and codex then reads
+// trust_level=trusted as a plain string instead of a table. A root that holds
+// a single quote still needs a basic-string key, which that path cannot
+// carry on Windows.
 func trustCwdArgument(root string) string {
 	key := "'" + root + "'"
 	if strings.Contains(root, "'") {
 		key = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(root) + `"`
 	}
-	return "projects={" + key + `={trust_level="trusted"}}`
+	return "projects={" + key + `={trust_level='trusted'}}`
 }

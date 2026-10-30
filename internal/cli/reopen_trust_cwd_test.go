@@ -42,7 +42,7 @@ func TestReopenTrustCwd(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", run.code, run.stderr)
 	}
 	root, _ := filepath.EvalSymlinks(f.cwd)
-	want := "projects={'" + root + `'={trust_level="trusted"}}`
+	want := "projects={'" + root + `'={trust_level='trusted'}}`
 	if !containsReopenArgPair(reopenStartArgv(run), "-c", want) {
 		t.Fatalf("missing trust pair: %q stderr=%q", reopenStartArgv(run), run.stderr)
 	}
