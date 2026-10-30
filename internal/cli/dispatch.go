@@ -419,9 +419,16 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// The check rides the dispatch's pre-send state read, which is taken
 	// here, before the first sidecar write.
 	var before herdr.AgentStateResult
+	// pi 1.4.0 signals an active compaction only through its input box
+	// border label ("Auto-compacting..." / "Compacting context...");
+	// Herdr's state stays "idle" the whole time, so a pi on that border is
+	// busy even though the state read says otherwise.
+	piCompacting := func() bool {
+		return kind == "pi" && provider.PiCompactingBorder(herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40)))
+	}
 	if checkOn {
 		before = herdr.AgentState(agent, env, herdr.Timeout, nil)
-		if whenIdle && before.State == "working" {
+		if whenIdle && (before.State == "working" || piCompacting()) {
 			fmt.Fprintf(platform.Stderr, "soho: dispatch: '%s' is still working; waiting for it to finish before sending (--when-idle)\n", agent)
 			started := platform.Now()
 			waitTimeout := parseTimeout(timeoutRaw)
@@ -437,7 +444,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				if left <= 0 {
 					timedOut()
 				}
-				if before.State != "working" {
+				if before.State != "working" && !piCompacting() {
 					break
 				}
 				time.Sleep(min(time.Duration(waitpkg.PollIntervalMs(env))*time.Millisecond, left))
@@ -461,7 +468,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				}
 			}
 		}
-		if !amend && !queue && (before.State == "working" || before.State == "blocked") {
+		if !amend && !queue && (before.State == "working" || before.State == "blocked" || piCompacting()) {
 			if ptr := taskreport.ReadTaskReportPointer(sd, agent); ptr != nil {
 				if cur, ok := ptr.Get("current"); ok {
 					if s, isStr := cur.(string); isStr && s != "" {
@@ -550,7 +557,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		text = fmt.Sprintf("Read the file %s in full and execute it. It amends the brief you are working on. When finished, write your report to %s and reply with exactly that path and nothing else.", composed, report)
 	}
 	// before and checkOn stand from before the first sidecar write (D25).
-	wasWorking := checkOn && before.State == "working"
+	wasWorking := checkOn && (before.State == "working" || piCompacting())
 	settleSecs := 20
 	rawSettle := core.Cfg(ctx, "prompt_settle_seconds", "20", env)
 	var settleErr error
