@@ -604,6 +604,21 @@ func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sa
 		}
 		return screen
 	}
+	// pi 1.4.0 signals an active compaction only through its input box border
+	// label ("Auto-compacting..." / "Compacting context..."); Herdr's state
+	// stays "idle" the whole time. Keep pi working until the border returns
+	// to normal, or an idle-with-no-report wait would settle on the first
+	// poll while pi is rewriting its context.
+	if rosterKind(sd, agent) == "pi" {
+		if provider.PiCompactingBorder(visible()) {
+			if _, ok := readWaitFile(sd, agent, "compacting"); !ok {
+				writeWaitFile(sd, agent, "compacting", "")
+				sendWarning(fmt.Sprintf("'%s' is compacting its context", agent))
+			}
+			return "working"
+		}
+		removeWaitFile(sd, agent, "compacting")
+	}
 	if st.State == "working" {
 		text := visible()
 		if p := provider.LostConnection(text); p != nil {
