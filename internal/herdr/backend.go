@@ -470,6 +470,81 @@ func (b *backend) AgentReadRaw(ctx context.Context, target transport.Target, sou
 	return transport.Reply[string]{Value: r.Stdout, Valid: true, Process: processResult(r)}
 }
 
+// AgentListRaw runs `agent list` once with the call's timeout and returns
+// the raw agent objects the adapter parses (one JSON value per agent), so
+// callers that read fields beyond the terminal projection keep them. The
+// adapter's die-on-failure behavior happens inside the wrapped call, exactly
+// as the caller's recover used to catch it.
+func (b *backend) AgentListRaw(ctx context.Context, call transport.Call) transport.Reply[[]json.RawMessage] {
+	agents := LiveAgents(b.env, timeoutFor(call))
+	out := make([]json.RawMessage, 0, len(agents))
+	for _, a := range agents {
+		out = append(out, json.RawMessage(jsonjs.Stringify(a)))
+	}
+	return transport.Reply[[]json.RawMessage]{Value: out, Valid: true}
+}
+
+// AgentGetRaw runs one `agent get <id>` with the call's timeout and returns
+// the raw process result: Value carries the stdout (possibly empty) and the
+// caller owns the fail-open and body-parsing handling. It never retries and
+// does not parse the body.
+func (b *backend) AgentGetRaw(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[string] {
+	r := runWithTimeout([]string{"agent", "get", target.ID}, b.env, timeoutFor(call), ctxArgs(ctx)...)
+	if !ok(r) {
+		return transport.Reply[string]{Value: r.Stdout, Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
+	}
+	return transport.Reply[string]{Value: r.Stdout, Valid: true, Process: processResult(r)}
+}
+
+// ClaudeTranscriptPath resolves the target's Claude Code session transcript
+// path: the adapter's one agent get (its fixed timeout) plus the local file
+// derivation; "" when any data is missing.
+func (b *backend) ClaudeTranscriptPath(ctx context.Context, target transport.Target) transport.Reply[string] {
+	return transport.Reply[string]{Value: ClaudeTranscriptPath(target.ID, b.env, ctxArgs(ctx)...), Valid: true}
+}
+
+// PiSessionPath resolves the target's pi session file path: the adapter's
+// one agent get (its fixed timeout) plus the local file derivation; "" when
+// any data is missing. The adapter does not take a per-call context, so ctx
+// is not forwarded.
+func (b *backend) PiSessionPath(ctx context.Context, target transport.Target) transport.Reply[string] {
+	return transport.Reply[string]{Value: PiSessionPath(target.ID, b.env), Valid: true}
+}
+
+// CountClaudeCompactBoundaries counts the compact-boundary lines of a
+// Claude Code session transcript file — a local read with no herdr call —
+// bounded by the per-call context; Err is set when the file cannot be read.
+func (b *backend) CountClaudeCompactBoundaries(ctx context.Context, path string) transport.Reply[int] {
+	n, ok := CountClaudeCompactBoundaries(path, ctxArgs(ctx)...)
+	if !ok {
+		return transport.Reply[int]{Err: &transport.Failure{Kind: transport.FailureCommand, Message: "the transcript is unreadable"}}
+	}
+	return transport.Reply[int]{Value: n, Valid: true}
+}
+
+// CountClaudeUserMarkerLines counts the lines of a Claude Code session
+// transcript file that carry the user record marker and the given peer
+// marker — a local read with no herdr call; Err is set when the file cannot
+// be read.
+func (b *backend) CountClaudeUserMarkerLines(ctx context.Context, path, marker string) transport.Reply[int] {
+	n, ok := CountClaudeUserMarkerLines(path, marker)
+	if !ok {
+		return transport.Reply[int]{Err: &transport.Failure{Kind: transport.FailureCommand, Message: "the transcript is unreadable"}}
+	}
+	return transport.Reply[int]{Value: n, Valid: true}
+}
+
+// CountPiUserMarkerLines counts the lines of a pi session file that carry
+// the given peer marker in a message entry — a local read with no herdr
+// call; Err is set when the file cannot be read.
+func (b *backend) CountPiUserMarkerLines(ctx context.Context, path, marker string) transport.Reply[int] {
+	n, ok := CountPiUserMarkerLines(path, marker)
+	if !ok {
+		return transport.Reply[int]{Err: &transport.Failure{Kind: transport.FailureCommand, Message: "the transcript is unreadable"}}
+	}
+	return transport.Reply[int]{Value: n, Valid: true}
+}
+
 // Runtime.
 
 // Start starts the requested agent in its pane:

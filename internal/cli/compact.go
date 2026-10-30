@@ -19,6 +19,7 @@ import (
 	"github.com/djalmajr/soho/internal/provider"
 	"github.com/djalmajr/soho/internal/spawn"
 	"github.com/djalmajr/soho/internal/text"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 // compactPollInterval is the pause between the compact's screen reads.
@@ -28,7 +29,7 @@ const compactPollInterval = 2 * time.Second
 // restoration. Its real clock is independent of the proof polling clock.
 type compactBudget struct {
 	ctx              context.Context
-	env              platform.Env
+	svc              transport.Services
 	screen           string
 	thinkingChanged  bool
 	thinkingRestored bool
@@ -55,21 +56,22 @@ func (b *compactBudget) sleep(d time.Duration) {
 	b.check()
 }
 
-func (b *compactBudget) state(agent string) herdr.AgentStateResult {
+func (b *compactBudget) state(agent string) stateProbe {
 	b.check()
-	r := herdr.AgentState(agent, b.env, herdr.Timeout, nil, b.ctx)
+	rep := b.svc.Runtime.Get(b.ctx, transport.Target{ID: agent}, transport.Call{Timeout: herdr.Timeout})
 	b.check()
-	return r
+	return stateFromReply(rep)
 }
 
 func (b *compactBudget) readOK(agent, source string, lines *int) (string, bool) {
 	b.check()
-	s, ok := herdr.AgentReadOK(b.env, agent, source, lines, b.ctx)
+	rep := b.svc.Runtime.Read(b.ctx, transport.Target{ID: agent}, transport.Read{Source: source, Lines: lines}, transport.Call{Timeout: herdr.Timeout})
 	b.check()
-	if ok {
-		b.screen = s
+	if rep.Err != nil {
+		return "", false
 	}
-	return s, ok
+	b.screen = rep.Value
+	return rep.Value, true
 }
 
 func (b *compactBudget) read(agent, source string, lines *int) string {
@@ -79,21 +81,21 @@ func (b *compactBudget) read(agent, source string, lines *int) string {
 
 func (b *compactBudget) sendText(pane, text string) bool {
 	b.check()
-	ok := herdr.PaneSendText(pane, text, b.env, b.ctx)
+	ok := b.svc.Terminal.SendText(b.ctx, transport.Target{ID: pane}, text, transport.Call{Timeout: herdr.Timeout}).Value
 	b.check()
 	return ok
 }
 
 func (b *compactBudget) sendKeys(pane, keys string) bool {
 	b.check()
-	ok := herdr.PaneSendKeys(pane, keys, b.env, b.ctx)
+	ok := b.svc.Runtime.Keys(b.ctx, transport.Target{ID: pane}, keys, true, transport.Call{Timeout: herdr.Timeout}).Value
 	b.check()
 	return ok
 }
 
 func (b *compactBudget) transcript(agent string) string {
 	b.check()
-	path := herdr.ClaudeTranscriptPath(agent, b.env, b.ctx)
+	path := b.svc.Legacy.ClaudeTranscriptPath(b.ctx, transport.Target{ID: agent}).Value
 	b.check()
 	b.transcriptPath = path
 	b.transcriptState = "missing"
@@ -105,14 +107,15 @@ func (b *compactBudget) transcript(agent string) string {
 
 func (b *compactBudget) boundaries(path string) (int, bool) {
 	b.check()
-	n, ok := herdr.CountClaudeCompactBoundaries(path, b.ctx)
+	rep := b.svc.Legacy.CountClaudeCompactBoundaries(b.ctx, path)
 	b.check()
+	ok := rep.Err == nil
 	if ok {
 		b.transcriptState = "counted"
 	} else {
 		b.transcriptState = "unreadable"
 	}
-	return n, ok
+	return rep.Value, ok
 }
 
 // compactComposerWindow is how long the composer confirm waits, after each
@@ -499,7 +502,7 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 	phaseStart := time.Now()
 	budgetCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
 	defer cancel()
-	budget := &compactBudget{ctx: budgetCtx, env: env, transcriptState: "missing"}
+	budget := &compactBudget{ctx: budgetCtx, svc: herdr.New(env), transcriptState: "missing"}
 	before := ""
 	timedOut := false
 	var timeoutElapsed int64
@@ -972,7 +975,7 @@ func compactPruneTimeoutScreens(waitDir, agent string) {
 // compactDieOnDeadWorker exits 4 (unavailable) or 6 (gone) with the same
 // message before the send and during the idle wait; it returns when the
 // worker is neither.
-func compactDieOnDeadWorker(agent string, state herdr.AgentStateResult) {
+func compactDieOnDeadWorker(agent string, state stateProbe) {
 	if state.State == "unavailable" {
 		cause := state.Cause
 		if cause == "" {
