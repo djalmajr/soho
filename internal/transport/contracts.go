@@ -290,9 +290,10 @@ type Window interface {
 }
 
 // LegacyTransport holds operations with no equivalent in a second backend.
-// Stage 1 exposes the process-info read, the exact rename contract, and the
-// raw agent existence check; snapshot and run-in-pane join it in the slice
-// that moves their caller.
+// Stage 1 exposes the process-info read, the exact rename contract, the raw
+// agent existence check, the raw one-attempt knowledge probe, and the raw
+// agent read with caller-owned exit handling; snapshot and run-in-pane join
+// it in the slice that moves their caller.
 type LegacyTransport interface {
 	// ProcessInfo returns the raw process info a backend reports for a pane.
 	ProcessInfo(ctx context.Context, target Target, call Call) Reply[json.RawMessage]
@@ -306,6 +307,19 @@ type LegacyTransport interface {
 	// failure and exits 0. It never retries and does not parse the body,
 	// so an exit-0 answer without an agent_status still reports true.
 	AgentGetOK(ctx context.Context, target Target, call Call) Reply[bool]
+	// AgentGetKnown is the raw one-attempt knowledge check for a target on
+	// its own machine (the machine prefix the target names): one agent get,
+	// Value true only when the call exits 0 and its body carries a
+	// non-empty string agent_status. A timeout, a lookup failure and every
+	// failed call report false with the cause; an exit-0 body without a
+	// usable agent_status is a well-formed observation of false, not an
+	// error.
+	AgentGetKnown(ctx context.Context, target Target, call Call) Reply[bool]
+	// AgentReadRaw runs the exact `agent read <id> --source <source>
+	// --lines <lines>` call once and returns the raw process result (Value
+	// carries the stdout) so the caller keeps its own fallback output and
+	// exit-code handling.
+	AgentReadRaw(ctx context.Context, target Target, source, lines string, call Call) Reply[string]
 }
 
 // Runtime is the second runtime capability: the operations whose caller

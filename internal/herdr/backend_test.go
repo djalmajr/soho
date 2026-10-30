@@ -584,6 +584,123 @@ func TestBackendAgentGetOK(t *testing.T) {
 	})
 }
 
+// TestBackendAgentGetKnown: the legacy raw knowledge check issues one agent
+// get (with the machine prefix for a non-local target) and reports known
+// only for an exit-0 body with a non-empty string agent_status; a failed
+// call is not retried.
+func TestBackendAgentGetKnown(t *testing.T) {
+	t.Run("local exit 0 with an agent_status reports known, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "p1"}, Stdout: `{"result":{"agent":{"name":"reviewer","agent_status":"working"}}}`}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentGetKnown(context.Background(), transport.Target{ID: "p1"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if !got.Value || !got.Valid || got.Err != nil || got.Process.Status == nil || *got.Process.Status != 0 {
+			t.Fatalf("got=%#v", got)
+		}
+		calls := backendCalls(t, env)
+		wantArgv(t, calls, [][]string{{"agent", "get", "p1"}})
+	})
+	t.Run("a non-local machine takes the machine prefix, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"--machine", "m1", "agent", "get", "p1"}, Stdout: `{"result":{"agent":{"agent_status":"idle"}}}`}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentGetKnown(context.Background(), transport.Target{Machine: "m1", ID: "p1"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if !got.Value || !got.Valid || got.Err != nil {
+			t.Fatalf("got=%#v", got)
+		}
+		calls := backendCalls(t, env)
+		wantArgv(t, calls, [][]string{{"--machine", "m1", "agent", "get", "p1"}})
+	})
+	t.Run("exit 0 without an agent_status is a well-formed false", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "p1"}, Stdout: `{"result":{"agent":{"name":"reviewer"}}}`}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentGetKnown(context.Background(), transport.Target{ID: "p1"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value || !got.Valid || got.Err != nil {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one call expected, got %#v", calls)
+		}
+	})
+	t.Run("a non-string agent_status is not known", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "p1"}, Stdout: `{"result":{"agent":{"agent_status":5}}}`}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentGetKnown(context.Background(), transport.Target{ID: "p1"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one call expected, got %#v", calls)
+		}
+	})
+	t.Run("a failed call reports false with the cause, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"--machine", "m1", "agent", "get", "p1"}, Call: 1, Code: 1, Stderr: `{"error":{"code":"agent_not_found"}}`},
+			{Argv: []string{"--machine", "m1", "agent", "get", "p1"}, Call: 2, Stdout: `{"result":{"agent":{"agent_status":"working"}}}`},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentGetKnown(context.Background(), transport.Target{Machine: "m1", ID: "p1"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value || got.Err == nil || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+	t.Run("a missing binary reports false without reaching the CLI", func(t *testing.T) {
+		env := platform.Env{"PATH": t.TempDir(), "TMPDIR": t.TempDir()}
+		svc := New(env)
+		got := svc.Legacy.AgentGetKnown(context.Background(), transport.Target{ID: "p1"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value || !got.Process.NotFound {
+			t.Fatalf("got=%#v", got)
+		}
+	})
+}
+
+// TestBackendAgentReadRaw: the legacy raw agent read issues the exact
+// `agent read <id> --source <source> --lines <lines>` argv once and returns
+// the raw process result (stdout on Value, the full result on Process) so
+// the caller keeps its own exit-code handling.
+func TestBackendAgentReadRaw(t *testing.T) {
+	t.Run("exit 0 returns the stdout, exact argv, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "read", "p1", "--source", "recent-unwrapped", "--lines", "120"}, Stdout: "line1\nline2\n"}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentReadRaw(context.Background(), transport.Target{ID: "p1"}, "recent-unwrapped", "120", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != "line1\nline2\n" || !got.Valid || got.Err != nil || got.Process.Status == nil || *got.Process.Status != 0 {
+			t.Fatalf("got=%#v", got)
+		}
+		calls := backendCalls(t, env)
+		wantArgv(t, calls, [][]string{{"agent", "read", "p1", "--source", "recent-unwrapped", "--lines", "120"}})
+	})
+	t.Run("a failed call keeps the partial stdout and the raw result, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"agent", "read", "p1", "--source", "recent-unwrapped", "--lines", "40"}, Call: 1, Code: 3, Stdout: "partial\n", Stderr: "boom"},
+			{Argv: []string{"agent", "read", "p1", "--source", "recent-unwrapped", "--lines", "40"}, Call: 2, Stdout: "recovered\n"},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentReadRaw(context.Background(), transport.Target{ID: "p1"}, "recent-unwrapped", "40", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != "partial\n" || got.Err == nil || got.Process.Stderr != "boom" || got.Process.Status == nil || *got.Process.Status != 3 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+	t.Run("a missing binary reports false without reaching the CLI", func(t *testing.T) {
+		env := platform.Env{"PATH": t.TempDir(), "TMPDIR": t.TempDir()}
+		svc := New(env)
+		got := svc.Legacy.AgentReadRaw(context.Background(), transport.Target{ID: "p1"}, "recent-unwrapped", "120", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if !got.Process.NotFound {
+			t.Fatalf("got=%#v", got)
+		}
+	})
+}
+
 // TestBackendSpawnRuntime: the spawn-slice capabilities (the Runtime methods
 // Start, CallerAgentName, SendText, GetGone and the LegacyTransport's Rename)
 // issue the exact argv the pre-transport spawn path used, with the same

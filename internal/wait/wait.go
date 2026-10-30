@@ -1,6 +1,7 @@
 package wait
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
@@ -25,6 +26,7 @@ import (
 	"github.com/djalmajr/soho/internal/spawn/cursorapproval"
 	"github.com/djalmajr/soho/internal/startup"
 	"github.com/djalmajr/soho/internal/taskreport"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 const enterRetryLimit = 3
@@ -199,13 +201,50 @@ func promptWindow(ctx *core.Config, env platform.Env) int64 {
 
 func sendWarning(message string) { core.Warn(message, frictionLogFile, "wait") }
 
+// stateProbe is the wait-side projection of a terminal state read: the
+// reported state, the unavailable cause and the rendered
+// state_change_seq ("" when the read carries none).
+type stateProbe struct {
+	State string
+	Cause string
+	Seq   string
+}
+
+// readScreen runs the agent's screen read through the transport with the
+// exact agent read call (source and optional lines, the adapter's fixed
+// timeout, its not-idle fallback) and reports whether it succeeded; a
+// failed read returns "" like before.
+func readScreen(svc transport.Services, agent, source string, lines *int) (string, bool) {
+	rep := svc.Runtime.Read(context.Background(), transport.Target{ID: agent}, transport.Read{Source: source, Lines: lines}, transport.Call{})
+	return rep.Value, rep.Err == nil
+}
+
+// readState runs the agent's state read through the transport with the same
+// call herdr.AgentState made (agent get under the adapter's default retry
+// pauses) and projects the reported state, the unavailable cause and the
+// rendered state_change_seq.
+func readState(svc transport.Services, agent string) stateProbe {
+	rep := svc.Runtime.Get(context.Background(), transport.Target{ID: agent}, transport.Call{Timeout: herdr.Timeout})
+	cause := ""
+	if rep.Err != nil {
+		cause = rep.Err.Message
+	}
+	return stateProbe{State: rep.Value.State, Cause: cause, Seq: string(rep.Value.Sequence)}
+}
+
+// sendAgentKey sends one raw key to the agent through the transport's
+// agent channel with the adapter's exact send-keys call and fixed timeout.
+func sendAgentKey(svc transport.Services, agent, key string) bool {
+	return svc.Runtime.Keys(context.Background(), transport.Target{ID: agent}, key, false, transport.Call{}).Value
+}
+
 // A fresh full visible read is required after reads that may fall back to
 // visible, and immediately before a wait consumer sends input to Cursor.
-func cursorMCPBlocked(sd, agent string, env platform.Env) bool {
+func cursorMCPBlocked(sd, agent string, svc transport.Services) bool {
 	if rosterKind(sd, agent) != "cursor" {
 		return false
 	}
-	screen, ok := herdr.AgentReadOK(env, agent, "visible", nil)
+	screen, ok := readScreen(svc, agent, "visible", nil)
 	if ok && cursorapproval.CursorMCPApproval(screen) {
 		sendWarning(fmt.Sprintf("agent '%s' requires approval of MCP servers; no input is sent — the operator must answer in the pane", agent))
 		return true
@@ -214,6 +253,7 @@ func cursorMCPBlocked(sd, agent string, env platform.Env) bool {
 }
 
 func TryAutoApprove(sd, agent string, ctx *core.Config, env platform.Env) bool {
+	svc := herdr.New(env)
 	if core.Cfg(ctx, "auto_approve", "off", env) != "on" {
 		return false
 	}
@@ -242,14 +282,14 @@ func TryAutoApprove(sd, agent string, ctx *core.Config, env platform.Env) bool {
 	if len(line) > 2 {
 		kind = line[2]
 	}
-	if cursorMCPBlocked(sd, agent, env) {
+	if cursorMCPBlocked(sd, agent, svc) {
 		return false
 	}
 	key := "enter"
 	if kind == "codex" {
 		key = "y"
 	}
-	if !herdr.AgentSendKeys(agent, key, env) {
+	if !sendAgentKey(svc, agent, key) {
 		return false
 	}
 	next := n + 1
@@ -264,7 +304,7 @@ func TryAutoApprove(sd, agent string, ctx *core.Config, env platform.Env) bool {
 	return true
 }
 
-func retryNotReceived(sd, agent, marker string, ctx *core.Config, env platform.Env, st herdr.AgentStateResult) string {
+func retryNotReceived(sd, agent, marker string, ctx *core.Config, env platform.Env, svc transport.Services) string {
 	window := promptWindow(ctx, env)
 	lastEpoch := markerEpoch(marker, 0)
 	attempts := 0
@@ -277,8 +317,8 @@ func retryNotReceived(sd, agent, marker string, ctx *core.Config, env platform.E
 		lastEpoch, _ = strconv.ParseInt(parts[1], 10, 64)
 	}
 	now := platform.Now().Unix()
-	screen := herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40))
-	if cursorMCPBlocked(sd, agent, env) {
+	screen, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
+	if cursorMCPBlocked(sd, agent, svc) {
 		return "blocked"
 	}
 	// The retry Enter needs the same composer proof as the dispatch: a
@@ -297,7 +337,7 @@ func retryNotReceived(sd, agent, marker string, ctx *core.Config, env platform.E
 	if attempts < enterRetryLimit && provider.DialogUI(rosterKind(sd, agent), screen) == "" {
 		next := attempts + 1
 		writeWaitFile(sd, agent, "enter-retry", fmt.Sprintf("%d %d\n", next, now))
-		if herdr.AgentSendKeys(agent, "enter", env) {
+		if sendAgentKey(svc, agent, "enter") {
 			sendWarning(fmt.Sprintf("prompt to '%s' was still in its input box; sent Enter again (%d of %d)", agent, next, enterRetryLimit))
 			return "working"
 		}
@@ -346,7 +386,7 @@ func reportStableAt(sd, agent, identity string) (int64, bool) {
 
 // reportAgentState checks report completion for wait and blocking dispatch.
 // Failed or missing panes preserve the report's authority.
-func reportAgentState(sd, agent, report string, ctx *core.Config, env platform.Env, stable bool, identity string) string {
+func reportAgentState(sd, agent, report string, ctx *core.Config, svc transport.Services, env platform.Env, stable bool, identity string) string {
 	max := reportWorkingMax(ctx, env)
 	done := func() string {
 		if !core.Nowrite(env) {
@@ -376,7 +416,7 @@ func reportAgentState(sd, agent, report string, ctx *core.Config, env platform.E
 	if max == 0 {
 		return done()
 	}
-	st := herdr.AgentState(agent, env, herdr.Timeout, nil)
+	st := readState(svc, agent)
 	switch st.State {
 	case "gone", "unavailable":
 		return done()
@@ -427,7 +467,7 @@ func reportAgentState(sd, agent, report string, ctx *core.Config, env platform.E
 }
 
 func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) string {
-	return probeAgent(sd, agent, report, ctx, env, nil)
+	return probeAgent(sd, agent, report, ctx, herdr.New(env), env, nil)
 }
 
 type probeScreen struct {
@@ -436,7 +476,7 @@ type probeScreen struct {
 	nativeWorking bool
 }
 
-func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sample *probeScreen) string {
+func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Services, env platform.Env, sample *probeScreen) string {
 	capture := func(text string, ok bool) string {
 		if sample != nil {
 			sample.read = true
@@ -460,7 +500,7 @@ func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sa
 		final, _ := readWaitFile(sd, agent, "report-working-final")
 		settled, _ := readWaitFile(sd, agent, "report-settled")
 		if (ok && strings.TrimSpace(prev) == size) || hasTimer || final == identity || settled == identity {
-			return reportAgentState(sd, agent, report, ctx, env, true, identity)
+			return reportAgentState(sd, agent, report, ctx, svc, env, true, identity)
 		}
 		removeWaitFile(sd, agent, "report-stable-at")
 		removeWaitFile(sd, agent, "report-working-final")
@@ -472,7 +512,7 @@ func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sa
 	removeWaitFile(sd, agent, "report-working-final")
 	removeWaitFile(sd, agent, "report-files-held")
 	removeWaitFile(sd, agent, "report-settled")
-	st := herdr.AgentState(agent, env, herdr.Timeout, nil)
+	st := readState(svc, agent)
 	nrFile := filepath.Join(sd, "wait", agent+".not-received")
 	queuedFile := filepath.Join(sd, "wait", agent+".queued")
 	retryFile := filepath.Join(sd, "wait", agent+".enter-retry")
@@ -496,7 +536,7 @@ func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sa
 	// demanded and ordinary in-progress output is never inferred away.
 	probeKind := field(strings.Split(core.RosterLine(sd, agent), "\t"), 2)
 	if startup.Enabled(probeKind) {
-		cursorScreen, cursorScreenOK := herdr.AgentReadOK(env, agent, "visible", nil)
+		cursorScreen, cursorScreenOK := readScreen(svc, agent, "visible", nil)
 		capture(cursorScreen, cursorScreenOK)
 		if ev := cursorapproval.Evaluate(probeKind, st.State, cursorScreen, cursorScreenOK); ev.Verdict == startup.VerdictBlocked || ev.Reason == startup.ReasonScreenIncomplete {
 			if ev.Reason == "mcp-approval" {
@@ -532,12 +572,13 @@ func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sa
 				_ = os.Remove(nrFile)
 				_ = os.Remove(retryFile)
 			} else {
-				return retryNotReceived(sd, agent, mark, ctx, env, st)
+				return retryNotReceived(sd, agent, mark, ctx, env, svc)
 			}
 		}
 	}
 	if st.State == "blocked" {
-		p := provider.ProviderDetectTexts(st.State, herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40)), "", "")
+		blockedRecent, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
+		p := provider.ProviderDetectTexts(st.State, blockedRecent, "", "")
 		if p != nil && (p.Status == "provider-refusal" || p.Cause == provider.LostConnectionCause) {
 			_ = os.Remove(queuedFile)
 			_ = os.Remove(retryFile)
@@ -557,7 +598,8 @@ func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sa
 			if len(line) > 2 {
 				kind = line[2]
 			}
-			visible := capture(herdr.AgentReadOK(env, agent, "visible", intPtr(40)))
+			visibleText, visibleOK := readScreen(svc, agent, "visible", intPtr(40))
+			visible := capture(visibleText, visibleOK)
 			if provider.DialogKind(kind, visible) == "question" {
 				writeWaitFile(sd, agent, "question", provider.QuestionText(visible)+"\n")
 				clearQueued()
@@ -599,7 +641,8 @@ func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sa
 	screenRead := false
 	visible := func() string {
 		if !screenRead {
-			screen = capture(herdr.AgentReadOK(env, agent, "visible", nil))
+			visibleText, visibleOK := readScreen(svc, agent, "visible", nil)
+			screen = capture(visibleText, visibleOK)
 			screenRead = true
 		}
 		return screen
@@ -657,7 +700,8 @@ func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sa
 		}
 	}
 	if st.State != "working" {
-		if quota := provider.QuotaDetect(st.State, herdr.AgentRead(env, agent, "visible", intPtr(20))); quota != nil {
+		quotaVisible, _ := readScreen(svc, agent, "visible", intPtr(20))
+		if quota := provider.QuotaDetect(st.State, quotaVisible); quota != nil {
 			_ = os.Remove(queuedFile)
 			_ = os.Remove(retryFile)
 			content := quota[0] + "\n"
@@ -668,7 +712,7 @@ func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sa
 			clearProvider()
 			return "quota"
 		}
-		ptext := herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40))
+		ptext, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
 		p := core.ProviderDetectTexts(st.State, ptext, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
 		if p != nil {
 			if (p.Status == "provider-error" && p.Auth) || p.Status == "provider-refusal" || p.Cause == provider.LostConnectionCause {
@@ -719,12 +763,12 @@ func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sa
 			}
 			report := core.LastReport(sd, agent)
 			prompt := fmt.Sprintf("The model provider was at capacity and your last request failed. Continue the task from where you stopped; do not redo finished steps. When finished, write your report to %s and reply with only that path.", report)
-			if cursorMCPBlocked(sd, agent, env) {
+			if cursorMCPBlocked(sd, agent, svc) {
 				return "blocked"
 			}
-			sent := herdr.AgentPrompt(agent, prompt, env)
-			if !sent.Ok {
-				sendWarning("provider capacity: failed to send the continue to '" + agent + "': " + sent.Raw + "; acting as exhausted")
+			sent := svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: prompt}, transport.Call{})
+			if sent.Err != nil {
+				sendWarning("provider capacity: failed to send the continue to '" + agent + "': " + sent.Err.Message + "; acting as exhausted")
 				_ = os.Remove(queuedFile)
 				_ = os.Remove(retryFile)
 				return "capacity"
@@ -740,8 +784,8 @@ func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sa
 		clearProvider()
 	}
 	if queuedPending {
-		recent := herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40))
-		if cursorMCPBlocked(sd, agent, env) {
+		recent, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
+		if cursorMCPBlocked(sd, agent, svc) {
 			return "blocked"
 		}
 		promptPath := QueuedPromptPath(queuedText, sd, agent)
@@ -753,7 +797,7 @@ func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sa
 		if promptPath == "" {
 			promptPath = "-"
 		}
-		seq := jsString(st.Seq)
+		seq := st.Seq
 		if seq == "" {
 			seq = "-"
 		}
@@ -783,7 +827,7 @@ func probeAgent(sd, agent, report string, ctx *core.Config, env platform.Env, sa
 		if attempts < enterRetryLimit && provider.DialogUI(rosterKind(sd, agent), recent) == "" {
 			next := attempts + 1
 			writeWaitFile(sd, agent, "enter-retry", fmt.Sprintf("%d %d\n", next, now))
-			if herdr.AgentSendKeys(agent, "enter", env) {
+			if sendAgentKey(svc, agent, "enter") {
 				sendWarning(fmt.Sprintf("prompt to '%s' was still in its input box; sent Enter again (%d of %d)", agent, next, enterRetryLimit))
 				return "working"
 			}
@@ -890,6 +934,7 @@ func jsonLine(value *jsonjs.Object) {
 }
 
 func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, timeoutMs float64, anyDone bool, cwd string) int {
+	svc := herdr.New(env)
 	for _, agent := range agents {
 		removeWaitFile(sd, agent, "size")
 		removeWaitFile(sd, agent, "background-noted")
@@ -960,7 +1005,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				continue
 			}
 			var sample probeScreen
-			state := probeAgent(sd, agent, report, ctx, env, &sample)
+			state := probeAgent(sd, agent, report, ctx, svc, env, &sample)
 			tag := strings.SplitN(state, "\t", 2)[0]
 			alert := idleAlerts[agent]
 			if alert == nil {
@@ -977,7 +1022,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			due := alert.sampleDue(idleTask(sd, agent, report), tag, now, idleMinutes)
 			if idleMinutes > 0 && tag == "working" && (sample.read || sample.nativeWorking && due) {
 				if !sample.read {
-					if text, ok := herdr.AgentReadOK(env, agent, "visible", nil); ok {
+					if text, ok := readScreen(svc, agent, "visible", nil); ok {
 						sample.frames = append(sample.frames, text)
 					}
 				}
@@ -1066,7 +1111,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					}
 				}
 				if core.Cfg(ctx, "notify", "off", env) == "on" {
-					herdr.NotificationShow("soho: "+agent+" finished", report, env)
+					svc.Window.Notify(context.Background(), "soho: "+agent+" finished", report, transport.Call{})
 				}
 				_ = core.MarkTaskDone(sd, agent, env)
 				mirrorReport(sd, agent, report, ctx, env, cwd)
@@ -1074,7 +1119,8 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					return 0
 				}
 			case "blocked":
-				dialog := lastNonEmpty(herdr.AgentRead(env, agent, "visible", nil), 20)
+				blockedVisible, _ := readScreen(svc, agent, "visible", nil)
+				dialog := lastNonEmpty(blockedVisible, 20)
 				jsonLine(jsonjs.O("agent", agent, "status", "blocked", "report", report, "dialog", dialog))
 				if WaitRank(7) > WaitRank(rc) {
 					rc = 7
@@ -1096,7 +1142,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				// the blocked case: an agent that settled without its report
 				// shows why (DJA-434: codex's hooks review screen took the
 				// brief's Enter).
-				visible := herdr.AgentRead(env, agent, "visible", nil)
+				visible, _ := readScreen(svc, agent, "visible", nil)
 				line := jsonjs.O("agent", agent, "status", "settled-no-report", "report", report, "screen", lastNonEmpty(visible, 20))
 				workerCwd := field(strings.Split(core.RosterLine(sd, agent), "\t"), 6)
 				if WorkerCwdGone(workerCwd) {
@@ -1173,7 +1219,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				if tag == "" {
 					tag = "working"
 				}
-				screen := herdr.AgentRead(env, agent, "visible", nil)
+				screen, _ := readScreen(svc, agent, "visible", nil)
 				age, changed := ActivityAgeSeconds(sd, agent, screen, now)
 				active := tag == "working" && age != nil && float64(*age) < win*60
 				// A screen that changed since the last probe proves movement within

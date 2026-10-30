@@ -2,6 +2,7 @@
 package stats
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"github.com/djalmajr/soho/internal/reportscan"
 	"github.com/djalmajr/soho/internal/taskreport"
 	textutil "github.com/djalmajr/soho/internal/text"
+	"github.com/djalmajr/soho/internal/transport"
 	"github.com/djalmajr/soho/internal/wait"
 )
 
@@ -942,6 +944,7 @@ func CmdCollect(args []string, command CommandContext) int {
 		}
 	}
 	sd := core.StateDir(ctx, env, cwd)
+	svc := herdr.New(env)
 	// An active collaboration outranks the report: while its assignment is
 	// active the participant is still working, so the initial or stale
 	// report is an artifact, never the completion. The cycle is shown
@@ -999,9 +1002,14 @@ func CmdCollect(args []string, command CommandContext) int {
 		}
 	}
 	if core.RosterLine(sd, agent) != "" {
-		st := herdr.AgentState(agent, env, herdr.Timeout, nil)
+		stRep := svc.Runtime.Get(context.Background(), transport.Target{ID: agent}, transport.Call{Timeout: herdr.Timeout})
+		st := stRep.Value
+		cause := ""
+		if stRep.Err != nil {
+			cause = stRep.Err.Message
+		}
 		if st.State == "unavailable" {
-			core.Warn("no report file yet for '"+agent+"', and herdr agent get failed: "+st.Cause+". The worker may still be live.", logFile, "collect")
+			core.Warn("no report file yet for '"+agent+"', and herdr agent get failed: "+cause+". The worker may still be live.", logFile, "collect")
 			return 4
 		}
 		if (st.State == "working" || st.State == "blocked") && !linesSet {
@@ -1010,21 +1018,21 @@ func CmdCollect(args []string, command CommandContext) int {
 		}
 	}
 	core.Warn("no report file yet for '"+agent+"' (expected "+orNone(report)+"); falling back to recent terminal output", logFile, "collect")
-	r := platform.RunCli("herdr", []string{"agent", "read", agent, "--source", "recent-unwrapped", "--lines", lines}, platform.RunOptions{Env: env, TimeoutMs: int(herdr.Timeout / time.Millisecond)})
-	if r.Stdout != "" {
-		output(r.Stdout)
+	r := svc.Legacy.AgentReadRaw(context.Background(), transport.Target{ID: agent}, "recent-unwrapped", lines, transport.Call{Timeout: herdr.Timeout})
+	if r.Value != "" {
+		output(r.Value)
 	}
-	if r.Stderr != "" {
-		_, _ = platform.Stderr.Write([]byte(r.Stderr))
+	if r.Process.Stderr != "" {
+		_, _ = platform.Stderr.Write([]byte(r.Process.Stderr))
 	}
-	if r.NotFound {
+	if r.Process.NotFound {
 		platform.Die("herdr CLI not found in PATH", 2)
 	}
-	if r.Status == nil {
+	if r.Process.Status == nil {
 		return 1
 	}
-	if *r.Status != 0 {
-		return *r.Status
+	if *r.Process.Status != 0 {
+		return *r.Process.Status
 	}
 	return 6
 }
