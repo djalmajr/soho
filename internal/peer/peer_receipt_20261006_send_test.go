@@ -205,7 +205,11 @@ func TestReceiptComposerTextIsNotProof(t *testing.T) {
 	// unproved, and the 15 says delivery is uncertain with the marker named.
 	id, prompt := stalledID(t)
 	status := "  GPT-6.1-Sol high · ~/repo · Run herdr agents\n  ← for agents · ? for shortcuts\n"
-	box := "› " + prompt + "\n" + status
+	// The screen keeps the prompt's opening tag inside the composer's 8
+	// non-empty line window (the 5-line part B header fits without the
+	// status footer), so the composer is recognized and the single
+	// recovery Enter goes; the recent read still holds only composer text.
+	box := "› " + prompt + "\n"
 	rules := []fakecli.Rule{
 		{Argv: []string{"agent", "get", "w0test:p0a"}, Call: 1, Stdout: agentJSONKind("codex", "done", "1")},
 		{Argv: []string{"agent", "read", "w0test:p0a", "--source", "visible"}, Call: 1, Stdout: "old turn output\n" + "› Ask Codex to do anything\n" + status},
@@ -331,7 +335,9 @@ func TestReceiptClaudeTranscriptCurrentEnd(t *testing.T) {
 	configRoot := t.TempDir()
 	transcriptPath := claudeTranscriptPath(t, configRoot, cwd)
 	writeClaudeTranscript(t, transcriptPath, `{"type":"user","message":{"content":"earlier conversation"}}`+"\n")
-	userLine := `{"type":"user","message":{"content":"` + peer.PeerEndLine(id) + `"}}`
+	// The transcript line holds the whole peer prompt (the opening tag
+	// line included), the way Claude Code records the taken message.
+	userLine := transcriptUserLine(t, prompt)
 	working := "✻ Fluttering… (9s · ↓ 135 tokens)\n"
 	rules := []fakecli.Rule{
 		{Argv: []string{"agent", "get", "w0test:p0a"}, ArgvPrefix: true, Stdout: claudeSessionAgentJSON("done", "1", cwd)},

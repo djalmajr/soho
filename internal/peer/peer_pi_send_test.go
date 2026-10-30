@@ -76,7 +76,7 @@ func TestSendPiInputBox(t *testing.T) {
 	})
 	t.Run("pi: a message in the Steering queue above the input box is queued, not sent (R-RC8C)", func(t *testing.T) {
 		prompt := newPromptFixture(t)
-		history := "old turn output\nSteering: [soho:peer] #01020304 Message from another agent\n↳ Option+Up to edit all queued messages"
+		history := "old turn output\nSteering: " + peer.PeerOpenTag("01020304") + " Message from another agent\n↳ Option+Up to edit all queued messages"
 		rules := []fakecli.Rule{
 			{Argv: []string{"agent", "get", "w0test:p0a"}, Call: 1, Stdout: agentJSONKind("pi", "working", "1")},
 			{Argv: []string{"agent", "read", "w0test:p0a", "--source", "visible"}, Call: 1, Stdout: piSendScreen("old turn output", "")},

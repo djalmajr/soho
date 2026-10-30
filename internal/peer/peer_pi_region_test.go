@@ -83,22 +83,26 @@ func TestPiSendScreenMarkers(t *testing.T) {
 			t.Fatal("the empty box must not hold the id")
 		}
 	})
-	t.Run("pi: a marker in the box blocks the screen proof; only the header licenses the Enter", func(t *testing.T) {
-		if !messageStillInScreen("pi", screen("#"+id), endLine, id) {
-			t.Fatal("the id in the box must block the screen proof")
+	t.Run("pi: the opening tag or the closing line in the box blocks the screen proof; only the header licenses the Enter", func(t *testing.T) {
+		if !messageStillInScreen("pi", screen(PeerOpenTag(id)), endLine, id) {
+			t.Fatal("the opening tag in the box must block the screen proof")
 		}
 		if !messageStillInScreen("pi", screen(endLine), endLine, id) {
 			t.Fatal("the end line in the box must block the screen proof")
 		}
-		// A bare #id without the header is uncertainty, not permission to
-		// press Enter; the header of this message licenses it.
+		// A bare #id without the marker is neither the marker (it no longer
+		// blocks the proof) nor permission to press Enter; the opening tag
+		// of this message licenses it.
+		if messageStillInScreen("pi", screen("#"+id), endLine, id) {
+			t.Fatal("a bare #id in the box is not the part B marker")
+		}
 		if idInInputBox("pi", screen("#"+id), id) {
 			t.Fatal("a bare #id without the header must not license the Enter")
 		}
-		if !idInInputBox("pi", screen(PeerPrefix+" #"+id+" Message from another agent"), id) {
+		if !idInInputBox("pi", screen(PeerOpenTag(id)), id) {
 			t.Fatal("the header in the box must license the Enter")
 		}
-		if idInInputBox("pi", screen("> "+PeerPrefix+" #"+id+" Message from another agent"), id) {
+		if idInInputBox("pi", screen("> "+PeerOpenTag(id)), id) {
 			t.Fatal("a quoted header in the box is payload, not the typed header")
 		}
 	})

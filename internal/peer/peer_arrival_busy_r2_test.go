@@ -55,7 +55,7 @@ func TestSendArrivalBusyR2ComposerSequence(t *testing.T) {
 	prompt := newPrompt(t)
 	// The one-shot proof read: the marker sits in the composer while the
 	// sequence has moved from the idle baseline.
-	boxScreen := strings.Replace(r2PreScreen, "› Ask Codex to do anything", "› [soho:peer] #"+id+" Message from another agent", 1)
+	boxScreen := strings.Replace(r2PreScreen, "› Ask Codex to do anything", "› "+peer.PeerOpenTag(id), 1)
 	rules := []fakecli.Rule{
 		remoteGets(1, "idle", "1"),
 		remoteVisible(1, r2PreScreen),
@@ -320,9 +320,6 @@ func TestSendArrivalBusyR2SubsecondWindow(t *testing.T) {
 	// \"\"" failure).
 	const id = "01020304"
 	const cwd = "/tmp/claude-work"
-	// The transcript line holds the real peer end line (with the # marker),
-	// the way Claude Code records the taken message.
-	userLine := `{"type":"user","message":{"content":"` + peer.PeerEndLine(id) + `"}}`
 	newPrompt := func(t *testing.T) string {
 		t.Helper()
 		oldReader := rand.Reader
@@ -335,6 +332,9 @@ func TestSendArrivalBusyR2SubsecondWindow(t *testing.T) {
 	}
 
 	prompt := newPrompt(t)
+	// The transcript line holds the whole peer prompt (the opening tag
+	// line included), the way Claude Code records the taken message.
+	userLine := transcriptUserLine(t, prompt)
 	configRoot := t.TempDir()
 	transcriptPath := claudeTranscriptPath(t, configRoot, cwd)
 	writeClaudeTranscript(t, transcriptPath, `{"type":"user","message":{"content":"earlier conversation"}}`+"\n")

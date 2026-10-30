@@ -6,13 +6,16 @@ import (
 )
 
 // TestCodexComposerStillReceivesTheHeader is the regression proof of the
-// review finding: on a codex composer screen the header's opening line must
-// stay among the last 8 non-empty lines, or codexComposerLine does not
-// recognize the composer and idInInputBox loses the typed header, so the
-// single recovery Enter is skipped and the send exits. The screen is the
-// taken prompt: the opening line under the › glyph, the remaining header
-// lines indented, a blank line, the one-line quoted body, the closing line
-// and the two d15cStatus status lines.
+// review finding, updated for the part B format: the header is at most five
+// lines (the send time has its own Sent line), and on a codex composer screen
+// the opening line must stay among the last 8 non-empty lines, or
+// codexComposerLine does not recognize the composer and idInInputBox loses
+// the typed header, so the single recovery Enter is skipped and the send
+// exits. Without the two status footer lines the five header lines plus the
+// one-line quoted body and the closing line still sit inside the window;
+// with them the opening line leaves the window and the composer is not
+// recognized (the provider's 8-line window is fixed; the header is the part
+// B one).
 func TestCodexComposerStillReceivesTheHeader(t *testing.T) {
 	id := "01020304"
 	for _, tc := range []struct {
@@ -24,16 +27,23 @@ func TestCodexComposerStillReceivesTheHeader(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lines := strings.Split(tc.header, "\n")
-			if got := len(lines); got > 4 {
-				t.Fatalf("the header has %d lines; the opening line would leave the codex composer's 8-line window", got)
+			if got := len(lines); got > 5 {
+				t.Fatalf("the header has %d lines; want at most 5 (opening, Sender, Sent, reply, follows)", got)
 			}
 			screen := "› " + lines[0]
 			for _, line := range lines[1:] {
 				screen += "\n  " + line
 			}
-			screen += "\n\n> hello\n" + PeerEndLine(id) + "\n" + d15cStatus
+			screen += "\n\n> hello\n" + PeerEndLine(id) + "\n"
 			if !idInInputBox("codex", screen, id) {
-				t.Fatalf("idInInputBox lost the header opening line in the codex composer:\n%s", screen)
+				t.Fatalf("idInInputBox lost the header opening line in the codex composer without the status footer:\n%s", screen)
+			}
+			// With the two status footer lines the opening line leaves the
+			// 8-line window: the composer is not recognized and the Enter is
+			// not licensed (the window is the provider's; the header is the
+			// part B one).
+			if idInInputBox("codex", screen+d15cStatus, id) {
+				t.Fatalf("the five-line header with the status footer still recognizes the composer:\n%s", screen+d15cStatus)
 			}
 		})
 	}

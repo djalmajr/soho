@@ -110,7 +110,7 @@ func blockJSON(lines ...string) string {
 }
 
 func refusedLine(id string, result peerauth.Result) string {
-	return "[soho:peer-refused] #" + id + " " + string(result)
+	return "[soho:peer-refused:" + id + "] " + string(result)
 }
 
 func (h *hookFix) read(name string) string {

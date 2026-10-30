@@ -21,9 +21,6 @@ const (
 )
 
 const (
-	// RefusalMarker opens the line the hook's block reason (and the sender's
-	// proof) carries for each refused header.
-	RefusalMarker = "[soho:peer-refused] #"
 	// ReasonTail is the last line of the block reason.
 	ReasonTail = "The refused text stays in the input; clear it (Ctrl+C) before the next message."
 
@@ -71,6 +68,14 @@ type Outcome struct {
 	TooLarge bool
 }
 
+// RefusalLine is the hook's block-reason line for one refused header:
+// `[soho:peer-refused:<id>] <result>`. The size refusal names no message id
+// and keeps its own line (TooLargeLine). The sender accepts this line and
+// the previous generation's `[soho:peer-refused] #<id>` line.
+func RefusalLine(id string, result Result) string {
+	return "[soho:peer-refused:" + id + "] " + string(result)
+}
+
 // Reason is the text of a block decision: one line per header, in prompt
 // order, and the tail. It carries no body and no label.
 func (o Outcome) Reason() string {
@@ -79,7 +84,7 @@ func (o Outcome) Reason() string {
 	}
 	lines := make([]string, 0, len(o.Verdicts)+1)
 	for _, v := range o.Verdicts {
-		lines = append(lines, RefusalMarker+v.Header.ID+" "+string(v.Result))
+		lines = append(lines, RefusalLine(v.Header.ID, v.Result))
 	}
 	return strings.Join(append(lines, ReasonTail), "\n")
 }

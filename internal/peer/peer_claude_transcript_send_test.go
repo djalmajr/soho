@@ -3,6 +3,7 @@ package peer_test
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -48,6 +49,18 @@ func writeClaudeTranscript(t *testing.T, path, content string) {
 	}
 }
 
+// transcriptUserLine is the session transcript line Claude Code writes when
+// it takes a message: the whole peer prompt (the opening tag line, the
+// header, the quoted body, the closing line) as a JSON string value.
+func transcriptUserLine(t *testing.T, prompt string) string {
+	t.Helper()
+	content, err := json.Marshal(prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return `{"type":"user","message":{"content":` + string(content) + `}}`
+}
+
 // appendAfterPrompt appends the transcript line only after the fake herdr has
 // logged the prompt call for the id and reports on done whether the append
 // landed. It never calls t after returning, so a late run is harmless.
@@ -63,7 +76,7 @@ func appendAfterPrompt(t *testing.T, callsLog, transcriptPath, id, line string) 
 					// Find `agent prompt <pane> <msg>` with or without the
 					// leading --machine prefix.
 					for i := 0; i+3 < len(c.Argv); i++ {
-						if c.Argv[i] == "agent" && c.Argv[i+1] == "prompt" && strings.Contains(c.Argv[i+3], "#"+id) {
+						if c.Argv[i] == "agent" && c.Argv[i+1] == "prompt" && strings.Contains(c.Argv[i+3], "soho:peer:"+id) {
 							f, werr := os.OpenFile(transcriptPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 							if werr == nil {
 								_, werr = f.WriteString(line + "\n")
@@ -91,15 +104,15 @@ func appendAfterPrompt(t *testing.T, callsLog, transcriptPath, id, line string) 
 func TestSendClaudeTranscriptProof(t *testing.T) {
 	id := "01020304"
 	cwd := "/tmp/claude-work"
-	// The transcript line holds the real peer end line (with the # marker),
-	// the way Claude Code records the taken message.
-	userLine := `{"type":"user","message":{"content":"` + peer.PeerEndLine(id) + `"}}`
 	newPromptFixture := func(t *testing.T) string {
 		oldReader := rand.Reader
 		rand.Reader = bytes.NewReader([]byte{1, 2, 3, 4})
 		t.Cleanup(func() { rand.Reader = oldReader })
 		return peer.PeerHeader("local/-", "-", "-", "-", id) + "\n\n> hello\n" + peer.PeerEndLine(id)
 	}
+	// The transcript line holds the whole peer prompt (the opening tag
+	// line included), the way Claude Code records the taken message.
+	userLine := transcriptUserLine(t, newPromptFixture(t))
 	countEnters := func(t *testing.T, f *fixture) int {
 		t.Helper()
 		calls, err := fakecli.ReadCallsForConfig(filepath.Join(filepath.Dir(f.bin), "herdr.json"))

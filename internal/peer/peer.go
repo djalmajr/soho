@@ -28,15 +28,14 @@ import (
 )
 
 const (
+	// PeerPrefix is the previous format's opening-line marker. The current
+	// format's opening line is the PeerOpenTag, whose id sits inside the tag.
 	PeerPrefix           = "[soho:peer]"
 	PeerLogFile          = "peer-messages.tsv"
 	PromptWaitTimeoutMS  = 15_000
 	DefaultSendTimeoutMS = 600_000
 	HerdrCallTimeoutMS   = 30_000
 )
-
-// peerOpenMarkers are the opening markers an input recognition accepts.
-var peerOpenMarkers = []string{PeerPrefix}
 
 var controlRE = regexp.MustCompile(`[\x00-\x08\x0b-\x1f\x7f]`)
 var orchestratorNameRE = regexp.MustCompile(`^orchestrator(-[0-9]+)?$`)
@@ -126,7 +125,7 @@ func RandomPeerID() string {
 // metadata only — the sender reference, the known sender fields, the send
 // time and the reply command — and carries no intent, approval or
 // behavioral instruction.
-const peerFollowsLine = `The message follows, each line quoted with "> ".`
+const peerFollowsLine = `A message from another agent follows, each line quoted with "> ".`
 
 // peerNow is the clock the header's send time reads; a variable so tests
 // pin it to one instant (go:linkname).
@@ -149,16 +148,24 @@ type PeerSender struct {
 // header shows: empty, "-" and "unknown" are the unknown markers.
 func knownPeerField(v string) bool { return v != "" && v != "-" && v != "unknown" }
 
-// peerSenderLine is the header's Sender line: the known name/kind/role/model
-// items, "; "-separated, ending with a period. It is "" when nothing is
-// known, and the header then omits the line. A message from an older sender
-// may still carry a `from` and a `sig v1:` item on its Sender line; the
-// receiver treats those items as plain text.
-func peerSenderLine(s PeerSender) string {
-	items := []string{}
-	if knownPeerField(s.Name) {
-		items = append(items, "name "+s.Name)
+// peerSenderLine is the header's Sender line: the known name with the
+// reference in parentheses, or — when no name is known — the reference
+// alone, then the known kind/role/model items, "; "-separated, ending with a
+// period. It is "" when the reference and every field are unknown, and the
+// header then omits the line. A message from an older sender may still carry
+// a `from` and a `sig v1:` item on its Sender line; the receiver treats
+// those items as plain text.
+func peerSenderLine(s PeerSender, ref string) string {
+	head := ""
+	switch {
+	case knownPeerField(s.Name) && ref != "":
+		head = s.Name + " (" + ref + ")"
+	case knownPeerField(s.Name):
+		head = s.Name
+	case ref != "":
+		head = ref
 	}
+	items := []string{}
 	if knownPeerField(s.Kind) {
 		items = append(items, "kind "+s.Kind)
 	}
@@ -168,41 +175,46 @@ func peerSenderLine(s PeerSender) string {
 	if knownPeerField(s.Model) {
 		items = append(items, "model "+s.Model)
 	}
-	if len(items) == 0 {
+	if head == "" && len(items) == 0 {
 		return ""
+	}
+	switch {
+	case head != "" && len(items) > 0:
+		return "Sender: " + head + "; " + strings.Join(items, "; ") + "."
+	case head != "":
+		return "Sender: " + head + "."
 	}
 	return "Sender: " + strings.Join(items, "; ") + "."
 }
 
 // peerSentTime is the header's send time: the current instant in UTC,
-// RFC 3339 seconds, on the opening line.
+// RFC 3339 seconds, on its own Sent line.
 func peerSentTime() string { return peerNow().UTC().Format(time.RFC3339) }
 
 // peerHeaderLines assembles the peer header in its fixed order: the opening
-// line (carrying the send time), the Sender line (omitted when nothing is
-// known), the reply line and the closing quote line. The header is at most
-// four lines: on a codex composer screen the opening line must stay among
-// the last 8 non-empty screen lines, or the composer is not recognized and
-// the single recovery Enter is skipped.
-func peerHeaderLines(s PeerSender, first, reply string) string {
-	lines := []string{first}
-	if sender := peerSenderLine(s); sender != "" {
+// line (the tag that carries the message id), the Sender line (omitted when
+// the reference and every field are unknown), the send-time line, the reply
+// line and the closing quote line. The header is at most five lines: on a
+// codex composer screen the opening line must stay among the last 8
+// non-empty screen lines, or the composer is not recognized and the single
+// recovery Enter is skipped.
+func peerHeaderLines(s PeerSender, ref, open, sent, reply string) string {
+	lines := []string{open}
+	if sender := peerSenderLine(s, ref); sender != "" {
 		lines = append(lines, sender)
 	}
-	return strings.Join(append(lines, reply, peerFollowsLine), "\n")
+	return strings.Join(append(lines, "Sent: "+sent, reply, peerFollowsLine), "\n")
 }
 
 // PeerHeaderFor builds the peer header for a target on the receiver's
-// machine: line one carries the sender reference and the send time, and the
-// reply line the exact send command back to it.
+// machine: the opening line is the tag that carries the message id (an
+// empty id has no message id: the tag is built from the empty one, as the
+// previous format built its marker without a `#`), the Sender line carries
+// the sender reference and the known sender fields, the Sent line the send
+// time, and the reply line the exact send command back to it.
 func PeerHeaderFor(s PeerSender, id string) string {
-	prefix := PeerPrefix
-	if id != "" {
-		prefix += " #" + id
-	}
-	first := fmt.Sprintf("%s Message from another agent — %s, sent %s.", prefix, s.Ref, peerSentTime())
 	reply := fmt.Sprintf("Reply with: soho send %s \"<your reply>\"", s.Ref)
-	return peerHeaderLines(s, first, reply)
+	return peerHeaderLines(s, s.Ref, PeerOpenTag(id), peerSentTime(), reply)
 }
 
 // senderHostname names this machine in the header of a remote peer message:
@@ -225,19 +237,15 @@ var senderHostname = func() string {
 // or emptied by the cleaning) the " on …" part and the parenthetical are
 // dropped: there is no hostname for the receiver to look up.
 func PeerHeaderRemoteFor(s PeerSender, pane, hostname, id string) string {
-	prefix := PeerPrefix
-	if id != "" {
-		prefix += " #" + id
-	}
 	sent := peerSentTime()
+	ref := pane
 	if hostname != "" {
-		first := fmt.Sprintf("%s Message from another agent — %s on %s, sent %s.", prefix, pane, hostname, sent)
+		ref = fmt.Sprintf("%s on %s", pane, hostname)
 		reply := fmt.Sprintf("Reply with: soho send <this machine's name in your herdr machine list>/%s \"<your reply>\" (this machine is %s)", pane, hostname)
-		return peerHeaderLines(s, first, reply)
+		return peerHeaderLines(s, ref, PeerOpenTag(id), sent, reply)
 	}
-	first := fmt.Sprintf("%s Message from another agent — %s, sent %s.", prefix, pane, sent)
 	reply := fmt.Sprintf("Reply with: soho send <this machine's name in your herdr machine list>/%s \"<your reply>\"", pane)
-	return peerHeaderLines(s, first, reply)
+	return peerHeaderLines(s, ref, PeerOpenTag(id), sent, reply)
 }
 
 // PeerHeader builds the peer header for a target on the receiver's machine.
@@ -254,26 +262,25 @@ func PeerHeaderRemote(pane, hostname, senderName, senderKind, senderRole, id str
 // delivery: the local header whose reply line is the assignment reply
 // command, addressed to the counterpart's name.
 func PeerHeaderAssignment(s PeerSender, replyName, assignmentID, id string) string {
-	prefix := PeerPrefix
-	if id != "" {
-		prefix += " #" + id
-	}
-	first := fmt.Sprintf("%s Message from another agent — %s, sent %s.", prefix, s.Ref, peerSentTime())
 	reply := fmt.Sprintf("Reply within this assignment: soho send %s --assignment %s --type review.question \"<your reply>\"", replyName, assignmentID)
-	return peerHeaderLines(s, first, reply)
+	return peerHeaderLines(s, s.Ref, PeerOpenTag(id), peerSentTime(), reply)
 }
 
-// PeerEndPrefix is the peer message's closing-line marker: the peer prefix
-// closed by a slash, so an opening header line ("[soho:peer] #<id>")
-// can never be read as the end of a message and an end line can never be
-// read as an opening header.
+// PeerOpenTag is the peer message's opening line: the tag with the message
+// id inside it, and nothing else on the line. An empty id has no message id:
+// the tag is built from the empty one, as the previous format built its
+// marker without a `#`.
+func PeerOpenTag(id string) string { return "[soho:peer:" + id + "]" }
+
+// PeerEndPrefix is the previous format's closing-line marker. The current
+// format's closing line is the PeerEndLine, whose id sits inside the tag,
+// so an opening header line ("[soho:peer:<id>]") can never be read as the
+// end of a message and an end line can never be read as an opening header.
 const PeerEndPrefix = "[/soho:peer]"
 
-// peerEndReceiptMarkers are the closing-line marker forms an input
-// recognition accepts.
-var peerEndReceiptMarkers = []string{PeerEndPrefix}
-
-func PeerEndLine(id string) string { return fmt.Sprintf("%s #%s end of message", PeerEndPrefix, id) }
+// PeerEndLine is the peer message's closing line: exactly the tag with the
+// slash and the message id inside it.
+func PeerEndLine(id string) string { return "[/soho:peer:" + id + "]" }
 
 func QuotePeerBody(body string) string {
 	lines := strings.Split(body, "\n")
@@ -1356,7 +1363,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			transcript = transcriptProof{path: herdr.PiSessionPath(t.TargetArg, env), count: herdr.CountPiUserMarkerLines, queued: steeringQueued}
 		}
 		if transcript.path != "" {
-			if pre, ok := transcript.count(transcript.path, "#"+id); ok {
+			if pre, ok := transcript.count(transcript.path, PeerOpenTag(id)); ok {
 				transcript.pre = pre
 				transcript.armed = true
 				// The too-large refusal has no id: only a system entry written after
@@ -1367,7 +1374,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	}
 	windowMS, pollMS := arrivalWindowMS(env), arrivalPollMS(env)
 	// A receiver whose UserPromptSubmit hook blocked the message shows the
-	// refusal line `[soho:peer-refused] #<id> <result>` on its screen, in its
+	// refusal line `[soho:peer-refused:<id>] <result>` on its screen, in its
 	// recent history and, for a local claude, in its transcript. The refusal
 	// wins over every arrival proof, and no key is sent once it is seen: the
 	// refused text stays in the target's input until someone clears it.
@@ -1443,7 +1450,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 				result.LastCause = curGet.Cause
 			}
 			if transcript.armed {
-				if count, ok := transcript.count(transcript.path, "#"+id); ok && count > transcript.pre {
+				if count, ok := transcript.count(transcript.path, PeerOpenTag(id)); ok && count > transcript.pre {
 					// The target also writes the taken message to the transcript
 					// while it sits unread in its open queue: the count growth is
 					// not proof while the visible queue line still holds the id.
@@ -1532,7 +1539,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		// the id, which is queued, not taken (the same growth-not-proof rule
 		// the window applies).
 		if transcript.armed {
-			if count, ok := transcript.count(transcript.path, "#"+id); ok && count > transcript.pre {
+			if count, ok := transcript.count(transcript.path, PeerOpenTag(id)); ok && count > transcript.pre {
 				return !transcript.queued(visible, id)
 			}
 		}
@@ -1692,7 +1699,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 					_, _ = fmt.Fprintf(platform.Stderr, "send: %s is busy; waiting for its transcript to show the message (up to %ss)\n", t.RefShown, numberSeconds(timeoutMS))
 				}
 			}
-			if count, ok := herdr.CountClaudeUserMarkerLines(transcript.path, "#"+id); !(ok && count > transcript.pre) {
+			if count, ok := herdr.CountClaudeUserMarkerLines(transcript.path, PeerOpenTag(id)); !(ok && count > transcript.pre) {
 				warnBusy()
 			}
 			// The queue line, like the count growth, proves the queued outcome
@@ -1714,7 +1721,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 					_, _ = fmt.Fprintf(platform.Stdout, "queued for %s: it takes the message when its current turn ends\n", t.RefShown)
 					return 0
 				}
-				if count, ok := herdr.CountClaudeUserMarkerLines(transcript.path, "#"+id); ok && count > transcript.pre {
+				if count, ok := herdr.CountClaudeUserMarkerLines(transcript.path, PeerOpenTag(id)); ok && count > transcript.pre {
 					// As in the window's transcript check, the count growth is
 					// not proof while the visible queue line still holds the id.
 					if visible, visibleErr := readAfter("visible", 0, HerdrCallTimeoutMS); visibleErr == "" {
@@ -1876,7 +1883,7 @@ func claudeBoxScope(visible string) ([]string, bool) {
 	// the typed message.
 	for _, line := range lines[start:] {
 		norm := NormalizeScreen(line)
-		if strings.Contains(norm, NormalizeScreen(PeerPrefix)) {
+		if strings.Contains(norm, NormalizeScreen("[soho:peer:")) {
 			scope = append(scope, line)
 		}
 	}
@@ -1898,26 +1905,23 @@ func codexComposerRegion(visible string) ([]string, bool) {
 }
 
 // peerEndLineIn reports whether the line is this message's closing line in
-// its marker form: "[/soho:peer] #<id> end of message". The match is anchored to
-// the whole line: after NormalizeScreen a real closing line is the marker
-// itself (with an optional leading history "›"), so a prose line, an
-// assistant bullet or a history echo that merely contains the marker is not
-// it. The id must be this message's exact id: an unrelated id, or a longer
-// id that only has this one as a prefix, is not this message's end. A quoted
-// line ("> ...") never counts: the quoted body of a peer message is payload,
-// and a closing marker quoted into it or glued onto its end without a line
-// break (the rc12 shape) is never positive receipt, however the terminal
-// drew it.
+// its marker form: "[/soho:peer:<id>]". The match is anchored to the whole
+// line: after NormalizeScreen a real closing line is the marker itself (with
+// an optional leading history "›"), so a prose line, an assistant bullet or
+// a history echo that merely contains the marker is not it. The id must be
+// this message's exact id: an unrelated id, or a longer id, is not this
+// message's end. A quoted line ("> ...") never counts: the quoted body of a
+// peer message is payload, and a closing marker quoted into it or glued onto
+// its end without a line break (the rc12 shape) is never positive receipt,
+// however the terminal drew it.
 func peerEndLineIn(line, id string) bool {
 	norm := NormalizeScreen(line)
 	if strings.HasPrefix(norm, ">") {
 		return false // quoted payload: a marker in it is part of the quoted body
 	}
-	for _, marker := range peerEndReceiptMarkers {
-		open := marker + "#" + id + "endofmessage"
-		if norm == open || norm == "›"+open {
-			return true // the marker is the whole line (optional history "›")
-		}
+	want := PeerEndLine(id)
+	if norm == want || norm == "›"+want {
+		return true // the marker is the whole line (optional history "›")
 	}
 	return false
 }
@@ -1930,10 +1934,10 @@ func isHexRune(r rune) bool {
 
 // receiptLineIn reports whether the line carries a receipt marker of this
 // message: its closing line (peerEndLineIn, anchored to the whole line) or
-// the opening of its header ("[soho:peer] #<id>"), anchored the same way:
+// the opening of its header ("[soho:peer:<id>]"), anchored the same way:
 // after NormalizeScreen the real line starts with the marker (an optional
-// leading history "›" stripped), and the rune after the opening id is not a
-// hex digit, so a longer id that only has this one as a prefix is not it. A
+// leading history "›" stripped); the tag's closing bracket sits right after
+// the id, so a longer id that only has this one as a prefix is not it. A
 // quoted line never counts: the quoted body of a peer message is payload and
 // can carry a spoofed opening or closing line, no matter how the terminal
 // drew it. The id must be this message's exact id in both: an unrelated id is
@@ -1944,14 +1948,9 @@ func receiptLineIn(line, id string) bool {
 	norm := NormalizeScreen(line)
 	if !strings.HasPrefix(norm, ">") {
 		rest := strings.TrimPrefix(norm, "›")
-		for _, prefix := range peerOpenMarkers {
-			open := prefix + "#" + id
-			if strings.HasPrefix(rest, open) {
-				after := rest[len(open):]
-				if after == "" || !isHexRune(rune(after[0])) {
-					return true // the header opens the line; the id is complete
-				}
-			}
+		open := PeerOpenTag(id)
+		if strings.HasPrefix(rest, open) {
+			return true // the header opens the line; the id is complete
 		}
 	}
 	return peerEndLineIn(line, id)
@@ -1984,7 +1983,7 @@ func receiptLineInText(text, id string) bool {
 // lines — keeps reading as the box.
 func peerMessageInHistory(visible, id string) bool {
 	lines := strings.Split(strings.ReplaceAll(visible, "\r\n", "\n"), "\n")
-	headerNorms := []string{NormalizeScreen(PeerPrefix + " #" + id)}
+	headerNorms := []string{NormalizeScreen(PeerOpenTag(id))}
 	for i, line := range lines {
 		if !peerEndLineIn(line, id) {
 			continue
@@ -2032,18 +2031,19 @@ func messageStillInScreen(kind, visible, endLine, id string) bool {
 	}
 	if ok {
 		region := NormalizeScreen(strings.Join(lines, "\n"))
-		return strings.Contains(region, NormalizeScreen("#"+id)) || strings.Contains(region, NormalizeScreen(endLine))
+		return strings.Contains(region, NormalizeScreen(PeerOpenTag(id))) || strings.Contains(region, NormalizeScreen(endLine))
 	}
 	visibleNorm := NormalizeScreen(visible)
-	return strings.Contains(visibleNorm, NormalizeScreen(endLine)) || strings.Contains(visibleNorm, NormalizeScreen("#"+id))
+	return strings.Contains(visibleNorm, NormalizeScreen(endLine)) || strings.Contains(visibleNorm, NormalizeScreen(PeerOpenTag(id)))
 }
 
 // idInInputBox reports whether a retry Enter may go to this screen for this
 // message: only a recognized actual composer (the shared provider recognition
 // for the kind — pi's input box, the claude box scope, the codex composer
 // region) holding this exact message's header (composerHeaderLineIn: a line
-// that opens with "[soho:peer] #<id>", unquoted, the id complete — a
-// hex digit right after it is a longer id, not this one) licenses the key.
+// that opens with "[soho:peer:<id>]", unquoted, the id complete inside the
+// tag — a hex digit right before the closing bracket would be a longer id,
+// not this one) licenses the key.
 // A marker in a footer or in older history sits outside the recognized
 // composer; an unrecognized layout, an unknown kind, and a known
 // trust/approval/question UI (provider.DialogUI) refuse it the same way.
@@ -2084,9 +2084,10 @@ func idInInputBox(kind, visible, id string) bool {
 // composerHeaderLineIn reports whether a line of a recognized composer
 // region is this message's header opening: after NormalizeScreen, with an
 // optional leading composer prompt glyph (the claude "❯" or the codex "›")
-// stripped, the line starts with "[soho:peer] #<id>" and the rune right
-// after the id is not a hex digit, so a longer id that only has this one as
-// a prefix is not it. A quoted line ("> ...") never counts: the quoted body
+// stripped, the line starts with the opening tag "[soho:peer:<id>]"; the
+// tag's closing bracket sits right after the id, so a longer id that only
+// has this one as a prefix is not it. A quoted line ("> ...") never counts:
+// the quoted body
 // of a peer message is payload and can carry a spoofed header, no matter how
 // the terminal drew it.
 func composerHeaderLineIn(line, id string) bool {
@@ -2095,14 +2096,8 @@ func composerHeaderLineIn(line, id string) bool {
 		return false // quoted payload: a header in it is part of the quoted body
 	}
 	rest := strings.TrimPrefix(strings.TrimPrefix(norm, "❯"), "›")
-	for _, prefix := range peerOpenMarkers {
-		open := prefix + "#" + id
-		if strings.HasPrefix(rest, open) {
-			after := rest[len(open):]
-			if after == "" || !isHexRune(rune(after[0])) {
-				return true
-			}
-		}
+	if strings.HasPrefix(rest, PeerOpenTag(id)) {
+		return true
 	}
 	return false
 }
@@ -2112,7 +2107,7 @@ func composerHeaderLineIn(line, id string) bool {
 func steeringQueued(visible, id string) bool {
 	for _, line := range strings.Split(visible, "\n") {
 		head := strings.TrimLeft(NormalizeScreen(line), " \t")
-		if strings.HasPrefix(head, "Steering:") && strings.Contains(head, NormalizeScreen("#"+id)) {
+		if strings.HasPrefix(head, "Steering:") && strings.Contains(head, NormalizeScreen(PeerOpenTag(id))) {
 			return true
 		}
 	}
@@ -2123,7 +2118,7 @@ func steeringQueued(visible, id string) bool {
 // message's id and the line Claude Code shows while a working turn holds
 // sent messages until it ends.
 func claudeQueued(visible, id string) bool {
-	if !strings.Contains(NormalizeScreen(visible), NormalizeScreen("#"+id)) {
+	if !strings.Contains(NormalizeScreen(visible), NormalizeScreen(PeerOpenTag(id))) {
 		return false
 	}
 	for _, line := range strings.Split(visible, "\n") {
@@ -2148,7 +2143,7 @@ func codexQueued(visible, id string) bool {
 	if !ok {
 		start = 0
 	}
-	want := NormalizeScreen("#" + id)
+	want := NormalizeScreen(PeerOpenTag(id))
 	for _, line := range lines[:start] {
 		head := strings.TrimLeft(NormalizeScreen(line), " \t")
 		if strings.HasPrefix(head, "↳") && strings.Contains(head, want) {

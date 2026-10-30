@@ -41,7 +41,7 @@ func appendAfterPromptDelayed(t *testing.T, callsLog, transcriptPath, id, line s
 			if calls, err := fakecli.ReadCalls(callsLog); err == nil {
 				for _, c := range calls {
 					for i := 0; i+3 < len(c.Argv); i++ {
-						if c.Argv[i] == "agent" && c.Argv[i+1] == "prompt" && strings.Contains(c.Argv[i+3], "#"+id) {
+						if c.Argv[i] == "agent" && c.Argv[i+1] == "prompt" && strings.Contains(c.Argv[i+3], "soho:peer:"+id) {
 							time.Sleep(time.Duration(delayMS) * time.Millisecond)
 							f, werr := os.OpenFile(transcriptPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 							if werr == nil {
@@ -150,9 +150,9 @@ func TestSendArrivalBusyClaudeTranscript(t *testing.T) {
 	const id = "01020304"
 	const cwd = "/tmp/claude-work"
 	const workingScreen = "✻ Cranking out changes…\n"
-	// The transcript line holds the real peer end line (with the # marker),
-	// the way Claude Code records the taken message.
-	userLine := `{"type":"user","message":{"content":"` + peer.PeerEndLine(id) + `"}}`
+	// The transcript line holds the taken message's prompt (with the
+	// opening tag marker), the way Claude Code records it.
+	userLine := transcriptUserLine(t, peer.PeerHeader("local/-", "-", "-", "-", id)+"\n\n> hello\n"+peer.PeerEndLine(id))
 	newPrompt := func(t *testing.T) string {
 		t.Helper()
 		oldReader := rand.Reader

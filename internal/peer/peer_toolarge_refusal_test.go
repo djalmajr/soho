@@ -263,7 +263,7 @@ func TestSendReadsTheTooLargeRefusalFromTheTranscript(t *testing.T) {
 		requireTooLargeRefusal(t, code, out, stderr, f)
 	})
 	t.Run("an entry before the send began is an old refusal", func(t *testing.T) {
-		code, out, stderr, f := run(t, userLine+"\n"+systemLine+"\n", `{"type":"user","message":{"content":"`+peer.PeerEndLine(signID)+`"}}`)
+		code, out, stderr, f := run(t, userLine+"\n"+systemLine+"\n", `{"type":"user","message":{"content":"`+peer.PeerOpenTag(signID)+`"}}`)
 		if code != 0 || out != "sent to local/w0test:p0a\n" {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 		}
@@ -297,7 +297,7 @@ func TestSendReadsTheTooLargeRefusalFromAReplacedTranscript(t *testing.T) {
 		}
 		return string(raw)
 	}
-	user := `{"type":"user","message":{"content":"` + peer.PeerEndLine(signID) + `"}}`
+	user := `{"type":"user","message":{"content":"` + peer.PeerOpenTag(signID) + `"}}`
 	now := func() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 	old := func() string { return time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano) }
 	// run seeds a long transcript, then, once the prompt call is logged, either
@@ -325,7 +325,7 @@ func TestSendReadsTheTooLargeRefusalFromAReplacedTranscript(t *testing.T) {
 				calls, _ := fakecli.ReadCalls(callsLog)
 				for _, c := range calls {
 					for i := 0; i+3 < len(c.Argv); i++ {
-						if c.Argv[i] == "agent" && c.Argv[i+1] == "prompt" && strings.Contains(c.Argv[i+3], "#"+signID) {
+						if c.Argv[i] == "agent" && c.Argv[i+1] == "prompt" && strings.Contains(c.Argv[i+3], "soho:peer:"+signID) {
 							var err error
 							if replace == "rotate" {
 								err = os.Rename(path, path+".before")
@@ -353,12 +353,12 @@ func TestSendReadsTheTooLargeRefusalFromAReplacedTranscript(t *testing.T) {
 	// no longer end as they did, so the offset is not trusted.
 	for _, replace := range []string{"truncate", "rotate"} {
 		t.Run(replace+" to a longer file: a new refusal is seen", func(t *testing.T) {
-			longer := `{"type":"user","message":{"content":"` + peer.PeerEndLine(signID) + `"},"pad":"` + strings.Repeat("new padding ", 1000) + `"}`
+			longer := `{"type":"user","message":{"content":"` + peer.PeerOpenTag(signID) + `"},"pad":"` + strings.Repeat("new padding ", 1000) + `"}`
 			code, out, stderr, f := run(t, replace, system(now())+"\n"+longer+"\n")
 			requireTooLargeRefusal(t, code, out, stderr, f)
 		})
 		t.Run(replace+" to a longer file: a refusal from before the send began does not count", func(t *testing.T) {
-			longer := `{"type":"user","message":{"content":"` + peer.PeerEndLine(signID) + `"},"pad":"` + strings.Repeat("new padding ", 1000) + `"}`
+			longer := `{"type":"user","message":{"content":"` + peer.PeerOpenTag(signID) + `"},"pad":"` + strings.Repeat("new padding ", 1000) + `"}`
 			code, out, stderr, f := run(t, replace, system(old())+"\n"+longer+"\n")
 			if code != 0 || out != "sent to local/w0test:p0a\n" {
 				t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)

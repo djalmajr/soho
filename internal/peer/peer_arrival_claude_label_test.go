@@ -12,14 +12,15 @@ import (
 )
 
 const claudeLabelTop = "────────────────────────────────────────────────────────── Session ─"
-const claudeLabelHistory = `❯ [soho:peer] #01020304 Message from another agent — w16:p1 on
-  Example, sent 2026-10-21T02:14:38Z.
-  Sender: kind claude; from example-win; sig v1:c2589db12c3f6c89f8f601ea6828ea33.
-  The message follows, each line quoted with "> ".
+const claudeLabelHistory = `❯ [soho:peer:01020304]
+  Sender: orchestrator-2 (w16:p1 on Example); kind claude.
+  Sent: 2026-10-21T02:14:38Z
+  Reply with: soho send <this machine's name in your herdr machine list>/w16:p1 "<your reply>" (this machine is Example)
+  A message from another agent follows, each line quoted with "> ".
 
   > sample message
 
-  [/soho:peer] #01020304 end of message`
+  [/soho:peer:01020304]`
 
 func claudeLabelVisible(history, box string) string {
 	return history + "\n\n⏺ Example response…\n\n· Booping… (51s · ↓ 3.5k tokens · thought for 3s)\n" +

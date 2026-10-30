@@ -147,7 +147,7 @@ func TestSendArrivalBusyCodexStalled(t *testing.T) {
 		// (the typed Enter never landed); after the Enter the screen shows
 		// the message taken — the fixture.
 		boxScreen := strings.Replace(screen, "› Ask Codex to do anything",
-			"› [soho:peer] #"+id+" Message from another agent", 1)
+			"› "+peer.PeerOpenTag(id), 1)
 		rules := []fakecli.Rule{
 			remoteGets(1, "idle", "1"),
 			remoteVisible(1, preScreen),
@@ -183,7 +183,7 @@ func TestSendArrivalBusyCodexStalled(t *testing.T) {
 		// The screen at the stalled read: the marker sits in the composer,
 		// and after the Enter it is still there — the message is not taken.
 		boxScreen := strings.Replace(d15Fixture(t), "› Ask Codex to do anything",
-			"› [soho:peer] #"+id+" Message from another agent", 1)
+			"› "+peer.PeerOpenTag(id), 1)
 		rules := []fakecli.Rule{
 			remoteGets(1, "idle", "1"),
 			remoteVisible(1, preScreen),
