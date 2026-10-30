@@ -12,6 +12,7 @@ import (
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	textutil "github.com/djalmajr/soho/internal/text"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 var shellNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -376,25 +377,27 @@ func LaneDecide(ctx *Config, lane, role string, env platform.Env, cwd string, re
 	unavailableName, unavailableCause := "", ""
 	firstLocked := ""
 	locked := 0
+	svc := herdr.New(env)
 	for _, line := range rows {
 		f := strings.Split(line, "\t")
 		nm := ""
 		if len(f) > 0 {
 			nm = f[0]
 		}
-		st := herdr.AgentState(nm, env, herdr.Timeout, nil)
-		if st.State == "gone" {
+		st := svc.Runtime.Get(nil, transport.Target{ID: nm}, transport.Call{})
+		state := st.Value.State
+		if state == "gone" {
 			d.Gone = append(d.Gone, nm)
 			continue
 		}
 		d.Occupants = append(d.Occupants, nm)
-		if st.State == "unavailable" {
+		if state == "unavailable" {
 			if unavailableName == "" {
-				unavailableName, unavailableCause = nm, st.Cause
+				unavailableName, unavailableCause = nm, st.Err.Message
 			}
 			continue
 		}
-		if st.State == "idle" || st.State == "done" {
+		if state == "idle" || state == "done" {
 			rep := LastReport(sd, nm)
 			if rep != "" {
 				info, e := os.Stat(rep)
@@ -427,7 +430,7 @@ func LaneDecide(ctx *Config, lane, role string, env platform.Env, cwd string, re
 		}
 		if d.Name == "" {
 			d.Name = nm
-			d.State = st.State
+			d.State = state
 			if d.State == "" {
 				d.State = "unknown"
 			}
@@ -528,7 +531,18 @@ func MaxWorkers(ctx *Config, env platform.Env) string {
 	}
 	return v
 }
-func liveAgentsByName(env platform.Env) []any { return herdr.LiveAgents(env, herdr.Timeout) }
+func liveAgentsByName(env platform.Env) []any {
+	svc := herdr.New(env)
+	// LiveWorkerNames and the burst scan still read the list as field
+	// objects: rebuild them from the transport terminals with the field
+	// names those reads take.
+	live := svc.Runtime.List(nil, transport.Scope{}, transport.Call{}).Value
+	rows := make([]any, 0, len(live))
+	for _, a := range live {
+		rows = append(rows, jsonjs.O("name", a.Name, "pane_id", a.PaneID, "agent_status", a.State))
+	}
+	return rows
+}
 func agentField(a any, key string) string {
 	if o, ok := a.(*jsonjs.Object); ok {
 		v, _ := o.Get(key)
@@ -609,9 +623,10 @@ func EnforceWorkerCap(ctx *Config, env platform.Env, cwd string) {
 	// sub-orchestrator keeps its roster row until it is demoted, and a worker
 	// that calls spawn from its own pane is itself. The other live workers —
 	// including other genuine sub-orchestrators — still count.
+	svc := herdr.New(env)
 	caller := ""
-	if env.Get("HERDR_PANE_ID") != "" {
-		caller = herdr.CallerAgentName(env)
+	if svc.Runtime.Caller().PaneID != "" {
+		caller = svc.Terminal.CallerAgentName(nil, transport.Call{}).Value
 	}
 	if caller != "" {
 		kept := make([]string, 0, len(names))

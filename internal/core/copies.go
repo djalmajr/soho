@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 // copiesHeader is the first line of the per-workspace copy registry,
@@ -232,21 +234,22 @@ func DropCopiesLinesHeld(stateDir string, removed map[string]bool) error {
 // that must keep running when the workspace cannot be resolved: a missing
 // herdr CLI or a failing pane current comes back as an error.
 func WorkspaceIDOrError(env platform.Env) (string, error) {
-	if id := env.Get("HERDR_WORKSPACE_ID"); id != "" {
+	svc := herdr.New(env)
+	if id := svc.Runtime.Caller().WorkspaceID; id != "" {
 		return id, nil
 	}
-	r := platform.RunCli("herdr", []string{"pane", "current", "--current"}, platform.RunOptions{Env: env, TimeoutMs: 30_000})
-	if r.NotFound {
+	rep := svc.Legacy.PaneCurrentRaw(nil, transport.Call{Timeout: 30 * time.Second})
+	if rep.Process.NotFound {
 		return "", errors.New("herdr CLI not found in PATH")
 	}
-	if r.Status == nil || *r.Status != 0 {
+	if rep.Process.Status == nil || *rep.Process.Status != 0 {
 		code := 0
-		if r.Status != nil {
-			code = *r.Status
+		if rep.Process.Status != nil {
+			code = *rep.Process.Status
 		}
 		return "", fmt.Errorf("herdr pane current failed (exit %d)", code)
 	}
-	v, err := jsonjs.Parse([]byte(r.Stdout))
+	v, err := jsonjs.Parse([]byte(rep.Value))
 	if err != nil {
 		return "", errors.New("herdr pane current returned invalid JSON")
 	}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 // callerCheckModeOk reports whether a caller_check value is one of the
@@ -88,8 +89,18 @@ func CallerGate(command string, ctx *Config, env platform.Env, cwd string) {
 	if mode == "off" {
 		return
 	}
-	res := herdr.CheckCallerPane(env)
-	if res.State != herdr.CallerMismatch {
+	svc := herdr.New(env)
+	res := svc.Runtime.CheckCaller(nil, transport.Call{})
+	check := herdr.CallerCheck{
+		State:       herdr.CallerState(res.Value.State),
+		Pane:        res.Value.Pane,
+		ShellPID:    res.Value.ShellPID,
+		Reason:      res.Value.Reason,
+		Session:     res.Value.Session,
+		PaneSession: res.Value.PaneSession,
+		ShownIn:     res.Value.ShownIn,
+	}
+	if check.State != herdr.CallerMismatch {
 		return
 	}
 	logFile := ""
@@ -99,11 +110,11 @@ func CallerGate(command string, ctx *Config, env platform.Env, cwd string) {
 		_ = os.MkdirAll(filepath.Dir(logFile), 0o777)
 	}
 	if mode == "refuse" {
-		message := command + ": " + callerGateLine(res) + "Nothing was changed." + callerGateFix
+		message := command + ": " + callerGateLine(check) + "Nothing was changed." + callerGateFix
 		RecordFrictionError(message, 2, logFile, command)
 		platform.Die(message, 2)
 	}
-	Warn(command+": "+callerGateLine(res)+"Continuing because caller_check=warn."+callerGateFix, logFile, command)
+	Warn(command+": "+callerGateLine(check)+"Continuing because caller_check=warn."+callerGateFix, logFile, command)
 }
 
 // callerGateStateless reports the two cases where the state dir is not
