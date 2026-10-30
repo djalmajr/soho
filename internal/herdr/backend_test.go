@@ -2,6 +2,7 @@ package herdr
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -931,7 +932,12 @@ func TestBackendTranscriptPaths(t *testing.T) {
 		if err := os.WriteFile(sess, []byte("{}\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "pi-a"}, Stdout: `{"result":{"agent":{"agent_session":{"kind":"path","value":"` + sess + `"}}}}`}})
+		// The path goes in as a JSON string: a Windows path holds backslashes.
+		quoted, err := json.Marshal(sess)
+		if err != nil {
+			t.Fatal(err)
+		}
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "pi-a"}, Stdout: `{"result":{"agent":{"agent_session":{"kind":"path","value":` + string(quoted) + `}}}}`}})
 		readyProbe(t, env)
 		svc := New(env)
 		got := svc.Legacy.PiSessionPath(context.Background(), transport.Target{ID: "pi-a"})
