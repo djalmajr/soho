@@ -10,6 +10,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 )
@@ -96,7 +97,7 @@ func ComposeAmendment(raw, report string, ctx *core.Config, env platform.Env, ki
 func cooperativePrompt(agent, report string, ctx *core.Config, env platform.Env) string {
 	// Dispatch resolves the live workspace before composing. Standalone
 	// composition remains a pure operation without Herdr environment lookup.
-	if env.Get("HERDR_WORKSPACE_ID") == "" {
+	if herdr.New(env).Runtime.Caller().WorkspaceID == "" {
 		return ""
 	}
 	cwd, _ := os.Getwd()

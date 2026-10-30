@@ -379,20 +379,6 @@ type LegacyTransport interface {
 	// backend's path derivation), Value "" when any data is missing. The
 	// backend's call takes no per-call context, so ctx is not forwarded.
 	PiSessionPath(ctx context.Context, target Target) Reply[string]
-	// CountClaudeCompactBoundaries counts the compact-boundary lines of a
-	// Claude Code session transcript file — a local read with no herdr
-	// call — bounded by the per-call context; Err is set when the file
-	// cannot be read.
-	CountClaudeCompactBoundaries(ctx context.Context, path string) Reply[int]
-	// CountClaudeUserMarkerLines counts the lines of a Claude Code session
-	// transcript file that carry the user record marker and the given peer
-	// marker — a local read with no herdr call; Err is set when the file
-	// cannot be read.
-	CountClaudeUserMarkerLines(ctx context.Context, path, marker string) Reply[int]
-	// CountPiUserMarkerLines counts the lines of a pi session file that
-	// carry the given peer marker in a message entry — a local read with no
-	// herdr call; Err is set when the file cannot be read.
-	CountPiUserMarkerLines(ctx context.Context, path, marker string) Reply[int]
 	// WorkspaceCreateRaw runs one `workspace create --cwd <cwd> --label
 	// <label> [--env KEY=VALUE ...] --no-focus` with the --env pairs sorted
 	// by key, the call's timeout rounded up to whole milliseconds (an

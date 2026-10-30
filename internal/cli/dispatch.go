@@ -27,6 +27,7 @@ import (
 	"github.com/djalmajr/soho/internal/startup"
 	"github.com/djalmajr/soho/internal/stats"
 	"github.com/djalmajr/soho/internal/taskreport"
+	"github.com/djalmajr/soho/internal/transcript"
 	"github.com/djalmajr/soho/internal/transport"
 	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
@@ -635,13 +636,11 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	if checkOn && (kind == "claude" || kind == "pi") {
 		if kind == "claude" {
 			transcriptCount = func(path, marker string) (int, bool) {
-				rep := svc.Legacy.CountClaudeUserMarkerLines(context.Background(), path, marker)
-				return rep.Value, rep.Err == nil
+				return transcript.CountClaudeUserMarkerLines(path, marker)
 			}
 		} else {
 			transcriptCount = func(path, marker string) (int, bool) {
-				rep := svc.Legacy.CountPiUserMarkerLines(context.Background(), path, marker)
-				return rep.Value, rep.Err == nil
+				return transcript.CountPiUserMarkerLines(path, marker)
 			}
 		}
 		var path string

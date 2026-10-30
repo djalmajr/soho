@@ -1,4 +1,4 @@
-package herdr
+package transcript
 
 import (
 	"encoding/json"
