@@ -8,6 +8,7 @@ import (
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 	herdrtext "github.com/djalmajr/soho/internal/text"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 var taskContractHeading = regexp.MustCompile(`^(goal|owned files|owned|scope|forbidden|non-goals|constraints|report|expected result|acceptance criteria|acceptance|decisions already made|context|sources)[ \t]*$`)
@@ -48,7 +49,7 @@ func PaneTaskTitle(dir, agent string, title *string, env platform.Env) {
 	if len(f) < 2 || f[1] == "" {
 		return
 	}
-	_ = herdr.PaneTitle(f[1], title, env)
+	_ = herdr.New(env).Window.Title(nil, f[1], title, transport.Call{})
 }
 
 func MarkTaskDone(dir, agent string, env platform.Env) error {

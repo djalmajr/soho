@@ -6,18 +6,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 func SessionConfPath(ctx *Config, env platform.Env, cwd string) string {
-	workspace := env.Get("HERDR_WORKSPACE_ID")
-	if workspace == "" && env.Get("HERDR_ENV") != "1" {
+	svc := herdr.New(env)
+	workspace := svc.Runtime.Caller().WorkspaceID
+	if workspace == "" && !svc.Runtime.Caller().Inside {
 		return ""
 	}
 	if workspace == "" {
-		result := platform.RunCli("herdr", []string{"pane", "current", "--current"}, platform.RunOptions{Env: env, TimeoutMs: 10_000})
-		if !result.NotFound && result.Status != nil && *result.Status == 0 {
+		result := svc.Legacy.PaneCurrentRaw(nil, transport.Call{Timeout: 10 * time.Second})
+		if !result.Process.NotFound && result.Process.Status != nil && *result.Process.Status == 0 {
 			var payload struct {
 				Result struct {
 					Pane struct {
@@ -25,7 +29,7 @@ func SessionConfPath(ctx *Config, env platform.Env, cwd string) string {
 					} `json:"pane"`
 				} `json:"result"`
 			}
-			if json.Unmarshal([]byte(result.Stdout), &payload) == nil {
+			if json.Unmarshal([]byte(result.Value), &payload) == nil {
 				workspace = payload.Result.Pane.WorkspaceID
 			}
 		}

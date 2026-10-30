@@ -8,8 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 const rosterHeader = "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\n"
@@ -85,27 +87,28 @@ func RecordFrictionError(message string, code int, logFile string, fallbackComma
 }
 
 func WorkspaceID(ctx *Config, env platform.Env, cwd string) string {
-	if id := env.Get("HERDR_WORKSPACE_ID"); id != "" {
+	svc := herdr.New(env)
+	if id := svc.Runtime.Caller().WorkspaceID; id != "" {
 		return id
 	}
-	r := platform.RunCli("herdr", []string{"pane", "current", "--current"}, platform.RunOptions{Env: env, TimeoutMs: 30_000})
-	if r.NotFound {
+	rep := svc.Legacy.PaneCurrentRaw(nil, transport.Call{Timeout: 30 * time.Second})
+	if rep.Process.NotFound {
 		platform.Die("herdr CLI not found in PATH", 2)
 	}
-	if r.Status == nil || *r.Status != 0 {
-		if r.Stdout != "" {
-			_, _ = platform.Stdout.Write([]byte(r.Stdout))
+	if rep.Process.Status == nil || *rep.Process.Status != 0 {
+		if rep.Process.Stdout != "" {
+			_, _ = platform.Stdout.Write([]byte(rep.Process.Stdout))
 		}
-		if r.Stderr != "" {
-			_, _ = platform.Stderr.Write([]byte(r.Stderr))
+		if rep.Process.Stderr != "" {
+			_, _ = platform.Stderr.Write([]byte(rep.Process.Stderr))
 		}
 		code := 1
-		if r.Status != nil {
-			code = *r.Status
+		if rep.Process.Status != nil {
+			code = *rep.Process.Status
 		}
 		platform.Die("", code)
 	}
-	v, err := jsonjs.Parse([]byte(r.Stdout))
+	v, err := jsonjs.Parse([]byte(rep.Value))
 	if err != nil {
 		platform.Die("", 2)
 	}

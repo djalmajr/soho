@@ -11,6 +11,7 @@ import (
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 type gridResult struct {
@@ -26,8 +27,14 @@ type gridResult struct {
 }
 
 func ratio4(n int) string { return fmt.Sprintf("%.4f", math.Round((1/float64(n))*10000)/10000) }
+
+// moveInTab moves one pane into the tab with the exact argument vector the
+// regrid always used; the move reports where the pane landed (a move can
+// re-id the pane).
 func moveInTab(pane, tab, split, target, ratio string, env platform.Env) herdr.PaneMoveResult {
-	return herdr.PaneMove([]string{pane, "--tab", tab, "--split", split, "--target-pane", target, "--ratio", ratio, "--no-focus"}, env)
+	svc := herdr.New(env)
+	rep := svc.Window.Move(nil, transport.Move{Pane: pane, Tab: tab, Split: split, TargetPane: target, Ratio: ratio, NoFocus: true}, transport.Call{})
+	return herdr.PaneMoveResult{Ok: rep.Err == nil, Pane: rep.Value.PaneID, Tab: rep.Value.TabID}
 }
 func buildGrid(tab string, cells []string, env platform.Env) gridResult {
 	g := GridSizes(len(cells))
@@ -100,33 +107,34 @@ func parkPanesTracked(dir string, panes []string, env platform.Env) ([]string, s
 	if len(panes) == 0 {
 		return []string{}, "", false
 	}
+	svc := herdr.New(env)
 	first := panes[0]
-	m := herdr.PaneMove([]string{first, "--new-tab", "--label", "herd-park", "--no-focus"}, env)
-	if !m.Ok || m.Tab == "" {
+	m := svc.Window.Move(nil, transport.Move{Pane: first, NewTab: true, Label: "herd-park", NoFocus: true}, transport.Call{})
+	if m.Err != nil || m.Value.TabID == "" {
 		return append([]string(nil), panes...), "", false
 	}
 	parked := []string{first}
-	if m.Pane != "" && m.Pane != first {
+	if m.Value.PaneID != "" && m.Value.PaneID != first {
 		if dir != "" {
-			core.RosterReplacePane(dir, first, m.Pane)
+			core.RosterReplacePane(dir, first, m.Value.PaneID)
 		}
-		parked[0] = m.Pane
+		parked[0] = m.Value.PaneID
 	}
 	for _, pane := range panes[1:] {
-		r := herdr.PaneMove([]string{pane, "--tab", m.Tab, "--split", "down", "--target-pane", parked[0], "--ratio", "0.5", "--no-focus"}, env)
-		if !r.Ok {
-			return parked, m.Tab, false
+		r := svc.Window.Move(nil, transport.Move{Pane: pane, Tab: m.Value.TabID, Split: "down", TargetPane: parked[0], Ratio: "0.5", NoFocus: true}, transport.Call{})
+		if r.Err != nil {
+			return parked, m.Value.TabID, false
 		}
 		next := pane
-		if r.Pane != "" && r.Pane != pane {
+		if r.Value.PaneID != "" && r.Value.PaneID != pane {
 			if dir != "" {
-				core.RosterReplacePane(dir, pane, r.Pane)
+				core.RosterReplacePane(dir, pane, r.Value.PaneID)
 			}
-			next = r.Pane
+			next = r.Value.PaneID
 		}
 		parked = append(parked, next)
 	}
-	return parked, m.Tab, true
+	return parked, m.Value.TabID, true
 }
 func parkPanes(panes []string, env platform.Env) (bool, string) {
 	_, tab, ok := parkPanesTracked("", panes, env)
@@ -149,7 +157,8 @@ func parkPanes(panes []string, env platform.Env) (bool, string) {
 // the live topology; a mismatch is refused instead of guessed. On success
 // the caller's stale roster row is re-identified to the actual pane id.
 func callerContext(ctx *core.Config, env platform.Env, live []any, dir, ws string) (tab, pane, refuse string) {
-	inherited := env.Get("HERDR_PANE_ID")
+	svc := herdr.New(env)
+	inherited := svc.Runtime.Caller().PaneID
 	if inherited == "" {
 		return "", "", ""
 	}
@@ -168,18 +177,18 @@ func callerContext(ctx *core.Config, env platform.Env, live []any, dir, ws strin
 			}
 		}
 	}
-	res := herdr.PaneCurrent(env)
-	if !res.Ok {
+	res := svc.Runtime.Current(nil, transport.Call{})
+	if res.Err != nil {
 		return "", "", refuseMessage("the inherited caller pane " + inherited + " is not live in workspace " + ws + " and herdr pane current --current could not resolve it")
 	}
-	if res.PaneID == "" || res.TabID == "" {
-		return "", "", refuseMessage("the resolved caller identity is incomplete (pane " + res.PaneID + ", tab " + res.TabID + ")")
+	if res.Value.PaneID == "" || res.Value.TabID == "" {
+		return "", "", refuseMessage("the resolved caller identity is incomplete (pane " + res.Value.PaneID + ", tab " + res.Value.TabID + ")")
 	}
-	if res.WorkspaceID == "" {
+	if res.Value.WorkspaceID == "" {
 		return "", "", refuseMessage("the resolved caller identity has no workspace scope (missing scope is uncertainty, not permission)")
 	}
-	if res.WorkspaceID != ws {
-		return "", "", refuseMessage("the caller resolves to workspace " + res.WorkspaceID + ", outside this state scope " + ws)
+	if res.Value.WorkspaceID != ws {
+		return "", "", refuseMessage("the caller resolves to workspace " + res.Value.WorkspaceID + ", outside this state scope " + ws)
 	}
 	for _, v := range live {
 		o, isObj := v.(*jsonjs.Object)
@@ -187,19 +196,19 @@ func callerContext(ctx *core.Config, env platform.Env, live []any, dir, ws strin
 			continue
 		}
 		pid, _ := o.Get("pane_id")
-		if pid != res.PaneID {
+		if pid != res.Value.PaneID {
 			continue
 		}
 		if tid, _ := o.Get("tab_id"); tid != nil {
-			if t, ok := tid.(string); ok && t == res.TabID {
-				if dir != "" && inherited != res.PaneID {
-					core.RosterReplacePane(dir, inherited, res.PaneID)
+			if t, ok := tid.(string); ok && t == res.Value.TabID {
+				if dir != "" && inherited != res.Value.PaneID {
+					core.RosterReplacePane(dir, inherited, res.Value.PaneID)
 				}
-				return res.TabID, res.PaneID, ""
+				return res.Value.TabID, res.Value.PaneID, ""
 			}
 		}
 	}
-	return "", "", refuseMessage("the resolved caller pane " + res.PaneID + " is not live in tab " + res.TabID + " of workspace " + ws)
+	return "", "", refuseMessage("the resolved caller pane " + res.Value.PaneID + " is not live in tab " + res.Value.TabID + " of workspace " + ws)
 }
 
 // refuseMessage shapes the whole-command refusal: an explicit
@@ -350,12 +359,13 @@ func CmdRegrid(_ []string, ctx *core.Config, env platform.Env, cwd string) int {
 	// The caller-pane check runs before touching the claimed pane's tab
 	// (DJA-394); the callerContext slow path below keeps its own rule.
 	core.CallerGate("regrid", ctx, env, cwd)
+	svc := herdr.New(env)
 	dir := core.StateDirPath(ctx, env, cwd)
 	ws := core.WorkspaceID(ctx, env, cwd)
 	root := platform.ProjectRoot(env, cwd)
 	layout := core.Cfg(ctx, "layout", "split", env)
 	focusBefore := UIFocusedPane(env)
-	live := herdr.PaneList(env, ws)
+	live := livePanes(svc.Window.ListPanes(nil, transport.Scope{WorkspaceID: ws}, transport.Call{}).Value)
 	summary := []RegridEntry{}
 	callerTab, callerPane, refuse := callerContext(ctx, env, live, dir, ws)
 	if refuse != "" {
@@ -395,7 +405,7 @@ func CmdRegrid(_ []string, ctx *core.Config, env platform.Env, cwd string) int {
 				panes = append(panes, p)
 			}
 		}
-		live = herdr.PaneList(env, ws)
+		live = livePanes(svc.Window.ListPanes(nil, transport.Scope{WorkspaceID: ws}, transport.Call{}).Value)
 		if len(panes) >= 1 {
 			shape := GridShapeFor(ctx, env, len(panes)+1)
 			if core.Cfg(ctx, "pane_columns", "", env) == "auto" {
@@ -414,7 +424,7 @@ func CmdRegrid(_ []string, ctx *core.Config, env platform.Env, cwd string) int {
 			summary = append(summary, RegridEntry{callerTab, "caller", len(parked) + 1, shape.Cols})
 			// Parking and gridding can change the pane ids recorded in the
 			// roster. Rebuild against the topology after those moves.
-			live = herdr.PaneList(env, ws)
+			live = livePanes(svc.Window.ListPanes(nil, transport.Scope{WorkspaceID: ws}, transport.Call{}).Value)
 		}
 	}
 	kept := ""
@@ -436,17 +446,17 @@ func CmdRegrid(_ []string, ctx *core.Config, env platform.Env, cwd string) int {
 			if createLabel == "" {
 				createLabel = "herd"
 			}
-			created := herdr.TabCreate(env, ws, root, createLabel)
-			if !created.Ok {
+			created := svc.Window.CreateTab(nil, transport.Open{WorkspaceID: ws, Cwd: root, Label: createLabel}, transport.Call{})
+			if created.Err != nil {
 				dieRegrid(ctx, env, cwd, "tab create failed")
 			}
-			newtab := created.Tab
+			newtab := created.Value.ID
 			HerdTabSet(ctx, newtab, label, e.Mode, env, cwd)
-			m := moveInTab(panes[0], newtab, "right", created.Root, "0.5", env)
+			m := moveInTab(panes[0], newtab, "right", created.Value.RootPane, "0.5", env)
 			if !m.Ok {
 				dieRegrid(ctx, env, cwd, fmt.Sprintf("regrid: move of %s failed; remaining workers are alive in tab %s", panes[0], e.Tab))
 			}
-			herdr.PaneClose(created.Root, env)
+			svc.Runtime.Close(nil, transport.Target{ID: created.Value.RootPane}, transport.Call{})
 			if m.Pane != "" && m.Pane != panes[0] {
 				core.RosterReplacePane(dir, panes[0], m.Pane)
 				panes[0] = m.Pane

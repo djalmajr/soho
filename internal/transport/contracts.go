@@ -198,6 +198,14 @@ type View struct {
 	Raw         json.RawMessage
 }
 
+// TabFields is the parsed identity of a tab (its label and root pane),
+// kept whatever the exit status: a failed tab get can still print a tab
+// with a root pane, and the caller may want it.
+type TabFields struct {
+	Label string
+	Root  string
+}
+
 // Open describes how a window split or tab is created.
 type Open struct {
 	Anchor      string
@@ -340,6 +348,13 @@ type LegacyTransport interface {
 	// empty) so the caller keeps its own fail-open and body-parsing
 	// handling. It never retries and does not parse the body.
 	AgentGetRaw(ctx context.Context, target Target, call Call) Reply[string]
+	// TabGetRaw runs one `tab get <tab>` with the call's timeout and
+	// returns the parsed tab fields (label and root pane) whatever the exit
+	// status — a failed call can still print a tab with a root pane — with
+	// the raw process result so the caller keeps its own exit-status
+	// judgment. It never retries and, unlike Tab, keeps the parsed fields
+	// on the Value alongside Err.
+	TabGetRaw(ctx context.Context, tab string, call Call) Reply[TabFields]
 	// PaneCurrentRaw runs `pane current --current` once with the call's
 	// timeout and returns the raw process result (Value carries the stdout)
 	// so the caller keeps its own exit-status handling. It never retries and

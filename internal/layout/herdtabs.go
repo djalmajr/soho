@@ -13,6 +13,7 @@ import (
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 type TabEntry struct{ Tab, Label, Mode string }
@@ -73,6 +74,7 @@ func tabFile(ctx *core.Config, env platform.Env, cwd string) string {
 
 // HerdTabEntries migrates legacy entries, detects manual renames, prunes dead tabs, and persists the normalized file.
 func HerdTabEntries(ctx *core.Config, env platform.Env, cwd string) []TabEntry {
+	svc := herdr.New(env)
 	file := tabFile(ctx, env, cwd)
 	if _, err := os.Stat(file); err != nil {
 		return []TabEntry{}
@@ -87,20 +89,20 @@ func HerdTabEntries(ctx *core.Config, env platform.Env, cwd string) []TabEntry {
 		if label == "-" {
 			label = ""
 		}
-		g := herdr.TabGet(e.Tab, env)
-		if !g.Ok {
+		g := svc.Window.Tab(nil, e.Tab, transport.Call{})
+		if g.Err != nil {
 			continue
 		}
 		mode := e.Mode
 		if mode == "" {
 			mode = "manual"
-			if g.Label == "" || legacyHerdLabel.MatchString(g.Label) {
+			if g.Value.Label == "" || legacyHerdLabel.MatchString(g.Value.Label) {
 				mode = "auto"
 			}
-			label = g.Label
-		} else if mode == "auto" && label != "" && g.Label != "" && g.Label != label {
+			label = g.Value.Label
+		} else if mode == "auto" && label != "" && g.Value.Label != "" && g.Value.Label != label {
 			mode = "manual"
-			label = g.Label
+			label = g.Value.Label
 		}
 		out = append(out, TabEntry{e.Tab, storedLabel(label), mode})
 	}
@@ -203,6 +205,7 @@ func containsString(values []string, target string) bool {
 }
 
 func rosterPanes(ctx *core.Config, live []any, tab string, env platform.Env, cwd string) []string {
+	svc := herdr.New(env)
 	out := []string{}
 	for _, line := range core.RosterRows(core.StateDirPath(ctx, env, cwd)) {
 		f := strings.Split(line, "\t")
@@ -226,7 +229,7 @@ func rosterPanes(ctx *core.Config, live []any, tab string, env platform.Env, cwd
 		if !present {
 			continue
 		}
-		if herdr.AgentState(f[0], env, herdr.Timeout, nil).State == "gone" {
+		if svc.Runtime.Get(nil, transport.Target{ID: f[0]}, transport.Call{}).Value.State == "gone" {
 			continue
 		}
 		out = append(out, pane)
@@ -268,13 +271,14 @@ func RosterPanesInTab(ctx *core.Config, live []any, tab string, env platform.Env
 }
 
 func HerdTabsRelabel(ctx *core.Config, env platform.Env, cwd string) {
+	svc := herdr.New(env)
 	ws := core.WorkspaceID(ctx, env, cwd)
-	live := herdr.PaneList(env, ws)
+	live := livePanes(svc.Window.ListPanes(nil, transport.Scope{WorkspaceID: ws}, transport.Call{}).Value)
 	entries := HerdTabEntries(ctx, env, cwd)
 	tpl := core.Cfg(ctx, "herd_label", "{roles}", env)
 	orch := ""
 	if strings.Contains(tpl, "{orch}") {
-		orch = herdr.CallerAgentName(env)
+		orch = svc.Terminal.CallerAgentName(nil, transport.Call{}).Value
 		if orch == "" {
 			orch = core.Cfg(ctx, "orchestrator_name", "orchestrator", env)
 		}
@@ -293,8 +297,8 @@ func HerdTabsRelabel(ctx *core.Config, env platform.Env, cwd string) {
 		if e.Mode == "auto" {
 			roles := rosterRoles(ctx, live, e.Tab, env, cwd)
 			want := HerdAutoLabel(ComposeHerdLabel(tpl, roles, index, orch), taken, ctx, env)
-			cur := herdr.TabGet(e.Tab, env).Label
-			if want != cur && !herdr.TabRename(e.Tab, want, env) {
+			cur := svc.Legacy.TabGetRaw(nil, e.Tab, transport.Call{}).Value.Label
+			if want != cur && !svc.Window.RenameTab(nil, e.Tab, want, transport.Call{}).Value {
 				core.Warn(fmt.Sprintf("tab rename %s → '%s' failed", e.Tab, want), frictionPath(ctx, env, cwd))
 			}
 			label = want
@@ -308,7 +312,8 @@ func frictionPath(ctx *core.Config, env platform.Env, cwd string) string {
 }
 
 func HerdTabSplit(ctx *core.Config, tab, workerCwd string, env platform.Env, cwd string, beforeCreate ...func()) herdr.PaneSplitResult {
-	live := herdr.PaneList(env, core.WorkspaceID(ctx, env, cwd))
+	svc := herdr.New(env)
+	live := livePanes(svc.Window.ListPanes(nil, transport.Scope{WorkspaceID: core.WorkspaceID(ctx, env, cwd)}, transport.Call{}).Value)
 	anchor := ""
 	for _, v := range live {
 		o, ok := v.(*jsonjs.Object)
@@ -325,24 +330,25 @@ func HerdTabSplit(ctx *core.Config, tab, workerCwd string, env platform.Env, cwd
 		}
 	}
 	if anchor == "" {
-		return herdr.PaneSplitResult{Ok: true, Pane: herdr.TabGet(tab, env).Root}
+		return herdr.PaneSplitResult{Ok: true, Pane: svc.Legacy.TabGetRaw(nil, tab, transport.Call{}).Value.Root}
 	}
 	for _, prepare := range beforeCreate {
 		prepare()
 	}
-	s := herdr.PaneSplit(anchor, AutoDirectionFor(env, anchor), workerCwd, env, nil)
-	if !s.Ok {
+	rep := svc.Window.Split(nil, transport.Open{Anchor: anchor, Direction: AutoDirectionFor(env, anchor), Cwd: workerCwd}, transport.Call{})
+	if rep.Err != nil {
 		platform.DieFriction("pane split failed", 4)
 	}
-	return s
+	return herdr.PaneSplitResult{Ok: true, Pane: rep.Value.PaneID}
 }
 
 // beforeCreate runs only after placement selects a new shell, before its create
 // call. Adopting an existing empty tab root does not invoke it.
 func HerdTabPane(ctx *core.Config, workerCwd, label, role string, env platform.Env, cwd string, beforeCreate ...func()) herdr.PaneSplitResult {
+	svc := herdr.New(env)
 	ws := core.WorkspaceID(ctx, env, cwd)
 	cap := SplitCap(ctx, env)
-	live := herdr.PaneList(env, ws)
+	live := livePanes(svc.Window.ListPanes(nil, transport.Scope{WorkspaceID: ws}, transport.Call{}).Value)
 	newLabel, newMode := "", ""
 	if label != "" {
 		cand := label
@@ -385,12 +391,12 @@ func HerdTabPane(ctx *core.Config, workerCwd, label, role string, env platform.E
 	for _, prepare := range beforeCreate {
 		prepare()
 	}
-	t := herdr.TabCreate(env, ws, workerCwd, newLabel)
-	if !t.Ok {
+	t := svc.Window.CreateTab(nil, transport.Open{WorkspaceID: ws, Cwd: workerCwd, Label: newLabel}, transport.Call{})
+	if t.Err != nil {
 		platform.DieFriction("tab create failed", 4)
 	}
-	HerdTabSet(ctx, t.Tab, newLabel, newMode, env, cwd)
-	return herdr.PaneSplitResult{Ok: true, Pane: t.Root}
+	HerdTabSet(ctx, t.Value.ID, newLabel, newMode, env, cwd)
+	return herdr.PaneSplitResult{Ok: true, Pane: t.Value.RootPane}
 }
 
 func jsStringLen(s string) int { return len(utf16.Encode([]rune(s))) }
@@ -401,6 +407,7 @@ func padJS(s string, n int) string {
 	return s
 }
 func CmdTabLabel(args []string, ctx *core.Config, env platform.Env, cwd string) int {
+	svc := herdr.New(env)
 	text, tab := "", ""
 	auto := false
 	for i := 0; i < len(args); i++ {
@@ -436,7 +443,7 @@ func CmdTabLabel(args []string, ctx *core.Config, env platform.Env, cwd string) 
 		core.DieFriction("tab-label: no herd tab yet (workers overflow into one when the caller's tab is full)", 3, frictionPath(ctx, env, cwd), "tab-label")
 	}
 	if tab == "" {
-		caller := env.Get("HERDR_TAB_ID")
+		caller := svc.Runtime.Caller().TabID
 		for _, e := range entries {
 			if e.Tab == caller && caller != "" {
 				tab = caller
@@ -472,7 +479,7 @@ func CmdTabLabel(args []string, ctx *core.Config, env platform.Env, cwd string) 
 		if len([]rune(text)) > HerdLabelMax(ctx, env) {
 			core.Warn(fmt.Sprintf("label '%s' is longer than %d characters; the sidebar will cut it", text, HerdLabelMax(ctx, env)), frictionPath(ctx, env, cwd))
 		}
-		if !herdr.TabRename(tab, text, env) {
+		if !svc.Window.RenameTab(nil, tab, text, transport.Call{}).Value {
 			core.DieFriction("tab rename failed", 4, frictionPath(ctx, env, cwd), "tab-label")
 		}
 		HerdTabSet(ctx, tab, text, "manual", env, cwd)

@@ -498,6 +498,23 @@ func (b *backend) AgentGetRaw(ctx context.Context, target transport.Target, call
 	return transport.Reply[string]{Value: r.Stdout, Valid: true, Process: processResult(r)}
 }
 
+// TabGetRaw: one `tab get <tab>`, no retries. The parsed label and root pane
+// are kept whatever the exit status — the same parse as the TabGet adapter
+// (a failed call can still print a tab with a root pane) — and the raw
+// process result comes back so the caller keeps the exit-status judgment;
+// the Value holds the fields even when Err is set.
+func (b *backend) TabGetRaw(ctx context.Context, tab string, call transport.Call) transport.Reply[transport.TabFields] {
+	r := runWithTimeout([]string{"tab", "get", tab}, b.env, timeoutFor(call), ctxArgs(ctx)...)
+	fields := transport.TabFields{
+		Label: str(get(parsed(r.Stdout), "result", "tab", "label")),
+		Root:  str(get(parsed(r.Stdout), "result", "root_pane", "pane_id")),
+	}
+	if !ok(r) {
+		return transport.Reply[transport.TabFields]{Value: fields, Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
+	}
+	return transport.Reply[transport.TabFields]{Value: fields, Valid: true, Process: processResult(r)}
+}
+
 // PaneCurrentRaw runs `pane current --current` once with the call's timeout
 // and returns the raw process result: Value carries the stdout and the
 // caller owns the exit-status handling. It never retries and does not parse

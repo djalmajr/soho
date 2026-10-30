@@ -893,6 +893,50 @@ func TestBackendAgentGetRaw(t *testing.T) {
 	})
 }
 
+// TestBackendTabGetRaw: the parsed label and root pane are kept whatever the
+// exit status — a failed tab get can still print a tab with a root pane —
+// and the raw process result comes back so the caller keeps its own
+// exit-status judgment; the Value holds the fields even when Err is set.
+func TestBackendTabGetRaw(t *testing.T) {
+	const body = `{"result":{"tab":{"label":"workers"},"root_pane":{"pane_id":"rootp"}}}`
+	t.Run("exit 0 returns the parsed fields, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"tab", "get", "th"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.TabGetRaw(context.Background(), "th", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value.Label != "workers" || got.Value.Root != "rootp" || !got.Valid || got.Err != nil || got.Process.Status == nil || *got.Process.Status != 0 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one call expected, got %#v", calls)
+		}
+	})
+	t.Run("a nonzero exit keeps the parsed fields on the Value", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"tab", "get", "th"}, Call: 1, Code: 1, Stdout: body},
+			{Argv: []string{"tab", "get", "th"}, Call: 2, Stdout: body},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.TabGetRaw(context.Background(), "th", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value.Label != "workers" || got.Value.Root != "rootp" || got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+	t.Run("a nonzero exit without output keeps zero fields", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"tab", "get", "th"}, Code: 1, Stderr: "boom"}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.TabGetRaw(context.Background(), "th", transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value.Label != "" || got.Value.Root != "" || got.Err == nil || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+	})
+}
+
 // TestBackendTranscriptPaths: the legacy transcript path resolutions wrap the
 // adapter's one agent get plus local file derivation, and report "" when any
 // data is missing.

@@ -13,6 +13,7 @@ import (
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 type Grid struct {
@@ -268,8 +269,12 @@ func SplitMin(ctx *core.Config, env platform.Env) float64 {
 }
 
 func AutoDirectionFor(env platform.Env, pane string) string {
-	r := herdr.PaneLayout(env, pane)
-	if r.Stdout == "" {
+	// The old code ran the layout read with no per-call context; nil keeps
+	// that path (the backend forwards no context to the adapter).
+	svc := herdr.New(env)
+	r := svc.Window.Layout(nil, pane, transport.Call{})
+	stdout := r.Process.Stdout
+	if stdout == "" {
 		return "right"
 	}
 	var doc struct {
@@ -286,12 +291,12 @@ func AutoDirectionFor(env platform.Env, pane string) string {
 			} `json:"layout"`
 		} `json:"result"`
 	}
-	if json.Unmarshal([]byte(r.Stdout), &doc) != nil || doc.Result.Layout.Panes == nil {
+	if json.Unmarshal([]byte(stdout), &doc) != nil || doc.Result.Layout.Panes == nil {
 		return "down"
 	}
 	sel := pane
 	if sel == "" {
-		sel = env.Get("HERDR_PANE_ID")
+		sel = svc.Runtime.Caller().PaneID
 	}
 	for _, p := range doc.Result.Layout.Panes {
 		if p.ID == sel || (sel == "" && p.Focused) {
@@ -304,8 +309,25 @@ func AutoDirectionFor(env platform.Env, pane string) string {
 	return "down"
 }
 
+// livePanes re-reads a pane listing as the field objects the layout helpers
+// read: one entry per view, re-parsed from the raw object the transport kept
+// on the view (the projection alone drops fields such as focused).
+func livePanes(views []transport.View) []any {
+	out := make([]any, 0, len(views))
+	for _, v := range views {
+		if len(v.Raw) == 0 {
+			continue
+		}
+		if value, _ := jsonjs.Parse(v.Raw); value != nil {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 func UIFocusedPane(env platform.Env) string {
-	for _, value := range herdr.PaneListAll(env) {
+	svc := herdr.New(env)
+	for _, value := range livePanes(svc.Window.ListPanes(nil, transport.Scope{All: true}, transport.Call{}).Value) {
 		p, ok := value.(*jsonjs.Object)
 		if !ok {
 			continue
@@ -327,7 +349,8 @@ func RestoreFocusIfStolen(prev, stolen, direction string, env platform.Env) {
 	if prev == "" || stolen == "" || prev == stolen || UIFocusedPane(env) != stolen {
 		return
 	}
-	if herdr.AgentFocus(prev, env) || prev != env.Get("HERDR_PANE_ID") {
+	svc := herdr.New(env)
+	if svc.Window.Focus(nil, transport.Focus{Target: transport.Target{ID: prev}}, transport.Call{}).Value || prev != svc.Runtime.Caller().PaneID {
 		return
 	}
 	back := ""
@@ -337,18 +360,20 @@ func RestoreFocusIfStolen(prev, stolen, direction string, env platform.Env) {
 		back = "up"
 	}
 	if back != "" {
-		herdr.PaneFocusBack(back, stolen, env)
+		svc.Window.Focus(nil, transport.Focus{Direction: back, PaneID: stolen}, transport.Call{})
 	}
 }
 
 func PickSplitAnchor(ctx *core.Config, env platform.Env, cwd string) *Anchor {
-	me := env.Get("HERDR_PANE_ID")
-	r := herdr.PaneLayout(env, "")
-	if r.Stdout == "" {
+	svc := herdr.New(env)
+	me := svc.Runtime.Caller().PaneID
+	r := svc.Window.Layout(nil, "", transport.Call{})
+	stdout := r.Process.Stdout
+	if stdout == "" {
 		return &Anchor{Anchor: me, Direction: "right"}
 	}
 	var doc any
-	if json.Unmarshal([]byte(r.Stdout), &doc) != nil {
+	if json.Unmarshal([]byte(stdout), &doc) != nil {
 		return &Anchor{Anchor: me, Direction: "right"}
 	}
 	dir := core.StateDirPath(ctx, env, cwd)
@@ -362,9 +387,9 @@ func PickSplitAnchor(ctx *core.Config, env platform.Env, cwd string) *Anchor {
 	var out *Anchor
 	if cols, overflow, declared := PaneColumns(ctx, env); declared {
 		cap, unlimited := SplitCapDeclared(ctx, env)
-		out = SplitAnchorDeclared([]byte(r.Stdout), me, mine, cols, overflow, cap, unlimited, SplitMin(ctx, env))
+		out = SplitAnchorDeclared([]byte(stdout), me, mine, cols, overflow, cap, unlimited, SplitMin(ctx, env))
 	} else {
-		out = SplitAnchor([]byte(r.Stdout), me, mine, SplitCap(ctx, env), SplitMin(ctx, env))
+		out = SplitAnchor([]byte(stdout), me, mine, SplitCap(ctx, env), SplitMin(ctx, env))
 	}
 	if out == nil {
 		return &Anchor{Anchor: me, Direction: "right"}

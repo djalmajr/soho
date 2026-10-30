@@ -6,9 +6,27 @@ import (
 	"strings"
 
 	"github.com/djalmajr/soho/internal/herdr"
+	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	textutil "github.com/djalmajr/soho/internal/text"
+	"github.com/djalmajr/soho/internal/transport"
 )
+
+// livePanes re-reads a pane listing as the field objects the core helpers
+// read: one entry per view, re-parsed from the raw object the transport kept
+// on the view.
+func livePanes(views []transport.View) []any {
+	out := make([]any, 0, len(views))
+	for _, v := range views {
+		if len(v.Raw) == 0 {
+			continue
+		}
+		if value, _ := jsonjs.Parse(v.Raw); value != nil {
+			out = append(out, value)
+		}
+	}
+	return out
+}
 
 // Orphan is a live Herdr agent of the current workspace that this project no
 // longer owns: its pane and name both match a row of this project's
@@ -68,11 +86,12 @@ func readReleasedPanes(dir string) []ReleasedPane {
 // cause is kept, so a herdr outage never wipes the registry.
 func releasedPanesWrite(ctx *Config, env platform.Env, cwd string, mutate func(rows []ReleasedPane) []ReleasedPane) {
 	sd := StateDir(ctx, env, cwd)
+	svc := herdr.New(env)
 	WithRosterLock(sd, func() {
 		current := readReleasedPanes(sd)
 		pruned := make([]ReleasedPane, 0, len(current))
 		for _, row := range current {
-			if !herdr.PaneGetGone(row.Pane, env) {
+			if !svc.Terminal.GetGone(nil, transport.Target{ID: row.Pane}, transport.Call{}).Value {
 				pruned = append(pruned, row)
 			}
 		}
@@ -129,6 +148,7 @@ func writeReleasedPanes(dir string, rows []ReleasedPane) {
 // the orchestrator's own pane (HERDR_PANE_ID). A failed pane list reads as no
 // workspace pane, so nothing is classified (no false orphan).
 func OrphansOf(ctx *Config, env platform.Env, cwd string, live []any) []Orphan {
+	svc := herdr.New(env)
 	rosterPanes := map[string]bool{}
 	for _, line := range RosterRows(StateDirPath(ctx, env, cwd)) {
 		fields := strings.Split(line, "\t")
@@ -137,7 +157,7 @@ func OrphansOf(ctx *Config, env platform.Env, cwd string, live []any) []Orphan {
 		}
 	}
 	workspacePanes := map[string]bool{}
-	for _, pane := range herdr.PaneList(env, WorkspaceID(ctx, env, cwd)) {
+	for _, pane := range livePanes(svc.Window.ListPanes(nil, transport.Scope{WorkspaceID: WorkspaceID(ctx, env, cwd)}, transport.Call{}).Value) {
 		if id := agentField(pane, "pane_id"); id != "" {
 			workspacePanes[id] = true
 		}
@@ -146,7 +166,7 @@ func OrphansOf(ctx *Config, env platform.Env, cwd string, live []any) []Orphan {
 	for _, row := range ReleasedPanes(ctx, env, cwd) {
 		released[row.Name+"\x00"+row.Pane] = true
 	}
-	orchestrator := env.Get("HERDR_PANE_ID")
+	orchestrator := svc.Runtime.Caller().PaneID
 	out := []Orphan{}
 	for _, agent := range live {
 		name := agentField(agent, "name")
@@ -170,7 +190,15 @@ func OrphansOf(ctx *Config, env platform.Env, cwd string, live []any) []Orphan {
 // herdr.LiveAgents' own error, the same way the roster's "other live agents"
 // section fails.
 func Orphans(ctx *Config, env platform.Env, cwd string) []Orphan {
-	return OrphansOf(ctx, env, cwd, herdr.LiveAgents(env, herdr.Timeout))
+	svc := herdr.New(env)
+	// OrphansOf still reads the live list as field objects: rebuild it from
+	// the transport terminals with the field names that function reads.
+	live := svc.Runtime.List(nil, transport.Scope{}, transport.Call{}).Value
+	rows := make([]any, 0, len(live))
+	for _, a := range live {
+		rows = append(rows, jsonjs.O("name", a.Name, "pane_id", a.PaneID, "agent_status", a.State))
+	}
+	return OrphansOf(ctx, env, cwd, rows)
 }
 
 // FindOrphan reports the orphan named exactly name, when it has one.

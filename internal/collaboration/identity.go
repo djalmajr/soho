@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 func ResolveParticipant(stateDir, name string, env platform.Env, contexts ...context.Context) (Participant, error) {
@@ -22,8 +25,9 @@ func ResolveParticipant(stateDir, name string, env platform.Env, contexts ...con
 	if len(contexts) > 0 && contexts[0] != nil {
 		ctx = contexts[0]
 	}
-	r := platform.RunCli("herdr", []string{"agent", "get", name}, platform.RunOptions{Env: env, Context: ctx, TimeoutMs: 5000})
-	if r.Status == nil || *r.Status != 0 || r.TimedOut || r.NotFound {
+	svc := herdr.New(env)
+	rep := svc.Legacy.AgentGetRaw(ctx, transport.Target{ID: name}, transport.Call{Timeout: 5 * time.Second})
+	if rep.Process.Status == nil || *rep.Process.Status != 0 || rep.Process.TimedOut || rep.Process.NotFound {
 		return Participant{}, fmt.Errorf("cannot verify live collaboration participant %s", name)
 	}
 	var response struct {
@@ -41,11 +45,11 @@ func ResolveParticipant(stateDir, name string, env platform.Env, contexts ...con
 			} `json:"agent"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal([]byte(r.Stdout), &response); err != nil {
+	if err := json.Unmarshal([]byte(rep.Value), &response); err != nil {
 		return Participant{}, err
 	}
 	ag := response.Result.Agent
-	if ag.Name != name || ag.Pane != row[1] || ag.Kind != row[2] || ag.Workspace != env.Get("HERDR_WORKSPACE_ID") || ag.Workspace == "" || ag.Session.Kind == "" || ag.Session.Value == "" || !filepath.IsAbs(ag.Cwd) {
+	if ag.Name != name || ag.Pane != row[1] || ag.Kind != row[2] || ag.Workspace != svc.Runtime.Caller().WorkspaceID || ag.Workspace == "" || ag.Session.Kind == "" || ag.Session.Value == "" || !filepath.IsAbs(ag.Cwd) {
 		return Participant{}, errors.New("participant pane, workspace or session no longer matches its registration")
 	}
 	cwd, err := filepath.EvalSymlinks(ag.Cwd)
@@ -61,7 +65,7 @@ func ResolveParticipant(stateDir, name string, env platform.Env, contexts ...con
 }
 
 func CheckParticipants(a Assignment, stateDir string, env platform.Env, contexts ...context.Context) error {
-	if env.Get("HERDR_WORKSPACE_ID") != a.Workspace {
+	if herdr.New(env).Runtime.Caller().WorkspaceID != a.Workspace {
 		return errors.New("collaboration belongs to another workspace")
 	}
 	for _, expected := range []Participant{a.Author, a.Reviewer} {
