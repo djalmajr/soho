@@ -531,8 +531,14 @@ func PaneFocusBack(direction, pane string, env platform.Env) bool {
 func AgentSendKeys(agent, key string, env platform.Env) bool {
 	return ok(run([]string{"agent", "send-keys", agent, key}, env))
 }
+
+// notificationShow runs the best-effort notification and reports the raw
+// result. NotificationShow keeps the no-result behavior by delegating to it.
+func notificationShow(title, body string, env platform.Env) platform.RunResult {
+	return run([]string{"notification", "show", title, "--body", body, "--sound", "done"}, env)
+}
 func NotificationShow(title, body string, env platform.Env) {
-	_ = run([]string{"notification", "show", title, "--body", body, "--sound", "done"}, env)
+	_ = notificationShow(title, body, env)
 }
 func PaneClose(pane string, env platform.Env) bool {
 	return ok(run([]string{"pane", "close", pane}, env))
