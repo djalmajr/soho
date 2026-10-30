@@ -918,12 +918,14 @@ func TestJobCancelRecoversTheCrashedStart(t *testing.T) {
 }
 
 func TestJobCapabilitiesLine(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
 	var out, errOut bytes.Buffer
 	oldOut, oldErr := platform.Stdout, platform.Stderr
 	platform.Stdout, platform.Stderr = &out, &errOut
-	code := Run([]string{"capabilities", "--json"}, platform.Env{})
+	code := Run([]string{"capabilities", "--json"}, platform.Env{"HOME": root, "USERPROFILE": root})
 	platform.Stdout, platform.Stderr = oldOut, oldErr
-	want := `{"schema":1,"worker_collaboration":1,"ephemeral_job":1,"job_events":1}` + "\n"
+	want := `{"schema":1,"worker_collaboration":1,"ephemeral_job":1,"job_events":1,"transport":"herdr"}` + "\n"
 	if code != 0 || out.String() != want || errOut.Len() != 0 {
 		t.Fatalf("code=%d out=%q err=%q", code, out.String(), errOut.String())
 	}

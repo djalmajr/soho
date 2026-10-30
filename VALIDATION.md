@@ -109,7 +109,7 @@ Use a fresh `<id>` for every attempt: the id is the idempotency key, and startin
 
 Run each command through `<bin>`, and capture each command's stdout, stderr and exit code to separate files in `<evidence-dir>`, with the UTC start and end timestamp of the command (see Evidence and how to paste it). `<evidence-dir>` is outside the repository checkout.
 
-1. Check the engine capabilities of the candidate binary: `<bin> capabilities --json`. It must print `{"schema":1,"worker_collaboration":1,"ephemeral_job":1,"job_events":1}`.
+1. Check the engine capabilities of the candidate binary: `<bin> capabilities --json`. It must print `{"schema":1,"worker_collaboration":1,"ephemeral_job":1,"job_events":1,"transport":"herdr"}` (`transport` is `hc` when the configuration selects it).
 2. Record the Herdr workspaces before the job: `herdr workspace list`.
 3. Validate the start without side effects: `<bin> job start --id <id> --repo <org>/<sandbox-repo> --base <base-branch> --brief <brief-file> --timeout 30 --dry-run`. It must exit 0 and print `"status":"dry_run"`. Do not continue on another exit code; record the cause (a configuration or prerequisite gap is BLOCKED).
 4. Start the real job with the same arguments, without `--dry-run`: `<bin> job start --id <id> --repo <org>/<sandbox-repo> --base <base-branch> --brief <brief-file> --timeout 30`. It must exit 0 and print the status line of a `running` job. `--base` may be omitted, in which case the base comes from the brief, then from the remote default branch.

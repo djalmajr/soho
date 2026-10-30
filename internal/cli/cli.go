@@ -111,7 +111,10 @@ func Run(args []string, env platform.Env) (code int) {
 		return 0
 	}
 	if len(args) == 2 && args[0] == "capabilities" && args[1] == "--json" {
-		_, _ = io.WriteString(platform.Stdout, "{\"schema\":1,\"worker_collaboration\":1,\"ephemeral_job\":1,\"job_events\":1}\n")
+		// transport is the configured worker transport for this directory
+		// (DJA-603); the other fields are fixed for this binary.
+		cwd, _ := os.Getwd()
+		_, _ = fmt.Fprintf(platform.Stdout, "{\"schema\":1,\"worker_collaboration\":1,\"ephemeral_job\":1,\"job_events\":1,\"transport\":%q}\n", core.TransportModeAt(env, cwd))
 		return 0
 	}
 
