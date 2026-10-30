@@ -186,7 +186,7 @@ func TestCountClaudeUserMarkerLines(t *testing.T) {
 	t.Run("a matching line without a trailing newline still counts", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "session.jsonl")
-		content := `{"type":"user","message":{"content":"earlier"}}\n{"type":"user","message":{"content":"` + marker + `"}}`
+		content := `{"type":"user","message":{"content":"earlier"}}` + "\n" + `{"type":"user","message":{"content":"` + marker + `"}}`
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}

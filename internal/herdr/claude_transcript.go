@@ -84,10 +84,12 @@ const claudeTranscriptUserType = `"type":"user"`
 
 var claudeTranscriptUserTypeBytes = []byte(claudeTranscriptUserType)
 
-// CountClaudeUserMarkerLines counts the transcript lines that contain the
-// user record marker and the given peer marker (#id). Like
-// CountClaudeCompactBoundaries it streams the file line by line and returns
-// only the number: it does not read into, retain, log, or return the content
+// CountClaudeUserMarkerLines counts the transcript's user records that
+// contain the given marker. The raw user-type and marker substrings are a
+// prefilter; a candidate counts only when its own root type is user, since
+// "type":"user" may sit in a nested object of an assistant or tool record.
+// Like CountClaudeCompactBoundaries it streams the file line by line and
+// returns only the number: it does not retain, log, or return the content
 // of any line, matching or not. ok is false when the file cannot be read.
 func CountClaudeUserMarkerLines(path, marker string) (int, bool) {
 	f, err := os.Open(path)
@@ -102,7 +104,11 @@ func CountClaudeUserMarkerLines(path, marker string) (int, bool) {
 	markerBytes := []byte(marker)
 	n := 0
 	for scanner.Scan() {
-		if bytes.Contains(scanner.Bytes(), claudeTranscriptUserTypeBytes) && bytes.Contains(scanner.Bytes(), markerBytes) {
+		line := scanner.Bytes()
+		if !bytes.Contains(line, claudeTranscriptUserTypeBytes) || !bytes.Contains(line, markerBytes) {
+			continue
+		}
+		if str(get(parsed(string(line)), "type")) == "user" {
 			n++
 		}
 	}
