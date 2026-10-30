@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -25,6 +27,7 @@ import (
 	"github.com/djalmajr/soho/internal/startup"
 	"github.com/djalmajr/soho/internal/stats"
 	"github.com/djalmajr/soho/internal/taskreport"
+	"github.com/djalmajr/soho/internal/transport"
 	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
 
@@ -191,6 +194,10 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			core.DieFriction("dispatch: "+err.Error(), 4, frictionLogPath, "dispatch")
 		}
 	}
+	// One transport per dispatch: the herdr backend is built after the
+	// collaboration env clone above, so every herdr call sees the same env
+	// the adapter calls used to receive.
+	svc := herdr.New(env)
 	kind := at(2)
 	if kind == "codex" && !dispatchNativeArg(at(13), "--no-daemon") && !dispatchNativeArg(at(13), "--remote") && dispatchCodexSupportsNoDaemon(env, cwd) {
 		fmt.Fprintf(platform.Stderr, "soho: dispatch: '%s' was started without --no-daemon: codex runs its commands through a shared server that may carry another pane's identity, so its procs, copies and send can land in another workspace. Release it with --close and spawn it again\n", agent)
@@ -248,7 +255,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// read, and a safe screen proceeds to the duplicate handling and the
 	// send below, unchanged.
 	if startup.Enabled(kind) {
-		st, screen, screenOK := cursorStartupScreen(agent, env)
+		st, screen, screenOK := cursorStartupScreen(agent, svc)
 		ev := spawn.EvaluateCursorStartup(kind, st.State, screen, screenOK)
 		if ev.Refuses() {
 			return dispatchCursorStartupRefusal(agent, role, kind, "", "", "", st.State, ev, sd)
@@ -379,7 +386,8 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			freshPercent = 0
 		}
 		if warnPercent > 0 || (freshPercent > 0 && !allowFullContext) {
-			pct := dispatchContextPercentFor(kind, herdr.AgentRead(env, agent, "visible", nil))
+			visible, _ := readScreen(svc, agent, "visible", nil)
+			pct := dispatchContextPercentFor(kind, visible)
 			if !allowFullContext && freshPercent > 0 && pct >= 0 && int64(pct) >= freshPercent {
 				core.DieFriction(fmt.Sprintf("dispatch: '%s' is at %d%% of its context (context_fresh_percent=%d); nothing was sent. Release it with --close and spawn a fresh worker, or pass --allow-full-context to send anyway", agent, pct, freshPercent), 10, frictionLogPath, "dispatch")
 			}
@@ -418,16 +426,20 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// (unavailable) or no current task-report path keeps today's behavior.
 	// The check rides the dispatch's pre-send state read, which is taken
 	// here, before the first sidecar write.
-	var before herdr.AgentStateResult
+	var before stateProbe
 	// pi 1.4.0 signals an active compaction only through its input box
 	// border label ("Auto-compacting..." / "Compacting context...");
 	// Herdr's state stays "idle" the whole time, so a pi on that border is
 	// busy even though the state read says otherwise.
 	piCompacting := func() bool {
-		return kind == "pi" && provider.PiCompactingBorder(herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40)))
+		if kind != "pi" {
+			return false
+		}
+		screen, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
+		return provider.PiCompactingBorder(screen)
 	}
 	if checkOn {
-		before = herdr.AgentState(agent, env, herdr.Timeout, nil)
+		before = readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
 		if whenIdle && (before.State == "working" || piCompacting()) {
 			fmt.Fprintf(platform.Stderr, "soho: dispatch: '%s' is still working; waiting for it to finish before sending (--when-idle)\n", agent)
 			started := platform.Now()
@@ -452,7 +464,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				if left <= 0 {
 					continue
 				}
-				before = herdr.AgentState(agent, env, min(herdr.Timeout, left), nil)
+				before = readState(svc, agent, transport.Call{Timeout: min(herdr.Timeout, left)})
 			}
 			// Re-read before resuming the normal busy check: a settled pane
 			// may have started another turn or opened a dialog meanwhile.
@@ -462,7 +474,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				if left <= 0 {
 					timedOut()
 				}
-				before = herdr.AgentState(agent, env, min(herdr.Timeout, left), nil)
+				before = readState(svc, agent, transport.Call{Timeout: min(herdr.Timeout, left)})
 				if deadline.Sub(platform.Now()) <= 0 {
 					timedOut()
 				}
@@ -495,7 +507,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			fmt.Sprintf("could not write the attempt sidecar %s: %s", sidecar, sanitizeDispatchCause(err.Error())))
 	}
 	shared := false
-	if live := safeLiveAgents(env); len(live) > 0 {
+	if live := safeLiveAgents(svc); len(live) > 0 {
 		shared = sharedTreeEditor(core.RosterRows(sd), live, agent, workerCwd, env, cwd, sharedTreeBriefs{body: briefRaw, stateDir: sd})
 	}
 	prompt := dispatch.ComposePrompt(roleFile, role, agent, briefRaw, report, ctx, env, kind, args, approvals, shared)
@@ -569,14 +581,14 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// Cursor is read again after all reads that can fall back to visible.
 	lastVisible := ""
 	if settleSecs > 0 && !wasWorking {
-		prev := herdr.AgentRead(env, agent, "visible", nil)
+		prev, _ := readScreen(svc, agent, "visible", nil)
 		lastVisible = prev
 		settled := false
 		deadline := time.Now().Add(time.Duration(settleSecs) * time.Second)
 		for time.Now().Add(500 * time.Millisecond).Before(deadline) {
 			time.Sleep(500 * time.Millisecond)
-			ready := isInteractiveReady(agent, env)
-			curr := herdr.AgentRead(env, agent, "visible", nil)
+			ready := isInteractiveReady(agent, svc)
+			curr, _ := readScreen(svc, agent, "visible", nil)
 			lastVisible = curr
 			if ready && curr == prev {
 				settled = true
@@ -590,15 +602,17 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	}
 	preState := before
 	if !wasWorking && settleSecs > 0 {
-		preState = herdr.AgentState(agent, env, herdr.Timeout, nil)
+		preState = readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
 	}
 	H0, preSeq := "", ""
 	priorAuth := map[string]bool{}
 	if checkOn {
-		lastVisible = herdr.AgentRead(env, agent, "visible", nil)
+		visible, _ := readScreen(svc, agent, "visible", nil)
+		lastVisible = visible
 		H0 = strconv.FormatUint(uint64(waitpkg.CksumField(lastVisible)), 10)
-		preSeq = seqString(preState.Seq)
-		for _, cause := range authCauses(herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40))) {
+		preSeq = preState.Seq
+		recent, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
+		for _, cause := range authCauses(recent) {
 			priorAuth[cause] = true
 		}
 	}
@@ -619,17 +633,22 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	transcriptArmed := false
 	transcriptCount := func(path, marker string) (int, bool) { return 0, false }
 	if checkOn && (kind == "claude" || kind == "pi") {
-		switch kind {
-		case "claude":
-			transcriptCount = herdr.CountClaudeUserMarkerLines
-		case "pi":
-			transcriptCount = herdr.CountPiUserMarkerLines
+		if kind == "claude" {
+			transcriptCount = func(path, marker string) (int, bool) {
+				rep := svc.Legacy.CountClaudeUserMarkerLines(context.Background(), path, marker)
+				return rep.Value, rep.Err == nil
+			}
+		} else {
+			transcriptCount = func(path, marker string) (int, bool) {
+				rep := svc.Legacy.CountPiUserMarkerLines(context.Background(), path, marker)
+				return rep.Value, rep.Err == nil
+			}
 		}
 		var path string
 		if kind == "claude" {
-			path = herdr.ClaudeTranscriptPath(agent, env)
+			path = svc.Legacy.ClaudeTranscriptPath(context.Background(), transport.Target{ID: agent}).Value
 		} else {
-			path = herdr.PiSessionPath(agent, env)
+			path = svc.Legacy.PiSessionPath(context.Background(), transport.Target{ID: agent}).Value
 		}
 		if path != "" {
 			if pre, ok := transcriptCount(path, transcriptPathMarker(composed)); ok {
@@ -652,7 +671,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// send was already claimed (pointer, last-report, the attempted
 	// sidecar): restore the task state, like the failed-send path, and end
 	// with the blocked result.
-	if blocked, ev, st := cursorStartupRefusal(kind, agent, env); blocked {
+	if blocked, ev, st := cursorStartupRefusal(kind, agent, svc); blocked {
 		_ = restoreTaskDispatch(sd, agent, lastPath, lastData, priorPointer)
 		return dispatchCursorStartupRefusal(agent, role, kind, composed, report, taskReport, st.State, ev, sd)
 	}
@@ -663,8 +682,8 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		approved := false
 		if mode == "trust" {
 			io := codexhooks.IO{
-				SendKey: func(key string) bool { return herdr.AgentSendKeys(agent, key, env) },
-				Read:    func() string { return herdr.AgentRead(env, agent, "visible", nil) },
+				SendKey: func(key string) bool { return sendAgentKey(svc, agent, key) },
+				Read:    func() string { s, _ := readScreen(svc, agent, "visible", nil); return s },
 				Pause:   500 * time.Millisecond,
 			}
 			var screen string
@@ -686,8 +705,8 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	if kind == "cursor" {
 		clearDispatchWait()
 	}
-	p := herdr.AgentPrompt(agent, text, env)
-	if !p.Ok {
+	promptRep := svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text}, transport.Call{})
+	if promptRep.Err != nil {
 		_ = restoreTaskDispatch(sd, agent, lastPath, lastData, priorPointer)
 		// The failed sidecar records the pointer's task_report after the
 		// restoration — the task the pointer actually keeps; without a
@@ -703,7 +722,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, restoredReport, briefSHA, "failed", "", session, role); err != nil {
 			core.Warn(fmt.Sprintf("could not record the failed submission in the attempt sidecar %s: %s", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 		}
-		return writeDispatchError(agent, role, kind, composed, report, taskReport, sd, p.Raw, 4,
+		return writeDispatchError(agent, role, kind, composed, report, taskReport, sd, promptRep.Err.Message, 4,
 			"prompt submission failed; inspect with: herdr agent get "+agent+" && herdr agent read "+agent+". Do not resend blindly.")
 	}
 	if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session, role); err != nil {
@@ -722,16 +741,16 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			if nonEmpty(report) {
 				return true
 			}
-			st := herdr.AgentState(agent, env, herdr.Timeout, nil)
+			st := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
 			arrivalState = st.State
-			return (st.State == "working" || st.State == "blocked") && preSeq != "" && seqString(st.Seq) != "" && seqString(st.Seq) != preSeq
+			return (st.State == "working" || st.State == "blocked") && preSeq != "" && st.Seq != "" && st.Seq != preSeq
 		}
 		promptEvidence := func() bool {
-			screen := herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40))
+			screen, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
 			return provider.PromptEvidence(screen, composed)
 		}
 		if !wasWorking && !waitDispatchArrivalExtra(window, env, arrived, transcriptArrival) {
-			screen := herdr.AgentRead(env, agent, "visible", nil)
+			screen, _ := readScreen(svc, agent, "visible", nil)
 			// A plan refusal leaves the pointer in the composer. Neither an
 			// Enter nor a resend can change the subscription's model settings.
 			// Reuse the arrival state and the existing visible frame so this
@@ -748,7 +767,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				// path: the prompt is typed and not sent. A report, a read, the
 				// history or a dialog never authorizes the Enter on an empty or
 				// unrelated draft; an unrecognized region is not positive proof.
-				if blocked, ev, st := cursorStartupRefusal(kind, agent, env); blocked {
+				if blocked, ev, st := cursorStartupRefusal(kind, agent, svc); blocked {
 					// The dialog appeared after the send: the Enter would be
 					// its input — refuse with the blocked result, no key sent.
 					return dispatchCursorStartupRefusal(agent, role, kind, composed, report, taskReport, st.State, ev, sd)
@@ -758,7 +777,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 					// be its input — no key, delivery not-received.
 					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "its "+ui+" dialog")
 				}
-				if herdr.AgentSendKeys(agent, "enter", env) {
+				if sendAgentKey(svc, agent, "enter") {
 					enterSent = true
 					core.Warn(fmt.Sprintf("prompt to '%s' sat in the input box; sent Enter", agent), frictionLogPath, "dispatch")
 					if !waitDispatchArrival(window, env, arrived) {
@@ -770,16 +789,16 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 					core.Warn(fmt.Sprintf("prompt to '%s' sat in the input box; its Enter failed", agent), frictionLogPath, "dispatch")
 					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "a failed Enter on the text left in its input box")
 				}
-			} else if staleAuthBlock(agent, env, H0, preSeq, enterSent, resent) {
+			} else if staleAuthBlock(agent, svc, H0, preSeq, enterSent, resent) {
 				return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "its block on a provider auth error")
 			} else {
 				// The text can land in the composer between the first arrival
 				// check and this retry: re-read the actual input region right
 				// before the retry and act only on a recognized composer.
-				resendScreen, resendScreenOK := herdr.AgentReadOK(env, agent, "visible", nil)
+				resendScreen, resendScreenOK := readScreen(svc, agent, "visible", nil)
 				H0 = strconv.FormatUint(uint64(waitpkg.CksumField(resendScreen)), 10)
-				resendState := herdr.AgentState(agent, env, herdr.Timeout, nil)
-				if blocked, ev, st := cursorStartupRefusal(kind, agent, env); blocked {
+				resendState := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
+				if blocked, ev, st := cursorStartupRefusal(kind, agent, svc); blocked {
 					// The dialog appeared before the resend: the resend would
 					// type into it — refuse with the blocked result.
 					return dispatchCursorStartupRefusal(agent, role, kind, composed, report, taskReport, st.State, ev, sd)
@@ -792,7 +811,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 					// (question result or the opt-in auto-approve).
 					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "its "+ui+" dialog")
 				}
-				if resendState.State == "blocked" && !(preSeq != "" && seqString(resendState.Seq) != "" && preSeq != seqString(resendState.Seq)) {
+				if resendState.State == "blocked" && !(preSeq != "" && resendState.Seq != "" && preSeq != resendState.Seq) {
 					// A blocked target is on a dialog the screen rules could
 					// not name: it takes no Enter from here and no repeated
 					// prompt — end not-received and leave the pane to be read.
@@ -802,14 +821,14 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				if !resendScreenOK {
 					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an unreadable input region")
 				}
-				if nonEmpty(report) || transcriptArrival() || ((resendState.State == "working" || resendState.State == "blocked") && preSeq != "" && seqString(resendState.Seq) != "" && preSeq != seqString(resendState.Seq)) {
+				if nonEmpty(report) || transcriptArrival() || ((resendState.State == "working" || resendState.State == "blocked") && preSeq != "" && resendState.Seq != "" && preSeq != resendState.Seq) {
 					// Receipt can arrive between the deadline and this final read.
 					// Preserve the original sequence baseline; never resend it.
 				} else if recognized && provider.ComposerHoldsPathFor(kind, region, composed) {
 					// This exact composed prompt path is in the recognized
 					// composer: the text landed after the arrival check. Send
 					// only the bounded Enter and never duplicate the text.
-					if herdr.AgentSendKeys(agent, "enter", env) {
+					if sendAgentKey(svc, agent, "enter") {
 						enterSent = true
 						core.Warn(fmt.Sprintf("prompt to '%s' reached its input after the arrival check; sent Enter without resending", agent), frictionLogPath, "dispatch")
 						if !waitDispatchArrival(window, env, arrived) {
@@ -832,7 +851,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 					// Repeating text requires a readable, recognized empty
 					// composer and no trace in the readable recent screen.
 					// Failed or clipped reads never prove nondelivery.
-					recent, recentOK := herdr.AgentReadOK(env, agent, "recent-unwrapped", intPtr(40))
+					recent, recentOK := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
 					if !recentOK || provider.ScreenShowsPath(recent, composed) {
 						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an unconfirmed recent screen")
 					}
@@ -840,7 +859,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "unconfirmed arrival without a resend")
 					}
 					core.Warn(fmt.Sprintf("prompt to '%s' did not arrive; sending it once more", agent), frictionLogPath, "dispatch")
-					if herdr.AgentPrompt(agent, text, env).Ok {
+					if svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text}, transport.Call{}).Err == nil {
 						resent = true
 						if !waitDispatchArrivalExtra(window, env, arrived, transcriptArrival) {
 							return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "one resend")
@@ -861,7 +880,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				// look for the arrival once more. After the turn only a new working turn
 				// or the report counts: a path in the scrollback of an idle agent is not
 				// a queued prompt (the next wait would read it as stuck in the input).
-				ok = waitWorkingTurnEnd(agent, preSeq, time.Duration(settleSecs)*time.Second, env) &&
+				ok = waitWorkingTurnEnd(agent, preSeq, time.Duration(settleSecs)*time.Second, env, svc) &&
 					waitDispatchArrival(window, env, arrived)
 			}
 			if !ok && noWait {
@@ -877,12 +896,12 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				// the report the way soho wait would, which reads that marker.
 				markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA, env, true)
 				warnNotReceived(agent, whyWorkingNoEvidence, true, true)
-			} else if st := herdr.AgentState(agent, env, herdr.Timeout, nil); !(nonEmpty(report) || ((st.State == "working" || st.State == "blocked") && preSeq != "" && seqString(st.Seq) != "" && preSeq != seqString(st.Seq))) {
+			} else if st := readState(svc, agent, transport.Call{Timeout: herdr.Timeout}); !(nonEmpty(report) || ((st.State == "working" || st.State == "blocked") && preSeq != "" && st.Seq != "" && preSeq != st.Seq)) {
 				status = "queued"
 				if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "queued", session, role); err != nil {
 					core.Warn(fmt.Sprintf("could not record the queued arrival in the attempt sidecar %s: %s; the dispatch result stands", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 				}
-				seq := seqString(st.Seq)
+				seq := st.Seq
 				if seq == "" {
 					seq = "-"
 				}
@@ -895,7 +914,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	gittree.Preserve(sidecar, gitFields)
 	var last *jsonjs.Object
 	if noWait && checkOn && status != "queued" {
-		status, last = noWaitObservation(agent, role, kind, lane, model, report, env, sd, ctx, priorAuth)
+		status, last = noWaitObservation(agent, role, kind, lane, model, report, env, svc, sd, ctx, priorAuth)
 	}
 	waitCode := 0
 	if !noWait {
@@ -1113,21 +1132,71 @@ func addTaskToSidecar(path string, taskReport, briefSHA string, roles ...string)
 }
 
 func nonEmpty(path string) bool { st, e := os.Stat(path); return e == nil && st.Size() > 0 }
-func seqString(value any) string {
-	if value == nil {
+
+// stateProbe is the dispatch-side projection of a terminal state read: the
+// reported state, the cause of an unavailable read, and the state sequence
+// rendered with the same rendering wait uses for the seq dispatch writes
+// into its arrival markers.
+type stateProbe struct {
+	State string
+	Cause string
+	Seq   string
+}
+
+// stateFromReply projects a state read through the transport: an
+// unavailable read keeps the terminal's state and carries the cause as the
+// reply error, exactly the fields the adapter result held.
+func stateFromReply(rep transport.Reply[transport.Terminal]) stateProbe {
+	cause := ""
+	if rep.Err != nil {
+		cause = rep.Err.Message
+	}
+	return stateProbe{State: rep.Value.State, Cause: cause, Seq: seqRender(rep.Value.Sequence)}
+}
+
+// readState reads the agent's state through the transport with the
+// adapter's retry pauses (nil, as the old calls passed) and the call's
+// timeout.
+func readState(svc transport.Services, agent string, call transport.Call) stateProbe {
+	return stateFromReply(svc.Runtime.Get(context.Background(), transport.Target{ID: agent}, call))
+}
+
+// readScreen reads the agent's screen through the transport with the
+// adapter's exact agent-read call and its fixed timeout; a failed read
+// yields "" with ok false, as the adapter pair did.
+func readScreen(svc transport.Services, agent, source string, lines *int) (string, bool) {
+	rep := svc.Runtime.Read(context.Background(), transport.Target{ID: agent}, transport.Read{Source: source, Lines: lines}, transport.Call{})
+	if rep.Err != nil {
+		return "", false
+	}
+	return rep.Value, true
+}
+
+// sendAgentKey sends one raw key to the agent through the transport's agent
+// channel with the adapter's exact send-keys call and fixed timeout.
+func sendAgentKey(svc transport.Services, agent, key string) bool {
+	return svc.Runtime.Keys(context.Background(), transport.Target{ID: agent}, key, false, transport.Call{}).Value
+}
+
+// seqRender renders a state sequence the transport returns as JSON (the
+// state_change_seq) with the same rendering wait uses for the seq dispatch
+// writes into its arrival markers (wait's seqText): the raw text when it is
+// a base-10 integer, the decimal number rendering when it parses as a
+// number (never exponent form, so a large unchanged sequence still matches
+// its marker), the raw text otherwise, "" when absent.
+func seqRender(raw json.RawMessage) string {
+	s := string(raw)
+	if s == "" {
 		return ""
 	}
-	switch v := value.(type) {
-	case string:
-		return v
-	case float64:
-		return strconv.FormatFloat(v, 'f', -1, 64)
-	case int:
-		return strconv.Itoa(v)
-	case int64:
-		return strconv.FormatInt(v, 10)
+	if _, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return s
 	}
-	return ""
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return s
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 // parseTimeout reads the --timeout flag in milliseconds: a plain integer or
@@ -1170,14 +1239,14 @@ func waitDispatchArrivalExtra(window time.Duration, env platform.Env, arrived, e
 // until its turn ends (it leaves working and blocked) or a new turn starts (its
 // state_change_seq moves while working), up to window. It reports whether that
 // happened in time.
-func waitWorkingTurnEnd(agent, preSeq string, window time.Duration, env platform.Env) bool {
+func waitWorkingTurnEnd(agent, preSeq string, window time.Duration, env platform.Env, svc transport.Services) bool {
 	deadline := platform.Now().Add(window)
 	for {
-		st := herdr.AgentState(agent, env, herdr.Timeout, nil)
+		st := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
 		if st.State != "working" && st.State != "blocked" {
 			return st.State == "idle" || st.State == "done"
 		}
-		if preSeq != "" && seqString(st.Seq) != "" && seqString(st.Seq) != preSeq {
+		if preSeq != "" && st.Seq != "" && st.Seq != preSeq {
 			return true
 		}
 		if !platform.Now().Before(deadline) {
@@ -1244,9 +1313,9 @@ func writeDispatchError(agent, role, kind, composed, report, taskReport, sd, raw
 // cursorStartupScreen reads the agent's state and the visible screen once
 // for the cursor/Windows startup checks (issue #59): the shared runner's
 // calls, the same reads the consumers already spend on safe screens.
-func cursorStartupScreen(agent string, env platform.Env) (herdr.AgentStateResult, string, bool) {
-	st := herdr.AgentState(agent, env, herdr.Timeout, nil)
-	screen, screenOK := herdr.AgentReadOK(env, agent, "visible", nil)
+func cursorStartupScreen(agent string, svc transport.Services) (stateProbe, string, bool) {
+	st := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
+	screen, screenOK := readScreen(svc, agent, "visible", nil)
 	return st, screen, screenOK
 }
 
@@ -1286,11 +1355,11 @@ func dispatchComposerEmpty(kind string, region []string) bool {
 // AgentPrompt or an arrival/retry Enter). A dialog that appears during the
 // settle must receive no input. Non-target kinds or platforms return
 // false without any herdr read.
-func cursorStartupRefusal(kind, agent string, env platform.Env) (bool, startup.Evaluation, herdr.AgentStateResult) {
+func cursorStartupRefusal(kind, agent string, svc transport.Services) (bool, startup.Evaluation, stateProbe) {
 	if !startup.Enabled(kind) {
-		return false, startup.Evaluation{}, herdr.AgentStateResult{}
+		return false, startup.Evaluation{}, stateProbe{}
 	}
-	st, screen, screenOK := cursorStartupScreen(agent, env)
+	st, screen, screenOK := cursorStartupScreen(agent, svc)
 	ev := spawn.EvaluateCursorStartup(kind, st.State, screen, screenOK)
 	return ev.Refuses(), ev, st
 }
@@ -1381,7 +1450,12 @@ func markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskRepo
 	if err := writeDispatchSidecarWithAuthorContext(dispatchAuthorContext{stateDir: sd, env: env, cwd: cwd}, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "not-received", session); err != nil {
 		core.Warn(fmt.Sprintf("could not record the not-received arrival in the attempt sidecar %s: %s; the dispatch result stands", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 	}
-	seq := seqString(herdr.AgentState(agent, env, herdr.Timeout, nil).Seq)
+	// One state read through the transport, rendered with the same rendering
+	// wait uses for the seq markers. The read is this writer's sole herdr
+	// call, so it builds its one-shot backend from the dispatch's env (the
+	// helper's env-based signature is kept so its existing callers and tests
+	// stay unchanged).
+	seq := readState(herdr.New(env), agent, transport.Call{Timeout: herdr.Timeout}).Seq
 	marker := strconv.FormatInt(platform.Now().Unix(), 10)
 	if wasWorking {
 		// The prompt path goes in the marker (as in .queued): the next wait then
@@ -2189,21 +2263,33 @@ func sharedTreeEditor(rows []string, live []any, self, selfCwd string, env platf
 	return false
 }
 
-func safeLiveAgents(env platform.Env) (agents []any) {
+func safeLiveAgents(svc transport.Services) (agents []any) {
 	defer func() {
 		if recover() != nil {
 			agents = nil
 		}
 	}()
-	return herdr.LiveAgents(env, herdr.Timeout)
+	// The raw agent objects (the projection-free list), re-parsed so the
+	// readers keep the object access they have always used; a failed list
+	// dies inside the call, as the die-on-failure adapter did.
+	rep := svc.Legacy.AgentListRaw(context.Background(), transport.Call{Timeout: herdr.Timeout})
+	agents = make([]any, 0, len(rep.Value))
+	for _, raw := range rep.Value {
+		v, _ := jsonjs.Parse(raw)
+		agents = append(agents, v)
+	}
+	return agents
 }
 
-func isInteractiveReady(agent string, env platform.Env) bool {
-	r := platform.RunCli("herdr", []string{"agent", "get", agent}, platform.RunOptions{Env: env, TimeoutMs: int(herdr.Timeout / time.Millisecond)})
-	if r.Status == nil || *r.Status != 0 || r.Stdout == "" {
+// isInteractiveReady reports whether the agent's input is ready to take the
+// prompt: the interactive_ready flag the state read reports, fail-open when
+// the read or its body is unreadable, exactly as the adapter call did.
+func isInteractiveReady(agent string, svc transport.Services) bool {
+	rep := svc.Legacy.AgentGetRaw(context.Background(), transport.Target{ID: agent}, transport.Call{Timeout: herdr.Timeout})
+	if rep.Err != nil || rep.Value == "" {
 		return true
 	}
-	value, err := jsonjs.Parse([]byte(r.Stdout))
+	value, err := jsonjs.Parse([]byte(rep.Value))
 	if err != nil {
 		return true
 	}
@@ -2238,46 +2324,46 @@ func authCauses(screen string) []string {
 	return causes
 }
 
-func staleAuthBlock(agent string, env platform.Env, h0, preSeq string, enterSent, resent bool) bool {
+func staleAuthBlock(agent string, svc transport.Services, h0, preSeq string, enterSent, resent bool) bool {
 	if enterSent || resent {
 		return false
 	}
-	state := herdr.AgentState(agent, env, herdr.Timeout, nil)
-	if state.State != "blocked" {
+	st := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
+	if st.State != "blocked" {
 		return false
 	}
-	if preSeq != "" && seqString(state.Seq) != "" && seqString(state.Seq) != preSeq {
+	if preSeq != "" && st.Seq != "" && st.Seq != preSeq {
 		return false
 	}
-	screen := herdr.AgentRead(env, agent, "visible", nil)
+	screen, _ := readScreen(svc, agent, "visible", nil)
 	if strconv.FormatUint(uint64(waitpkg.CksumField(screen)), 10) != h0 {
 		return false
 	}
-	d := provider.ProviderDetect(state.State, screen)
+	d := provider.ProviderDetect(st.State, screen)
 	return d != nil && d.Status == "provider-error" && d.Auth
 }
 
-func noWaitObservation(agent, role, kind, lane, model, report string, env platform.Env, sd string, ctx *core.Config, priorAuth map[string]bool) (string, *jsonjs.Object) {
+func noWaitObservation(agent, role, kind, lane, model, report string, env platform.Env, svc transport.Services, sd string, ctx *core.Config, priorAuth map[string]bool) (string, *jsonjs.Object) {
 	if nonEmpty(report) {
 		return "submitted", nil
 	}
-	state := herdr.AgentState(agent, env, herdr.Timeout, nil)
-	if state.State == "working" || state.State == "unavailable" {
+	st := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
+	if st.State == "working" || st.State == "unavailable" {
 		return "submitted", nil
 	}
-	visible20 := herdr.AgentRead(env, agent, "visible", intPtr(20))
-	if q := provider.QuotaDetect(state.State, visible20); q != nil {
+	visible20, _ := readScreen(svc, agent, "visible", intPtr(20))
+	if q := provider.QuotaDetect(st.State, visible20); q != nil {
 		if lane == "" {
 			lane = core.LaneOfRole(ctx, role, env)
 		}
 		return "quota", jsonjs.O("status", "quota", "lane", lane, "model", model, "match", q[0], "renewal", q[1])
 	}
-	visible40 := herdr.AgentRead(env, agent, "visible", intPtr(40))
+	visible40, _ := readScreen(svc, agent, "visible", intPtr(40))
 	if provider.DialogKind(kind, visible40) == "question" {
 		return "submitted", nil
 	}
-	recent := herdr.AgentRead(env, agent, "recent-unwrapped", intPtr(40))
-	d := core.ProviderDetectTexts(state.State, recent, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
+	recent, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
+	d := core.ProviderDetectTexts(st.State, recent, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
 	if d != nil && d.Status == "provider-error" && ((d.Auth && !priorAuth[d.Cause]) || core.IsModelPlanError(d.Cause)) {
 		if lane == "" {
 			lane = core.LaneOfRole(ctx, role, env)

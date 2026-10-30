@@ -291,9 +291,13 @@ type Window interface {
 
 // LegacyTransport holds operations with no equivalent in a second backend.
 // Stage 1 exposes the process-info read, the exact rename contract, the raw
-// agent existence check, the raw one-attempt knowledge probe, and the raw
-// agent read with caller-owned exit handling; snapshot and run-in-pane join
-// it in the slice that moves their caller.
+// agent existence check, the raw one-attempt knowledge probe, the raw agent
+// read with caller-owned exit handling, the raw agent list with the
+// projection-free objects, the raw one-attempt agent get with caller-owned
+// fail-open handling, the local session-transcript path resolutions (one
+// agent get plus a local file), and the local transcript compact-boundary
+// and user-marker counts; snapshot and run-in-pane join it in the slice that
+// moves their caller.
 type LegacyTransport interface {
 	// ProcessInfo returns the raw process info a backend reports for a pane.
 	ProcessInfo(ctx context.Context, target Target, call Call) Reply[json.RawMessage]
@@ -320,6 +324,41 @@ type LegacyTransport interface {
 	// carries the stdout) so the caller keeps its own fallback output and
 	// exit-code handling.
 	AgentReadRaw(ctx context.Context, target Target, source, lines string, call Call) Reply[string]
+	// AgentListRaw runs `agent list` once with the call's timeout and returns
+	// the raw agent objects the adapter parses (one JSON value per agent),
+	// so callers that read fields beyond the terminal projection keep them.
+	// The adapter's die-on-failure behavior happens inside the wrapped call,
+	// exactly as the caller's recover used to catch it.
+	AgentListRaw(ctx context.Context, call Call) Reply[[]json.RawMessage]
+	// AgentGetRaw runs one `agent get <id>` with the call's timeout and
+	// returns the raw process result (Value carries the stdout, possibly
+	// empty) so the caller keeps its own fail-open and body-parsing
+	// handling. It never retries and does not parse the body.
+	AgentGetRaw(ctx context.Context, target Target, call Call) Reply[string]
+	// ClaudeTranscriptPath resolves the Claude Code session transcript path
+	// the target's agent get reports (one agent get, the backend's fixed
+	// timeout, the backend's path derivation), Value "" when any data is
+	// missing.
+	ClaudeTranscriptPath(ctx context.Context, target Target) Reply[string]
+	// PiSessionPath resolves the pi session file path the target's agent
+	// get reports (one agent get, the backend's fixed timeout, the
+	// backend's path derivation), Value "" when any data is missing. The
+	// backend's call takes no per-call context, so ctx is not forwarded.
+	PiSessionPath(ctx context.Context, target Target) Reply[string]
+	// CountClaudeCompactBoundaries counts the compact-boundary lines of a
+	// Claude Code session transcript file — a local read with no herdr
+	// call — bounded by the per-call context; Err is set when the file
+	// cannot be read.
+	CountClaudeCompactBoundaries(ctx context.Context, path string) Reply[int]
+	// CountClaudeUserMarkerLines counts the lines of a Claude Code session
+	// transcript file that carry the user record marker and the given peer
+	// marker — a local read with no herdr call; Err is set when the file
+	// cannot be read.
+	CountClaudeUserMarkerLines(ctx context.Context, path, marker string) Reply[int]
+	// CountPiUserMarkerLines counts the lines of a pi session file that
+	// carry the given peer marker in a message entry — a local read with no
+	// herdr call; Err is set when the file cannot be read.
+	CountPiUserMarkerLines(ctx context.Context, path, marker string) Reply[int]
 }
 
 // Runtime is the second runtime capability: the operations whose caller

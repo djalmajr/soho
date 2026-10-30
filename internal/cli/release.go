@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -15,6 +16,7 @@ import (
 	"github.com/djalmajr/soho/internal/layout"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/taskreport"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
@@ -37,11 +39,13 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 			core.DieFriction("release: unknown option "+arg, 2, frictionLogPath, "release")
 		}
 	}
+	// One transport per release, before the first Herdr call.
+	svc := herdr.New(env)
 
 	sd := core.StateDirPath(ctx, env, cwd)
 	line := core.RosterLine(sd, agent)
 	if line == "" {
-		if closePane && releaseOrphan(agent, force, ctx, env, cwd) {
+		if closePane && releaseOrphan(agent, force, ctx, env, cwd, svc) {
 			return 0
 		}
 		core.DieFriction(fmt.Sprintf("agent '%s' is not in the roster (state dir: %s)", agent, sd), 3, frictionLogPath, "release")
@@ -68,7 +72,7 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 		}
 	}
 	if !force && reportEmpty(report) {
-		state := herdr.AgentState(agent, env, herdr.Timeout, nil)
+		state := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
 		if state.State == "unavailable" {
 			core.DieFriction(fmt.Sprintf("agent '%s': herdr agent get failed (%s). Refusing to release; the worker may still be live. Retry when herdr answers, or pass --force.", agent, state.Cause), 4, frictionLogPath, "release")
 		}
@@ -79,7 +83,7 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 
 	if closes {
 		if created == "1" {
-			if herdr.PaneClose(pane, env) || closePane && herdr.PaneGetGone(pane, env) {
+			if svc.Runtime.Close(context.Background(), transport.Target{ID: pane}, transport.Call{}).Value || closePane && svc.Terminal.GetGone(context.Background(), transport.Target{ID: pane}, transport.Call{}).Value {
 				suffix := ""
 				if burst {
 					suffix = " (temporary)"
@@ -161,19 +165,19 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 // unqueryable one is refused with 10 unless --force is passed. A failed pane
 // close exits 4 and keeps the registry row: the pane is still open, and the
 // release must not claim otherwise.
-func releaseOrphan(name string, force bool, ctx *core.Config, env platform.Env, cwd string) bool {
+func releaseOrphan(name string, force bool, ctx *core.Config, env platform.Env, cwd string, svc transport.Services) bool {
 	orphan, ok := core.FindOrphan(name, ctx, env, cwd)
 	if !ok {
 		return false
 	}
 	state := ""
 	if !force {
-		state = herdr.AgentState(name, env, herdr.Timeout, nil).State
+		state = readState(svc, name, transport.Call{Timeout: herdr.Timeout}).State
 	}
 	if !force && state != "idle" && state != "done" {
 		core.DieFriction(fmt.Sprintf("agent '%s' is not in the roster and is %s; pass --force to close its pane", name, state), 10, frictionLogPath, "release")
 	}
-	if herdr.PaneClose(orphan.Pane, env) {
+	if svc.Runtime.Close(context.Background(), transport.Target{ID: orphan.Pane}, transport.Call{}).Value {
 		core.ReleasedPanesForget(ctx, env, cwd, orphan.Pane)
 		_, _ = fmt.Fprintf(platform.Stdout, "released %s (pane %s closed; it was no longer in the roster)\n", name, orphan.Pane)
 	} else {

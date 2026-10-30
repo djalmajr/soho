@@ -815,3 +815,183 @@ func TestBackendServicesWiring(t *testing.T) {
 		t.Fatalf("wiring: %#v", svc)
 	}
 }
+
+// TestBackendAgentListRaw: the legacy raw list issues the same `agent list`
+// call as LiveAgents and returns the raw objects one JSON value per agent,
+// so a field the terminal projection does not carry survives the round
+// trip.
+func TestBackendAgentListRaw(t *testing.T) {
+	env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"a","pane_id":"p1","agent_status":"working","state_change_seq":3,"cwd":"/work"},{"name":"b","pane_id":"p2"}]}}`}})
+	readyProbe(t, env)
+	svc := New(env)
+	got := svc.Legacy.AgentListRaw(context.Background(), transport.Call{Timeout: fakeTimeout(time.Second)})
+	raw := LiveAgents(env, fakeTimeout(time.Second))
+	if !got.Valid || got.Err != nil || len(got.Value) != 2 || len(raw) != 2 {
+		t.Fatalf("got=%#v raw=%d", got, len(raw))
+	}
+	for i, want := range raw {
+		if string(got.Value[i]) != jsonjs.Stringify(want) {
+			t.Fatalf("agent %d raw=%s want=%s", i, got.Value[i], jsonjs.Stringify(want))
+		}
+	}
+	v, err := jsonjs.Parse(got.Value[0])
+	if err != nil {
+		t.Fatalf("the raw agent does not parse: %v", err)
+	}
+	obj, ok := v.(*jsonjs.Object)
+	if !ok {
+		t.Fatalf("the raw agent is not an object: %#v", v)
+	}
+	cwd, hasCwd := obj.Get("cwd")
+	if !hasCwd || cwd != "/work" {
+		t.Fatalf("the raw agent lost the projection-free fields: %s", got.Value[0])
+	}
+	wantArgv(t, backendCalls(t, env), [][]string{{"agent", "list"}, {"agent", "list"}})
+}
+
+// TestBackendAgentGetRaw: the legacy raw agent get issues one agent get and
+// returns the raw stdout (or the raw process result on failure) so the
+// caller keeps its own fail-open and body-parsing handling, and never
+// retries.
+func TestBackendAgentGetRaw(t *testing.T) {
+	const body = `{"result":{"agent":{"agent_status":"working","interactive_ready":true}}}`
+	t.Run("exit 0 returns the raw stdout, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "p1"}, Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentGetRaw(context.Background(), transport.Target{ID: "p1"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != body || !got.Valid || got.Err != nil || got.Process.Status == nil || *got.Process.Status != 0 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one call expected, got %#v", calls)
+		}
+	})
+	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{
+			{Argv: []string{"agent", "get", "p9"}, Call: 1, Code: 1, Stderr: `{"error":{"code":"agent_not_found","message":"gone"}}`},
+			{Argv: []string{"agent", "get", "p9"}, Call: 2, Stdout: body},
+		})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentGetRaw(context.Background(), transport.Target{ID: "p9"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if got.Value != "" || got.Err == nil || got.Err.Kind != transport.FailureCommand || got.Process.Status == nil || *got.Process.Status != 1 {
+			t.Fatalf("got=%#v", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("no retry expected, got %#v", calls)
+		}
+	})
+	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
+		env := platform.Env{"PATH": t.TempDir(), "TMPDIR": t.TempDir()}
+		svc := New(env)
+		got := svc.Legacy.AgentGetRaw(context.Background(), transport.Target{ID: "p1"}, transport.Call{Timeout: fakeTimeout(time.Second)})
+		if !got.Process.NotFound {
+			t.Fatalf("got=%#v", got)
+		}
+	})
+}
+
+// TestBackendTranscriptPaths: the legacy transcript path resolutions wrap the
+// adapter's one agent get plus local file derivation, and report "" when any
+// data is missing.
+func TestBackendTranscriptPaths(t *testing.T) {
+	const session = "11111111-2222-3333-4444-555555555555"
+	t.Run("claude: the agent get plus the local transcript file", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "projects", ClaudeProjectDir("/work/proj"), session+".jsonl")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "claude-a"}, Stdout: `{"result":{"agent":{"agent_session":{"kind":"id","value":"` + session + `"},"cwd":"/work/proj"}}}`}})
+		env["CLAUDE_CONFIG_DIR"] = dir
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.ClaudeTranscriptPath(context.Background(), transport.Target{ID: "claude-a"})
+		want := ClaudeTranscriptPath("claude-a", env)
+		if !got.Valid || got.Value != want || got.Value != path {
+			t.Fatalf("got=%#v want=%s", got, path)
+		}
+	})
+	t.Run("claude: a missing file resolves nothing", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "claude-a"}, Stdout: `{"result":{"agent":{"agent_session":{"kind":"id","value":"` + session + `"},"cwd":"/work/proj"}}}`}})
+		env["CLAUDE_CONFIG_DIR"] = t.TempDir()
+		svc := New(env)
+		got := svc.Legacy.ClaudeTranscriptPath(context.Background(), transport.Target{ID: "claude-a"})
+		if got.Value != "" {
+			t.Fatalf("got=%#v", got)
+		}
+	})
+	t.Run("pi: the agent get plus the local session file", func(t *testing.T) {
+		dir := t.TempDir()
+		sess := filepath.Join(dir, "session.jsonl")
+		if err := os.WriteFile(sess, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "pi-a"}, Stdout: `{"result":{"agent":{"agent_session":{"kind":"path","value":"` + sess + `"}}}}`}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.PiSessionPath(context.Background(), transport.Target{ID: "pi-a"})
+		want := PiSessionPath("pi-a", env)
+		if !got.Valid || got.Value != want || got.Value != sess {
+			t.Fatalf("got=%#v want=%s", got, sess)
+		}
+	})
+	t.Run("pi: a non-path session kind resolves nothing", func(t *testing.T) {
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "pi-a"}, Stdout: `{"result":{"agent":{"agent_session":{"kind":"id","value":"` + session + `"}}}}`}})
+		svc := New(env)
+		got := svc.Legacy.PiSessionPath(context.Background(), transport.Target{ID: "pi-a"})
+		if got.Value != "" {
+			t.Fatalf("got=%#v", got)
+		}
+	})
+}
+
+// TestBackendUserMarkerCounts: the legacy user-marker counts are local file
+// reads (no herdr call) that return the adapter's count and an error for an
+// unreadable file.
+func TestBackendUserMarkerCounts(t *testing.T) {
+	t.Run("claude: the lines that hold the user type and the marker", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "session.jsonl")
+		marker := "/work/proj/reports/build-1.md"
+		user := `{"type":"user","message":{"content":"Read the file ` + marker + ` in full"}}`
+		assistant := `{"type":"assistant","message":{"content":"noted ` + marker + `"}}`
+		if err := os.WriteFile(path, []byte(user+"\n"+assistant+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		svc := New(platform.Env{})
+		got := svc.Legacy.CountClaudeUserMarkerLines(context.Background(), path, marker)
+		want, ok := CountClaudeUserMarkerLines(path, marker)
+		if !got.Valid || got.Err != nil || !ok || got.Value != want || got.Value != 1 {
+			t.Fatalf("got=%#v want=%d", got, want)
+		}
+	})
+	t.Run("pi: only the user message record holding the marker counts", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "session.jsonl")
+		marker := "#build-1"
+		user := `{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Read the brief ` + marker + `"}]}}`
+		assistant := `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"done ` + marker + `"}]}}`
+		if err := os.WriteFile(path, []byte(user+"\n"+assistant+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		svc := New(platform.Env{})
+		got := svc.Legacy.CountPiUserMarkerLines(context.Background(), path, marker)
+		want, ok := CountPiUserMarkerLines(path, marker)
+		if !got.Valid || got.Err != nil || !ok || got.Value != want || got.Value != 1 {
+			t.Fatalf("got=%#v want=%d", got, want)
+		}
+	})
+	t.Run("an unreadable file is an error", func(t *testing.T) {
+		svc := New(platform.Env{})
+		missing := filepath.Join(t.TempDir(), "absent.jsonl")
+		if got := svc.Legacy.CountClaudeUserMarkerLines(context.Background(), missing, "m"); got.Valid || got.Err == nil {
+			t.Fatalf("claude: %#v", got)
+		}
+		if got := svc.Legacy.CountPiUserMarkerLines(context.Background(), missing, "m"); got.Valid || got.Err == nil {
+			t.Fatalf("pi: %#v", got)
+		}
+	})
+}
