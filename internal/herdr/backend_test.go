@@ -1611,6 +1611,19 @@ func TestBackendAgentPromptWaitRaw(t *testing.T) {
 			t.Fatalf("got=%#v; the 1.2s run must fit the call's 2s process timeout", got)
 		}
 	})
+	t.Run("the call's process timeout cuts an over-budget run, one call", func(t *testing.T) {
+		timeout := fakeTimeout(25 * time.Millisecond)
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "prompt", "w0:p1", "slow", "--wait", "--until", "working", "--until", "blocked", "--until", "idle", "--until", "done", "--timeout", "100"}, Delay: timeoutDelay(timeout), Stdout: body}})
+		readyProbe(t, env)
+		svc := New(env)
+		got := svc.Legacy.AgentPromptWaitRaw(context.Background(), transport.Target{ID: "w0:p1"}, "slow", 100, transport.Call{Timeout: timeout})
+		if !got.Process.TimedOut {
+			t.Fatalf("got=%#v; the call's process timeout must cut the run", got)
+		}
+		if calls := backendCalls(t, env); len(calls) != 1 {
+			t.Fatalf("one attempt expected, got %#v", calls)
+		}
+	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
 		env := newFake(t, "herdr", []fakecli.Rule{
 			{Argv: promptArgv, Call: 1, Code: 1, Stderr: `{"error":{"code":"agent_blocked","message":"busy"}}`},
