@@ -1077,7 +1077,7 @@ func TestBackendPaneCurrentRaw(t *testing.T) {
 		}
 	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"pane", "current", "--current"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -1131,7 +1131,7 @@ func TestBackendPaneGetRaw(t *testing.T) {
 		}
 	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"pane", "get", "w1:p1"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -1222,7 +1222,7 @@ func TestBackendWorkspaceCreateRaw(t *testing.T) {
 		}
 	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: createArgv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -1276,7 +1276,7 @@ func TestBackendWorkspaceCloseRaw(t *testing.T) {
 		}
 	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"workspace", "close", "w1"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -1330,7 +1330,7 @@ func TestBackendWorkspaceListRaw(t *testing.T) {
 		}
 	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"workspace", "list"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -1384,7 +1384,7 @@ func TestBackendPaneListRaw(t *testing.T) {
 		}
 	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"pane", "list", "--workspace", "w1"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -1450,7 +1450,7 @@ func TestBackendPaneRunRaw(t *testing.T) {
 		}
 	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -1514,7 +1514,7 @@ func TestBackendAgentGetMachineRaw(t *testing.T) {
 		}
 	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "p1"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -1577,7 +1577,7 @@ func TestBackendAgentWaitRaw(t *testing.T) {
 		}
 	})
 	t.Run("a timed-out run keeps the raw TimedOut result, one call", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: waitArgv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -1867,7 +1867,7 @@ func TestBackendSnapshotRaw(t *testing.T) {
 		wantArgv(t, backendCalls(t, env), [][]string{{"--machine", "box1", "api", "snapshot"}})
 	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"api", "snapshot"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -1912,7 +1912,7 @@ func TestBackendMachineListRaw(t *testing.T) {
 		wantArgv(t, backendCalls(t, env), [][]string{{"machine", "list", "--json"}})
 	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"machine", "list", "--json"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -1941,11 +1941,48 @@ func TestBackendMachineListRaw(t *testing.T) {
 	})
 }
 
-// noDeadlineProbeDelay outlives the backend's 30 s default (herdr.Timeout)
-// by a margin: a fake that sleeps it and still answers proves the call ran
-// without a deadline, and a mutant that maps the zero timeout to the 30 s
-// default times the run out and fails the assertion.
-const noDeadlineProbeDelay = 31000
+// captureRun records every CLI call the backend routes through its runner
+// without starting a process: the binary, argv, and run options of each
+// call, and the fixed result every call returns. A test builds a backend
+// around it and asserts the exact run the contract promises — most
+// importantly the TimeoutMs the deadline conversion produced — with no
+// sleep: a method that maps a zero call timeout to the bounded 30000 ms
+// default fails on the captured TimeoutMs immediately.
+type captureRun struct {
+	binaries []string
+	argv     [][]string
+	opts     []platform.RunOptions
+	result   platform.RunResult
+}
+
+func (c *captureRun) run(exe string, args []string, opts platform.RunOptions) platform.RunResult {
+	c.binaries = append(c.binaries, exe)
+	c.argv = append(c.argv, append([]string(nil), args...))
+	c.opts = append(c.opts, opts)
+	return c.result
+}
+
+// assertRawContract asserts, on a capture-runner backend, that one raw method
+// issued exactly one `herdr` call with the exact argv and the expected
+// deadline, and passed the runner's raw result through unchanged.
+func assertRawContract(t *testing.T, got transport.Reply[string], cr *captureRun, argv []string, body string, timeoutMs int) {
+	t.Helper()
+	if len(cr.argv) != 1 {
+		t.Fatalf("one call expected, got %#v", cr.argv)
+	}
+	if cr.binaries[0] != "herdr" {
+		t.Fatalf("binary %q expected \"herdr\"", cr.binaries[0])
+	}
+	if !reflect.DeepEqual(cr.argv[0], argv) {
+		t.Fatalf("argv %#v want %#v", cr.argv[0], argv)
+	}
+	if cr.opts[0].TimeoutMs != timeoutMs {
+		t.Fatalf("TimeoutMs=%d want %d", cr.opts[0].TimeoutMs, timeoutMs)
+	}
+	if got.Value != body || !got.Valid || got.Err != nil || got.Process.Stdout != body || got.Process.Status == nil || *got.Process.Status != 0 || got.Process.TimedOut {
+		t.Fatalf("got=%#v; the runner's raw result must pass through unchanged", got)
+	}
+}
 
 // TestBackendVersionRaw: the legacy raw version read issues one `--version`,
 // keeps no deadline for a zero call timeout (the doctor's legacy contract),
@@ -1963,20 +2000,15 @@ func TestBackendVersionRaw(t *testing.T) {
 		}
 		wantArgv(t, backendCalls(t, env), [][]string{argv})
 	})
-	t.Run("a zero timeout keeps no deadline", func(t *testing.T) {
-		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: noDeadlineProbeDelay, Stdout: body}})
-		readyProbe(t, env)
-		svc := New(env)
-		got := svc.Legacy.VersionRaw(context.Background(), transport.Call{})
-		if got.Process.TimedOut || got.Err != nil || got.Value != body {
-			t.Fatalf("got=%#v; a zero call timeout must keep the unbounded run", got)
-		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
-		}
+	t.Run("a zero call timeout routes a zero TimeoutMs through the runner", func(t *testing.T) {
+		zero := 0
+		cr := &captureRun{result: platform.RunResult{Status: &zero, Stdout: body}}
+		b := &backend{env: platform.Env{}, runner: cr.run}
+		got := b.VersionRaw(context.Background(), transport.Call{})
+		assertRawContract(t, got, cr, argv, body, 0)
 	})
 	t.Run("a positive timeout still bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -2021,13 +2053,21 @@ func TestBackendStatusServerRaw(t *testing.T) {
 		}
 		wantArgv(t, backendCalls(t, env), [][]string{argv})
 	})
-	t.Run("a zero timeout keeps no deadline", func(t *testing.T) {
-		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: noDeadlineProbeDelay, Stdout: body}})
+	t.Run("a zero call timeout routes a zero TimeoutMs through the runner", func(t *testing.T) {
+		zero := 0
+		cr := &captureRun{result: platform.RunResult{Status: &zero, Stdout: body}}
+		b := &backend{env: platform.Env{}, runner: cr.run}
+		got := b.StatusServerRaw(context.Background(), transport.Call{})
+		assertRawContract(t, got, cr, argv, body, 0)
+	})
+	t.Run("a positive timeout still bounds the run", func(t *testing.T) {
+		timeout := fakeTimeout(200 * time.Millisecond)
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
-		got := svc.Legacy.StatusServerRaw(context.Background(), transport.Call{})
-		if got.Process.TimedOut || got.Err != nil || got.Value != body {
-			t.Fatalf("got=%#v; a zero call timeout must keep the unbounded run", got)
+		got := svc.Legacy.StatusServerRaw(context.Background(), transport.Call{Timeout: timeout})
+		if !got.Process.TimedOut || got.Err == nil {
+			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
 		if calls := backendCalls(t, env); len(calls) != 1 {
 			t.Fatalf("one attempt expected, got %#v", calls)
@@ -2066,13 +2106,21 @@ func TestBackendSkillRaw(t *testing.T) {
 		}
 		wantArgv(t, backendCalls(t, env), [][]string{argv})
 	})
-	t.Run("a zero timeout keeps no deadline", func(t *testing.T) {
-		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: noDeadlineProbeDelay, Stdout: body}})
+	t.Run("a zero call timeout routes a zero TimeoutMs through the runner", func(t *testing.T) {
+		zero := 0
+		cr := &captureRun{result: platform.RunResult{Status: &zero, Stdout: body}}
+		b := &backend{env: platform.Env{}, runner: cr.run}
+		got := b.SkillRaw(context.Background(), transport.Call{})
+		assertRawContract(t, got, cr, argv, body, 0)
+	})
+	t.Run("a positive timeout still bounds the run", func(t *testing.T) {
+		timeout := fakeTimeout(200 * time.Millisecond)
+		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
-		got := svc.Legacy.SkillRaw(context.Background(), transport.Call{})
-		if got.Process.TimedOut || got.Err != nil || got.Value != body {
-			t.Fatalf("got=%#v; a zero call timeout must keep the unbounded run", got)
+		got := svc.Legacy.SkillRaw(context.Background(), transport.Call{Timeout: timeout})
+		if !got.Process.TimedOut || got.Err == nil {
+			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
 		if calls := backendCalls(t, env); len(calls) != 1 {
 			t.Fatalf("one attempt expected, got %#v", calls)
@@ -2115,8 +2163,15 @@ func TestBackendPluginListRaw(t *testing.T) {
 		}
 		wantArgv(t, backendCalls(t, env), [][]string{argv})
 	})
+	t.Run("a 30 s call timeout routes a 30000 ms deadline through the runner", func(t *testing.T) {
+		zero := 0
+		cr := &captureRun{result: platform.RunResult{Status: &zero, Stdout: body}}
+		b := &backend{env: platform.Env{}, runner: cr.run}
+		got := b.PluginListRaw(context.Background(), transport.Call{Timeout: pluginCallTimeout})
+		assertRawContract(t, got, cr, argv, body, 30000)
+	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -2161,8 +2216,15 @@ func TestBackendPluginInstallRefRaw(t *testing.T) {
 		}
 		wantArgv(t, backendCalls(t, env), [][]string{argv})
 	})
+	t.Run("a 30 s call timeout routes a 30000 ms deadline through the runner", func(t *testing.T) {
+		zero := 0
+		cr := &captureRun{result: platform.RunResult{Status: &zero, Stdout: body}}
+		b := &backend{env: platform.Env{}, runner: cr.run}
+		got := b.PluginInstallRefRaw(context.Background(), "v1.2.3", transport.Call{Timeout: pluginCallTimeout})
+		assertRawContract(t, got, cr, argv, body, 30000)
+	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -2207,8 +2269,15 @@ func TestBackendPluginConfigDirRaw(t *testing.T) {
 		}
 		wantArgv(t, backendCalls(t, env), [][]string{argv})
 	})
+	t.Run("a 30 s call timeout routes a 30000 ms deadline through the runner", func(t *testing.T) {
+		zero := 0
+		cr := &captureRun{result: platform.RunResult{Status: &zero, Stdout: body}}
+		b := &backend{env: platform.Env{}, runner: cr.run}
+		got := b.PluginConfigDirRaw(context.Background(), "djalmajr.soho", transport.Call{Timeout: pluginCallTimeout})
+		assertRawContract(t, got, cr, argv, body, 30000)
+	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -2253,6 +2322,14 @@ func TestBackendPluginRemoveRaw(t *testing.T) {
 		}
 		wantArgv(t, backendCalls(t, env), [][]string{argv})
 	})
+	t.Run("a 30 s call timeout routes a 30000 ms deadline through the runner", func(t *testing.T) {
+		argv := []string{"plugin", "uninstall", "djalmajr.herdr-soho"}
+		zero := 0
+		cr := &captureRun{result: platform.RunResult{Status: &zero, Stdout: body}}
+		b := &backend{env: platform.Env{}, runner: cr.run}
+		got := b.PluginRemoveRaw(context.Background(), "uninstall", "djalmajr.herdr-soho", transport.Call{Timeout: pluginCallTimeout})
+		assertRawContract(t, got, cr, argv, body, 30000)
+	})
 	t.Run("unlink argv, one call", func(t *testing.T) {
 		argv := []string{"plugin", "unlink", "djalmajr.herdr-soho"}
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Stdout: body}})
@@ -2266,7 +2343,7 @@ func TestBackendPluginRemoveRaw(t *testing.T) {
 	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
 		argv := []string{"plugin", "uninstall", "djalmajr.herdr-soho"}
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)
@@ -2312,8 +2389,15 @@ func TestBackendServerReloadConfigRaw(t *testing.T) {
 		}
 		wantArgv(t, backendCalls(t, env), [][]string{argv})
 	})
+	t.Run("a 30 s call timeout routes a 30000 ms deadline through the runner", func(t *testing.T) {
+		zero := 0
+		cr := &captureRun{result: platform.RunResult{Status: &zero, Stdout: body}}
+		b := &backend{env: platform.Env{}, runner: cr.run}
+		got := b.ServerReloadConfigRaw(context.Background(), transport.Call{Timeout: pluginCallTimeout})
+		assertRawContract(t, got, cr, argv, body, 30000)
+	})
 	t.Run("the call's timeout bounds the run", func(t *testing.T) {
-		timeout := fakeTimeout(25 * time.Millisecond)
+		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
 		svc := New(env)

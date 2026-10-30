@@ -23,13 +23,18 @@ import (
 // Call.Timeout.
 type backend struct {
 	env platform.Env
+	// runner executes the Herdr CLI on the backend's behalf. New defaults it
+	// to platform.RunCli; a per-instance replacement (never package-global)
+	// lets a test observe the exact run — argv and run options — without
+	// starting a process.
+	runner func(exe string, args []string, opts platform.RunOptions) platform.RunResult
 }
 
 // New builds the Herdr transport services for one invocation over env. It
 // returns the Transport, Window, LegacyTransport, and Runtime implementations;
 // the caller holds them for the duration of the invocation.
 func New(env platform.Env) transport.Services {
-	b := &backend{env: env}
+	b := &backend{env: env, runner: platform.RunCli}
 	return transport.Services{Runtime: b, Window: b, Legacy: b, Terminal: b}
 }
 
@@ -611,7 +616,7 @@ func timeoutMsUp(d time.Duration) int {
 // non-zero status. An explicit zero timeout keeps "no deadline", the job's
 // reading of a zero millisecond bound.
 func (b *backend) jobStep(args []string, call transport.Call, ctx context.Context) transport.Reply[string] {
-	r := platform.RunCli("herdr", args, platform.RunOptions{Env: b.env, Context: ctx, TimeoutMs: timeoutMsUp(call.Timeout)})
+	r := b.runner("herdr", args, platform.RunOptions{Env: b.env, Context: ctx, TimeoutMs: timeoutMsUp(call.Timeout)})
 	if r.NotFound || r.TimedOut || r.Status == nil || *r.Status != 0 {
 		return transport.Reply[string]{Value: r.Stdout, Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
 	}
@@ -835,7 +840,7 @@ func (b *backend) ServerReloadConfigRaw(ctx context.Context, call transport.Call
 // timeout, a nil status or a non-zero status. The caller keeps its own
 // TimedOut and structured-error handling on the raw result.
 func (b *backend) rawStep(args []string, call transport.Call, ctx context.Context) transport.Reply[string] {
-	r := runWithTimeout(args, b.env, timeoutFor(call), ctxArgs(ctx)...)
+	r := b.runner("herdr", args, platform.RunOptions{Env: b.env, Context: ctx, TimeoutMs: int(timeoutFor(call) / time.Millisecond)})
 	return rawReply(r)
 }
 
