@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -25,6 +26,7 @@ import (
 	"github.com/djalmajr/soho/internal/spawn/codexhooks"
 	"github.com/djalmajr/soho/internal/taskreport"
 	textutil "github.com/djalmajr/soho/internal/text"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 const (
@@ -308,24 +310,23 @@ func LiteralPeerText(s string) string {
 	return controlRE.ReplaceAllString(s, "")
 }
 
-func SenderRefOf(env platform.Env) string {
-	pane := env.Get("HERDR_PANE_ID")
-	if pane == "" {
+func SenderRefOf(caller transport.Caller) string {
+	if caller.PaneID == "" {
 		return sessionref.LocalMachine + "/-"
 	}
-	return sessionref.FormatRef(sessionref.Ref{Machine: sessionref.LocalMachine, PaneID: pane})
+	return sessionref.FormatRef(sessionref.Ref{Machine: sessionref.LocalMachine, PaneID: caller.PaneID})
 }
 
-func SenderInfo(ctx *core.Config, env platform.Env, cwd string, skipRosterLookup bool) (ref, name, kind, role, model string) {
-	pane := env.Get("HERDR_PANE_ID")
+func SenderInfo(ctx *core.Config, svc transport.Services, env platform.Env, cwd string, skipRosterLookup bool) (ref, name, kind, role, model string) {
+	pane := svc.Runtime.Caller().PaneID
 	if pane == "" {
 		return sessionref.LocalMachine + "/-", "-", "-", "-", "-"
 	}
 	ref = sessionref.FormatRef(sessionref.Ref{Machine: sessionref.LocalMachine, PaneID: pane})
 	name, kind, role, model = "-", "-", "-", "-"
 	// Sender identity is deliberately best-effort; a missing lookup never prevents delivery.
-	args := append(sessionref.HerdrMachineArgs(sessionref.LocalMachine), "agent", "get", pane)
-	r := platform.RunCli("herdr", args, platform.RunOptions{Env: env, TimeoutMs: HerdrCallTimeoutMS})
+	rep := svc.Legacy.AgentGetRaw(context.Background(), transport.Target{ID: pane}, transport.Call{Timeout: time.Duration(HerdrCallTimeoutMS) * time.Millisecond})
+	r := rep.Process
 	if !r.NotFound && r.Status != nil && *r.Status == 0 {
 		var out map[string]any
 		if json.Unmarshal([]byte(r.Stdout), &out) == nil {
@@ -384,9 +385,9 @@ func inboundConfiguration(targetCwd, targetWorkspace string, env platform.Env) (
 	return config, policyEnv
 }
 
-func agentGet(machine, target string, env platform.Env, timeoutMS int) agentInfo {
-	args := append(sessionref.HerdrMachineArgs(machine), "agent", "get", target)
-	r := platform.RunCli("herdr", args, platform.RunOptions{Env: env, TimeoutMs: timeoutMS})
+func agentGet(svc transport.Services, machine, target string, timeoutMS int) agentInfo {
+	rep := svc.Legacy.AgentGetMachineRaw(context.Background(), transport.Target{Machine: machine, ID: target}, transport.Call{Timeout: time.Duration(timeoutMS) * time.Millisecond})
+	r := rep.Process
 	if r.NotFound {
 		return agentInfo{NotFound: true, Cause: "herdr CLI not found in PATH"}
 	}
@@ -443,6 +444,7 @@ func resolveTarget(target string, env platform.Env) resolvedTarget {
 // timeoutMS: the agent_not_ready retries of send pass what is left of the
 // send's --timeout.
 func resolveTargetWithin(target string, env platform.Env, timeoutMS int) resolvedTarget {
+	svc := herdr.New(env)
 	deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
 	remaining := func() int { return int(time.Until(deadline).Milliseconds()) }
 	ref := sessionref.ParseRef(target)
@@ -461,7 +463,7 @@ func resolveTargetWithin(target string, env platform.Env, timeoutMS int) resolve
 	if left <= 0 {
 		return timedOut()
 	}
-	a := agentGet(machine, paneTarget, env, left)
+	a := agentGet(svc, machine, paneTarget, left)
 	var hint *string
 	resolvedFrom, resolvedName := "", ""
 	if a.Code == "agent_not_found" && workspaceRef != nil {
@@ -488,7 +490,7 @@ func resolveTargetWithin(target string, env platform.Env, timeoutMS int) resolve
 			if left <= 0 {
 				return timedOut()
 			}
-			a = agentGet(machine, e.PaneID, env, left)
+			a = agentGet(svc, machine, e.PaneID, left)
 			if a.OK {
 				resolvedFrom, resolvedName = shown, valueString(e.Name)
 				paneTarget, shown = e.PaneID, e.Ref
@@ -606,9 +608,11 @@ func structuredError(stdout, stderr, what, rcLabel string) (string, string) {
 	return "", cause
 }
 
-func waitUntilIdle(machine, pane string, timeoutMS int, env platform.Env) callResult {
-	args := append(sessionref.HerdrMachineArgs(machine), "agent", "wait", pane, "--until", "idle", "--until", "done", "--timeout", fmt.Sprint(timeoutMS))
-	r := platform.RunCli("herdr", args, platform.RunOptions{Env: env, TimeoutMs: timeoutMS + HerdrCallTimeoutMS})
+func waitUntilIdle(svc transport.Services, machine, pane string, timeoutMS int) callResult {
+	// The process timeout is the logical wait bound plus the call budget, so
+	// the herdr call can still report when the wait itself runs out.
+	rep := svc.Legacy.AgentWaitRaw(context.Background(), transport.Target{Machine: machine, ID: pane}, timeoutMS, transport.Call{Timeout: time.Duration(timeoutMS+HerdrCallTimeoutMS) * time.Millisecond})
+	r := rep.Process
 	if r.NotFound {
 		return callResult{Cause: "herdr CLI not found in PATH"}
 	}
@@ -626,9 +630,11 @@ func waitUntilIdle(machine, pane string, timeoutMS int, env platform.Env) callRe
 	return callResult{Code: code, Cause: cause}
 }
 
-func deliverPrompt(machine, pane, body string, env platform.Env) callResult {
-	args := append(sessionref.HerdrMachineArgs(machine), "agent", "prompt", pane, body, "--wait", "--until", "working", "--until", "blocked", "--until", "idle", "--until", "done", "--timeout", fmt.Sprint(PromptWaitTimeoutMS))
-	r := platform.RunCli("herdr", args, platform.RunOptions{Env: env, TimeoutMs: PromptWaitTimeoutMS + HerdrCallTimeoutMS, MergeOutput: true})
+func deliverPrompt(svc transport.Services, machine, pane, body string) callResult {
+	// The process timeout is the prompt wait bound plus the call budget, so
+	// the herdr call can still report when the wait itself runs out.
+	rep := svc.Legacy.AgentPromptWaitRaw(context.Background(), transport.Target{Machine: machine, ID: pane}, body, PromptWaitTimeoutMS, transport.Call{Timeout: time.Duration(PromptWaitTimeoutMS+HerdrCallTimeoutMS) * time.Millisecond})
+	r := rep.Process
 	if r.NotFound {
 		return callResult{Cause: "herdr CLI not found in PATH"}
 	}
@@ -667,12 +673,14 @@ func floorCallBudget(ms int) int {
 // fallback — is reported through onVisibleScreen when it is non-nil, so the
 // caller (the send flow) records every visible screen it sees.
 func readScreen(machine, pane, source string, lines int, env platform.Env, timeoutMS int, onVisibleScreen func(string)) (string, string) {
-	args := append(sessionref.HerdrMachineArgs(machine), "agent", "read", pane, "--source", source)
+	svc := herdr.New(env)
+	var linesArg *int
 	if lines > 0 {
-		args = append(args, "--lines", fmt.Sprint(lines))
+		linesArg = &lines
 	}
 	deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
-	r := platform.RunCli("herdr", args, platform.RunOptions{Env: env, TimeoutMs: timeoutMS})
+	rep := svc.Legacy.AgentReadSourceRaw(context.Background(), transport.Target{Machine: machine, ID: pane}, source, linesArg, transport.Call{Timeout: time.Duration(timeoutMS) * time.Millisecond})
+	r := rep.Process
 	if r.NotFound {
 		return "", "herdr CLI not found in PATH"
 	}
@@ -736,9 +744,9 @@ func SaveStalledScreen(stateDir, id, screen string, env platform.Env) string {
 	return dest
 }
 
-func sendKey(machine, pane, key string, env platform.Env) bool {
-	args := append(sessionref.HerdrMachineArgs(machine), "agent", "send-keys", pane, key)
-	r := platform.RunCli("herdr", args, platform.RunOptions{Env: env, TimeoutMs: HerdrCallTimeoutMS})
+func sendKey(svc transport.Services, machine, pane, key string) bool {
+	rep := svc.Legacy.AgentSendKeysRaw(context.Background(), transport.Target{Machine: machine, ID: pane}, key, transport.Call{Timeout: time.Duration(HerdrCallTimeoutMS) * time.Millisecond})
+	r := rep.Process
 	return !r.NotFound && r.Status != nil && *r.Status == 0
 }
 
@@ -1030,13 +1038,19 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	// peer.SendAssignmentMessage, which gates itself after its own
 	// validation.
 	core.CallerGate("send", ctx, env, cwd)
+	// One transport service for this send: every Herdr step below (the sender
+	// lookup, the resolution, the wait, the prompt, the reads, the keys and
+	// the transcript paths) goes through it. The backend holds no state
+	// beyond the env, so the service is built once here at the send's start.
+	svc := herdr.New(env)
+	caller := svc.Runtime.Caller()
 	// Without a caller pane or an explicit workspace, StateDirPath would
 	// infer the focused workspace, which may belong to another session.
 	// Keep delivery stateless in that case, including roster resolution
 	// (StateRoot can update .gitignore even when the roster is only read).
-	noCallerWorkspace := env.Get("HERDR_PANE_ID") == "" && env.Get("HERDR_WORKSPACE_ID") == ""
+	noCallerWorkspace := caller.PaneID == "" && caller.WorkspaceID == ""
 	stateless := formerWaiting || noCallerWorkspace
-	senderRef, senderName, senderKind, senderRole, senderModel := SenderInfo(ctx, env, cwd, stateless)
+	senderRef, senderName, senderKind, senderRole, senderModel := SenderInfo(ctx, svc, env, cwd, stateless)
 	if !stateless {
 		if _, err := os.ReadFile(filepath.Join(core.StateDirPath(ctx, env, cwd), "agents.tsv")); err != nil && !os.IsNotExist(err) {
 			platform.Die("send: worker registration is unreadable; nothing was sent", 4)
@@ -1045,7 +1059,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		// lookup failed: an unavailable worker cannot bypass the default refusal.
 		for _, row := range core.RosterRows(core.StateDirPath(ctx, env, cwd)) {
 			parts := strings.Split(row, "\t")
-			if len(parts) > 1 && parts[1] != "" && parts[1] == env.Get("HERDR_PANE_ID") {
+			if len(parts) > 1 && parts[1] != "" && parts[1] == caller.PaneID {
 				senderName, senderRole = parts[0], "unknown"
 				if senderName == "" || senderName == "-" {
 					senderName = "registered-worker"
@@ -1126,7 +1140,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			// The deadline passed with the agent still starting: today's
 			// exit 4 and today's cause, with the waited time appended as the
 			// send's --timeout in numberSeconds form.
-			log(SenderRefOf(env), t.RefShown, "error")
+			log(SenderRefOf(caller), t.RefShown, "error")
 			platform.Die(fmt.Sprintf("send: %s unavailable: %s (still not ready after %ss)", t.RefShown, t.Cause, numberSeconds(timeoutMS)), 4)
 		}
 	}
@@ -1135,7 +1149,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		if t.Code == "agent_not_found" {
 			result = "no-agent"
 		}
-		log(SenderRefOf(env), t.RefShown, result)
+		log(SenderRefOf(caller), t.RefShown, result)
 		if t.Code == "agent_not_found" {
 			msg := "send: no agent in " + t.RefShown
 			hint := t.NoAgentHint
@@ -1170,7 +1184,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			_ = os.RemoveAll(policyTmp)
 		}
 		if policy == "off" {
-			log(SenderRefOf(env), t.RefShown, "refused")
+			log(SenderRefOf(caller), t.RefShown, "refused")
 			platform.Die(fmt.Sprintf("send: %s does not accept peer messages (inbound=off)", t.RefShown), 18)
 		}
 	}
@@ -1183,7 +1197,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		// means the busy wait timed out already: no new wait starts.
 		w := callResult{Code: "timeout"}
 		if busyMS, wait := sendBusyBudgetMS(timeoutMS, notReady, deadline, time.Now()); wait {
-			w = waitUntilIdle(t.Machine, t.TargetArg, busyMS, env)
+			w = waitUntilIdle(svc, t.Machine, t.TargetArg, busyMS)
 		}
 		if w.Code == "settled" {
 			currentStatus = "idle"
@@ -1193,7 +1207,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			if again.OK {
 				status = again.Status
 			}
-			log(SenderRefOf(env), t.RefShown, "busy")
+			log(SenderRefOf(caller), t.RefShown, "busy")
 			// A blocked target may be showing a dialog or waiting for an
 			// approval: never suggest typing over it.
 			hint := "(--now sends it without waiting; the target's CLI decides whether to queue it)"
@@ -1202,7 +1216,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			}
 			platform.Die(fmt.Sprintf("send: %s is still %s after %ss; nothing was sent %s", t.RefShown, status, numberSeconds(timeoutMS), hint), 17)
 		} else {
-			log(SenderRefOf(env), t.RefShown, "error")
+			log(SenderRefOf(caller), t.RefShown, "error")
 			platform.Die(fmt.Sprintf("send: %s unavailable: %s", t.RefShown, w.Cause), 4)
 		}
 	}
@@ -1219,7 +1233,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		log(senderRef, t.RefShown, "unreadable")
 		platform.Die(fmt.Sprintf("send: could not read %s's screen (%s); nothing was sent", t.RefShown, cause), 4)
 	}
-	screenGet := agentGet(t.Machine, t.TargetArg, env, HerdrCallTimeoutMS)
+	screenGet := agentGet(svc, t.Machine, t.TargetArg, HerdrCallTimeoutMS)
 	if !screenGet.OK {
 		log(senderRef, t.RefShown, "error")
 		platform.Die(fmt.Sprintf("send: %s unavailable: %s", t.RefShown, screenGet.Cause), 4)
@@ -1237,7 +1251,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		approved := false
 		if mode == "trust" {
 			io := codexhooks.IO{
-				SendKey: func(key string) bool { return sendKey(t.Machine, t.TargetArg, key, env) },
+				SendKey: func(key string) bool { return sendKey(svc, t.Machine, t.TargetArg, key) },
 				Read: func() string {
 					screen, _ := readScreen(t.Machine, t.TargetArg, "visible", 0, env, HerdrCallTimeoutMS, noteVisibleScreen)
 					return screen
@@ -1271,7 +1285,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 					log(senderRef, t.RefShown, "unreadable")
 					platform.Die(fmt.Sprintf("send: could not read %s's screen (%s); nothing was sent", t.RefShown, cause), 4)
 				}
-				g := agentGet(t.Machine, t.TargetArg, env, HerdrCallTimeoutMS)
+				g := agentGet(svc, t.Machine, t.TargetArg, HerdrCallTimeoutMS)
 				if !g.OK {
 					log(senderRef, t.RefShown, "error")
 					platform.Die(fmt.Sprintf("send: %s unavailable: %s", t.RefShown, g.Cause), 4)
@@ -1284,7 +1298,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			platform.Die(fmt.Sprintf("send: %s is showing a dialog; nothing was sent", t.RefShown), 17)
 		}
 	}
-	preGet := agentGet(t.Machine, t.TargetArg, env, HerdrCallTimeoutMS)
+	preGet := agentGet(svc, t.Machine, t.TargetArg, HerdrCallTimeoutMS)
 	preSeq, preStatus := "", ""
 	if preGet.OK {
 		preSeq, preStatus = preGet.Seq, preGet.Status
@@ -1358,9 +1372,9 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	tooLargeBefore := countTooLarge(vScreen)
 	if t.Machine == sessionref.LocalMachine || t.Machine == "" {
 		if t.Kind == "claude" {
-			transcript = transcriptProof{path: herdr.ClaudeTranscriptPath(t.TargetArg, env), count: herdr.CountClaudeUserClosingLines, queued: claudeQueued}
+			transcript = transcriptProof{path: svc.Legacy.ClaudeTranscriptPath(context.Background(), transport.Target{ID: t.TargetArg}).Value, count: herdr.CountClaudeUserClosingLines, queued: claudeQueued}
 		} else if t.Kind == "pi" && preGet.OK && preGet.SessionKind != "" {
-			transcript = transcriptProof{path: herdr.PiSessionPath(t.TargetArg, env), count: herdr.CountPiUserClosingLines, queued: steeringQueued}
+			transcript = transcriptProof{path: svc.Legacy.PiSessionPath(context.Background(), transport.Target{ID: t.TargetArg}).Value, count: herdr.CountPiUserClosingLines, queued: steeringQueued}
 		}
 		if transcript.path != "" {
 			if pre, ok := transcript.count(transcript.path, PeerEndLine(id)); ok {
@@ -1418,7 +1432,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		deadline := time.Now().Add(time.Duration(windowMS) * time.Millisecond)
 		result := proofResult{}
 		for {
-			curGet := agentGet(t.Machine, t.TargetArg, env, HerdrCallTimeoutMS)
+			curGet := agentGet(svc, t.Machine, t.TargetArg, HerdrCallTimeoutMS)
 			if curGet.OK {
 				preIdle := preStatus == "idle" || preStatus == "done"
 				// An idle/done agent's state sequence moves only when its
@@ -1553,7 +1567,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			(t.Kind == "codex" && codexQueued(visible, id)) {
 			return false
 		}
-		curGet := agentGet(t.Machine, t.TargetArg, env, stalledCheckBudget(deadline))
+		curGet := agentGet(svc, t.Machine, t.TargetArg, stalledCheckBudget(deadline))
 		preIdle := preStatus == "idle" || preStatus == "done"
 		if preSeq != "" && curGet.Seq != "" && curGet.Seq != preSeq && preIdle {
 			return !isDialogScreen(visible, t.Kind, curGet.Status)
@@ -1593,7 +1607,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			sleepMS(min(pollMS, int(time.Until(deadline).Milliseconds())))
 		}
 	}
-	p := deliverPrompt(t.Machine, t.TargetArg, message, env)
+	p := deliverPrompt(svc, t.Machine, t.TargetArg, message)
 	if p.Code != "ok" {
 		if p.Code == "agent_prompt_stalled" {
 			// agent_prompt_stalled can mean the prompt was typed but its
@@ -1614,7 +1628,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 				// The key transport reports whether the Enter actually landed
 				// (herdr send-keys exited 0); a failed send is never claimed as
 				// pressed, and no second Enter or resend follows.
-				entered := sendKey(t.Machine, t.TargetArg, "enter", env)
+				entered := sendKey(svc, t.Machine, t.TargetArg, "enter")
 				if res := pollWindow(); res.Proven {
 					log(senderRef, t.RefShown, "sent")
 					_, _ = fmt.Fprintf(platform.Stdout, "sent to %s\n", t.RefShown)
@@ -1692,7 +1706,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	// undecided (a grown count whose screen cannot be read); a growth whose
 	// queue decision is immediate waits for nothing and says nothing.
 	if t.Kind == "claude" && transcript.armed {
-		if busy := agentGet(t.Machine, t.TargetArg, env, HerdrCallTimeoutMS); busy.OK && busy.Status == "working" {
+		if busy := agentGet(svc, t.Machine, t.TargetArg, HerdrCallTimeoutMS); busy.OK && busy.Status == "working" {
 			deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
 			warned := false
 			warnBusy := func() {
@@ -1737,7 +1751,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 						return 0
 					}
 				}
-				if g := agentGet(t.Machine, t.TargetArg, env, HerdrCallTimeoutMS); !g.OK || g.Status != "working" {
+				if g := agentGet(svc, t.Machine, t.TargetArg, HerdrCallTimeoutMS); !g.OK || g.Status != "working" {
 					break
 				}
 				if !time.Now().Before(deadline) {
@@ -1772,7 +1786,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		log(senderRef, t.RefShown, "unverified")
 		platform.Die(fmt.Sprintf("send: could not confirm that %s took the message (%s); %s before sending again", t.RefShown, readErr, readPaneHint(t)), 15)
 	}
-	preEnterGet := agentGet(t.Machine, t.TargetArg, env, HerdrCallTimeoutMS)
+	preEnterGet := agentGet(svc, t.Machine, t.TargetArg, HerdrCallTimeoutMS)
 	if !preEnterGet.OK {
 		log(senderRef, t.RefShown, "unverified")
 		cause := preEnterGet.Cause
@@ -1793,7 +1807,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	// The key transport reports whether the Enter actually landed (herdr
 	// send-keys exited 0); a failed send is never claimed as pressed, and no
 	// second Enter or resend follows.
-	entered := sendKey(t.Machine, t.TargetArg, "enter", env)
+	entered := sendKey(svc, t.Machine, t.TargetArg, "enter")
 	res = pollWindow()
 	if res.Proven {
 		log(senderRef, t.RefShown, "sent")

@@ -11,8 +11,10 @@ import (
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/communication"
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/sessionref"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 type AssignmentMessageOptions struct {
@@ -65,9 +67,14 @@ func SendAssignmentMessage(options AssignmentMessageOptions) (collaboration.Deli
 		return refused(errors.New("worker messages cannot write state inside the skill"))
 	}
 	env := options.Env.Clone()
+	// The derived workspace id must reach the child process environment and
+	// the policy paths unchanged, so it is written into this env copy.
 	if env.Get("HERDR_WORKSPACE_ID") == "" {
 		env["HERDR_WORKSPACE_ID"] = core.WorkspaceID(options.Config, env, options.Cwd)
 	}
+	// One transport service for this delivery: the recipient inspection and
+	// the submission go through it.
+	svc := herdr.New(env)
 	sd := core.StateDirPath(options.Config, env, options.Cwd)
 	a, err := (collaboration.Store{StateDir: sd}).Read(options.AssignmentID)
 	if err != nil {
@@ -82,7 +89,7 @@ func SendAssignmentMessage(options AssignmentMessageOptions) (collaboration.Deli
 	if err := collaboration.CheckParticipants(a, sd, env, ctx); err != nil {
 		return refused(err)
 	}
-	from, member := a.Member(env.Get("HERDR_PANE_ID"))
+	from, member := a.Member(svc.Runtime.Caller().PaneID)
 	if !member {
 		return refused(errors.New("sender is not an assigned participant"))
 	}
@@ -143,7 +150,7 @@ func SendAssignmentMessage(options AssignmentMessageOptions) (collaboration.Deli
 	if cause != "" {
 		return refused(fmt.Errorf("cannot inspect recipient screen: %s", cause))
 	}
-	state := agentGet(sessionref.LocalMachine, to.Pane, env, remaining())
+	state := agentGet(svc, sessionref.LocalMachine, to.Pane, remaining())
 	if !state.OK || state.PaneID != to.Pane {
 		return refused(errors.New("recipient changed or became unavailable"))
 	}
@@ -166,7 +173,8 @@ func SendAssignmentMessage(options AssignmentMessageOptions) (collaboration.Deli
 	metadata := fmt.Sprintf("Assignment: %s; type: %s; round: %d; revision: %s.", a.ID, HeaderField(options.Type), a.Round, a.Revision)
 	message := header + "\n" + metadata + "\n\n" + QuotePeerBody(LiteralPeerText(options.Body)) + "\n" + PeerEndLine(id)
 	// No --wait: neither side waits for the other's turn, report or idle.
-	r := platform.RunCli("herdr", []string{"agent", "prompt", to.Pane, message}, platform.RunOptions{Env: env, TimeoutMs: remaining()})
+	rep := svc.Legacy.AgentPromptRaw(context.Background(), transport.Target{ID: to.Pane}, message, transport.Call{Timeout: time.Duration(remaining()) * time.Millisecond})
+	r := rep.Process
 	result := collaboration.DeliveryResult{Status: "submitted"}
 	if r.Status == nil || *r.Status != 0 || r.TimedOut || r.NotFound {
 		code, cause := structuredError(r.Stdout, r.Stderr, "agent prompt", "submission could not be confirmed")

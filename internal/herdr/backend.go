@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -652,6 +653,116 @@ func (b *backend) PaneRunRaw(ctx context.Context, paneID string, argv []string, 
 	args = append(args, "pane", "run", paneID)
 	args = append(args, argv...)
 	return b.jobStep(args, call, ctx)
+}
+
+// AgentGetMachineRaw runs one `agent get <id>` with the machine prefix the
+// target's machine names and the call's timeout, and returns the raw process
+// result (Value carries the stdout, possibly empty): the caller keeps its
+// own fail-open and body-parsing handling. It never retries and does not
+// parse the body.
+func (b *backend) AgentGetMachineRaw(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[string] {
+	args := append(append([]string{}, sessionref.HerdrMachineArgs(target.Machine)...), "agent", "get", target.ID)
+	return b.rawStep(args, call, ctx)
+}
+
+// AgentWaitRaw runs one `agent wait <id> --until idle --until done --timeout
+// <timeoutMS>` with the machine prefix the target's machine names, under the
+// call's timeout as the process timeout, and returns the raw process result
+// (Value carries the stdout): the caller keeps its own TimedOut,
+// structured-error and exit-status handling. timeoutMS is the logical wait
+// bound rendered into the argv only.
+func (b *backend) AgentWaitRaw(ctx context.Context, target transport.Target, timeoutMS int, call transport.Call) transport.Reply[string] {
+	args := append(append([]string{}, sessionref.HerdrMachineArgs(target.Machine)...), "agent", "wait", target.ID, "--until", "idle", "--until", "done", "--timeout", strconv.Itoa(timeoutMS))
+	return b.rawStep(args, call, ctx)
+}
+
+// AgentPromptWaitRaw runs one `agent prompt <id> <body> --wait --until working
+// --until blocked --until idle --until done --timeout <timeoutMS>` with the
+// machine prefix the target's machine names, the call's timeout as the
+// process timeout, and merged output (the raw result's stdout holds the
+// merged stream). The caller keeps its own TimedOut, structured-error and
+// exit-status handling. timeoutMS is the logical wait bound rendered into
+// the argv only.
+func (b *backend) AgentPromptWaitRaw(ctx context.Context, target transport.Target, body string, timeoutMS int, call transport.Call) transport.Reply[string] {
+	args := append(append([]string{}, sessionref.HerdrMachineArgs(target.Machine)...), "agent", "prompt", target.ID, body, "--wait", "--until", "working", "--until", "blocked", "--until", "idle", "--until", "done", "--timeout", strconv.Itoa(timeoutMS))
+	r := platform.RunCli("herdr", args, platform.RunOptions{Env: b.env, Context: ctx, TimeoutMs: int(timeoutFor(call) / time.Millisecond), MergeOutput: true})
+	return rawReply(r)
+}
+
+// AgentPromptRaw runs one bare `agent prompt <id> <body>` (no wait flags)
+// with the machine prefix the target's machine names and the call's timeout,
+// and returns the raw process result (Value carries the stdout): the caller
+// keeps its own exit-status, timeout and structured-error handling.
+func (b *backend) AgentPromptRaw(ctx context.Context, target transport.Target, body string, call transport.Call) transport.Reply[string] {
+	args := append(append([]string{}, sessionref.HerdrMachineArgs(target.Machine)...), "agent", "prompt", target.ID, body)
+	return b.rawStep(args, call, ctx)
+}
+
+// AgentReadSourceRaw runs one `agent read <id> --source <source>` with the
+// machine prefix the target's machine names, an optional `--lines <n>` when
+// lines is non-nil, and the call's timeout, and returns the raw process
+// result (Value carries the stdout): the caller keeps its own fallback and
+// exit-status handling.
+func (b *backend) AgentReadSourceRaw(ctx context.Context, target transport.Target, source string, lines *int, call transport.Call) transport.Reply[string] {
+	args := append(append([]string{}, sessionref.HerdrMachineArgs(target.Machine)...), "agent", "read", target.ID, "--source", source)
+	if lines != nil {
+		args = append(args, "--lines", strconv.Itoa(*lines))
+	}
+	return b.rawStep(args, call, ctx)
+}
+
+// AgentSendKeysRaw runs one `agent send-keys <id> <key>` with the machine
+// prefix the target's machine names and the call's timeout, and returns the
+// raw process result: Value is true only when the call is not a lookup
+// failure and exits 0, and the raw result stays on the reply for the
+// caller's own exit-status judgment.
+func (b *backend) AgentSendKeysRaw(ctx context.Context, target transport.Target, key string, call transport.Call) transport.Reply[bool] {
+	args := append(append([]string{}, sessionref.HerdrMachineArgs(target.Machine)...), "agent", "send-keys", target.ID, key)
+	r := runWithTimeout(args, b.env, timeoutFor(call), ctxArgs(ctx)...)
+	if !ok(r) {
+		return transport.Reply[bool]{Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
+	}
+	return transport.Reply[bool]{Value: true, Valid: true, Process: processResult(r)}
+}
+
+// SnapshotRaw runs one `api snapshot` with the machine prefix the target's
+// machine names and the call's timeout, and returns the raw process result
+// (Value carries the stdout): the caller keeps its own exit-status and
+// body-parsing handling. The per-call context bounds the run.
+func (b *backend) SnapshotRaw(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[string] {
+	args := append(append([]string{}, sessionref.HerdrMachineArgs(target.Machine)...), "api", "snapshot")
+	return b.rawStep(args, call, ctx)
+}
+
+// MachineListRaw runs one `machine list --json` with the call's timeout and
+// returns the raw process result (Value carries the stdout): the caller
+// keeps its own exit-status and body-parsing handling. The per-call context
+// bounds the run.
+func (b *backend) MachineListRaw(ctx context.Context, call transport.Call) transport.Reply[string] {
+	return b.rawStep([]string{"machine", "list", "--json"}, call, ctx)
+}
+
+// rawStep is the raw one-step run of the peer's Herdr steps: one herdr CLI
+// call with exactly the given argv under the call's timeout (the backend's
+// default when the call names none), the per-call context forwarded, and no
+// output merging. It returns the raw stdout plus the raw process result and
+// reports Err exactly when the one-step run fails: a not-found binary, a
+// timeout, a nil status or a non-zero status. The caller keeps its own
+// TimedOut and structured-error handling on the raw result.
+func (b *backend) rawStep(args []string, call transport.Call, ctx context.Context) transport.Reply[string] {
+	r := runWithTimeout(args, b.env, timeoutFor(call), ctxArgs(ctx)...)
+	return rawReply(r)
+}
+
+// rawReply maps one raw process outcome into a string reply: Value carries
+// the raw stdout (possibly empty) and the raw result stays on the reply for
+// the caller's own handling; Err is set exactly when the run is a lookup
+// failure, a timeout, a nil status or a non-zero status.
+func rawReply(r platform.RunResult) transport.Reply[string] {
+	if !ok(r) {
+		return transport.Reply[string]{Value: r.Stdout, Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
+	}
+	return transport.Reply[string]{Value: r.Stdout, Valid: true, Process: processResult(r)}
 }
 
 // Runtime.

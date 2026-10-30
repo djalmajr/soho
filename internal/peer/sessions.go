@@ -7,10 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/sessionref"
 	textutil "github.com/djalmajr/soho/internal/text"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 const SnapshotTimeoutMS = 30_000
@@ -374,7 +376,16 @@ func oneSnapshot(machine string, opts SnapshotOptions) (any, string) {
 	if timeout == 0 {
 		timeout = SnapshotTimeoutMS
 	}
-	r := runSessionCli(opts, append(sessionref.HerdrMachineArgs(machine), "api", "snapshot"), timeout)
+	// The test seam (opts.Run) keeps its direct CLI shape; the default path
+	// runs the same argv through the backend with the same context and
+	// timeout.
+	var r platform.RunResult
+	if opts.Run != nil {
+		r = opts.Run("herdr", append(sessionref.HerdrMachineArgs(machine), "api", "snapshot"), platform.RunOptions{Env: opts.Env, Context: opts.Context, TimeoutMs: timeout})
+	} else {
+		rep := herdr.New(opts.Env).Legacy.SnapshotRaw(opts.Context, transport.Target{Machine: machine}, transport.Call{Timeout: time.Duration(timeout) * time.Millisecond})
+		r = runResultFromProcess(rep.Process)
+	}
 	if r.NotFound {
 		return nil, "herdr CLI not found in PATH"
 	}
@@ -408,12 +419,20 @@ func oneSnapshot(machine string, opts SnapshotOptions) (any, string) {
 	return snapshot, ""
 }
 
-func runSessionCli(opts SnapshotOptions, args []string, timeout int) platform.RunResult {
-	run := opts.Run
-	if run == nil {
-		run = platform.RunCli
+// runResultFromProcess mirrors the backend's raw process outcome into the
+// platform result the snapshot parsing reads: the fields are the same, so
+// the parsing keeps reading exactly what the direct CLI call used to.
+func runResultFromProcess(p transport.ProcessResult) platform.RunResult {
+	return platform.RunResult{
+		NotFound: p.NotFound,
+		Resolved: p.Resolved,
+		Status:   p.Status,
+		Signal:   p.Signal,
+		Stdout:   p.Stdout,
+		Stderr:   p.Stderr,
+		TimedOut: p.TimedOut,
+		Error:    p.Error,
 	}
-	return run("herdr", args, platform.RunOptions{Env: opts.Env, Context: opts.Context, TimeoutMs: timeout})
 }
 
 func FetchSessions(machines []string, opts SnapshotOptions) SessionResult {
@@ -438,7 +457,16 @@ func MachineList(opts SnapshotOptions) ([]Machine, string) {
 }
 
 func listMachines(timeoutMS int, opts SnapshotOptions) ([]Machine, string) {
-	r := runSessionCli(opts, []string{"machine", "list", "--json"}, timeoutMS)
+	// The test seam (opts.Run) keeps its direct CLI shape; the default path
+	// runs the same argv through the backend with the same context and
+	// timeout.
+	var r platform.RunResult
+	if opts.Run != nil {
+		r = opts.Run("herdr", []string{"machine", "list", "--json"}, platform.RunOptions{Env: opts.Env, Context: opts.Context, TimeoutMs: timeoutMS})
+	} else {
+		rep := herdr.New(opts.Env).Legacy.MachineListRaw(opts.Context, transport.Call{Timeout: time.Duration(timeoutMS) * time.Millisecond})
+		r = runResultFromProcess(rep.Process)
+	}
 	if r.NotFound {
 		return nil, "herdr CLI not found in PATH"
 	}
