@@ -21,6 +21,18 @@ import (
 
 const tooLargeText = peerauth.TooLargeLine + "\n" + peerauth.TooLargeReason
 
+// signID is the fixed message id the transcript fixtures bind to.
+const signID = "01020304"
+
+func peerMessagesLog(t *testing.T, f *fixture) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(f.env["SOHO_DIR"], "ws-test", peer.PeerLogFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
 // tooLargeScreen is the claude composer under the given lines, with the
 // prompt in the box when prompt is not empty.
 func tooLargeScreen(above, prompt string) string {

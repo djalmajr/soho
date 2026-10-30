@@ -98,11 +98,6 @@ var jobMachineKeys = []string{
 	"job_human_input_minutes", "job_wake_cmd",
 }
 
-// peerInboundKeys are the receiver's peer-message authentication keys. Like
-// jobMachineKeys they stay out of ConfigScalarKeys (the frozen parity oracle
-// pins that order) and only the user configuration file sets them.
-var peerInboundKeys = []string{"inbound_auth", "inbound_allow"}
-
 // startupDialogKeys are the keys of the startup dialogs soho answers
 // (DJA-434: hooks_review). Like jobMachineKeys they stay out of
 // ConfigScalarKeys, so `soho config` keeps the row order pinned by the
@@ -439,11 +434,6 @@ func ConfigKeyOk(key string) bool {
 		}
 	}
 	for _, scalar := range jobMachineKeys {
-		if scalar == key {
-			return true
-		}
-	}
-	for _, scalar := range peerInboundKeys {
 		if scalar == key {
 			return true
 		}

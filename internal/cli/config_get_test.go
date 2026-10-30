@@ -238,3 +238,34 @@ func TestNowriteConfigGet(t *testing.T) {
 		})
 	}
 }
+
+// The signed peer settings are retired (DJA-610): `config set` and
+// `config get` refuse the two keys as unknown keys, and a file that still
+// holds them loads without error.
+func TestConfigRetiredPeerInboundKeys(t *testing.T) {
+	env, cwd := commandFixture(t)
+	for _, key := range []string{"inbound_auth", "inbound_allow"} {
+		code, out, errOut := runIn(t, []string{"config", "set", key, "warn"}, env, cwd)
+		if code != 2 || out != "" || !strings.Contains(errOut, "unknown key '"+key+"'") {
+			t.Fatalf("%s set: code=%d out=%q err=%q", key, code, out, errOut)
+		}
+		code, out, errOut = runIn(t, []string{"config", "get", key}, env, cwd)
+		if code != 2 || out != "" || !strings.Contains(errOut, "unknown key '"+key+"'") {
+			t.Fatalf("%s get: code=%d out=%q err=%q", key, code, out, errOut)
+		}
+	}
+	// A user file that still holds the retired keys loads without error and
+	// does not change any other key.
+	writeConfigFile(t, platform.UserConfigPath(platform.Current(), env), "inbound_auth=warn\ninbound_allow=mac\njob_timeout=77\n")
+	code, out, errOut := runIn(t, []string{"config", "get", "job_timeout"}, env, cwd)
+	if code != 0 || out != "77\n" || errOut != "" {
+		t.Fatalf("a file with the retired keys loads: code=%d out=%q err=%q", code, out, errOut)
+	}
+	code, listing, errOut := runIn(t, []string{"config"}, env, cwd)
+	if code != 0 || errOut != "" {
+		t.Fatalf("config code=%d err=%q", code, errOut)
+	}
+	if strings.Contains(listing, "inbound_auth") {
+		t.Fatalf("the listing shows a retired key:\n%s", listing)
+	}
+}

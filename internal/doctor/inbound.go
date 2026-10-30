@@ -4,96 +4,45 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
-	"github.com/djalmajr/soho/internal/peerauth"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/setuptext"
 )
 
-// doctorPeerInbound warns about the receiver side of signed peer messages
-// (peerauth). With the default configuration (no inbound_auth, no
-// inbound_allow anywhere) it says nothing, so the doctor's output is the one
-// it always had.
+// doctorPeerInbound checks the receiver side of peer messages: that every
+// agent that could receive one has a UserPromptSubmit hook, and that the
+// signed peer settings of the previous design are gone. The hook reads no key
+// and checks no signature, so there is nothing else to check.
 func doctorPeerInbound(ctx *core.Config, env platform.Env, cwd string, s *Say) {
-	userFile := core.EffectiveUserConfigFile(platform.Current(), env, core.UserSelection{})
+	// The signed peer settings are retired: a file that still sets one is
+	// no longer read by anything.
 	for _, layer := range ctx.Layers {
-		if layer.Source != "project" && layer.Source != "session" {
-			continue
-		}
 		for _, key := range []string{"inbound_auth", "inbound_allow"} {
-			if _, set := layer.Entries[key]; set {
-				s.Warning(fmt.Sprintf("config: %s in the %s file %s is ignored; only the user file %s sets it", key, layer.Source, layer.File, userFile))
+			if _, present := layer.Entries[key]; present {
+				s.Warning(fmt.Sprintf("config: %s is retired (%s); delete the %s line from %s", key, layer.Source, key, layer.File))
 			}
 		}
 	}
-	for _, key := range []string{"inbound_auth", "inbound_allow"} {
-		if env.Get("SOHO_"+strings.ToUpper(key)) != "" {
-			s.Warning(fmt.Sprintf("config: SOHO_%s is ignored; only the user file %s sets %s", strings.ToUpper(key), userFile, key))
-		}
+	userDir := filepath.Dir(core.EffectiveUserConfigFile(platform.Current(), env, core.UserSelection{}))
+	if info, err := os.Stat(filepath.Join(userDir, "peer-keys")); err == nil && info.IsDir() {
+		s.Warning("peer keys in " + filepath.Join(userDir, "peer-keys") + " are no longer used; delete the directory")
 	}
-	policy, err := peerauth.LoadPolicy(userFile)
-	if err != nil {
-		return
-	}
-	if policy.ModeInvalid {
-		s.Warning(fmt.Sprintf("config: inbound_auth='%s' is not off|warn|enforce (it applies as enforce)", policy.ModeValue))
-	}
-	if policy.Mode == peerauth.ModeOff {
-		return
-	}
-	dir := filepath.Dir(userFile)
-	if line, corrupt := peerauth.SeenCorrupt(dir); corrupt {
-		s.Warning(fmt.Sprintf("peer replay cache %s is corrupt (line %d); messages are refused until it is fixed: delete it", filepath.Join(dir, peerauth.SeenFile), line))
-	}
-	checked := map[string]bool{}
-	checkKey := func(name string) {
-		if checked[name] {
-			return
-		}
-		checked[name] = true
-		path, ok := peerauth.KeyPath(dir, name)
-		if !ok {
-			s.Warning(fmt.Sprintf("inbound_allow: label '%s' is not a valid machine name (letters, digits, '.', '_' and '-', at most 64)", name))
-			return
-		}
-		switch _, status := peerauth.ReadKey(dir, name); status {
-		case peerauth.KeyMissing:
-			s.Warning(fmt.Sprintf("inbound_allow: no key file for '%s' (%s); create it with: soho peer-key new %s", name, path, name))
-			return
-		case peerauth.KeyInvalid:
-			s.Warning(fmt.Sprintf("peer key %s is invalid (it must hold 64 hex characters, 32 bytes); replace it with: soho peer-key new %s", path, name))
-			return
-		}
-		if runtime.GOOS != "windows" {
-			if info, statErr := os.Stat(path); statErr == nil && info.Mode().Perm() != 0o600 {
-				s.Warning(fmt.Sprintf("peer key %s has mode %04o; chmod 600 it", path, info.Mode().Perm()))
-			}
-		}
-	}
-	for _, label := range policy.Allow {
-		checkKey(label)
-	}
-	if _, status := peerauth.ReadKey(dir, peerauth.LocalName); status == peerauth.KeyMissing {
-		s.Warning("peer key local is missing: peer messages to this machine's own panes go out unsigned and, with inbound_auth=enforce, are refused; create it with: soho peer-key new local")
-	} else {
-		checkKey(peerauth.LocalName)
-	}
-	if runtime.GOOS == "windows" {
-		s.Warning("peer key permissions are not checked on Windows; keep the peer-keys directory readable by your user only")
+	if _, err := os.Stat(filepath.Join(userDir, "peer-inbound-seen.tsv")); err == nil {
+		s.Warning("peer replay cache " + filepath.Join(userDir, "peer-inbound-seen.tsv") + " is no longer used; delete it")
 	}
 	settings := filepath.Join(platform.ProjectRoot(env, cwd), ".claude", "settings.json")
 	localSettings := filepath.Join(platform.ProjectRoot(env, cwd), ".claude", "settings.local.json")
 	if !userPromptSubmitProtected(settings) && !userPromptSubmitProtected(localSettings) {
 		s.Warning(fmt.Sprintf("%s and %s have no 'soho hook reminder' or 'soho hook inbound' in UserPromptSubmit: the Claude Code panes of this project do not check peer messages (run 'soho setup')", settings, localSettings))
 	}
-	if policy.Mode == peerauth.ModeEnforce {
-		doctorUnprotectedAgents(ctx, env, cwd, s)
-	}
+	// The hook is the protection: every live agent without a UserPromptSubmit
+	// hook receives a peer message as-is. This check no longer depends on a
+	// setting; it runs whenever the doctor runs in Herdr.
+	doctorUnprotectedAgents(ctx, env, cwd, s)
 }
 
 // userPromptSubmitProtected reports whether the settings file carries a

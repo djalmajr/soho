@@ -165,12 +165,6 @@ func SendAssignmentMessage(options AssignmentMessageOptions) (collaboration.Deli
 	header := PeerHeaderAssignment(PeerSender{Ref: ref, Name: HeaderField(from.Name), Kind: HeaderField(from.Kind), Role: HeaderField(from.Role), Model: HeaderField(from.Model)}, from.Name, a.ID, id)
 	metadata := fmt.Sprintf("Assignment: %s; type: %s; round: %d; revision: %s.", a.ID, HeaderField(options.Type), a.Round, a.Revision)
 	message := header + "\n" + metadata + "\n\n" + QuotePeerBody(LiteralPeerText(options.Body)) + "\n" + PeerEndLine(id)
-	// Signed with the local key when there is one, the Assignment line
-	// included; an invalid key refuses the delivery before `agent prompt`.
-	message, err = SignLocalMessage(env, message)
-	if err != nil {
-		return refused(err)
-	}
 	// No --wait: neither side waits for the other's turn, report or idle.
 	r := platform.RunCli("herdr", []string{"agent", "prompt", to.Pane, message}, platform.RunOptions{Env: env, TimeoutMs: remaining()})
 	result := collaboration.DeliveryResult{Status: "submitted"}

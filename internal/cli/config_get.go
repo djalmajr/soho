@@ -6,7 +6,6 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/job"
-	"github.com/djalmajr/soho/internal/peerauth"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -54,21 +53,6 @@ func cmdConfigGet(argv []string, configCtx *core.Config, env platform.Env, cwd s
 			platform.Die("config get: "+err.Error(), 2)
 		}
 		value = values[key]
-	case key == "inbound_auth" || key == "inbound_allow":
-		// Like machine_label, only the user file sets them: the raw value
-		// the hook reads (inbound_auth is off when unset).
-		policy, err := peerauth.LoadPolicy(core.EffectiveUserConfigFile(platform.Current(), env, core.UserSelection{}))
-		if err != nil {
-			platform.Die("config get: cannot read user configuration", 2)
-		}
-		if key == "inbound_auth" {
-			value = policy.ModeValue
-			if value == "" {
-				value = string(peerauth.ModeOff)
-			}
-		} else {
-			value = policy.AllowValue
-		}
 	case key == "job_auto_cleanup", key == "job_human_input_minutes":
 		// The same resolution the job's autoCloseSettings makes over the
 		// cwd's layered configuration.

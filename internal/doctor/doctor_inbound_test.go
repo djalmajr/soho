@@ -4,18 +4,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/peerauth"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/setuptext"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
-// The receiver-side warnings of signed peer messages (DJA-196).
+// The receiver side of unsigned peer messages (DJA-610): the deprecated
+// signed-peer settings, the leftover seen-state file, and every agent without
+// a UserPromptSubmit hook.
 
 type inboundDoctor struct {
 	t    *testing.T
@@ -57,15 +57,6 @@ func (d *inboundDoctor) write(path, body string, mode os.FileMode) {
 
 func (d *inboundDoctor) user(body string) { d.write(filepath.Join(d.conf, "config"), body, 0o600) }
 
-func (d *inboundDoctor) key(name string) string {
-	d.t.Helper()
-	path, err := peerauth.NewKey(d.conf, name)
-	if err != nil {
-		d.t.Fatal(err)
-	}
-	return path
-}
-
 func (d *inboundDoctor) protect() {
 	d.write(filepath.Join(d.cwd, ".claude", "settings.json"), `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder"}]}]}}`, 0o600)
 }
@@ -78,10 +69,10 @@ func (d *inboundDoctor) out() string {
 	return out.String()
 }
 
-func warnLines(out string) []string {
+func inboundWarnLines(out string) []string {
 	var lines []string
 	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, "warn") && (strings.Contains(line, "inbound") || strings.Contains(line, "peer key") || strings.Contains(line, "not protected")) {
+		if strings.HasPrefix(line, "warn") && (strings.Contains(line, "peer") || strings.Contains(line, "inbound")) {
 			lines = append(lines, strings.TrimLeft(strings.TrimPrefix(line, "warn"), " "))
 		}
 	}
@@ -90,133 +81,103 @@ func warnLines(out string) []string {
 
 func wantWarn(t *testing.T, out, want string) {
 	t.Helper()
-	for _, line := range warnLines(out) {
+	for _, line := range inboundWarnLines(out) {
 		if line == want {
 			return
 		}
 	}
-	t.Fatalf("no warning %q in:\n%s", want, strings.Join(warnLines(out), "\n"))
+	t.Fatalf("no warning %q in:\n%s", want, strings.Join(inboundWarnLines(out), "\n"))
 }
 
-func TestDoctorInboundDefaultOutputIsUnchanged(t *testing.T) {
+// A bare project (no settings, no hooks, no deprecated config) warns that its
+// Claude Code panes do not check peer messages: the hook is the protection.
+func TestDoctorInboundBareProjectWarnsAboutTheHook(t *testing.T) {
 	d := newInboundDoctor(t)
-	base := d.out()
-	if got := warnLines(base); len(got) != 0 {
-		t.Fatalf("default configuration warns about inbound: %v", got)
+	out := d.out()
+	wantWarn(t, out, fmt.Sprintf("%s and %s have no 'soho hook reminder' or 'soho hook inbound' in UserPromptSubmit: the Claude Code panes of this project do not check peer messages (run 'soho setup')",
+		filepath.Join(d.cwd, ".claude", "settings.json"), filepath.Join(d.cwd, ".claude", "settings.local.json")))
+	if got := len(inboundWarnLines(out)); got != 1 {
+		t.Fatalf("one peer warning, got %d:\n%s", got, out)
 	}
-	// inbound_auth=off, a pile of keys and a protected project: still the same.
-	d.user("inbound_auth=off\n")
-	for _, name := range []string{"mac", "local"} {
-		d.key(name)
-	}
-	d.write(filepath.Join(d.conf, "peer-keys", "garbage.key"), "garbage", 0o644)
-	d.protect()
-	withOff := d.out()
-	// The project settings add their own ok line; strip it for the compare by
-	// building the control the same way.
-	control := newInboundDoctor(t)
-	control.protect()
-	// Different temp roots: compare with the root replaced.
-	norm := func(out, root string) string { return strings.ReplaceAll(out, root, "<root>") }
-	if norm(withOff, d.root) != norm(control.out(), control.root) {
-		t.Fatalf("inbound_auth=off with keys changed the doctor output:\n%s\n---\n%s", norm(withOff, d.root), norm(control.out(), control.root))
-	}
-	// The default output also reads the same twice.
-	if norm(d.out(), d.root) != norm(withOff, d.root) {
+	// The output is stable across two runs.
+	if d.out() != out {
 		t.Fatal("doctor output is not stable")
 	}
-	if strings.Contains(norm(base, d.root), "inbound") {
-		t.Fatal("the default output mentions inbound")
+	// With the hook installed and no deprecated config, nothing peer-related
+	// warns.
+	d.protect()
+	if got := inboundWarnLines(d.out()); len(got) != 0 {
+		t.Fatalf("a protected project without deprecated config warns: %v", got)
 	}
 }
 
-func TestDoctorInboundIgnoredOutsideTheUserFile(t *testing.T) {
+// The signed peer settings of the previous design are retired: any file that
+// still sets one gets the retired warning (the family_check style), and the
+// doctor reads nothing else for it (no key checks follow).
+func TestDoctorInboundRetiredConfigWarnings(t *testing.T) {
 	d := newInboundDoctor(t)
-	d.write(filepath.Join(d.cwd, ".agents", "soho.conf"), "inbound_auth=enforce\ninbound_allow=mac\n", 0o600)
-	out := d.out()
+	d.protect()
 	project := filepath.Join(d.cwd, ".agents", "soho.conf")
-	user := filepath.Join(d.conf, "config")
-	wantWarn(t, out, fmt.Sprintf("config: inbound_auth in the project file %s is ignored; only the user file %s sets it", project, user))
-	wantWarn(t, out, fmt.Sprintf("config: inbound_allow in the project file %s is ignored; only the user file %s sets it", project, user))
-
-	d = newInboundDoctor(t)
-	d.env["SOHO_INBOUND_AUTH"], d.env["SOHO_INBOUND_ALLOW"] = "warn", "mac"
-	out = d.out()
-	user = filepath.Join(d.conf, "config")
-	wantWarn(t, out, fmt.Sprintf("config: SOHO_INBOUND_AUTH is ignored; only the user file %s sets inbound_auth", user))
-	wantWarn(t, out, fmt.Sprintf("config: SOHO_INBOUND_ALLOW is ignored; only the user file %s sets inbound_allow", user))
-	// An ignored key does not turn the receiver on: no key checks follow.
-	if strings.Contains(out, "peer key local") {
-		t.Fatalf("an ignored inbound_auth switched the key checks on:\n%s", out)
-	}
-
-	// The session file (a state dir session.conf) is ignored too.
-	d = newInboundDoctor(t)
-	d.env["HERDR_WORKSPACE_ID"] = "ws"
-	d.write(filepath.Join(d.root, "state", "ws", "session.conf"), "inbound_auth=off\n", 0o600)
-	out = d.out()
-	wantWarn(t, out, fmt.Sprintf("config: inbound_auth in the session file %s is ignored; only the user file %s sets it", filepath.Join(d.root, "state", "ws", "session.conf"), filepath.Join(d.conf, "config")))
-}
-
-func TestDoctorInboundInvalidModeAppliesAsEnforce(t *testing.T) {
-	d := newInboundDoctor(t)
-	d.user("inbound_auth=strict\n")
+	d.write(project, "inbound_auth=enforce\ninbound_allow=mac\n", 0o600)
 	out := d.out()
-	wantWarn(t, out, "config: inbound_auth='strict' is not off|warn|enforce (it applies as enforce)")
-	// And as enforce it runs the key checks.
-	wantWarn(t, out, "peer key local is missing: peer messages to this machine's own panes go out unsigned and, with inbound_auth=enforce, are refused; create it with: soho peer-key new local")
+	wantWarn(t, out, fmt.Sprintf("config: inbound_auth is retired (project); delete the inbound_auth line from %s", project))
+	wantWarn(t, out, fmt.Sprintf("config: inbound_allow is retired (project); delete the inbound_allow line from %s", project))
+
+	d = newInboundDoctor(t)
+	d.protect()
+	user := core.EffectiveUserConfigFile(platform.Current(), d.env, core.UserSelection{})
+	d.user("inbound_auth=off\n")
+	out = d.out()
+	wantWarn(t, out, "config: inbound_auth is retired (user); delete the inbound_auth line from "+user)
+	// A retired value reads nothing else: no key or policy side effects.
+	if strings.Contains(out, "peer key") || strings.Contains(out, "peer-keys") {
+		t.Fatalf("a retired setting switched checks on:\n%s", out)
+	}
+
+	// The session file (a state dir session.conf) is retired too.
+	d = newInboundDoctor(t)
+	d.protect()
+	d.env["HERDR_WORKSPACE_ID"] = "ws"
+	session := filepath.Join(d.root, "state", "ws", "session.conf")
+	d.write(session, "inbound_auth=off\n", 0o600)
+	out = d.out()
+	wantWarn(t, out, fmt.Sprintf("config: inbound_auth is retired (session); delete the inbound_auth line from %s", session))
 }
 
-func TestDoctorInboundKeyChecks(t *testing.T) {
-	for _, mode := range []string{"warn", "enforce"} {
-		t.Run(mode, func(t *testing.T) {
-			d := newInboundDoctor(t)
-			d.user("inbound_auth=" + mode + "\ninbound_allow=mac|../evil|missing|bad|loose\n")
-			d.key("local")
-			d.key("mac")
-			d.write(filepath.Join(d.conf, "peer-keys", "bad.key"), "not a key\n", 0o600)
-			loose := d.key("loose")
-			if runtime.GOOS != "windows" {
-				if err := os.Chmod(loose, 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			out := d.out()
-			keys := filepath.Join(d.conf, "peer-keys")
-			wantWarn(t, out, "inbound_allow: label '../evil' is not a valid machine name (letters, digits, '.', '_' and '-', at most 64)")
-			wantWarn(t, out, fmt.Sprintf("inbound_allow: no key file for 'missing' (%s); create it with: soho peer-key new missing", filepath.Join(keys, "missing.key")))
-			wantWarn(t, out, fmt.Sprintf("peer key %s is invalid (it must hold 64 hex characters, 32 bytes); replace it with: soho peer-key new bad", filepath.Join(keys, "bad.key")))
-			if runtime.GOOS != "windows" {
-				wantWarn(t, out, fmt.Sprintf("peer key %s has mode 0644; chmod 600 it", loose))
-				for _, line := range warnLines(out) {
-					if strings.Contains(line, "mac.key") || strings.Contains(line, "local.key") {
-						t.Fatalf("a good 0600 key was flagged: %s", line)
-					}
-				}
-			} else {
-				wantWarn(t, out, "peer key permissions are not checked on Windows; keep the peer-keys directory readable by your user only")
-			}
-			if strings.Contains(out, "peer key local is missing") {
-				t.Fatal("local.key exists, yet it is reported missing")
-			}
-			// Nothing printed carries a key value.
-			raw, _ := os.ReadFile(filepath.Join(keys, "mac.key"))
-			if strings.Contains(out, strings.TrimSpace(string(raw))) {
-				t.Fatal("the doctor printed a key")
-			}
-		})
+// The leftovers of the previous design warn one by one; a clean user dir
+// prints none of them. Nothing is deleted automatically.
+func TestDoctorInboundLeftoverWarnings(t *testing.T) {
+	d := newInboundDoctor(t)
+	d.protect()
+	keysDir := filepath.Join(d.conf, "peer-keys")
+	seen := filepath.Join(d.conf, "peer-inbound-seen.tsv")
+	d.write(filepath.Join(keysDir, "mac.key"), "0123456789abcdef0123456789abcdef\n", 0o600)
+	body := "mac\t0f23aac6\t2026-10-19T12:00:00Z\t2026-10-19T12:00:01Z\n"
+	d.write(seen, body, 0o600)
+	out := d.out()
+	wantWarn(t, out, "peer keys in "+keysDir+" are no longer used; delete the directory")
+	wantWarn(t, out, "peer replay cache "+seen+" is no longer used; delete it")
+	// The doctor does not touch the leftovers.
+	if raw, err := os.ReadFile(seen); err != nil || string(raw) != body {
+		t.Fatalf("the doctor changed the cache: %q (%v)", raw, err)
 	}
-	t.Run("local.key missing", func(t *testing.T) {
-		d := newInboundDoctor(t)
-		d.user("inbound_auth=warn\n")
-		wantWarn(t, d.out(), "peer key local is missing: peer messages to this machine's own panes go out unsigned and, with inbound_auth=enforce, are refused; create it with: soho peer-key new local")
-	})
-	t.Run("an invalid local.key", func(t *testing.T) {
-		d := newInboundDoctor(t)
-		d.user("inbound_auth=warn\n")
-		d.write(filepath.Join(d.conf, "peer-keys", "local.key"), "short\n", 0o600)
-		wantWarn(t, d.out(), fmt.Sprintf("peer key %s is invalid (it must hold 64 hex characters, 32 bytes); replace it with: soho peer-key new local", filepath.Join(d.conf, "peer-keys", "local.key")))
-	})
+	if _, err := os.Stat(filepath.Join(keysDir, "mac.key")); err != nil {
+		t.Fatalf("the doctor changed the keys dir: %v", err)
+	}
+
+	// Remove one leftover at a time: each warning goes with its file.
+	if err := os.Remove(seen); err != nil {
+		t.Fatal(err)
+	}
+	if got := inboundWarnLines(d.out()); len(got) != 1 || !strings.Contains(got[0], "peer keys in") {
+		t.Fatalf("without the cache: %v", got)
+	}
+	if err := os.RemoveAll(keysDir); err != nil {
+		t.Fatal(err)
+	}
+	if got := inboundWarnLines(d.out()); len(got) != 0 {
+		t.Fatalf("a clean user dir prints none of them: %v", got)
+	}
 }
 
 func TestDoctorInboundProjectWithoutTheHook(t *testing.T) {
@@ -239,14 +200,12 @@ func TestDoctorInboundProjectWithoutTheHook(t *testing.T) {
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			d := newInboundDoctor(t)
-			d.user("inbound_auth=enforce\n")
-			d.key("local")
 			if c.body != "" {
 				d.write(settings(d), c.body, 0o600)
 			}
 			out := d.out()
 			found := false
-			for _, line := range warnLines(out) {
+			for _, line := range inboundWarnLines(out) {
 				found = found || line == want(d)
 			}
 			if found == c.protect {
@@ -254,16 +213,9 @@ func TestDoctorInboundProjectWithoutTheHook(t *testing.T) {
 			}
 		})
 	}
-	t.Run("with inbound_auth=off there is no such warning", func(t *testing.T) {
-		d := newInboundDoctor(t)
-		d.user("inbound_auth=off\n")
-		if got := warnLines(d.out()); len(got) != 0 {
-			t.Fatalf("warnings: %v", got)
-		}
-	})
 }
 
-func TestDoctorInboundEnforceNamesUnprotectedAgents(t *testing.T) {
+func TestDoctorInboundNamesUnprotectedAgents(t *testing.T) {
 	root := t.TempDir()
 	bin := filepath.Join(root, "bin")
 	state := filepath.Join(root, "state")
@@ -327,63 +279,6 @@ func TestDoctorInboundEnforceNamesUnprotectedAgents(t *testing.T) {
 	if out.Len() != 0 {
 		t.Fatalf("outside Herdr: %q", out.String())
 	}
-}
-
-// A replay cache that cannot be read refuses every peer message until it is
-// fixed: the doctor says so, with inbound_auth other than off.
-func TestDoctorInboundCorruptReplayCache(t *testing.T) {
-	good := "mac\t0f23aac6\t2026-10-19T12:00:00Z\t2026-10-19T12:00:01Z\n"
-	cacheWarning := func(out string) string {
-		for _, line := range strings.Split(out, "\n") {
-			if strings.Contains(line, "peer replay cache") {
-				return strings.TrimLeft(strings.TrimPrefix(line, "warn"), " ")
-			}
-		}
-		return ""
-	}
-	for _, mode := range []string{"warn", "enforce"} {
-		for name, tc := range map[string]struct {
-			body string
-			line int
-		}{
-			"too few fields":  {good + "oops\n", 2},
-			"too many fields": {"a\tb\tc\td\te\n", 1},
-			"unreadable time": {good + good + "mac\t1\t2\tnope\n", 3},
-		} {
-			t.Run(mode+", "+name, func(t *testing.T) {
-				d := newInboundDoctor(t)
-				d.user("inbound_auth=" + mode + "\ninbound_allow=mac\n")
-				d.key("local")
-				d.key("mac")
-				d.protect()
-				path := filepath.Join(d.conf, peerauth.SeenFile)
-				d.write(path, tc.body, 0o600)
-				want := fmt.Sprintf("peer replay cache %s is corrupt (line %d); messages are refused until it is fixed: delete it", path, tc.line)
-				if got := cacheWarning(d.out()); got != want {
-					t.Fatalf("warning = %q\nwant      %q", got, want)
-				}
-				if raw, err := os.ReadFile(path); err != nil || string(raw) != tc.body {
-					t.Fatalf("the doctor changed the cache: %q (%v)", raw, err)
-				}
-			})
-		}
-	}
-	t.Run("a good cache and an off policy say nothing", func(t *testing.T) {
-		d := newInboundDoctor(t)
-		d.user("inbound_auth=enforce\ninbound_allow=mac\n")
-		d.key("local")
-		d.key("mac")
-		d.protect()
-		d.write(filepath.Join(d.conf, peerauth.SeenFile), good, 0o600)
-		if got := cacheWarning(d.out()); got != "" {
-			t.Fatalf("warning for a good cache: %q", got)
-		}
-		d.user("inbound_auth=off\n")
-		d.write(filepath.Join(d.conf, peerauth.SeenFile), "oops\n", 0o600)
-		if got := cacheWarning(d.out()); got != "" {
-			t.Fatalf("warning with inbound_auth=off: %q", got)
-		}
-	})
 }
 
 func TestDoctorCodexInboundHook(t *testing.T) {

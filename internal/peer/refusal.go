@@ -14,7 +14,7 @@ import (
 )
 
 // refusalResultRE is the result a refusal line names, as it reads once the
-// screen's spaces are gone: `refused-bad-signature`.
+// screen's spaces are gone: `refused-inbound-off`.
 var refusalResultRE = regexp.MustCompile(`^refused(?:-[a-z]+)+`)
 
 // maxTranscriptScan bounds how much of the end of a session transcript the
