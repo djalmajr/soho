@@ -186,14 +186,13 @@ func warmFakeBinary(t *testing.T) {
 // step again.
 func TestFinishingGhStepBoundsTheSecondCommandByTheRemainder(t *testing.T) {
 	for _, tc := range []struct {
-		// The 2 s cases run the list for 60% of the step (1.2 s, down from
-		// 1.8 s): with the fake warmed (warmFakeBinary), opening it and
-		// running the list must fit the 2 s step under host load, and the
-		// 800 ms remainder keeps the intent — the list uses most of the
-		// step, and create runs on what is left — with a remainder wider
-		// than the warm start cost (DJA-637, mirroring the checkpoint
-		// case's 60%); the 5 s case keeps its 4 s list (80%), whose 1 s
-		// remainder already is.
+		// The short cases use a 4 s step with the list at 60% of it
+		// (2.4 s): with the fake warmed (warmFakeBinary) the 1.6 s
+		// remainder is wider than a start under host load, and the list
+		// stays longer than clampSlack, so a create given a fresh step
+		// instead of the remainder ends past step + clampSlack and fails
+		// the bound (DJA-637; a 2 s step with a 1.2 s list could not tell
+		// the two apart). The 5 s case keeps its 4 s list (80%).
 		name  string
 		step  time.Duration
 		delay int
@@ -201,9 +200,9 @@ func TestFinishingGhStepBoundsTheSecondCommandByTheRemainder(t *testing.T) {
 		// the recorded start: the measure must not depend on that delay.
 		lateRead time.Duration
 	}{
-		{"step 2s, list 1.2s", 2 * time.Second, 1200, 0},
+		{"step 4s, list 2.4s", 4 * time.Second, 2400, 0},
 		{"step 5s, list 4s", 5 * time.Second, 4000, 0},
-		{"step 2s, list 1.2s, start read 4s after the job", 2 * time.Second, 1200, 4 * time.Second},
+		{"step 4s, list 2.4s, start read 4s after the job", 4 * time.Second, 2400, 4 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			step := scaledDuration(tc.step)
