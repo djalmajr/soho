@@ -134,6 +134,8 @@ func newHcDeliveryFixture(t *testing.T, spec *hcDeliverySpec) *hcDeliveryFixture
 		"PATH": bin, "HOME": home, "USERPROFILE": home, "XDG_CONFIG_HOME": conf,
 		"TMPDIR": root, "SOHO_FAKECLI_CONFIG": bin,
 		"SOHO_DIR": state, "SOHO_TRANSPORT": "hc", "HC_TERMINAL_ID": "t7",
+		// Keep race detection without its per-child exit delay in the bounded delivery.
+		"GORACE": fakecli.RaceOptions([]string{"GORACE=" + os.Getenv("GORACE")}),
 	}
 	projectRoot := platform.StateProjectRoot(env, root)
 	// The participants carry the session stand-in the hc participant
