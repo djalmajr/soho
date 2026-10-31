@@ -28,9 +28,6 @@ import (
 const hcCollabNotice = "soho: warning: collaborate: transport=hc does not verify participant identity yet; participants are trusted by terminal name, address and cwd"
 
 // collabHcSpec deviates the participant terminal records from the happy
-// path: a different address, a different cwd, a finished terminal or a
-// failed (not-found) get.
-// collabHcSpec deviates the participant terminal records from the happy
 // path (the roster rows always say author t7 and reviewer t8, their cwd
 // the project root): a record address different from the roster's pane
 // column, a different cwd, a finished terminal or a failed (not-found)
@@ -274,4 +271,266 @@ func TestCollaborateHcCwdChangedIsRefused(t *testing.T) {
 		t.Fatalf("start stderr=%q, want the working-directory refusal", stderr)
 	}
 	f.assertNoHerdrCall(t)
+}
+
+// reinstallHc swaps the fixture's fake hc image for a fresh one in a new
+// bin (fakecli.Install refuses an existing image): the orchestrator
+// caller by address, the author and reviewer by address and name (their
+// records carry the session label), the recipient record for address t8
+// (or a not-found exit), and the scripted send result.
+func (f *collabHcFixture) reinstallHc(t *testing.T, recipientStdout string, recipientCode, sendCode int, sendStderr string) {
+	t.Helper()
+	cwdJSON, err := json.Marshal(f.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller := `{"address":"t1","name":"orchestrator","state":"live","labels":{"soho.session":"sX"},"cwd":` + string(cwdJSON) + `,"status":{"state":"idle","turn":1}}`
+	label := func(rec string) string {
+		return strings.Replace(rec, `"state":"live"`, `"state":"live","labels":{"soho.session":"sX"}`, 1)
+	}
+	author := label(collabHcTerminal(t, "author", "t7", f.root, "working", false))
+	reviewer := label(collabHcTerminal(t, "reviewer", "t8", f.root, "idle", false))
+	if recipientStdout == "" {
+		recipientStdout = reviewer
+	}
+	rules := []fakecli.Rule{
+		{Argv: []string{"get", "t1", "--json"}, Stdout: caller},
+		{Argv: []string{"get", "t7", "--json"}, Stdout: author},
+		{Argv: []string{"get", "author", "--json"}, Stdout: author},
+		{Argv: []string{"get", "reviewer", "--json"}, Stdout: reviewer},
+		{Argv: []string{"get", "t8", "--json"}, Stdout: recipientStdout, Code: recipientCode},
+	}
+	if sendCode == 0 {
+		rules = append(rules, fakecli.Rule{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"started":true,"turn":2}`})
+	} else {
+		rules = append(rules, fakecli.Rule{Argv: []string{"send"}, ArgvPrefix: true, Code: sendCode, Stderr: sendStderr})
+	}
+	f.bin = t.TempDir()
+	if _, err := fakecli.Install(t, f.bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fakecli.Install(t, f.bin, "herdr", nil); err != nil {
+		t.Fatal(err)
+	}
+	f.env["PATH"] = f.bin
+	f.env["SOHO_FAKECLI_CONFIG"] = f.bin
+}
+
+// hcCalls reads the fake hc call log.
+func (f *collabHcFixture) hcCalls(t *testing.T) []fakecli.Call {
+	t.Helper()
+	calls, err := fakecli.ReadCalls(filepath.Join(f.bin, "hc.calls.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return calls
+}
+
+// assertHcSendCount asserts that exactly n hc send calls were recorded
+// so far, that the last one went to addr as a queued send (no --if guard,
+// the message after the options terminator) and that it carries the
+// assignment's metadata.
+func assertHcSendCount(t *testing.T, f *collabHcFixture, n int, addr, assignmentID string) {
+	t.Helper()
+	var sends []fakecli.Call
+	for _, c := range f.hcCalls(t) {
+		if len(c.Argv) > 0 && c.Argv[0] == "send" {
+			sends = append(sends, c)
+		}
+	}
+	if len(sends) != n {
+		t.Fatalf("hc send calls = %d: %#v, want %d", len(sends), sends, n)
+	}
+	if n == 0 {
+		return
+	}
+	last := sends[n-1].Argv
+	if len(last) != 5 || last[1] != "--json" || last[2] != "--" || last[3] != addr {
+		t.Fatalf("send argv=%q, want send --json -- %s <message>", last, addr)
+	}
+	for _, a := range last {
+		if a == "--if" {
+			t.Fatalf("send argv=%q carries the --if guard, want the queued send", last)
+		}
+	}
+	if !strings.Contains(last[4], "Assignment: "+assignmentID) {
+		t.Fatalf("send message=%q, want the assignment metadata", last[4])
+	}
+}
+
+// assertNoHcRead fails when the fake hc recorded a screen read: under
+// transport=hc the hc state replaces the screen read.
+func (f *collabHcFixture) assertNoHcRead(t *testing.T) {
+	t.Helper()
+	for _, c := range f.hcCalls(t) {
+		if len(c.Argv) > 0 && c.Argv[0] == "read" {
+			t.Fatalf("hc read argv=%q, want no screen read under hc", c.Argv)
+		}
+	}
+}
+
+// hcCliEvent writes one report, computes the current revision and runs
+// collaborate event with it, parsing the updated assignment JSON.
+func (f *collabHcFixture) hcCliEvent(t *testing.T, a collaboration.Assignment, pane, event, body string) collaboration.Assignment {
+	t.Helper()
+	report := filepath.Join(f.root, event+".md")
+	if err := os.WriteFile(report, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := collaboration.Fingerprint(a.Author.Cwd, a.Paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.env["HC_TERMINAL_ID"] = pane
+	code, out, stderr := f.run(t, "collaborate", "event", a.ID, event, "--report", report, "--revision", revision.Fingerprint)
+	if code != 0 || json.Unmarshal([]byte(out), &a) != nil {
+		t.Fatalf("event %s code=%d out=%q stderr=%q", event, code, out, stderr)
+	}
+	return a
+}
+
+// TestCollaborateHcFullCycleDeliversThroughHc: start, the author's ready
+// event, the reviewer's approval and the orchestrator's finalize all run
+// under transport=hc. Every event is delivered with one queued hc send to
+// the recipient's address (no --if guard, no screen read), the assignment
+// reaches finished, and the fake herdr is never called. (Ports the
+// reviewer probe TestReviewerHcEventReadyDelivery into the committed full
+// cycle.)
+func TestCollaborateHcFullCycleDeliversThroughHc(t *testing.T) {
+	f := newCollabHcFixture(t, nil)
+	code, out, stderr := f.run(t, "collaborate", "start", "author", "reviewer", "--brief", f.brief)
+	var a collaboration.Assignment
+	if code != 0 || json.Unmarshal([]byte(out), &a) != nil || a.ID == "" {
+		t.Fatalf("start code=%d out=%q stderr=%q, want the assignment JSON", code, out, stderr)
+	}
+	f.reinstallHc(t, "", 0, 0, "")
+
+	// The author's ready event, as the author's terminal.
+	a = f.hcCliEvent(t, a, "t7", "ready", "Implementation ready\n")
+	if a.Phase != collaboration.Reviewing || len(a.Events) != 1 || a.Events[0].Delivery != "submitted" {
+		t.Fatalf("ready: phase=%s delivery=%+v, want reviewing/submitted", a.Phase, a.Events)
+	}
+	assertHcSendCount(t, f, 1, "t8", a.ID)
+
+	// The reviewer's approval, as the reviewer's terminal: the send goes
+	// the other way (to the author's address).
+	a = f.hcCliEvent(t, a, "t8", "approved", "findings: 0 (P0 0, P1 0, P2 0, P3 0) | verdict: pass\nVerified snapshot.\n")
+	if a.Phase != collaboration.AwaitingOrchestrator || len(a.Events) != 2 || a.Events[1].Delivery != "submitted" {
+		t.Fatalf("approved: phase=%s events=%+v, want awaiting-orchestrator with the submitted approval", a.Phase, a.Events)
+	}
+	assertHcSendCount(t, f, 2, "t7", a.ID)
+
+	// The orchestrator's finalize, as the session's orchestrator terminal.
+	f.env["HC_TERMINAL_ID"] = "t1"
+	code, out, stderr = f.run(t, "collaborate", "finalize", a.ID, "--verdict", "accept")
+	if code != 0 || json.Unmarshal([]byte(out), &a) != nil || a.Phase != collaboration.Finished {
+		t.Fatalf("finalize code=%d phase=%s stderr=%q, want finished", code, a.Phase, stderr)
+	}
+	f.assertNoHcRead(t)
+	f.assertNoHerdrCall(t)
+}
+
+// TestCollaborateHcEventBlockedRecipientIsRefusedWithoutSend: a recipient
+// blocked on a person's prompt refuses the event (exit 15) with nothing
+// sent.
+func TestCollaborateHcEventBlockedRecipientIsRefusedWithoutSend(t *testing.T) {
+	f := newCollabHcFixture(t, nil)
+	code, out, stderr := f.run(t, "collaborate", "start", "author", "reviewer", "--brief", f.brief)
+	var a collaboration.Assignment
+	if code != 0 || json.Unmarshal([]byte(out), &a) != nil {
+		t.Fatalf("start code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	f.reinstallHc(t, collabHcTerminal(t, "reviewer", "t8", f.root, "blocked", false), 0, 0, "")
+	_, stderr = f.hcCliEventFails(t, a, "t7", "ready", "Implementation ready\n", 15)
+	want := "soho: collaborate: delivery refused: recipient is blocked on a prompt; nothing was sent; inspect before any new attempt\n"
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("event stderr=%q, want the blocked-recipient refusal", stderr)
+	}
+	assertHcSendCount(t, f, 0, "", "")
+	f.assertNoHcRead(t)
+	f.assertNoHerdrCall(t)
+}
+
+// TestCollaborateHcEventAddressMismatchIsRefused: a recipient record
+// whose address no longer matches its registration refuses the event
+// with nothing sent.
+func TestCollaborateHcEventAddressMismatchIsRefused(t *testing.T) {
+	f := newCollabHcFixture(t, nil)
+	code, out, stderr := f.run(t, "collaborate", "start", "author", "reviewer", "--brief", f.brief)
+	var a collaboration.Assignment
+	if code != 0 || json.Unmarshal([]byte(out), &a) != nil {
+		t.Fatalf("start code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	f.reinstallHc(t, collabHcTerminal(t, "reviewer", "t9", f.root, "idle", false), 0, 0, "")
+	_, stderr = f.hcCliEventFails(t, a, "t7", "ready", "Implementation ready\n", 15)
+	want := "soho: collaborate: delivery refused: recipient changed or became unavailable; inspect before any new attempt\n"
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("event stderr=%q, want the changed-or-unavailable refusal", stderr)
+	}
+	assertHcSendCount(t, f, 0, "", "")
+	f.assertNoHerdrCall(t)
+}
+
+// TestCollaborateHcEventSendBlockedIsRefused: a send that exits the hc
+// blocked exit (9) refuses the delivery with the failure's message.
+func TestCollaborateHcEventSendBlockedIsRefused(t *testing.T) {
+	f := newCollabHcFixture(t, nil)
+	code, out, stderr := f.run(t, "collaborate", "start", "author", "reviewer", "--brief", f.brief)
+	var a collaboration.Assignment
+	if code != 0 || json.Unmarshal([]byte(out), &a) != nil {
+		t.Fatalf("start code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	f.reinstallHc(t, "", 0, 9, "")
+	_, stderr = f.hcCliEventFails(t, a, "t7", "ready", "Implementation ready\n", 15)
+	if !strings.Contains(stderr, "soho: collaborate: delivery refused: worker t8 is blocked: a person must answer its prompt") {
+		t.Fatalf("event stderr=%q, want the blocked-send refusal", stderr)
+	}
+	assertHcSendCount(t, f, 1, "t8", a.ID)
+	f.assertNoHerdrCall(t)
+}
+
+// TestCollaborateHcEventSendFailureIsUncertain: a send that fails
+// otherwise (exit 1) records the delivery as uncertain.
+func TestCollaborateHcEventSendFailureIsUncertain(t *testing.T) {
+	f := newCollabHcFixture(t, nil)
+	code, out, stderr := f.run(t, "collaborate", "start", "author", "reviewer", "--brief", f.brief)
+	var a collaboration.Assignment
+	if code != 0 || json.Unmarshal([]byte(out), &a) != nil {
+		t.Fatalf("start code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	f.reinstallHc(t, "", 0, 1, "connection disappeared")
+	_, stderr = f.hcCliEventFails(t, a, "t7", "ready", "Implementation ready\n", 15)
+	if !strings.Contains(stderr, "soho: collaborate: delivery uncertain: hc exited 1: connection disappeared") {
+		t.Fatalf("event stderr=%q, want the uncertain send", stderr)
+	}
+	updated, err := collaboration.Store{StateDir: f.sd}.Read(a.ID)
+	if err != nil || len(updated.Events) != 1 || updated.Events[0].Delivery != "uncertain" {
+		t.Fatalf("stored delivery=%+v err=%v, want the uncertain event", updated.Events, err)
+	}
+	assertHcSendCount(t, f, 1, "t8", a.ID)
+	f.assertNoHerdrCall(t)
+}
+
+// hcCliEventFails writes one report, computes the current revision and
+// runs collaborate event with it, expecting the given refusal exit; the
+// updated assignment JSON and the stderr are captured for the caller.
+func (f *collabHcFixture) hcCliEventFails(t *testing.T, a collaboration.Assignment, pane, event, body string, wantCode int) (collaboration.Assignment, string) {
+	t.Helper()
+	report := filepath.Join(f.root, event+".md")
+	if err := os.WriteFile(report, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := collaboration.Fingerprint(a.Author.Cwd, a.Paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.env["HC_TERMINAL_ID"] = pane
+	code, out, stderr := f.run(t, "collaborate", "event", a.ID, event, "--report", report, "--revision", revision.Fingerprint)
+	if code != wantCode {
+		t.Fatalf("event %s code=%d out=%q stderr=%q, want the refusal exit %d", event, code, out, stderr, wantCode)
+	}
+	if json.Unmarshal([]byte(out), &a) != nil {
+		t.Fatalf("event %s out=%q, want the updated assignment JSON", event, out)
+	}
+	return a, stderr
 }
