@@ -21,6 +21,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -434,45 +435,101 @@ func marshalRecord(rec Record) ([]byte, error) {
 	return data, nil
 }
 
+// openOwnLockDir opens the just-created lock directory for the retained
+// lifetime handle through the platform's nonblocking read flags (plain
+// read-only where the filesystem has no FIFOs): a directory swapped for a
+// FIFO between the identity check and the open cannot block the
+// acquisition, and the post-open kind and identity checks then refuse
+// the swapped entry.
+func openOwnLockDir(sessRoot *os.Root) (*os.File, error) {
+	return sessRoot.OpenFile(lockName, platform.ReadOnlyNonBlocking, 0)
+}
+
 // acquireLock creates the own handle-relative lock directory. It is
 // bounded, never deletes a lock it does not own, and hands back the
-// identity to retain on release.
-func acquireLock(sessRoot *os.Root) (os.FileInfo, error) {
+// identity to retain on release: the lstat identity plus, on every
+// platform where an open directory handle does not block removal, a live
+// handle on the opened lock directory for the ownership lifetime. While
+// that handle is open the directory's inode cannot be freed, so an
+// immediate unlink/recreate cannot hand the replacement lock the identity
+// of this one and a stale release can never match it. The check/open
+// window is bounded the same way: the directory open uses the
+// platform's nonblocking read flags, and the opened handle must be a real
+// directory with the checked identity, so a swap of the checked directory
+// for a FIFO cannot block the acquisition. Windows retains the
+// FileInfo only (an open directory handle blocks os.Remove there) and
+// keeps the pre-existing identity semantics.
+func acquireLock(sessRoot *os.Root) (os.FileInfo, *os.File, error) {
+	return acquireLockOpen(sessRoot, openOwnLockDir)
+}
+
+// acquireLockOpen runs the bounded acquisition with the named per-call
+// open; production passes openOwnLockDir, and the scheduled swap consumer
+// passes its own writer-then-open through this argument, so no mutable
+// package state is involved.
+func acquireLockOpen(sessRoot *os.Root, open func(*os.Root) (*os.File, error)) (os.FileInfo, *os.File, error) {
 	deadline := time.Now().Add(lockWait)
 	for {
 		if err := sessRoot.Mkdir(lockName, 0o700); err == nil {
 			info, err := sessRoot.Lstat(lockName)
 			if err != nil || !info.IsDir() {
-				return nil, errors.New("sessionmeta: the lock identity changed")
+				return nil, nil, errors.New("sessionmeta: the lock identity changed")
 			}
-			return info, nil
+			if runtime.GOOS == "windows" {
+				return info, nil, nil
+			}
+			handle, err := open(sessRoot)
+			if err != nil {
+				return nil, nil, fmt.Errorf("sessionmeta: the own lock handle cannot be opened: %v", err)
+			}
+			if hin, herr := handle.Stat(); herr != nil || !hin.IsDir() || !os.SameFile(hin, info) {
+				_ = handle.Close()
+				return nil, nil, errors.New("sessionmeta: the lock identity changed")
+			}
+			return info, handle, nil
 		} else if !os.IsExist(err) {
-			return nil, fmt.Errorf("sessionmeta: the lock cannot be created: %v", err)
+			return nil, nil, fmt.Errorf("sessionmeta: the lock cannot be created: %v", err)
 		}
 		if time.Now().Add(lockPoll).After(deadline) {
-			return nil, ErrLocked
+			return nil, nil, ErrLocked
 		}
 		time.Sleep(lockPoll)
 	}
 }
 
 // releaseLock removes only the lock this writer created, by retained
-// identity. A missing, changed or unowned entry is left exactly as found
-// and reports nil; a genuine failure to remove the retained own lock is an
+// identity. Where acquireLock retains a live handle, that handle pins the
+// inode for the ownership lifetime, so a replacement created after an
+// unlink can never match the retained identity. A missing, changed or
+// unowned entry is left exactly as found, the retained handle is closed
+// and nil is reported; a genuine failure to remove the retained own lock
+// — or to close the retained handle after a successful removal — is an
 // explicit error, without claiming any published record rolled back.
-func releaseLock(sessRoot *os.Root, saved os.FileInfo) error {
+func releaseLock(sessRoot *os.Root, saved os.FileInfo, handle *os.File) error {
+	closeHandle := func() error {
+		if handle == nil {
+			return nil
+		}
+		return handle.Close()
+	}
 	info, err := sessRoot.Lstat(lockName)
 	if err != nil {
+		_ = closeHandle()
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("sessionmeta: the own lock identity cannot be checked: %w", err)
 	}
 	if !info.IsDir() || !os.SameFile(info, saved) {
+		_ = closeHandle()
 		return nil
 	}
 	if err := sessRoot.Remove(lockName); err != nil {
+		_ = closeHandle()
 		return fmt.Errorf("sessionmeta: the own lock cannot be released: %v", err)
+	}
+	if err := closeHandle(); err != nil {
+		return fmt.Errorf("sessionmeta: the own lock handle cannot be closed after release: %v", err)
 	}
 	return nil
 }
@@ -482,12 +539,12 @@ func releaseLock(sessRoot *os.Root, saved os.FileInfo) error {
 // released; a genuine release failure is reported alongside the
 // transaction's result, dropping neither.
 func withLockedRecord(sessRoot *os.Root, fn func() error) error {
-	saved, err := acquireLock(sessRoot)
+	saved, handle, err := acquireLock(sessRoot)
 	if err != nil {
 		return err
 	}
 	primary := fn()
-	release := releaseLock(sessRoot, saved)
+	release := releaseLock(sessRoot, saved, handle)
 	switch {
 	case primary != nil && release != nil:
 		return errors.Join(primary, release)

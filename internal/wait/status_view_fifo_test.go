@@ -11,8 +11,75 @@ import (
 
 	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
+
+// observeFIFOConsumer keeps the existing 250ms consumer deadline and 1s
+// release/join bound. A successful nonblocking writer proves a waiting
+// FIFO reader; ENXIO instead identifies latency elsewhere in the consumer.
+// Either missed deadline still fails the consumer assertion.
+func observeFIFOConsumer(t *testing.T, path string, consume func() AgentStatusView) (view AgentStatusView, delayed, readerWaiting bool) {
+	t.Helper()
+	done := make(chan AgentStatusView, 1)
+	go func() { done <- consume() }()
+	select {
+	case view = <-done:
+		return view, false, false
+	case <-time.After(250 * time.Millisecond):
+		writer, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+		readerWaiting = err == nil
+		if writer != nil {
+			if err := writer.Close(); err != nil {
+				t.Errorf("close the owned FIFO release writer: %v", err)
+			}
+		}
+		select {
+		case view = <-done:
+			return view, true, readerWaiting
+		case <-time.After(time.Second):
+			t.Fatalf("FIFO consumer did not join within the existing release bound; waiting reader=%v writer error=%v", readerWaiting, err)
+			return AgentStatusView{}, true, readerWaiting
+		}
+	}
+}
+
+func inspectFIFOPromptly(t *testing.T, path string, consume func() AgentStatusView) AgentStatusView {
+	t.Helper()
+	view, delayed, readerWaiting := observeFIFOConsumer(t, path, consume)
+	if delayed {
+		t.Errorf("consumer exceeded 250ms; a FIFO reader was waiting=%v (false means latency outside the FIFO acquisition)", readerWaiting)
+	}
+	return view
+}
+
+func TestStatusViewFIFOBlockingControl(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "owned-fifo")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	view, delayed, waiting := observeFIFOConsumer(t, path, func() AgentStatusView {
+		_, err := platform.ReadRegularFile(path)
+		if err == nil {
+			return AgentStatusView{State: "accepted"}
+		}
+		return AgentStatusView{State: "refused"}
+	})
+	if delayed || waiting || view.State != "refused" {
+		t.Fatalf("nonblocking control=%+v delayed=%v reader=%v", view, delayed, waiting)
+	}
+	view, delayed, waiting = observeFIFOConsumer(t, path, func() AgentStatusView {
+		_, err := os.ReadFile(path) // deliberately blocking owned FIFO control
+		if err != nil {
+			return AgentStatusView{State: "read-error"}
+		}
+		return AgentStatusView{State: "joined"}
+	})
+	if !delayed || !waiting || view.State != "joined" {
+		t.Fatalf("blocking control=%+v delayed=%v reader=%v", view, delayed, waiting)
+	}
+	t.Log("nonblocking refusal met 250ms; blocking FIFO crossed 250ms, actual waiting reader released and joined")
+}
 
 // snapSkip is treeSnapshot with one path recorded by metadata only: the
 // FIFO itself is never read (a read of it blocks), so the assertion keeps
@@ -65,37 +132,14 @@ func TestStatusViewCompactFIFO(t *testing.T) {
 	if err := syscall.Mkfifo(p, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan AgentStatusView, 1)
-	go func() {
-		done <- InspectAgentStatus(AgentStatusRequest{
+	view := inspectFIFOPromptly(t, p, func() AgentStatusView {
+		return InspectAgentStatus(AgentStatusRequest{
 			StateDir: f.sd, SessionID: "ws", Agent: "worker", Cwd: f.cwd,
 			Config: f.ctx, Env: f.env, Services: backend.New(f.env),
 		})
-	}()
-	select {
-	case view := <-done:
-		if view.State != "compact-unknown" {
-			t.Fatalf("FIFO marker view=%+v, want the existing compact-unknown inspection status", view)
-		}
-	case <-time.After(250 * time.Millisecond):
-		// The reader is still blocked: release it with an owned writer and
-		// show that it was waiting, not refusing.
-		w, err := os.OpenFile(p, os.O_WRONLY|syscall.O_NONBLOCK, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := w.Write([]byte("malformed")); err != nil {
-			t.Fatal(err)
-		}
-		if err := w.Close(); err != nil {
-			t.Fatal(err)
-		}
-		select {
-		case view := <-done:
-			t.Fatalf("InspectAgentStatus blocked on the nonregular compact marker until an owned writer released it; joined result=%+v", view)
-		case <-time.After(time.Second):
-			t.Fatal("the owned reader failed to join after the release")
-		}
+	})
+	if view.State != "compact-unknown" {
+		t.Fatalf("FIFO marker view=%+v, want the existing compact-unknown inspection status", view)
 	}
 	info, err := os.Lstat(p)
 	if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
@@ -141,20 +185,14 @@ func TestStatusViewSourceFIFOMarker(t *testing.T) {
 	if err := syscall.Mkfifo(p, 0o600); err != nil {
 		t.Skipf("the test user cannot create FIFOs: %v", err)
 	}
-	done := make(chan AgentStatusView, 1)
-	go func() {
-		done <- InspectAgentStatus(AgentStatusRequest{
+	view := inspectFIFOPromptly(t, p, func() AgentStatusView {
+		return InspectAgentStatus(AgentStatusRequest{
 			StateDir: f.sd, SessionID: "ws", Agent: "worker", Cwd: f.cwd,
 			Config: f.ctx, Env: f.env, Services: backend.New(f.env), Source: src,
 		})
-	}()
-	select {
-	case view := <-done:
-		if view.State != "unknown" || view.TerminalState != "idle" {
-			t.Fatalf("FIFO marker view=%+v, want the conservative unknown over the idle probe (never the absence)", view)
-		}
-	case <-time.After(250 * time.Millisecond):
-		t.Fatal("the inspection blocked on the FIFO marker (it must refuse the nonregular entry without reading it)")
+	})
+	if view.State != "unknown" || view.TerminalState != "idle" {
+		t.Fatalf("FIFO marker view=%+v, want the conservative unknown over the idle probe (never the absence)", view)
 	}
 	info, err := os.Lstat(p)
 	if err != nil || info.Mode()&os.ModeNamedPipe == 0 {

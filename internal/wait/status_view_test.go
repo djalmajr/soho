@@ -74,7 +74,7 @@ func newStatusViewFixtureFull(t *testing.T, rosterRows func(cwd string) string, 
 	oldFriction := frictionLogFile
 	frictionLogFile = friction
 	t.Cleanup(func() { frictionLogFile = oldFriction })
-	if _, err := fakecli.Install(t, bin, "herdr", rulesFor(cwd)); err != nil {
+	if _, err := fakecli.InstallWithOptions(t, bin, "herdr", rulesFor(cwd), fakecli.InstallOptions{CaptureEnv: []string{"GORACE"}}); err != nil {
 		t.Fatal(err)
 	}
 	env := platform.Env{
@@ -87,6 +87,10 @@ func newStatusViewFixtureFull(t *testing.T, rosterRows func(cwd string) string, 
 		"HOME":                home,
 		"USERPROFILE":         home,
 		"TMPDIR":              tmp,
+		// These manually constructed fake-child environments do not pass
+		// through fakecli.Env. Remove only the child's race exit pause,
+		// preserving detector options and the parent process environment.
+		"GORACE": fakecli.RaceOptions(os.Environ()),
 	}
 	// The platform's by-pid process read shells out to ps: the fake bin
 	// comes first so the fake herdr wins, and the host ps dir is appended
@@ -108,6 +112,30 @@ func newStatusViewFixtureFull(t *testing.T, rosterRows func(cwd string) string, 
 
 func newStatusViewFixture(t *testing.T, rosterRows string, rules []fakecli.Rule) statusViewFixture {
 	return newStatusViewFixtureRows(t, func(cwd string) string { return rosterRows }, rules)
+}
+
+func TestStatusViewFakeChildRaceOptions(t *testing.T) {
+	parent, set := os.LookupEnv("GORACE")
+	f := newStatusViewFixture(t, "worker\tp1\tclaude\timplementer\tanthropic\t\t\t\tmodel-x\t\t\t\n", []fakecli.Rule{
+		{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"agent_status":"idle"}}}`},
+		{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},
+	})
+	if view := f.inspect(t, "ws", "worker"); view.State != "no-report-yet" {
+		t.Fatalf("view=%+v, want the ordinary idle consumer", view)
+	}
+	calls, err := fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
+	if err != nil || len(calls) == 0 {
+		t.Fatalf("no actual fake subprocess calls: %v", err)
+	}
+	for _, call := range calls {
+		if call.Env["GORACE"] != fakecli.RaceOptions(os.Environ()) {
+			t.Fatal("the fake child did not receive the preserved detector options with zero exit pause")
+		}
+	}
+	if after, present := os.LookupEnv("GORACE"); after != parent || present != set {
+		t.Fatal("the fixture changed the parent's GORACE")
+	}
+	t.Log("actual fake child options preserve the detector options, remove only exit delay; parent GORACE unchanged")
 }
 
 func (f statusViewFixture) inspect(t *testing.T, session, agent string) AgentStatusView {
@@ -575,10 +603,19 @@ func TestStatusViewCompact(t *testing.T) {
 // collabAgentGets builds the two participant probes for one fixture's
 // project dir.
 func collabAgentGets(cwd string) []fakecli.Rule {
-	return []fakecli.Rule{
-		{Argv: []string{"agent", "get", "author"}, Stdout: `{"result":{"agent":{"name":"author","pane_id":"p-author","agent":"claude","workspace_id":"ws","cwd":"` + cwd + `","agent_session":{"kind":"pi","value":"s-1"}}}}`},
-		{Argv: []string{"agent", "get", "reviewer"}, Stdout: `{"result":{"agent":{"name":"reviewer","pane_id":"p-reviewer","agent":"grok","workspace_id":"ws","cwd":"` + cwd + `","agent_session":{"kind":"pi","value":"s-2"}}}}`},
+	var rules []fakecli.Rule
+	for _, participant := range []struct{ name, pane, kind, session string }{
+		{"author", "p-author", "claude", "s-1"},
+		{"reviewer", "p-reviewer", "grok", "s-2"},
+	} {
+		body, _ := json.Marshal(map[string]any{"result": map[string]any{"agent": map[string]any{
+			"name": participant.name, "pane_id": participant.pane, "agent": participant.kind,
+			"workspace_id": "ws", "cwd": cwd,
+			"agent_session": map[string]string{"kind": "pi", "value": participant.session},
+		}}})
+		rules = append(rules, fakecli.Rule{Argv: []string{"agent", "get", participant.name}, Stdout: string(body)})
 	}
+	return rules
 }
 
 // collabAssignment seeds the valid active collaboration the fixture's

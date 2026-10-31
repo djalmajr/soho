@@ -64,7 +64,9 @@ func inventoryCLITree(t *testing.T, root string) map[string]string {
 		if err != nil {
 			return err
 		}
-		info, err := d.Info()
+		// Observe current metadata rather than the directory enumeration's
+		// cached record, which can retain a pre-child-creation mtime on Windows.
+		info, err := os.Lstat(path)
 		if err != nil {
 			return err
 		}
@@ -80,6 +82,13 @@ func inventoryCLITree(t *testing.T, root string) map[string]string {
 			}
 			value += fmt.Sprintf(" %x", sha256.Sum256(b))
 		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			value += " " + target
+		}
 		snap[rel] = value
 		return nil
 	})
@@ -87,6 +96,60 @@ func inventoryCLITree(t *testing.T, root string) map[string]string {
 		t.Fatal(err)
 	}
 	return snap
+}
+
+func TestInventoryCLITreeCanary(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "file")
+	at := time.Date(2020, time.January, 2, 3, 4, 5, 0, time.UTC)
+	if err := os.WriteFile(file, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(file, at, at); err != nil {
+		t.Fatal(err)
+	}
+	before := inventoryCLITree(t, root)
+	if len(before) != 2 || before["file"] == "" || !reflect.DeepEqual(before, inventoryCLITree(t, root)) {
+		t.Fatalf("unchanged snapshot is incomplete or unstable: %v", before)
+	}
+	// Equal length and restored mtime leave the bytes/hash as the discriminator.
+	if err := os.WriteFile(file, []byte("after!"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(file, at, at); err != nil {
+		t.Fatal(err)
+	}
+	afterBytes := inventoryCLITree(t, root)
+	if before["file"] == afterBytes["file"] {
+		t.Fatal("same-length byte modification was not observed")
+	}
+	// Change only the regular-file timestamp, without touching bytes or length.
+	later := at.Add(24 * time.Hour)
+	if err := os.Chtimes(file, later, later); err != nil {
+		t.Fatal(err)
+	}
+	afterTime := inventoryCLITree(t, root)
+	if afterBytes["file"] == afterTime["file"] {
+		t.Fatal("regular-file mtime change was not observed")
+	}
+	if data, err := os.ReadFile(file); err != nil || string(data) != "after!" {
+		t.Fatalf("mtime control changed bytes: %q %v", data, err)
+	}
+	added := filepath.Join(root, "added")
+	if err := os.WriteFile(added, []byte("entry"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	afterCreate := inventoryCLITree(t, root)
+	if len(afterCreate) != len(afterTime)+1 || afterCreate["added"] == "" {
+		t.Fatal("entry creation was not observed")
+	}
+	if err := os.Remove(added); err != nil {
+		t.Fatal(err)
+	}
+	afterDelete := inventoryCLITree(t, root)
+	if _, exists := afterDelete["added"]; exists || len(afterDelete) != len(afterTime) {
+		t.Fatal("entry deletion was not observed")
+	}
 }
 
 func inventoryCLICalls(t *testing.T, bin, name string) []fakecli.Call {
@@ -181,8 +244,8 @@ func TestInventoryCLIEmptyAndNowrite(t *testing.T) {
 					t.Fatalf("projects=%s", doc["projects"])
 				}
 				assertInventoryCLICalls(t, bin, host, [][]string{argv})
-				if !reflect.DeepEqual(before, inventoryCLITree(t, root)) {
-					t.Fatal("inventory changed fixture tree")
+				if after := inventoryCLITree(t, root); !reflect.DeepEqual(before, after) {
+					t.Fatalf("inventory changed fixture tree: before=%v after=%v", before, after)
 				}
 				if !reflect.DeepEqual(envBefore, env) {
 					t.Fatal("inventory changed invocation environment")
@@ -212,8 +275,8 @@ func TestInventoryCLIUsageAndHelpBeforeIO(t *testing.T) {
 						t.Fatalf("usage exit=%d out=%q stderr=%q", code, out, stderr)
 					}
 					assertInventoryCLICalls(t, bin, host, nil)
-					if !reflect.DeepEqual(before, inventoryCLITree(t, root)) {
-						t.Fatal("usage/help changed fixture tree")
+					if after := inventoryCLITree(t, root); !reflect.DeepEqual(before, after) {
+						t.Fatalf("usage/help changed fixture tree: before=%v after=%v", before, after)
 					}
 				})
 			}

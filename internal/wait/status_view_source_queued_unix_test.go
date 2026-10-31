@@ -8,7 +8,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
@@ -63,23 +62,9 @@ func queuedSourceView(t *testing.T, f sourceViewFixture, sd string) AgentStatusV
 
 func queuedFIFOView(t *testing.T, f sourceViewFixture, sd, path string) AgentStatusView {
 	t.Helper()
-	done := make(chan AgentStatusView, 1)
-	go func() {
-		done <- InspectAgentStatus(AgentStatusRequest{StateDir: sd, SessionID: "ws", Agent: "worker", Cwd: f.cwd, Config: f.ctx, Env: f.env, Services: backend.New(f.env), Source: f.src})
-	}()
-	var got AgentStatusView
-	select {
-	case got = <-done:
-	case <-time.After(250 * time.Millisecond):
-		// Release an accidental reader of this owned FIFO and join it
-		// before reporting the regression. No persistent writer is started.
-		fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_NONBLOCK, 0)
-		if err == nil {
-			_ = syscall.Close(fd)
-		}
-		got = <-done
-		t.Errorf("inspection opened the FIFO body %q (fallback writer: %v)", path, err)
-	}
+	got := inspectFIFOPromptly(t, path, func() AgentStatusView {
+		return InspectAgentStatus(AgentStatusRequest{StateDir: sd, SessionID: "ws", Agent: "worker", Cwd: f.cwd, Config: f.ctx, Env: f.env, Services: backend.New(f.env), Source: f.src})
+	})
 	assertNoSessionDiscovery(t, f.callLog(t))
 	return got
 }

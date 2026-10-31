@@ -17,9 +17,16 @@ func TestEnsureSessionStateDirectoryClosesRoots(t *testing.T) {
 	old := debug.SetGCPercent(-1)
 	defer debug.SetGCPercent(old)
 	count := func() int {
-		entries, err := os.ReadDir("/dev/fd")
+		dir, err := os.Open("/dev/fd")
 		if err != nil {
 			t.Fatal(err)
+		}
+		// Only names are needed. ReadDir may stat a transient descriptor
+		// after it closes and fail with EBADF on macOS.
+		entries, readErr := dir.Readdirnames(-1)
+		closeErr := dir.Close()
+		if readErr != nil || closeErr != nil {
+			t.Fatalf("descriptor names: read=%v close=%v", readErr, closeErr)
 		}
 		return len(entries)
 	}

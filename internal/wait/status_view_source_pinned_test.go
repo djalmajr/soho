@@ -338,7 +338,11 @@ func TestStatusViewSourcePinnedRootSidecarHistory(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(decoySidecar), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(decoySidecar, []byte(`{"git_tree":"`+sidecarJSON.Tree+`","git_head":"`+sidecarJSON.Head+`","role":"implementer"}`+"\n"), 0o600); err != nil {
+	decoyJSON, err := json.Marshal(map[string]string{"git_tree": sidecarJSON.Tree, "git_head": sidecarJSON.Head, "role": "implementer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(decoySidecar, append(decoyJSON, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// The decoy's brief carries no Owned section: the raw walk resolves an

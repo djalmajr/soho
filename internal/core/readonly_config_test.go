@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -38,9 +39,11 @@ func roFixture(t *testing.T) (platform.Env, string) {
 		t.Fatal(err)
 	}
 	env := platform.Env{
-		"HOME":        home,
-		"USERPROFILE": home,
-		"PATH":        bin,
+		"HOME":         home,
+		"USERPROFILE":  home,
+		"APPDATA":      filepath.Join(home, "AppData", "Roaming"),
+		"LOCALAPPDATA": filepath.Join(home, "AppData", "Local"),
+		"PATH":         bin,
 	}
 	return env, root
 }
@@ -219,7 +222,7 @@ func TestReadOnlyBootstrapDefaultsUserOnly(t *testing.T) {
 		t.Fatalf("Config.User must retain the selection, got %+v", rc.Config.User)
 	}
 	// The absent skill cache is not materialized by the bootstrap.
-	if _, err := os.Stat(filepath.Join(homeOf(t, env), ".cache")); !os.IsNotExist(err) {
+	if _, err := os.Stat(cacheBaseOf(t, env)); !os.IsNotExist(err) {
 		t.Fatalf("the bootstrap created the skill cache base")
 	}
 }
@@ -239,6 +242,25 @@ func homeOf(t *testing.T, env platform.Env) string {
 	}
 	t.Fatal("the fixture must pin HOME")
 	return ""
+}
+
+func userConfigFileOf(t *testing.T, env platform.Env) string {
+	t.Helper()
+	return platform.UserConfigPath(platform.Current(), env)
+}
+
+func cacheBaseOf(t *testing.T, env platform.Env) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		if cache := env["LOCALAPPDATA"]; cache != "" {
+			return cache
+		}
+		return filepath.Join(homeOf(t, env), "AppData", "Local")
+	}
+	if cache := env["XDG_CACHE_HOME"]; cache != "" {
+		return cache
+	}
+	return filepath.Join(homeOf(t, env), ".cache")
 }
 
 func diffMaps(a, b map[string]string) string {
@@ -269,7 +291,7 @@ func TestReadOnlyForeignRootSession(t *testing.T) {
 	foreign := filepath.Join(root, "foreign")
 	roWrite(t, filepath.Join(foreign, ".agents", "soho.conf"), "inventory=show\ninventory_name=acme\n")
 	roWrite(t, filepath.Join(foreign, ".soho", "w1", "session.conf"), "inventory=hidden\n")
-	roWrite(t, filepath.Join(homeOf(t, env), ".config", "soho", "config"), "max_workers=2\n")
+	roWrite(t, userConfigFileOf(t, env), "max_workers=2\n")
 
 	link := filepath.Join(root, "link-foreign")
 	if err := os.Symlink(foreign, link); err != nil {
@@ -562,7 +584,7 @@ func TestReadOnlyRefusalsPreserveTargets(t *testing.T) {
 		}, "session", "inventory"},
 		{"user config oversized", func(t *testing.T, env platform.Env, root, foreign, outside string) {
 			os.MkdirAll(foreign, 0o755)
-			roWrite(t, filepath.Join(homeOf(t, env), ".config", "soho", "config"), oversizedProject)
+			roWrite(t, userConfigFileOf(t, env), oversizedProject)
 		}, "user", "inventory"},
 	}
 	for _, tc := range cases {
@@ -720,13 +742,13 @@ func TestReadOnlyResolveModeLowerOnly(t *testing.T) {
 	restrictors := map[string]func(t *testing.T, env platform.Env, foreign string){
 		"none": func(t *testing.T, env platform.Env, foreign string) {},
 		"user hidden": func(t *testing.T, env platform.Env, foreign string) {
-			roWrite(t, filepath.Join(homeOf(t, env), ".config", "soho", "config"), "inventory=hidden\n")
+			roWrite(t, userConfigFileOf(t, env), "inventory=hidden\n")
 		},
 		"user off": func(t *testing.T, env platform.Env, foreign string) {
-			roWrite(t, filepath.Join(homeOf(t, env), ".config", "soho", "config"), "inventory=off\n")
+			roWrite(t, userConfigFileOf(t, env), "inventory=off\n")
 		},
 		"user bogus": func(t *testing.T, env platform.Env, foreign string) {
-			roWrite(t, filepath.Join(homeOf(t, env), ".config", "soho", "config"), "inventory=bogus\n")
+			roWrite(t, userConfigFileOf(t, env), "inventory=bogus\n")
 		},
 		"session off": func(t *testing.T, env platform.Env, foreign string) {
 			roWrite(t, filepath.Join(foreign, ".soho", "w1", "session.conf"), "inventory=off\n")
@@ -764,7 +786,7 @@ func TestReadOnlyResolveModeLowerOnly(t *testing.T) {
 	// Only the project file opens: a user show with no project stays off.
 	t.Run("user show cannot open", func(t *testing.T) {
 		env, root := roFixture(t)
-		roWrite(t, filepath.Join(homeOf(t, env), ".config", "soho", "config"), "inventory=show\n")
+		roWrite(t, userConfigFileOf(t, env), "inventory=show\n")
 		foreign := filepath.Join(root, "foreign")
 		os.MkdirAll(foreign, 0o755)
 		rc, err := core.LoadReadOnlyConfig(env, foreign, "", core.UserSelection{})
@@ -838,9 +860,8 @@ func TestReadOnlyNowriteReadonly(t *testing.T) {
 			roWrite(t, filepath.Join(foreign, ".agents", "soho.conf"), "inventory=show\n")
 			roWrite(t, filepath.Join(foreign, ".soho", "w1", "session.conf"), "inventory=hidden\n")
 
-			home := homeOf(t, env)
 			absent := []string{
-				filepath.Join(home, ".cache"),
+				cacheBaseOf(t, env),
 				filepath.Join(foreign, ".gitignore"),
 				filepath.Join(foreign, ".soho", "w1", "agents.lock"),
 				filepath.Join(foreign, ".soho", "w1", "agents.tsv"),
@@ -871,12 +892,11 @@ func TestReadOnlyNowriteReadonly(t *testing.T) {
 // cache the defaults layer is the embedded bytes and nothing is created.
 func TestReadOnlyAbsentSkillCacheEmbedded(t *testing.T) {
 	env, _ := roFixture(t)
-	home := homeOf(t, env)
 	_, err := core.LoadReadOnlyConfig(env, "", "", core.UserSelection{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := filepath.Join(home, ".cache")
+	cache := cacheBaseOf(t, env)
 	if _, err := os.Stat(cache); !os.IsNotExist(err) {
 		t.Fatalf("the load materialized the skill cache at %s", cache)
 	}
@@ -968,8 +988,9 @@ func TestStateRootPathForProjectDelegation(t *testing.T) {
 	if got := core.StateRootPathForProject(ctx, platform.Env{"SOHO_DIR": external}, foreign); got != external {
 		t.Fatalf("SOHO_DIR must win over the state_dir setting")
 	}
-	if got := core.StateRootPathForProject(ctx, platform.Env{"SOHO_STATE_DIR": "/sd"}, foreign); got != "/sd" {
-		t.Fatalf("SOHO_STATE_DIR must win inside the setting")
+	stateOverride := filepath.Join(root, "sd")
+	if got := core.StateRootPathForProject(ctx, platform.Env{"SOHO_STATE_DIR": stateOverride}, foreign); got != stateOverride {
+		t.Fatalf("SOHO_STATE_DIR must win inside the setting: got %q want %q", got, stateOverride)
 	}
 	// A defaults-layer state_dir does not override the default.
 	ctx = &core.Config{Entries: map[string]core.ConfigEntry{"state_dir": {Value: "ignored", Source: "defaults"}}}

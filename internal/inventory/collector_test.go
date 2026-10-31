@@ -1099,9 +1099,9 @@ func TestInventoryCollectOrderAndPhysicalDedup(t *testing.T) {
 			// The same physical terminal twice: one agent.
 			herdrAgentEntry("wb", "pb", "claude", "sB", canonB),
 			// An unregistered terminal (no workspace): ignored.
-			`{"name":"shell","pane_id":"px","agent":"claude","workspace_id":"","cwd":"`+canonA+`"}`,
+			herdrAgentEntry("shell", "px", "claude", "", canonA),
 			// An unknown kind: never guessed from the name.
-			`{"name":"weird","pane_id":"pw","agent":"some-unknown-cli","workspace_id":"sA","cwd":"`+canonA+`"}`,
+			herdrAgentEntry("weird", "pw", "some-unknown-cli", "sA", canonA),
 		),
 		herdrGet("wa", "working"),
 		herdrReadVisible("wa", "typing\n"),

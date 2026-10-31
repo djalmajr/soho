@@ -38,10 +38,6 @@ func TestSessionSourceDirectoryBinding(t *testing.T) {
 				t.Run(site+"/"+moment+"/"+replacement, func(t *testing.T) {
 					base, sd := sessionFixture(t, "s1")
 					scratch := t.TempDir()
-					canonicalScratch, err := filepath.EvalSymlinks(scratch)
-					if err != nil {
-						t.Fatal(err)
-					}
 					for _, dir := range []string{sd, filepath.Join(sd, "wait"), filepath.Join(sd, "briefs"), filepath.Join(sd, "reports"), filepath.Join(scratch, "soho"), filepath.Join(scratch, "soho", "s1"), filepath.Join(scratch, "soho", "s1", "reports")} {
 						if err := os.MkdirAll(dir, 0700); err != nil {
 							t.Fatal(err)
@@ -49,6 +45,10 @@ func TestSessionSourceDirectoryBinding(t *testing.T) {
 						if err := os.WriteFile(filepath.Join(dir, "evidence"), []byte("original"), 0600); err != nil {
 							t.Fatal(err)
 						}
+					}
+					scratchParent, err := os.Stat(filepath.Join(scratch, "soho"))
+					if err != nil {
+						t.Fatal(err)
 					}
 					target, component := sd, "s1"
 					switch site {
@@ -106,8 +106,14 @@ func TestSessionSourceDirectoryBinding(t *testing.T) {
 							return parent.OpenRoot(name)
 						}
 						// The scratch session must not intercept initial state acquisition.
-						if site == "scratch-session" && parent.Name() != filepath.Join(canonicalScratch, "soho") {
-							return parent.OpenRoot(name)
+						if site == "scratch-session" {
+							actualParent, err := parent.Stat(".")
+							if err != nil {
+								t.Fatal(err)
+							}
+							if !os.SameFile(actualParent, scratchParent) {
+								return parent.OpenRoot(name)
+							}
 						}
 						fired = true
 						if moment == "before-open" {

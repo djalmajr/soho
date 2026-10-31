@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
@@ -44,20 +43,14 @@ func TestStatusViewSourceFIFOSettlement(t *testing.T) {
 				t.Skipf("the test user cannot create FIFOs: %v", err)
 			}
 			t.Cleanup(func() { _ = os.Remove(p) })
-			done := make(chan AgentStatusView, 1)
-			go func() {
-				done <- InspectAgentStatus(AgentStatusRequest{
+			after := inspectFIFOPromptly(t, p, func() AgentStatusView {
+				return InspectAgentStatus(AgentStatusRequest{
 					StateDir: f.sd, SessionID: "ws", Agent: "worker", Cwd: f.cwd,
 					Config: f.ctx, Env: f.env, Services: backend.New(f.env), Source: f.src,
 				})
-			}()
-			select {
-			case after := <-done:
-				if after.State != "unknown" || !after.ReportReady {
-					t.Errorf("FIFO marker view=%+v, want unknown with the report ready", after)
-				}
-			case <-time.After(250 * time.Millisecond):
-				t.Fatal("the inspection blocked on the FIFO marker (it must refuse the nonregular entry without reading it)")
+			})
+			if after.State != "unknown" || !after.ReportReady {
+				t.Errorf("FIFO marker view=%+v, want unknown with the report ready", after)
 			}
 			info, err := os.Lstat(p)
 			if err != nil || info.Mode()&os.ModeNamedPipe == 0 {

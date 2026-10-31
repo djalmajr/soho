@@ -70,7 +70,24 @@ func herdrInitRules(repo, agentListBody string) []fakecli.Rule {
 }
 
 func herdrAgentEntry(name, pane, agent, session, cwd string) string {
-	return `{"name":"` + name + `","pane_id":"` + pane + `","agent":"` + agent + `","workspace_id":"` + session + `","cwd":"` + cwd + `"}`
+	body, _ := json.Marshal(map[string]string{
+		"name": name, "pane_id": pane, "agent": agent, "workspace_id": session, "cwd": cwd,
+	})
+	return string(body)
+}
+
+func TestHerdrAgentEntryWindowsJSON(t *testing.T) {
+	for _, cwd := range []string{`C:\fixture\repo`, `C:\Users\fixture\repo with spaces`, `\\server\share\repo`} {
+		t.Run(cwd, func(t *testing.T) {
+			var entry map[string]string
+			if err := json.Unmarshal([]byte(herdrAgentEntry("worker", "p1", "claude", "ws", cwd)), &entry); err != nil {
+				t.Fatal(err)
+			}
+			if entry["cwd"] != cwd || entry["name"] != "worker" || entry["pane_id"] != "p1" || entry["agent"] != "claude" || entry["workspace_id"] != "ws" || len(entry) != 5 {
+				t.Fatalf("decoded entry=%q, want the exact five-field protocol and cwd %q", entry, cwd)
+			}
+		})
+	}
 }
 
 func TestInitRegistersOrchestratorRecordThroughFakeHerdr(t *testing.T) {

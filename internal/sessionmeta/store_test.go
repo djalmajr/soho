@@ -1032,48 +1032,48 @@ func TestReleaseFailureOwnLock(t *testing.T) {
 		}
 		defer sessRoot.Close()
 		// The own empty lock releases cleanly and disappears.
-		saved, err := acquireLock(sessRoot)
+		saved, handle, err := acquireLock(sessRoot)
 		if err != nil {
 			t.Fatalf("acquire: %v", err)
 		}
-		if err := releaseLock(sessRoot, saved); err != nil {
+		if err := releaseLock(sessRoot, saved, handle); err != nil {
 			t.Fatalf("own lock release err=%v, want nil", err)
 		}
 		if _, err := sessRoot.Lstat(lockName); !os.IsNotExist(err) {
 			t.Fatalf("the own lock remains after release: %v", err)
 		}
 		// A missing lock is a clean release.
-		savedMissing, err := acquireLock(sessRoot)
+		savedMissing, handleMissing, err := acquireLock(sessRoot)
 		if err != nil {
 			t.Fatalf("acquire: %v", err)
 		}
 		if err := sessRoot.Remove(lockName); err != nil {
 			t.Fatalf("the lock cannot be removed for the missing case: %v", err)
 		}
-		if err := releaseLock(sessRoot, savedMissing); err != nil {
+		if err := releaseLock(sessRoot, savedMissing, handleMissing); err != nil {
 			t.Fatalf("release of a missing lock err=%v, want nil", err)
 		}
 		// A replaced entry is never authorized for removal under a stale
 		// identity: the current directory stays exactly as found.
-		savedStale, err := acquireLock(sessRoot)
+		savedStale, handleStale, err := acquireLock(sessRoot)
 		if err != nil {
 			t.Fatalf("acquire: %v", err)
 		}
 		if err := sessRoot.Remove(lockName); err != nil {
 			t.Fatalf("the lock cannot be removed for the replacement case: %v", err)
 		}
-		savedCurrent, err := acquireLock(sessRoot)
+		savedCurrent, handleCurrent, err := acquireLock(sessRoot)
 		if err != nil {
 			t.Fatalf("acquire replacement: %v", err)
 		}
-		if err := releaseLock(sessRoot, savedStale); err != nil {
+		if err := releaseLock(sessRoot, savedStale, handleStale); err != nil {
 			t.Fatalf("release with a stale identity err=%v, want nil", err)
 		}
 		cur, err := sessRoot.Lstat(lockName)
 		if err != nil || !os.SameFile(cur, savedCurrent) {
 			t.Fatalf("the current lock was touched by a stale release: %v", err)
 		}
-		if err := releaseLock(sessRoot, savedCurrent); err != nil {
+		if err := releaseLock(sessRoot, savedCurrent, handleCurrent); err != nil {
 			t.Fatalf("final own release err=%v, want nil", err)
 		}
 	})

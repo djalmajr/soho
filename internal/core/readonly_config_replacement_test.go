@@ -85,7 +85,7 @@ func TestReadOnlyOversizedCachedDefaultsBounded(t *testing.T) {
 	env, root := roFixture(t)
 	bin := filepath.Join(root, "bin")
 	roInstallCanaries(t, bin)
-	cache := filepath.Join(homeOf(t, env), ".cache")
+	cache := cacheBaseOf(t, env)
 
 	// The existing-source control: a valid published cache is the source.
 	dir, err := skill.Materialize(cache)
