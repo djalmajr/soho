@@ -2,6 +2,7 @@ package hcbackend
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -360,10 +361,37 @@ func TestSurfaceCoversEveryMethod(t *testing.T) {
 		{"Runtime.GetGone", wantImplemented, nil},
 	}
 
-	// The contracts' five method sets (Transport 9, Window 11, LegacyTransport
-	// 33, Runtime 4): keep the table whole when a contract changes.
-	if len(entries) != 9+11+33+4 {
-		t.Fatalf("table covers %d methods want %d", len(entries), 9+11+33+4)
+	// The table must hold exactly one decision per method of the four
+	// contracts, read from the interfaces themselves: a method added to a
+	// contract without an hc decision fails here, and so does a stale or
+	// duplicate entry.
+	want := map[string]bool{}
+	for prefix, typ := range map[string]reflect.Type{
+		"Transport": reflect.TypeOf((*transport.Transport)(nil)).Elem(),
+		"Window":    reflect.TypeOf((*transport.Window)(nil)).Elem(),
+		"Legacy":    reflect.TypeOf((*transport.LegacyTransport)(nil)).Elem(),
+		"Runtime":   reflect.TypeOf((*transport.Runtime)(nil)).Elem(),
+	} {
+		for i := 0; i < typ.NumMethod(); i++ {
+			want[prefix+"."+typ.Method(i).Name] = true
+		}
+	}
+	got := map[string]bool{}
+	for _, entry := range entries {
+		if got[entry.name] {
+			t.Errorf("duplicate hc decision for %s", entry.name)
+		}
+		got[entry.name] = true
+	}
+	for name := range want {
+		if !got[name] {
+			t.Errorf("no hc decision for %s", name)
+		}
+	}
+	for name := range got {
+		if !want[name] {
+			t.Errorf("stale hc decision for %s, which no contract declares", name)
+		}
 	}
 
 	var launches int

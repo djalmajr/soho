@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strconv"
 	"sync"
 
@@ -193,25 +192,46 @@ func stateOf(obj *jsonjs.Object) string {
 	return "unknown"
 }
 
-// turnRaw renders the record's turn counter as the terminal's sequence: the
-// whole number as raw JSON, an absent or non-whole value as no sequence.
-func turnRaw(obj *jsonjs.Object) json.RawMessage {
-	v, ok := obj.Get("turn")
-	if !ok {
+// turnRaw returns a terminal record's turn counter exactly as hc wrote it:
+// an unsigned 64-bit integer literal (the schema's uint64), read from the
+// raw JSON and never passed through float64, so every value keeps its
+// identity. An absent or malformed turn is no sequence.
+func turnRaw(record json.RawMessage) json.RawMessage {
+	var rec struct {
+		Turn json.RawMessage `json:"turn"`
+	}
+	if json.Unmarshal(record, &rec) != nil {
 		return nil
 	}
-	n, ok := v.(float64)
-	if !ok || math.IsNaN(n) || math.IsInf(n, 0) || math.Trunc(n) != n {
+	text := string(rec.Turn)
+	if text == "" {
 		return nil
 	}
-	if n < math.MinInt64 || n >= math.MaxInt64 {
+	if _, err := strconv.ParseUint(text, 10, 64); err != nil {
 		return nil
 	}
-	b, err := json.Marshal(int64(n))
-	if err != nil {
+	return json.RawMessage(text)
+}
+
+// listRecords returns the raw JSON of each terminal in an `hc ls` answer,
+// in order, for the fields read byte for byte (turnRaw).
+func listRecords(stdout string) []json.RawMessage {
+	var list struct {
+		Terminals []json.RawMessage `json:"terminals"`
+	}
+	if json.Unmarshal([]byte(stdout), &list) != nil {
 		return nil
 	}
-	return b
+	return list.Terminals
+}
+
+// listTurn is the turn of the i-th record of an `hc ls` answer, or no
+// sequence when the raw list does not line up.
+func listTurn(records []json.RawMessage, i int) json.RawMessage {
+	if i < 0 || i >= len(records) {
+		return nil
+	}
+	return turnRaw(records[i])
 }
 
 // nameOf reads the record's name ("" when the terminal is unnamed).
@@ -318,7 +338,11 @@ func (b *backend) List(ctx context.Context, scope transport.Scope, call transpor
 	}
 	out, err := b.client.Run(ctx, "ls", "--label", SessionLabel+"="+session)
 	if err != nil {
-		return transport.Reply[[]transport.Terminal]{Err: failure(err)}
+		// A roster query names no target, so even an exit 3 is the backend
+		// being unavailable, never a target not found.
+		f := failure(err)
+		f.Kind = transport.FailureUnavailable
+		return transport.Reply[[]transport.Terminal]{Err: f}
 	}
 	v, err := jsonjs.Parse([]byte(out))
 	if err != nil {
@@ -336,8 +360,9 @@ func (b *backend) List(ctx context.Context, scope transport.Scope, call transpor
 	if !ok {
 		return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned a non-array terminals list"}}
 	}
+	records := listRecords(out)
 	terms := make([]transport.Terminal, 0, len(list))
-	for _, item := range list {
+	for i, item := range list {
 		rec, ok := item.(*jsonjs.Object)
 		if !ok {
 			return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned a non-object terminal"}}
@@ -347,7 +372,7 @@ func (b *backend) List(ctx context.Context, scope transport.Scope, call transpor
 			Name:     nameOf(rec),
 			PaneID:   addressOf(rec),
 			State:    stateOf(rec),
-			Sequence: turnRaw(rec),
+			Sequence: listTurn(records, i),
 		})
 	}
 	return transport.Reply[[]transport.Terminal]{Value: terms, Valid: true}
@@ -375,7 +400,7 @@ func (b *backend) Get(ctx context.Context, target transport.Target, call transpo
 			Name:     nameOf(obj),
 			PaneID:   addressOf(obj),
 			State:    stateOf(obj),
-			Sequence: turnRaw(obj),
+			Sequence: turnRaw(json.RawMessage(out)),
 		},
 		Valid: true,
 	}
