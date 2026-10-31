@@ -523,25 +523,18 @@ func (b *backend) TabGetRaw(ctx context.Context, tab string, call transport.Call
 // PaneCurrentRaw runs `pane current --current` once with the call's timeout
 // and returns the raw process result: Value carries the stdout and the
 // caller owns the exit-status handling. It never retries and does not parse
-// the body.
+// the body; see rawStep for the timeout and failure contract.
 func (b *backend) PaneCurrentRaw(ctx context.Context, call transport.Call) transport.Reply[string] {
-	r := runWithTimeout([]string{"pane", "current", "--current"}, b.env, timeoutFor(call), ctxArgs(ctx)...)
-	if !ok(r) {
-		return transport.Reply[string]{Value: r.Stdout, Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
-	}
-	return transport.Reply[string]{Value: r.Stdout, Valid: true, Process: processResult(r)}
+	return b.rawStep([]string{"pane", "current", "--current"}, call, ctx)
 }
 
 // PaneGetRaw runs one `pane get <id>` with the call's timeout and returns
 // the raw process result: Value carries the stdout (possibly empty) and the
 // caller owns the exit-status and body-parsing handling. It never retries
-// and does not parse the body.
+// and does not parse the body; see rawStep for the timeout and failure
+// contract.
 func (b *backend) PaneGetRaw(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[string] {
-	r := runWithTimeout([]string{"pane", "get", target.ID}, b.env, timeoutFor(call), ctxArgs(ctx)...)
-	if !ok(r) {
-		return transport.Reply[string]{Value: r.Stdout, Process: processResult(r), Err: &transport.Failure{Kind: transport.FailureCommand, Message: r.Stderr}}
-	}
-	return transport.Reply[string]{Value: r.Stdout, Valid: true, Process: processResult(r)}
+	return b.rawStep([]string{"pane", "get", target.ID}, call, ctx)
 }
 
 // ClaudeTranscriptPath resolves the target's Claude Code session transcript
@@ -673,7 +666,7 @@ func (b *backend) AgentWaitRaw(ctx context.Context, target transport.Target, tim
 // the argv only.
 func (b *backend) AgentPromptWaitRaw(ctx context.Context, target transport.Target, body string, timeoutMS int, call transport.Call) transport.Reply[string] {
 	args := append(append([]string{}, sessionref.HerdrMachineArgs(target.Machine)...), "agent", "prompt", target.ID, body, "--wait", "--until", "working", "--until", "blocked", "--until", "idle", "--until", "done", "--timeout", strconv.Itoa(timeoutMS))
-	r := platform.RunCli("herdr", args, platform.RunOptions{Env: b.env, Context: ctx, TimeoutMs: int(timeoutFor(call) / time.Millisecond), MergeOutput: true})
+	r := b.runner("herdr", args, platform.RunOptions{Env: b.env, Context: ctx, TimeoutMs: int(timeoutFor(call) / time.Millisecond), MergeOutput: true})
 	return rawReply(r)
 }
 
