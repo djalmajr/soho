@@ -284,15 +284,25 @@ func ProjectRoot(env Env, cwd string) string {
 	return cachedRoot(rootCacheKey("project", env, cwd), func() string {
 		out, status := gitRunner(env, cwd, "rev-parse", "--show-toplevel")
 		if status == 0 {
-			if root := strings.TrimSpace(out); root != "" {
-				if runtime.GOOS == "windows" {
-					root = filepath.Clean(strings.ReplaceAll(root, "/", `\`))
-				}
+			if root, ok := projectRootFromToplevel(out); ok {
 				return root
 			}
 		}
 		return cwd
 	})
+}
+
+// projectRootFromToplevel interprets a successful show-toplevel payload:
+// the trimmed root with the native path cleanup.
+func projectRootFromToplevel(out string) (string, bool) {
+	root := strings.TrimSpace(out)
+	if root == "" {
+		return "", false
+	}
+	if runtime.GOOS == "windows" {
+		root = filepath.Clean(strings.ReplaceAll(root, "/", `\`))
+	}
+	return root, true
 }
 
 func StateProjectRoot(env Env, cwd string) string {
@@ -302,50 +312,15 @@ func StateProjectRoot(env Env, cwd string) string {
 }
 
 func stateProjectRootUncached(env Env, cwd string) string {
-	gitDirOut, gitStatus := gitRunner(env, cwd, "rev-parse", "--git-dir")
-	commonOut, commonStatus := gitRunner(env, cwd, "rev-parse", "--git-common-dir")
-	if gitStatus != 0 || commonStatus != 0 {
+	root, err := stateRootResolve(cwd, func(cwd string, args ...string) (string, int) {
+		return gitRunner(env, cwd, args...)
+	}, false, func() (string, bool) {
+		return ProjectRoot(env, cwd), true
+	})
+	if err != nil {
 		return ProjectRoot(env, cwd)
 	}
-	gitPath := resolveFrom(cwd, strings.TrimSpace(gitDirOut))
-	commonPath := resolveFrom(cwd, strings.TrimSpace(commonOut))
-	if gitPath == "" || gitPath == commonPath {
-		return ProjectRoot(env, cwd)
-	}
-	if filepath.Base(commonPath) == ".git" {
-		root := filepath.Dir(commonPath)
-		if hasGitPathSegment(root) {
-			return ProjectRoot(env, cwd)
-		}
-		return root
-	}
-	worktreesOut, worktreeStatus := gitRunner(env, cwd, "worktree", "list", "--porcelain")
-	if worktreeStatus == 0 {
-		first := strings.SplitN(strings.TrimRight(worktreesOut, "\n"), "\n\n", 2)[0]
-		var firstPath string
-		bare := false
-		for _, line := range strings.Split(strings.ReplaceAll(first, "\r\n", "\n"), "\n") {
-			if strings.HasPrefix(line, "worktree ") {
-				firstPath = strings.TrimPrefix(line, "worktree ")
-			}
-			if line == "bare" {
-				bare = true
-			}
-		}
-		if firstPath != "" && !bare {
-			root := resolveFrom(cwd, firstPath)
-			if isWithin(commonPath, root) {
-				worktreeOut, status := gitRunner(env, cwd, "--git-dir", commonPath, "config", "--path", "core.worktree")
-				if status == 0 && strings.TrimSpace(worktreeOut) != "" {
-					root = resolveFrom(commonPath, strings.TrimSpace(worktreeOut))
-				}
-			}
-			if !isWithin(commonPath, root) && !hasGitPathSegment(root) {
-				return root
-			}
-		}
-	}
-	return ProjectRoot(env, cwd)
+	return root
 }
 
 func hasGitPathSegment(value string) bool {
