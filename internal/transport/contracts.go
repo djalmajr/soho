@@ -546,7 +546,9 @@ type Runtime interface {
 	// timeout and optional args, and returns the merged output the backend
 	// captured, so the caller can read the backend's start markers from it.
 	// The herdr backend's Value is that merged output; the hc backend
-	// returns the new terminal's address (t7) on success instead.
+	// returns the new terminal's address (t7) on success, and also carries
+	// it on the readiness failures (blocked, exited, timeout) once the
+	// terminal exists, so the caller can close the terminal the start left.
 	Start(ctx context.Context, start Start, call Call) Reply[string]
 	// CallerAgentName returns the agent that hosts the caller's claimed
 	// pane, read with one agent get on that pane; a pane without a readable

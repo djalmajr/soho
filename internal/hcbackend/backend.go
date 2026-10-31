@@ -521,32 +521,26 @@ func (b *backend) Read(ctx context.Context, target transport.Target, read transp
 	return transport.Reply[string]{Value: text, Valid: true, Process: processRecord(out)}
 }
 
-// Close ends the terminal's program and removes its record: `hc kill` then
-// `hc rm`; a terminal that is already finished goes straight to `hc rm`.
-// Closed means the record is gone: a terminal whose record is already
-// removed reports closed.
+// Close ends the terminal's program and removes its record: `hc kill`
+// then `hc rm`. A kill that exits 3, or that reports the program already
+// finished, still runs the rm; an rm that exits 3 counts as closed. So a
+// Close is safe for a live terminal, an already finished one, and the
+// terminal a failed start left behind. Closed means the record is gone:
+// a terminal whose record is already removed reports closed.
 func (b *backend) Close(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[bool] {
 	id := addr(target)
-	out, err := b.run(ctx, call, "get", id)
-	if err != nil {
-		if notFound(err) {
-			return transport.Reply[bool]{Value: true, Valid: true}
-		}
-		return transport.Reply[bool]{Err: failure(err)}
-	}
-	obj, ok := terminalObject(out)
-	if !ok {
-		return transport.Reply[bool]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc get returned no terminal record"}}
-	}
-	if stateOf(obj) != "gone" {
-		if _, err := b.run(ctx, call, "kill", id); err != nil {
-			if notFound(err) {
-				return transport.Reply[bool]{Value: true, Valid: true}
-			}
+	if _, err := b.run(ctx, call, "kill", id); err != nil {
+		// An exit-3 kill found no terminal to end; a kill that reports the
+		// program already finished exits 0 with the finished record. Either
+		// way the record may still need its rm, so only a kill that failed
+		// for another reason stops the close.
+		if !notFound(err) {
 			return transport.Reply[bool]{Err: failure(err)}
 		}
 	}
 	if _, err := b.run(ctx, call, "rm", id); err != nil {
+		// An rm that exits 3 found no record to remove: the terminal is
+		// closed.
 		if notFound(err) {
 			return transport.Reply[bool]{Value: true, Valid: true}
 		}
@@ -916,26 +910,28 @@ func startRunFailure(name string, err error) transport.Reply[string] {
 // ready, a blocked status is the blocked failure (the terminal stays; spawn
 // decides), a finished terminal or a get that exits 3 is the exited
 // failure, and the deadline is the timeout failure carrying the last get
-// error it holds. A cancelled ctx stops the poll as a cancellation.
+// error it holds. A cancelled ctx stops the poll as a cancellation. Every
+// failure reply carries the address in Value, so the caller can close the
+// terminal the start left.
 func (b *backend) waitReady(ctx context.Context, call transport.Call, name, address string, deadline time.Duration) transport.Reply[string] {
 	deadlineAt := time.Now().Add(deadline)
 	var lastErr *transport.Failure
 	for {
 		if err := ctx.Err(); err != nil {
-			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: err.Error(), Cause: err}}
+			return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCancelled, Message: err.Error(), Cause: err}}
 		}
 		if time.Until(deadlineAt) <= 0 {
-			return timeoutReply(name, deadline, lastErr)
+			return timeoutReply(name, address, deadline, lastErr)
 		}
 		getCtx, cancel := context.WithTimeout(ctx, time.Until(deadlineAt))
 		out, err := b.run(getCtx, call, "get", address)
 		cancel()
 		if err != nil {
 			if notFound(err) {
-				return transport.Reply[string]{Err: exitedFailure(name, nil)}
+				return transport.Reply[string]{Value: address, Err: exitedFailure(name, nil)}
 			}
 			if ctx.Err() != nil {
-				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: ctx.Err().Error(), Cause: ctx.Err()}}
+				return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCancelled, Message: ctx.Err().Error(), Cause: ctx.Err()}}
 			}
 			lastErr = failure(err)
 		} else {
@@ -950,11 +946,11 @@ func (b *backend) waitReady(ctx context.Context, call transport.Call, name, addr
 			wait = remaining
 		}
 		if wait <= 0 {
-			return timeoutReply(name, deadline, lastErr)
+			return timeoutReply(name, address, deadline, lastErr)
 		}
 		select {
 		case <-ctx.Done():
-			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: ctx.Err().Error(), Cause: ctx.Err()}}
+			return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCancelled, Message: ctx.Err().Error(), Cause: ctx.Err()}}
 		case <-time.After(wait):
 		}
 	}
@@ -973,7 +969,7 @@ func readinessReply(name, address, out string) (*transport.Reply[string], *trans
 	}
 	if v, ok := obj.Get("state"); ok {
 		if state, isString := v.(string); isString && state == "finished" {
-			return &transport.Reply[string]{Err: exitedFailure(name, obj)}, nil
+			return &transport.Reply[string]{Value: address, Err: exitedFailure(name, obj)}, nil
 		}
 	}
 	raw, ok := obj.Get("status")
@@ -998,7 +994,7 @@ func readinessReply(name, address, out string) (*transport.Reply[string], *trans
 				message += ": " + s
 			}
 		}
-		return &transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCommand, Message: message}}, nil
+		return &transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCommand, Message: message}}, nil
 	case "idle", "done":
 		reported := false
 		if v, ok := obj.Get("reported"); ok {
@@ -1055,12 +1051,12 @@ func exitCodeOf(obj *jsonjs.Object) (int, bool) {
 
 // timeoutReply renders the readiness deadline: `agent <name> still not
 // ready after <seconds>s`, with the last get error when the poll holds one.
-func timeoutReply(name string, deadline time.Duration, lastErr *transport.Failure) transport.Reply[string] {
+func timeoutReply(name, address string, deadline time.Duration, lastErr *transport.Failure) transport.Reply[string] {
 	message := fmt.Sprintf("agent %s still not ready after %ss", name, startDeadlineSeconds(deadline))
 	if lastErr != nil {
 		message += ": " + lastErr.Error()
 	}
-	return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCommand, Message: message, Cause: lastErr}}
+	return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCommand, Message: message, Cause: lastErr}}
 }
 
 // CallerAgentName returns the name of the terminal the caller runs in: one

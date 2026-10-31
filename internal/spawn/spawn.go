@@ -933,6 +933,15 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	if o.effort != "" && !effortOk(o.effort) {
 		core.DieFriction(fmt.Sprintf("invalid effort '%s' (low|medium|high|xhigh|max)", o.effort), 2, "", "")
 	}
+	// DJA-604 2b-2b: transport=hc has no panes, so the pane and tab flags
+	// have nothing to point at. They are dropped with one warning before
+	// anything can act on them; the worker is a new hc terminal of the
+	// session, opened by Runtime.Start below.
+	if env.Get("SOHO_TRANSPORT") == "hc" && (o.pane != "" || o.tabLabel != "") {
+		Warn("spawn: transport=hc has no panes; --pane and --tab are ignored", ctx, env, "spawn")
+		o.pane = ""
+		o.tabLabel = ""
+	}
 	if o.role == "planner" {
 		core.DieFriction("spawn planner: the orchestrator is the planner and does not open a pane. Plan in this session.", 12, "", "")
 	}
@@ -958,7 +967,13 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			RefuseLaneKind(o.role, lane, laneKind, o.kind, fmt.Sprintf("spawn: role '%s' runs in lane '%s', whose kind is %s; --kind %s would put a %s worker in it and block the lane's next spawns. Spawn with --kind %s, change lane.%s.kind, or set SOHO_LANES=off for this spawn to open it outside the lanes.", o.role, lane, laneKind, o.kind, o.kind, laneKind, lane), "spawn", ctx, env, cwd)
 		}
 	}
-	EnsureOrchestratorName(ctx, env, cwd, "spawn")
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		// DJA-604 2b-2b: hc has no rename; the orchestrator keeps its
+		// terminal name and nothing else happens.
+		Warn("spawn: transport=hc has no rename; the orchestrator keeps its terminal name", ctx, env, "spawn")
+	} else {
+		EnsureOrchestratorName(ctx, env, cwd, "spawn")
+	}
 	res := core.ResolveRoleSettings(o.role, ctx, env, cwd, core.RoleFlags{Kind: o.kind, Model: o.model, Effort: o.effort, Approvals: o.approvals})
 	lane, kind := res.Lane, res.Kind
 	if lane == "" && core.LanesEnabled(ctx, env) {
@@ -1307,11 +1322,19 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	}()
 	created, placement, autoRegrid := false, "given", false
 	layoutMode := core.Cfg(ctx, "layout", "split", env)
-	focusBefore := layout.UIFocusedPane(env)
+	focusBefore := ""
+	if env.Get("SOHO_TRANSPORT") != "hc" {
+		focusBefore = layout.UIFocusedPane(env)
+	}
 	if o.tabLabel != "" && o.pane != "" {
 		Warn("--tab-label ignored: --pane places the worker in a given pane", ctx, env, "spawn")
 	}
-	if o.pane == "" {
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		// DJA-604 2b-2b: transport=hc has no panes to place the worker in:
+		// the worker is a new hc terminal of the session that Runtime.Start
+		// opens below. No focus read, no split, no herd tab, no regrid.
+		created, placement = true, "hc"
+	} else if o.pane == "" {
 		// Pin only resource registrations, without changing the worker's
 		// configuration or session lookup when its cwd is another project.
 		paneEnv := env.Clone()
@@ -1401,11 +1424,19 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	if err := taskreport.RetireTaskReportPointer(sd, o.name); err != nil {
 		core.DieFriction("spawn: could not retire task pointer: "+err.Error(), 4, "", "")
 	}
-	blocked := startAgent(o, kind, env, created, agentArgs)
+	blocked := false
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		// DJA-604 2b-2b: Runtime.Start opens the new terminal and waits for
+		// the worker's first reported status, so there is no start window to
+		// check; a failed start dies here and closes the terminal it left.
+		startHcAgent(ctx, &o, kind, env, agentArgs)
+	} else {
+		blocked = startAgent(o, kind, env, created, agentArgs)
+	}
 	layout.RestoreFocusIfStolen(focusBefore, o.pane, o.direction, env)
 	family := kinds.AgentFamily(kind, o.model)
 	lastState, lastScreen := "", ""
-	if !blocked {
+	if !blocked && env.Get("SOHO_TRANSPORT") != "hc" {
 		lastState, lastScreen, blocked = checkStartWindow(o, kind, env, created, agentArgs, ctx)
 	}
 	if kind == "codex" {
@@ -1536,6 +1567,12 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		// here; doctor names it.
 		value := core.Cfg(ctx, core.ContextWindowKey("grok"), "", env)
 		typing := value != "" && core.ContextWindowValueOk(value)
+		if env.Get("SOHO_TRANSPORT") == "hc" && typing {
+			// DJA-604 2b-2b: hc has no keys to type the command with; the
+			// context window stays at grok's default, so nothing is typed.
+			Warn("spawn: transport=hc cannot type /context-window into grok; the context window stays at grok's default", ctx, env, "spawn")
+			typing = false
+		}
 		if typing {
 			screen := agentReadText(svc.Runtime, o.name, "visible", intPtr(40))
 			if isGrokTrustDialog(screen) {
@@ -1848,6 +1885,70 @@ func startAgent(o spawnOptions, kind string, env platform.Env, created bool, arg
 			core.DieFriction(fmt.Sprintf("agent start failed for %s (%s) in pane %s; pane close failed and the pane is still open, check it for a running agent (last screen lines: %s)", o.name, kind, o.pane, tail), 4, "", "")
 		}
 		core.DieFriction(fmt.Sprintf("agent start failed for %s (%s) in pane %s; the pane was given (--pane) and stays open: check it for a running agent", o.name, kind, o.pane), 4, "", "")
+	}
+}
+
+// startHcAgent runs the worker through hc (DJA-604 2b-2b). Runtime.Start
+// opens the new terminal of the session with the worker's exact argv and
+// waits for its first reported status, so on success o.pane holds the new
+// terminal's address (the roster's pane field under hc) and nothing else
+// happens. name_taken moves to the next free suffix under the UniqueName
+// rule, each retry printing the "is taken" warning, up to 10 tries; any
+// other start failure closes the terminal the start left (when the start
+// named one) and dies like the herdr failed-start path: exit 4, the Start
+// failure's message, no roster row. It takes o by pointer: the retries
+// rename o, and the roster row and the JSON use the final name.
+func startHcAgent(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string) {
+	svc := backend.New(env)
+	rt := svc.Terminal
+	base := o.name
+	for tries := 0; ; tries++ {
+		rep := rt.Start(context.Background(), transport.Start{Name: o.name, Kind: kind, Cwd: o.cwd, Timeout: o.timeout, Args: args}, transport.Call{Timeout: time.Duration(startWrapperTimeoutMs(o.timeout)) * time.Millisecond})
+		if rep.Err == nil {
+			o.pane = rep.Value
+			return
+		}
+		if rep.Err.Kind == transport.FailureConflict {
+			if tries+1 >= 10 {
+				core.DieFriction(fmt.Sprintf("spawn: no free hc terminal name for '%s' after 10 tries", base), 4, "", "spawn")
+			}
+			taken := o.name
+			o.name = nextHcName(taken, env)
+			Warn(fmt.Sprintf("agent name '%s' is taken by another pane or workspace; using '%s'", taken, o.name), ctx, env, "spawn")
+			continue
+		}
+		if rep.Value != "" {
+			// The readiness failure left a terminal behind; close it before
+			// the die, the way the herdr path closes the pane it opened. A
+			// terminal that survives holds the name, so say which one.
+			closed := svc.Runtime.Close(context.Background(), transport.Target{ID: rep.Value}, transport.Call{})
+			if closed.Err != nil || !closed.Value {
+				Warn(fmt.Sprintf("spawn: could not close hc terminal %s after the failed start; it may still hold the name '%s'", rep.Value, o.name), ctx, env, "spawn")
+			}
+		}
+		core.DieFriction(rep.Err.Error(), 4, "", "spawn")
+	}
+}
+
+// nextHcName is the next free suffix after the taken name, under the
+// UniqueName rule (base, base-2, base-3, …): when the taken name ends in a
+// numeric suffix of 2 or more the sequence continues from there, otherwise
+// -2 is appended. Each candidate is checked against the session's live
+// names (hc names are unique on the whole core, so a taken name may belong
+// to another session and not appear in the list).
+func nextHcName(taken string, env platform.Env) string {
+	base, suffix := taken, 1
+	if i := strings.LastIndexByte(taken, '-'); i > 0 {
+		if n, err := strconv.Atoi(taken[i+1:]); err == nil && n >= 2 {
+			base, suffix = taken[:i], n
+		}
+	}
+	for {
+		suffix++
+		candidate := fmt.Sprintf("%s-%d", base, suffix)
+		if !AgentNameTaken(candidate, env) {
+			return candidate
+		}
 	}
 }
 func startWrapperTimeoutMs(raw string) float64 {

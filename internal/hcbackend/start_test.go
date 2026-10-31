@@ -362,6 +362,9 @@ func TestStartReadiness(t *testing.T) {
 		if rep.Err.Message != want {
 			t.Fatalf("message %q want %q", rep.Err.Message, want)
 		}
+		if rep.Value != "t7" {
+			t.Fatalf("rep: %+v want the address t7 in Value so the caller can close it", rep)
+		}
 	})
 
 	t.Run("blocked without msg: ends at startup", func(t *testing.T) {
@@ -375,6 +378,9 @@ func TestStartReadiness(t *testing.T) {
 		want := "agent w7 is blocked during startup"
 		if rep.Err.Message != want {
 			t.Fatalf("message %q want %q", rep.Err.Message, want)
+		}
+		if rep.Value != "t7" {
+			t.Fatalf("rep: %+v want the address t7 in Value so the caller can close it", rep)
 		}
 	})
 
@@ -390,6 +396,9 @@ func TestStartReadiness(t *testing.T) {
 		if rep.Err.Message != want {
 			t.Fatalf("message %q want %q", rep.Err.Message, want)
 		}
+		if rep.Value != "t7" {
+			t.Fatalf("rep: %+v want the address t7 in Value so the caller can close it", rep)
+		}
 	})
 
 	t.Run("finished with exit code only", func(t *testing.T) {
@@ -404,6 +413,9 @@ func TestStartReadiness(t *testing.T) {
 		if rep.Err.Message != want {
 			t.Fatalf("message %q want %q", rep.Err.Message, want)
 		}
+		if rep.Value != "t7" {
+			t.Fatalf("rep: %+v want the address t7 in Value so the caller can close it", rep)
+		}
 	})
 
 	t.Run("get exit 3: the exited failure without the parts hc does not report", func(t *testing.T) {
@@ -417,6 +429,9 @@ func TestStartReadiness(t *testing.T) {
 		want := "agent w7 exited during startup"
 		if rep.Err.Message != want {
 			t.Fatalf("message %q want %q", rep.Err.Message, want)
+		}
+		if rep.Value != "t7" {
+			t.Fatalf("rep: %+v want the address t7 in Value so the caller can close it", rep)
 		}
 	})
 
@@ -433,6 +448,9 @@ func TestStartReadiness(t *testing.T) {
 		want := "agent w7 still not ready after 0.3s"
 		if rep.Err.Message != want {
 			t.Fatalf("message %q want %q", rep.Err.Message, want)
+		}
+		if rep.Value != "t7" {
+			t.Fatalf("rep: %+v want the address t7 in Value so the caller can close it", rep)
 		}
 		if elapsed < 300*time.Millisecond {
 			t.Fatalf("elapsed %v: the poll gave up before the 300 ms deadline", elapsed)
@@ -454,6 +472,9 @@ func TestStartReadiness(t *testing.T) {
 		if rep.Err.Message != want {
 			t.Fatalf("message %q want %q", rep.Err.Message, want)
 		}
+		if rep.Value != "t7" {
+			t.Fatalf("rep: %+v want the address t7 in Value so the caller can close it", rep)
+		}
 	})
 
 	t.Run("a cancelled context stops the poll", func(t *testing.T) {
@@ -470,6 +491,9 @@ func TestStartReadiness(t *testing.T) {
 		}
 		if rep.Err.Message != "context canceled" {
 			t.Fatalf("message %q", rep.Err.Message)
+		}
+		if rep.Value != "t7" {
+			t.Fatalf("rep: %+v want the address t7 in Value so the caller can close it", rep)
 		}
 	})
 

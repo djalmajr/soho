@@ -477,7 +477,7 @@ func hcCommandAllowed(command string) bool {
 	switch command {
 	case "", "help", "-h", "--help":
 		return true
-	case "status", "wait", "doctor", "config", "explain", "capabilities":
+	case "status", "wait", "spawn", "doctor", "config", "explain", "capabilities":
 		return true
 	case "kinds", "models", "model", "roles", "role", "lint", "install", "env":
 		return true
