@@ -88,6 +88,18 @@ type idleAlert struct {
 	observed        bool
 	warned          map[string]bool
 	count           int
+	hc              bool
+	warnedMinutes   int64
+}
+
+// takeWarnedMinutes returns the minutes of the latest alert warn (0 when no
+// warn fired since the last call) and clears it, so wait writes the
+// <agent>.idle-alert marker (DJA-565) exactly once per warn and a later
+// poll of the same task does not rewrite it.
+func (a *idleAlert) takeWarnedMinutes() int64 {
+	m := a.warnedMinutes
+	a.warnedMinutes = 0
+	return m
 }
 
 func idleAlertMinutes(ctx *core.Config, env platform.Env) int64 {
@@ -135,6 +147,13 @@ func (a *idleAlert) observe(screen, agent string, now time.Time, minutes int64, 
 		}
 		a.warned[a.task] = true
 		a.count++
-		sendWarning(fmt.Sprintf("'%s' has been working for %d min with no new output; read its pane (herdr agent read %s --source visible) — it may be stuck on a long command", agent, elapsed, agent))
+		a.warnedMinutes = elapsed
+		// DJA-565 decision 5: the hint names the transport's read command;
+		// the herdr wording stays byte-identical.
+		hint := "read its pane (herdr agent read " + agent + " --source visible)"
+		if a.hc {
+			hint = "read its terminal (hc read " + agent + ")"
+		}
+		sendWarning(fmt.Sprintf("'%s' has been working for %d min with no new output; %s — it may be stuck on a long command", agent, elapsed, hint))
 	}
 }

@@ -254,7 +254,29 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 				cause = "retrying: " + retryLine
 			}
 		}
-		ageFields := []any{"task_s", taskS, "activity_s", activityS}
+		// DJA-565: the wait's idle-alert mark, read from its local marker:
+		// shown only when the marker's task is this worker's current task and
+		// the worker is working. A local file read — no screen read, no new
+		// transport call.
+		var idleMinutes int64
+		if state == "working" {
+			idleMinutes = idleAlertMark(sd, agent, report)
+		}
+		// Like the retry line, the mark goes in the cause column: the state
+		// stays working for every reader that compares it.
+		if idleMinutes > 0 {
+			idle := fmt.Sprintf("idle: no new output for %d min", idleMinutes)
+			if cause == "" {
+				cause = idle
+			} else {
+				cause += "; " + idle
+			}
+		}
+		ageFields := []any{}
+		if idleMinutes > 0 {
+			ageFields = append(ageFields, "idle_minutes", idleMinutes)
+		}
+		ageFields = append(ageFields, "task_s", taskS, "activity_s", activityS)
 		if activityChanged {
 			ageFields = append(ageFields, "activity_changed", true)
 		}
@@ -459,6 +481,30 @@ func derivedWorkspaceEnv(ctx *core.Config, env platform.Env, cwd string) func() 
 func markerRead(sd, agent, name string) string {
 	value, _ := platform.ReadTextFile(filepath.Join(sd, "wait", agent+"."+name))
 	return value
+}
+
+// idleAlertMark reads the wait's idle-alert marker (<task>\t<minutes>\t<unix>,
+// DJA-565) and returns its minutes when the marker's task equals the
+// worker's current task; a missing or malformed marker is no mark. It is a
+// local file read only: status adds no screen read or transport call for
+// the mark.
+func idleAlertMark(sd, agent, report string) int64 {
+	raw, ok := readWaitFile(sd, agent, "idle-alert")
+	if !ok || raw == "" {
+		return 0
+	}
+	fields := strings.Split(raw, "\t")
+	if len(fields) != 3 || fields[0] != idleTask(sd, agent, report) {
+		return 0
+	}
+	minutes, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || minutes < 0 {
+		return 0
+	}
+	if _, err := strconv.ParseInt(fields[2], 10, 64); err != nil {
+		return 0
+	}
+	return minutes
 }
 func queuedPromptIsUnresolved(sd, agent, state string, ctx *core.Config, env platform.Env, svc transport.Services) bool {
 	marker := markerRead(sd, agent, "queued")
