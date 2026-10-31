@@ -28,6 +28,7 @@ import (
 	"github.com/djalmajr/soho/internal/spawn/cursorapproval"
 	"github.com/djalmajr/soho/internal/startup"
 	"github.com/djalmajr/soho/internal/taskreport"
+	"github.com/djalmajr/soho/internal/text"
 	"github.com/djalmajr/soho/internal/transport"
 )
 
@@ -445,7 +446,13 @@ func reportAgentState(sd, agent, report string, ctx *core.Config, svc transport.
 		return done()
 	}
 	st := readState(svc, agent)
-	switch st.State {
+	state := st.State
+	if env.Get("SOHO_TRANSPORT") == "hc" && state == "error" {
+		// An hc error ends the turn as done does: with the report written,
+		// the report decides.
+		state = "done"
+	}
+	switch state {
 	case "gone", "unavailable":
 		return done()
 	case "idle", "done":
@@ -560,7 +567,10 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 	// so a report still wins; the herdr path never reports an `error`
 	// word, and the guard keeps it that way.
 	if env.Get("SOHO_TRANSPORT") == "hc" && st.State == "error" {
-		cause := st.Msg
+		// The message is the assistant's own text: redacted and made one
+		// printable line, as every other provider cause is, before it
+		// reaches the marker, the JSON, the warning and the friction log.
+		cause := text.SanitizeCause(text.RedactSecrets(st.Msg))
 		if cause == "" {
 			cause = "the assistant reported an error"
 		}
@@ -1361,9 +1371,11 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 func pauseForWake(svc transport.Services, env platform.Env, deadline time.Time, timeoutMs float64, remaining []string) {
 	poll := time.Duration(PollIntervalMs(env)) * time.Millisecond
 	if waker, ok := svc.Runtime.(transport.Waker); ok && env.Get("SOHO_TRANSPORT") == "hc" && len(remaining) > 0 && !math.IsNaN(timeoutMs) && !math.IsInf(timeoutMs, 0) {
-		bound := 10 * time.Second
-		if rem := deadline.Sub(platform.Now()); rem > 0 && rem < bound {
-			bound = rem
+		// An expired budget never becomes a new wake: the bound is the
+		// remaining time, capped at 10s, and a nonpositive one skips the wake.
+		bound := deadline.Sub(platform.Now())
+		if bound > 10*time.Second {
+			bound = 10 * time.Second
 		}
 		if bound > 0 {
 			started := time.Now()
