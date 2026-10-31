@@ -345,12 +345,7 @@ func TestSurfaceCoversEveryMethod(t *testing.T) {
 		},
 
 		// Runtime.
-		{
-			"Runtime.Start", wantUnsupported, func(b *backend) outcome {
-				rep := b.Start(context.Background(), transport.Start{Name: "n"}, transport.Call{})
-				return outcome{valid: rep.Valid, kind: kind(rep.Err), msg: msg(rep.Err), zero: rep.Value == ""}
-			},
-		},
+		{"Runtime.Start", wantImplemented, nil},
 		{"Runtime.CallerAgentName", wantImplemented, nil},
 		{
 			"Runtime.SendText", wantUnsupported, func(b *backend) outcome {

@@ -820,7 +820,8 @@ func rawReply(r platform.RunResult) transport.Reply[string] {
 // `agent start <name> --kind <kind> --pane <pane> --timeout <timeout>`, with
 // the request's args after a "--" when there are any, under the per-call
 // wrapper timeout. The merged output comes back on Value so the caller can
-// read the backend's start markers from it.
+// read the backend's start markers from it. The request's Cwd is ignored:
+// the pane's own working directory stands.
 func (b *backend) Start(ctx context.Context, start transport.Start, call transport.Call) transport.Reply[string] {
 	args := []string{"agent", "start", start.Name, "--kind", start.Kind, "--pane", start.PaneID, "--timeout", start.Timeout}
 	if len(start.Args) > 0 {
