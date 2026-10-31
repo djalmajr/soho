@@ -80,6 +80,9 @@ const (
 	FailureCancelled FailureKind = "cancelled"
 	// FailureCommand: the underlying command failed for another reason.
 	FailureCommand FailureKind = "command"
+	// FailureConflict: the request conflicts with existing state, such as
+	// a terminal name the hc core already has live (its name_taken error).
+	FailureConflict FailureKind = "conflict"
 )
 
 // Failure is a structured transport error. Code carries an observed wire code
@@ -164,6 +167,11 @@ type Start struct {
 	PaneID  string
 	Timeout string
 	Args    []string
+
+	// Cwd is the worker's working directory. The herdr backend ignores it
+	// (its pane already has a cwd); the hc backend passes it as --cwd when
+	// it is non-empty.
+	Cwd string
 }
 
 // CallerCheck is the outcome of the caller-pane check: whether this process
@@ -537,6 +545,10 @@ type Runtime interface {
 	// Start starts an agent of the request's kind in its pane with its
 	// timeout and optional args, and returns the merged output the backend
 	// captured, so the caller can read the backend's start markers from it.
+	// The herdr backend's Value is that merged output; the hc backend
+	// returns the new terminal's address (t7) on success, and also carries
+	// it on the readiness failures (blocked, exited, timeout) once the
+	// terminal exists, so the caller can close the terminal the start left.
 	Start(ctx context.Context, start Start, call Call) Reply[string]
 	// CallerAgentName returns the agent that hosts the caller's claimed
 	// pane, read with one agent get on that pane; a pane without a readable

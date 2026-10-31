@@ -521,32 +521,26 @@ func (b *backend) Read(ctx context.Context, target transport.Target, read transp
 	return transport.Reply[string]{Value: text, Valid: true, Process: processRecord(out)}
 }
 
-// Close ends the terminal's program and removes its record: `hc kill` then
-// `hc rm`; a terminal that is already finished goes straight to `hc rm`.
-// Closed means the record is gone: a terminal whose record is already
-// removed reports closed.
+// Close ends the terminal's program and removes its record: `hc kill`
+// then `hc rm`. A kill that exits 3, or that reports the program already
+// finished, still runs the rm; an rm that exits 3 counts as closed. So a
+// Close is safe for a live terminal, an already finished one, and the
+// terminal a failed start left behind. Closed means the record is gone:
+// a terminal whose record is already removed reports closed.
 func (b *backend) Close(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[bool] {
 	id := addr(target)
-	out, err := b.run(ctx, call, "get", id)
-	if err != nil {
-		if notFound(err) {
-			return transport.Reply[bool]{Value: true, Valid: true}
-		}
-		return transport.Reply[bool]{Err: failure(err)}
-	}
-	obj, ok := terminalObject(out)
-	if !ok {
-		return transport.Reply[bool]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc get returned no terminal record"}}
-	}
-	if stateOf(obj) != "gone" {
-		if _, err := b.run(ctx, call, "kill", id); err != nil {
-			if notFound(err) {
-				return transport.Reply[bool]{Value: true, Valid: true}
-			}
+	if _, err := b.run(ctx, call, "kill", id); err != nil {
+		// An exit-3 kill found no terminal to end; a kill that reports the
+		// program already finished exits 0 with the finished record. Either
+		// way the record may still need its rm, so only a kill that failed
+		// for another reason stops the close.
+		if !notFound(err) {
 			return transport.Reply[bool]{Err: failure(err)}
 		}
 	}
 	if _, err := b.run(ctx, call, "rm", id); err != nil {
+		// An rm that exits 3 found no record to remove: the terminal is
+		// closed.
 		if notFound(err) {
 			return transport.Reply[bool]{Value: true, Valid: true}
 		}
@@ -794,10 +788,283 @@ func (b *backend) ServerReloadConfigRaw(ctx context.Context, call transport.Call
 
 // Runtime.
 
-// Start is not supported with transport=hc: agent start (the argv
-// resolution for the 7501 assistants among it) is the next slice's work.
+// startPollInterval is the readiness poll period after a successful hc run:
+// one hc get per interval until the worker reports (DJA-604 slice 2b-2a).
+const startPollInterval = 200 * time.Millisecond
+
+// startTimeoutDefaultMs is the readiness deadline when Start.Timeout is
+// empty, zero or invalid: the herdr default the spawn side passes.
+const startTimeoutDefaultMs = 60000
+
+// hcStartKinds are the kinds whose executable reports a 7501 status hc can
+// observe; the executable is the kind name itself, the single piece herdr
+// fixed on its side.
+var hcStartKinds = map[string]bool{
+	"claude": true,
+	"codex":  true,
+	"pi":     true,
+	"grok":   true,
+	"agy":    true,
+}
+
+// validHcName reports whether name is a valid hc terminal name: 1-32
+// characters of a-z 0-9 - _.
+func validHcName(name string) bool {
+	if len(name) < 1 || len(name) > 32 {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// startTimeout parses the readiness deadline: milliseconds as a decimal
+// string, as herdr takes it; empty, zero or invalid mean the default.
+func startTimeout(timeout string) time.Duration {
+	ms, err := strconv.Atoi(timeout)
+	if err != nil || ms <= 0 {
+		return time.Duration(startTimeoutDefaultMs) * time.Millisecond
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// startDeadlineSeconds renders the readiness deadline in seconds for the
+// timeout message (60000 ms is "60", 250 is "0.25").
+func startDeadlineSeconds(deadline time.Duration) string {
+	return strconv.FormatFloat(float64(deadline.Milliseconds())/1000, 'g', -1, 64)
+}
+
+// Start starts the worker in a new hc terminal of this session and waits
+// for its first reported status (DJA-604 slice 2b-2a). The command is
+// `hc run --bg --json --name <name> [--cwd <cwd>] --label
+// soho.session=<session> --no-notify --outlive-parent -- <exe> <args…>`,
+// where <exe> is the kind's name; the request's args go out byte for byte,
+// with no quoting added. Value carries the new terminal's address on
+// success. An unsupported kind and an invalid name refuse before any
+// launch; a run that fails with hc's name_taken error is a FailureConflict
+// (spawn picks the next suffix; this slice does not retry); readiness is
+// one hc get per startPollInterval until the deadline.
 func (b *backend) Start(ctx context.Context, start transport.Start, call transport.Call) transport.Reply[string] {
-	return transport.Reply[string]{Err: unsupported("Start")}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !hcStartKinds[start.Kind] {
+		return transport.Reply[string]{Err: &transport.Failure{
+			Kind:    transport.FailureUnsupported,
+			Message: fmt.Sprintf("kind %s does not report status under transport=hc; use transport=herdr", start.Kind),
+		}}
+	}
+	if !validHcName(start.Name) {
+		return transport.Reply[string]{Err: &transport.Failure{
+			Kind:    transport.FailureCommand,
+			Message: fmt.Sprintf("worker name '%s' is not a valid hc terminal name (1-32 of a-z 0-9 - _)", start.Name),
+		}}
+	}
+	session, err := b.session(ctx, call)
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: cerr.Error(), Cause: cerr}}
+		}
+		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: err.Error(), Cause: err}}
+	}
+	args := []string{"run", "--bg", "--json", "--name", start.Name}
+	if start.Cwd != "" {
+		args = append(args, "--cwd", start.Cwd)
+	}
+	args = append(args, "--label", SessionLabel+"="+session, "--no-notify", "--outlive-parent", "--", start.Kind)
+	args = append(args, start.Args...)
+	out, err := b.run(ctx, call, args...)
+	if err != nil {
+		// A run the request's cancellation interrupted is a cancellation,
+		// not a failed command.
+		if cerr := ctx.Err(); cerr != nil {
+			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: cerr.Error(), Cause: cerr}}
+		}
+		return startRunFailure(start.Name, err)
+	}
+	obj, ok := terminalObject(out)
+	if !ok {
+		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc run returned no terminal record"}}
+	}
+	address := addressOf(obj)
+	if address == "" {
+		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc run returned no terminal address"}}
+	}
+	return b.waitReady(ctx, call, start.Name, address, startTimeout(start.Timeout))
+}
+
+// startRunFailure maps one failed hc run onto the transport failure it is:
+// hc's name_taken error is a conflict (names are unique on the whole core,
+// not only this session), every other hc error is the command having
+// failed, and a launch that never resolved is the backend unreachable.
+func startRunFailure(name string, err error) transport.Reply[string] {
+	var hcErr *hc.Error
+	if errors.As(err, &hcErr) {
+		if hcErr.Kind == "name_taken" {
+			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureConflict, Message: "name_taken: " + name, Cause: err}}
+		}
+		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCommand, Message: hcErr.Error(), Cause: err}}
+	}
+	return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: err.Error(), Cause: err}}
+}
+
+// waitReady polls one hc get on the new terminal's address per
+// startPollInterval until startup is decided: a reported idle or done is
+// ready, a blocked status is the blocked failure (the terminal stays; spawn
+// decides), a finished terminal or a get that exits 3 is the exited
+// failure, and the deadline is the timeout failure carrying the last get
+// error it holds. A cancelled ctx stops the poll as a cancellation. Every
+// failure reply carries the address in Value, so the caller can close the
+// terminal the start left.
+func (b *backend) waitReady(ctx context.Context, call transport.Call, name, address string, deadline time.Duration) transport.Reply[string] {
+	deadlineAt := time.Now().Add(deadline)
+	var lastErr *transport.Failure
+	for {
+		if err := ctx.Err(); err != nil {
+			return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCancelled, Message: err.Error(), Cause: err}}
+		}
+		if time.Until(deadlineAt) <= 0 {
+			return timeoutReply(name, address, deadline, lastErr)
+		}
+		getCtx, cancel := context.WithTimeout(ctx, time.Until(deadlineAt))
+		out, err := b.run(getCtx, call, "get", address)
+		cancel()
+		if err != nil {
+			if notFound(err) {
+				return transport.Reply[string]{Value: address, Err: exitedFailure(name, nil)}
+			}
+			if ctx.Err() != nil {
+				return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCancelled, Message: ctx.Err().Error(), Cause: ctx.Err()}}
+			}
+			lastErr = failure(err)
+		} else {
+			rep, perr := readinessReply(name, address, out)
+			if rep != nil {
+				return *rep
+			}
+			lastErr = perr
+		}
+		wait := startPollInterval
+		if remaining := time.Until(deadlineAt); wait > remaining {
+			wait = remaining
+		}
+		if wait <= 0 {
+			return timeoutReply(name, address, deadline, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCancelled, Message: ctx.Err().Error(), Cause: ctx.Err()}}
+		case <-time.After(wait):
+		}
+	}
+}
+
+// readinessReply decides one readiness get. The reply is non-nil when the
+// get decides startup (ready, blocked or exited); the failure is non-nil
+// when the body is not a terminal record at all (a protocol failure the
+// poll retries like any other get failure); both are nil when the worker
+// is simply not ready yet (working or error, a null status, not yet
+// reported).
+func readinessReply(name, address, out string) (*transport.Reply[string], *transport.Failure) {
+	obj, ok := terminalObject(out)
+	if !ok {
+		return nil, &transport.Failure{Kind: transport.FailureProtocol, Message: "hc get returned no terminal record"}
+	}
+	if v, ok := obj.Get("state"); ok {
+		if state, isString := v.(string); isString && state == "finished" {
+			return &transport.Reply[string]{Value: address, Err: exitedFailure(name, obj)}, nil
+		}
+	}
+	raw, ok := obj.Get("status")
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	status, ok := raw.(*jsonjs.Object)
+	if !ok {
+		return nil, nil
+	}
+	word := ""
+	if v, ok := status.Get("state"); ok {
+		if s, isString := v.(string); isString {
+			word = s
+		}
+	}
+	switch word {
+	case "blocked":
+		message := "agent " + name + " is blocked during startup"
+		if m, ok := status.Get("msg"); ok {
+			if s, isString := m.(string); isString && s != "" {
+				message += ": " + s
+			}
+		}
+		return &transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCommand, Message: message}}, nil
+	case "idle", "done":
+		reported := false
+		if v, ok := obj.Get("reported"); ok {
+			reported = v == true
+		}
+		if reported {
+			return &transport.Reply[string]{Value: address, Valid: true, Process: processRecord(out)}, nil
+		}
+	}
+	return nil, nil
+}
+
+// exitedFailure renders the startup exit, `agent <name> exited during
+// startup (exit <code>, <reason>)`, leaving out the parts hc does not
+// report (a get that exits 3 knows neither).
+func exitedFailure(name string, obj *jsonjs.Object) *transport.Failure {
+	code, hasCode := exitCodeOf(obj)
+	reason := ""
+	if obj != nil {
+		if v, ok := obj.Get("reason"); ok {
+			if s, isString := v.(string); isString {
+				reason = s
+			}
+		}
+	}
+	switch {
+	case hasCode && reason != "":
+		return &transport.Failure{Kind: transport.FailureCommand, Message: fmt.Sprintf("agent %s exited during startup (exit %d, %s)", name, code, reason)}
+	case hasCode:
+		return &transport.Failure{Kind: transport.FailureCommand, Message: fmt.Sprintf("agent %s exited during startup (exit %d)", name, code)}
+	case reason != "":
+		return &transport.Failure{Kind: transport.FailureCommand, Message: fmt.Sprintf("agent %s exited during startup (%s)", name, reason)}
+	default:
+		return &transport.Failure{Kind: transport.FailureCommand, Message: "agent " + name + " exited during startup"}
+	}
+}
+
+// exitCodeOf reads the record's exit code: jsonjs decodes JSON numbers as
+// float64, and an exit code is an integer of one.
+func exitCodeOf(obj *jsonjs.Object) (int, bool) {
+	if obj == nil {
+		return 0, false
+	}
+	v, ok := obj.Get("exit_code")
+	if !ok {
+		return 0, false
+	}
+	f, ok := v.(float64)
+	if !ok {
+		return 0, false
+	}
+	return int(f), true
+}
+
+// timeoutReply renders the readiness deadline: `agent <name> still not
+// ready after <seconds>s`, with the last get error when the poll holds one.
+func timeoutReply(name, address string, deadline time.Duration, lastErr *transport.Failure) transport.Reply[string] {
+	message := fmt.Sprintf("agent %s still not ready after %ss", name, startDeadlineSeconds(deadline))
+	if lastErr != nil {
+		message += ": " + lastErr.Error()
+	}
+	return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCommand, Message: message, Cause: lastErr}}
 }
 
 // CallerAgentName returns the name of the terminal the caller runs in: one

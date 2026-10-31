@@ -55,9 +55,9 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("hc exited %d: %s: %s", e.Exit, e.Kind, e.Message)
 }
 
-// Run runs hc with the given sub-arguments and --json appended (once: an
-// argument list that already holds it is passed as is), without
-// stdin input. It returns the stdout text on exit 0; a missing binary is
+// Run runs hc with the given sub-arguments and --json placed in the options
+// region (before the first "--", appended when there is none), without stdin
+// input. It returns the stdout text on exit 0; a missing binary is
 // ErrNotInstalled; every other non-zero exit is an *Error decoded from the
 // stderr.
 func Run(ctx context.Context, env platform.Env, args ...string) (string, error) {
@@ -66,12 +66,33 @@ func Run(ctx context.Context, env platform.Env, args ...string) (string, error) 
 
 // RunInput is Run with one line written to hc's stdin before it is closed.
 func RunInput(ctx context.Context, env platform.Env, input string, args ...string) (string, error) {
-	argv := append([]string{}, args...)
-	if !slices.Contains(argv, "--json") {
-		argv = append(argv, "--json")
-	}
+	argv := placeJSON(args)
 	res := platform.RunCli("hc", argv, platform.RunOptions{Context: ctx, Env: env, Input: input})
 	return decode(res)
+}
+
+// placeJSON returns the argv with --json placed for the hc client: only the
+// options region (before the first "--") counts — after it, a "--json" is a
+// program argument and must not suppress the client's own flag — and when
+// the options region holds none, it is inserted right before the first "--",
+// or appended when there is no "--" at all.
+func placeJSON(args []string) []string {
+	argv := append([]string{}, args...)
+	sep := slices.Index(argv, "--")
+	opts := argv
+	if sep >= 0 {
+		opts = argv[:sep]
+	}
+	if slices.Contains(opts, "--json") {
+		return argv
+	}
+	if sep >= 0 {
+		out := make([]string, 0, len(argv)+1)
+		out = append(out, argv[:sep]...)
+		out = append(out, "--json")
+		return append(out, argv[sep:]...)
+	}
+	return append(argv, "--json")
 }
 
 // Client is a per-instance hc client bound to one environment. Launch is
@@ -97,17 +118,13 @@ func defaultLaunch(ctx context.Context, env platform.Env, args ...string) platfo
 	return platform.RunCli("hc", args, platform.RunOptions{Context: ctx, Env: env})
 }
 
-// Run runs hc with the client's environment and --json appended (once: an
-// argument list that already holds it is passed as is), without stdin
+// Run runs hc with the client's environment and --json placed in the options
+// region (before the first "--", appended when there is none), without stdin
 // input. It returns the stdout text on exit 0; a missing binary is
 // ErrNotInstalled; every other non-zero exit is an *Error decoded from the
 // stderr.
 func (c *Client) Run(ctx context.Context, args ...string) (string, error) {
-	argv := append([]string{}, args...)
-	if !slices.Contains(argv, "--json") {
-		argv = append(argv, "--json")
-	}
-	return decode(c.Launch(ctx, c.Env, argv...))
+	return decode(c.Launch(ctx, c.Env, placeJSON(args)...))
 }
 
 // decode maps one raw hc launch onto Run's contract: the stdout text on

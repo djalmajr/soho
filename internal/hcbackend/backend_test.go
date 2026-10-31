@@ -453,9 +453,8 @@ func TestBackendClose(t *testing.T) {
 	const live = `{"address":"t7","state":"live","status":{"state":"idle"},"turn":1}`
 	const finished = `{"address":"t7","state":"finished","status":null,"turn":4}`
 
-	t.Run("live: get, kill, rm", func(t *testing.T) {
+	t.Run("kill, then rm", func(t *testing.T) {
 		env, calls := fakeHc(t, []fakecli.Rule{
-			{Argv: []string{"get", "t7", "--json"}, Stdout: live},
 			{Argv: []string{"kill", "t7", "--json"}, Stdout: live},
 			{Argv: []string{"rm", "t7", "--json"}, Stdout: `{"removed":"t7"}`},
 		})
@@ -468,15 +467,14 @@ func TestBackendClose(t *testing.T) {
 			t.Fatalf("rep: %+v", rep)
 		}
 		wantArgv(t, calls(), [][]string{
-			{"get", "t7", "--json"},
 			{"kill", "t7", "--json"},
 			{"rm", "t7", "--json"},
 		})
 	})
 
-	t.Run("a finished terminal goes straight to rm", func(t *testing.T) {
+	t.Run("a kill that reports the terminal finished still runs the rm", func(t *testing.T) {
 		env, calls := fakeHc(t, []fakecli.Rule{
-			{Argv: []string{"get", "t7", "--json"}, Stdout: finished},
+			{Argv: []string{"kill", "t7", "--json"}, Stdout: finished},
 			{Argv: []string{"rm", "t7", "--json"}, Stdout: `{"removed":"t7"}`},
 		})
 		b := &backend{env: env, client: hc.New(env)}
@@ -485,24 +483,45 @@ func TestBackendClose(t *testing.T) {
 			t.Fatalf("rep: %+v", rep)
 		}
 		wantArgv(t, calls(), [][]string{
-			{"get", "t7", "--json"},
+			{"kill", "t7", "--json"},
 			{"rm", "t7", "--json"},
 		})
 	})
 
-	t.Run("an already removed record is closed", func(t *testing.T) {
-		env, calls := fakeHc(t, []fakecli.Rule{{Argv: []string{"get", "t7", "--json"}, Code: 3, Stderr: `{"error":{"kind":"not_found","message":"no such terminal"}}`}})
+	t.Run("a kill that exits 3 still runs the rm", func(t *testing.T) {
+		env, calls := fakeHc(t, []fakecli.Rule{
+			{Argv: []string{"kill", "t7", "--json"}, Code: 3, Stderr: `{"error":{"kind":"not_found","message":"no such terminal"}}`},
+			{Argv: []string{"rm", "t7", "--json"}, Stdout: `{"removed":"t7"}`},
+		})
 		b := &backend{env: env, client: hc.New(env)}
 		rep := b.Close(context.Background(), transport.Target{ID: "t7"}, transport.Call{})
 		if rep.Err != nil || !rep.Value {
 			t.Fatalf("rep: %+v", rep)
 		}
-		wantArgv(t, calls(), [][]string{{"get", "t7", "--json"}})
+		wantArgv(t, calls(), [][]string{
+			{"kill", "t7", "--json"},
+			{"rm", "t7", "--json"},
+		})
 	})
 
-	t.Run("a kill failure stops before the rm", func(t *testing.T) {
+	t.Run("an rm that exits 3 counts as closed", func(t *testing.T) {
 		env, calls := fakeHc(t, []fakecli.Rule{
-			{Argv: []string{"get", "t7", "--json"}, Stdout: live},
+			{Argv: []string{"kill", "t7", "--json"}, Stdout: live},
+			{Argv: []string{"rm", "t7", "--json"}, Code: 3, Stderr: `{"error":{"kind":"not_found","message":"no such terminal"}}`},
+		})
+		b := &backend{env: env, client: hc.New(env)}
+		rep := b.Close(context.Background(), transport.Target{ID: "t7"}, transport.Call{})
+		if rep.Err != nil || !rep.Value {
+			t.Fatalf("rep: %+v", rep)
+		}
+		wantArgv(t, calls(), [][]string{
+			{"kill", "t7", "--json"},
+			{"rm", "t7", "--json"},
+		})
+	})
+
+	t.Run("a kill failure other than not-found stops before the rm", func(t *testing.T) {
+		env, calls := fakeHc(t, []fakecli.Rule{
 			{Argv: []string{"kill", "t7", "--json"}, Code: 1, Stderr: `{"error":{"kind":"internal","message":"cannot signal"}}`},
 		})
 		b := &backend{env: env, client: hc.New(env)}
@@ -513,21 +532,17 @@ func TestBackendClose(t *testing.T) {
 		if rep.Value {
 			t.Fatal("closed on a kill failure")
 		}
-		wantArgv(t, calls(), [][]string{
-			{"get", "t7", "--json"},
-			{"kill", "t7", "--json"},
-		})
+		wantArgv(t, calls(), [][]string{{"kill", "t7", "--json"}})
 	})
 
-	t.Run("an rm failure is not closed", func(t *testing.T) {
+	t.Run("an rm failure other than not-found is not closed", func(t *testing.T) {
 		env, _ := fakeHc(t, []fakecli.Rule{
-			{Argv: []string{"get", "t7", "--json"}, Stdout: live},
 			{Argv: []string{"kill", "t7", "--json"}, Stdout: live},
-			{Argv: []string{"rm", "t7", "--json"}, Code: 1, Stderr: `{"error":{"kind":"internal","message":"still live"}}`},
+			{Argv: []string{"rm", "t7", "--json"}, Code: 1, Stderr: `{"error":{"kind":"live","message":"terminal is live"}}`},
 		})
 		b := &backend{env: env, client: hc.New(env)}
 		rep := b.Close(context.Background(), transport.Target{ID: "t7"}, transport.Call{})
-		if rep.Err == nil || !strings.Contains(rep.Err.Message, "still live") {
+		if rep.Err == nil || !strings.Contains(rep.Err.Message, "terminal is live") {
 			t.Fatalf("err: %+v", rep.Err)
 		}
 		if rep.Value {
