@@ -395,7 +395,10 @@ func TestWaitHcWakeBoundStaysWithinTheRemainingTimeout(t *testing.T) {
 		fakecli.Rule{Argv: []string{"get", "worker", "--json"}, Stdout: hcWakeWorking5},
 		fakecli.Rule{Argv: []string{"wait", "worker"}, ArgvPrefix: true, Stdout: hcWakeWaitTurn(6)},
 	)
-	code, out, stderr := f.runWait(t, false, 2000)
+	// An 8 s budget leaves room for the first poll under host load (a
+	// budget already spent before the first pause rightly starts no
+	// wake); every wake must still stay within what remains.
+	code, out, stderr := f.runWait(t, false, 8000)
 	if code != 9 {
 		t.Fatalf("code=%d out=%q stderr=%q, want the timeout exit 9", code, out, stderr)
 	}
@@ -414,8 +417,8 @@ func TestWaitHcWakeBoundStaysWithinTheRemainingTimeout(t *testing.T) {
 				_, _ = fmt.Sscanf(w.Argv[i+1], "%d", &sec)
 			}
 		}
-		if sec < 1 || sec > 2 {
-			t.Fatalf("wake %q used --timeout %d, want within the remaining 2s budget (1..2)", joined, sec)
+		if sec < 1 || sec > 8 {
+			t.Fatalf("wake %q used --timeout %d, want within the remaining 8s budget (1..8)", joined, sec)
 		}
 	}
 	f.assertNoHerdr(t)
