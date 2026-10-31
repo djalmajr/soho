@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -142,11 +144,55 @@ func firstAtOrAfter(times []time.Time, from time.Time) (time.Time, error) {
 	return first, nil
 }
 
+// warmFakeBinary re-executes a throwaway fake — a symlink to the test
+// binary, the same inode every fixture fake execs — with a no-op rule
+// until a round trip is quick, so the step tests below measure the
+// fixture's delays, not the fake's cold start: the cold start (page-in
+// plus runtime init) can outlive a short step under host load, eating
+// the remainder the scenario must leave for the second command (DJA-637,
+// after fakePsWarm in internal/platform). It installs in its own
+// directory with its own call log, so the fixtures' call logs — and the
+// call-count assertions over them — stay clean.
+func warmFakeBinary(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	bin, err := fakecli.Install(t, dir, "soho-warmup", []fakecli.Rule{{Argv: []string{"version"}, Stdout: "1\n"}})
+	if err != nil {
+		t.Fatalf("install the warm-up fake: %v", err)
+	}
+	env := platform.Env{}
+	for _, item := range fakecli.Env(nil, dir) {
+		key, value, ok := strings.Cut(item, "=")
+		if ok && key != "" {
+			env[key] = value
+		}
+	}
+	until := time.Now().Add(30 * time.Second)
+	for {
+		began := time.Now()
+		platform.RunExecutable(bin, []string{"version"}, platform.RunOptions{Env: env, TimeoutMs: 5000})
+		if time.Since(began) < 400*time.Millisecond {
+			return
+		}
+		if time.Now().After(until) {
+			t.Fatalf("the fake took over 400 ms per round trip for 30 s; the host load is too high to exercise the step remainder")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // A slow first gh command followed by a hung second one stays inside the gh
 // step: `gh pr create` receives the remainder at its own start, not the whole
 // step again.
 func TestFinishingGhStepBoundsTheSecondCommandByTheRemainder(t *testing.T) {
 	for _, tc := range []struct {
+		// The short cases use a 4 s step with the list at 60% of it
+		// (2.4 s): with the fake warmed (warmFakeBinary) the 1.6 s
+		// remainder is wider than a start under host load, and the list
+		// stays longer than clampSlack, so a create given a fresh step
+		// instead of the remainder ends past step + clampSlack and fails
+		// the bound (DJA-637; a 2 s step with a 1.2 s list could not tell
+		// the two apart). The 5 s case keeps its 4 s list (80%).
 		name  string
 		step  time.Duration
 		delay int
@@ -154,9 +200,9 @@ func TestFinishingGhStepBoundsTheSecondCommandByTheRemainder(t *testing.T) {
 		// the recorded start: the measure must not depend on that delay.
 		lateRead time.Duration
 	}{
-		{"step 2s, list 1.8s", 2 * time.Second, 1800, 0},
+		{"step 4s, list 2.4s", 4 * time.Second, 2400, 0},
 		{"step 5s, list 4s", 5 * time.Second, 4000, 0},
-		{"step 2s, list 1.8s, start read 4s after the job", 2 * time.Second, 1800, 4 * time.Second},
+		{"step 4s, list 2.4s, start read 4s after the job", 4 * time.Second, 2400, 4 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			step := scaledDuration(tc.step)
@@ -166,6 +212,7 @@ func TestFinishingGhStepBoundsTheSecondCommandByTheRemainder(t *testing.T) {
 				{Argv: ghCreateArgv("feat: first", supGitPRBody), Stdout: gitSyncPRURL + "\n", Delay: 60000},
 			}
 			f := newSupGitFixture(t, rules)
+			warmFakeBinary(t)
 			f.job.commitIn(t, "feat: first")
 			finishingRealClock(f, finishingLimits{Budget: 60 * time.Second, Git: 30 * time.Second, GH: step})
 			frictionAt := frictionTimes(f)
@@ -242,6 +289,10 @@ func TestCheckpointBoundsTheLaterCommandsByTheStepRemainder(t *testing.T) {
 				t.Fatalf("install the fake git: %v", err)
 			}
 			g := &GitSync{Env: envFromPairs(t, fakecli.Env(nil, fakeDir)), Dir: dir, Branch: gitSyncBranch, Base: "main", Repo: gitSyncRepo}
+			// Warm the fake git (same test-binary inode): its cold start can
+			// outlive the 2 s step under host load, ending the step before
+			// diff or commit opens inside it (DJA-637).
+			warmFakeBinary(t)
 			start := time.Now()
 			g.Limit = stepDeadlineLimit(start.Add(step))
 			committed, err := g.Checkpoint()
