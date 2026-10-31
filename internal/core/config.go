@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/djalmajr/soho/internal/platform"
 	textutil "github.com/djalmajr/soho/internal/text"
@@ -109,6 +110,9 @@ var startupDialogKeys = []string{"hooks_review"}
 // out of ConfigScalarKeys, so `soho config` keeps the row order pinned by
 // the frozen parity oracle; config set and config get accept it.
 var transportKeys = []string{"transport"}
+
+// Inventory keys stay outside the frozen configuration listing order.
+var inventoryKeys = []string{"inventory", "inventory_name"}
 
 var KnownKinds = []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode"}
 var EffortLadder = []string{"low", "medium", "high", "xhigh", "max"}
@@ -448,6 +452,11 @@ func ConfigKeyOk(key string) bool {
 			return true
 		}
 	}
+	for _, scalar := range inventoryKeys {
+		if scalar == key {
+			return true
+		}
+	}
 	return dottedKeyRE.MatchString(key)
 }
 
@@ -498,6 +507,10 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return HooksReviewModeOk(value)
 	case key == "transport":
 		return TransportValueOk(value)
+	case key == "inventory":
+		return value == "off" || value == "hidden" || value == "show"
+	case key == "inventory_name":
+		return utf8.ValidString(value) && !strings.ContainsFunc(value, unicode.IsControl)
 	case key == "worker_messages":
 		return value == "off" || value == "policy"
 	case key == "panes":
@@ -699,13 +712,22 @@ func ConfigFileFor(where string, env platform.Env, cwd string) string {
 }
 
 func StateRootPath(ctx *Config, env platform.Env, cwd string) string {
-	root := platform.StateProjectRoot(env, cwd)
+	return StateRootPathForProject(ctx, env, platform.StateProjectRoot(env, cwd))
+}
+
+// StateRootPathForProject is StateRootPath over an already known project
+// root: SOHO_DIR first, otherwise the current state_dir setting, relative
+// to that root. It is pure path arithmetic: no Git lookup, no cwd and no
+// state access, so the explicit read-only loader can use its supplied
+// canonical root. StateRootPath delegates to it after resolving the
+// existing StateProjectRoot, with no behavior change.
+func StateRootPathForProject(ctx *Config, env platform.Env, projectRoot string) string {
 	dir := env.Get("SOHO_DIR")
 	if dir == "" {
-		dir = StateDirSetting(ctx, env, cwd)
+		dir = StateDirSetting(ctx, env, "")
 	}
 	if !filepath.IsAbs(dir) {
-		dir = filepath.Join(root, dir)
+		dir = filepath.Join(projectRoot, dir)
 	}
 	return filepath.Clean(dir)
 }

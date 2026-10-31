@@ -449,3 +449,7 @@ job_wake_cmd=
 # other check today) or `hc`, the herdr-core CLI. Only `doctor` reads hc so
 # far; the other commands still use herdr.
 transport=herdr
+# Machine inventory is opt-in per project; user, session and SOHO_INVENTORY settings may only lower the project mode.
+inventory=off
+# Optional display name from the project file only; empty uses the project root's base name.
+inventory_name=

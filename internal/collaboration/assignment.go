@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -106,6 +107,15 @@ func (s Store) Read(id string) (Assignment, error) {
 	if err != nil {
 		return Assignment{}, err
 	}
+	return ParseAssignment(raw, id)
+}
+
+// ParseAssignment is the shared record parse and validation that
+// Store.Read and the read-only inspection apply to the record bytes: the
+// same JSON parse, the same full validation and the same id agreement
+// check; an unreadable, invalid or mismatched record is an error with the
+// parsed fields returned. It opens no path.
+func ParseAssignment(raw []byte, id string) (Assignment, error) {
 	var a Assignment
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return a, fmt.Errorf("unreadable collaboration %s: %w", id, err)
@@ -218,6 +228,56 @@ func (s Store) ListActive() (active []Assignment, unreadable []UnreadableAssignm
 		}
 	}
 	return active, unreadable, nil
+}
+
+// activeSourceRecordMax and activeSourceTotalMax are the D7 inspection
+// caps of the collaboration read: one assignment record's bytes and the
+// aggregate assignment bytes of one inspection.
+const (
+	activeSourceRecordMax = 1 << 20
+	activeSourceTotalMax  = 4 << 20
+)
+
+// ActiveForSource is the read-only inspection twin of ActiveFor: the
+// same walk and the same shared record parse, over the source's bounded
+// confined enumeration and capped record reads — the state dir is never
+// reopened by raw path, a record the cap refuses or an exhausted
+// directory is an error (never an empty success), and an absent
+// collaboration dir is no active collaboration.
+func ActiveForSource(src *core.SessionSource, pane string) (*Assignment, error) {
+	names, err := src.ReadDir("collaboration")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var found *Assignment
+	var total int64
+	for _, id := range names {
+		if !assignmentID.MatchString(id) {
+			continue
+		}
+		raw, err := src.ReadFile(activeSourceRecordMax, "collaboration", id, "assignment.json")
+		if err != nil {
+			return nil, err
+		}
+		total += int64(len(raw))
+		if total > activeSourceTotalMax {
+			return nil, errors.New("the collaboration records exceed the inspection cap")
+		}
+		a, err := ParseAssignment([]byte(raw), id)
+		if err != nil {
+			return nil, err
+		}
+		if _, member := a.Member(pane); member && a.Active() {
+			if found != nil {
+				return nil, errors.New("participant has multiple active collaborations")
+			}
+			found = &a
+		}
+	}
+	return found, nil
 }
 
 func (s Store) ActiveFor(pane string) (*Assignment, error) {

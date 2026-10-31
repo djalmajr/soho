@@ -78,6 +78,27 @@ func read(path string) *jsonjs.Object {
 	return o
 }
 
+// sidecarInspectLimit is the D7 inspection cap of one dispatch sidecar:
+// the inspection seam never reads more of a sidecar's metadata than this
+// and refuses an overlong sidecar (it is not truncated).
+const sidecarInspectLimit = 1 << 20
+
+// readSidecarInspect is the inspection's sidecar read: the same existing
+// scratch read guarantees as read (a regular nonlinked file of the
+// current user, nonblocking, identity-verified) plus the capped bound.
+func readSidecarInspect(path string) *jsonjs.Object {
+	raw, err := core.ReadScratchReportLimited(path, sidecarInspectLimit)
+	if err != nil {
+		return nil
+	}
+	v, err := jsonjs.Parse(raw)
+	o, _ := v.(*jsonjs.Object)
+	if err != nil {
+		return nil
+	}
+	return o
+}
+
 // Fields reads only the task's Git metadata, retaining a previous once marker.
 func Fields(path string) *jsonjs.Object {
 	o := read(path)
@@ -120,9 +141,31 @@ func Preserve(path string, fields *jsonjs.Object) {
 
 // Sidecar locates the task's sidecar in state or alongside scratch reports.
 func Sidecar(sd, report string) string {
+	return sidecarLocate(sd, report, read)
+}
+
+// SidecarInspect is the inspection's sidecar location: the same two
+// candidate probes as Sidecar, through the capped sidecar read, so an
+// overlong sidecar refuses instead of being read into memory.
+func SidecarInspect(sd, report string) string {
+	return sidecarLocate(sd, report, readSidecarInspect)
+}
+
+// SidecarInspectSource is the sidecar location with a session source: the
+// same two candidate probes, through the source's confined bounded read
+// (the per-sidecar cap), so the candidates are never reopened by raw
+// path and an overlong sidecar refuses.
+func SidecarInspectSource(src *core.SessionSource, sd, report string) string {
+	return sidecarLocate(sd, report, sourceSidecarParse(src))
+}
+
+// sidecarLocate is the shared sidecar probe: state briefs first, then
+// alongside the report; the sidecar read is the only decision that
+// differs between the command and inspection callers.
+func sidecarLocate(sd, report string, sidecarRead func(string) *jsonjs.Object) string {
 	base := strings.TrimSuffix(filepath.Base(report), ".md") + ".dispatch.json"
 	for _, path := range []string{filepath.Join(sd, "briefs", base), filepath.Join(filepath.Dir(report), base)} {
-		if read(path) != nil {
+		if sidecarRead(path) != nil {
 			return path
 		}
 	}

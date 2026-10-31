@@ -18,13 +18,13 @@ func TaskReportPointerPath(sd, agent string) string {
 	return filepath.Join(sd, "task-report-"+agent+".json")
 }
 
-// ReadTaskReportPointer returns a valid version 1 pointer or nil for absent or invalid files.
-func ReadTaskReportPointer(sd, agent string) *jsonjs.Object {
-	data, err := platform.ReadTextFile(TaskReportPointerPath(sd, agent))
-	if err != nil {
-		return nil
-	}
-	value, err := jsonjs.Parse([]byte(data))
+// ParseTaskReportPointer validates the pointer bytes with the same check
+// ReadTaskReportPointer applies after its path read: a valid version 1
+// pointer, or nil for unreadable or invalid bytes. The read-only
+// inspection feeds it the bytes of its confined bounded pointer read;
+// it opens no path.
+func ParseTaskReportPointer(raw []byte) *jsonjs.Object {
+	value, err := jsonjs.Parse(raw)
 	if err != nil {
 		return nil
 	}
@@ -33,6 +33,15 @@ func ReadTaskReportPointer(sd, agent string) *jsonjs.Object {
 		return nil
 	}
 	return pointer
+}
+
+// ReadTaskReportPointer returns a valid version 1 pointer or nil for absent or invalid files.
+func ReadTaskReportPointer(sd, agent string) *jsonjs.Object {
+	data, err := platform.ReadTextFile(TaskReportPointerPath(sd, agent))
+	if err != nil {
+		return nil
+	}
+	return ParseTaskReportPointer([]byte(data))
 }
 
 func validPointer(pointer *jsonjs.Object) bool {

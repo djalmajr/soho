@@ -103,14 +103,22 @@ func NormalizeScreen(value string) string {
 // returns a nil age with changed true.
 func ActivityAgeSeconds(sd, agent, screen string, now int64) (*int64, bool) {
 	hashRaw, ok := readWaitFile(sd, agent, "stuck-hash")
-	if !ok || strings.TrimSpace(hashRaw) == "" || strings.TrimSpace(screen) == "" || strings.TrimSpace(hashRaw) == strconv.FormatUint(uint64(CksumField(NormalizeScreen(""))), 10) {
+	at, valid := positiveWaitInt(sd, agent, "activity-at")
+	return activityAgeFrom(hashRaw, ok, screen, at, valid, now)
+}
+
+// activityAgeFrom is the shared activity computation the ordinary wait
+// file reads and the inspection's confined source reads both feed: the
+// recorded stuck-hash versus the current screen hash and the recorded
+// activity age, exactly as ActivityAgeSeconds has always decided it.
+func activityAgeFrom(hashRaw string, hashOK bool, screen string, at int64, atOK bool, now int64) (*int64, bool) {
+	if !hashOK || strings.TrimSpace(hashRaw) == "" || strings.TrimSpace(screen) == "" || strings.TrimSpace(hashRaw) == strconv.FormatUint(uint64(CksumField(NormalizeScreen(""))), 10) {
 		return nil, false
 	}
 	if strconv.FormatUint(uint64(CksumField(NormalizeScreen(screen))), 10) != strings.TrimSpace(hashRaw) {
 		return nil, true
 	}
-	at, valid := positiveWaitInt(sd, agent, "activity-at")
-	if !valid {
+	if !atOK {
 		return nil, false
 	}
 	age := now - at
@@ -137,12 +145,7 @@ func positiveWaitInt(sd, agent, name string) (int64, bool) {
 	if !ok {
 		return 0, false
 	}
-	raw = strings.TrimSpace(raw)
-	if !uintPattern.MatchString(raw) {
-		return 0, false
-	}
-	n, err := strconv.ParseInt(raw, 10, 64)
-	return n, err == nil && n > 0
+	return parseWaitInt(raw)
 }
 
 func NormalizeApproveScreen(value string) string { return NormalizeScreen(value) }
@@ -1044,7 +1047,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			// An active collaboration owns the pane: the stale report is an
 			// artifact only, and the probe is skipped — no retry, no provider
 			// resume, no keys or prompts sent while the pane is idle.
-			if cs, ok := readCollaboration(sd, field(strings.Split(core.RosterLine(sd, agent), "\t"), 1), ctx, workspaceEnv); ok {
+			if cs, ok := readCollaboration(sd, field(strings.Split(core.RosterLine(sd, agent), "\t"), 1), ctx, workspaceEnv, "", nil); ok {
 				if alert := idleAlerts[agent]; alert != nil {
 					alert.sampleDue(idleTask(sd, agent, report), "collaborating", platform.Now(), idleMinutes)
 				}
@@ -1429,9 +1432,12 @@ func readQuotaFile(sd, agent string) (string, string) {
 	return field(parts, 0), field(parts, 1)
 }
 
-// observeReport recovers the protected state mirror only when scratch is gone.
-// Observing an unfinished report never publishes a mirror.
-func observeReport(sd, agent, report string, ctx *core.Config, env platform.Env, cwd string) string {
+// observeReportSession recovers the protected state mirror only when
+// scratch is gone, using the caller's known session instead of deriving
+// the workspace: the session is consulted only when the report is a
+// missing scratch report, like the deriving wrapper. Observing an
+// unfinished report never publishes a mirror.
+func observeReportSession(sd, agent, report string, session func() string) string {
 	dir := filepath.Dir(report)
 	if filepath.Base(dir) != "reports" || filepath.Base(filepath.Dir(filepath.Dir(dir))) != "soho" || dir == filepath.Join(sd, "reports") {
 		return report
@@ -1439,10 +1445,24 @@ func observeReport(sd, agent, report string, ctx *core.Config, env platform.Env,
 	if _, err := core.StatScratchReport(report); !errors.Is(err, os.ErrNotExist) {
 		return report
 	}
-	ws := core.WorkspaceID(ctx, env, cwd)
-	if filepath.Base(filepath.Dir(dir)) != ws {
+	if filepath.Base(filepath.Dir(dir)) != session() {
 		return report
 	}
+	return protectedMirror(sd, report)
+}
+
+// observeReport is the session-deriving wrapper for the command entry
+// points: the known workspace id is resolved with core.WorkspaceID only
+// when the report is a missing scratch report, exactly as before.
+func observeReport(sd, agent, report string, ctx *core.Config, env platform.Env, cwd string) string {
+	return observeReportSession(sd, agent, report, func() string { return core.WorkspaceID(ctx, env, cwd) })
+}
+
+// protectedMirror is the read-only core of the scratch-mirror recovery:
+// the protected copy under the state dir, when it exists and is a regular
+// nonempty file owned by this user (or of unknown owner), is the report's
+// stand-in; no mirror is published here.
+func protectedMirror(sd, report string) string {
 	state, err := os.OpenRoot(sd)
 	if err != nil {
 		return report

@@ -1,6 +1,7 @@
 package gittree
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -179,7 +180,18 @@ func diffOriginalStems(sidecar string, o *jsonjs.Object) []string {
 // Scope follows the latest explicit member at or before this attempt. The
 // stable task_report identity also determines the independent time cutoff.
 func diffEffectiveOwned(sidecar, agent string, o *jsonjs.Object) ([]string, bool, bool) {
-	text, err := diffComposedBrief(sidecar)
+	return diffEffectiveOwnedRead(sidecar, agent, o, commandOwnedSeams())
+}
+
+// diffEffectiveOwnedRead is the shared owned-scope walk: the composed
+// brief read, the task-report pointer read and the historical sidecar
+// reads come from the supplied seams, so the command, the read-only
+// and the inspection-with-source callers decide only on the reads
+// (ordinary, capped, or confined and capped) — the locate, the pointer
+// identity, the history order and the owned-files decision are one
+// algorithm.
+func diffEffectiveOwnedRead(sidecar, agent string, o *jsonjs.Object, seams ownedReadSeams) ([]string, bool, bool) {
+	text, err := diffComposedBriefRead(sidecar, seams.brief)
 	if err != nil {
 		return nil, false, false
 	}
@@ -189,11 +201,11 @@ func diffEffectiveOwned(sidecar, agent string, o *jsonjs.Object) ([]string, bool
 	task, _ := stringField(o, "task_report")
 	if strings.HasSuffix(task, ".current.md") {
 		sd := filepath.Clean(filepath.Join(filepath.Dir(task), ".."))
-		_, pointerErr := os.Lstat(taskreport.TaskReportPointerPath(sd, agent))
-		pointer := taskreport.ReadTaskReportPointer(sd, agent)
+		pointer, pointerInvalid := seams.pointer(sd, agent)
 		// Only an absent pointer permits the original single-task fallback.
-		// An existing invalid or unreadable pointer leaves the audit retryable.
-		if pointer == nil && !os.IsNotExist(pointerErr) {
+		// An existing invalid or unreadable pointer leaves the audit
+		// retryable.
+		if pointer == nil && pointerInvalid {
 			return nil, false, false
 		}
 		if pointer != nil {
@@ -201,6 +213,9 @@ func diffEffectiveOwned(sidecar, agent string, o *jsonjs.Object) ([]string, bool
 			if identity == task {
 				history, _ := pointer.Get("history")
 				items, _ := history.([]any)
+				if seams.historyMembersMax > 0 && len(items) > seams.historyMembersMax {
+					return nil, false, false
+				}
 				current, _ := stringField(pointer, "current")
 				ordered := append(append([]any{}, items...), current)
 				at := -1
@@ -210,17 +225,68 @@ func diffEffectiveOwned(sidecar, agent string, o *jsonjs.Object) ([]string, bool
 						at = i
 					}
 				}
+				// The single aggregate per-walk budget (auxHistoryBytesMax)
+				// covers all historical content the loop consumes: the
+				// locate-candidate sidecar reads (parseMember), the
+				// selected sidecar entry reads (readHistEntry) and the
+				// composed historical briefs (histBrief). It counts actual
+				// successful bytes, including repeated physical reads; the
+				// initial current composed brief keeps its separate
+				// per-file cap, and the ordinary command and read-only
+				// seams (historyBytesMax 0) keep their behavior.
+				var histBytes int64
+				budgetExceeded := false
+				account := func(n int) {
+					histBytes += int64(n)
+					if seams.historyBytesMax > 0 && histBytes > seams.historyBytesMax {
+						budgetExceeded = true
+					}
+				}
+				parseMember := func(p string) *jsonjs.Object {
+					raw, rerr := seams.rawLocate(p)
+					if rerr == nil {
+						account(len(raw))
+					}
+					return parseObjectBytes(raw, rerr)
+				}
+				readHistEntry := func(p string) ([]byte, error) {
+					raw, err := seams.rawEntry(p)
+					if err == nil {
+						account(len(raw))
+					}
+					return raw, err
+				}
+				histBrief := func(candidate string) ([]byte, error) {
+					raw, err := seams.brief(candidate)
+					if err == nil {
+						account(len(raw))
+					}
+					return raw, err
+				}
 				for i := at - 1; i >= 0; i-- {
+					if budgetExceeded {
+						return nil, false, false
+					}
 					member, _ := ordered[i].(string)
-					sc := Sidecar(sd, member)
-					entry := read(sc)
+					sc := sidecarLocate(sd, member, parseMember)
+					if budgetExceeded {
+						return nil, false, false
+					}
+					raw, rerr := readHistEntry(sc)
+					if budgetExceeded {
+						return nil, false, false
+					}
+					entry := parseObjectBytes(raw, rerr)
 					if entry == nil {
 						return nil, false, false
 					}
 					identity, _ := stringField(entry, "task_report")
 					if identity == task {
-						text, err := diffComposedBrief(sc)
+						text, err := diffComposedBriefRead(sc, histBrief)
 						if err != nil {
+							return nil, false, false
+						}
+						if budgetExceeded {
 							return nil, false, false
 						}
 						if owned, found := diffOwned(text); found {
@@ -233,7 +299,7 @@ func diffEffectiveOwned(sidecar, agent string, o *jsonjs.Object) ([]string, bool
 	}
 	for _, original := range diffOriginalStems(sidecar, o) {
 		member := original + ".dispatch.json"
-		text, err := diffComposedBrief(member)
+		text, err := diffComposedBriefRead(member, seams.brief)
 		if err != nil {
 			// State and scratch can provide alternative original locations.
 			if os.IsNotExist(err) && member != sidecar {
@@ -248,6 +314,102 @@ func diffEffectiveOwned(sidecar, agent string, o *jsonjs.Object) ([]string, bool
 	return nil, false, true
 }
 
+// auxBriefLimit, auxPointerLimit, auxHistoryMembersMax and
+// auxHistoryBytesMax are the D7 inspection caps of the owned-scope walk
+// with a session source: the composed brief bytes, the task-report
+// pointer bytes, the historical members and the aggregate per-walk
+// historical content bytes (the locate-candidate sidecar reads, the
+// selected sidecar reads and the composed historical briefs). The
+// sidecar candidates keep the inspection's existing per-sidecar cap
+// (sidecarInspectLimit, task.go).
+const (
+	auxBriefLimit        = 4 << 20
+	auxPointerLimit      = 64 << 10
+	auxHistoryMembersMax = 4096
+	auxHistoryBytesMax   = 4 << 20
+)
+
+// parseObjectBytes is the shared sidecar/pointer parse over supplied
+// bytes: a valid JSON object, or nil for unreadable or non-object
+// bytes (the ordinary readers' refusal).
+func parseObjectBytes(raw []byte, err error) *jsonjs.Object {
+	if err != nil {
+		return nil
+	}
+	value, perr := jsonjs.Parse(raw)
+	if perr != nil {
+		return nil
+	}
+	o, _ := value.(*jsonjs.Object)
+	return o
+}
+
+// ownedReadSeams are the owned-scope walk's read decisions: the command
+// caller's ordinary scratch readers (unbounded), the read-only caller's
+// capped sidecar readers, and the inspection-with-source caller's
+// confined capped readers; the walk itself is one shared algorithm.
+type ownedReadSeams struct {
+	rawLocate         func(string) ([]byte, error) // the historical member's sidecar candidate read
+	rawEntry          func(string) ([]byte, error) // the historical member's sidecar entry read
+	brief             func(candidate string) ([]byte, error)
+	pointer           func(sd, agent string) (*jsonjs.Object, bool)
+	historyMembersMax int
+	historyBytesMax   int64
+}
+
+// commandOwnedSeams is the command's walk over the ordinary scratch
+// readers: unbounded, no history limits — the exact pre-inspection
+// behavior.
+func commandOwnedSeams() ownedReadSeams {
+	return ownedReadSeams{rawLocate: core.ReadScratchReport, rawEntry: core.ReadScratchReport, brief: core.ReadScratchReport, pointer: commandTaskPointer}
+}
+
+// readOnlyOwnedSeams is the read-only (no source) walk: the capped
+// sidecar entry reads and the ordinary unbounded brief and locate
+// reads, the shared command task-report pointer.
+func readOnlyOwnedSeams() ownedReadSeams {
+	return ownedReadSeams{rawLocate: core.ReadScratchReport, rawEntry: func(p string) ([]byte, error) { return core.ReadScratchReportLimited(p, sidecarInspectLimit) }, brief: core.ReadScratchReport, pointer: commandTaskPointer}
+}
+
+// sourceOwnedSeams is the read-only walk with a session source: every
+// read confined to the source's retained roots at the D7 caps.
+func sourceOwnedSeams(src *core.SessionSource) ownedReadSeams {
+	aux := func(max int64) func(string) ([]byte, error) {
+		return func(p string) ([]byte, error) { raw, err := src.ReadAuxFile(p, max); return []byte(raw), err }
+	}
+	return ownedReadSeams{rawLocate: aux(sidecarInspectLimit), rawEntry: aux(sidecarInspectLimit), brief: aux(auxBriefLimit), pointer: sourceTaskPointer(src), historyMembersMax: auxHistoryMembersMax, historyBytesMax: auxHistoryBytesMax}
+}
+
+// commandTaskPointer is the command's task-report pointer read: the
+// ordinary pointer read with the existing invalid-versus-absent
+// discrimination the audit already relies on.
+func commandTaskPointer(sd, agent string) (*jsonjs.Object, bool) {
+	_, pointerErr := os.Lstat(taskreport.TaskReportPointerPath(sd, agent))
+	pointer := taskreport.ReadTaskReportPointer(sd, agent)
+	return pointer, pointer == nil && !os.IsNotExist(pointerErr)
+}
+
+// sourceTaskPointer is the inspection's task-report pointer read over
+// the source's retained roots: the pointer is read only at the session
+// directory the pointer location names (the state or the approved
+// scratch session dir, in every base alias), bounded and confined; an
+// existing pointer the cap or the confinement refuses, or a location
+// outside the approved roots, is invalid (the audit stays retryable)
+// while a truly absent pointer at an approved location is absent.
+func sourceTaskPointer(src *core.SessionSource) func(sd, agent string) (*jsonjs.Object, bool) {
+	return func(sd, agent string) (*jsonjs.Object, bool) {
+		raw, err := src.ReadAuxFile(taskreport.TaskReportPointerPath(sd, agent), auxPointerLimit)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, false
+			}
+			return nil, true
+		}
+		pointer := taskreport.ParseTaskReportPointer([]byte(raw))
+		return pointer, pointer == nil
+	}
+}
+
 func diffNames(names []string) string {
 	if len(names) <= 10 {
 		return strings.Join(names, ", ")
@@ -255,11 +417,17 @@ func diffNames(names []string) string {
 	return strings.Join(names[:10], ", ") + fmt.Sprintf(", … (+%d more)", len(names)-10)
 }
 
-func diffComposedBrief(sidecar string) (string, error) {
+// diffComposedBriefRead is the composed-brief read the audit and the
+// changed-paths walk share: the sidecar's own brief first, then the
+// task-report stem's brief. The supplied reader is the only read
+// decision: the command and read-only callers pass the ordinary
+// scratch read, the inspection with a source passes its capped
+// confined read.
+func diffComposedBriefRead(sidecar string, briefRead func(candidate string) ([]byte, error)) (string, error) {
 	stem := strings.TrimSuffix(sidecar, ".dispatch.json")
 	var missing error
 	for _, candidate := range []string{stem + ".brief.md", stem + ".md"} {
-		b, err := core.ReadScratchReport(candidate)
+		b, err := briefRead(candidate)
 		if err == nil {
 			return string(b), nil
 		}
@@ -269,6 +437,13 @@ func diffComposedBrief(sidecar string) (string, error) {
 		missing = err
 	}
 	return "", missing
+}
+
+// diffComposedBrief is the command's composed-brief read over the
+// ordinary scratch reader: the shared walk with the ordinary read
+// decision.
+func diffComposedBrief(sidecar string) (string, error) {
+	return diffComposedBriefRead(sidecar, core.ReadScratchReport)
 }
 
 var diffHeadingRE = regexp.MustCompile(`^ {0,3}(#{1,6})[ \t]+(.+?)\s*#*\s*$`)

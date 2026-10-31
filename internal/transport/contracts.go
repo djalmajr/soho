@@ -147,10 +147,27 @@ type Terminal struct {
 	// the backend does not report one), so a consumer that trusts the
 	// terminal record can compare it with the registration.
 	Cwd string
+	// WorkspaceID is the workspace or session the terminal record itself
+	// names ("" when it does not): the herdr record's workspace_id or the
+	// hc record's soho.session label (with the hc-<address> fallback the
+	// session resolution uses). Source metadata for local discovery, never
+	// a public field.
+	WorkspaceID string
+	// ProgramHints are the executable hints the terminal record itself
+	// names, in record order: the herdr record's agent identifier alone,
+	// or the hc record's status app followed by the argv[0] basename when
+	// present and different. Hints only; canonical kind matching stays in
+	// the kinds catalog.
+	ProgramHints []string
 }
 
-// Scope selects which panes a window listing covers: All lists panes across
-// every workspace; otherwise WorkspaceID scopes the listing.
+// Scope selects which terminals a listing covers. All lists every live
+// local terminal of the machine, independent of the caller's workspace and
+// terminal (no caller or HC_TERMINAL_ID resolution): herdr's agent listing
+// and hc's unfiltered listing. With All false the backend keeps its
+// caller-scoped form: herdr lists the caller's agents, and hc lists the
+// caller's soho.session terminals. Window listings cover the panes of the
+// selected workspace (All: every workspace).
 type Scope struct {
 	WorkspaceID string
 	All         bool
@@ -281,7 +298,11 @@ type Transport interface {
 	Current(ctx context.Context, call Call) Reply[Caller]
 	// CheckCaller verifies the calling process runs in the claimed pane.
 	CheckCaller(ctx context.Context, call Call) Reply[CallerCheck]
-	// List returns the registered terminals (agents).
+	// List returns the registered terminals (agents). Scope.All lists every
+	// live local terminal of the machine without resolving the caller and
+	// projects the additive record metadata (WorkspaceID, ProgramHints,
+	// Cwd, Msg) where the source reports it; with All false the backend
+	// keeps its caller-scoped listing.
 	List(ctx context.Context, scope Scope, call Call) Reply[[]Terminal]
 	// Get reads one terminal's state.
 	Get(ctx context.Context, target Target, call Call) Reply[Terminal]

@@ -81,6 +81,15 @@ func FmGet(file, key string) string {
 	if err != nil {
 		return ""
 	}
+	return fmGetText(text, key)
+}
+
+// fmGetText is the pure frontmatter parser behind FmGet: the key from the
+// leading --- block with the current value rules (brackets, quotes, commas
+// and whitespace collapsed to one space). The ordinary FmGet and the
+// bounded read-only role inspection share this one parser, so no
+// frontmatter grammar is copied.
+func fmGetText(text, key string) string {
 	lines := splitLines(text)
 	if len(lines) == 0 || lines[0] != "---" {
 		return ""
@@ -176,6 +185,78 @@ func RoleIsEdit(role string, env platform.Env, cwd string) bool {
 	}
 	file := RoleFile(role, env, cwd)
 	return file != "" && FmGet(file, "mode") == "edit"
+}
+
+// RoleIsEditReadOnly is the read-only, nonfatal twin of RoleIsEdit for the
+// inspection path: it shares RoleIsEdit's built-in word rule and the
+// fmGetText parser, but its skill role dir is the existing-only skill
+// lookup (SkillDirSourceOrEmpty) — it never Materializes the bundle and
+// never Dies. Unknown or unavailable custom role metadata returns false;
+// the built-in roles and readable project/env/existing-skill roles keep
+// the current rules.
+//
+// The selected custom role file is read bounded: the requested role
+// filename is validated as a safe single component before the lookup, and
+// the existing file is read through the shared readConfinedFile at
+// readonlyLayerMax — no path reopen, no materialization, no global hook.
+// Appended or final links, nonregular files, FIFOs, oversize and unreadable
+// files refuse and return false like unavailable custom role metadata,
+// preserving the report authority. The ordinary command reader
+// (RoleIsEdit) is unchanged.
+func RoleIsEditReadOnly(role string, env platform.Env, cwd string) bool {
+	if hasWord(EditRoles, role) {
+		return true
+	}
+	if strings.HasSuffix(role, ".append") || role == "" || !platform.ValidStateComponent(role+".md") {
+		return false
+	}
+	for _, dir := range RoleDirsReadOnly(env, cwd) {
+		data, absent, err := readConfinedFile(dir, role+".md", readonlyLayerMax, nil)
+		if absent {
+			continue
+		}
+		if err != nil {
+			return false
+		}
+		return fmGetText(platform.DecodeText(data), "mode") == "edit"
+	}
+	return false
+}
+
+// RoleDirsReadOnly is RoleDirs with the skill dir restricted to an existing
+// skill: the existing-only lookup returns "" when no source holds a skill,
+// so the dir list simply omits the skill role dir instead of
+// materializing or dying.
+func RoleDirsReadOnly(env platform.Env, cwd string) []string {
+	dirs := make([]string, 0, 3)
+	project := filepath.Join(platform.ProjectRoot(env, cwd), ".agents", "soho-roles")
+	if isDir(project) {
+		dirs = append(dirs, project)
+	}
+	// One roles override: SOHO_ROLES.
+	extra := env.Get("SOHO_ROLES")
+	if extra != "" && isDir(extra) {
+		dirs = append(dirs, extra)
+	}
+	if dir, _ := platform.SkillDirSourceOrEmpty(env); dir != "" {
+		dirs = append(dirs, filepath.Join(dir, "roles"))
+	}
+	return dirs
+}
+
+// RoleFileReadOnly is RoleFile over the existing-only dirs: the same .md
+// lookup, the same first-dir-wins order, no materialization or Die.
+func RoleFileReadOnly(role string, env platform.Env, cwd string) string {
+	if strings.HasSuffix(role, ".append") {
+		return ""
+	}
+	for _, dir := range RoleDirsReadOnly(env, cwd) {
+		file := filepath.Join(dir, role+".md")
+		if isFile(file) {
+			return file
+		}
+	}
+	return ""
 }
 
 func HistoryHasEdit(history string, env platform.Env, cwd string) bool {
