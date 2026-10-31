@@ -115,6 +115,23 @@ A confirmation runs its write only on a `y` pressed on its own after the prompt 
 
 `q` closes the panel from a main view and `Ctrl-C` from any view; `Esc` backs out of a report or a confirmation and closes a main view. Every read call runs in the target's cwd with the target's `HERDR_*` ids and `SOHO_NOWRITE=1`. A focused pane from another workspace, or whose cwd does not exist, shows the cause on one line instead of the panel, and closes with `Esc`.
 
+## Machine inventory
+
+`soho inventory --json` reads the selected local terminal backend and prints one schema 1 JSON object. It works without a caller terminal and under `SOHO_NOWRITE=1`; it discovers projects from live terminal working directories and their canonical Git roots, including linked worktrees. `soho capabilities --json` advertises `"inventory": 1` when the command is available.
+
+Each project opts in through its own `.agents/soho.conf`:
+
+```ini
+inventory=show
+inventory_name=example-project
+```
+
+`show` includes the project's display name, sessions and live registered agents; `hidden` contributes only merged counts for `working`, `needs_you`, `done`, `idle` and `unknown`; `off` contributes nothing and is the default. A missing key, invalid mode or unreadable configuration fails closed. User and session settings and `SOHO_INVENTORY` may only lower the project's mode. Only the project file supplies `inventory_name`; an unset name uses the canonical project root's base name.
+
+The session's registered orchestrator appears first, with its `soho title` objective, followed by workers in roster order. Only live agents with matching registration are listed. Closed job terminals stay omitted while the job waits for a person. Optional model, effort, task and state timestamp fields remain explicit JSON nulls when unavailable; titles have at most 120 code points. The output retains an ordered prefix of complete agents, limited to 500 shown agents and 4 MiB including the final newline. `truncated: true` means eligible shown agents were omitted by either limit; the prefix may be empty. Hidden counts include all eligible hidden agents.
+
+The output carries no working, state or report paths, environment, arguments, screens, dialogs, command output, brief content or report content. Hidden projects disclose no names, session or terminal IDs, roles, assistants, models or titles. Exit 0 means an inventory was printed, including an empty one; exit 2 means invalid usage; exit 4 means the local terminal server could not be read and stdout is empty.
+
 ## Develop locally
 
 Use Go 1.25 or newer. There are no third-party Go module dependencies and no generator step:
