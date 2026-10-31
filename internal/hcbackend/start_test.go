@@ -297,13 +297,56 @@ func TestStartReadiness(t *testing.T) {
 	})
 
 	t.Run("idle without reported: keeps polling until reported", func(t *testing.T) {
-		rep := startWorker(t, []fakecli.Rule{
+		env, calls := startEnv(t, []fakecli.Rule{
 			{Argv: runArgv("claude"), Stdout: startRunResult},
 			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: `{"address":"t7","state":"live","reported":false,"status":{"state":"idle"}}`},
 			{Argv: []string{"get", "t7", "--json"}, Call: 2, Stdout: startReadyIdle},
-		}, "3000")
+		})
+		rep := newBackend(env).Start(context.Background(), transport.Start{Name: "w7", Kind: "claude", Timeout: "3000"}, transport.Call{})
 		if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
 			t.Fatalf("rep: %+v want ready with Value t7", rep)
+		}
+		// The unreported idle record is not readiness: the poll reads again.
+		wantArgv(t, calls(), [][]string{
+			{"get", "t1", "--json"},
+			runArgv("claude"),
+			{"get", "t7", "--json"},
+			{"get", "t7", "--json"},
+		})
+	})
+
+	t.Run("a get that hangs ends with the startup deadline, not its own budget", func(t *testing.T) {
+		env := platform.Env{"HC_TERMINAL_ID": "t1"}
+		b := newBackend(env)
+		var remaining time.Duration
+		b.client.Launch = func(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
+			zero := 0
+			switch {
+			case args[0] == "run":
+				return platform.RunResult{Status: &zero, Stdout: startRunResult}
+			case args[1] == "t1":
+				return platform.RunResult{Status: &zero, Stdout: startCaller}
+			}
+			if deadline, ok := ctx.Deadline(); ok {
+				remaining = time.Until(deadline)
+			}
+			<-ctx.Done()
+			exit := 124
+			return platform.RunResult{Status: &exit, Stderr: `{"error":{"kind":"timeout","message":"timed out"}}`}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		begin := time.Now()
+		rep := b.Start(ctx, transport.Start{Name: "w7", Kind: "claude", Timeout: "150"}, transport.Call{})
+		elapsed := time.Since(begin)
+		if rep.Err == nil || rep.Err.Kind != transport.FailureCommand {
+			t.Fatalf("rep: %+v want the startup timeout", rep)
+		}
+		if remaining > 200*time.Millisecond {
+			t.Fatalf("the hanging get had %v left, want at most the 150 ms startup deadline", remaining)
+		}
+		if elapsed > time.Second {
+			t.Fatalf("elapsed %v, want the start to end near its 150 ms deadline", elapsed)
 		}
 	})
 
