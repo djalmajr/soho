@@ -1192,20 +1192,13 @@ func (b *backend) SendText(ctx context.Context, target transport.Target, text st
 	return transport.Reply[bool]{Err: unsupported("SendText")}
 }
 
-// GetGone reports whether the terminal is already gone: `hc get` exits 3
-// (the record is removed) or the record's state is finished (the program has
-// ended). A live terminal, or a failure for another reason, reports false.
+// GetGone reports whether the terminal is already gone: `hc get` exits 3,
+// the record is removed — the herdr meaning, a pane that is not found. A
+// finished terminal whose record still exists is not gone: it still holds
+// its name and waits for its rm, so the released-panes registry keeps it.
+// A live or finished terminal, or a failure for another reason, reports
+// false.
 func (b *backend) GetGone(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[bool] {
-	out, err := b.run(ctx, call, "get", addr(target))
-	if err != nil {
-		if notFound(err) {
-			return transport.Reply[bool]{Value: true, Valid: true}
-		}
-		return transport.Reply[bool]{Value: false, Valid: true}
-	}
-	obj, ok := terminalObject(out)
-	if !ok {
-		return transport.Reply[bool]{Value: false, Valid: true}
-	}
-	return transport.Reply[bool]{Value: stateOf(obj) == "gone", Valid: true}
+	_, err := b.run(ctx, call, "get", addr(target))
+	return transport.Reply[bool]{Value: err != nil && notFound(err), Valid: true}
 }

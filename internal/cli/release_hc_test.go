@@ -327,6 +327,43 @@ func TestReleaseHcWithoutCloseKeepsTheTerminal(t *testing.T) {
 	f.assertHcNeverTouchedHerdr(t)
 }
 
+// TestReleaseHcRegistryKeepsAFinishedTerminal: the released-panes
+// registry prunes a row only when its terminal record is removed (hc get
+// exits 3). A terminal whose program finished but whose record remains
+// still holds its name and waits for its rm, so recording another release
+// keeps its row.
+func TestReleaseHcRegistryKeepsAFinishedTerminal(t *testing.T) {
+	f := newReleaseHcFixture(t, []fakecli.Rule{
+		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcReleaseWorkerLive},
+		{Argv: []string{"ls", "--label", "soho.session=sX", "--json"}, ArgvPrefix: true, Stdout: `{"terminals":[]}`},
+		{Argv: []string{"get", "t9", "--json"}, ArgvPrefix: true, Stdout: `{"address":"t9","name":"older","state":"finished","exit_code":0,"reason":"exited"}`},
+		{Argv: []string{"get", "t8", "--json"}, ArgvPrefix: true, Code: 3, Stderr: `{"error":{"kind":"not_found","message":"no such terminal"}}`},
+	})
+	registry := filepath.Join(f.sd, "released-panes.tsv")
+	seed := "# name\tpane\tkind\treleased\nolder\tt9\tcodex\t2026-10-31T00:00:00Z\nremoved\tt8\tcodex\t2026-10-31T00:00:00Z\n"
+	if err := os.WriteFile(registry, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	addReleaseHcReport(t, f, false)
+	if code, out, errText := f.run(t, "worker"); code != 0 {
+		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
+	}
+	data, err := os.ReadFile(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "older\tt9\t") {
+		t.Fatalf("registry=%q, want the finished terminal t9 kept", data)
+	}
+	if strings.Contains(string(data), "removed\tt8\t") {
+		t.Fatalf("registry=%q, want the removed terminal t8 pruned", data)
+	}
+	if !strings.Contains(string(data), "worker\tt7\t") {
+		t.Fatalf("registry=%q, want the released worker t7 recorded", data)
+	}
+	f.assertHcNeverTouchedHerdr(t)
+}
+
 // TestReleaseHcFailedGetIsRefused is acceptance (e): a get that fails is
 // the hc-named refusal (exit 4), with the roster kept.
 func TestReleaseHcFailedGetIsRefused(t *testing.T) {
