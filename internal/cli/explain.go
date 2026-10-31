@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
@@ -60,7 +61,7 @@ func explainFootprintLine(stateDir string, ctx *core.Config, env platform.Env, c
 	// The workspace id of the state dir (its directory name): the
 	// env-var-only rule, so explain never dies on a missing herdr the way
 	// core.WorkspaceID can. Caller() is that same pure environment read.
-	workspaceID := herdr.New(env).Runtime.Caller().WorkspaceID
+	workspaceID := backend.New(env).Runtime.Caller().WorkspaceID
 	if stateDir != "" {
 		workspaceID = filepath.Base(stateDir)
 	}
@@ -101,7 +102,7 @@ func explainFootprintText(fp *core.Footprint) string {
 }
 
 func explainStateDir(ctx *core.Config, env platform.Env, cwd string) explainStateDirResult {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	if svc.Runtime.Caller().WorkspaceID != "" {
 		return explainStateDirDirect(ctx, env, cwd)
 	}
@@ -176,7 +177,7 @@ func explainActivity(name, sd string, ctx *core.Config, env platform.Env, cwd st
 		}
 		return "idle"
 	}
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	orig := readState(svc, name, transport.Call{Timeout: herdr.Timeout}).State
 	if orig == "working" {
 		return "working"

@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/doctor"
 	"github.com/djalmajr/soho/internal/herdr"
@@ -87,7 +88,7 @@ func liveAgentsFriction(env platform.Env) []any {
 			platform.DieFriction(exitErr.Msg, exitErr.Code)
 		}
 	}()
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	raw := svc.Legacy.AgentListRaw(context.Background(), transport.Call{Timeout: herdr.Timeout}).Value
 	return rawObjects(raw)
 }
@@ -184,6 +185,22 @@ func Run(args []string, env platform.Env) (code int) {
 		ctx := core.LoadConfigFor(decisionEnv, commandCwd, userSel)
 		commandConfig = &ctx
 	}
+	// The worker transport is resolved from the configuration this command
+	// loaded and travels in the environment (DJA-604 stage 2b): every
+	// downstream backend.New(env) and the hc entry guard below see the
+	// resolved mode, and child processes that inherit the env keep it.
+	effectiveCfg := commandConfig
+	if effectiveCfg == nil {
+		effectiveCfg = configCtx
+	}
+	transportMode := transportModeFor(effectiveCfg, env, decisionEnv)
+	// The hc entry guard: under transport=hc only the read side and the
+	// explicitly allowed commands run; every other command dies here, before
+	// any read or write of its own, with the one fixed line. An unknown
+	// command keeps its own unknown-command diagnostic below.
+	if transportMode == "hc" && (knownCommands[command] || command == "plugin") && !hcCommandAllowed(command) {
+		platform.Die(fmt.Sprintf("%s does not support transport=hc yet; set transport=herdr or see DJA-604", command), 2)
+	}
 	// A writing job subcommand under NOWRITE dies with the job-specific
 	// message before the generic refusal; the five read subcommands (and
 	// their flags) pass through nowriteReadInvocation below.
@@ -244,7 +261,12 @@ func Run(args []string, env platform.Env) (code int) {
 	if command == "roster" || command == "friction" || command == "title" || command == "clean" || command == "feedback" || command == "regrid" || command == "promote" || command == "tab-label" || command == "release" || command == "reopen" || command == "spawn" || command == "dispatch" || command == "resume" || command == "run" || command == "collect" || command == "init" || command == "wait" || command == "status" || command == "compact" || command == "copies" || command == "gc" || command == "procs" {
 		ctx := core.LoadConfigFor(decisionEnv, commandCwd, userSel)
 		commandConfig = &ctx
-		herdr.RequireEnv(decisionEnv, platform.Current(), os.Getpid(), nil)
+		// The herdr environment check belongs to the herdr transport: under
+		// hc there is no HERDR_ENV to require and no herdr binary to demand
+		// (DJA-604 stage 2b); the read side runs on the hc backend.
+		if transportMode != "hc" {
+			herdr.RequireEnv(decisionEnv, platform.Current(), os.Getpid(), nil)
+		}
 		frictionLogPath = ""
 		if !core.Nowrite(decisionEnv) {
 			if _, found := platform.FindExecutable("herdr", decisionEnv, platform.Current()); found {
@@ -422,6 +444,37 @@ func Run(args []string, env platform.Env) (code int) {
 	// diagnostic as an unknown one: nothing is probed or executed.
 	platform.Die("unknown command '"+command+"'", 2)
 	return 2
+}
+
+// transportModeFor resolves the worker transport for the configuration a
+// command loaded and records it on the env the command and its helpers
+// receive (DJA-604 stage 2b): every downstream backend.New(env) sees the
+// resolved mode. It returns the resolved mode.
+func transportModeFor(ctx *core.Config, env, decisionEnv platform.Env) string {
+	mode := core.TransportMode(ctx, decisionEnv)
+	env["SOHO_TRANSPORT"] = mode
+	decisionEnv["SOHO_TRANSPORT"] = mode
+	return mode
+}
+
+// hcCommandAllowed lists the commands that run under transport=hc
+// (DJA-604 stage 2b): the read side (status, wait), the explicitly allowed
+// diagnostics and configuration commands (doctor, config, explain,
+// capabilities), the usage and version invocations, and the commands that
+// never touch the transport (kinds, models, model, roles, role, lint,
+// install, env — env reports the herdr version through a one-shot external
+// binary call, never the transport). Every other command is refused at the
+// entry with the guard's line.
+func hcCommandAllowed(command string) bool {
+	switch command {
+	case "", "help", "-h", "--help":
+		return true
+	case "status", "wait", "doctor", "config", "explain", "capabilities":
+		return true
+	case "kinds", "models", "model", "roles", "role", "lint", "install", "env":
+		return true
+	}
+	return false
 }
 
 // nowriteReadInvocation decides, from the shape of the invocation alone, what

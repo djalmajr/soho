@@ -10,8 +10,8 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -370,7 +370,7 @@ func registerMutationCopy(env platform.Env, source, dest string) {
 			return
 		}
 	}
-	pane := herdr.New(env).Runtime.Caller().PaneID
+	pane := backend.New(env).Runtime.Caller().PaneID
 	owner := rosterAgentForPane(sd, pane)
 	if pane == "" {
 		pane = "-"

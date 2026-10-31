@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
@@ -944,7 +945,7 @@ func CmdCollect(args []string, command CommandContext) int {
 		}
 	}
 	sd := core.StateDir(ctx, env, cwd)
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	// An active collaboration outranks the report: while its assignment is
 	// active the participant is still working, so the initial or stale
 	// report is an artifact, never the completion. The cycle is shown

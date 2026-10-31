@@ -13,8 +13,8 @@ import (
 )
 
 // hcExperimentalWarning is the warning every transport=hc doctor line is
-// followed by (DJA-603 stage 2a).
-const hcExperimentalWarning = "transport=hc is experimental: only doctor reads it so far; spawn, dispatch and wait still use herdr"
+// followed by (DJA-603 stage 2a; the line reworded by DJA-604 stage 2b).
+const hcExperimentalWarning = "transport=hc is experimental: status and wait read through hc; spawn, dispatch and release do not support it yet"
 
 // doctorHcJSON is the fake hc 0.1.14 output of the capability steps, the
 // strings of hc 0.1.14 as the brief records them.

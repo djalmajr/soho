@@ -8,18 +8,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/djalmajr/soho/internal/herdr"
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/transport"
 )
 
 func SessionConfPath(ctx *Config, env platform.Env, cwd string) string {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	workspace := svc.Runtime.Caller().WorkspaceID
 	if workspace == "" && !svc.Runtime.Caller().Inside {
 		return ""
 	}
-	if workspace == "" {
+	if workspace == "" && env.Get("SOHO_TRANSPORT") != "hc" {
+		// The herdr fallback: hc has no pane current, and without a session
+		// there is no session.conf to name (DJA-604 stage 2b).
 		result := svc.Legacy.PaneCurrentRaw(nil, transport.Call{Timeout: 10 * time.Second})
 		if !result.Process.NotFound && result.Process.Status != nil && *result.Process.Status == 0 {
 			var payload struct {

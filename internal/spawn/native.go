@@ -7,8 +7,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/transport"
 )
@@ -90,7 +90,7 @@ func RosterCaller(ctx *core.Config, env platform.Env, cwd, pane string) (name, r
 // written to stderr naming it (command is the calling command, "init" or
 // "spawn"), and the agent's current name is returned.
 func EnsureOrchestratorName(ctx *core.Config, env platform.Env, cwd, command string) string {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	pane := svc.Runtime.Caller().PaneID
 	if pane == "" {
 		return ""

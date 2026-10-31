@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
@@ -384,7 +385,7 @@ func cmdCopies(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 // <state>". It is read-only: it removes nothing and writes nothing, and it
 // does not show sizes.
 func copiesList(ctx *core.Config, env platform.Env, cwd string) int {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	sd := core.StateDir(ctx, env, cwd)
 	incorporatePendingCopies("copies", sd, env, cwd)
 	rows, err := core.ReadCopies(sd)
@@ -842,7 +843,7 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		sd = core.StateDir(ctx, env, cwd)
 	}
 	incorporatePendingCopies("copies add", sd, env, cwd)
-	pane := herdr.New(env).Runtime.Caller().PaneID
+	pane := backend.New(env).Runtime.Caller().PaneID
 	owner := "-"
 	if agentSeen {
 		line := core.RosterLine(sd, agent)
@@ -1062,7 +1063,7 @@ func (v *gcVolumes) print() {
 // project are listed in their own block and only stopped with
 // --include-unregistered-procs --yes.
 func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	yes, includeUnregistered, includeProcs := false, false, false
 	hours := "2"
 	for i := 0; i < len(argv); i++ {

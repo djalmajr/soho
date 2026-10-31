@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/layout"
@@ -322,7 +322,7 @@ func approvalsRank(mode string) int {
 }
 
 func liveAgents(env platform.Env) []transport.Terminal {
-	return herdr.New(env).Runtime.List(context.Background(), transport.Scope{}, transport.Call{}).Value
+	return backend.New(env).Runtime.List(context.Background(), transport.Scope{}, transport.Call{}).Value
 }
 
 // agentGetState reads one agent's state through the transport, mirroring the
@@ -477,7 +477,7 @@ func mcpMatches(f []string, want string) bool {
 // choice to match wantMcp (DJA-392): a session opened without the user's
 // MCP servers cannot serve a role that needs them, nor the reverse.
 func FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort string, ctx *core.Config, env platform.Env, cwd string) (string, string, bool) {
-	rt := herdr.New(env).Runtime
+	rt := backend.New(env).Runtime
 	multi := core.Cfg(ctx, "multi_role", "on", env)
 	sd := core.StateDirPath(ctx, env, cwd)
 	blockedName, blockedCause, crossHit := "", "", ""
@@ -615,7 +615,7 @@ func laneApprovalsMatch(f []string, approvals string) bool {
 // first idle worker that is a reuse candidate for the request, or "" when no
 // idle worker matches (each mismatched idle then counts as occupied).
 func laneReusePick(sd, lane, role, kind, model, effort, approvals, mcp, workerCwd string, env platform.Env, cwd string) string {
-	rt := herdr.New(env).Runtime
+	rt := backend.New(env).Runtime
 	for _, row := range core.LaneWorkers(sd, lane) {
 		f := strings.Split(row, "\t")
 		nm := fieldAt(f, 0)
@@ -906,7 +906,7 @@ func effortOk(value string) bool {
 }
 
 func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	// Machine under pressure: warn before opening more work (stderr only;
 	// the spawn proceeds as usual).
 	core.PressureWarn(ctx, env, cwd)
@@ -1382,7 +1382,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			reserveForNewShell()
 			// The split runs with the pane's registry/E2E env, and its
 			// SOHO_CREATED_E2E_PANE write-back lands in that same env.
-			s := herdr.New(paneEnv).Window.Split(context.Background(), transport.Open{Anchor: anchor, Direction: o.direction, Cwd: o.cwd, Ratio: &ratio}, transport.Call{})
+			s := backend.New(paneEnv).Window.Split(context.Background(), transport.Open{Anchor: anchor, Direction: o.direction, Cwd: o.cwd, Ratio: &ratio}, transport.Call{})
 			if s.Err != nil {
 				core.DieFriction("pane split failed", 4, "", "")
 			}
@@ -1805,7 +1805,7 @@ func mismatchSimple(name, lane, actual, want string, ctx *core.Config, env platf
 }
 
 func startAgent(o spawnOptions, kind string, env platform.Env, created bool, args []string) bool {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	rt := svc.Terminal
 	for tries := 0; ; tries++ {
 		if startup.CurrentPlatform() != "win32" && (!created || tries > 0) {
@@ -1935,7 +1935,7 @@ func pollMillis(env platform.Env) time.Duration {
 	return 500 * time.Millisecond
 }
 func checkStartWindow(o spawnOptions, kind string, env platform.Env, created bool, args []string, ctx *core.Config) (string, string, bool) {
-	rt := herdr.New(env).Runtime
+	rt := backend.New(env).Runtime
 	poll := time.Duration(PollIntervalMs(env)) * time.Millisecond
 	canRelaunch := true
 	blocked := false

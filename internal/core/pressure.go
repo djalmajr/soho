@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/djalmajr/soho/internal/herdr"
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -102,7 +102,7 @@ func PressureRefuseParts(ctx *Config, env platform.Env, cwd string) []string {
 // no pressure check (a command that cannot resolve its state dir cannot be
 // opened more work for). Any failure means silent skip.
 func pressureStateDir(ctx *Config, env platform.Env, cwd string) string {
-	workspace := herdr.New(env).Runtime.Caller().WorkspaceID
+	workspace := backend.New(env).Runtime.Caller().WorkspaceID
 	if workspace == "" {
 		return ""
 	}

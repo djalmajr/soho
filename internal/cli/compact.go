@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -502,7 +503,7 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 	phaseStart := time.Now()
 	budgetCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
 	defer cancel()
-	budget := &compactBudget{ctx: budgetCtx, svc: herdr.New(env), transcriptState: "missing"}
+	budget := &compactBudget{ctx: budgetCtx, svc: backend.New(env), transcriptState: "missing"}
 	before := ""
 	timedOut := false
 	var timeoutElapsed int64

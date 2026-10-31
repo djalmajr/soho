@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/herdr"
@@ -74,7 +75,7 @@ func cmdPromote(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 		platform.Die("promote: acts on the calling sub-orchestrator and takes no arguments (no target, no bypass flags)", 2)
 	}
 	herdr.RequireEnv(env, platform.Current(), os.Getpid(), nil)
-	svc := herdr.New(env)
+	svc := backend.New(env)
 
 	// Canonical caller scope: the native server's view of this process's
 	// pane, not the inherited HERDR_* ids (they stay stale for a moved

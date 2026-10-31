@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/djalmajr/soho/internal/herdr"
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/platform"
 	herdrtext "github.com/djalmajr/soho/internal/text"
 	"github.com/djalmajr/soho/internal/transport"
@@ -49,7 +49,7 @@ func PaneTaskTitle(dir, agent string, title *string, env platform.Env) {
 	if len(f) < 2 || f[1] == "" {
 		return
 	}
-	_ = herdr.New(env).Window.Title(nil, f[1], title, transport.Call{})
+	_ = backend.New(env).Window.Title(nil, f[1], title, transport.Call{})
 }
 
 func MarkTaskDone(dir, agent string, env platform.Env) error {

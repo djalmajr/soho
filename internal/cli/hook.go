@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/doctor"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/peerauth"
 	"github.com/djalmajr/soho/internal/platform"
 )
@@ -37,12 +37,12 @@ func cmdHook(args []string, env platform.Env, cwd string) int {
 		if hookInbound(env, cwd, codex) {
 			return 0
 		}
-		if args[0] == "reminder" && herdr.New(env).Runtime.Caller().Inside {
+		if args[0] == "reminder" && backend.New(env).Runtime.Caller().Inside {
 			fmt.Fprintln(platform.Stdout, hookReminder)
 		}
 		return 0
 	}
-	if !herdr.New(env).Runtime.Caller().Inside {
+	if !backend.New(env).Runtime.Caller().Inside {
 		return 0
 	}
 	if project := env.Get("CLAUDE_PROJECT_DIR"); project != "" {
@@ -144,7 +144,7 @@ func hookInbound(env platform.Env, cwd string, codex bool) bool {
 			}
 			return core.Cfg(&ctx, "inbound", "auto", readEnv) == "off", nil
 		},
-		Pane: herdr.New(env).Runtime.Caller().PaneID,
+		Pane: backend.New(env).Runtime.Caller().PaneID,
 		Now:  platform.Now,
 	}
 	outcome := peerauth.Check(*in.Prompt, src)
@@ -166,7 +166,7 @@ func hookTooLarge(env platform.Env, cwd string, codex bool) bool {
 	userFile := core.EffectiveUserConfigFile(platform.Current(), env, core.UserSelection{})
 	outcome := peerauth.CheckTooLarge(peerauth.Source{
 		Dir:  filepath.Dir(userFile),
-		Pane: herdr.New(env).Runtime.Caller().PaneID,
+		Pane: backend.New(env).Runtime.Caller().PaneID,
 		Now:  platform.Now,
 	})
 	writeHookBlock(outcome, codex)
@@ -214,7 +214,7 @@ func readHookInput() (data []byte, tooLarge, ok bool) {
 // herdr state and creates no directory.
 func hookFriction(env platform.Env, target, message string) {
 	logFile := ""
-	if workspace := herdr.New(env).Runtime.Caller().WorkspaceID; workspace != "" {
+	if workspace := backend.New(env).Runtime.Caller().WorkspaceID; workspace != "" {
 		func() {
 			defer func() { _ = recover() }()
 			ctx := core.LoadConfig(env, target)

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode/utf16"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	herdrtext "github.com/djalmajr/soho/internal/text"
@@ -110,7 +110,7 @@ func cmdRoster(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		platform.Die("usage: roster [--scope workspace|server] [--json]", 2)
 	}
 	sd := core.StateDir(ctx, env, cwd)
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	live := liveAgentsFriction(env)
 	ws := core.WorkspaceID(ctx, env, cwd)
 	panes := windowObjects(svc.Window.ListPanes(context.Background(), transport.Scope{WorkspaceID: ws}, transport.Call{}).Value)

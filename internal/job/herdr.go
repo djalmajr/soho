@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/transport"
 )
@@ -76,7 +76,7 @@ var (
 // built on the adapter's env, whose methods run the exact one-step herdr
 // calls the adapter used to make through runStep.
 func (c *herdrCLI) legacy() transport.LegacyTransport {
-	return herdr.New(c.Env).Legacy
+	return backend.New(c.Env).Legacy
 }
 
 func (c *herdrCLI) timeout() time.Duration {

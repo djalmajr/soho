@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/codexenv"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
@@ -113,7 +114,7 @@ func CmdInit(ctx *core.Config, env platform.Env, cwd string) {
 	name := spawn.EnsureOrchestratorName(ctx, env, cwd, "init")
 	// One backend for this invocation: the init's pane read, title and the
 	// context claims all run through it (DJA-596).
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	pane := svc.Runtime.Caller().PaneID
 	_, _, callerInRoster := spawn.RosterCaller(ctx, env, cwd, pane)
 	paneID := ""
@@ -271,7 +272,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	s := &Say{Out: out}
 	// One backend for this invocation: every herdr probe of the doctor runs
 	// through it (DJA-596).
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	doctorRestartNotices(ctx, env, cwd, platform.Stderr)
 	if svc.Runtime.Caller().Inside {
 		herdrContextCheck(svc, s)
@@ -525,9 +526,9 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 
 // doctorHcTransport is the transport=hc doctor check (DJA-603 stage 2a):
 // it runs the hc capability probe and prints exactly one line for the
-// outcome it reaches, plus the experimental warning in every case. It is
-// the only reader of transport so far: spawn, dispatch and wait still use
-// herdr.
+// outcome it reaches, plus the experimental warning in every case. As of
+// DJA-604 stage 2b status and wait read through hc; spawn, dispatch and
+// release do not support it yet.
 func doctorHcTransport(env platform.Env, s *Say) {
 	probe := hc.Probe(context.Background(), env)
 	var hcErr *hc.Error
@@ -560,7 +561,7 @@ func doctorHcTransport(env platform.Env, s *Say) {
 	default:
 		s.Ok(fmt.Sprintf("hc %s, core %s running, protocol generation 1", probe.Version, probe.CoreName))
 	}
-	s.Warning("transport=hc is experimental: only doctor reads it so far; spawn, dispatch and wait still use herdr")
+	s.Warning("transport=hc is experimental: status and wait read through hc; spawn, dispatch and release do not support it yet")
 }
 
 // doctorFootprint warns when the team's total on-disk footprint (the
@@ -1596,7 +1597,7 @@ func doctorWorkerCwds(ctx *core.Config, svc transport.Services, env platform.Env
 		// The agent get's child process ran with readEnv (SOHO_NOWRITE set),
 		// not the invocation's env: a separate backend keeps that contract
 		// (DJA-596).
-		state := herdr.New(readEnv).Runtime.Get(context.Background(), transport.Target{ID: cols[0]}, transport.Call{Timeout: herdr.Timeout}).Value.State
+		state := backend.New(readEnv).Runtime.Get(context.Background(), transport.Target{ID: cols[0]}, transport.Call{Timeout: herdr.Timeout}).Value.State
 		if state != "" && state != "gone" && state != "unavailable" {
 			s.Warning(fmt.Sprintf("worker '%s' runs in %s, which no longer exists; release it with --close", cols[0], cols[6]))
 		}

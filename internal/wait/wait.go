@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/gittree"
@@ -274,7 +275,7 @@ func cursorMCPBlocked(sd, agent string, svc transport.Services) bool {
 }
 
 func TryAutoApprove(sd, agent string, ctx *core.Config, env platform.Env) bool {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	if core.Cfg(ctx, "auto_approve", "off", env) != "on" {
 		return false
 	}
@@ -488,7 +489,7 @@ func reportAgentState(sd, agent, report string, ctx *core.Config, svc transport.
 }
 
 func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) string {
-	return probeAgent(sd, agent, report, ctx, herdr.New(env), env, nil)
+	return probeAgent(sd, agent, report, ctx, backend.New(env), env, nil)
 }
 
 type probeScreen struct {
@@ -955,7 +956,7 @@ func jsonLine(value *jsonjs.Object) {
 }
 
 func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, timeoutMs float64, anyDone bool, cwd string) int {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	for _, agent := range agents {
 		removeWaitFile(sd, agent, "size")
 		removeWaitFile(sd, agent, "background-noted")

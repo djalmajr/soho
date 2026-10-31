@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/djalmajr/soho/internal/herdr"
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/transport"
@@ -234,9 +234,18 @@ func DropCopiesLinesHeld(stateDir string, removed map[string]bool) error {
 // that must keep running when the workspace cannot be resolved: a missing
 // herdr CLI or a failing pane current comes back as an error.
 func WorkspaceIDOrError(env platform.Env) (string, error) {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	if id := svc.Runtime.Caller().WorkspaceID; id != "" {
 		return id, nil
+	}
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		// hc has no pane current: the session is the workspace, and when it
+		// cannot be resolved that comes back as the hc error, never a Herdr
+		// error (DJA-604 stage 2b).
+		if svc.Runtime.Caller().Inside {
+			return "", errors.New("transport=hc: the caller terminal's soho session could not be read (hc get failed for HC_TERMINAL_ID)")
+		}
+		return "", errors.New("transport=hc: not inside an hc terminal (HC_TERMINAL_ID is not set)")
 	}
 	rep := svc.Legacy.PaneCurrentRaw(nil, transport.Call{Timeout: 30 * time.Second})
 	if rep.Process.NotFound {
