@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/peer"
+	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -172,12 +173,18 @@ func TestSendWorkspaceRetrySharedDeadline(t *testing.T) {
 		{Argv: []string{"agent", "get", "w6Y"}, Call: 1, Code: 1, Stderr: noAgentNotRef},
 		{Argv: []string{"api", "snapshot"}, Call: 1, Stdout: snapshot},
 		{Argv: []string{"agent", "get", "w6Y:p1"}, Call: 1, Code: 1, Stderr: notReadyErr},
-		{Argv: []string{"agent", "get", "w6Y"}, Call: 2, Delay: 1200, Code: 1, Stderr: noAgentNotRef},
+		{Argv: []string{"agent", "get", "w6Y"}, Call: 2, Delay: 500, Code: 1, Stderr: noAgentNotRef},
 		{Argv: []string{"api", "snapshot"}, Call: 2, Delay: 1200, Stdout: snapshot},
 		{Argv: []string{"agent", "get", "w6Y:p1"}, Call: 2, Delay: 1200, Code: 1, Stderr: notReadyErr},
 	})
 	f.env["PATH"], f.env["USERPROFILE"] = filepath.Dir(f.bin), f.env["HOME"]
 	f.env["SOHO_SEND_POLL_MS"] = "1"
+	// The 500 ms retry get must finish inside the shared 1.5 s deadline
+	// whatever the host load: the fake's cold start (a re-exec of the
+	// test binary) used to eat the 300 ms the 1.2 s version left (DJA-637).
+	// The 1.2 s snapshot still outlives what is left of the deadline, so
+	// the cut path and the no-revalidation assertion are unchanged.
+	warmFakeHerdr(t, f)
 	start := time.Now()
 	code, out, stderr := f.run([]string{"send", "local/w6Y", "--timeout", "1500", "hello"})
 	workspace := callStartsOf(t, f, []string{"agent", "get", "w6Y"})
@@ -208,6 +215,30 @@ func TestSendWorkspaceRetrySharedDeadline(t *testing.T) {
 	}
 	if countCalls(calls, "agent", "prompt") != 0 || countSendKeyEnters(t, f) != 0 || peerLogResult(t, f) != "error" {
 		t.Fatalf("timeout sent input or recorded a wrong result: %+v", calls)
+	}
+}
+
+// warmFakeHerdr runs the fixture's fake herdr (a re-exec of the test
+// binary) with a no-rule argv until a round trip is quick, so the
+// deadline tests below measure the fixture's delays, not the fake's cold
+// start: the cold start (page-in plus runtime init) can outlive a short
+// deadline under host load, taking the timeout path the fixture must not
+// exercise (DJA-637, after fakePsWarm in internal/platform). The
+// warm-up calls are logged under their own argv, which the tests'
+// argv-scoped call assertions ignore.
+func warmFakeHerdr(t *testing.T, f *fixture) {
+	t.Helper()
+	until := time.Now().Add(30 * time.Second)
+	for {
+		began := time.Now()
+		platform.RunCli("herdr", []string{"version"}, platform.RunOptions{Env: f.env, TimeoutMs: 5000})
+		if time.Since(began) < 400*time.Millisecond {
+			return
+		}
+		if time.Now().After(until) {
+			t.Fatalf("the fake herdr took over 400 ms per round trip for 30 s; the host load is too high to exercise the shared deadline")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

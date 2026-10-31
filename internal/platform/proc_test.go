@@ -140,6 +140,27 @@ func TestProcInfoCases(t *testing.T) {
 	})
 }
 
+// psWarm runs the fixture's staged ps (the real ps on the fixture's own
+// PATH) until a round trip is quick, so the stop-tree test below measures
+// the stop, not ps's cold start under host load: the readers' 2 s deadline
+// is a production contract, so the binary must start fast instead (DJA-637,
+// after fakePsWarm in proc_flags_unix_test.go).
+func psWarm(t *testing.T, env Env) {
+	t.Helper()
+	until := time.Now().Add(30 * time.Second)
+	for {
+		began := time.Now()
+		RunCli("ps", []string{"-o", "pid=,state=", "-p", "1"}, RunOptions{Env: env, TimeoutMs: 2000})
+		if time.Since(began) < 400*time.Millisecond {
+			return
+		}
+		if time.Now().After(until) {
+			t.Fatalf("ps took over 400 ms per round trip for 30 s; the host load is too high to exercise the TERM round")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func TestStopProcessTreeCases(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the unix TERM/KILL round; the windows round exercises taskkill /T")
@@ -149,6 +170,12 @@ func TestStopProcessTreeCases(t *testing.T) {
 		// The owned tree is the parent plus exactly one sleeper
 		// descendant: the native stand-in for the old sh + sleep tree.
 		parent, child := treeFixture(t, env)
+		// Warm the staged ps (its pages resident, a round trip measured
+		// under the current load): a cold ps can outlive the readers' 2 s
+		// deadline under host load, and a TimedOut ps reads every pid
+		// alive, which pushes the stop into the KILL round this test must
+		// not need (DJA-637, after fakePsWarm).
+		psWarm(t, env)
 		started := time.Now()
 		readStarted, _, ok := ProcInfo(parent, env)
 		if !ok {
