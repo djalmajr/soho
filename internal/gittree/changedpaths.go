@@ -24,6 +24,22 @@ type ChangedPath struct {
 // Git, scope or stat failures: callers must preserve report authority then.
 // It reads through the tree root and never changes Git or task state.
 func ChangedPaths(sidecar, agent string, env platform.Env) []ChangedPath {
+	return changedPaths(sidecar, agent, env, func(role, cwd string) bool { return core.RoleIsEdit(role, env, cwd) })
+}
+
+// ChangedPathsReadOnly is ChangedPaths with the read-only, nonfatal role
+// lookup (RoleIsEditReadOnly): the same changed-path algorithm, but the
+// edit-role decision never materializes the skill bundle and never Dies,
+// so an unavailable custom role simply reports nil like every other
+// metadata failure.
+func ChangedPathsReadOnly(sidecar, agent string, env platform.Env) []ChangedPath {
+	return changedPaths(sidecar, agent, env, func(role, cwd string) bool { return core.RoleIsEditReadOnly(role, env, cwd) })
+}
+
+// changedPaths is the shared changed-path algorithm: the role gate
+// (roleIsEdit) is the only decision that differs between the command and
+// the inspection readers.
+func changedPaths(sidecar, agent string, env platform.Env, roleIsEdit func(role, cwd string) bool) []ChangedPath {
 	o := read(sidecar)
 	if o == nil {
 		return nil
@@ -31,7 +47,7 @@ func ChangedPaths(sidecar, agent string, env platform.Env) []ChangedPath {
 	tree, _ := stringField(o, "git_tree")
 	head, _ := stringField(o, "git_head")
 	role, _ := stringField(o, "role")
-	if tree == "" || !diffHeadRE.MatchString(head) || role == "" || !core.RoleIsEdit(role, env, tree) {
+	if tree == "" || !diffHeadRE.MatchString(head) || role == "" || !roleIsEdit(role, tree) {
 		return nil
 	}
 	owned, hasOwned, scopeOK := diffEffectiveOwned(sidecar, agent, o)

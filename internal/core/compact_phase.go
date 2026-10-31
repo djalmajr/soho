@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -82,6 +83,65 @@ func CompactPendingRead(path string) (*CompactPending, error) {
 	if err != nil {
 		return nil, err
 	}
+	return compactPendingParse(path, raw)
+}
+
+// compactInspectionMax is the private metadata cap of the inspection read:
+// a marker larger than it is refused as unverifiable, so a per-machine scan
+// can never hold a reader on one oversized state record.
+const compactInspectionMax = 64 << 10
+
+// CompactPendingReadInspect is the bounded nonblocking inspection read:
+// it confines the marker to its opened parent, refuses linked entries and
+// verifies their identity against the nonblocking opened regular handle,
+// reads at most
+// compactInspectionMax bytes, and shares compactPendingParse's validation.
+// It writes nothing and repairs nothing; absence is os.ErrNotExist like the
+// command reader, and a marker over the cap is a corrupted record.
+func CompactPendingReadInspect(path string) (*CompactPending, error) {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	name := filepath.Base(path)
+	before, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !before.Mode().IsRegular() {
+		return nil, platform.ErrNotRegular
+	}
+	f, err := root.OpenFile(name, platform.ReadOnlyNonBlocking, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	opened, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	after, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || !after.Mode().IsRegular() || !os.SameFile(before, opened) || !os.SameFile(opened, after) {
+		return nil, platform.ErrNotRegular
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, compactInspectionMax+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > compactInspectionMax {
+		return nil, fmt.Errorf("the marker %s exceeds the %d-byte inspection cap", path, compactInspectionMax)
+	}
+	return compactPendingParse(path, raw)
+}
+
+// compactPendingParse is the marker validation the command and inspection
+// readers share: broken JSON, a non-object, an unsupported version or a
+// missing field is a corrupted record.
+func compactPendingParse(path string, raw []byte) (*CompactPending, error) {
 	value, err := jsonjs.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("the marker %s is not JSON: %v", path, err)

@@ -17,6 +17,18 @@ import (
 )
 
 func ResolveParticipant(stateDir, name string, env platform.Env, contexts ...context.Context) (Participant, error) {
+	return resolveParticipant(stateDir, name, callerWorkspace(env), env, contexts...)
+}
+
+// callerWorkspace reads the caller's workspace on each evaluation, at the
+// same sites the writers always read it: once per check and once per
+// participant in the herdr branch. It is the caller-derived expected
+// workspace; the read-only explicit-workspace path supplies its own.
+func callerWorkspace(env platform.Env) func() string {
+	return func() string { return backend.New(env).Runtime.Caller().WorkspaceID }
+}
+
+func resolveParticipant(stateDir, name string, workspace func() string, env platform.Env, contexts ...context.Context) (Participant, error) {
 	row := strings.Split(core.RosterLine(stateDir, name), "\t")
 	if len(row) < 12 || row[0] != name || row[1] == "" || row[7] == "" {
 		return Participant{}, fmt.Errorf("%s has no complete worker registration", name)
@@ -75,7 +87,7 @@ func ResolveParticipant(stateDir, name string, env platform.Env, contexts ...con
 		return Participant{}, err
 	}
 	ag := response.Result.Agent
-	if ag.Name != name || ag.Pane != row[1] || ag.Kind != row[2] || ag.Workspace != svc.Runtime.Caller().WorkspaceID || ag.Workspace == "" || ag.Session.Kind == "" || ag.Session.Value == "" || !filepath.IsAbs(ag.Cwd) {
+	if ag.Name != name || ag.Pane != row[1] || ag.Kind != row[2] || ag.Workspace != workspace() || ag.Workspace == "" || ag.Session.Kind == "" || ag.Session.Value == "" || !filepath.IsAbs(ag.Cwd) {
 		return Participant{}, errors.New("participant pane, workspace or session no longer matches its registration")
 	}
 	cwd, err := filepath.EvalSymlinks(ag.Cwd)
@@ -91,11 +103,30 @@ func ResolveParticipant(stateDir, name string, env platform.Env, contexts ...con
 }
 
 func CheckParticipants(a Assignment, stateDir string, env platform.Env, contexts ...context.Context) error {
-	if backend.New(env).Runtime.Caller().WorkspaceID != a.Workspace {
+	return checkParticipants(a, stateDir, callerWorkspace(env), env, contexts...)
+}
+
+// CheckParticipantsForWorkspace is the read-only explicit-workspace twin of
+// CheckParticipants: the assignment's workspace is compared to the known
+// supplied workspace, and each participant's record is verified against it,
+// instead of resolving the caller's workspace. The participant and root
+// comparisons are the same shared checks, so the temporary hc
+// name/address/cwd trust and every refusal are unchanged. The writers keep
+// calling CheckParticipants; no caller_check, policy, lifecycle or extra
+// identity verification changes.
+func CheckParticipantsForWorkspace(a Assignment, stateDir, workspace string, env platform.Env, contexts ...context.Context) error {
+	return checkParticipants(a, stateDir, func() string { return workspace }, env, contexts...)
+}
+
+// checkParticipants is the shared participant/root verification: the
+// expected workspace (caller-derived or explicit) is compared to the
+// assignment's once, then each participant is resolved and compared.
+func checkParticipants(a Assignment, stateDir string, workspace func() string, env platform.Env, contexts ...context.Context) error {
+	if workspace() != a.Workspace {
 		return errors.New("collaboration belongs to another workspace")
 	}
 	for _, expected := range []Participant{a.Author, a.Reviewer} {
-		live, err := ResolveParticipant(stateDir, expected.Name, env, contexts...)
+		live, err := resolveParticipant(stateDir, expected.Name, workspace, env, contexts...)
 		if err != nil {
 			return err
 		}

@@ -178,6 +178,57 @@ func RoleIsEdit(role string, env platform.Env, cwd string) bool {
 	return file != "" && FmGet(file, "mode") == "edit"
 }
 
+// RoleIsEditReadOnly is the read-only, nonfatal twin of RoleIsEdit for the
+// inspection path: it shares RoleIsEdit's built-in word rule and the FmGet
+// parser, but its skill role dir is the existing-only skill lookup
+// (SkillDirSourceOrEmpty) — it never Materializes the bundle and never
+// Dies. Unknown or unavailable custom role metadata returns false; the
+// built-in roles and readable project/env/existing-skill roles keep the
+// current rules.
+func RoleIsEditReadOnly(role string, env platform.Env, cwd string) bool {
+	if hasWord(EditRoles, role) {
+		return true
+	}
+	file := RoleFileReadOnly(role, env, cwd)
+	return file != "" && FmGet(file, "mode") == "edit"
+}
+
+// RoleDirsReadOnly is RoleDirs with the skill dir restricted to an existing
+// skill: the existing-only lookup returns "" when no source holds a skill,
+// so the dir list simply omits the skill role dir instead of
+// materializing or dying.
+func RoleDirsReadOnly(env platform.Env, cwd string) []string {
+	dirs := make([]string, 0, 3)
+	project := filepath.Join(platform.ProjectRoot(env, cwd), ".agents", "soho-roles")
+	if isDir(project) {
+		dirs = append(dirs, project)
+	}
+	// One roles override: SOHO_ROLES.
+	extra := env.Get("SOHO_ROLES")
+	if extra != "" && isDir(extra) {
+		dirs = append(dirs, extra)
+	}
+	if dir, _ := platform.SkillDirSourceOrEmpty(env); dir != "" {
+		dirs = append(dirs, filepath.Join(dir, "roles"))
+	}
+	return dirs
+}
+
+// RoleFileReadOnly is RoleFile over the existing-only dirs: the same .md
+// lookup, the same first-dir-wins order, no materialization or Die.
+func RoleFileReadOnly(role string, env platform.Env, cwd string) string {
+	if strings.HasSuffix(role, ".append") {
+		return ""
+	}
+	for _, dir := range RoleDirsReadOnly(env, cwd) {
+		file := filepath.Join(dir, role+".md")
+		if isFile(file) {
+			return file
+		}
+	}
+	return ""
+}
+
 func HistoryHasEdit(history string, env platform.Env, cwd string) bool {
 	for _, role := range strings.Split(history, ",") {
 		if RoleIsEdit(strings.TrimSpace(role), env, cwd) {

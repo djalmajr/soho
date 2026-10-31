@@ -1044,7 +1044,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			// An active collaboration owns the pane: the stale report is an
 			// artifact only, and the probe is skipped — no retry, no provider
 			// resume, no keys or prompts sent while the pane is idle.
-			if cs, ok := readCollaboration(sd, field(strings.Split(core.RosterLine(sd, agent), "\t"), 1), ctx, workspaceEnv); ok {
+			if cs, ok := readCollaboration(sd, field(strings.Split(core.RosterLine(sd, agent), "\t"), 1), ctx, workspaceEnv, ""); ok {
 				if alert := idleAlerts[agent]; alert != nil {
 					alert.sampleDue(idleTask(sd, agent, report), "collaborating", platform.Now(), idleMinutes)
 				}
@@ -1429,9 +1429,12 @@ func readQuotaFile(sd, agent string) (string, string) {
 	return field(parts, 0), field(parts, 1)
 }
 
-// observeReport recovers the protected state mirror only when scratch is gone.
-// Observing an unfinished report never publishes a mirror.
-func observeReport(sd, agent, report string, ctx *core.Config, env platform.Env, cwd string) string {
+// observeReportSession recovers the protected state mirror only when
+// scratch is gone, using the caller's known session instead of deriving
+// the workspace: the session is consulted only when the report is a
+// missing scratch report, like the deriving wrapper. Observing an
+// unfinished report never publishes a mirror.
+func observeReportSession(sd, agent, report string, session func() string) string {
 	dir := filepath.Dir(report)
 	if filepath.Base(dir) != "reports" || filepath.Base(filepath.Dir(filepath.Dir(dir))) != "soho" || dir == filepath.Join(sd, "reports") {
 		return report
@@ -1439,10 +1442,24 @@ func observeReport(sd, agent, report string, ctx *core.Config, env platform.Env,
 	if _, err := core.StatScratchReport(report); !errors.Is(err, os.ErrNotExist) {
 		return report
 	}
-	ws := core.WorkspaceID(ctx, env, cwd)
-	if filepath.Base(filepath.Dir(dir)) != ws {
+	if filepath.Base(filepath.Dir(dir)) != session() {
 		return report
 	}
+	return protectedMirror(sd, report)
+}
+
+// observeReport is the session-deriving wrapper for the command entry
+// points: the known workspace id is resolved with core.WorkspaceID only
+// when the report is a missing scratch report, exactly as before.
+func observeReport(sd, agent, report string, ctx *core.Config, env platform.Env, cwd string) string {
+	return observeReportSession(sd, agent, report, func() string { return core.WorkspaceID(ctx, env, cwd) })
+}
+
+// protectedMirror is the read-only core of the scratch-mirror recovery:
+// the protected copy under the state dir, when it exists and is a regular
+// nonempty file owned by this user (or of unknown owner), is the report's
+// stand-in; no mirror is published here.
+func protectedMirror(sd, report string) string {
 	state, err := os.OpenRoot(sd)
 	if err != nil {
 		return report
