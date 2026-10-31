@@ -10,6 +10,13 @@ package inventory
 // new one.
 const Schema = 1
 
+// MaxDocumentBytes is the largest successful `soho inventory --json`
+// output: the encoded JSON object plus the CLI's final newline. The
+// pinned reader accepts at most this many bytes, and the collector keeps
+// only an in-order prefix of shown agents while the encoded document
+// stays within it.
+const MaxDocumentBytes = 4 << 20
+
 // Document is one `soho inventory --json` output: the projects in show
 // mode and the merged per-state counts of the hidden projects of one
 // machine.
@@ -26,8 +33,10 @@ type Document struct {
 	// Hidden counts the live agents per state over every hidden-mode
 	// project of the machine; all five keys are always present.
 	Hidden Counts `json:"hidden"`
-	// Truncated is true when soho kept only the first 500 agents. It is
-	// the only field of the document that is omitted when false.
+	// Truncated is true when soho kept only a prefix of the shown
+	// agents: at most the first 500 and only while the encoded document
+	// stays within MaxDocumentBytes. It is the only field of the
+	// document that is omitted when false.
 	Truncated bool `json:"truncated,omitempty"`
 }
 
