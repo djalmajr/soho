@@ -493,6 +493,9 @@ func TestDiffReportWaitingDispatchProducer(t *testing.T) {
 	}
 	diffWrite(t, filepath.Join(bin, "herdr.json"), string(config))
 	stop, done := make(chan struct{}), make(chan struct{})
+	// A failure of the report goroutine fails the test, even when it left
+	// the report on disk: the dispatch outcome alone would not show it.
+	goErr := make(chan error, 1)
 	go func() {
 		defer close(done)
 		for {
@@ -505,12 +508,15 @@ func TestDiffReportWaitingDispatchProducer(t *testing.T) {
 					report := strings.TrimSpace(string(b))
 					if report != "" && report != f.report {
 						if err := diffAfterCurrentDispatch(f, report, false); err != nil {
+							goErr <- err
 							return
 						}
 						// The gate goes last: the fake worker only turns idle
 						// once the wait's settled read can see the report and
 						// its edits.
-						_ = os.WriteFile(gate, []byte("ready\n"), 0o600)
+						if err := os.WriteFile(gate, []byte("ready\n"), 0o600); err != nil {
+							goErr <- err
+						}
 						return
 					}
 				}
@@ -523,6 +529,11 @@ func TestDiffReportWaitingDispatchProducer(t *testing.T) {
 	platform.Stdout, platform.Stderr = &out, &stderr
 	defer func() { platform.Stdout, platform.Stderr = oldOut, oldErr }()
 	code := cli.Run([]string{"dispatch", "worker", input, "--role", "implementer", "--timeout", "30s"}, f.env)
+	select {
+	case err := <-goErr:
+		t.Fatalf("report goroutine failed: %v (dispatch code=%d)", err, code)
+	default:
+	}
 	if code != 0 {
 		t.Fatalf("dispatch code=%d out=%s stderr=%s", code, out.String(), stderr.String())
 	}
