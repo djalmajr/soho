@@ -278,6 +278,11 @@ func TestStateAndReasonConstantsPinTheContractVocabulary(t *testing.T) {
 	if len(states) != 5 {
 		t.Fatalf("states = %d values, want 5 distinct ones", len(states))
 	}
+	for state, want := range states {
+		if string(state) != want {
+			t.Fatalf("state constant = %q, want %q", state, want)
+		}
+	}
 	reasons := map[Reason]string{
 		ReasonQuestion:    "question",
 		ReasonApproval:    "approval",
