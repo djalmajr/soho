@@ -39,8 +39,8 @@ func treePaths(t *testing.T, root string) []string {
 // hcRefusedCommands is every known command the hc entry guard refuses.
 var hcRefusedCommands = []string{
 	"session", "find", "run", "resume", "collect",
-	"send", "stats", "clean", "setup", "init",
-	"title", "regrid", "roster", "friction", "feedback", "tab-label",
+	"send", "stats", "clean", "setup",
+	"regrid", "roster", "friction", "feedback", "tab-label",
 	"layout-plan", "mutation-guard", "mutation-copy", "review-snapshot",
 	"reopen", "compact", "metrics", "copies", "gc", "procs", "promote",
 	"job", "plugin",
@@ -105,11 +105,14 @@ func TestHcGuardRefusesEveryOtherCommand(t *testing.T) {
 	// allowed commands (doctor, config, explain, capabilities), the usage and
 	// version invocations, and the commands that never touch the transport
 	// (kinds, models, model, roles, role, lint, install, env), and hook,
-	// which is advisory and must never block the host assistant.
+	// which is advisory and must never block the host assistant. DJA-611
+	// also admits private-record init/title and caller-free inventory;
+	// their positive/refusal behavior is covered by their command tests.
 	allowed := map[string]bool{
 		"": true, "help": true, "-h": true, "--help": true,
 		"status": true, "wait": true, "spawn": true, "dispatch": true, "release": true, "collaborate": true,
 		"doctor": true, "config": true, "explain": true, "capabilities": true,
+		"init": true, "title": true, "inventory": true,
 		"kinds": true, "models": true, "model": true, "roles": true, "role": true,
 		"lint": true, "install": true, "env": true, "hook": true,
 	}
