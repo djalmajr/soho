@@ -83,19 +83,30 @@ func Session(env platform.Env) (string, error) {
 // session resolves the session through the instance's runner, lazily and
 // within the request's budget (ctx and call, through run). The value is
 // memoized, so no later call issues the session read again; so is a failure
-// the read met with the full default budget. A failure under a shorter
-// budget is not memoized: a later call with more time reads again.
+// the read met with the full default budget, judged before the read. A
+// failure under a shorter budget, or one the request's cancellation caused,
+// is not memoized: a later call with more time reads again. The lock is not
+// held across the read, so a caller never waits on another caller's read;
+// concurrent first reads may each launch, and the first stored result wins.
 func (b *backend) session(ctx context.Context, call transport.Call) (string, error) {
 	b.sessionMu.Lock()
-	defer b.sessionMu.Unlock()
 	if b.sessionDone {
-		return b.sessionValue, b.sessionErr
+		value, err := b.sessionValue, b.sessionErr
+		b.sessionMu.Unlock()
+		return value, err
 	}
+	b.sessionMu.Unlock()
+	full := fullBudget(ctx, call)
 	value, err := b.sessionOf(ctx, call)
-	if err == nil || errors.Is(err, ErrNotInHcTerminal) || fullBudget(ctx, call) {
+	if err != nil && !errors.Is(err, ErrNotInHcTerminal) && (!full || (ctx != nil && ctx.Err() != nil)) {
+		return value, err
+	}
+	b.sessionMu.Lock()
+	defer b.sessionMu.Unlock()
+	if !b.sessionDone {
 		b.sessionValue, b.sessionErr, b.sessionDone = value, err, true
 	}
-	return value, err
+	return b.sessionValue, b.sessionErr
 }
 
 func (b *backend) sessionOf(ctx context.Context, call transport.Call) (string, error) {
@@ -111,12 +122,16 @@ func (b *backend) sessionOf(ctx context.Context, call transport.Call) (string, e
 }
 
 // fullBudget reports whether a launch under ctx and call runs with the
-// default 30s: no call timeout and no parent deadline sooner than it.
+// default 30s: no call timeout, a live parent, and no parent deadline
+// sooner than it.
 func fullBudget(ctx context.Context, call transport.Call) bool {
 	if call.Timeout > 0 {
 		return false
 	}
 	if ctx != nil {
+		if ctx.Err() != nil {
+			return false
+		}
 		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < hcTimeoutDefault {
 			return false
 		}

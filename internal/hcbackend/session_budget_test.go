@@ -71,3 +71,93 @@ func TestListSessionHonorsTheRequestBudget(t *testing.T) {
 		t.Fatalf("session gets = %d after a memoized success, want 2", gets)
 	}
 }
+
+// TestSessionMemoizationEdges pins the three edges of the failure memo: a
+// cancelled request (with no deadline) does not memoize its failure; a
+// request that launched with the full default budget memoizes its failure
+// even when the read itself took time; and a caller never waits on another
+// caller's read in flight.
+func TestSessionMemoizationEdges(t *testing.T) {
+	failing := func(gets *int) func(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
+		return func(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
+			*gets++
+			if *gets == 1 {
+				exit := 1
+				return platform.RunResult{Status: &exit, Stderr: `{"error":{"kind":"internal","message":"core down"}}`}
+			}
+			zero := 0
+			return platform.RunResult{Status: &zero, Stdout: `{"address":"t1","state":"live","labels":{"soho.session":"s1"},"terminals":[]}`}
+		}
+	}
+
+	t.Run("a cancelled request's failure is not memoized", func(t *testing.T) {
+		env := platform.Env{"HC_TERMINAL_ID": "t1"}
+		b := &backend{env: env, client: hc.New(env)}
+		var gets int
+		b.client.Launch = failing(&gets)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := b.session(ctx, transport.Call{}); err == nil {
+			t.Fatal("the cancelled read succeeded, want its failure")
+		}
+		if session := b.Caller().WorkspaceID; session != "s1" || gets != 2 {
+			t.Fatalf("later Caller session = %q after %d gets, want s1 read again", session, gets)
+		}
+	})
+
+	t.Run("a full-budget failure is memoized even when the read took time", func(t *testing.T) {
+		env := platform.Env{"HC_TERMINAL_ID": "t1"}
+		b := &backend{env: env, client: hc.New(env)}
+		var gets int
+		inner := failing(&gets)
+		b.client.Launch = func(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
+			time.Sleep(40 * time.Millisecond)
+			return inner(ctx, env, args...)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), hcTimeoutDefault+20*time.Millisecond)
+		defer cancel()
+		if _, err := b.session(ctx, transport.Call{}); err == nil {
+			t.Fatal("the first read succeeded, want its failure")
+		}
+		if _, err := b.session(context.Background(), transport.Call{}); err == nil || gets != 1 {
+			t.Fatalf("second read err = %v after %d gets, want the memoized failure and 1 get", err, gets)
+		}
+	})
+
+	t.Run("a cancelled caller does not wait on another caller's read", func(t *testing.T) {
+		env := platform.Env{"HC_TERMINAL_ID": "t1"}
+		b := &backend{env: env, client: hc.New(env)}
+		release := make(chan struct{})
+		entered := make(chan struct{}, 2)
+		b.client.Launch = func(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
+			entered <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			exit := 124
+			return platform.RunResult{Status: &exit, Stderr: `{"error":{"kind":"timeout","message":"timed out"}}`}
+		}
+		first := make(chan struct{})
+		go func() {
+			defer close(first)
+			_, _ = b.session(context.Background(), transport.Call{})
+		}()
+		<-entered
+		ctx, cancel := context.WithCancel(context.Background())
+		second := make(chan struct{})
+		go func() {
+			defer close(second)
+			_ = b.List(ctx, transport.Scope{}, transport.Call{})
+		}()
+		cancel()
+		select {
+		case <-second:
+		case <-time.After(2 * time.Second):
+			t.Error("List waited on the other caller's session read after its own cancellation")
+		}
+		close(release)
+		<-first
+		<-second
+	})
+}
