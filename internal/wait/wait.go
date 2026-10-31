@@ -103,14 +103,22 @@ func NormalizeScreen(value string) string {
 // returns a nil age with changed true.
 func ActivityAgeSeconds(sd, agent, screen string, now int64) (*int64, bool) {
 	hashRaw, ok := readWaitFile(sd, agent, "stuck-hash")
-	if !ok || strings.TrimSpace(hashRaw) == "" || strings.TrimSpace(screen) == "" || strings.TrimSpace(hashRaw) == strconv.FormatUint(uint64(CksumField(NormalizeScreen(""))), 10) {
+	at, valid := positiveWaitInt(sd, agent, "activity-at")
+	return activityAgeFrom(hashRaw, ok, screen, at, valid, now)
+}
+
+// activityAgeFrom is the shared activity computation the ordinary wait
+// file reads and the inspection's confined source reads both feed: the
+// recorded stuck-hash versus the current screen hash and the recorded
+// activity age, exactly as ActivityAgeSeconds has always decided it.
+func activityAgeFrom(hashRaw string, hashOK bool, screen string, at int64, atOK bool, now int64) (*int64, bool) {
+	if !hashOK || strings.TrimSpace(hashRaw) == "" || strings.TrimSpace(screen) == "" || strings.TrimSpace(hashRaw) == strconv.FormatUint(uint64(CksumField(NormalizeScreen(""))), 10) {
 		return nil, false
 	}
 	if strconv.FormatUint(uint64(CksumField(NormalizeScreen(screen))), 10) != strings.TrimSpace(hashRaw) {
 		return nil, true
 	}
-	at, valid := positiveWaitInt(sd, agent, "activity-at")
-	if !valid {
+	if !atOK {
 		return nil, false
 	}
 	age := now - at
@@ -137,12 +145,7 @@ func positiveWaitInt(sd, agent, name string) (int64, bool) {
 	if !ok {
 		return 0, false
 	}
-	raw = strings.TrimSpace(raw)
-	if !uintPattern.MatchString(raw) {
-		return 0, false
-	}
-	n, err := strconv.ParseInt(raw, 10, 64)
-	return n, err == nil && n > 0
+	return parseWaitInt(raw)
 }
 
 func NormalizeApproveScreen(value string) string { return NormalizeScreen(value) }
@@ -1044,7 +1047,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			// An active collaboration owns the pane: the stale report is an
 			// artifact only, and the probe is skipped — no retry, no provider
 			// resume, no keys or prompts sent while the pane is idle.
-			if cs, ok := readCollaboration(sd, field(strings.Split(core.RosterLine(sd, agent), "\t"), 1), ctx, workspaceEnv, ""); ok {
+			if cs, ok := readCollaboration(sd, field(strings.Split(core.RosterLine(sd, agent), "\t"), 1), ctx, workspaceEnv, "", nil); ok {
 				if alert := idleAlerts[agent]; alert != nil {
 					alert.sampleDue(idleTask(sd, agent, report), "collaborating", platform.Now(), idleMinutes)
 				}

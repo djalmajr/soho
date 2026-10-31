@@ -138,6 +138,15 @@ func CompactPendingReadInspect(path string) (*CompactPending, error) {
 	return compactPendingParse(path, raw)
 }
 
+// CompactPendingParse validates the marker bytes read by the
+// inspection's source read (Source.ReadMetadata) with the exact
+// validation the path readers share: broken JSON, a non-object, an
+// unsupported version or a missing field is a corrupted record. It
+// opens no path.
+func CompactPendingParse(path string, raw []byte) (*CompactPending, error) {
+	return compactPendingParse(path, raw)
+}
+
 // compactPendingParse is the marker validation the command and inspection
 // readers share: broken JSON, a non-object, an unsupported version or a
 // missing field is a corrupted record.

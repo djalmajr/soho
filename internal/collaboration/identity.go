@@ -29,7 +29,17 @@ func callerWorkspace(env platform.Env) func() string {
 }
 
 func resolveParticipant(stateDir, name string, workspace func() string, env platform.Env, contexts ...context.Context) (Participant, error) {
-	row := strings.Split(core.RosterLine(stateDir, name), "\t")
+	return resolveParticipantRow(strings.Split(core.RosterLine(stateDir, name), "\t"), name, workspace, env, contexts...)
+}
+
+// resolveParticipantRow is the shared participant verification over one
+// supplied roster row: the command path supplies core.RosterLine's
+// split, the read-only inspection supplies its acquired snapshot row;
+// every check (the temporary hc name/address/cwd trust, the herdr
+// record, the cwd comparison, the family) is the single shared
+// algorithm, and a missing or incomplete row is the same registration
+// refusal.
+func resolveParticipantRow(row []string, name string, workspace func() string, env platform.Env, contexts ...context.Context) (Participant, error) {
 	if len(row) < 12 || row[0] != name || row[1] == "" || row[7] == "" {
 		return Participant{}, fmt.Errorf("%s has no complete worker registration", name)
 	}
@@ -122,11 +132,19 @@ func CheckParticipantsForWorkspace(a Assignment, stateDir, workspace string, env
 // expected workspace (caller-derived or explicit) is compared to the
 // assignment's once, then each participant is resolved and compared.
 func checkParticipants(a Assignment, stateDir string, workspace func() string, env platform.Env, contexts ...context.Context) error {
+	return checkParticipantsRow(a, func(name string) []string { return strings.Split(core.RosterLine(stateDir, name), "\t") }, workspace, env, contexts...)
+}
+
+// checkParticipantsRow is checkParticipants over a supplied roster row
+// lookup: the read-only inspection resolves the participants against its
+// acquired roster snapshot instead of reopening the state roster; every
+// check and refusal is the shared algorithm.
+func checkParticipantsRow(a Assignment, rowFor func(name string) []string, workspace func() string, env platform.Env, contexts ...context.Context) error {
 	if workspace() != a.Workspace {
 		return errors.New("collaboration belongs to another workspace")
 	}
 	for _, expected := range []Participant{a.Author, a.Reviewer} {
-		live, err := resolveParticipant(stateDir, expected.Name, workspace, env, contexts...)
+		live, err := resolveParticipantRow(rowFor(expected.Name), expected.Name, workspace, env, contexts...)
 		if err != nil {
 			return err
 		}
@@ -138,4 +156,14 @@ func checkParticipants(a Assignment, stateDir string, workspace func() string, e
 		}
 	}
 	return nil
+}
+
+// CheckParticipantsForRoster is the read-only inspection twin of
+// CheckParticipantsForWorkspace: the assignment's workspace is compared
+// to the known supplied workspace, and each participant resolves against
+// the supplied roster rows (the inspection's acquired snapshot) instead
+// of the state roster; the temporary hc name/address/cwd trust and every
+// refusal are the shared checks.
+func CheckParticipantsForRoster(a Assignment, rowFor func(name string) []string, workspace string, env platform.Env, contexts ...context.Context) error {
+	return checkParticipantsRow(a, rowFor, func() string { return workspace }, env, contexts...)
 }

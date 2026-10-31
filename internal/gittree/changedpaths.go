@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -19,28 +20,54 @@ type ChangedPath struct {
 	ModTime time.Time
 }
 
-// ChangedPaths returns the edit task's changed tracked and untracked paths,
-// restricted to its effective Owned files. A nil result also covers metadata,
-// Git, scope or stat failures: callers must preserve report authority then.
-// It reads through the tree root and never changes Git or task state.
+// ChangedPaths is the command reader of the edit task's changed tracked
+// and untracked paths, restricted to its effective Owned files: the
+// shared algorithm with the ordinary role gate and the ordinary sidecar
+// read. A nil result also covers metadata, Git, scope or stat failures:
+// callers must preserve report authority then. It reads through the tree
+// root and never changes Git or task state.
 func ChangedPaths(sidecar, agent string, env platform.Env) []ChangedPath {
-	return changedPaths(sidecar, agent, env, func(role, cwd string) bool { return core.RoleIsEdit(role, env, cwd) })
+	return changedPathsRead(sidecar, agent, env, func(role, cwd string) bool { return core.RoleIsEdit(role, env, cwd) }, read, commandOwnedSeams())
 }
 
 // ChangedPathsReadOnly is ChangedPaths with the read-only, nonfatal role
-// lookup (RoleIsEditReadOnly): the same changed-path algorithm, but the
-// edit-role decision never materializes the skill bundle and never Dies,
-// so an unavailable custom role simply reports nil like every other
-// metadata failure.
+// lookup (RoleIsEditReadOnly) and the inspection's capped sidecar read:
+// the same shared algorithm, but the edit-role decision never
+// materializes the skill bundle and never Dies, and an overlong sidecar
+// refuses instead of being read whole, so an unavailable custom role or
+// hostile sidecar simply reports nil like every other metadata failure.
 func ChangedPathsReadOnly(sidecar, agent string, env platform.Env) []ChangedPath {
-	return changedPaths(sidecar, agent, env, func(role, cwd string) bool { return core.RoleIsEditReadOnly(role, env, cwd) })
+	return changedPathsRead(sidecar, agent, env, func(role, cwd string) bool { return core.RoleIsEditReadOnly(role, env, cwd) }, readSidecarInspect, readOnlyOwnedSeams())
 }
 
-// changedPaths is the shared changed-path algorithm: the role gate
-// (roleIsEdit) is the only decision that differs between the command and
-// the inspection readers.
-func changedPaths(sidecar, agent string, env platform.Env, roleIsEdit func(role, cwd string) bool) []ChangedPath {
-	o := read(sidecar)
+// ChangedPathsInspectSource is the read-only changed paths with a session
+// source: the same shared algorithm, but the sidecar, the composed
+// briefs, the task-report pointer and the historical sidecars are the
+// source's confined bounded reads (the D7 caps) instead of raw path
+// reads — a renamed or replaced state dir does not change the decision,
+// and a capped or refused read reports nil like every other metadata
+// failure (report authority is preserved).
+func ChangedPathsInspectSource(src *core.SessionSource, sidecar, agent string, env platform.Env) []ChangedPath {
+	return changedPathsRead(sidecar, agent, env, func(role, cwd string) bool { return core.RoleIsEditReadOnly(role, env, cwd) }, sourceSidecarParse(src), sourceOwnedSeams(src))
+}
+
+// sourceSidecarParse is the inspection's sidecar parse over the source's
+// confined bounded read: the same candidate guarantee as read
+// (a regular nonlinked file of the current user, nonblocking,
+// identity-verified) at the inspection's per-sidecar cap.
+func sourceSidecarParse(src *core.SessionSource) func(string) *jsonjs.Object {
+	return func(p string) *jsonjs.Object {
+		raw, err := src.ReadAuxFile(p, sidecarInspectLimit)
+		return parseObjectBytes([]byte(raw), err)
+	}
+}
+
+// changedPathsRead is the shared changed-path algorithm: the role gate,
+// the sidecar read and the owned-scope read seams are the only decisions
+// that differ between the command, the read-only and the
+// inspection-with-source callers.
+func changedPathsRead(sidecar, agent string, env platform.Env, roleIsEdit func(role, cwd string) bool, sidecarRead func(string) *jsonjs.Object, seams ownedReadSeams) []ChangedPath {
+	o := sidecarRead(sidecar)
 	if o == nil {
 		return nil
 	}
@@ -50,7 +77,7 @@ func changedPaths(sidecar, agent string, env platform.Env, roleIsEdit func(role,
 	if tree == "" || !diffHeadRE.MatchString(head) || role == "" || !roleIsEdit(role, tree) {
 		return nil
 	}
-	owned, hasOwned, scopeOK := diffEffectiveOwned(sidecar, agent, o)
+	owned, hasOwned, scopeOK := diffEffectiveOwnedRead(sidecar, agent, o, seams)
 	if !scopeOK {
 		return nil
 	}
