@@ -795,6 +795,20 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 			}
 			sent := svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: prompt}, transport.Call{})
 			if sent.Err != nil {
+				switch sent.Err.Kind {
+				case transport.FailureBlocked:
+					// The worker sits on a prompt only a person can answer:
+					// the continue cannot go in, the attempt is not counted
+					// as exhausted, and the retry state stays for the next
+					// poll (the herdr send has no such outcome, so this case
+					// never fires under transport=herdr).
+					sendWarning(fmt.Sprintf("provider capacity: '%s' is blocked; a person must answer its prompt before the continue", agent))
+					return "blocked"
+				case transport.FailureBusy:
+					// The idle guard found the worker still working: keep
+					// the retry file for the next poll and re-probe.
+					return "working"
+				}
 				sendWarning("provider capacity: failed to send the continue to '" + agent + "': " + sent.Err.Message + "; acting as exhausted")
 				_ = os.Remove(queuedFile)
 				_ = os.Remove(retryFile)

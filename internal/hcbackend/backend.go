@@ -585,9 +585,55 @@ func (b *backend) Layout(ctx context.Context, pane string, call transport.Call) 
 	return transport.Reply[json.RawMessage]{Valid: true}
 }
 
-// ListPanes is a no-op: hc has no panes, and herdr-app owns them.
+// ListPanes lists the session's terminals as the pane views the core
+// helpers read: one view per terminal, its Raw the herdr-shaped pane
+// object (its pane_id the terminal address) the way Orphans rebuilds the
+// live list from the transport terminals with the field names that
+// OrphansOf reads. The soho session is the workspace under transport=hc,
+// and the orphan classification is the only consumer that reaches this
+// under hc (the layout paths that also read the pane list never run under
+// hc). A roster query names no target, so a failure is the backend being
+// unavailable, never a target not found.
 func (b *backend) ListPanes(ctx context.Context, scope transport.Scope, call transport.Call) transport.Reply[[]transport.View] {
-	return transport.Reply[[]transport.View]{Valid: true}
+	session, err := b.session(ctx, call)
+	if err != nil {
+		return transport.Reply[[]transport.View]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: "cannot resolve the soho.session label: " + err.Error(), Cause: err}}
+	}
+	out, err := b.run(ctx, call, "ls", "--label", SessionLabel+"="+session)
+	if err != nil {
+		f := failure(err)
+		f.Kind = transport.FailureUnavailable
+		return transport.Reply[[]transport.View]{Err: f}
+	}
+	v, err := jsonjs.Parse([]byte(out))
+	if err != nil {
+		return transport.Reply[[]transport.View]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned no JSON: " + err.Error(), Cause: err}}
+	}
+	obj, ok := v.(*jsonjs.Object)
+	if !ok {
+		return transport.Reply[[]transport.View]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned no list record"}}
+	}
+	rawList, ok := obj.Get("terminals")
+	if !ok {
+		return transport.Reply[[]transport.View]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned no terminals list"}}
+	}
+	list, ok := rawList.([]any)
+	if !ok {
+		return transport.Reply[[]transport.View]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned a non-array terminals list"}}
+	}
+	views := make([]transport.View, 0, len(list))
+	for _, item := range list {
+		rec, ok := item.(*jsonjs.Object)
+		if !ok {
+			return transport.Reply[[]transport.View]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned a non-object terminal"}}
+		}
+		address := addressOf(rec)
+		raw, _ := json.Marshal(struct {
+			PaneID string `json:"pane_id"`
+		}{address})
+		views = append(views, transport.View{ID: address, PaneID: address, Raw: json.RawMessage(raw)})
+	}
+	return transport.Reply[[]transport.View]{Value: views, Valid: true}
 }
 
 // ListTabs is a no-op: hc has no tabs, and herdr-app owns them.
