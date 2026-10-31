@@ -1034,13 +1034,13 @@ func TestBackendPaneCurrentRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"pane", "current", "--current"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.PaneCurrentRaw(context.Background(), transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1088,13 +1088,13 @@ func TestBackendPaneGetRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"pane", "get", "w1:p1"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.PaneGetRaw(context.Background(), transport.Target{ID: "w1:p1"}, transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1179,13 +1179,13 @@ func TestBackendWorkspaceCreateRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: createArgv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.WorkspaceCreateRaw(context.Background(), "/repo", "job-x", createEnv, transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1233,13 +1233,13 @@ func TestBackendWorkspaceCloseRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"workspace", "close", "w1"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.WorkspaceCloseRaw(context.Background(), "w1", transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1287,13 +1287,13 @@ func TestBackendWorkspaceListRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"workspace", "list"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.WorkspaceListRaw(context.Background(), transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1341,13 +1341,13 @@ func TestBackendPaneListRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"pane", "list", "--workspace", "w1"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.PaneListRaw(context.Background(), "w1", transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1407,13 +1407,13 @@ func TestBackendPaneRunRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.PaneRunRaw(context.Background(), "w1:p1", []string{"soho", "wait", "--id", "job1"}, transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1471,13 +1471,13 @@ func TestBackendAgentGetMachineRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "p1"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.AgentGetMachineRaw(context.Background(), transport.Target{ID: "p1"}, transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a missing binary reports the lookup failure without reaching the CLI", func(t *testing.T) {
@@ -1534,13 +1534,13 @@ func TestBackendAgentWaitRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: waitArgv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.AgentWaitRaw(context.Background(), transport.Target{ID: "w0:p1"}, logical, transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
@@ -1613,13 +1613,13 @@ func TestBackendAgentPromptWaitRaw(t *testing.T) {
 		timeout := fakeTimeout(25 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"agent", "prompt", "w0:p1", "slow", "--wait", "--until", "working", "--until", "blocked", "--until", "idle", "--until", "done", "--timeout", "100"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.AgentPromptWaitRaw(context.Background(), transport.Target{ID: "w0:p1"}, "slow", 100, transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut {
 			t.Fatalf("got=%#v; the call's process timeout must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
@@ -1824,13 +1824,13 @@ func TestBackendSnapshotRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"api", "snapshot"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.SnapshotRaw(context.Background(), transport.Target{}, transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
@@ -1869,13 +1869,13 @@ func TestBackendMachineListRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: []string{"machine", "list", "--json"}, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.MachineListRaw(context.Background(), transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
@@ -1965,13 +1965,13 @@ func TestBackendVersionRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.VersionRaw(context.Background(), transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
@@ -2018,13 +2018,13 @@ func TestBackendStatusServerRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.StatusServerRaw(context.Background(), transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
@@ -2071,13 +2071,13 @@ func TestBackendSkillRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.SkillRaw(context.Background(), transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
@@ -2128,13 +2128,13 @@ func TestBackendPluginListRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.PluginListRaw(context.Background(), transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
@@ -2181,13 +2181,13 @@ func TestBackendPluginInstallRefRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.PluginInstallRefRaw(context.Background(), "v1.2.3", transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
@@ -2234,13 +2234,13 @@ func TestBackendPluginConfigDirRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.PluginConfigDirRaw(context.Background(), "djalmajr.soho", transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
@@ -2300,13 +2300,13 @@ func TestBackendPluginRemoveRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.PluginRemoveRaw(context.Background(), "uninstall", "djalmajr.herdr-soho", transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
@@ -2354,13 +2354,13 @@ func TestBackendServerReloadConfigRaw(t *testing.T) {
 		timeout := fakeTimeout(200 * time.Millisecond)
 		env := newFake(t, "herdr", []fakecli.Rule{{Argv: argv, Delay: timeoutDelay(timeout), Stdout: body}})
 		readyProbe(t, env)
-		svc := New(env)
+		svc, launches := countingServices(t, env)
 		got := svc.Legacy.ServerReloadConfigRaw(context.Background(), transport.Call{Timeout: timeout})
 		if !got.Process.TimedOut || got.Err == nil {
 			t.Fatalf("got=%#v; the deadline must cut the run", got)
 		}
-		if calls := backendCalls(t, env); len(calls) != 1 {
-			t.Fatalf("one attempt expected, got %#v", calls)
+		if n := launches.count(); n != 1 {
+			t.Fatalf("one launch expected, got %d", n)
 		}
 	})
 	t.Run("a failed call keeps the raw process result, one call", func(t *testing.T) {
