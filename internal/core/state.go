@@ -225,9 +225,11 @@ func tsvLines(dir string) []string {
 	return lines
 }
 
-func RosterRows(dir string) []string {
+// rosterDataRows is the shared comment filter of the roster read: the
+// normal reader and the bounded inspection reader keep one grammar.
+func rosterDataRows(lines []string) []string {
 	out := []string{}
-	for _, line := range tsvLines(dir) {
+	for _, line := range lines {
 		if !strings.HasPrefix(line, "#") {
 			out = append(out, line)
 		}
@@ -235,15 +237,31 @@ func RosterRows(dir string) []string {
 	return out
 }
 
-func RosterLine(dir, name string) string {
-	found := ""
-	for _, line := range RosterRows(dir) {
-		fields := strings.Split(line, "\t")
-		if fields[0] == name {
-			found = line
-		}
+// rosterSelectLast is the shared roster selection: the LAST data row
+// whose name column equals name ("" when none), exactly what the normal
+// reader has always returned.
+func rosterSelectLast(rows []string, name string) string {
+	if index, ok := rosterLastIndices(rows)[name]; ok {
+		return rows[index]
 	}
-	return found
+	return ""
+}
+
+func rosterLastIndices(rows []string) map[string]int {
+	indices := make(map[string]int, len(rows))
+	for index, line := range rows {
+		name, _, _ := strings.Cut(line, "\t")
+		indices[name] = index
+	}
+	return indices
+}
+
+func RosterRows(dir string) []string {
+	return rosterDataRows(tsvLines(dir))
+}
+
+func RosterLine(dir, name string) string {
+	return rosterSelectLast(RosterRows(dir), name)
 }
 
 func WithRosterLock(dir string, fn func()) {
