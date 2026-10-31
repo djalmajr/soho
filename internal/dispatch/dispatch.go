@@ -167,7 +167,9 @@ func WriteSidecar(path string, kind, model, effort, submission, arrival, session
 }
 
 // DeclaredWorktree returns the absolute path in the first Worktree: line
-// outside fenced code blocks. An invalid first declaration has no tree.
+// outside fenced code blocks: the path between backticks when the value
+// starts with one, else the first field. Text after the path, backticks
+// included, is ignored. An invalid first declaration has no tree.
 func DeclaredWorktree(body string) string {
 	lines := strings.Split(body, "\n")
 	fenced := briefFenceMask(lines)
@@ -175,9 +177,9 @@ func DeclaredWorktree(body string) string {
 		if fenced[i] || !strings.HasPrefix(line, "Worktree:") {
 			continue
 		}
-		value := strings.TrimPrefix(line, "Worktree:")
+		value := strings.TrimSpace(strings.TrimPrefix(line, "Worktree:"))
 		tree := ""
-		if _, rest, quoted := strings.Cut(value, "`"); quoted {
+		if rest, quoted := strings.CutPrefix(value, "`"); quoted {
 			var closed bool
 			tree, _, closed = strings.Cut(rest, "`")
 			if !closed {

@@ -30,6 +30,9 @@ func TestDeclaredWorktree(t *testing.T) {
 		{name: "crlf", body: "```md\r\nWorktree: `" + other + "`\r\n```\r\nWorktree: `" + abs + "`\r\n", want: abs},
 		{name: "windows-drive", body: "Worktree: `C:\\repo\\worktree`", want: `C:\repo\worktree`},
 		{name: "windows-unc", body: "Worktree: `\\\\server\\share\\tree`", want: `\\server\share\tree`},
+		{name: "bare-then-backticks", body: "Worktree: " + other + " (branch `feat/x`, commit `a4224d0`, on `main`). Work only in `web/`.", want: other},
+		{name: "quoted-then-backticks", body: "Worktree: `" + abs + "` (branch `feat/x`)", want: abs},
+		{name: "relative-then-backticks", body: "Worktree: .worktrees/x (branch `feat/x`)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// A path only declares a tree when absolute on the running platform.
