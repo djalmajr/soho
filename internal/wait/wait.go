@@ -28,6 +28,7 @@ import (
 	"github.com/djalmajr/soho/internal/spawn/cursorapproval"
 	"github.com/djalmajr/soho/internal/startup"
 	"github.com/djalmajr/soho/internal/taskreport"
+	"github.com/djalmajr/soho/internal/text"
 	"github.com/djalmajr/soho/internal/transport"
 )
 
@@ -204,11 +205,12 @@ func promptWindow(ctx *core.Config, env platform.Env) int64 {
 func sendWarning(message string) { core.Warn(message, frictionLogFile, "wait") }
 
 // stateProbe is the wait-side projection of a terminal state read: the
-// reported state, the unavailable cause and the rendered
-// state_change_seq ("" when the read carries none).
+// reported state, the unavailable cause, the reported status message and
+// the rendered state_change_seq ("" when the read carries none).
 type stateProbe struct {
 	State string
 	Cause string
+	Msg   string
 	Seq   string
 }
 
@@ -231,7 +233,7 @@ func readState(svc transport.Services, agent string) stateProbe {
 	if rep.Err != nil {
 		cause = rep.Err.Message
 	}
-	return stateProbe{State: rep.Value.State, Cause: cause, Seq: seqText(rep.Value.Sequence)}
+	return stateProbe{State: rep.Value.State, Cause: cause, Msg: rep.Value.Msg, Seq: seqText(rep.Value.Sequence)}
 }
 
 // seqText renders the transported state_change_seq as jsString rendered the
@@ -444,7 +446,13 @@ func reportAgentState(sd, agent, report string, ctx *core.Config, svc transport.
 		return done()
 	}
 	st := readState(svc, agent)
-	switch st.State {
+	state := st.State
+	if env.Get("SOHO_TRANSPORT") == "hc" && state == "error" {
+		// An hc error ends the turn as done does: with the report written,
+		// the report decides.
+		state = "done"
+	}
+	switch state {
 	case "gone", "unavailable":
 		return done()
 	case "idle", "done":
@@ -550,6 +558,24 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 	}
 	if st.State == "unavailable" {
 		return "unavailable\t" + st.Cause
+	}
+	// DJA-605 amendment: under hc an `error` state word is the assistant's
+	// own error report, and wait maps it to the existing provider-error
+	// path — the cause is the hc status message when the terminal record
+	// carries one — so the orchestrator sees it instead of a quiet
+	// no-report-yet. The finished-report early return above decides first,
+	// so a report still wins; the herdr path never reports an `error`
+	// word, and the guard keeps it that way.
+	if env.Get("SOHO_TRANSPORT") == "hc" && st.State == "error" {
+		// The message is the assistant's own text: redacted and made one
+		// printable line, as every other provider cause is, before it
+		// reaches the marker, the JSON, the warning and the friction log.
+		cause := text.SanitizeCause(text.RedactSecrets(st.Msg))
+		if cause == "" {
+			cause = "the assistant reported an error"
+		}
+		writeWaitFile(sd, agent, "provider-cause", cause+"\n")
+		return "provider-error"
 	}
 	// The cursor/Windows startup guard (issue #59): the verified workspace
 	// trust dialog takes no approval key — not the auto-approve default and
@@ -717,7 +743,11 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 					writeWaitFile(sd, agent, "stuck-since", fmt.Sprintf("%d\n", now))
 				} else if float64(now-since) >= limit*60 {
 					mins := (now - since) / 60
-					sendWarning(fmt.Sprintf("agent '%s' has shown the same screen (apart from counters) for %d min while working; it may be stuck in one tool call. Inspect: herdr agent read %s --source recent-unwrapped --lines 60", agent, mins, agent))
+					inspect := fmt.Sprintf("herdr agent read %s --source recent-unwrapped --lines 60", agent)
+					if env.Get("SOHO_TRANSPORT") == "hc" {
+						inspect = "hc read " + agent
+					}
+					sendWarning(fmt.Sprintf("agent '%s' has shown the same screen (apart from counters) for %d min while working; it may be stuck in one tool call. Inspect: %s", agent, mins, inspect))
 					writeWaitFile(sd, agent, "stuck-warned", "")
 				}
 			}
@@ -1232,7 +1262,11 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				}
 			case "not-received":
 				jsonLine(jsonjs.O("agent", agent, "status", "not-received", "report", report))
-				sendWarning(fmt.Sprintf("prompt to '%s' never reached it: read the pane (herdr agent read %s --source visible), then dispatch again", agent, agent))
+				readHint := fmt.Sprintf("read the pane (herdr agent read %s --source visible)", agent)
+				if env.Get("SOHO_TRANSPORT") == "hc" {
+					readHint = fmt.Sprintf("read the terminal (hc read %s)", agent)
+				}
+				sendWarning(fmt.Sprintf("prompt to '%s' never reached it: %s, then dispatch again", agent, readHint))
 				if WaitRank(15) > WaitRank(rc) {
 					rc = 15
 				}
@@ -1320,8 +1354,43 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			}
 			return 9
 		}
-		time.Sleep(time.Duration(PollIntervalMs(env)) * time.Millisecond)
+		pauseForWake(svc, env, deadline, timeoutMs, remaining)
 	}
+}
+
+// pauseForWake is the pause between polls (DJA-605 stage 2c): the fixed
+// PollIntervalMs sleep, except under transport=hc when the runtime can wake
+// — then it is one hc wait on the first still-pending worker, bounded to 10
+// s and to the wait's remaining timeout, and a wake that comes back before
+// the poll interval sleeps the rest of it, so a terminal that is already
+// blocked, finished or errored and makes every hc wait return at once cannot
+// spin the loop. Every other outcome — a runtime without the waker, a wake
+// error, a missing remaining-timeout bound — is the sleep, exactly as
+// before, and nothing here changes how the loop decides: the report file
+// stays the only completion signal.
+func pauseForWake(svc transport.Services, env platform.Env, deadline time.Time, timeoutMs float64, remaining []string) {
+	poll := time.Duration(PollIntervalMs(env)) * time.Millisecond
+	if waker, ok := svc.Runtime.(transport.Waker); ok && env.Get("SOHO_TRANSPORT") == "hc" && len(remaining) > 0 && !math.IsNaN(timeoutMs) && !math.IsInf(timeoutMs, 0) {
+		// An expired budget never becomes a new wake: the bound is the
+		// remaining time, capped at 10s, and a nonpositive one skips the wake.
+		bound := deadline.Sub(platform.Now())
+		if bound > 10*time.Second {
+			bound = 10 * time.Second
+		}
+		if bound > 0 {
+			started := time.Now()
+			// The wake reason is the backend's to report; the wait decides
+			// from its next poll, so only the error matters here.
+			rep := waker.Wake(context.Background(), transport.Target{ID: remaining[0]}, bound, transport.Call{})
+			if rep.Err == nil {
+				if rest := poll - time.Since(started); rest > 0 {
+					time.Sleep(rest)
+				}
+				return
+			}
+		}
+	}
+	time.Sleep(poll)
 }
 
 func field(fields []string, i int) string {

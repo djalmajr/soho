@@ -138,6 +138,11 @@ type Terminal struct {
 	PaneID   string
 	State    string
 	Sequence json.RawMessage
+	// Msg carries the message the terminal record reports next to its
+	// state word (the hc status message, "" when the backend reports
+	// none), so a consumer that maps the state word can also carry the
+	// reported cause.
+	Msg string
 }
 
 // Scope selects which panes a window listing covers: All lists panes across
@@ -577,6 +582,21 @@ type Runtime interface {
 	// pane get fails with the pane-not-found code. A present pane, or a
 	// failure for another reason, reports false.
 	GetGone(ctx context.Context, target Target, call Call) Reply[bool]
+}
+
+// Waker is the optional wake capability (DJA-605 stage 2c): block until the
+// named terminal has news — its turn ends, it blocks, it errors, it exits —
+// or the bound checks in. Only a backend whose CLI can block on one terminal
+// implements it; the herdr backend does not. Callers type-assert their
+// Transport to it (svc.Runtime.(transport.Waker)) and fall back to a fixed
+// sleep when the assertion fails, so a backend without the capability costs
+// nothing.
+type Waker interface {
+	// Wake blocks on the target's news, bounded to max, and returns the wake
+	// reason the backend reports for the news, or "" when the bound expired
+	// with no news. A wake that finds no news is not an error: the bound
+	// check-in is the expected quiet outcome.
+	Wake(ctx context.Context, target Target, max time.Duration, call Call) Reply[string]
 }
 
 // Services is the set of capabilities a backend provides, built once per
