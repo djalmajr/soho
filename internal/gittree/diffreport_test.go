@@ -466,12 +466,20 @@ func TestDiffReportWaitingDispatchProducer(t *testing.T) {
 	f := newDiffFixture(t, "# Owned files\n- src/*.go\n", "Previous.\n", "implementer")
 	diffWrite(t, filepath.Join(f.tree, "src", "b.go"), "changed\n")
 	f.env["SOHO_PROMPT_CHECK_SECONDS"], f.env["SOHO_PROMPT_SETTLE_SECONDS"] = "0", "0"
+	// Safety cap for the gated get: a broken gate must surface as the
+	// dispatch's own timeout, not a hang. Stays under the 30s wait below.
+	f.env["FAKECLI_WAIT_FILE_TIMEOUT_MS"] = "25000"
 	input := filepath.Join(filepath.Dir(f.state), "input.md")
 	diffWrite(t, input, "# Goal\nDo it.\n# Owned files\n- src/*.go\n")
+	// The worker is working until its report exists: every agent get blocks
+	// on the report-ready gate the goroutine writes after the report and its
+	// edits, then reports idle. Under -race and host load the wait must not
+	// be able to settle settled-no-report before the report is on disk.
+	gate := filepath.Join(f.state, "dispatch-report-ready")
 	bin := f.env["SOHO_FAKECLI_CONFIG"]
 	rules := []fakecli.Rule{
 		{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},
-		{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"agent_status":"idle"}}}`},
+		{Argv: []string{"agent", "get", "worker"}, WaitFile: gate, Stdout: `{"result":{"agent":{"agent_status":"idle"}}}`},
 		{Argv: []string{"agent", "read", "worker"}, ArgvPrefix: true},
 		{Argv: []string{"agent", "prompt", "worker"}, ArgvPrefix: true, Stdout: `{"result":{"sent":true}}`},
 		{Argv: []string{"pane", "report-metadata"}, ArgvPrefix: true},
@@ -499,6 +507,10 @@ func TestDiffReportWaitingDispatchProducer(t *testing.T) {
 						if err := diffAfterCurrentDispatch(f, report, false); err != nil {
 							return
 						}
+						// The gate goes last: the fake worker only turns idle
+						// once the wait's settled read can see the report and
+						// its edits.
+						_ = os.WriteFile(gate, []byte("ready\n"), 0o600)
 						return
 					}
 				}
@@ -510,7 +522,7 @@ func TestDiffReportWaitingDispatchProducer(t *testing.T) {
 	var out, stderr bytes.Buffer
 	platform.Stdout, platform.Stderr = &out, &stderr
 	defer func() { platform.Stdout, platform.Stderr = oldOut, oldErr }()
-	code := cli.Run([]string{"dispatch", "worker", input, "--role", "implementer", "--timeout", "2s"}, f.env)
+	code := cli.Run([]string{"dispatch", "worker", input, "--role", "implementer", "--timeout", "30s"}, f.env)
 	if code != 0 {
 		t.Fatalf("dispatch code=%d out=%s stderr=%s", code, out.String(), stderr.String())
 	}
