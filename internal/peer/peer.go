@@ -26,6 +26,9 @@ import (
 	"github.com/djalmajr/soho/internal/spawn/codexhooks"
 	"github.com/djalmajr/soho/internal/taskreport"
 	textutil "github.com/djalmajr/soho/internal/text"
+	// transcriptpkg: the send path holds a local variable named transcript
+	// (the transcriptProof), which would shadow the package name.
+	transcriptpkg "github.com/djalmajr/soho/internal/transcript"
 	"github.com/djalmajr/soho/internal/transport"
 )
 
@@ -1372,9 +1375,9 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	tooLargeBefore := countTooLarge(vScreen)
 	if t.Machine == sessionref.LocalMachine || t.Machine == "" {
 		if t.Kind == "claude" {
-			transcript = transcriptProof{path: svc.Legacy.ClaudeTranscriptPath(context.Background(), transport.Target{ID: t.TargetArg}).Value, count: herdr.CountClaudeUserClosingLines, queued: claudeQueued}
+			transcript = transcriptProof{path: svc.Legacy.ClaudeTranscriptPath(context.Background(), transport.Target{ID: t.TargetArg}).Value, count: transcriptpkg.CountClaudeUserClosingLines, queued: claudeQueued}
 		} else if t.Kind == "pi" && preGet.OK && preGet.SessionKind != "" {
-			transcript = transcriptProof{path: svc.Legacy.PiSessionPath(context.Background(), transport.Target{ID: t.TargetArg}).Value, count: herdr.CountPiUserClosingLines, queued: steeringQueued}
+			transcript = transcriptProof{path: svc.Legacy.PiSessionPath(context.Background(), transport.Target{ID: t.TargetArg}).Value, count: transcriptpkg.CountPiUserClosingLines, queued: steeringQueued}
 		}
 		if transcript.path != "" {
 			if pre, ok := transcript.count(transcript.path, PeerEndLine(id)); ok {
@@ -1715,7 +1718,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 					_, _ = fmt.Fprintf(platform.Stderr, "send: %s is busy; waiting for its transcript to show the message (up to %ss)\n", t.RefShown, numberSeconds(timeoutMS))
 				}
 			}
-			if count, ok := herdr.CountClaudeUserClosingLines(transcript.path, PeerEndLine(id)); !(ok && count > transcript.pre) {
+			if count, ok := transcriptpkg.CountClaudeUserClosingLines(transcript.path, PeerEndLine(id)); !(ok && count > transcript.pre) {
 				warnBusy()
 			}
 			// The queue line, like the count growth, proves the queued outcome
@@ -1737,7 +1740,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 					_, _ = fmt.Fprintf(platform.Stdout, "queued for %s: it takes the message when its current turn ends\n", t.RefShown)
 					return 0
 				}
-				if count, ok := herdr.CountClaudeUserClosingLines(transcript.path, PeerEndLine(id)); ok && count > transcript.pre {
+				if count, ok := transcriptpkg.CountClaudeUserClosingLines(transcript.path, PeerEndLine(id)); ok && count > transcript.pre {
 					// As in the window's transcript check, the count growth is
 					// not proof while the visible queue line still holds the id.
 					if visible, visibleErr := readAfter("visible", 0, HerdrCallTimeoutMS); visibleErr == "" {

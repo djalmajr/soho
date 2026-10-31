@@ -19,6 +19,7 @@ import (
 	"github.com/djalmajr/soho/internal/provider"
 	"github.com/djalmajr/soho/internal/spawn"
 	"github.com/djalmajr/soho/internal/text"
+	"github.com/djalmajr/soho/internal/transcript"
 	"github.com/djalmajr/soho/internal/transport"
 )
 
@@ -107,15 +108,14 @@ func (b *compactBudget) transcript(agent string) string {
 
 func (b *compactBudget) boundaries(path string) (int, bool) {
 	b.check()
-	rep := b.svc.Legacy.CountClaudeCompactBoundaries(b.ctx, path)
+	n, ok := transcript.CountClaudeCompactBoundaries(path, b.ctx)
 	b.check()
-	ok := rep.Err == nil
 	if ok {
 		b.transcriptState = "counted"
 	} else {
 		b.transcriptState = "unreadable"
 	}
-	return rep.Value, ok
+	return n, ok
 }
 
 // compactComposerWindow is how long the composer confirm waits, after each

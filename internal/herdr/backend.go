@@ -559,40 +559,6 @@ func (b *backend) PiSessionPath(ctx context.Context, target transport.Target) tr
 	return transport.Reply[string]{Value: PiSessionPath(target.ID, b.env), Valid: true}
 }
 
-// CountClaudeCompactBoundaries counts the compact-boundary lines of a
-// Claude Code session transcript file — a local read with no herdr call —
-// bounded by the per-call context; Err is set when the file cannot be read.
-func (b *backend) CountClaudeCompactBoundaries(ctx context.Context, path string) transport.Reply[int] {
-	n, ok := CountClaudeCompactBoundaries(path, ctxArgs(ctx)...)
-	if !ok {
-		return transport.Reply[int]{Err: &transport.Failure{Kind: transport.FailureCommand, Message: "the transcript is unreadable"}}
-	}
-	return transport.Reply[int]{Value: n, Valid: true}
-}
-
-// CountClaudeUserMarkerLines counts the lines of a Claude Code session
-// transcript file that carry the user record marker and the given peer
-// marker — a local read with no herdr call; Err is set when the file cannot
-// be read.
-func (b *backend) CountClaudeUserMarkerLines(ctx context.Context, path, marker string) transport.Reply[int] {
-	n, ok := CountClaudeUserMarkerLines(path, marker)
-	if !ok {
-		return transport.Reply[int]{Err: &transport.Failure{Kind: transport.FailureCommand, Message: "the transcript is unreadable"}}
-	}
-	return transport.Reply[int]{Value: n, Valid: true}
-}
-
-// CountPiUserMarkerLines counts the lines of a pi session file that carry
-// the given peer marker in a message entry — a local read with no herdr
-// call; Err is set when the file cannot be read.
-func (b *backend) CountPiUserMarkerLines(ctx context.Context, path, marker string) transport.Reply[int] {
-	n, ok := CountPiUserMarkerLines(path, marker)
-	if !ok {
-		return transport.Reply[int]{Err: &transport.Failure{Kind: transport.FailureCommand, Message: "the transcript is unreadable"}}
-	}
-	return transport.Reply[int]{Value: n, Valid: true}
-}
-
 // timeoutMsUp is the subprocess deadline in whole milliseconds with the job
 // semantics: a positive duration is rounded up (never truncated) and a zero
 // or negative one stays 0, which the platform reads as "no deadline". It is

@@ -1000,52 +1000,6 @@ func TestBackendTranscriptPaths(t *testing.T) {
 	})
 }
 
-// TestBackendUserMarkerCounts: the legacy user-marker counts are local file
-// reads (no herdr call) that return the adapter's count and an error for an
-// unreadable file.
-func TestBackendUserMarkerCounts(t *testing.T) {
-	t.Run("claude: the lines that hold the user type and the marker", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "session.jsonl")
-		marker := "/work/proj/reports/build-1.md"
-		user := `{"type":"user","message":{"content":"Read the file ` + marker + ` in full"}}`
-		assistant := `{"type":"assistant","message":{"content":"noted ` + marker + `"}}`
-		if err := os.WriteFile(path, []byte(user+"\n"+assistant+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		svc := New(platform.Env{})
-		got := svc.Legacy.CountClaudeUserMarkerLines(context.Background(), path, marker)
-		want, ok := CountClaudeUserMarkerLines(path, marker)
-		if !got.Valid || got.Err != nil || !ok || got.Value != want || got.Value != 1 {
-			t.Fatalf("got=%#v want=%d", got, want)
-		}
-	})
-	t.Run("pi: only the user message record holding the marker counts", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "session.jsonl")
-		marker := "#build-1"
-		user := `{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Read the brief ` + marker + `"}]}}`
-		assistant := `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"done ` + marker + `"}]}}`
-		if err := os.WriteFile(path, []byte(user+"\n"+assistant+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		svc := New(platform.Env{})
-		got := svc.Legacy.CountPiUserMarkerLines(context.Background(), path, marker)
-		want, ok := CountPiUserMarkerLines(path, marker)
-		if !got.Valid || got.Err != nil || !ok || got.Value != want || got.Value != 1 {
-			t.Fatalf("got=%#v want=%d", got, want)
-		}
-	})
-	t.Run("an unreadable file is an error", func(t *testing.T) {
-		svc := New(platform.Env{})
-		missing := filepath.Join(t.TempDir(), "absent.jsonl")
-		if got := svc.Legacy.CountClaudeUserMarkerLines(context.Background(), missing, "m"); got.Valid || got.Err == nil {
-			t.Fatalf("claude: %#v", got)
-		}
-		if got := svc.Legacy.CountPiUserMarkerLines(context.Background(), missing, "m"); got.Valid || got.Err == nil {
-			t.Fatalf("pi: %#v", got)
-		}
-	})
-}
-
 // TestBackendPaneCurrentRaw: the legacy raw pane current issues the exact
 // `pane current --current` call once with the call's timeout, returns the
 // raw stdout, and never parses the body or retries.
