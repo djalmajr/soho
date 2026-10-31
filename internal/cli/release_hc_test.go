@@ -219,6 +219,50 @@ func TestReleaseHcCloseFailureKeepsRosterAndReport(t *testing.T) {
 	f.assertHcNeverTouchedHerdr(t)
 }
 
+// TestReleaseHcFinishedRecordIsNotClosed: under hc a close is kill plus
+// rm, so a terminal whose program finished but whose record was not
+// removed is not closed — the release fails and keeps the roster, the
+// herdr "already gone" fallback does not apply.
+func TestReleaseHcFinishedRecordIsNotClosed(t *testing.T) {
+	finished := `{"address":"t7","name":"worker","state":"finished","exit_code":0,"reason":"killed"}`
+	for _, tc := range []struct {
+		name  string
+		rules []fakecli.Rule
+	}{
+		{name: "kill ok, rm fails", rules: []fakecli.Rule{
+			{Argv: []string{"kill", "t7", "--json"}, ArgvPrefix: true, Stdout: finished},
+			{Argv: []string{"rm", "t7", "--json"}, ArgvPrefix: true, Code: 1, Stderr: `{"error":{"kind":"internal","message":"rm failed"}}`},
+		}},
+		{name: "kill fails", rules: []fakecli.Rule{
+			{Argv: []string{"kill", "t7", "--json"}, ArgvPrefix: true, Code: 1, Stderr: `{"error":{"kind":"refused","message":"the program is busy"}}`},
+		}},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			rules := append([]fakecli.Rule{
+				{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcReleaseWorkerLive},
+			}, tc.rules...)
+			rules = append(rules, fakecli.Rule{Argv: []string{"get", "t7", "--json"}, ArgvPrefix: true, Stdout: finished})
+			f := newReleaseHcFixture(t, rules)
+			addReleaseHcReport(t, f, false)
+			code, out, errText := f.run(t, "worker", "--close")
+			if code != 4 {
+				t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
+			}
+			if strings.Contains(out, "closed terminal") {
+				t.Fatalf("stdout=%q reports a close that did not remove the record", out)
+			}
+			if row := core.RosterLine(f.sd, "worker"); row == "" {
+				t.Fatal("roster row was removed though the terminal record stayed")
+			}
+			if _, err := os.ReadFile(core.LastReportPath(f.sd, "worker")); err != nil {
+				t.Fatalf("last-report pointer lost: %v", err)
+			}
+			f.assertHcNeverTouchedHerdr(t)
+		})
+	}
+}
+
 // TestReleaseHcWorkingWorkerWithoutReportIsRefused is acceptance (c): a
 // working worker that has not written its report takes the existing
 // refusal (exit 3), with no kill and no rm.

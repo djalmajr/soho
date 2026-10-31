@@ -88,7 +88,14 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 
 	if closes {
 		if created == "1" {
-			if svc.Runtime.Close(context.Background(), transport.Target{ID: pane}, transport.Call{}).Value || closePane && svc.Terminal.GetGone(context.Background(), transport.Target{ID: pane}, transport.Call{}).Value {
+			closed := svc.Runtime.Close(context.Background(), transport.Target{ID: pane}, transport.Call{}).Value
+			if !closed && closePane && !hcMode {
+				// A herdr pane already gone counts as closed. Under hc the
+				// close is kill plus rm, and a finished terminal whose record
+				// was not removed is not closed.
+				closed = svc.Terminal.GetGone(context.Background(), transport.Target{ID: pane}, transport.Call{}).Value
+			}
+			if closed {
 				suffix := ""
 				if burst {
 					suffix = " (temporary)"
