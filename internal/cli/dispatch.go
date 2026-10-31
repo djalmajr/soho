@@ -962,7 +962,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				// records the marker and the warning as --no-wait does, then waits for
 				// the report the way soho wait would, which reads that marker.
 				markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA, env, true)
-				warnNotReceived(agent, whyWorkingNoEvidence, true, true)
+				warnNotReceived(agent, whyWorkingNoEvidence, true, true, false)
 			} else if st := readState(svc, agent, transport.Call{Timeout: herdr.Timeout}); !(nonEmpty(report) || ((st.State == "working" || st.State == "blocked") && preSeq != "" && st.Seq != "" && preSeq != st.Seq)) {
 				status = "queued"
 				if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "queued", session, role); err != nil {
@@ -1613,7 +1613,7 @@ func dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, si
 	obj := jsonjs.O("wait_status", "not-received", "agent", agent, "role", role, "kind", kind, "composed_prompt", composed, "report", report, "task_report", taskReport, "report_exists", nonEmpty(report))
 	markReportVolatile(obj, report, sd)
 	fmt.Fprintln(platform.Stdout, jsonjs.Stringify(obj))
-	warnNotReceived(agent, why, wasWorking, false)
+	warnNotReceived(agent, why, wasWorking, false, env.Get("SOHO_TRANSPORT") == "hc")
 	return 15
 }
 
@@ -1648,8 +1648,14 @@ func markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskRepo
 
 // warnNotReceived warns that the prompt was not confirmed; waiting is set when
 // the blocking dispatch goes on to wait for the report instead of exiting 15.
-func warnNotReceived(agent, why string, wasWorking, waiting bool) {
-	warning := fmt.Sprintf("prompt to '%s' was not received after %s; read the pane (herdr agent read %s --source visible) before sending anything else", agent, why, agent)
+// Under hc there is no pane screen to read: the terminal read is `hc read`
+// and the state words are the evidence.
+func warnNotReceived(agent, why string, wasWorking, waiting, hc bool) {
+	probe := "read the pane (herdr agent read %s --source visible)"
+	if hc {
+		probe = "read the terminal (hc read %s)"
+	}
+	warning := fmt.Sprintf("prompt to '%s' was not received after %s; "+probe+" before sending anything else", agent, why, agent)
 	if wasWorking {
 		warning = fmt.Sprintf("prompt to '%s' not confirmed: it was working and shows no sign of the prompt; no key was sent. Read the pane before sending anything else.", agent)
 	}

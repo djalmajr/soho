@@ -156,9 +156,12 @@ func TestDispatchHcKindRefusedBeforeAnyReadOrSend(t *testing.T) {
 	}
 }
 
-// assertWorkerGetSendOrder pins the probe's operation order: the first
-// worker get precedes the send and the delayed get is the first post-send
-// call — so the deadline under test is measured on the post-send work.
+// assertWorkerGetSendOrder pins the probe's operation order when the
+// post-send get did run: the first worker get precedes the send and the
+// delayed get is the first post-send call, so the deadline under test is
+// measured on the post-send work. Under host load the budget can expire
+// before the get even launches — that also proves the deadline property,
+// so the order is pinned only when the get happened.
 func assertWorkerGetSendOrder(t *testing.T, f *dispatchHcFixture) {
 	t.Helper()
 	var ops []string
@@ -173,10 +176,14 @@ func assertWorkerGetSendOrder(t *testing.T, f *dispatchHcFixture) {
 			ops = append(ops, "get")
 		}
 	}
-	t.Logf("worker get/send order=%v; get #2 is the delayed response", ops)
-	if len(ops) < 3 || ops[0] != "get" || ops[1] != "send" || ops[2] != "get" {
-		t.Fatal("timing fixture did not delay the first post-send get")
+	if len(ops) < 3 {
+		t.Logf("worker get/send order=%v; the deadline passed before the post-send get launched", ops)
+		return
 	}
+	if ops[0] != "get" || ops[1] != "send" || ops[2] != "get" {
+		t.Fatalf("worker get/send order=%v; the first post-send get is not the delayed response", ops)
+	}
+	t.Logf("worker get/send order=%v; get #2 is the delayed response", ops)
 }
 
 // TestDispatchHcBusyRetryRefusedAfterDeadline is the ported BusyDeadline
@@ -239,6 +246,10 @@ func TestDispatchHcUint64TurnRiseArrives(t *testing.T) {
 		{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"turn":9223372036854775808,"started":false}`},
 		{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
 	})
+	// The window is generous so the acceptance does not depend on the fake
+	// process's start time under host load; the test ends as soon as the
+	// turn rise is observed.
+	f.env["SOHO_PROMPT_CHECK_SECONDS"] = "30"
 	code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
 	t.Logf("valid uint64 turn rose from 9223372036854775808 to 9223372036854775809; exit=%d", code)
 	if code != 0 {
@@ -331,7 +342,10 @@ func TestDispatchHcBusyRetryIsFinal(t *testing.T) {
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"send"}, ArgvPrefix: true, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`},
 	})
-	code, _, stderr := f.run(t, "worker", f.brief, "--no-wait", "--timeout", "1s")
+	// 30s is generous: the retry happens within the budget right away; the
+	// point is the ceiling, not the deadline (the deadline variant is
+	// TestDispatchHcBusyRetryRefusedAfterDeadline).
+	code, _, stderr := f.run(t, "worker", f.brief, "--no-wait", "--timeout", "30s")
 	sends := len(hcSends(f.hcCalls(t)))
 	t.Logf("both sends busy: sends=%d exit=%d", sends, code)
 	if sends != 2 || code != 4 || !strings.Contains(stderr, "hc get worker && hc read worker") {

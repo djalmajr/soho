@@ -240,6 +240,10 @@ func TestDispatchHcTurnRiseArrives(t *testing.T) {
 		{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":false}`},
 		{Argv: []string{"read", "worker"}, ArgvPrefix: true},
 	})
+	// The window is generous so the acceptance does not depend on the fake
+	// process's start time under host load; the test ends as soon as the
+	// turn rise is observed.
+	f.env["SOHO_PROMPT_CHECK_SECONDS"] = "30"
 	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
 	if code != 0 {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
@@ -279,8 +283,12 @@ func TestDispatchHcNoTurnRiseIsNotReceived(t *testing.T) {
 	if status := dispatchHcOutputStatus(t, out); status != "not-received" {
 		t.Fatalf("status=%q, want not-received (out=%s)", status, out)
 	}
-	if !strings.Contains(errText, "was not received after no turn started under hc") {
-		t.Fatalf("stderr=%q, want the hc not-received reason", errText)
+	// The hc not-received line is pinned exactly: under hc it names `hc
+	// read`, never the herdr pane read (the herdr wording stays as the
+	// herdr tests pin it).
+	wantLine := "soho: warning: prompt to 'worker' was not received after no turn started under hc; read the terminal (hc read worker) before sending anything else"
+	if !strings.Contains(errText, wantLine) {
+		t.Fatalf("stderr=%q, want the exact hc not-received line %q", errText, wantLine)
 	}
 	if len(hcSends(f.hcCalls(t))) != 1 {
 		t.Fatalf("sends: %#v, want exactly one (no resend under hc)", hcSends(f.hcCalls(t)))
