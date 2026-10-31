@@ -247,6 +247,11 @@ func seqText(raw json.RawMessage) string {
 	if _, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return s
 	}
+	if _, err := strconv.ParseUint(s, 10, 64); err == nil {
+		// An unsigned sequence above int64 (an hc turn) keeps its exact
+		// digits, as dispatch's seqRender writes it.
+		return s
+	}
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return s

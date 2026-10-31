@@ -19,6 +19,10 @@ func TestSeqTextKeepsTheDecimalRendering(t *testing.T) {
 		"-7":                  "-7",
 		"1e+21":               "1000000000000000000000",
 		"9223372036854776000": "9223372036854776000",
+		// An unsigned hc turn above int64 keeps its exact digits, the
+		// rendering dispatch writes into the marker.
+		"9223372036854775809":  "9223372036854775809",
+		"18446744073709551615": "18446744073709551615",
 	} {
 		if got := seqText(json.RawMessage(raw)); got != want {
 			t.Errorf("seqText(%q) = %q, want %q", raw, got, want)

@@ -38,7 +38,7 @@ func treePaths(t *testing.T, root string) []string {
 
 // hcRefusedCommands is every known command the hc entry guard refuses.
 var hcRefusedCommands = []string{
-	"session", "dispatch", "find", "run", "resume", "collect",
+	"session", "find", "run", "resume", "collect",
 	"send", "stats", "release", "clean", "setup", "init",
 	"title", "regrid", "roster", "friction", "feedback", "tab-label",
 	"layout-plan", "mutation-guard", "mutation-copy", "review-snapshot",
@@ -99,15 +99,15 @@ func TestHcGuardRefusesEveryOtherCommand(t *testing.T) {
 	// a command effect. The per-command tree snapshot then measures the
 	// command itself.
 	f.run(t, "config")
-	// The full allowed set: the read side (status, wait) plus spawn, which
-	// runs through hc (DJA-604 2b-2b), the explicitly allowed commands
-	// (doctor, config, explain, capabilities), the usage and version
-	// invocations, and the commands that never touch the transport
+	// The full allowed set: the read side (status, wait) plus spawn and
+	// dispatch, which run through hc (DJA-604 2b-2b / 2b-3a), the explicitly
+	// allowed commands (doctor, config, explain, capabilities), the usage and
+	// version invocations, and the commands that never touch the transport
 	// (kinds, models, model, roles, role, lint, install, env), and hook,
 	// which is advisory and must never block the host assistant.
 	allowed := map[string]bool{
 		"": true, "help": true, "-h": true, "--help": true,
-		"status": true, "wait": true, "spawn": true,
+		"status": true, "wait": true, "spawn": true, "dispatch": true,
 		"doctor": true, "config": true, "explain": true, "capabilities": true,
 		"kinds": true, "models": true, "model": true, "roles": true, "role": true,
 		"lint": true, "install": true, "env": true, "hook": true,

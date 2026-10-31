@@ -83,6 +83,12 @@ const (
 	// FailureConflict: the request conflicts with existing state, such as
 	// a terminal name the hc core already has live (its name_taken error).
 	FailureConflict FailureKind = "conflict"
+	// FailureBlocked: the target sits on a prompt only a person can answer
+	// (hc send's exit 9); the send was not made.
+	FailureBlocked FailureKind = "blocked"
+	// FailureBusy: the idle guard found the target not idle (hc send's exit
+	// 10); the send was not made.
+	FailureBusy FailureKind = "busy"
 )
 
 // Failure is a structured transport error. Code carries an observed wire code
@@ -151,9 +157,14 @@ type Read struct {
 }
 
 // Send carries a prompt for a terminal. The stage-1 backend always submits
-// Text as a prompt and returns the merged output.
+// Text as a prompt and returns the merged output. Queue lifts the idle guard
+// where the backend has one (the hc backend omits its --if idle, so the text
+// is typed even while the worker works; a blocked worker still refuses, and
+// --force is never passed); the herdr backend has no such guard and ignores
+// it.
 type Send struct {
-	Text string
+	Text  string
+	Queue bool
 }
 
 // Start names an agent-start request. The Herdr backend encodes it as
@@ -266,6 +277,11 @@ type Transport interface {
 	// Get reads one terminal's state.
 	Get(ctx context.Context, target Target, call Call) Reply[Terminal]
 	// Send submits a prompt to a terminal and returns the merged output.
+	// The hc backend pastes and submits through `hc send` and returns the
+	// raw SendResult record (its turn and started carry the arrival proof)
+	// instead of merged output; a worker that sits on a person's prompt is
+	// FailureBlocked and a non-idle worker (without Send.Queue) is
+	// FailureBusy.
 	Send(ctx context.Context, target Target, send Send, call Call) Reply[string]
 	// Keys sends raw keys; pane selects the pane channel, otherwise the
 	// agent channel.

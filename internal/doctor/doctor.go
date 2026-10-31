@@ -527,8 +527,8 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 // doctorHcTransport is the transport=hc doctor check (DJA-603 stage 2a):
 // it runs the hc capability probe and prints exactly one line for the
 // outcome it reaches, plus the experimental warning in every case. As of
-// DJA-604 2b-2b status, wait and spawn run through hc; dispatch and
-// release do not support it yet.
+// DJA-604 2b-3a status, wait, spawn and dispatch run through hc; release
+// does not support it yet.
 func doctorHcTransport(env platform.Env, s *Say) {
 	probe := hc.Probe(context.Background(), env)
 	var hcErr *hc.Error
@@ -561,7 +561,7 @@ func doctorHcTransport(env platform.Env, s *Say) {
 	default:
 		s.Ok(fmt.Sprintf("hc %s, core %s running, protocol generation 1", probe.Version, probe.CoreName))
 	}
-	s.Warning("transport=hc is experimental: status, wait and spawn run through hc; dispatch and release do not support it yet")
+	s.Warning("transport=hc is experimental: status, wait, spawn and dispatch run through hc; release does not support it yet")
 }
 
 // doctorFootprint warns when the team's total on-disk footprint (the
