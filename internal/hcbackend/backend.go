@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"sync"
 	"time"
@@ -255,6 +256,26 @@ func stateOf(obj *jsonjs.Object) string {
 	return "unknown"
 }
 
+// statusMsgOf returns the terminal record's status message (the hc
+// status.msg, "" when the record reports none) exactly as hc wrote it, so
+// a consumer that maps the state word can also carry the reported cause.
+func statusMsgOf(obj *jsonjs.Object) string {
+	raw, ok := obj.Get("status")
+	if !ok || raw == nil {
+		return ""
+	}
+	status, ok := raw.(*jsonjs.Object)
+	if !ok {
+		return ""
+	}
+	if v, ok := status.Get("msg"); ok {
+		if msg, isString := v.(string); isString {
+			return msg
+		}
+	}
+	return ""
+}
+
 // turnRaw returns a terminal record's turn counter exactly as hc wrote it:
 // an unsigned 64-bit integer literal (the schema's uint64), read from the
 // raw JSON and never passed through float64, so every value keeps its
@@ -464,6 +485,7 @@ func (b *backend) Get(ctx context.Context, target transport.Target, call transpo
 			PaneID:   addressOf(obj),
 			State:    stateOf(obj),
 			Sequence: turnRaw(json.RawMessage(out)),
+			Msg:      statusMsgOf(obj),
 		},
 		Valid: true,
 	}
@@ -1201,4 +1223,59 @@ func (b *backend) SendText(ctx context.Context, target transport.Target, text st
 func (b *backend) GetGone(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[bool] {
 	_, err := b.run(ctx, call, "get", addr(target))
 	return transport.Reply[bool]{Value: err != nil && notFound(err), Valid: true}
+}
+
+// Wake blocks on the terminal's news — its turn ends, it blocks, it errors
+// or it exits — or the bound checks in (DJA-605 stage 2c): `hc wait
+// <addr> --timeout <ceil(max) in seconds>` through b.run with --json placed
+// by the client, and a process budget of max + 5 s over the call's own
+// budget. The reply's Value is the wake reason hc reports (status, exit,
+// output, message, not_started, children), or "" when the bound expired
+// with no news (hc's check-in reports ended false); a bound that is not a
+// positive duration is refused before any launch, and a stdout without a
+// well-formed wait result is a protocol failure.
+func (b *backend) Wake(ctx context.Context, target transport.Target, max time.Duration, call transport.Call) transport.Reply[string] {
+	if max <= 0 {
+		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "wake needs a positive bound"}}
+	}
+	sec := int64(math.Ceil(max.Seconds()))
+	if sec < 1 {
+		sec = 1
+	}
+	wakeCall := call
+	wakeCall.Timeout = max + 5*time.Second
+	out, err := b.run(ctx, wakeCall, "wait", addr(target), "--timeout", strconv.FormatInt(sec, 10))
+	if err != nil {
+		return transport.Reply[string]{Err: failure(err)}
+	}
+	reason, ok := wakeReason(out)
+	if !ok {
+		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc wait returned no wait result"}}
+	}
+	return transport.Reply[string]{Value: reason, Valid: true}
+}
+
+// wakeReason maps one hc wait --json stdout onto the wake reason: the
+// timeout check-in (ended false) is no news and maps to ""; the news
+// carries hc's own reason word. A stdout that is not one well-formed
+// WaitResult record is not one.
+func wakeReason(stdout string) (string, bool) {
+	v, err := jsonjs.Parse([]byte(stdout))
+	if err != nil {
+		return "", false
+	}
+	obj, ok := v.(*jsonjs.Object)
+	if !ok {
+		return "", false
+	}
+	endedV, okE := obj.Get("ended")
+	reasonV, okR := obj.Get("reason")
+	reason, isString := reasonV.(string)
+	if !okE || !okR || !isString {
+		return "", false
+	}
+	if ended, isBool := endedV.(bool); isBool && !ended {
+		return "", true
+	}
+	return reason, true
 }
