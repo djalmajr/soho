@@ -102,8 +102,8 @@ func TestSessionOncePerServices(t *testing.T) {
 			exit := 1
 			return platform.RunResult{Status: &exit, Stderr: `{"error":{"kind":"internal","message":"core down"}}`}
 		}
-		first, err1 := b.session()
-		second, err2 := b.session()
+		first, err1 := b.session(context.Background(), transport.Call{})
+		second, err2 := b.session(context.Background(), transport.Call{})
 		if err1 == nil || err2 == nil {
 			t.Fatalf("errs: %v %v", err1, err2)
 		}

@@ -193,7 +193,7 @@ func Run(args []string, env platform.Env) (code int) {
 	if effectiveCfg == nil {
 		effectiveCfg = configCtx
 	}
-	transportMode := transportModeFor(effectiveCfg, env, decisionEnv)
+	transportMode := transportModeFor(effectiveCfg, env, decisionEnv, commandCwd)
 	// The hc entry guard: under transport=hc only the read side and the
 	// explicitly allowed commands run; every other command dies here, before
 	// any read or write of its own, with the one fixed line. An unknown
@@ -449,9 +449,17 @@ func Run(args []string, env platform.Env) (code int) {
 // transportModeFor resolves the worker transport for the configuration a
 // command loaded and records it on the env the command and its helpers
 // receive (DJA-604 stage 2b): every downstream backend.New(env) sees the
-// resolved mode. It returns the resolved mode.
-func transportModeFor(ctx *core.Config, env, decisionEnv platform.Env) string {
-	mode := core.TransportMode(ctx, decisionEnv)
+// resolved mode. A command that loads no configuration resolves it from the
+// file layers at cwd (core.TransportModeAt), so a project file selecting hc
+// reaches the guard for every command, not only the config-loading ones. It
+// returns the resolved mode.
+func transportModeFor(ctx *core.Config, env, decisionEnv platform.Env, cwd string) string {
+	var mode string
+	if ctx != nil {
+		mode = core.TransportMode(ctx, decisionEnv)
+	} else {
+		mode = core.TransportModeAt(decisionEnv, cwd)
+	}
 	env["SOHO_TRANSPORT"] = mode
 	decisionEnv["SOHO_TRANSPORT"] = mode
 	return mode
@@ -472,6 +480,10 @@ func hcCommandAllowed(command string) bool {
 	case "status", "wait", "doctor", "config", "explain", "capabilities":
 		return true
 	case "kinds", "models", "model", "roles", "role", "lint", "install", "env":
+		return true
+	case "hook":
+		// Advisory and never blocking: an exit 2 from a UserPromptSubmit
+		// hook would block the host assistant's prompt.
 		return true
 	}
 	return false

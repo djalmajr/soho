@@ -63,7 +63,8 @@ type backend struct {
 	env    platform.Env
 	client *hc.Client
 
-	sessionOnce  sync.Once
+	sessionMu    sync.Mutex
+	sessionDone  bool
 	sessionValue string
 	sessionErr   error
 }
@@ -75,31 +76,52 @@ type backend struct {
 // "hc-<address>" when the label is absent. Outside an hc terminal it is an
 // error.
 func Session(env platform.Env) (string, error) {
-	return sessionOf(hc.New(env), env)
+	b := &backend{env: env, client: hc.New(env)}
+	return b.session(context.Background(), transport.Call{})
 }
 
-// session resolves the session through the instance's runner, computed
-// lazily and at most once per Services: the value or the error is memoized,
-// so no later call issues the session read again.
-func (b *backend) session() (string, error) {
-	b.sessionOnce.Do(func() {
-		b.sessionValue, b.sessionErr = sessionOf(b.client, b.env)
-	})
-	return b.sessionValue, b.sessionErr
+// session resolves the session through the instance's runner, lazily and
+// within the request's budget (ctx and call, through run). The value is
+// memoized, so no later call issues the session read again; so is a failure
+// the read met with the full default budget. A failure under a shorter
+// budget is not memoized: a later call with more time reads again.
+func (b *backend) session(ctx context.Context, call transport.Call) (string, error) {
+	b.sessionMu.Lock()
+	defer b.sessionMu.Unlock()
+	if b.sessionDone {
+		return b.sessionValue, b.sessionErr
+	}
+	value, err := b.sessionOf(ctx, call)
+	if err == nil || errors.Is(err, ErrNotInHcTerminal) || fullBudget(ctx, call) {
+		b.sessionValue, b.sessionErr, b.sessionDone = value, err, true
+	}
+	return value, err
 }
 
-func sessionOf(c *hc.Client, env platform.Env) (string, error) {
-	addr := env.Get("HC_TERMINAL_ID")
+func (b *backend) sessionOf(ctx context.Context, call transport.Call) (string, error) {
+	addr := b.env.Get("HC_TERMINAL_ID")
 	if addr == "" {
 		return "", ErrNotInHcTerminal
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), hcTimeoutDefault)
-	defer cancel()
-	out, err := c.Run(ctx, "get", addr)
+	out, err := b.run(ctx, call, "get", addr)
 	if err != nil {
 		return "", err
 	}
 	return sessionFromGet(out)
+}
+
+// fullBudget reports whether a launch under ctx and call runs with the
+// default 30s: no call timeout and no parent deadline sooner than it.
+func fullBudget(ctx context.Context, call transport.Call) bool {
+	if call.Timeout > 0 {
+		return false
+	}
+	if ctx != nil {
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < hcTimeoutDefault {
+			return false
+		}
+	}
+	return true
 }
 
 // sessionFromGet extracts the session from one decoded hc get record: the
@@ -136,6 +158,10 @@ func (b *backend) run(ctx context.Context, call transport.Call, args ...string) 
 	timeout := hcTimeoutDefault
 	if call.Timeout > 0 {
 		timeout = call.Timeout
+	}
+	if ctx == nil {
+		// Transport consumers may pass a nil context (core.Orphans does).
+		ctx = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -330,7 +356,7 @@ var keysHC = map[string]string{
 // memoized per Services); the environment fields themselves are pure.
 func (b *backend) Caller() transport.Caller {
 	pane := b.env.Get("HC_TERMINAL_ID")
-	session, _ := b.session()
+	session, _ := b.session(context.Background(), transport.Call{})
 	return transport.Caller{Inside: pane != "", PaneID: pane, WorkspaceID: session, TabID: ""}
 }
 
@@ -354,7 +380,7 @@ func (b *backend) CheckCaller(ctx context.Context, call transport.Call) transpor
 // session label is the roster scope, and finished terminals are not part of
 // the live roster.
 func (b *backend) List(ctx context.Context, scope transport.Scope, call transport.Call) transport.Reply[[]transport.Terminal] {
-	session, err := b.session()
+	session, err := b.session(ctx, call)
 	if err != nil {
 		return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: "cannot resolve the soho.session label: " + err.Error(), Cause: err}}
 	}

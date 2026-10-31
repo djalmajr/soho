@@ -36,6 +36,16 @@ func treePaths(t *testing.T, root string) []string {
 	return paths
 }
 
+// hcRefusedCommands is every known command the hc entry guard refuses.
+var hcRefusedCommands = []string{
+	"session", "spawn", "dispatch", "find", "run", "resume", "collect",
+	"send", "stats", "release", "clean", "setup", "init",
+	"title", "regrid", "roster", "friction", "feedback", "tab-label",
+	"layout-plan", "mutation-guard", "mutation-copy", "review-snapshot",
+	"reopen", "compact", "metrics", "copies", "gc", "procs", "promote",
+	"collaborate", "job", "plugin",
+}
+
 // hcGuardFixture is one temp project root with an empty bin dir on PATH
 // (no hc, no herdr: a refused command must not launch anything) and the
 // hc-mode environment.
@@ -91,23 +101,16 @@ func TestHcGuardRefusesEveryOtherCommand(t *testing.T) {
 	// The full allowed set: the read side (status, wait), the explicitly
 	// allowed commands (doctor, config, explain, capabilities), the usage
 	// and version invocations, and the commands that never touch the
-	// transport (kinds, models, model, roles, role, lint, install, env).
+	// transport (kinds, models, model, roles, role, lint, install, env), and
+	// hook, which is advisory and must never block the host assistant.
 	allowed := map[string]bool{
 		"": true, "help": true, "-h": true, "--help": true,
 		"status": true, "wait": true,
 		"doctor": true, "config": true, "explain": true, "capabilities": true,
 		"kinds": true, "models": true, "model": true, "roles": true, "role": true,
-		"lint": true, "install": true, "env": true,
+		"lint": true, "install": true, "env": true, "hook": true,
 	}
-	refused := []string{
-		"session", "spawn", "dispatch", "find", "run", "resume", "collect",
-		"send", "stats", "release", "clean", "setup", "init",
-		"title", "regrid", "roster", "friction", "feedback", "tab-label",
-		"layout-plan", "mutation-guard", "mutation-copy", "review-snapshot",
-		"reopen", "compact", "metrics", "copies", "gc", "procs", "promote",
-		"collaborate", "hook", "job", "plugin",
-	}
-	for _, command := range refused {
+	for _, command := range hcRefusedCommands {
 		command := command
 		t.Run("refused "+command, func(t *testing.T) {
 			before := treePaths(t, f.root)
@@ -160,8 +163,8 @@ func TestHcGuardRefusesEveryOtherCommand(t *testing.T) {
 
 // TestHcGuardRefusesFromFileMode pins the guard reading the resolved mode:
 // with the project file selecting transport=hc and no SOHO_TRANSPORT in
-// the environment, a config-loading command (spawn) is refused by the
-// guard with the exact line.
+// the environment, every refused command is refused by the guard with the
+// exact line, the ones that load no configuration of their own included.
 func TestHcGuardRefusesFromFileMode(t *testing.T) {
 	root := t.TempDir()
 	bin := filepath.Join(root, "bin")
@@ -175,23 +178,23 @@ func TestHcGuardRefusesFromFileMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Chdir(root)
-	env := platform.Env{
+	f := hcGuardFixture{root: root, env: platform.Env{
 		"HOME":     root,
 		"SOHO_DIR": filepath.Join(root, "state"),
 		"TMPDIR":   root,
 		"PATH":     bin,
-	}
-	oldOut, oldErr := platform.Stdout, platform.Stderr
-	var out, errOut bytes.Buffer
-	platform.Stdout, platform.Stderr = &out, &errOut
-	code := Run([]string{"spawn"}, env)
-	platform.Stdout, platform.Stderr = oldOut, oldErr
-	if code != 2 {
-		t.Fatalf("exit = %d, want 2 (out=%q stderr=%q)", code, out.String(), errOut.String())
-	}
-	want := "soho: spawn " + hcRefusalLine + "\n"
-	if errOut.String() != want {
-		t.Fatalf("stderr = %q, want %q", errOut.String(), want)
+	}}
+	for _, command := range hcRefusedCommands {
+		command := command
+		t.Run(command, func(t *testing.T) {
+			code, out, errOut := f.run(t, command)
+			if code != 2 {
+				t.Fatalf("exit = %d, want 2 (out=%q stderr=%q)", code, out, errOut)
+			}
+			if want := "soho: " + command + " " + hcRefusalLine + "\n"; errOut != want {
+				t.Fatalf("stderr = %q, want %q", errOut, want)
+			}
+		})
 	}
 }
 
@@ -212,7 +215,7 @@ func TestTransportModeForPropagatesToTheCommandEnv(t *testing.T) {
 		base := platform.Env{"HOME": root, "SOHO_DIR": filepath.Join(root, "state")}
 		ctx := core.LoadConfigFor(base, root, core.UserSelection{})
 		decision := base.Clone()
-		if mode := transportModeFor(&ctx, base, decision); mode != "hc" {
+		if mode := transportModeFor(&ctx, base, decision, root); mode != "hc" {
 			t.Fatalf("mode = %q, want hc", mode)
 		}
 		if base["SOHO_TRANSPORT"] != "hc" || decision["SOHO_TRANSPORT"] != "hc" {
@@ -225,7 +228,7 @@ func TestTransportModeForPropagatesToTheCommandEnv(t *testing.T) {
 		base := platform.Env{"HOME": root, "SOHO_DIR": filepath.Join(root, "state")}
 		ctx := core.LoadConfigFor(base, root, core.UserSelection{})
 		decision := base.Clone()
-		if mode := transportModeFor(&ctx, base, decision); mode != "herdr" {
+		if mode := transportModeFor(&ctx, base, decision, root); mode != "herdr" {
 			t.Fatalf("mode = %q, want herdr", mode)
 		}
 		if base["SOHO_TRANSPORT"] != "herdr" || decision["SOHO_TRANSPORT"] != "herdr" {
