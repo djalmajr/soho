@@ -61,7 +61,7 @@ func (e *Error) Error() string {
 // ErrNotInstalled; every other non-zero exit is an *Error decoded from the
 // stderr.
 func Run(ctx context.Context, env platform.Env, args ...string) (string, error) {
-	return RunInput(ctx, env, "", args...)
+	return New(env).Run(ctx, args...)
 }
 
 // RunInput is Run with one line written to hc's stdin before it is closed.
@@ -71,6 +71,49 @@ func RunInput(ctx context.Context, env platform.Env, input string, args ...strin
 		argv = append(argv, "--json")
 	}
 	res := platform.RunCli("hc", argv, platform.RunOptions{Context: ctx, Env: env, Input: input})
+	return decode(res)
+}
+
+// Client is a per-instance hc client bound to one environment. Launch is
+// the per-instance runner: it runs the hc binary with the given sub-argv
+// (no binary name) and returns the raw process result; it defaults to
+// platform.RunCli for "hc", so a test can replace it to count and script
+// launches. There is no package-global seam: the package-level Run and
+// RunInput keep their behavior through the default launcher.
+type Client struct {
+	// Env is the environment every launch runs with.
+	Env platform.Env
+	// Launch runs the hc binary with the given sub-argv.
+	Launch func(ctx context.Context, env platform.Env, args ...string) platform.RunResult
+}
+
+// New builds a client for env with the default launcher.
+func New(env platform.Env) *Client {
+	return &Client{Env: env, Launch: defaultLaunch}
+}
+
+// defaultLaunch is the client's default runner: platform.RunCli for "hc".
+func defaultLaunch(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
+	return platform.RunCli("hc", args, platform.RunOptions{Context: ctx, Env: env})
+}
+
+// Run runs hc with the client's environment and --json appended (once: an
+// argument list that already holds it is passed as is), without stdin
+// input. It returns the stdout text on exit 0; a missing binary is
+// ErrNotInstalled; every other non-zero exit is an *Error decoded from the
+// stderr.
+func (c *Client) Run(ctx context.Context, args ...string) (string, error) {
+	argv := append([]string{}, args...)
+	if !slices.Contains(argv, "--json") {
+		argv = append(argv, "--json")
+	}
+	return decode(c.Launch(ctx, c.Env, argv...))
+}
+
+// decode maps one raw hc launch onto Run's contract: the stdout text on
+// exit 0; a missing binary is ErrNotInstalled; every other non-zero exit is
+// an *Error decoded from the stderr.
+func decode(res platform.RunResult) (string, error) {
 	if res.NotFound {
 		return "", ErrNotInstalled
 	}
