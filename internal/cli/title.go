@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/transport"
@@ -38,7 +38,7 @@ func cmdTitle(argv []string, cfg *core.Config, env platform.Env, cwd string) {
 			rest = append(rest, arg)
 		}
 	}
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	pane := svc.Runtime.Caller().PaneID
 	var title *string
 	if clear {

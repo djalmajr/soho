@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -32,7 +33,7 @@ func ratio4(n int) string { return fmt.Sprintf("%.4f", math.Round((1/float64(n))
 // regrid always used; the move reports where the pane landed (a move can
 // re-id the pane).
 func moveInTab(pane, tab, split, target, ratio string, env platform.Env) herdr.PaneMoveResult {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	rep := svc.Window.Move(nil, transport.Move{Pane: pane, Tab: tab, Split: split, TargetPane: target, Ratio: ratio, NoFocus: true}, transport.Call{})
 	return herdr.PaneMoveResult{Ok: rep.Err == nil, Pane: rep.Value.PaneID, Tab: rep.Value.TabID}
 }
@@ -107,7 +108,7 @@ func parkPanesTracked(dir string, panes []string, env platform.Env) ([]string, s
 	if len(panes) == 0 {
 		return []string{}, "", false
 	}
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	first := panes[0]
 	m := svc.Window.Move(nil, transport.Move{Pane: first, NewTab: true, Label: "herd-park", NoFocus: true}, transport.Call{})
 	if m.Err != nil || m.Value.TabID == "" {
@@ -157,7 +158,7 @@ func parkPanes(panes []string, env platform.Env) (bool, string) {
 // the live topology; a mismatch is refused instead of guessed. On success
 // the caller's stale roster row is re-identified to the actual pane id.
 func callerContext(ctx *core.Config, env platform.Env, live []any, dir, ws string) (tab, pane, refuse string) {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	inherited := svc.Runtime.Caller().PaneID
 	if inherited == "" {
 		return "", "", ""
@@ -359,7 +360,7 @@ func CmdRegrid(_ []string, ctx *core.Config, env platform.Env, cwd string) int {
 	// The caller-pane check runs before touching the claimed pane's tab
 	// (DJA-394); the callerContext slow path below keeps its own rule.
 	core.CallerGate("regrid", ctx, env, cwd)
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	dir := core.StateDirPath(ctx, env, cwd)
 	ws := core.WorkspaceID(ctx, env, cwd)
 	root := platform.ProjectRoot(env, cwd)

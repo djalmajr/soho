@@ -10,7 +10,11 @@ package archtest
 //      runStep("herdr", ...)); or
 //   2. reads a HERDR_* variable — a call to a Get, Getenv or LookupEnv
 //      method or function whose first argument is a string literal starting
-//      with "HERDR_".
+//      with "HERDR_"; or
+//   3. calls a backend constructor — herdr.New( or hcbackend.New( — outside
+//      internal/backend, the one selector (DJA-604 stage 2b) that may pick
+//      the backend. internal/herdr and internal/hcbackend keep their own
+//      constructors; rule 3 is about calls to them.
 //
 // Writes and deletes (env["HERDR_X"] = ..., delete(env, "HERDR_X")) are not
 // reads and are allowed. The test does not depend on line numbers: findings
@@ -29,8 +33,8 @@ package archtest
 //   - internal/codexenv: the zero-runner fallback used by herdr.RequireEnv,
 //     plus the variable names it filters.
 //
-// Every other kept read or call is listed individually below, by file and
-// enclosing function, with its reason.
+// Every other kept read, call or constructor call is listed individually
+// below, by file and enclosing function, with its reason.
 import (
 	"fmt"
 	"go/ast"
@@ -50,9 +54,11 @@ var allowedDirs = map[string]string{
 	"internal/codexenv": "the zero-runner fallback used by herdr.RequireEnv, plus the variable names it filters",
 }
 
-// allowedSite names one kept read or call outside the allowed directories,
-// by file, enclosing function and rule, with the reason it is kept. Rules:
-// "1" runs the herdr executable, "2" reads a HERDR_* variable, "1+2" both.
+// allowedSite names one kept read, call or constructor call outside the
+// allowed directories, by file, enclosing function and rule, with the
+// reason it is kept. Rules: "1" runs the herdr executable, "2" reads a
+// HERDR_* variable, "3" calls a backend constructor (herdr.New( or
+// hcbackend.New()), and a rule list ("1+2") covers several at one site.
 // A site allowed for one rule is not allowed for the other: a new direct
 // herdr call inside a function whose HERDR_* read is allowed is still a
 // violation.
@@ -64,6 +70,12 @@ type allowedSite struct {
 }
 
 var allowedSites = []allowedSite{
+	{
+		file:     "internal/backend/backend.go",
+		function: "New",
+		rules:    "3",
+		reason:   "the transport selector (DJA-604 stage 2b): SOHO_TRANSPORT=hc picks hcbackend.New and every other value keeps herdr.New; this is the only place outside the two backends that calls their constructors",
+	},
 	{
 		file:     "internal/peer/assignment.go",
 		function: "SendAssignmentMessage",
@@ -257,6 +269,11 @@ func TestHerdrBoundary(t *testing.T) {
 						finders = append(finders, finding{rule: 2, file: rel, line: pos.Line, function: function, what: lineText})
 					}
 				}
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+					if x, ok := sel.X.(*ast.Ident); ok && (x.Name == "herdr" || x.Name == "hcbackend") && sel.Sel.Name == "New" {
+						finders = append(finders, finding{rule: 3, file: rel, line: pos.Line, function: function, what: lineText})
+					}
+				}
 				return true
 			})
 		}
@@ -279,7 +296,12 @@ func TestHerdrBoundary(t *testing.T) {
 
 	covers := func(site allowedSite, rule int) bool {
 		tag := strconv.Itoa(rule)
-		return site.rules == tag || site.rules == "1+2"
+		for _, r := range strings.Split(site.rules, "+") {
+			if r == tag {
+				return true
+			}
+		}
+		return false
 	}
 
 	var failures []string
@@ -295,10 +317,13 @@ func TestHerdrBoundary(t *testing.T) {
 		}
 		if !ok {
 			failure := ""
-			if f.rule == 1 {
+			switch f.rule {
+			case 1:
 				failure = "rule 1 (runs the herdr executable): "
-			} else {
+			case 2:
 				failure = "rule 2 (reads a HERDR_* variable): "
+			default:
+				failure = "rule 3 (calls a backend constructor outside internal/backend): "
 			}
 			failures = append(failures, fmt.Sprintf("%s%s:%d in %s: %s", failure, f.file, f.line, f.function, f.what))
 			continue
@@ -309,7 +334,7 @@ func TestHerdrBoundary(t *testing.T) {
 	// scanned file: an entry whose site moved, disappeared, or whose file
 	// was deleted or renamed is stale and gets deleted at the same time.
 	for _, site := range allowedSites {
-		for rule := 1; rule <= 2; rule++ {
+		for rule := 1; rule <= 3; rule++ {
 			if !covers(site, rule) {
 				continue
 			}

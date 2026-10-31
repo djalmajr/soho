@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -194,7 +194,7 @@ func validLaunchNonce(nonce string) bool {
 func launchMismatch(rec launchRecord, id string, store *Store, env platform.Env, sel core.UserSelection) string {
 	// The caller identity is the supervisor's inherited environment claim,
 	// read through the transport the same way the old direct env.Get did.
-	caller := herdr.New(env).Runtime.Caller()
+	caller := backend.New(env).Runtime.Caller()
 	switch {
 	case rec.ID != id || rec.Store != filepath.Clean(store.Root):
 		return "the launch belongs to another job or store"
@@ -296,7 +296,7 @@ func ManagedSelection(args []string, launch LaunchLocators, env platform.Env, cw
 func bindingHolds(parent managedParentInfo, sel core.UserSelection, env platform.Env, cwd string) bool {
 	// The caller identity is the supervisor's inherited environment claim,
 	// read through the transport the same way the old direct env.Get did.
-	caller := herdr.New(env).Runtime.Caller()
+	caller := backend.New(env).Runtime.Caller()
 	workspace, pane := caller.WorkspaceID, caller.PaneID
 	if !caller.Inside || workspace == "" || pane == "" {
 		return false

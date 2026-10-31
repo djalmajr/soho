@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode/utf16"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	herdrtext "github.com/djalmajr/soho/internal/text"
@@ -19,7 +19,7 @@ import (
 )
 
 func cmdFeedback(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	sub := ""
 	words := []string{}
 	for _, arg := range argv {

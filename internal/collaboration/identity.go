@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/transport"
@@ -25,7 +25,7 @@ func ResolveParticipant(stateDir, name string, env platform.Env, contexts ...con
 	if len(contexts) > 0 && contexts[0] != nil {
 		ctx = contexts[0]
 	}
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	rep := svc.Legacy.AgentGetRaw(ctx, transport.Target{ID: name}, transport.Call{Timeout: 5 * time.Second})
 	if rep.Process.Status == nil || *rep.Process.Status != 0 || rep.Process.TimedOut || rep.Process.NotFound {
 		return Participant{}, fmt.Errorf("cannot verify live collaboration participant %s", name)
@@ -65,7 +65,7 @@ func ResolveParticipant(stateDir, name string, env platform.Env, contexts ...con
 }
 
 func CheckParticipants(a Assignment, stateDir string, env platform.Env, contexts ...context.Context) error {
-	if herdr.New(env).Runtime.Caller().WorkspaceID != a.Workspace {
+	if backend.New(env).Runtime.Caller().WorkspaceID != a.Workspace {
 		return errors.New("collaboration belongs to another workspace")
 	}
 	for _, expected := range []Participant{a.Author, a.Reviewer} {

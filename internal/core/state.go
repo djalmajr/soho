@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/djalmajr/soho/internal/herdr"
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/transport"
@@ -87,9 +87,18 @@ func RecordFrictionError(message string, code int, logFile string, fallbackComma
 }
 
 func WorkspaceID(ctx *Config, env platform.Env, cwd string) string {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	if id := svc.Runtime.Caller().WorkspaceID; id != "" {
 		return id
+	}
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		// hc has no pane current: the workspace is the session, and when it
+		// cannot be resolved the process dies here with the hc message,
+		// never a Herdr error (DJA-604 stage 2b).
+		if svc.Runtime.Caller().Inside {
+			platform.Die("transport=hc: the caller terminal's soho session could not be read (hc get failed for HC_TERMINAL_ID); check that hc is reachable", 2)
+		}
+		platform.Die("transport=hc: not inside an hc terminal (HC_TERMINAL_ID is not set); run soho from a terminal started with hc", 2)
 	}
 	rep := svc.Legacy.PaneCurrentRaw(nil, transport.Call{Timeout: 30 * time.Second})
 	if rep.Process.NotFound {

@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/djalmajr/soho/internal/herdr"
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	textutil "github.com/djalmajr/soho/internal/text"
@@ -86,7 +86,7 @@ func readReleasedPanes(dir string) []ReleasedPane {
 // cause is kept, so a herdr outage never wipes the registry.
 func releasedPanesWrite(ctx *Config, env platform.Env, cwd string, mutate func(rows []ReleasedPane) []ReleasedPane) {
 	sd := StateDir(ctx, env, cwd)
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	WithRosterLock(sd, func() {
 		current := readReleasedPanes(sd)
 		pruned := make([]ReleasedPane, 0, len(current))
@@ -148,7 +148,7 @@ func writeReleasedPanes(dir string, rows []ReleasedPane) {
 // the orchestrator's own pane (HERDR_PANE_ID). A failed pane list reads as no
 // workspace pane, so nothing is classified (no false orphan).
 func OrphansOf(ctx *Config, env platform.Env, cwd string, live []any) []Orphan {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	rosterPanes := map[string]bool{}
 	for _, line := range RosterRows(StateDirPath(ctx, env, cwd)) {
 		fields := strings.Split(line, "\t")
@@ -190,7 +190,7 @@ func OrphansOf(ctx *Config, env platform.Env, cwd string, live []any) []Orphan {
 // herdr.LiveAgents' own error, the same way the roster's "other live agents"
 // section fails.
 func Orphans(ctx *Config, env platform.Env, cwd string) []Orphan {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	// OrphansOf still reads the live list as field objects: rebuild it from
 	// the transport terminals with the field names that function reads.
 	live := svc.Runtime.List(nil, transport.Scope{}, transport.Call{}).Value

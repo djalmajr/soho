@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/djalmajr/soho/internal/herdr"
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/transport"
 )
@@ -63,7 +63,7 @@ type herdrPluginRef struct {
 func migratePlugin(env platform.Env, version string, dry bool) []string {
 	// One backend for this invocation: every herdr plugin step of the
 	// migration runs through it (DJA-596).
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	list := svc.Legacy.PluginListRaw(context.Background(), pluginCall)
 	if list.Process.NotFound {
 		// Without Herdr there is no plugin registration to migrate.

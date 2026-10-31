@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -42,7 +43,7 @@ func splitCap(ctx *core.Config, env platform.Env) int { return layout.SplitCap(c
 func splitMin(ctx *core.Config, env platform.Env) float64 { return layout.SplitMin(ctx, env) }
 
 func cmdLayoutPlan(args []string, ctx *core.Config, env platform.Env, cwd string) int {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	file, me, mine := "", svc.Runtime.Caller().PaneID, ""
 	for i := 0; i < len(args); i++ {
 		a := args[i]

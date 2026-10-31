@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/transport"
@@ -271,7 +271,7 @@ func SplitMin(ctx *core.Config, env platform.Env) float64 {
 func AutoDirectionFor(env platform.Env, pane string) string {
 	// The old code ran the layout read with no per-call context; nil keeps
 	// that path (the backend forwards no context to the adapter).
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	r := svc.Window.Layout(nil, pane, transport.Call{})
 	stdout := r.Process.Stdout
 	if stdout == "" {
@@ -326,7 +326,7 @@ func livePanes(views []transport.View) []any {
 }
 
 func UIFocusedPane(env platform.Env) string {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	for _, value := range livePanes(svc.Window.ListPanes(nil, transport.Scope{All: true}, transport.Call{}).Value) {
 		p, ok := value.(*jsonjs.Object)
 		if !ok {
@@ -349,7 +349,7 @@ func RestoreFocusIfStolen(prev, stolen, direction string, env platform.Env) {
 	if prev == "" || stolen == "" || prev == stolen || UIFocusedPane(env) != stolen {
 		return
 	}
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	if svc.Window.Focus(nil, transport.Focus{Target: transport.Target{ID: prev}}, transport.Call{}).Value || prev != svc.Runtime.Caller().PaneID {
 		return
 	}
@@ -365,7 +365,7 @@ func RestoreFocusIfStolen(prev, stolen, direction string, env platform.Env) {
 }
 
 func PickSplitAnchor(ctx *core.Config, env platform.Env, cwd string) *Anchor {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	me := svc.Runtime.Caller().PaneID
 	r := svc.Window.Layout(nil, "", transport.Call{})
 	stdout := r.Process.Stdout

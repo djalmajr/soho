@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/communication"
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/sessionref"
 	"github.com/djalmajr/soho/internal/transport"
@@ -74,7 +74,7 @@ func SendAssignmentMessage(options AssignmentMessageOptions) (collaboration.Deli
 	}
 	// One transport service for this delivery: the recipient inspection and
 	// the submission go through it.
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	sd := core.StateDirPath(options.Config, env, options.Cwd)
 	a, err := (collaboration.Store{StateDir: sd}).Read(options.AssignmentID)
 	if err != nil {

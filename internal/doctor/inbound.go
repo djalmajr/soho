@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -101,7 +102,7 @@ func userPromptSubmitProtected(file string) bool {
 // not protected by this project's supported inbound hooks.
 func doctorUnprotectedAgents(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 	// One backend for this invocation of the probe (DJA-596).
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	if !svc.Runtime.Caller().Inside {
 		return
 	}

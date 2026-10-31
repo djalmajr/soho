@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/communication"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/peer"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/transport"
@@ -23,7 +23,7 @@ import (
 
 func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd string) int {
 	fail := func(err error) int { fmt.Fprintf(platform.Stderr, "soho: collaborate: %s\n", err); return 2 }
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	caller := svc.Runtime.Caller()
 	if len(argv) == 0 {
 		return fail(errors.New("expected start, status, event, stop or finalize"))

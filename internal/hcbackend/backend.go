@@ -1,16 +1,17 @@
 // Package hcbackend is the herdr-core (hc) backend for the transport
 // contracts (internal/transport): the second implementation alongside the
-// Herdr backend (internal/herdr), for transport=hc (DJA-604 stage 2b). It is
-// not wired to any caller yet; the next slice adds the selector and switches
-// the callers.
+// Herdr backend (internal/herdr), for transport=hc (DJA-604 stage 2b).
+// internal/backend selects it when the resolved transport mode is hc.
 //
 // Every hc call goes through the per-instance runner of the internal/hc
 // client the constructor builds (default: platform.RunCli for "hc"); there
-// is no package-global seam. Methods this slice does not implement return a
-// *transport.Failure of kind FailureUnsupported naming the method and
-// "with transport=hc". The Window surface is no-ops (hc has no panes, tabs,
-// layout or focus, and herdr-app owns them), except Split and CreateTab,
-// which must produce a pane and so fail as unsupported.
+// is no package-global seam. Each launch is clamped to the herdr rule's
+// timeout: the call's timeout when it names one, else 30s. Methods this
+// slice does not implement return a *transport.Failure of kind
+// FailureUnsupported naming the method and "with transport=hc". The Window
+// surface is no-ops (hc has no panes, tabs, layout or focus, and herdr-app
+// owns them), except Split and CreateTab, which must produce a pane and so
+// fail as unsupported.
 package hcbackend
 
 import (
@@ -20,6 +21,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/djalmajr/soho/internal/hc"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -35,6 +37,10 @@ const SessionLabel = "soho.session"
 // for when the request names none: the count every current
 // recent-unwrapped caller passes.
 const defaultRecentLines = 40
+
+// hcTimeoutDefault is the herdr rule's default (herdr.Timeout) for an hc
+// launch that carries no call timeout of its own.
+const hcTimeoutDefault = 30 * time.Second
 
 // ErrNotInHcTerminal is returned by Session (and the backend's session
 // resolution) when HC_TERMINAL_ID is not set: the process is not inside an
@@ -57,7 +63,8 @@ type backend struct {
 	env    platform.Env
 	client *hc.Client
 
-	sessionOnce  sync.Once
+	sessionMu    sync.Mutex
+	sessionDone  bool
 	sessionValue string
 	sessionErr   error
 }
@@ -69,29 +76,67 @@ type backend struct {
 // "hc-<address>" when the label is absent. Outside an hc terminal it is an
 // error.
 func Session(env platform.Env) (string, error) {
-	return sessionOf(hc.New(env), env)
+	b := &backend{env: env, client: hc.New(env)}
+	return b.session(context.Background(), transport.Call{})
 }
 
-// session resolves the session through the instance's runner, computed
-// lazily and at most once per Services: the value or the error is memoized,
-// so no later call issues the session read again.
-func (b *backend) session() (string, error) {
-	b.sessionOnce.Do(func() {
-		b.sessionValue, b.sessionErr = sessionOf(b.client, b.env)
-	})
+// session resolves the session through the instance's runner, lazily and
+// within the request's budget (ctx and call, through run). The value is
+// memoized, so no later call issues the session read again; so is a failure
+// the read met with the full default budget, judged before the read. A
+// failure under a shorter budget, or one the request's cancellation caused,
+// is not memoized: a later call with more time reads again. The lock is not
+// held across the read, so a caller never waits on another caller's read;
+// concurrent first reads may each launch, and the first stored result wins.
+func (b *backend) session(ctx context.Context, call transport.Call) (string, error) {
+	b.sessionMu.Lock()
+	if b.sessionDone {
+		value, err := b.sessionValue, b.sessionErr
+		b.sessionMu.Unlock()
+		return value, err
+	}
+	b.sessionMu.Unlock()
+	full := fullBudget(ctx, call)
+	value, err := b.sessionOf(ctx, call)
+	if err != nil && !errors.Is(err, ErrNotInHcTerminal) && (!full || (ctx != nil && ctx.Err() != nil)) {
+		return value, err
+	}
+	b.sessionMu.Lock()
+	defer b.sessionMu.Unlock()
+	if !b.sessionDone {
+		b.sessionValue, b.sessionErr, b.sessionDone = value, err, true
+	}
 	return b.sessionValue, b.sessionErr
 }
 
-func sessionOf(c *hc.Client, env platform.Env) (string, error) {
-	addr := env.Get("HC_TERMINAL_ID")
+func (b *backend) sessionOf(ctx context.Context, call transport.Call) (string, error) {
+	addr := b.env.Get("HC_TERMINAL_ID")
 	if addr == "" {
 		return "", ErrNotInHcTerminal
 	}
-	out, err := c.Run(context.Background(), "get", addr)
+	out, err := b.run(ctx, call, "get", addr)
 	if err != nil {
 		return "", err
 	}
 	return sessionFromGet(out)
+}
+
+// fullBudget reports whether a launch under ctx and call runs with the
+// default 30s: no call timeout, a live parent, and no parent deadline
+// sooner than it.
+func fullBudget(ctx context.Context, call transport.Call) bool {
+	if call.Timeout > 0 {
+		return false
+	}
+	if ctx != nil {
+		if ctx.Err() != nil {
+			return false
+		}
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < hcTimeoutDefault {
+			return false
+		}
+	}
+	return true
 }
 
 // sessionFromGet extracts the session from one decoded hc get record: the
@@ -119,6 +164,24 @@ func sessionFromGet(stdout string) (string, error) {
 }
 
 // Shared helpers.
+
+// run applies the herdr rule's timeout to one hc launch: the call's
+// timeout when it names one, else 30s, nested as the context deadline the
+// runner inherits — the internal/hc Launch seam carries no timeout
+// argument, so the deadline is the clamp the launch runs under.
+func (b *backend) run(ctx context.Context, call transport.Call, args ...string) (string, error) {
+	timeout := hcTimeoutDefault
+	if call.Timeout > 0 {
+		timeout = call.Timeout
+	}
+	if ctx == nil {
+		// Transport consumers may pass a nil context (core.Orphans does).
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return b.client.Run(ctx, args...)
+}
 
 // addr renders one target for an hc call: the id, or the machine-prefixed
 // address hc documents for a remote terminal (machine/t7).
@@ -308,7 +371,7 @@ var keysHC = map[string]string{
 // memoized per Services); the environment fields themselves are pure.
 func (b *backend) Caller() transport.Caller {
 	pane := b.env.Get("HC_TERMINAL_ID")
-	session, _ := b.session()
+	session, _ := b.session(context.Background(), transport.Call{})
 	return transport.Caller{Inside: pane != "", PaneID: pane, WorkspaceID: session, TabID: ""}
 }
 
@@ -332,11 +395,11 @@ func (b *backend) CheckCaller(ctx context.Context, call transport.Call) transpor
 // session label is the roster scope, and finished terminals are not part of
 // the live roster.
 func (b *backend) List(ctx context.Context, scope transport.Scope, call transport.Call) transport.Reply[[]transport.Terminal] {
-	session, err := b.session()
+	session, err := b.session(ctx, call)
 	if err != nil {
 		return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: "cannot resolve the soho.session label: " + err.Error(), Cause: err}}
 	}
-	out, err := b.client.Run(ctx, "ls", "--label", SessionLabel+"="+session)
+	out, err := b.run(ctx, call, "ls", "--label", SessionLabel+"="+session)
 	if err != nil {
 		// A roster query names no target, so even an exit 3 is the backend
 		// being unavailable, never a target not found.
@@ -383,7 +446,7 @@ func (b *backend) List(ctx context.Context, scope transport.Scope, call transpor
 // failure is unavailable with the cause; a live terminal with no status is
 // unknown.
 func (b *backend) Get(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[transport.Terminal] {
-	out, err := b.client.Run(ctx, "get", addr(target))
+	out, err := b.run(ctx, call, "get", addr(target))
 	if err != nil {
 		if notFound(err) {
 			return transport.Reply[transport.Terminal]{Value: transport.Terminal{Target: target, State: "gone"}, Valid: true}
@@ -420,7 +483,7 @@ func (b *backend) Keys(ctx context.Context, target transport.Target, keys string
 	if !ok {
 		return transport.Reply[bool]{Err: &transport.Failure{Kind: transport.FailureUnsupported, Message: fmt.Sprintf("key %q is not supported with transport=hc", keys)}}
 	}
-	if _, err := b.client.Run(ctx, "keys", addr(target), mapped); err != nil {
+	if _, err := b.run(ctx, call, "keys", addr(target), mapped); err != nil {
 		return transport.Reply[bool]{Err: failure(err)}
 	}
 	return transport.Reply[bool]{Value: true, Valid: true}
@@ -437,7 +500,7 @@ func (b *backend) Read(ctx context.Context, target transport.Target, read transp
 	if !ok {
 		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureUnsupported, Message: fmt.Sprintf("read source %q is not supported with transport=hc", read.Source)}}
 	}
-	out, err := b.client.Run(ctx, "read", addr(target), "--lines", strconv.Itoa(lines))
+	out, err := b.run(ctx, call, "read", addr(target), "--lines", strconv.Itoa(lines))
 	if err != nil {
 		return transport.Reply[string]{Err: failure(err)}
 	}
@@ -464,7 +527,7 @@ func (b *backend) Read(ctx context.Context, target transport.Target, read transp
 // removed reports closed.
 func (b *backend) Close(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[bool] {
 	id := addr(target)
-	out, err := b.client.Run(ctx, "get", id)
+	out, err := b.run(ctx, call, "get", id)
 	if err != nil {
 		if notFound(err) {
 			return transport.Reply[bool]{Value: true, Valid: true}
@@ -476,14 +539,14 @@ func (b *backend) Close(ctx context.Context, target transport.Target, call trans
 		return transport.Reply[bool]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc get returned no terminal record"}}
 	}
 	if stateOf(obj) != "gone" {
-		if _, err := b.client.Run(ctx, "kill", id); err != nil {
+		if _, err := b.run(ctx, call, "kill", id); err != nil {
 			if notFound(err) {
 				return transport.Reply[bool]{Value: true, Valid: true}
 			}
 			return transport.Reply[bool]{Err: failure(err)}
 		}
 	}
-	if _, err := b.client.Run(ctx, "rm", id); err != nil {
+	if _, err := b.run(ctx, call, "rm", id); err != nil {
 		if notFound(err) {
 			return transport.Reply[bool]{Value: true, Valid: true}
 		}
@@ -557,7 +620,7 @@ func (b *backend) Notify(ctx context.Context, title, body string, call transport
 // target's id, Value true only when the call is not a lookup failure and
 // exits 0. It never retries and does not parse the body.
 func (b *backend) AgentGetOK(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[bool] {
-	if _, err := b.client.Run(ctx, "get", addr(target)); err != nil {
+	if _, err := b.run(ctx, call, "get", addr(target)); err != nil {
 		return transport.Reply[bool]{Err: failure(err)}
 	}
 	return transport.Reply[bool]{Value: true, Valid: true}
@@ -745,7 +808,7 @@ func (b *backend) CallerAgentName(ctx context.Context, call transport.Call) tran
 	if pane == "" {
 		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: "not inside an hc terminal: HC_TERMINAL_ID is not set"}}
 	}
-	out, err := b.client.Run(ctx, "get", pane)
+	out, err := b.run(ctx, call, "get", pane)
 	if err != nil {
 		return transport.Reply[string]{Err: failure(err)}
 	}
@@ -770,7 +833,7 @@ func (b *backend) SendText(ctx context.Context, target transport.Target, text st
 // (the record is removed) or the record's state is finished (the program has
 // ended). A live terminal, or a failure for another reason, reports false.
 func (b *backend) GetGone(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[bool] {
-	out, err := b.client.Run(ctx, "get", addr(target))
+	out, err := b.run(ctx, call, "get", addr(target))
 	if err != nil {
 		if notFound(err) {
 			return transport.Reply[bool]{Value: true, Valid: true}

@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/djalmajr/soho/internal/herdr"
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	textutil "github.com/djalmajr/soho/internal/text"
@@ -377,7 +377,7 @@ func LaneDecide(ctx *Config, lane, role string, env platform.Env, cwd string, re
 	unavailableName, unavailableCause := "", ""
 	firstLocked := ""
 	locked := 0
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	for _, line := range rows {
 		f := strings.Split(line, "\t")
 		nm := ""
@@ -532,7 +532,7 @@ func MaxWorkers(ctx *Config, env platform.Env) string {
 	return v
 }
 func liveAgentsByName(env platform.Env) []any {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	// LiveWorkerNames and the burst scan still read the list as field
 	// objects: rebuild them from the transport terminals with the field
 	// names those reads take.
@@ -623,7 +623,7 @@ func EnforceWorkerCap(ctx *Config, env platform.Env, cwd string) {
 	// sub-orchestrator keeps its roster row until it is demoted, and a worker
 	// that calls spawn from its own pane is itself. The other live workers —
 	// including other genuine sub-orchestrators — still count.
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	caller := ""
 	if svc.Runtime.Caller().PaneID != "" {
 		caller = svc.Terminal.CallerAgentName(nil, transport.Call{}).Value

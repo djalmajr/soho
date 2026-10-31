@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/djalmajr/soho/internal/herdr"
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/sessionref"
@@ -383,7 +383,7 @@ func oneSnapshot(machine string, opts SnapshotOptions) (any, string) {
 	if opts.Run != nil {
 		r = opts.Run("herdr", append(sessionref.HerdrMachineArgs(machine), "api", "snapshot"), platform.RunOptions{Env: opts.Env, Context: opts.Context, TimeoutMs: timeout})
 	} else {
-		rep := herdr.New(opts.Env).Legacy.SnapshotRaw(opts.Context, transport.Target{Machine: machine}, transport.Call{Timeout: time.Duration(timeout) * time.Millisecond})
+		rep := backend.New(opts.Env).Legacy.SnapshotRaw(opts.Context, transport.Target{Machine: machine}, transport.Call{Timeout: time.Duration(timeout) * time.Millisecond})
 		r = runResultFromProcess(rep.Process)
 	}
 	if r.NotFound {
@@ -464,7 +464,7 @@ func listMachines(timeoutMS int, opts SnapshotOptions) ([]Machine, string) {
 	if opts.Run != nil {
 		r = opts.Run("herdr", []string{"machine", "list", "--json"}, platform.RunOptions{Env: opts.Env, Context: opts.Context, TimeoutMs: timeoutMS})
 	} else {
-		rep := herdr.New(opts.Env).Legacy.MachineListRaw(opts.Context, transport.Call{Timeout: time.Duration(timeoutMS) * time.Millisecond})
+		rep := backend.New(opts.Env).Legacy.MachineListRaw(opts.Context, transport.Call{Timeout: time.Duration(timeoutMS) * time.Millisecond})
 		r = runResultFromProcess(rep.Process)
 	}
 	if r.NotFound {

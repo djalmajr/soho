@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -499,7 +499,7 @@ func confirmLaunch(store *Store, id string, env platform.Env, bind launchBinding
 		}
 		// The caller identity is the supervisor's inherited environment claim,
 		// read through the transport the same way the old direct env.Get did.
-		caller := herdr.New(env).Runtime.Caller()
+		caller := backend.New(env).Runtime.Caller()
 		if rec.Workspace != caller.WorkspaceID || rec.Pane != caller.PaneID {
 			reason = "the launch belongs to another workspace or pane"
 			return nil

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/communication"
 	"github.com/djalmajr/soho/internal/core"
@@ -85,7 +86,7 @@ func rosterNames(sd string) []string {
 
 func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	sd := core.StateDir(ctx, env, cwd)
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	restartStates := map[string]stateProbe{}
 	if len(argv) == 0 {
 		argv = rosterNames(sd)
@@ -484,7 +485,7 @@ var restartReportStamp = regexp.MustCompile(`-(\d{8}T\d{6})(?:-\d+)?\.md$`)
 // InspectRestartTask uses the local timestamp dispatch puts in the report name.
 // The dispatch sidecar has submission state, but no submission timestamp.
 func InspectRestartTask(agent, sd string, boot time.Time, env platform.Env) RestartTask {
-	return inspectRestartTask(agent, sd, boot, herdr.New(env), nil)
+	return inspectRestartTask(agent, sd, boot, backend.New(env), nil)
 }
 
 func inspectRestartTask(agent, sd string, boot time.Time, svc transport.Services, knownState *stateProbe) RestartTask {
@@ -548,7 +549,7 @@ func inspectRestartTask(agent, sd string, boot time.Time, svc transport.Services
 
 // RestartNotices adds advisory text only; stdout status rows remain unchanged.
 func RestartNotices(sd string, env platform.Env, out io.Writer, agents []string) {
-	restartNotices(sd, env, out, agents, nil, herdr.New(env))
+	restartNotices(sd, env, out, agents, nil, backend.New(env))
 }
 
 // A non-nil cache limits status notices to its normal-output state reads.

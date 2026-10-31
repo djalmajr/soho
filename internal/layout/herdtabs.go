@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf16"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -74,7 +75,7 @@ func tabFile(ctx *core.Config, env platform.Env, cwd string) string {
 
 // HerdTabEntries migrates legacy entries, detects manual renames, prunes dead tabs, and persists the normalized file.
 func HerdTabEntries(ctx *core.Config, env platform.Env, cwd string) []TabEntry {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	file := tabFile(ctx, env, cwd)
 	if _, err := os.Stat(file); err != nil {
 		return []TabEntry{}
@@ -205,7 +206,7 @@ func containsString(values []string, target string) bool {
 }
 
 func rosterPanes(ctx *core.Config, live []any, tab string, env platform.Env, cwd string) []string {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	out := []string{}
 	for _, line := range core.RosterRows(core.StateDirPath(ctx, env, cwd)) {
 		f := strings.Split(line, "\t")
@@ -271,7 +272,7 @@ func RosterPanesInTab(ctx *core.Config, live []any, tab string, env platform.Env
 }
 
 func HerdTabsRelabel(ctx *core.Config, env platform.Env, cwd string) {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	ws := core.WorkspaceID(ctx, env, cwd)
 	live := livePanes(svc.Window.ListPanes(nil, transport.Scope{WorkspaceID: ws}, transport.Call{}).Value)
 	entries := HerdTabEntries(ctx, env, cwd)
@@ -312,7 +313,7 @@ func frictionPath(ctx *core.Config, env platform.Env, cwd string) string {
 }
 
 func HerdTabSplit(ctx *core.Config, tab, workerCwd string, env platform.Env, cwd string, beforeCreate ...func()) herdr.PaneSplitResult {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	live := livePanes(svc.Window.ListPanes(nil, transport.Scope{WorkspaceID: core.WorkspaceID(ctx, env, cwd)}, transport.Call{}).Value)
 	anchor := ""
 	for _, v := range live {
@@ -345,7 +346,7 @@ func HerdTabSplit(ctx *core.Config, tab, workerCwd string, env platform.Env, cwd
 // beforeCreate runs only after placement selects a new shell, before its create
 // call. Adopting an existing empty tab root does not invoke it.
 func HerdTabPane(ctx *core.Config, workerCwd, label, role string, env platform.Env, cwd string, beforeCreate ...func()) herdr.PaneSplitResult {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	ws := core.WorkspaceID(ctx, env, cwd)
 	cap := SplitCap(ctx, env)
 	live := livePanes(svc.Window.ListPanes(nil, transport.Scope{WorkspaceID: ws}, transport.Call{}).Value)
@@ -407,7 +408,7 @@ func padJS(s string, n int) string {
 	return s
 }
 func CmdTabLabel(args []string, ctx *core.Config, env platform.Env, cwd string) int {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	text, tab := "", ""
 	auto := false
 	for i := 0; i < len(args); i++ {

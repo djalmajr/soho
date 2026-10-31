@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
@@ -198,7 +199,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// One transport per dispatch: the herdr backend is built after the
 	// collaboration env clone above, so every herdr call sees the same env
 	// the adapter calls used to receive.
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	kind := at(2)
 	if kind == "codex" && !dispatchNativeArg(at(13), "--no-daemon") && !dispatchNativeArg(at(13), "--remote") && dispatchCodexSupportsNoDaemon(env, cwd) {
 		fmt.Fprintf(platform.Stderr, "soho: dispatch: '%s' was started without --no-daemon: codex runs its commands through a shared server that may carry another pane's identity, so its procs, copies and send can land in another workspace. Release it with --close and spawn it again\n", agent)
@@ -1454,7 +1455,7 @@ func markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskRepo
 	// call, so it builds its one-shot backend from the dispatch's env (the
 	// helper's env-based signature is kept so its existing callers and tests
 	// stay unchanged).
-	seq := readState(herdr.New(env), agent, transport.Call{Timeout: herdr.Timeout}).Seq
+	seq := readState(backend.New(env), agent, transport.Call{Timeout: herdr.Timeout}).Seq
 	marker := strconv.FormatInt(platform.Now().Unix(), 10)
 	if wasWorking {
 		// The prompt path goes in the marker (as in .queued): the next wait then

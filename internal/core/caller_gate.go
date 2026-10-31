@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/transport"
@@ -89,7 +90,7 @@ func CallerGate(command string, ctx *Config, env platform.Env, cwd string) {
 	if mode == "off" {
 		return
 	}
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	res := svc.Runtime.CheckCaller(nil, transport.Call{})
 	check := herdr.CallerCheck{
 		State:       herdr.CallerState(res.Value.State),

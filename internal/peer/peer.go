@@ -16,9 +16,9 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/communication"
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/provider"
@@ -447,7 +447,7 @@ func resolveTarget(target string, env platform.Env) resolvedTarget {
 // timeoutMS: the agent_not_ready retries of send pass what is left of the
 // send's --timeout.
 func resolveTargetWithin(target string, env platform.Env, timeoutMS int) resolvedTarget {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
 	remaining := func() int { return int(time.Until(deadline).Milliseconds()) }
 	ref := sessionref.ParseRef(target)
@@ -676,7 +676,7 @@ func floorCallBudget(ms int) int {
 // fallback — is reported through onVisibleScreen when it is non-nil, so the
 // caller (the send flow) records every visible screen it sees.
 func readScreen(machine, pane, source string, lines int, env platform.Env, timeoutMS int, onVisibleScreen func(string)) (string, string) {
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	var linesArg *int
 	if lines > 0 {
 		linesArg = &lines
@@ -1045,7 +1045,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	// lookup, the resolution, the wait, the prompt, the reads, the keys and
 	// the transcript paths) goes through it. The backend holds no state
 	// beyond the env, so the service is built once here at the send's start.
-	svc := herdr.New(env)
+	svc := backend.New(env)
 	caller := svc.Runtime.Caller()
 	// Without a caller pane or an explicit workspace, StateDirPath would
 	// infer the focused workspace, which may belong to another session.
