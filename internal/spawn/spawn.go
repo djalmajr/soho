@@ -938,7 +938,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	// anything can act on them; the worker is a new hc terminal of the
 	// session, opened by Runtime.Start below.
 	if env.Get("SOHO_TRANSPORT") == "hc" && (o.pane != "" || o.tabLabel != "") {
-		Warn("spawn: transport=hc has no panes; --pane and --tab are ignored", ctx, env, "spawn")
+		Warn("spawn: transport=hc has no panes; --pane and --tab-label are ignored", ctx, env, "spawn")
 		o.pane = ""
 		o.tabLabel = ""
 	}
@@ -1913,7 +1913,11 @@ func startHcAgent(ctx *core.Config, o *spawnOptions, kind string, env platform.E
 				core.DieFriction(fmt.Sprintf("spawn: no free hc terminal name for '%s' after 10 tries", base), 4, "", "spawn")
 			}
 			taken := o.name
-			o.name = nextHcName(taken, env)
+			next, found := nextHcName(taken, env)
+			if !found {
+				core.DieFriction(fmt.Sprintf("spawn: no free hc terminal name for '%s' among the next %d suffixes", base, hcNameCandidates), 4, "", "spawn")
+			}
+			o.name = next
 			Warn(fmt.Sprintf("agent name '%s' is taken by another pane or workspace; using '%s'", taken, o.name), ctx, env, "spawn")
 			continue
 		}
@@ -1936,21 +1940,28 @@ func startHcAgent(ctx *core.Config, o *spawnOptions, kind string, env platform.E
 // -2 is appended. Each candidate is checked against the session's live
 // names (hc names are unique on the whole core, so a taken name may belong
 // to another session and not appear in the list).
-func nextHcName(taken string, env platform.Env) string {
+func nextHcName(taken string, env platform.Env) (string, bool) {
 	base, suffix := taken, 1
 	if i := strings.LastIndexByte(taken, '-'); i > 0 {
 		if n, err := strconv.Atoi(taken[i+1:]); err == nil && n >= 2 {
 			base, suffix = taken[:i], n
 		}
 	}
-	for {
+	// Bounded: the live list is read again for each candidate and may keep
+	// changing, so the search gives up instead of chasing it.
+	for range hcNameCandidates {
 		suffix++
 		candidate := fmt.Sprintf("%s-%d", base, suffix)
 		if !AgentNameTaken(candidate, env) {
-			return candidate
+			return candidate, true
 		}
 	}
+	return "", false
 }
+
+// hcNameCandidates bounds one nextHcName search.
+const hcNameCandidates = 50
+
 func startWrapperTimeoutMs(raw string) float64 {
 	n, ok := text.ParseJSNumber(raw)
 	if !ok || math.IsNaN(n) || math.IsInf(n, 0) {

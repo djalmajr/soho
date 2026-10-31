@@ -12,6 +12,7 @@ package spawn
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -229,25 +230,30 @@ func TestSpawnHcWorkersRunWithTheHerdrArgv(t *testing.T) {
 }
 
 func TestSpawnHcPaneFlagIsIgnored(t *testing.T) {
-	// DJA-604 2b-2b acceptance (b): --pane has no meaning to hc; the flag
-	// degrades to the warning and the spawn still opens a new terminal,
-	// with no pane call anywhere.
-	cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "")
-	res := core.ResolveRoleSettings("worker", ctx, env, cwd, core.RoleFlags{Kind: "pi"})
-	agent := hcAgentArgs(t, "worker", res, ctx, env, cwd)
-	wantRun := hcRunArgv(cwd, "worker", "pi", agent)
-	rules := append(hcFixtureRules(),
-		fakecli.Rule{Argv: wantRun, Stdout: hcRunResult},
-		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
-	)
-	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
-		t.Fatal(err)
-	}
-	_, stderr, calls := spawnHc(t, bin, []string{"worker", "--kind", "pi", "--pane", "p9"}, ctx, env, cwd)
-	assertHcOnlyReadsAndRun(t, bin, calls)
-	warn := "soho: warning: spawn: transport=hc has no panes; --pane and --tab are ignored"
-	if !strings.Contains(stderr.String(), warn) {
-		t.Fatalf("stderr=%q, want the pane warning %q", stderr.String(), warn)
+	// DJA-604 2b-2b acceptance (b): --pane and --tab-label have no meaning
+	// to hc; each degrades to the warning and the spawn still opens a new
+	// terminal, with no pane call anywhere.
+	for _, flag := range [][]string{{"--pane", "p9"}, {"--tab-label", "herd-x"}} {
+		flag := flag
+		t.Run(flag[0], func(t *testing.T) {
+			cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "")
+			res := core.ResolveRoleSettings("worker", ctx, env, cwd, core.RoleFlags{Kind: "pi"})
+			agent := hcAgentArgs(t, "worker", res, ctx, env, cwd)
+			wantRun := hcRunArgv(cwd, "worker", "pi", agent)
+			rules := append(hcFixtureRules(),
+				fakecli.Rule{Argv: wantRun, Stdout: hcRunResult},
+				fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
+			)
+			if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+				t.Fatal(err)
+			}
+			_, stderr, calls := spawnHc(t, bin, append([]string{"worker", "--kind", "pi"}, flag...), ctx, env, cwd)
+			assertHcOnlyReadsAndRun(t, bin, calls)
+			warn := "soho: warning: spawn: transport=hc has no panes; --pane and --tab-label are ignored"
+			if !strings.Contains(stderr.String(), warn) {
+				t.Fatalf("stderr=%q, want the pane warning %q", stderr.String(), warn)
+			}
+		})
 	}
 }
 
@@ -346,6 +352,54 @@ func TestSpawnHcNameTakenDiesAfterTenTries(t *testing.T) {
 				t.Fatalf("a roster row was written on the exhausted start: %q", line)
 			}
 		}
+	}
+}
+
+func TestSpawnHcSuffixSearchIsBounded(t *testing.T) {
+	// The suffix search after a name_taken reads the live list for each
+	// candidate; when every candidate is taken it gives up with exit 4
+	// instead of chasing the list.
+	cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "")
+	res := core.ResolveRoleSettings("worker", ctx, env, cwd, core.RoleFlags{Kind: "pi"})
+	agent := hcAgentArgs(t, "worker", res, ctx, env, cwd)
+	var live []string
+	for i := 2; i <= 2+hcNameCandidates; i++ {
+		live = append(live, fmt.Sprintf(`{"address":"t%d","name":"worker-%d","state":"live","labels":{"soho.session":"sX"}}`, 100+i, i))
+	}
+	rules := []fakecli.Rule{
+		{Argv: []string{"get", "t1", "--json"}, Stdout: hcCallerTerminal},
+		{Argv: []string{"ls", "--label", "soho.session=sX", "--json"}, Stdout: `{"terminals":[` + strings.Join(live, ",") + `]}`},
+		{Argv: hcRunArgv(cwd, "worker", "pi", agent), Code: 1, Stderr: hcNameTaken},
+	}
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	oldOut, oldErr := platform.Stdout, platform.Stderr
+	platform.Stdout, platform.Stderr = &bytes.Buffer{}, &bytes.Buffer{}
+	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
+	var exit *platform.ExitError
+	func() {
+		defer func() {
+			if value := recover(); value != nil {
+				if e, ok := value.(*platform.ExitError); ok {
+					exit = e
+				}
+			}
+		}()
+		CmdSpawn([]string{"worker", "--kind", "pi"}, ctx, env, cwd)
+	}()
+	want := fmt.Sprintf("spawn: no free hc terminal name for 'worker' among the next %d suffixes", hcNameCandidates)
+	if exit == nil || exit.Code != 4 || exit.Msg != want {
+		t.Fatalf("exit=%+v, want exit 4 with %q", exit, want)
+	}
+	runs := 0
+	for _, c := range hcCallLog(t, bin) {
+		if c.Argv[0] == "run" {
+			runs++
+		}
+	}
+	if runs != 1 {
+		t.Fatalf("hc run calls = %d, want only the first", runs)
 	}
 }
 
