@@ -107,7 +107,11 @@ func TestFindStreamPublishesBeforeDeadlineAndStopsRemoteProcess(t *testing.T) {
 		t.Fatal("the in-flight local-output control did not observe a pending remote")
 	default:
 	}
+	// Any read error is "not yet" until the deadline: on Windows another
+	// process (an indexer or antivirus) can hold the freshly renamed file for
+	// a moment, and the read then fails with a sharing violation (DJA-635).
 	var pid int
+	var lastErr error
 	until := time.Now().Add(time.Second)
 	for time.Now().Before(until) {
 		data, err := os.ReadFile(pidFile)
@@ -118,13 +122,11 @@ func TestFindStreamPublishesBeforeDeadlineAndStopsRemoteProcess(t *testing.T) {
 			}
 			break
 		}
-		if !os.IsNotExist(err) {
-			t.Fatal(err)
-		}
+		lastErr = err
 		time.Sleep(10 * time.Millisecond)
 	}
 	if pid == 0 {
-		t.Fatal("remote did not start before the CLI deadline")
+		t.Fatalf("remote did not start before the CLI deadline (last read error: %v)", lastErr)
 	}
 	start, name, alive := platform.ProcInfo(pid, processEnv)
 	if !alive || start == "" || name == "" {
