@@ -14,8 +14,10 @@ package archtest
 //
 // Writes and deletes (env["HERDR_X"] = ..., delete(env, "HERDR_X")) are not
 // reads and are allowed. The test does not depend on line numbers: findings
-// are keyed by file and enclosing function, so unrelated edits do not break
-// it.
+// are keyed by file and enclosing function (code outside any function is
+// keyed to <package-level> and is never covered by a function-keyed entry),
+// so unrelated edits do not break it. An entry whose file is no longer
+// scanned (deleted or renamed) is stale and must be deleted.
 //
 // Allowed places, whole directories:
 //   - internal/herdr: the backend itself; every Herdr execution and the
@@ -63,87 +65,6 @@ type allowedSite struct {
 
 var allowedSites = []allowedSite{
 	{
-		// The agent get and the workspace match run before the 1d-b slice
-		// (PR #289) migrates them to Legacy.AgentGetRaw and
-		// Runtime.Caller(); settled at integration.
-		file:     "internal/collaboration/identity.go",
-		function: "ResolveParticipant",
-		rules:    "1+2",
-		reason:   "pre-1d-b: the agent get and the HERDR_WORKSPACE_ID match move through the transport in PR #289",
-	},
-	{
-		file:     "internal/collaboration/identity.go",
-		function: "CheckParticipants",
-		rules:    "2",
-		reason:   "pre-1d-b: the HERDR_WORKSPACE_ID check moves to Runtime.Caller() in PR #289",
-	},
-	{
-		file:     "internal/core/copies.go",
-		function: "WorkspaceIDOrError",
-		rules:    "1+2",
-		reason:   "pre-1d-b: the pane current run and the HERDR_WORKSPACE_ID read move to Legacy.PaneCurrentRaw and Runtime.Caller() in PR #289",
-	},
-	{
-		file:     "internal/core/state.go",
-		function: "WorkspaceID",
-		rules:    "1+2",
-		reason:   "pre-1d-b: the pane current run and the HERDR_WORKSPACE_ID read move to Legacy.PaneCurrentRaw and Runtime.Caller() in PR #289",
-	},
-	{
-		file:     "internal/core/session.go",
-		function: "SessionConfPath",
-		rules:    "1+2",
-		reason:   "pre-1d-b: the pane current run and the HERDR_WORKSPACE_ID / HERDR_ENV reads move to Legacy.PaneCurrentRaw and Runtime.Caller() in PR #289",
-	},
-	{
-		file:     "internal/core/orphan.go",
-		function: "OrphansOf",
-		rules:    "2",
-		reason:   "pre-1d-b: the HERDR_PANE_ID read moves to Runtime.Caller() in PR #289",
-	},
-	{
-		file:     "internal/core/lanes.go",
-		function: "EnforceWorkerCap",
-		rules:    "2",
-		reason:   "pre-1d-b: the HERDR_PANE_ID read moves to Runtime.Caller() in PR #289",
-	},
-	{
-		file:     "internal/core/pressure.go",
-		function: "pressureStateDir",
-		rules:    "2",
-		reason:   "pre-1d-b: the HERDR_WORKSPACE_ID read moves to Runtime.Caller() in PR #289",
-	},
-	{
-		file:     "internal/layout/regrid.go",
-		function: "callerContext",
-		rules:    "2",
-		reason:   "pre-1d-b: the HERDR_PANE_ID read moves to Runtime.Caller() in PR #289",
-	},
-	{
-		file:     "internal/layout/layout.go",
-		function: "AutoDirectionFor",
-		rules:    "2",
-		reason:   "pre-1d-b: the HERDR_PANE_ID read moves to Runtime.Caller() in PR #289",
-	},
-	{
-		file:     "internal/layout/layout.go",
-		function: "RestoreFocusIfStolen",
-		rules:    "2",
-		reason:   "pre-1d-b: the HERDR_PANE_ID read moves to Runtime.Caller() in PR #289",
-	},
-	{
-		file:     "internal/layout/layout.go",
-		function: "PickSplitAnchor",
-		rules:    "2",
-		reason:   "pre-1d-b: the HERDR_PANE_ID read moves to Runtime.Caller() in PR #289",
-	},
-	{
-		file:     "internal/layout/herdtabs.go",
-		function: "CmdTabLabel",
-		rules:    "2",
-		reason:   "pre-1d-b: the HERDR_TAB_ID read moves to Runtime.Caller() in PR #289",
-	},
-	{
 		file:     "internal/peer/assignment.go",
 		function: "SendAssignmentMessage",
 		rules:    "1+2",
@@ -153,13 +74,13 @@ var allowedSites = []allowedSite{
 		file:     "internal/peer/sessions.go",
 		function: "oneSnapshot",
 		rules:    "1",
-		reason:   "opts.Run(\"herdr\", ...) is the test seam: it runs only when a test injects opts.Run; the default production path goes through Legacy.SnapshotRaw",
+		reason:   "the opts.Run(\"herdr\", ...) seam: the Herdr plugin's loadPickerEntries (internal/plugin) injects pickerDiscoveryRun, which runs Herdr through the plugin's HERDR_BIN_PATH — the same exception class as internal/plugin — and the peer tests inject their own runner; the default path (Run nil) goes through the backend's Legacy.SnapshotRaw and makes no direct herdr run (TestPeerSessionsDefaultPathUsesTheBackend)",
 	},
 	{
 		file:     "internal/peer/sessions.go",
 		function: "listMachines",
 		rules:    "1",
-		reason:   "opts.Run(\"herdr\", ...) is the test seam: it runs only when a test injects opts.Run; the default production path goes through Legacy.MachineListRaw",
+		reason:   "the opts.Run(\"herdr\", ...) seam: the Herdr plugin's loadBoardEntries (internal/plugin) injects pickerDiscoveryRun, which runs Herdr through the plugin's HERDR_BIN_PATH — the same exception class as internal/plugin — and the peer tests inject their own runner; the default path (Run nil) goes through the backend's Legacy.MachineListRaw and makes no direct herdr run (TestPeerSessionsDefaultPathUsesTheBackend)",
 	},
 	{
 		file:     "internal/cli/env.go",
@@ -312,31 +233,40 @@ func TestHerdrBoundary(t *testing.T) {
 			return err
 		}
 		lines := strings.Split(string(src), "\n")
-		function := "<package-level>"
-		ast.Inspect(file, func(n ast.Node) bool {
-			if decl, ok := n.(*ast.FuncDecl); ok {
-				function = decl.Name.Name
-			}
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			pos := fset.Position(call.Pos())
-			lineText := ""
-			if pos.Line >= 1 && pos.Line <= len(lines) {
-				lineText = strings.TrimSpace(lines[pos.Line-1])
-			}
-			if value, ok := firstStringLit(call); ok && value == "herdr" {
-				finders = append(finders, finding{rule: 1, file: rel, line: pos.Line, function: function, what: lineText})
-			}
-			name := callName(call)
-			if name == "Get" || name == "Getenv" || name == "LookupEnv" {
-				if value, ok := firstStringLit(call); ok && strings.HasPrefix(value, "HERDR_") {
-					finders = append(finders, finding{rule: 2, file: rel, line: pos.Line, function: function, what: lineText})
+		// Findings are attributed to the enclosing top-level declaration: a
+		// FuncDecl's body (closures included) is keyed to that function, and
+		// every other declaration — package-level initializers among them —
+		// is keyed to <package-level>, never to a neighboring function.
+		inspect := func(decl ast.Node, function string) {
+			ast.Inspect(decl, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
 				}
+				pos := fset.Position(call.Pos())
+				lineText := ""
+				if pos.Line >= 1 && pos.Line <= len(lines) {
+					lineText = strings.TrimSpace(lines[pos.Line-1])
+				}
+				if value, ok := firstStringLit(call); ok && value == "herdr" {
+					finders = append(finders, finding{rule: 1, file: rel, line: pos.Line, function: function, what: lineText})
+				}
+				name := callName(call)
+				if name == "Get" || name == "Getenv" || name == "LookupEnv" {
+					if value, ok := firstStringLit(call); ok && strings.HasPrefix(value, "HERDR_") {
+						finders = append(finders, finding{rule: 2, file: rel, line: pos.Line, function: function, what: lineText})
+					}
+				}
+				return true
+			})
+		}
+		for _, decl := range file.Decls {
+			if fd, ok := decl.(*ast.FuncDecl); ok {
+				inspect(fd, fd.Name.Name)
+				continue
 			}
-			return true
-		})
+			inspect(decl, "<package-level>")
+		}
 		return nil
 	})
 	if err != nil {
@@ -376,18 +306,19 @@ func TestHerdrBoundary(t *testing.T) {
 		t.Logf("allowed %s:%d in %s: %s", f.file, f.line, f.function, f.what)
 	}
 	// Every rule an allowlist entry covers must still hold a finding in a
-	// file that is scanned: an entry whose site moved or disappeared is
-	// stale and gets deleted at the same time.
+	// scanned file: an entry whose site moved, disappeared, or whose file
+	// was deleted or renamed is stale and gets deleted at the same time.
 	for _, site := range allowedSites {
-		if !seenFiles[site.file] {
-			continue
-		}
 		for rule := 1; rule <= 2; rule++ {
 			if !covers(site, rule) {
 				continue
 			}
 			if !matched[site.file+" :: "+site.function+" :: "+strconv.Itoa(rule)] {
-				failures = append(failures, fmt.Sprintf("stale allowlist entry: %s / %s (rule %d) holds no finding", site.file, site.function, rule))
+				if seenFiles[site.file] {
+					failures = append(failures, fmt.Sprintf("stale allowlist entry: %s / %s (rule %d) holds no finding", site.file, site.function, rule))
+				} else {
+					failures = append(failures, fmt.Sprintf("stale allowlist entry: %s / %s (rule %d) — the file %s is no longer scanned (deleted or renamed); delete the entry", site.file, site.function, rule, site.file))
+				}
 			}
 		}
 	}
