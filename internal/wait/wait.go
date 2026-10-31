@@ -1031,7 +1031,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			tag := strings.SplitN(state, "\t", 2)[0]
 			alert := idleAlerts[agent]
 			if alert == nil {
-				alert = &idleAlert{}
+				alert = &idleAlert{hc: env.Get("SOHO_TRANSPORT") == "hc"}
 				idleAlerts[agent] = alert
 			}
 			// Observe every successful probe frame in capture order. Only paths
@@ -1041,7 +1041,15 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			if tag == "working" && sample.nativeWorking {
 				observeQueuedPrompt(queuedAlerts, sd, agent, now, idleMinutes)
 			}
-			due := alert.sampleDue(idleTask(sd, agent, report), tag, now, idleMinutes)
+			task := idleTask(sd, agent, report)
+			due := alert.sampleDue(task, tag, now, idleMinutes)
+			// DJA-565: a marker for another task is stale at this sample: the
+			// worker's task moved (a new dispatch), so drop it now.
+			if stale, ok := readWaitFile(sd, agent, "idle-alert"); ok && stale != "" {
+				if markerTask, _, hasTab := strings.Cut(stale, "\t"); hasTab && markerTask != task {
+					removeWaitFile(sd, agent, "idle-alert")
+				}
+			}
 			if idleMinutes > 0 && tag == "working" && (sample.read || sample.nativeWorking && due) {
 				if !sample.read {
 					if text, ok := readScreen(svc, agent, "visible", nil); ok {
@@ -1052,6 +1060,13 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				for _, frame := range sample.frames {
 					alert.observe(frame, agent, now, idleMinutes, kind)
 				}
+			}
+			// DJA-565: the moment observe warned, write the idle-alert marker
+			// next to the other wait files: <task>, the minutes it warned,
+			// and the unix seconds when it warned. Consumed on every poll so
+			// a warn never resurfaces on a later one.
+			if m := alert.takeWarnedMinutes(); m > 0 {
+				writeWaitFile(sd, agent, "idle-alert", fmt.Sprintf("%s\t%d\t%d\n", task, m, now.Unix()))
 			}
 			switch tag {
 			case "done":

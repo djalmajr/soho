@@ -20,7 +20,7 @@ If a Codex worker opened with `spawn --cwd` registers copies or processes in ano
 
 ## A working worker has no new output
 
-`wait` samples working output at most once per minute for its idle alert, ignores timer, spinner, token/context and clock changes, and warns once per task per process after `idle_alert_minutes` (default `20`, `0` disables); its terminal JSON includes `idle_alerts`. Read the pane with `herdr agent read <agent> --source visible` to decide whether a long command is stuck; the alert sends no input and does not stop the worker. A state or substantive output change resets the observation timer. The older `stuck_warn_minutes` probe warning remains independent and can also appear.
+`wait` samples working output at most once per minute for its idle alert, ignores timer, spinner, token/context and clock changes, and warns once per task per process after `idle_alert_minutes` (default `20`, `0` disables); its terminal JSON includes `idle_alerts`. The alert also writes `wait/<agent>.idle-alert`, so `status` shows it while the task lasts: the state stays `working`, the cause column reads `idle: no new output for <N> min`, and a JSON row gains `idle_minutes`. Read the pane with `herdr agent read <agent> --source visible` (under `transport=hc`, `hc read <agent>`) to decide whether a long command is stuck; the alert sends no input and does not stop the worker. A state or substantive output change resets the observation timer. The older `stuck_warn_minutes` probe warning remains independent and can also appear.
 
 ## `dispatch --wait` returns `done` while the worker is still working
 
