@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -149,68 +150,229 @@ func Cached(cache string) (string, error) {
 	defer root.Close()
 	parent := filepath.Join("soho", "bundled")
 	destination := filepath.Join(parent, digest)
-	if _, err := root.Lstat(destination); err != nil {
-		// A missing cache or bundle is a not-exist error. This existence
-		// probe is the only extra read of the lookup; the verdict on what
-		// exists stays with verifyPublished.
-		return "", err
-	}
 	if err := verifyPublished(root, destination, files); err != nil {
 		return "", err
 	}
 	return filepath.Join(cache, destination), nil
 }
 
+// bundleTraversal is private to one verification call. Production supplies
+// the native nonblocking opener; tests may schedule a replacement during
+// open or after binding. There is no process-wide hook or mutable default.
+type bundleTraversal struct {
+	open     func(*os.Root, string) (*os.Root, error)
+	verified func(string)
+}
+
+// verifyPublished acquires every appended directory separately and keeps
+// each checked handle for its immediate children. The trusted base may be
+// an alias; appended links, replacements and non-directories are refused.
+// Each directory is enumerated once, bounded to known+1 entries; resource
+// bodies retain their known-length and digest checks without path reopens.
 func verifyPublished(root *os.Root, name string, files []resource) error {
-	info, err := root.Lstat(name)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("bundled skill: unsafe published bundle")
-	}
-	bundle, err := root.OpenRoot(name)
-	if err != nil {
-		return err
-	}
-	defer bundle.Close()
-	expected := make(map[string][32]byte, len(files))
-	for _, file := range files {
-		expected[file.name] = sha256.Sum256(file.data)
-	}
-	err = fs.WalkDir(bundle.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+	return verifyPublishedUsing(root, name, files, bundleTraversal{open: openBundleDirectory})
+}
+
+func verifyPublishedUsing(root *os.Root, name string, files []resource, traversal bundleTraversal) error {
+	current := root
+	label := ""
+	for _, component := range strings.Split(filepath.ToSlash(name), "/") {
+		if component == "" || component == "." || component == ".." {
+			return fmt.Errorf("bundled skill: invalid bundle component")
+		}
+		if label != "" {
+			label += "/"
+		}
+		label += component
+		child, err := bindPublishedDirectory(current, component, label, traversal)
 		if err != nil {
 			return err
 		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("bundled skill: symlink in published bundle: %s", name)
+		defer child.Close()
+		current = child
+	}
+	dirs, _ := knownTree(files)
+	bodies := make(map[string][]byte, len(files))
+	for _, file := range files {
+		bodies[file.name] = file.data
+	}
+	return walkPublishedDirectory(current, ".", label, dirs, bodies, traversal)
+}
+
+func bindPublishedDirectory(parent *os.Root, name, label string, traversal bundleTraversal) (*os.Root, error) {
+	before, err := parent.Lstat(name)
+	if err != nil {
+		return nil, err // Preserve not-exist for a missing cache component.
+	}
+	if !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("bundled skill: unsafe published directory: %s", label)
+	}
+	child, err := traversal.open(parent, name)
+	if err != nil {
+		return nil, err
+	}
+	retained := false
+	defer func() {
+		if !retained {
+			child.Close()
 		}
-		if entry.IsDir() {
-			if name != "." {
-				prefix := name + "/"
-				found := false
-				for _, file := range files {
-					found = found || strings.HasPrefix(file.name, prefix)
-				}
-				if !found {
-					return fmt.Errorf("bundled skill: unknown directory: %s", name)
-				}
-			}
-			return nil
-		}
-		digest, exists := expected[name]
-		if !exists || !entry.Type().IsRegular() {
-			return fmt.Errorf("bundled skill: unknown or nonregular file: %s", name)
-		}
-		data, err := bundle.ReadFile(filepath.FromSlash(name))
-		if err != nil || sha256.Sum256(data) != digest {
-			return fmt.Errorf("bundled skill: invalid bytes: %s", name)
-		}
-		delete(expected, name)
-		return nil
-	})
+	}()
+	opened, openErr := child.Stat(".")
+	post, postErr := parent.Lstat(name)
+	if openErr != nil || !opened.IsDir() || !os.SameFile(before, opened) ||
+		postErr != nil || !post.IsDir() || post.Mode()&os.ModeSymlink != 0 || !os.SameFile(opened, post) {
+		return nil, fmt.Errorf("bundled skill: published directory identity changed: %s", label)
+	}
+	if traversal.verified != nil {
+		traversal.verified(label)
+	}
+	retained = true
+	return child, nil
+}
+
+func walkPublishedDirectory(root *os.Root, dir, label string, dirs map[string]map[string]bool, bodies map[string][]byte, traversal bundleTraversal) error {
+	entries, err := verifyPublishedEntries(root, dir, dirs[dir])
 	if err != nil {
 		return err
 	}
-	if len(expected) != 0 {
-		return fmt.Errorf("bundled skill: missing resource files")
+	for _, entry := range entries {
+		name := entry.Name()
+		full := name
+		if dir != "." {
+			full = dir + "/" + name
+		}
+		if _, directory := dirs[full]; directory {
+			child, err := bindPublishedDirectory(root, name, label+"/"+name, traversal)
+			if err != nil {
+				return err
+			}
+			err = walkPublishedDirectory(child, full, label+"/"+name, dirs, bodies, traversal)
+			child.Close()
+			if err != nil {
+				return err
+			}
+		} else if err := verifyPublishedFile(root, name, bodies[full]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// knownTree derives the known resource tree from the embedded list: each
+// known directory maps to the set of entry names it must hold exactly
+// (known files and known subdirectories), in first-seen (embedded) order.
+func knownTree(files []resource) (map[string]map[string]bool, []string) {
+	dirs := map[string]map[string]bool{}
+	var order []string
+	add := func(dir, entry string) {
+		if dirs[dir] == nil {
+			dirs[dir] = map[string]bool{}
+			order = append(order, dir)
+		}
+		dirs[dir][entry] = true
+	}
+	for _, file := range files {
+		parts := strings.Split(file.name, "/")
+		parent := "."
+		for i := 0; i+1 < len(parts); i++ {
+			add(parent, parts[i])
+			if i == 0 {
+				parent = parts[i]
+			} else {
+				parent = strings.Join(parts[:i+1], "/")
+			}
+		}
+		add(parent, parts[len(parts)-1])
+	}
+	return dirs, order
+}
+
+// verifyPublishedEntries checks that dir holds exactly the known entries,
+// reading at most len(known)+1 directory records through a retained
+// directory handle: more entries than the known tree is a refusal without
+// enumerating the excess, a symlink or an unknown entry is a refusal, and
+// the known set (files plus subdirectories) must match exactly.
+func verifyPublishedEntries(bundle *os.Root, dir string, known map[string]bool) ([]os.DirEntry, error) {
+	// "." resolves from an already verified retained directory, never a
+	// full-relative path through ancestors that may have been replaced.
+	before, err := bundle.Stat(".")
+	if err != nil || !before.IsDir() {
+		return nil, fmt.Errorf("bundled skill: unsafe published bundle entry: %s", dir)
+	}
+	f, err := bundle.OpenFile(".", readOnlyNonBlocking, 0)
+	if err != nil {
+		return nil, fmt.Errorf("bundled skill: unsafe published bundle entry: %s", dir)
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !opened.IsDir() || !os.SameFile(before, opened) {
+		return nil, fmt.Errorf("bundled skill: unsafe published bundle entry: %s", dir)
+	}
+	entries, err := f.ReadDir(len(known) + 1)
+	if err != nil && err != io.EOF {
+		return nil, fmt.Errorf("bundled skill: unsafe published bundle entry: %s", dir)
+	}
+	if len(entries) > len(known) {
+		return nil, fmt.Errorf("bundled skill: unknown entry in published bundle: %s", dir)
+	}
+	if len(entries) != len(known) {
+		return nil, fmt.Errorf("bundled skill: missing entry in published bundle: %s", dir)
+	}
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("bundled skill: symlink in published bundle: %s", entry.Name())
+		}
+		if !known[entry.Name()] {
+			return nil, fmt.Errorf("bundled skill: unknown entry in published bundle: %s", entry.Name())
+		}
+		if seen[entry.Name()] {
+			return nil, fmt.Errorf("bundled skill: repeated entry in published bundle: %s", entry.Name())
+		}
+		seen[entry.Name()] = true
+	}
+	return entries, nil
+}
+
+// verifyPublishedFile checks one known resource: a plain regular entry
+// whose size equals the known embedded length (refused before any body
+// allocation), opened through a bounded nonblocking regular handle whose
+// identity matches the entry before and after a bounded read of exactly
+// the known length, with the body's digest checked against the embedded
+// resource's digest.
+func verifyPublishedFile(bundle *os.Root, name string, data []byte) error {
+	entry, err := bundle.Lstat(name)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("bundled skill: missing resource file: %s", name)
+		}
+		return fmt.Errorf("bundled skill: invalid bytes: %s", name)
+	}
+	if entry.Mode()&os.ModeSymlink != 0 || !entry.Mode().IsRegular() {
+		return fmt.Errorf("bundled skill: unknown or nonregular file: %s", name)
+	}
+	if entry.Size() != int64(len(data)) {
+		return fmt.Errorf("bundled skill: invalid bytes: %s", name)
+	}
+	f, err := bundle.OpenFile(name, readOnlyNonBlocking, 0)
+	if err != nil {
+		return fmt.Errorf("bundled skill: invalid bytes: %s", name)
+	}
+	defer f.Close()
+	hinfo, err := f.Stat()
+	if err != nil || !hinfo.Mode().IsRegular() || hinfo.Size() != int64(len(data)) || !os.SameFile(entry, hinfo) {
+		return fmt.Errorf("bundled skill: invalid bytes: %s", name)
+	}
+	body := make([]byte, len(data))
+	if _, err := io.ReadFull(f, body); err != nil {
+		return fmt.Errorf("bundled skill: invalid bytes: %s", name)
+	}
+	post, err := bundle.Lstat(name)
+	if err != nil || !post.Mode().IsRegular() || post.Size() != int64(len(data)) || !os.SameFile(hinfo, post) {
+		return fmt.Errorf("bundled skill: invalid bytes: %s", name)
+	}
+	if digest := sha256.Sum256(body); digest != sha256.Sum256(data) {
+		return fmt.Errorf("bundled skill: invalid bytes: %s", name)
 	}
 	return nil
 }
