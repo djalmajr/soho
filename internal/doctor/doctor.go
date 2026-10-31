@@ -95,6 +95,13 @@ func setupUnifiedDiff(before, after, label string) string {
 }
 
 func CmdInit(ctx *core.Config, env platform.Env, cwd string) {
+	// The explicit HC branch validates its own terminal/session/root/
+	// roster and registers the private record; it never enters the Herdr
+	// naming/title/doctor flow (DJA-611 D4).
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		cmdInitHc(ctx, env, cwd)
+		return
+	}
 	herdr.RequireEnv(env, platform.Current(), os.Getpid(), nil)
 	// The caller-pane check runs before naming the caller's agent and
 	// titling the claimed pane (DJA-394).
@@ -160,7 +167,11 @@ func CmdInit(ctx *core.Config, env platform.Env, cwd string) {
 	}
 	first := ProjectIsFirstRun(ctx, env, cwd)
 	layoutName := core.Cfg(ctx, "layout", "split", env)
-	obj := jsonjs.O("orchestrator", name, "pane_id", paneID, "tab_id", svc.Runtime.Caller().TabID, "workspace_id", core.WorkspaceID(ctx, env, cwd), "layout", layoutName, "state_dir", state, "first_run", first, "title", title)
+	session := core.WorkspaceID(ctx, env, cwd)
+	// The auxiliary private orchestrator registration (DJA-611 D4): it
+	// warns on every refusal and never changes the init's output.
+	registerInitRecord(ctx, env, cwd, svc, pane, name, title, session, friction)
+	obj := jsonjs.O("orchestrator", name, "pane_id", paneID, "tab_id", svc.Runtime.Caller().TabID, "workspace_id", session, "layout", layoutName, "state_dir", state, "first_run", first, "title", title)
 	fmt.Fprintln(platform.Stdout, jsonjs.StringifyIndent(obj, 2))
 }
 

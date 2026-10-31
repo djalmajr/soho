@@ -18,7 +18,7 @@ import (
 // SOHO_NOWRITE checks that nothing was written: capabilities must neither
 // fail without a skill nor materialize the bundled one.
 func TestCapabilitiesReportsTheConfiguredTransport(t *testing.T) {
-	fixed := `{"schema":1,"worker_collaboration":1,"ephemeral_job":1,"job_events":1,`
+	fixed := `{"schema":1,"worker_collaboration":1,"ephemeral_job":1,"job_events":1,"inventory":1,`
 	for _, tc := range []struct {
 		name, env, file, want string
 		nowrite               bool

@@ -41,7 +41,7 @@ var knownCommands = map[string]bool{
 	"layout-plan": true, "env": true, "mutation-guard": true, "mutation-copy": true, "review-snapshot": true,
 	"reopen": true, "compact": true, "metrics": true, "copies": true, "gc": true,
 	"procs": true, "install": true, "promote": true,
-	"collaborate": true, "capabilities": true, "hook": true, "job": true,
+	"collaborate": true, "capabilities": true, "hook": true, "job": true, "inventory": true,
 }
 
 var frictionLogPath string
@@ -128,6 +128,11 @@ func Run(args []string, env platform.Env) (code int) {
 		}
 		code = exitErr.Code
 	}()
+	// Machine-wide inventory owns its read-only bootstrap; it must not
+	// enter caller, managed-job, current-project or friction setup.
+	if len(args) > 0 && args[0] == "inventory" {
+		return cmdInventory(args[1:], job.WithoutLaunchLocators(env))
+	}
 	if len(args) == 1 && args[0] == "--version" {
 		_, _ = io.WriteString(platform.Stdout, versionText(version, vcsRevision()))
 		return 0
@@ -136,7 +141,7 @@ func Run(args []string, env platform.Env) (code int) {
 		// transport is the configured worker transport for this directory
 		// (DJA-603); the other fields are fixed for this binary.
 		cwd, _ := os.Getwd()
-		_, _ = fmt.Fprintf(platform.Stdout, "{\"schema\":1,\"worker_collaboration\":1,\"ephemeral_job\":1,\"job_events\":1,\"transport\":%q}\n", core.TransportModeAt(env, cwd))
+		_, _ = fmt.Fprintf(platform.Stdout, "{\"schema\":1,\"worker_collaboration\":1,\"ephemeral_job\":1,\"job_events\":1,\"inventory\":1,\"transport\":%q}\n", core.TransportModeAt(env, cwd))
 		return 0
 	}
 
@@ -268,23 +273,29 @@ func Run(args []string, env platform.Env) (code int) {
 			herdr.RequireEnv(decisionEnv, platform.Current(), os.Getpid(), nil)
 		}
 		frictionLogPath = ""
-		if !core.Nowrite(decisionEnv) {
-			if _, found := platform.FindExecutable("herdr", decisionEnv, platform.Current()); found {
-				if command == "release" || command == "reopen" {
-					// Preserve StateDir's existing safety refusals, which run
-					// before any initialization or gitignore update.
-					_, _, formerWaiting := core.FormerStateWaiting(commandConfig, decisionEnv, commandCwd)
-					if core.StateInSkill(commandConfig, decisionEnv, commandCwd) != "" || formerWaiting {
-						core.StateDir(commandConfig, decisionEnv, commandCwd)
+		// Under hc no friction state is initialized before the command's
+		// own validation: a rejected HC init/title must not create state
+		// merely because the herdr binary happens to be installed
+		// (DJA-611 D4).
+		if transportMode != "hc" {
+			if !core.Nowrite(decisionEnv) {
+				if _, found := platform.FindExecutable("herdr", decisionEnv, platform.Current()); found {
+					if command == "release" || command == "reopen" {
+						// Preserve StateDir's existing safety refusals, which run
+						// before any initialization or gitignore update.
+						_, _, formerWaiting := core.FormerStateWaiting(commandConfig, decisionEnv, commandCwd)
+						if core.StateInSkill(commandConfig, decisionEnv, commandCwd) != "" || formerWaiting {
+							core.StateDir(commandConfig, decisionEnv, commandCwd)
+						}
+						// An unknown worker must not initialize state just to log
+						// the refusal. Existing state keeps its friction log.
+						sd := core.StateDirPath(commandConfig, decisionEnv, commandCwd)
+						if info, err := os.Stat(sd); err == nil && info.IsDir() {
+							frictionLogPath = filepath.Join(sd, "friction.log")
+						}
+					} else {
+						frictionLogPath = filepath.Join(core.StateDir(commandConfig, decisionEnv, commandCwd), "friction.log")
 					}
-					// An unknown worker must not initialize state just to log
-					// the refusal. Existing state keeps its friction log.
-					sd := core.StateDirPath(commandConfig, decisionEnv, commandCwd)
-					if info, err := os.Stat(sd); err == nil && info.IsDir() {
-						frictionLogPath = filepath.Join(sd, "friction.log")
-					}
-				} else {
-					frictionLogPath = filepath.Join(core.StateDir(commandConfig, decisionEnv, commandCwd), "friction.log")
 				}
 			}
 		}
@@ -482,6 +493,13 @@ func hcCommandAllowed(command string) bool {
 		return true
 	case "kinds", "models", "model", "roles", "role", "lint", "install", "env":
 		return true
+	case "inventory":
+		return true
+	case "init", "title":
+		// The explicit init/title support the private orchestrator record
+		// on the hc transport (DJA-611 D4); their NOWRITE refusal and the
+		// hc validation before any state write keep their boundaries.
+		return true
 	case "hook":
 		// Advisory and never blocking: an exit 2 from a UserPromptSubmit
 		// hook would block the host assistant's prompt.
@@ -503,6 +521,8 @@ func nowriteReadInvocation(args []string) bool {
 		return false
 	}
 	switch args[0] {
+	case "inventory":
+		return len(args) == 2 && args[1] == "--json"
 	case "hook":
 		return len(args) == 2 && (args[1] == "reminder" || args[1] == "doctor" || args[1] == "inbound")
 	case "collaborate":
