@@ -478,14 +478,23 @@ func TestStartReadiness(t *testing.T) {
 	})
 
 	t.Run("a cancelled context stops the poll", func(t *testing.T) {
-		env, _ := startEnv(t, []fakecli.Rule{
-			{Argv: runArgv("claude"), Stdout: startRunResult},
-			{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":false,"status":{"state":"working"}}`},
-		})
+		// The cancel lands on the first readiness get, so the poll is what
+		// it stops, however slow the host starts a process.
+		b := newBackend(platform.Env{"HC_TERMINAL_ID": "t1"})
 		ctx, cancel := context.WithCancel(context.Background())
-		timer := time.AfterFunc(50*time.Millisecond, cancel)
-		defer timer.Stop()
-		rep := newBackend(env).Start(ctx, transport.Start{Name: "w7", Kind: "claude", Timeout: "10000"}, transport.Call{})
+		defer cancel()
+		b.client.Launch = func(lctx context.Context, env platform.Env, args ...string) platform.RunResult {
+			zero := 0
+			switch {
+			case args[0] == "run":
+				return platform.RunResult{Status: &zero, Stdout: startRunResult}
+			case args[1] == "t1":
+				return platform.RunResult{Status: &zero, Stdout: startCaller}
+			}
+			cancel()
+			return platform.RunResult{Status: &zero, Stdout: `{"address":"t7","state":"live","reported":false,"status":{"state":"working"}}`}
+		}
+		rep := b.Start(ctx, transport.Start{Name: "w7", Kind: "claude", Timeout: "10000"}, transport.Call{})
 		if rep.Err == nil || rep.Err.Kind != transport.FailureCancelled {
 			t.Fatalf("rep: %+v want FailureCancelled", rep)
 		}
@@ -494,6 +503,25 @@ func TestStartReadiness(t *testing.T) {
 		}
 		if rep.Value != "t7" {
 			t.Fatalf("rep: %+v want the address t7 in Value so the caller can close it", rep)
+		}
+	})
+
+	t.Run("a cancel during the run is a cancellation", func(t *testing.T) {
+		b := newBackend(platform.Env{"HC_TERMINAL_ID": "t1"})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		b.client.Launch = func(lctx context.Context, env platform.Env, args ...string) platform.RunResult {
+			zero := 0
+			if args[0] == "get" {
+				return platform.RunResult{Status: &zero, Stdout: startCaller}
+			}
+			cancel()
+			exit := 1
+			return platform.RunResult{Status: &exit}
+		}
+		rep := b.Start(ctx, transport.Start{Name: "w7", Kind: "claude", Timeout: "10000"}, transport.Call{})
+		if rep.Err == nil || rep.Err.Kind != transport.FailureCancelled {
+			t.Fatalf("rep: %+v want FailureCancelled", rep)
 		}
 	})
 

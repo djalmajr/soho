@@ -867,6 +867,9 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 	}
 	session, err := b.session(ctx, call)
 	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: cerr.Error(), Cause: cerr}}
+		}
 		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: err.Error(), Cause: err}}
 	}
 	args := []string{"run", "--bg", "--json", "--name", start.Name}
@@ -877,6 +880,11 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 	args = append(args, start.Args...)
 	out, err := b.run(ctx, call, args...)
 	if err != nil {
+		// A run the request's cancellation interrupted is a cancellation,
+		// not a failed command.
+		if cerr := ctx.Err(); cerr != nil {
+			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: cerr.Error(), Cause: cerr}}
+		}
 		return startRunFailure(start.Name, err)
 	}
 	obj, ok := terminalObject(out)
