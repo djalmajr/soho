@@ -95,35 +95,31 @@ func TestPeerSessionsDefaultPathUsesTheBackend(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.function, func(t *testing.T) {
-			var (
-				body        *ast.BlockStmt
-				defaultPath *ast.BlockStmt
-			)
+			var body *ast.BlockStmt
 			for _, decl := range file.Decls {
-				fd, ok := decl.(*ast.FuncDecl)
-				if !ok || fd.Name.Name != c.function {
-					continue
+				if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == c.function {
+					body = fd.Body
 				}
-				body = fd.Body
-				// The default path is the else of the runner seam; when
-				// the seam is gone the whole body is the default path.
-				defaultPath = body
-				ast.Inspect(body, func(n ast.Node) bool {
-					stmt, ok := n.(*ast.IfStmt)
-					if !ok || !runSeamCondition(stmt.Cond) {
-						return true
-					}
-					if blk, ok := stmt.Else.(*ast.BlockStmt); ok {
-						defaultPath = blk
-					}
-					return true
-				})
 			}
 			if body == nil {
 				t.Fatalf("%s not found in %s", c.function, path)
 				return
 			}
-			ast.Inspect(defaultPath, func(n ast.Node) bool {
+			// The default path is the whole body except the then block of
+			// the runner seam (`if opts.Run != nil { … }`): a direct run
+			// before, after or around the seam is on the default path too.
+			seamThen := map[*ast.BlockStmt]bool{}
+			ast.Inspect(body, func(n ast.Node) bool {
+				if stmt, ok := n.(*ast.IfStmt); ok && runSeamCondition(stmt.Cond) {
+					seamThen[stmt.Body] = true
+				}
+				return true
+			})
+			found := false
+			ast.Inspect(body, func(n ast.Node) bool {
+				if blk, ok := n.(*ast.BlockStmt); ok && seamThen[blk] {
+					return false
+				}
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true
@@ -132,14 +128,8 @@ func TestPeerSessionsDefaultPathUsesTheBackend(t *testing.T) {
 					t.Errorf("%s default path at %s makes a direct herdr run (%s); the default path must go through the backend",
 						c.function, fset.Position(call.Pos()), kind)
 				}
-				return true
-			})
-			found := false
-			ast.Inspect(defaultPath, func(n ast.Node) bool {
-				if call, ok := n.(*ast.CallExpr); ok {
-					if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == c.raw {
-						found = true
-					}
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == c.raw {
+					found = true
 				}
 				return true
 			})
