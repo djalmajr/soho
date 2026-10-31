@@ -143,6 +143,10 @@ type Terminal struct {
 	// none), so a consumer that maps the state word can also carry the
 	// reported cause.
 	Msg string
+	// Cwd is the working directory the terminal record reports ("" when
+	// the backend does not report one), so a consumer that trusts the
+	// terminal record can compare it with the registration.
+	Cwd string
 }
 
 // Scope selects which panes a window listing covers: All lists panes across

@@ -146,16 +146,34 @@ func SendAssignmentMessage(options AssignmentMessageOptions) (collaboration.Deli
 	if err := ctx.Err(); err != nil {
 		return refused(fmt.Errorf("submission deadline reached before delivery: %w", err))
 	}
-	screen, cause := readScreen(sessionref.LocalMachine, to.Pane, "visible", 0, env, remaining(), nil)
-	if cause != "" {
-		return refused(fmt.Errorf("cannot inspect recipient screen: %s", cause))
-	}
-	state := agentGet(svc, sessionref.LocalMachine, to.Pane, remaining())
-	if !state.OK || state.PaneID != to.Pane {
-		return refused(errors.New("recipient changed or became unavailable"))
-	}
-	if isDialogScreen(screen, to.Kind, state.Status) {
-		return refused(errors.New("recipient is showing a dialog; nothing was sent"))
+	// DJA-604 follow-up: under transport=hc the delivery surface is the
+	// hc contract. The recipient's own state replaces the herdr screen
+	// read and machine get (there is no screen read): a failed, gone or
+	// re-addressed terminal is refused before anything is sent, and a
+	// recipient blocked on a person's prompt refuses outright; the
+	// queued send below is the submission. The herdr path keeps its
+	// screen read, machine get and dialog refusal.
+	isHc := env.Get("SOHO_TRANSPORT") == "hc"
+	if isHc {
+		rep := svc.Runtime.Get(ctx, transport.Target{ID: to.Pane}, transport.Call{Timeout: time.Duration(remaining()) * time.Millisecond})
+		if rep.Err != nil || rep.Value.State == "gone" || rep.Value.PaneID != to.Pane {
+			return refused(errors.New("recipient changed or became unavailable"))
+		}
+		if rep.Value.State == "blocked" {
+			return refused(errors.New("recipient is blocked on a prompt; nothing was sent"))
+		}
+	} else {
+		screen, cause := readScreen(sessionref.LocalMachine, to.Pane, "visible", 0, env, remaining(), nil)
+		if cause != "" {
+			return refused(fmt.Errorf("cannot inspect recipient screen: %s", cause))
+		}
+		state := agentGet(svc, sessionref.LocalMachine, to.Pane, remaining())
+		if !state.OK || state.PaneID != to.Pane {
+			return refused(errors.New("recipient changed or became unavailable"))
+		}
+		if isDialogScreen(screen, to.Kind, state.Status) {
+			return refused(errors.New("recipient is showing a dialog; nothing was sent"))
+		}
 	}
 	current, err := collaboration.ResolveParticipant(sd, to.Name, env, ctx)
 	if err != nil || !collaboration.SameParticipant(to, current) {
@@ -172,15 +190,30 @@ func SendAssignmentMessage(options AssignmentMessageOptions) (collaboration.Deli
 	header := PeerHeaderAssignment(PeerSender{Ref: ref, Name: HeaderField(from.Name), Kind: HeaderField(from.Kind), Role: HeaderField(from.Role), Model: HeaderField(from.Model)}, from.Name, a.ID, id)
 	metadata := fmt.Sprintf("Assignment: %s; type: %s; round: %d; revision: %s.", a.ID, HeaderField(options.Type), a.Round, a.Revision)
 	message := header + "\n" + metadata + "\n\n" + QuotePeerBody(LiteralPeerText(options.Body)) + "\n" + PeerEndLine(id)
-	// No --wait: neither side waits for the other's turn, report or idle.
-	rep := svc.Legacy.AgentPromptRaw(context.Background(), transport.Target{ID: to.Pane}, message, transport.Call{Timeout: time.Duration(remaining()) * time.Millisecond})
-	r := rep.Process
-	result := collaboration.DeliveryResult{Status: "submitted"}
-	if r.Status == nil || *r.Status != 0 || r.TimedOut || r.NotFound {
-		code, cause := structuredError(r.Stdout, r.Stderr, "agent prompt", "submission could not be confirmed")
-		result = collaboration.DeliveryResult{Status: "uncertain", Cause: cause}
-		if code == "agent_blocked" || code == "agent_not_found" || r.NotFound {
-			result.Status = "refused"
+	var result collaboration.DeliveryResult
+	if isHc {
+		// Queued send: neither side waits for the other's turn, as the
+		// herdr path types regardless of state; a blocked worker still
+		// refuses it and a finished or removed terminal is not found.
+		srep := svc.Runtime.Send(ctx, transport.Target{ID: to.Pane}, transport.Send{Text: message, Queue: true}, transport.Call{Timeout: time.Duration(remaining()) * time.Millisecond})
+		result = collaboration.DeliveryResult{Status: "submitted"}
+		if srep.Err != nil {
+			result = collaboration.DeliveryResult{Status: "uncertain", Cause: srep.Err.Error()}
+			if srep.Err.Kind == transport.FailureBlocked || srep.Err.Kind == transport.FailureNotFound {
+				result.Status = "refused"
+			}
+		}
+	} else {
+		// No --wait: neither side waits for the other's turn, report or idle.
+		rep := svc.Legacy.AgentPromptRaw(context.Background(), transport.Target{ID: to.Pane}, message, transport.Call{Timeout: time.Duration(remaining()) * time.Millisecond})
+		r := rep.Process
+		result = collaboration.DeliveryResult{Status: "submitted"}
+		if r.Status == nil || *r.Status != 0 || r.TimedOut || r.NotFound {
+			code, cause := structuredError(r.Stdout, r.Stderr, "agent prompt", "submission could not be confirmed")
+			result = collaboration.DeliveryResult{Status: "uncertain", Cause: cause}
+			if code == "agent_blocked" || code == "agent_not_found" || r.NotFound {
+				result.Status = "refused"
+			}
 		}
 	}
 	appendPeerAssignmentLog(sd, sessionref.FormatRef(sessionref.Ref{Machine: sessionref.LocalMachine, PaneID: from.Pane}), sessionref.FormatRef(sessionref.Ref{Machine: sessionref.LocalMachine, PaneID: to.Pane}), result.Status, utf16Length(options.Body), id, env, a.ID, options.Type, fmt.Sprint(a.Round))

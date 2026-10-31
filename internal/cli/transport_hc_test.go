@@ -43,7 +43,7 @@ var hcRefusedCommands = []string{
 	"title", "regrid", "roster", "friction", "feedback", "tab-label",
 	"layout-plan", "mutation-guard", "mutation-copy", "review-snapshot",
 	"reopen", "compact", "metrics", "copies", "gc", "procs", "promote",
-	"collaborate", "job", "plugin",
+	"job", "plugin",
 }
 
 // hcGuardFixture is one temp project root with an empty bin dir on PATH
@@ -100,15 +100,15 @@ func TestHcGuardRefusesEveryOtherCommand(t *testing.T) {
 	// command itself.
 	f.run(t, "config")
 	// The full allowed set: the read side (status, wait) plus spawn,
-	// dispatch and release, which run through hc (DJA-604 2b-2b / 2b-3a /
-	// 2b-4), the explicitly
+	// dispatch, release and collaborate, which run through hc (DJA-604
+	// 2b-2b / 2b-3a / 2b-4 and the DJA-604 follow-up), the explicitly
 	// allowed commands (doctor, config, explain, capabilities), the usage and
 	// version invocations, and the commands that never touch the transport
 	// (kinds, models, model, roles, role, lint, install, env), and hook,
 	// which is advisory and must never block the host assistant.
 	allowed := map[string]bool{
 		"": true, "help": true, "-h": true, "--help": true,
-		"status": true, "wait": true, "spawn": true, "dispatch": true, "release": true,
+		"status": true, "wait": true, "spawn": true, "dispatch": true, "release": true, "collaborate": true,
 		"doctor": true, "config": true, "explain": true, "capabilities": true,
 		"kinds": true, "models": true, "model": true, "roles": true, "role": true,
 		"lint": true, "install": true, "env": true, "hook": true,

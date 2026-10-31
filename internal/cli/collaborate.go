@@ -35,6 +35,16 @@ func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd strin
 	if argv[0] != "status" && core.StateInSkill(cfg, env, cwd) != "" {
 		return fail(errors.New("state inside the skill is forbidden"))
 	}
+	// One notice per collaborate command under transport=hc (DJA-604
+	// follow-up): the participant identity is not verified through a herdr
+	// agent record yet, so the session terminals are trusted by their
+	// name, address and cwd; a way to verify comes in stage 3, DJA-598.
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		switch argv[0] {
+		case "start", "status", "event", "stop", "finalize":
+			fmt.Fprintf(platform.Stderr, "soho: warning: collaborate: transport=hc does not verify participant identity yet; participants are trusted by terminal name, address and cwd\n")
+		}
+	}
 	var a collaboration.Assignment
 	var err error
 	switch argv[0] {
@@ -284,6 +294,39 @@ func collaborationOrchestrator(sd string, cfg *core.Config, env platform.Env, sv
 			}
 			registeredName = fields[0]
 		}
+	}
+	// DJA-604 follow-up: under transport=hc the caller terminal is the
+	// session's own terminal; the record is trusted by its address, cwd
+	// and name (the identity verification comes in stage 3, DJA-598), and
+	// the workspace check is implicit: the record comes from our own
+	// session.
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		rep := svc.Runtime.Get(context.Background(), transport.Target{ID: pane}, transport.Call{Timeout: 5 * time.Second})
+		if rep.Err != nil || rep.Value.State == "gone" {
+			return errors.New("cannot verify current orchestrator")
+		}
+		ag := rep.Value
+		if ag.PaneID != pane || !filepath.IsAbs(ag.Cwd) || platform.StateProjectRoot(env, ag.Cwd) != platform.StateProjectRoot(env, cwd) {
+			return errors.New("current orchestrator context changed")
+		}
+		if registeredName != "" {
+			if ag.Name == registeredName {
+				return nil
+			}
+			return errors.New("sub-orchestrator identity changed")
+		}
+		base := core.Cfg(cfg, "orchestrator_name", "orchestrator", env)
+		if ag.Name == base {
+			return nil
+		}
+		if suffix := strings.TrimPrefix(ag.Name, base+"-"); suffix != ag.Name {
+			if n, err := strconv.Atoi(suffix); err == nil && n > 0 {
+				return nil
+			}
+		}
+		// hc has no rename: the orchestrator's terminal carries its name
+		// from the start.
+		return fmt.Errorf("current terminal is not the registered orchestrator; under transport=hc, start the orchestrator's terminal with: hc run --name %s", base)
 	}
 	r := svc.Legacy.AgentGetRaw(context.Background(), transport.Target{ID: pane}, transport.Call{Timeout: 5 * time.Second})
 	var response struct {
