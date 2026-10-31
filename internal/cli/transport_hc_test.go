@@ -64,6 +64,7 @@ func newHcGuardFixture(t *testing.T) hcGuardFixture {
 	t.Chdir(root)
 	env := platform.Env{
 		"HOME":           root,
+		"USERPROFILE":    root,
 		"SOHO_DIR":       filepath.Join(root, "state"),
 		"TMPDIR":         root,
 		"PATH":           bin,
@@ -179,10 +180,11 @@ func TestHcGuardRefusesFromFileMode(t *testing.T) {
 	}
 	t.Chdir(root)
 	f := hcGuardFixture{root: root, env: platform.Env{
-		"HOME":     root,
-		"SOHO_DIR": filepath.Join(root, "state"),
-		"TMPDIR":   root,
-		"PATH":     bin,
+		"HOME":        root,
+		"USERPROFILE": root,
+		"SOHO_DIR":    filepath.Join(root, "state"),
+		"TMPDIR":      root,
+		"PATH":        bin,
 	}}
 	for _, command := range hcRefusedCommands {
 		command := command
@@ -212,7 +214,7 @@ func TestTransportModeForPropagatesToTheCommandEnv(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Chdir(root)
-		base := platform.Env{"HOME": root, "SOHO_DIR": filepath.Join(root, "state")}
+		base := platform.Env{"HOME": root, "USERPROFILE": root, "SOHO_DIR": filepath.Join(root, "state")}
 		ctx := core.LoadConfigFor(base, root, core.UserSelection{})
 		decision := base.Clone()
 		if mode := transportModeFor(&ctx, base, decision, root); mode != "hc" {
@@ -225,7 +227,7 @@ func TestTransportModeForPropagatesToTheCommandEnv(t *testing.T) {
 	t.Run("default herdr", func(t *testing.T) {
 		root := t.TempDir()
 		t.Chdir(root)
-		base := platform.Env{"HOME": root, "SOHO_DIR": filepath.Join(root, "state")}
+		base := platform.Env{"HOME": root, "USERPROFILE": root, "SOHO_DIR": filepath.Join(root, "state")}
 		ctx := core.LoadConfigFor(base, root, core.UserSelection{})
 		decision := base.Clone()
 		if mode := transportModeFor(&ctx, base, decision, root); mode != "herdr" {
@@ -273,6 +275,7 @@ func TestStatusReadsThroughHc(t *testing.T) {
 	t.Chdir(root)
 	env := platform.Env{
 		"HOME":                root,
+		"USERPROFILE":         root,
 		"SOHO_DIR":            state,
 		"TMPDIR":              root,
 		"PATH":                bin,
