@@ -275,6 +275,11 @@ func hasControl(value string) bool {
 	return false
 }
 
+// ValidateRecord checks a proposed record without reading or writing state.
+func ValidateRecord(rec Record) error {
+	return validateRecord(rec)
+}
+
 func validateRecord(rec Record) error {
 	if rec.Schema != Schema {
 		return fmt.Errorf("sessionmeta: the record schema is %d, want %d", rec.Schema, Schema)
