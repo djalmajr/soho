@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -114,12 +115,26 @@ func terminalFromAgent(v any) (transport.Terminal, bool) {
 	// Target.ID is the agent name Get takes, so a listed terminal can be
 	// read back through the same target.
 	name := str(get(obj, "name"))
+	// The foreground directory wins when the record names one; the plain
+	// cwd is the fallback.
+	cwd := str(get(obj, "foreground_cwd"))
+	if cwd == "" {
+		cwd = str(get(obj, "cwd"))
+	}
+	// The nonempty agent identifier is the record's sole program hint.
+	var hints []string
+	if agent := str(get(obj, "agent")); agent != "" {
+		hints = []string{agent}
+	}
 	return transport.Terminal{
-		Target:   transport.Target{ID: name},
-		Name:     name,
-		PaneID:   str(get(obj, "pane_id")),
-		State:    str(get(obj, "agent_status")),
-		Sequence: seqRaw(jsSequence(get(obj, "state_change_seq"))),
+		Target:       transport.Target{ID: name},
+		Name:         name,
+		PaneID:       str(get(obj, "pane_id")),
+		State:        str(get(obj, "agent_status")),
+		Sequence:     seqRaw(jsSequence(get(obj, "state_change_seq"))),
+		WorkspaceID:  str(get(obj, "workspace_id")),
+		ProgramHints: hints,
+		Cwd:          cwd,
 	}, true
 }
 
@@ -212,8 +227,59 @@ func (b *backend) CheckCaller(ctx context.Context, call transport.Call) transpor
 	}
 }
 
-// List returns the registered terminals (agents).
+// liveAgentsTolerant runs `herdr agent list` through the same native
+// runner and parsing seam as LiveAgents, without its die and echo: a
+// missing CLI, a timeout or a nonzero command is FailureUnavailable, a
+// malformed or list-less body is FailureProtocol, and a successful empty
+// list is valid. It prints nothing and writes no state.
+func liveAgentsTolerant(env platform.Env, timeout time.Duration) ([]any, *transport.Failure) {
+	if _, found := platform.FindExecutable("herdr", env, platform.Current()); !found {
+		return nil, &transport.Failure{Kind: transport.FailureUnavailable, Message: "herdr CLI not found in PATH"}
+	}
+	r := runWithTimeout([]string{"agent", "list"}, env, timeout)
+	if r.NotFound {
+		return nil, &transport.Failure{Kind: transport.FailureUnavailable, Message: "herdr CLI not found in PATH"}
+	}
+	if r.TimedOut {
+		return nil, &transport.Failure{Kind: transport.FailureUnavailable, Message: timeoutMsg("agent list", timeout)}
+	}
+	if !ok(r) {
+		message := strings.TrimSpace(r.Stderr)
+		if message == "" {
+			message = "herdr agent list failed"
+		}
+		return nil, &transport.Failure{Kind: transport.FailureUnavailable, Message: message}
+	}
+	agents := get(parsed(r.Stdout), "result", "agents")
+	arr, isArr := agents.([]any)
+	if !isArr {
+		return nil, &transport.Failure{Kind: transport.FailureProtocol, Message: "herdr agent list returned no agent list"}
+	}
+	return arr, nil
+}
+
+// List returns the registered terminals (agents). Scope.All lists every
+// live local agent of the machine through the tolerant seam (typed failure,
+// no die, no echo) and refuses the whole observation on a malformed row;
+// otherwise the adapter's LiveAgents path is kept unchanged.
 func (b *backend) List(ctx context.Context, scope transport.Scope, call transport.Call) transport.Reply[[]transport.Terminal] {
+	if scope.All {
+		agents, f := liveAgentsTolerant(b.env, timeoutFor(call))
+		if f != nil {
+			return transport.Reply[[]transport.Terminal]{Err: f}
+		}
+		out := make([]transport.Terminal, 0, len(agents))
+		for _, a := range agents {
+			// The strict all-local observation refuses a malformed row
+			// instead of returning a partial list.
+			term, yes := terminalFromAgent(a)
+			if !yes {
+				return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "herdr agent list returned a non-object agent"}}
+			}
+			out = append(out, term)
+		}
+		return transport.Reply[[]transport.Terminal]{Value: out, Valid: true}
+	}
 	agents := LiveAgents(b.env, timeoutFor(call))
 	out := make([]transport.Terminal, 0, len(agents))
 	for _, a := range agents {

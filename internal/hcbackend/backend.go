@@ -20,7 +20,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -147,21 +149,31 @@ func sessionFromGet(stdout string) (string, error) {
 	if !ok {
 		return "", errors.New("hc get returned no terminal record")
 	}
+	if session := sessionOfRecord(obj); session != "" {
+		return session, nil
+	}
+	return "", errors.New("hc get returned no soho.session label and no address for the session fallback")
+}
+
+// sessionOfRecord is one terminal record's soho session: the soho.session
+// label when it names one, else the "hc-<address>" fallback the session
+// resolution uses ("" when the record names neither).
+func sessionOfRecord(obj *jsonjs.Object) string {
 	if labels, ok := obj.Get("labels"); ok {
 		if labelsObj, ok := labels.(*jsonjs.Object); ok {
 			if v, ok := labelsObj.Get(SessionLabel); ok {
 				if label, isString := v.(string); isString && label != "" {
-					return label, nil
+					return label
 				}
 			}
 		}
 	}
 	if v, ok := obj.Get("address"); ok {
 		if address, isString := v.(string); isString && address != "" {
-			return "hc-" + address, nil
+			return "hc-" + address
 		}
 	}
-	return "", errors.New("hc get returned no soho.session label and no address for the session fallback")
+	return ""
 }
 
 // Shared helpers.
@@ -348,6 +360,40 @@ func cwdOf(obj *jsonjs.Object) string {
 	return ""
 }
 
+// programHints renders one terminal record's program hints: the nonempty
+// status app first, then the basename of argv[0] when present and different
+// (both slash styles normalized for the basename; no shell parsing and no
+// other argv element is inspected). Hints only: canonical kind matching
+// stays in the kinds catalog.
+func programHints(obj *jsonjs.Object) []string {
+	var hints []string
+	if raw, ok := obj.Get("status"); ok && raw != nil {
+		if status, ok := raw.(*jsonjs.Object); ok {
+			if v, ok := status.Get("app"); ok {
+				if app, isString := v.(string); isString && app != "" {
+					hints = append(hints, app)
+				}
+			}
+		}
+	}
+	if raw, ok := obj.Get("argv"); ok {
+		if args, ok := raw.([]any); ok && len(args) > 0 {
+			if exe, ok := args[0].(string); ok && exe != "" {
+				if base := executableBase(exe); base != "" && (len(hints) == 0 || hints[0] != base) {
+					hints = append(hints, base)
+				}
+			}
+		}
+	}
+	return hints
+}
+
+// executableBase takes the basename of an executable path with both slash
+// styles normalized (a bare name is its own basename).
+func executableBase(exe string) string {
+	return path.Base(strings.ReplaceAll(exe, "\\", "/"))
+}
+
 // processRecord keeps one successful hc read's raw record on the reply's
 // Process (the exit zero and the record's stdout), so a later slice can read
 // how, complete and why out of it.
@@ -424,8 +470,12 @@ func (b *backend) CheckCaller(ctx context.Context, call transport.Call) transpor
 // on the soho.session label, which is mandatory — unfiltered, `hc ls` lists
 // the user's other terminals too. The request's scope is not honored: the
 // session label is the roster scope, and finished terminals are not part of
-// the live roster.
+// the live roster. Scope.All instead lists every live local terminal of the
+// machine (listAllLocal): one unfiltered `hc ls`, no caller session read.
 func (b *backend) List(ctx context.Context, scope transport.Scope, call transport.Call) transport.Reply[[]transport.Terminal] {
+	if scope.All {
+		return b.listAllLocal(ctx, call)
+	}
 	session, err := b.session(ctx, call)
 	if err != nil {
 		return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: "cannot resolve the soho.session label: " + err.Error(), Cause: err}}
@@ -467,6 +517,65 @@ func (b *backend) List(ctx context.Context, scope transport.Scope, call transpor
 			PaneID:   addressOf(rec),
 			State:    stateOf(rec),
 			Sequence: listTurn(records, i),
+		})
+	}
+	return transport.Reply[[]transport.Terminal]{Value: terms, Valid: true}
+}
+
+// listAllLocal lists every live local terminal of the machine for Scope.All:
+// one unfiltered `hc ls` (no --label, no --all, one --json) without
+// resolving the caller session or calling hc get. A finished (gone) record
+// and a machine-prefixed (remote) address are not part of the local
+// listing; an unknown state stays listed. A failed launch is unavailable
+// and a malformed record refuses the whole list (no partial).
+func (b *backend) listAllLocal(ctx context.Context, call transport.Call) transport.Reply[[]transport.Terminal] {
+	out, err := b.run(ctx, call, "ls")
+	if err != nil {
+		// A machine listing names no target, so even an exit 3 is the
+		// backend being unavailable, never a target not found.
+		f := failure(err)
+		f.Kind = transport.FailureUnavailable
+		return transport.Reply[[]transport.Terminal]{Err: f}
+	}
+	v, err := jsonjs.Parse([]byte(out))
+	if err != nil {
+		return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned no JSON: " + err.Error(), Cause: err}}
+	}
+	obj, ok := v.(*jsonjs.Object)
+	if !ok {
+		return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned no list record"}}
+	}
+	rawList, ok := obj.Get("terminals")
+	if !ok {
+		return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned no terminals list"}}
+	}
+	list, ok := rawList.([]any)
+	if !ok {
+		return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned a non-array terminals list"}}
+	}
+	records := listRecords(out)
+	terms := make([]transport.Terminal, 0, len(list))
+	for i, item := range list {
+		rec, ok := item.(*jsonjs.Object)
+		if !ok {
+			return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned a non-object terminal"}}
+		}
+		address := addressOf(rec)
+		// A finished record is gone, and a machine-prefixed address is a
+		// remote terminal, not part of the local listing.
+		if stateOf(rec) == "gone" || strings.Contains(address, "/") {
+			continue
+		}
+		terms = append(terms, transport.Terminal{
+			Target:       transport.Target{ID: address},
+			Name:         nameOf(rec),
+			PaneID:       address,
+			State:        stateOf(rec),
+			Sequence:     listTurn(records, i),
+			Msg:          statusMsgOf(rec),
+			Cwd:          cwdOf(rec),
+			WorkspaceID:  sessionOfRecord(rec),
+			ProgramHints: programHints(rec),
 		})
 	}
 	return transport.Reply[[]transport.Terminal]{Value: terms, Valid: true}
