@@ -18,6 +18,11 @@ import (
 //go:embed SKILL.md README.md config.defaults roles references templates agents
 var resources embed.FS
 
+// ReadConfigDefaults reads the bundled defaults without materializing a skill cache.
+func ReadConfigDefaults() ([]byte, error) {
+	return resources.ReadFile("config.defaults")
+}
+
 type resource struct {
 	name string
 	data []byte
