@@ -206,6 +206,18 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// the adapter calls used to receive.
 	svc := backend.New(env)
 	kind := at(2)
+	// DJA-604 2b-3a fixes: the transport mode is resolved before the first
+	// provider check. Under hc the worker's readiness is the hc state alone
+	// (the 7501 state words) plus the --if idle send guard, so the kinds
+	// whose status hc cannot report are refused before anything is read or
+	// sent, and the screen-based pre-send steps below (the cursor startup
+	// and final checks, the pi/opencode context read, the pi compaction
+	// border, the cursor marker cleanup) are herdr-only: none of them runs
+	// for the five kinds hc accepts.
+	hcMode := env.Get("SOHO_TRANSPORT") == "hc"
+	if hcMode && kind != "claude" && kind != "codex" && kind != "pi" && kind != "grok" && kind != "agy" {
+		core.DieFriction(fmt.Sprintf("dispatch: kind %s does not report status under transport=hc; use transport=herdr", kind), 2, frictionLogPath, "dispatch")
+	}
 	if kind == "codex" && !dispatchNativeArg(at(13), "--no-daemon") && !dispatchNativeArg(at(13), "--remote") && dispatchCodexSupportsNoDaemon(env, cwd) {
 		fmt.Fprintf(platform.Stderr, "soho: dispatch: '%s' was started without --no-daemon: codex runs its commands through a shared server that may carry another pane's identity, so its procs, copies and send can land in another workspace. Release it with --close and spawn it again\n", agent)
 	}
@@ -382,8 +394,9 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// Context check after any compact step (a compaction is the remedy for a
 	// full context, so the post-compact footer decides) and before any task
 	// state is written or the brief is sent. pi and opencode only; an unknown
-	// footer is never evidence to refuse a dispatch.
-	if kind == "pi" || kind == "opencode" {
+	// footer is never evidence to refuse a dispatch. A screen read: under hc
+	// the state words own the decision, so the footer is herdr-only.
+	if !hcMode && (kind == "pi" || kind == "opencode") {
 		warnPercent, err := strconv.Atoi(core.Cfg(ctx, "context_warn_percent", "60", env))
 		if err != nil {
 			warnPercent = 60
@@ -439,7 +452,10 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// Herdr's state stays "idle" the whole time, so a pi on that border is
 	// busy even though the state read says otherwise.
 	piCompacting := func() bool {
-		if kind != "pi" {
+		if kind != "pi" || hcMode {
+			// The border is a screen read; under hc the state words own the
+			// busy decision, so the recent read is skipped (the pre-send
+			// check and the --when-idle loop both go through this).
 			return false
 		}
 		screen, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
@@ -581,8 +597,8 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// screen- or key-based step around it is skipped (the settle reads, the
 	// sequence baseline, the transcript arming); the hc arrival below uses
 	// the send's own proof instead. priorAuth stays empty for the no-wait
-	// observation.
-	hcMode := env.Get("SOHO_TRANSPORT") == "hc"
+	// observation. hcMode is resolved above, before the first provider
+	// check.
 	settleSecs := 20
 	rawSettle := core.Cfg(ctx, "prompt_settle_seconds", "20", env)
 	var settleErr error
@@ -775,20 +791,12 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		// dialog check, no resend; with the check window off a send without
 		// started is not probed, as the ported behavior keeps. A prompt with
 		// no turn rise takes the not-received path, once.
-		started, sendTurn := hcSendResult(promptRep.Value)
+		started, sendTurn, sendTurnOK := hcSendResult(promptRep.Value)
 		if !started && checkOn {
-			window := time.Duration(checkSecs) * time.Second
-			arrived := waitDispatchArrival(window, env, func() bool {
-				st := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
-				if st.State == "working" {
-					return true
-				}
-				if sendTurn >= 0 && st.Seq != "" {
-					n, err := strconv.ParseUint(st.Seq, 10, 64)
-					return err == nil && int64(n) > sendTurn
-				}
-				return false
-			})
+			// The proof must be read inside the window: each get is capped
+			// to the remaining time and a result that returns after the
+			// deadline does not count as arrival.
+			arrived := hcTurnArrival(time.Duration(checkSecs)*time.Second, env, svc, agent, sendTurn, sendTurnOK)
 			if !arrived {
 				return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "no turn started under hc")
 			}
@@ -1251,6 +1259,12 @@ func seqRender(raw json.RawMessage) string {
 	if _, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return s
 	}
+	if _, err := strconv.ParseUint(s, 10, 64); err == nil {
+		// A sequence in the unsigned range above int64 keeps its exact
+		// digits: a float rendering would lose the low bits and the
+		// sequence would no longer equal itself.
+		return s
+	}
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return s
@@ -1321,27 +1335,32 @@ func waitWorkingTurnEnd(agent, preSeq string, window time.Duration, env platform
 
 // hcSendResult reads the SendResult record the hc backend puts on the send
 // reply: started is the immediate arrival proof and turn the turn the send
-// started (a turn greater than it, or a working state, is arrival). An
-// unreadable record carries neither proof.
-func hcSendResult(raw string) (started bool, turn int64) {
+// started (a turn greater than it, or a working state, is arrival). The turn
+// is the schema's uint64, read without narrowing and with an explicit valid
+// flag (turnOK) instead of a sentinel: a missing or invalid turn is no
+// baseline and proves nothing, an unreadable record carries no started
+// proof either.
+func hcSendResult(raw string) (started bool, turn uint64, turnOK bool) {
 	var rec struct {
 		Started bool        `json:"started"`
 		Turn    json.Number `json:"turn"`
 	}
 	if err := json.Unmarshal([]byte(raw), &rec); err != nil {
-		return false, -1
+		return false, 0, false
 	}
-	n, err := rec.Turn.Int64()
+	n, err := strconv.ParseUint(string(rec.Turn), 10, 64)
 	if err != nil {
-		return rec.Started, -1
+		return rec.Started, 0, false
 	}
-	return rec.Started, n
+	return rec.Started, n, true
 }
 
 // hcSettled polls the worker's state through Get until it is no longer
 // working, within the dispatch's idle wait (--timeout, or the role's timeout
 // when the flag is absent — the --when-idle budget), and reports whether the
-// worker settled inside it.
+// worker settled inside it. Each Get is capped to the remaining budget, the
+// deadline is checked before it starts and after it returns, and a result
+// that arrives after the deadline does not authorize the retry.
 func hcSettled(svc transport.Services, agent string, timeoutRaw string, timeoutGiven bool, sd string, ctx *core.Config, env platform.Env, cwd string) bool {
 	waitTimeout := parseTimeout(timeoutRaw)
 	if !timeoutGiven {
@@ -1349,11 +1368,60 @@ func hcSettled(svc transport.Services, agent string, timeoutRaw string, timeoutG
 	}
 	deadline := platform.Now().Add(time.Duration(waitTimeout) * time.Millisecond)
 	for {
-		st := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
+		left := deadline.Sub(platform.Now())
+		if left <= 0 {
+			return false
+		}
+		st := readState(svc, agent, transport.Call{Timeout: left})
+		if !platform.Now().Before(deadline) {
+			// The read returned after the idle budget ended (or was cut at
+			// the edge): its result does not settle the worker.
+			return false
+		}
 		if st.State != "working" {
 			return true
 		}
+		left = deadline.Sub(platform.Now())
+		if left <= 0 {
+			return false
+		}
+		poll := time.Duration(spawn.PollIntervalMs(env)) * time.Millisecond
+		if poll > left {
+			poll = left
+		}
+		time.Sleep(poll)
+	}
+}
+
+// hcTurnArrival polls the worker's state through Get until a working state
+// or a turn above the send's turn proves the prompt arrived, within the
+// arrival window: each Get is capped to the remaining time, evidence that
+// returns after the deadline is rejected, and no poll starts at or after
+// expiry. A send whose turn is missing or invalid (turnOK false) can only
+// arrive through the working state.
+func hcTurnArrival(window time.Duration, env platform.Env, svc transport.Services, agent string, sendTurn uint64, sendTurnOK bool) bool {
+	deadline := platform.Now().Add(window)
+	for {
 		left := deadline.Sub(platform.Now())
+		if left <= 0 {
+			return false
+		}
+		st := readState(svc, agent, transport.Call{Timeout: left})
+		if !platform.Now().Before(deadline) {
+			// The read returned after the window ended (or was cut at the
+			// edge): its result is not arrival proof.
+			return false
+		}
+		if st.State == "working" {
+			return true
+		}
+		if sendTurnOK && st.Seq != "" {
+			n, err := strconv.ParseUint(st.Seq, 10, 64)
+			if err == nil && n > sendTurn {
+				return true
+			}
+		}
+		left = deadline.Sub(platform.Now())
 		if left <= 0 {
 			return false
 		}
