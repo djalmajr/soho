@@ -14,7 +14,7 @@ import (
 
 // hcExperimentalWarning is the warning every transport=hc doctor line is
 // followed by (DJA-603 stage 2a; the line reworded by DJA-604 stage 2b).
-const hcExperimentalWarning = "transport=hc is experimental: status, wait, spawn and dispatch run through hc; release does not support it yet"
+const hcExperimentalWarning = "transport=hc is experimental: status, wait, spawn, dispatch and release run through hc"
 
 // doctorHcJSON is the fake hc 0.1.14 output of the capability steps, the
 // strings of hc 0.1.14 as the brief records them.

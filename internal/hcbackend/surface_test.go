@@ -83,12 +83,7 @@ func TestSurfaceCoversEveryMethod(t *testing.T) {
 				return outcome{valid: rep.Valid, kind: kind(rep.Err), msg: msg(rep.Err), zero: rep.Value == nil}
 			},
 		},
-		{
-			"Window.ListPanes", wantNoOp, func(b *backend) outcome {
-				rep := b.ListPanes(context.Background(), transport.Scope{}, transport.Call{})
-				return outcome{valid: rep.Valid, kind: kind(rep.Err), msg: msg(rep.Err), zero: rep.Value == nil}
-			},
-		},
+		{"Window.ListPanes", wantImplemented, nil},
 		{
 			"Window.ListTabs", wantNoOp, func(b *backend) outcome {
 				rep := b.ListTabs(context.Background(), "ws", transport.Call{})

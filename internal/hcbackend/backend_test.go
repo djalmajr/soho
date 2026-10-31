@@ -551,8 +551,9 @@ func TestBackendClose(t *testing.T) {
 	})
 }
 
-// TestBackendGetGone: gone when hc get exits 3 or the record is finished;
-// a live terminal or another failure reports false.
+// TestBackendGetGone: gone only when hc get exits 3 (the record is
+// removed); a finished record, a live terminal or another failure reports
+// false.
 func TestBackendGetGone(t *testing.T) {
 	t.Run("exit 3 is gone", func(t *testing.T) {
 		env, calls := fakeHc(t, []fakecli.Rule{{Argv: []string{"get", "t7", "--json"}, Code: 3, Stderr: `{"error":{"kind":"not_found","message":"no such terminal"}}`}})
@@ -564,12 +565,12 @@ func TestBackendGetGone(t *testing.T) {
 		wantArgv(t, calls(), [][]string{{"get", "t7", "--json"}})
 	})
 
-	t.Run("a finished record is gone", func(t *testing.T) {
+	t.Run("a finished record is not gone", func(t *testing.T) {
 		env, _ := fakeHc(t, []fakecli.Rule{{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"finished"}`}})
 		b := &backend{env: env, client: hc.New(env)}
 		rep := b.GetGone(context.Background(), transport.Target{ID: "t7"}, transport.Call{})
-		if !rep.Value {
-			t.Fatalf("rep: %+v", rep)
+		if rep.Value {
+			t.Fatalf("rep: %+v, want a finished record still present", rep)
 		}
 	})
 
