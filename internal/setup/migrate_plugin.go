@@ -5,6 +5,7 @@ package setup
 // runs nothing that writes when dry is true.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,12 +16,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 // herdrPluginTimeoutMs matches the doctor's herdr CLI contract (a bounded
 // call, never an unattended hang while setup or doctor runs).
 const herdrPluginTimeoutMs = 30000
+
+// pluginCall is the bounded call every herdr plugin step of the migration
+// runs with (DJA-596).
+var pluginCall = transport.Call{Timeout: herdrPluginTimeoutMs * time.Millisecond}
 
 const (
 	formerPluginID = "djalmajr.herdr-soho"
@@ -54,19 +61,22 @@ type herdrPluginRef struct {
 // djalmajr.soho. It returns one line per step ("migrate: plugin: ...")
 // and runs nothing that writes when dry is true.
 func migratePlugin(env platform.Env, version string, dry bool) []string {
-	list := herdrPluginCall(env, "plugin", "list", "--json")
-	if list.NotFound {
+	// One backend for this invocation: every herdr plugin step of the
+	// migration runs through it (DJA-596).
+	svc := herdr.New(env)
+	list := svc.Legacy.PluginListRaw(context.Background(), pluginCall)
+	if list.Process.NotFound {
 		// Without Herdr there is no plugin registration to migrate.
 		return nil
 	}
-	if !herdrCallOK(list) {
-		return []string{fmt.Sprintf("migrate: plugin: skipped (herdr plugin list failed: %s)", herdrCallReason(list))}
+	if !herdrCallOK(list.Process) {
+		return []string{fmt.Sprintf("migrate: plugin: skipped (herdr plugin list failed: %s)", herdrCallReason(list.Process))}
 	}
-	if strings.TrimSpace(list.Stdout) == "" {
+	if strings.TrimSpace(list.Process.Stdout) == "" {
 		// A list that succeeds with no output registers nothing to migrate.
 		return nil
 	}
-	plugins, ok := parsePluginList(list.Stdout)
+	plugins, ok := parsePluginList(list.Process.Stdout)
 	if !ok {
 		return []string{"migrate: plugin: skipped (herdr plugin list failed: invalid JSON)"}
 	}
@@ -82,14 +92,14 @@ func migratePlugin(env platform.Env, version string, dry bool) []string {
 		}
 		if dry {
 			lines = append(lines, fmt.Sprintf("migrate: plugin: would run: herdr plugin install djalmajr/soho/plugin --ref %s --yes", version))
-		} else if install := herdrPluginCall(env, "plugin", "install", "djalmajr/soho/plugin", "--ref", version, "--yes"); !herdrCallOK(install) {
-			return []string{fmt.Sprintf("migrate: plugin: install of djalmajr.soho failed: %s; the former plugin is kept", herdrCallReason(install))}
+		} else if install := svc.Legacy.PluginInstallRefRaw(context.Background(), version, pluginCall); !herdrCallOK(install.Process) {
+			return []string{fmt.Sprintf("migrate: plugin: install of djalmajr.soho failed: %s; the former plugin is kept", herdrCallReason(install.Process))}
 		}
 	}
 	// The former plugin is removed only once its shortcuts are known to be
 	// moved: an unknown config, an unreadable one or a reload that fails
 	// keeps it, so no shortcut is left pointing at a missing plugin.
-	config := herdrConfigToml(env)
+	config := herdrConfigToml(svc, env)
 	if config == "" {
 		return append(lines, "migrate: plugin: could not locate the Herdr config (herdr plugin config-dir failed); the former plugin is kept")
 	}
@@ -117,8 +127,8 @@ func migratePlugin(env platform.Env, version string, dry bool) []string {
 		if hasSohoShortcut(content) {
 			if dry {
 				lines = append(lines, "migrate: plugin: would run: herdr server reload-config")
-			} else if reload := herdrPluginCall(env, "server", "reload-config"); !herdrCallOK(reload) {
-				return append(lines, fmt.Sprintf("migrate: plugin: herdr server reload-config failed: %s; the former plugin is kept until Herdr loads the djalmajr.soho shortcuts: restart Herdr and run soho setup again", herdrCallReason(reload)))
+			} else if reload := svc.Legacy.ServerReloadConfigRaw(context.Background(), pluginCall); !herdrCallOK(reload.Process) {
+				return append(lines, fmt.Sprintf("migrate: plugin: herdr server reload-config failed: %s; the former plugin is kept until Herdr loads the djalmajr.soho shortcuts: restart Herdr and run soho setup again", herdrCallReason(reload.Process)))
 			}
 		}
 	}
@@ -130,27 +140,21 @@ func migratePlugin(env platform.Env, version string, dry bool) []string {
 		lines = append(lines, fmt.Sprintf("migrate: plugin: would run: herdr plugin %s %s", verb, formerPluginID))
 		return lines
 	}
-	if remove := herdrPluginCall(env, "plugin", verb, formerPluginID); herdrCallOK(remove) {
+	if remove := svc.Legacy.PluginRemoveRaw(context.Background(), verb, formerPluginID, pluginCall); herdrCallOK(remove.Process) {
 		lines = append(lines, fmt.Sprintf("migrate: plugin: removed the former %s (%s)", formerPluginID, verb))
 	} else {
-		lines = append(lines, fmt.Sprintf("migrate: plugin: could not remove %s: %s", formerPluginID, herdrCallReason(remove)))
+		lines = append(lines, fmt.Sprintf("migrate: plugin: could not remove %s: %s", formerPluginID, herdrCallReason(remove.Process)))
 	}
 	return lines
 }
 
-// herdrPluginCall runs one herdr CLI command through the package's CLI
-// mechanism, with the doctor's bounded timeout.
-func herdrPluginCall(env platform.Env, args ...string) platform.RunResult {
-	return platform.RunCli("herdr", args, platform.RunOptions{Env: env, TimeoutMs: herdrPluginTimeoutMs})
-}
-
-func herdrCallOK(result platform.RunResult) bool {
+func herdrCallOK(result transport.ProcessResult) bool {
 	return !result.NotFound && result.Error == "" && result.Status != nil && *result.Status == 0
 }
 
 // herdrCallReason is the short, deterministic reason a failed herdr call
 // ends up on the migration lines.
-func herdrCallReason(result platform.RunResult) string {
+func herdrCallReason(result transport.ProcessResult) string {
 	switch {
 	case result.NotFound:
 		return "herdr not found"
@@ -210,12 +214,12 @@ func pluginPresent(plugins []herdrPluginRef, id string) bool {
 // herdrConfigToml finds the Herdr config.toml through
 // 'herdr plugin config-dir djalmajr.soho': three levels above the printed
 // plugin config dir. It returns "" when the path cannot be resolved.
-func herdrConfigToml(env platform.Env) string {
-	called := herdrPluginCall(env, "plugin", "config-dir", sohoPluginID)
-	if !herdrCallOK(called) {
+func herdrConfigToml(svc transport.Services, env platform.Env) string {
+	called := svc.Legacy.PluginConfigDirRaw(context.Background(), sohoPluginID, pluginCall)
+	if !herdrCallOK(called.Process) {
 		return ""
 	}
-	dir := strings.TrimSpace(called.Stdout)
+	dir := strings.TrimSpace(called.Process.Stdout)
 	if dir == "" {
 		return ""
 	}

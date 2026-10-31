@@ -310,7 +310,11 @@ type Window interface {
 // raw peer agent steps (the machine-prefixed agent get, the agent wait, the
 // waiting and bare agent prompts, the agent read with a source and an
 // optional line count, the agent send-keys) plus the raw session snapshot
-// and machine list with the caller's context, timeout and parsing.
+// and machine list with the caller's context, timeout and parsing, the raw
+// doctor version, status-server and skill reads (no deadline when the call
+// names none), and the raw herdr plugin-management steps (the plugin list,
+// the ref-bounded install, the config-dir, the verb-bounded remove, and the
+// server config reload) with the caller's bounded timeout and parsing.
 type LegacyTransport interface {
 	// ProcessInfo returns the raw process info a backend reports for a pane.
 	ProcessInfo(ctx context.Context, target Target, call Call) Reply[json.RawMessage]
@@ -489,6 +493,53 @@ type LegacyTransport interface {
 	// per-call context bounds the run. It never retries and does not parse
 	// the body.
 	MachineListRaw(ctx context.Context, call Call) Reply[string]
+	// VersionRaw runs one `--version` with no deadline (the doctor's legacy
+	// contract: a zero or negative call timeout keeps the unbounded run) and
+	// returns the raw process result (Value carries the stdout) so the
+	// caller keeps its own exit-status and output handling. It never
+	// retries and does not parse the body.
+	VersionRaw(ctx context.Context, call Call) Reply[string]
+	// StatusServerRaw runs one `status server` with no deadline (a zero or
+	// negative call timeout keeps the unbounded run, the doctor's legacy
+	// contract) and returns the raw process result (Value carries the
+	// stdout) so the caller keeps its own exit-status and version parsing.
+	// It never retries and does not parse the body.
+	StatusServerRaw(ctx context.Context, call Call) Reply[string]
+	// SkillRaw runs one `--skill` with no deadline (a zero or negative call
+	// timeout keeps the unbounded run, the doctor's legacy contract) and
+	// returns the raw process result (Value carries the stdout) so the
+	// caller keeps its own exit-status and file comparison. It never
+	// retries and does not parse the body.
+	SkillRaw(ctx context.Context, call Call) Reply[string]
+	// PluginListRaw runs one `plugin list --json` with the call's timeout
+	// (a zero or negative one keeps no deadline) and returns the raw process
+	// result (Value carries the stdout) so the caller keeps its own
+	// exit-status and list parsing. It never retries and does not parse the
+	// body.
+	PluginListRaw(ctx context.Context, call Call) Reply[string]
+	// PluginInstallRefRaw runs one `plugin install djalmajr/soho/plugin
+	// --ref <ref> --yes` with the call's timeout (a zero or negative one
+	// keeps no deadline) and returns the raw process result (Value carries
+	// the stdout) so the caller keeps its own exit-status handling. It
+	// never retries and does not parse the body.
+	PluginInstallRefRaw(ctx context.Context, ref string, call Call) Reply[string]
+	// PluginConfigDirRaw runs one `plugin config-dir <pluginID>` with the
+	// call's timeout (a zero or negative one keeps no deadline) and returns
+	// the raw process result (Value carries the stdout) so the caller keeps
+	// its own exit-status and dir parsing. It never retries and does not
+	// parse the body.
+	PluginConfigDirRaw(ctx context.Context, pluginID string, call Call) Reply[string]
+	// PluginRemoveRaw runs one `plugin <verb> <pluginID>` (verb is the
+	// caller's uninstall/unlink choice) with the call's timeout (a zero or
+	// negative one keeps no deadline) and returns the raw process result
+	// (Value carries the stdout) so the caller keeps its own exit-status
+	// handling. It never retries and does not parse the body.
+	PluginRemoveRaw(ctx context.Context, verb, pluginID string, call Call) Reply[string]
+	// ServerReloadConfigRaw runs one `server reload-config` with the call's
+	// timeout (a zero or negative one keeps no deadline) and returns the raw
+	// process result (Value carries the stdout) so the caller keeps its own
+	// exit-status handling. It never retries and does not parse the body.
+	ServerReloadConfigRaw(ctx context.Context, call Call) Reply[string]
 }
 
 // Runtime is the second runtime capability: the operations whose caller

@@ -210,7 +210,17 @@ func GetProcessAncestors(start int, env platform.Env, goos string) []Process {
 	return out
 }
 
-func DiagnoseOutsideHerdr(base string, env platform.Env, goos string, pid int, ancestors []Process) string {
+// DiagnoseRunners is the two raw herdr operations DiagnoseOutsideHerdr runs:
+// the api snapshot and one pane process-info per candidate pane. A caller on
+// the transport interface fills it from its transport.Services; when none
+// is passed the raw herdr CLI runs with the same argv, the same 10-second
+// bound and the same Platform as the injected path.
+type DiagnoseRunners struct {
+	Snapshot    func() platform.RunResult
+	ProcessInfo func(paneID string) platform.RunResult
+}
+
+func DiagnoseOutsideHerdr(base string, env platform.Env, goos string, pid int, ancestors []Process, runners ...DiagnoseRunners) string {
 	if goos == "win32" {
 		return base
 	}
@@ -229,7 +239,16 @@ func DiagnoseOutsideHerdr(base string, env platform.Env, goos string, pid int, a
 	if !has {
 		return base
 	}
-	snap := platform.RunCli("herdr", []string{"api", "snapshot"}, platform.RunOptions{Env: env, Platform: goos, TimeoutMs: 10000})
+	var runner DiagnoseRunners
+	if len(runners) > 0 {
+		runner = runners[0]
+	}
+	var snap platform.RunResult
+	if runner.Snapshot != nil {
+		snap = runner.Snapshot()
+	} else {
+		snap = platform.RunCli("herdr", []string{"api", "snapshot"}, platform.RunOptions{Env: env, Platform: goos, TimeoutMs: 10000})
+	}
 	if snap.Status == nil || *snap.Status != 0 || snap.Stdout == "" {
 		return base
 	}
@@ -267,7 +286,12 @@ func DiagnoseOutsideHerdr(base string, env platform.Env, goos string, pid int, a
 			continue
 		}
 		paneID := jsonJSString(paneIDValue)
-		r := platform.RunCli("herdr", []string{"pane", "process-info", "--pane", paneID}, platform.RunOptions{Env: env, Platform: goos, TimeoutMs: 10000})
+		var r platform.RunResult
+		if runner.ProcessInfo != nil {
+			r = runner.ProcessInfo(paneID)
+		} else {
+			r = platform.RunCli("herdr", []string{"pane", "process-info", "--pane", paneID}, platform.RunOptions{Env: env, Platform: goos, TimeoutMs: 10000})
+		}
 		if r.Status == nil || *r.Status != 0 || r.Stdout == "" {
 			continue
 		}

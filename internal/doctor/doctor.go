@@ -26,6 +26,7 @@ import (
 	"github.com/djalmajr/soho/internal/setuptext"
 	"github.com/djalmajr/soho/internal/spawn"
 	textutil "github.com/djalmajr/soho/internal/text"
+	"github.com/djalmajr/soho/internal/transport"
 	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
 
@@ -110,12 +111,16 @@ func CmdInit(ctx *core.Config, env platform.Env, cwd string) {
 	state := core.StateDir(ctx, env, cwd)
 	friction := filepath.Join(state, "friction.log")
 	name := spawn.EnsureOrchestratorName(ctx, env, cwd, "init")
-	pane := env.Get("HERDR_PANE_ID")
+	// One backend for this invocation: the init's pane read, title and the
+	// context claims all run through it (DJA-596).
+	svc := herdr.New(env)
+	pane := svc.Runtime.Caller().PaneID
 	_, _, callerInRoster := spawn.RosterCaller(ctx, env, cwd, pane)
 	paneID := ""
 	title := ""
 	if pane != "" {
-		r := platform.RunCli("herdr", []string{"pane", "get", pane}, platform.RunOptions{Env: env, TimeoutMs: 30000})
+		rep := svc.Legacy.PaneGetRaw(context.Background(), transport.Target{ID: pane}, transport.Call{Timeout: herdr.Timeout})
+		r := rep.Process
 		var payload any
 		if v, e := jsonjs.Parse([]byte(r.Stdout)); e == nil {
 			payload = v
@@ -144,7 +149,7 @@ func CmdInit(ctx *core.Config, env platform.Env, cwd string) {
 				// A roster pane is a worker another orchestrator opened: this
 				// init does not touch its title.
 				fresh := "orchestrator: " + filepath.Base(platform.ProjectRoot(env, cwd))
-				if herdr.PaneTitle(pane, &fresh, env) {
+				if svc.Window.Title(context.Background(), pane, &fresh, transport.Call{Timeout: herdr.Timeout}).Value {
 					title = fresh
 				} else {
 					core.Warn("init: herdr pane report-metadata failed; pane title left as is", friction)
@@ -154,7 +159,7 @@ func CmdInit(ctx *core.Config, env platform.Env, cwd string) {
 	}
 	first := ProjectIsFirstRun(ctx, env, cwd)
 	layoutName := core.Cfg(ctx, "layout", "split", env)
-	obj := jsonjs.O("orchestrator", name, "pane_id", paneID, "tab_id", env.Get("HERDR_TAB_ID"), "workspace_id", core.WorkspaceID(ctx, env, cwd), "layout", layoutName, "state_dir", state, "first_run", first, "title", title)
+	obj := jsonjs.O("orchestrator", name, "pane_id", paneID, "tab_id", svc.Runtime.Caller().TabID, "workspace_id", core.WorkspaceID(ctx, env, cwd), "layout", layoutName, "state_dir", state, "first_run", first, "title", title)
 	fmt.Fprintln(platform.Stdout, jsonjs.StringifyIndent(obj, 2))
 }
 
@@ -264,33 +269,49 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 }
 func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) {
 	s := &Say{Out: out}
+	// One backend for this invocation: every herdr probe of the doctor runs
+	// through it (DJA-596).
+	svc := herdr.New(env)
 	doctorRestartNotices(ctx, env, cwd, platform.Stderr)
-	if env.Get("HERDR_ENV") == "1" {
-		herdrContextCheck(env, s)
+	if svc.Runtime.Caller().Inside {
+		herdrContextCheck(svc, s)
 		// After the context check: this process must actually run in the
 		// claimed pane (DJA-394). The warning appears for every
 		// caller_check value except off; the command itself keeps its own
 		// gate.
 		if core.CallerCheckMode(ctx, env) != "off" {
-			if res := herdr.CheckCallerPane(env); res.State == herdr.CallerMismatch {
+			if res := svc.Runtime.CheckCaller(context.Background(), transport.Call{}).Value; res.State == string(herdr.CallerMismatch) {
 				s.Warning(fmt.Sprintf("Herdr context invalid: HERDR_PANE_ID='%s' is live but this process does not run in it (its process tree does not reach shell pid %d); fix the inherited HERDR_* environment", res.Pane, res.ShellPID))
 			}
 		}
 	} else {
-		s.Warning(codexenv.DiagnoseOutsideHerdr("HERDR_ENV != 1: not inside a Herdr pane", env, platform.Current(), 0, nil))
+		// The codexenv diagnose's two raw herdr operations run through the
+		// invocation's backend (DJA-596): the api snapshot and one pane
+		// process-info per candidate pane, both with the diagnose's 10 s
+		// bound.
+		s.Warning(codexenv.DiagnoseOutsideHerdr("HERDR_ENV != 1: not inside a Herdr pane", env, platform.Current(), 0, nil, codexenv.DiagnoseRunners{
+			Snapshot: func() platform.RunResult {
+				rep := svc.Legacy.SnapshotRaw(context.Background(), transport.Target{}, transport.Call{Timeout: 10 * time.Second})
+				return replyRunResult(rep.Value, rep.Process)
+			},
+			ProcessInfo: func(paneID string) platform.RunResult {
+				rep := svc.Legacy.ProcessInfo(context.Background(), transport.Target{ID: paneID}, transport.Call{Timeout: 10 * time.Second})
+				return replyRunResult(string(rep.Value), rep.Process)
+			},
+		}))
 	}
 	_, herdrFound := platform.FindExecutable("herdr", env, platform.Current())
 	cliVersion := ""
 	if herdrFound {
-		v := platform.RunCli("herdr", []string{"--version"}, platform.RunOptions{Env: env})
-		for _, line := range strings.Split(v.Stdout, "\n") {
+		v := svc.Legacy.VersionRaw(context.Background(), transport.Call{})
+		for _, line := range strings.Split(v.Value, "\n") {
 			f := strings.Fields(line)
 			if len(f) > 1 {
 				cliVersion += f[1] + "\n"
 			}
 		}
-		srv := platform.RunCli("herdr", []string{"status", "server"}, platform.RunOptions{Env: env})
-		server := regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+`).FindString(srv.Stdout)
+		srv := svc.Legacy.StatusServerRaw(context.Background(), transport.Call{})
+		server := regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+`).FindString(srv.Value)
 		cliVersion = strings.TrimSuffix(cliVersion, "\n")
 		if server != "" && server != cliVersion {
 			s.Warning(fmt.Sprintf("herdr client %s vs server %s: restart the server (herdr update --handoff) so CLI and server agree", cliVersion, server))
@@ -319,9 +340,9 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	} else {
 		same := false
 		if herdrFound {
-			r := platform.RunCli("herdr", []string{"--skill"}, platform.RunOptions{Env: env})
+			r := svc.Legacy.SkillRaw(context.Background(), transport.Call{})
 			b, e := platform.ReadTextFile(skill)
-			same = e == nil && r.Stdout == b
+			same = e == nil && r.Value == b
 		}
 		if herdrFound && !same {
 			s.Warning(fmt.Sprintf("official herdr skill at %s differs from 'herdr --skill' (stale after herdr update?): bunx skills update herdr -g", skill))
@@ -474,8 +495,8 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 		s.Ok("config: lanes=off (per-role reuse unchanged)")
 	}
 	doctorProjectRoles(env, cwd, s)
-	doctorOrphans(ctx, env, cwd, s)
-	doctorWorkerCwds(ctx, env, cwd, s)
+	doctorOrphans(ctx, svc, env, cwd, s)
+	doctorWorkerCwds(ctx, svc, env, cwd, s)
 	doctorDiscardedModels(ctx, env, cwd, s)
 	doctorModelPairs(ctx, env, cwd, s)
 	doctorLaneArgs(ctx, env, s)
@@ -498,7 +519,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	}
 	checkSetup(ctx, env, cwd, s)
 	doctorPeerInbound(ctx, env, cwd, s)
-	doctorFootprint(ctx, env, cwd, s)
+	doctorFootprint(ctx, svc, env, cwd, s)
 	fmt.Fprintf(out, "first_run: %t\n%d ok, %d warning(s)\n", ProjectIsFirstRun(ctx, env, cwd), s.OK, s.Warn)
 }
 
@@ -548,8 +569,8 @@ func doctorHcTransport(env platform.Env, s *Say) {
 // 1024^3 bytes). With the limit at 0 or unreadable, nothing is measured
 // or printed; outside a Herdr workspace there is no team footprint to
 // measure, and the check stays silent.
-func doctorFootprint(ctx *core.Config, env platform.Env, cwd string, s *Say) {
-	workspaceID := env.Get("HERDR_WORKSPACE_ID")
+func doctorFootprint(ctx *core.Config, svc transport.Services, env platform.Env, cwd string, s *Say) {
+	workspaceID := svc.Runtime.Caller().WorkspaceID
 	if workspaceID == "" {
 		return
 	}
@@ -577,14 +598,15 @@ func doctorFootprintLine(fp *core.Footprint, raw string) string {
 // herdrContextCheck verifies the context HERDR_ENV=1 claims: the inherited
 // pane id must be a live pane of the caller's workspace, or the current pane
 // must resolve with the same argv core.WorkspaceID uses.
-func herdrContextCheck(env platform.Env, s *Say) {
-	if pane := env.Get("HERDR_PANE_ID"); pane != "" {
-		r := platform.RunCli("herdr", []string{"pane", "get", pane}, platform.RunOptions{Env: env, TimeoutMs: 30000})
+func herdrContextCheck(svc transport.Services, s *Say) {
+	if pane := svc.Runtime.Caller().PaneID; pane != "" {
+		rep := svc.Legacy.PaneGetRaw(context.Background(), transport.Target{ID: pane}, transport.Call{Timeout: herdr.Timeout})
+		r := rep.Process
 		if r.NotFound || r.Status == nil || *r.Status != 0 {
 			s.Warning(fmt.Sprintf("Herdr context invalid: HERDR_PANE_ID=%s is not a live pane (%s)", pane, herdrCause("pane get", r)))
 			return
 		}
-		ws := env.Get("HERDR_WORKSPACE_ID")
+		ws := svc.Runtime.Caller().WorkspaceID
 		if ws == "" {
 			s.Ok("inside Herdr (HERDR_ENV=1)")
 			return
@@ -597,7 +619,8 @@ func herdrContextCheck(env platform.Env, s *Say) {
 		s.Warning(fmt.Sprintf("Herdr context invalid: pane %s belongs to workspace '%s', not HERDR_WORKSPACE_ID '%s'", pane, paneWs, ws))
 		return
 	}
-	r := platform.RunCli("herdr", []string{"pane", "current", "--current"}, platform.RunOptions{Env: env, TimeoutMs: 30000})
+	rep := svc.Legacy.PaneCurrentRaw(context.Background(), transport.Call{Timeout: herdr.Timeout})
+	r := rep.Process
 	if !r.NotFound && r.Status != nil && *r.Status == 0 {
 		s.Ok("inside Herdr (HERDR_ENV=1)")
 		return
@@ -640,7 +663,7 @@ func paneWorkspaceID(stdout string) string {
 // from a failed herdr call: the structured error code and message when the
 // output carries one, the sanitized raw output otherwise, and a fallback
 // with the exit code when there is nothing to read.
-func herdrCause(what string, r platform.RunResult) string {
+func herdrCause(what string, r transport.ProcessResult) string {
 	if r.NotFound {
 		return "herdr CLI not found in PATH"
 	}
@@ -666,7 +689,7 @@ func herdrCause(what string, r platform.RunResult) string {
 	return fallback
 }
 
-func herdrExitCode(r platform.RunResult) int {
+func herdrExitCode(r transport.ProcessResult) int {
 	if r.Status != nil {
 		return *r.Status
 	}
@@ -674,6 +697,13 @@ func herdrExitCode(r platform.RunResult) int {
 		return 128
 	}
 	return 1
+}
+
+// replyRunResult mirrors one transport raw reply into the platform result
+// shape the codexenv diagnose reads (status, stdout, stderr, lookup and
+// timeout): the diagnose's own exit-status judgment is unchanged (DJA-596).
+func replyRunResult(stdout string, p transport.ProcessResult) platform.RunResult {
+	return platform.RunResult{NotFound: p.NotFound, Status: p.Status, Stdout: stdout, Stderr: p.Stderr, TimedOut: p.TimedOut, Error: p.Error}
 }
 
 func herdrErrorInfo(raw string) (string, string) {
@@ -976,8 +1006,8 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 // left the roster, with the command to close it. Outside a Herdr pane
 // (HERDR_ENV != 1) there is no live-agent context to check; a failing herdr
 // call is swallowed and the doctor keeps going, like its other herdr probes.
-func doctorOrphans(ctx *core.Config, env platform.Env, cwd string, s *Say) {
-	if env.Get("HERDR_ENV") != "1" {
+func doctorOrphans(ctx *core.Config, svc transport.Services, env platform.Env, cwd string, s *Say) {
+	if !svc.Runtime.Caller().Inside {
 		return
 	}
 	var orphans []core.Orphan
@@ -1539,8 +1569,8 @@ func doctorRestartNotices(ctx *core.Config, env platform.Env, cwd string, out io
 }
 
 // Worker cwd warnings are a read-only, best-effort workspace probe.
-func doctorWorkerCwds(ctx *core.Config, env platform.Env, cwd string, s *Say) {
-	if env.Get("HERDR_ENV") != "1" {
+func doctorWorkerCwds(ctx *core.Config, svc transport.Services, env platform.Env, cwd string, s *Say) {
+	if !svc.Runtime.Caller().Inside {
 		return
 	}
 	defer func() {
@@ -1563,7 +1593,10 @@ func doctorWorkerCwds(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 		if !waitpkg.WorkerCwdGone(cols[6]) {
 			continue
 		}
-		state := herdr.AgentState(cols[0], readEnv, herdr.Timeout, nil).State
+		// The agent get's child process ran with readEnv (SOHO_NOWRITE set),
+		// not the invocation's env: a separate backend keeps that contract
+		// (DJA-596).
+		state := herdr.New(readEnv).Runtime.Get(context.Background(), transport.Target{ID: cols[0]}, transport.Call{Timeout: herdr.Timeout}).Value.State
 		if state != "" && state != "gone" && state != "unavailable" {
 			s.Warning(fmt.Sprintf("worker '%s' runs in %s, which no longer exists; release it with --close", cols[0], cols[6]))
 		}

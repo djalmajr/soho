@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/setuptext"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 // doctorPeerInbound checks the receiver side of peer messages: that every
@@ -98,7 +100,9 @@ func userPromptSubmitProtected(file string) bool {
 // doctorUnprotectedAgents warns about each live agent of the roster that is
 // not protected by this project's supported inbound hooks.
 func doctorUnprotectedAgents(ctx *core.Config, env platform.Env, cwd string, s *Say) {
-	if env.Get("HERDR_ENV") != "1" {
+	// One backend for this invocation of the probe (DJA-596).
+	svc := herdr.New(env)
+	if !svc.Runtime.Caller().Inside {
 		return
 	}
 	codexHooks, codexReadError := platform.ReadTextFile(filepath.Join(platform.ProjectRoot(env, cwd), ".codex", "hooks.json"))
@@ -118,16 +122,17 @@ func doctorUnprotectedAgents(ctx *core.Config, env platform.Env, cwd string, s *
 				}
 			}
 		}()
-		agents := herdr.LiveAgents(env, herdr.Timeout)
+		rep := svc.Legacy.AgentListRaw(context.Background(), transport.Call{Timeout: herdr.Timeout})
 		seen := map[string]bool{}
 		for _, row := range core.RosterRows(core.StateDirPath(ctx, env, cwd)) {
 			f := strings.Split(row, "\t")
 			if len(f) < 3 || f[0] == "" || seen[f[0]] {
 				continue
 			}
-			for _, agent := range agents {
-				object, ok := agent.(*jsonjs.Object)
-				if !ok {
+			for _, rawAgent := range rep.Value {
+				parsed, err := jsonjs.Parse([]byte(rawAgent))
+				object, ok := parsed.(*jsonjs.Object)
+				if err != nil || !ok {
 					continue
 				}
 				name, _ := object.Get("name")
