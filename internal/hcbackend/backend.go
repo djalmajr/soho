@@ -338,6 +338,16 @@ func addressOf(obj *jsonjs.Object) string {
 	return ""
 }
 
+// cwdOf reads the record's cwd ("" when the terminal reports none).
+func cwdOf(obj *jsonjs.Object) string {
+	if v, ok := obj.Get("cwd"); ok {
+		if cwd, isString := v.(string); isString {
+			return cwd
+		}
+	}
+	return ""
+}
+
 // processRecord keeps one successful hc read's raw record on the reply's
 // Process (the exit zero and the record's stdout), so a later slice can read
 // how, complete and why out of it.
@@ -486,6 +496,7 @@ func (b *backend) Get(ctx context.Context, target transport.Target, call transpo
 			State:    stateOf(obj),
 			Sequence: turnRaw(json.RawMessage(out)),
 			Msg:      statusMsgOf(obj),
+			Cwd:      cwdOf(obj),
 		},
 		Valid: true,
 	}

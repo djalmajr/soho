@@ -466,18 +466,19 @@ func transportModeFor(ctx *core.Config, env, decisionEnv platform.Env, cwd strin
 }
 
 // hcCommandAllowed lists the commands that run under transport=hc
-// (DJA-604 stage 2b): the read side (status, wait), the explicitly allowed
+// (DJA-604): the five transport commands (status, wait, spawn, dispatch,
+// release), collaborate (without identity verification yet), the
 // diagnostics and configuration commands (doctor, config, explain,
-// capabilities), the usage and version invocations, and the commands that
-// never touch the transport (kinds, models, model, roles, role, lint,
-// install, env — env reports the herdr version through a one-shot external
-// binary call, never the transport). Every other command is refused at the
-// entry with the guard's line.
+// capabilities), the usage and version invocations, the advisory hook, and
+// the commands that never touch the transport (kinds, models, model, roles,
+// role, lint, install, env — env reports the herdr version through a
+// one-shot external binary call, never the transport). Every other command
+// is refused at the entry with the guard's line.
 func hcCommandAllowed(command string) bool {
 	switch command {
 	case "", "help", "-h", "--help":
 		return true
-	case "status", "wait", "spawn", "dispatch", "release", "doctor", "config", "explain", "capabilities":
+	case "status", "wait", "spawn", "dispatch", "release", "collaborate", "doctor", "config", "explain", "capabilities":
 		return true
 	case "kinds", "models", "model", "roles", "role", "lint", "install", "env":
 		return true
