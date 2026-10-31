@@ -523,12 +523,22 @@ func TestDiffReportWaitingDispatchProducer(t *testing.T) {
 			}
 		}
 	}()
-	t.Cleanup(func() { close(stop); <-done })
+	// join stops the goroutine and waits for it; once, from the test body
+	// or from the cleanup when the body fails earlier.
+	var stopOnce sync.Once
+	join := func() {
+		stopOnce.Do(func() { close(stop) })
+		<-done
+	}
+	t.Cleanup(join)
 	oldOut, oldErr := platform.Stdout, platform.Stderr
 	var out, stderr bytes.Buffer
 	platform.Stdout, platform.Stderr = &out, &stderr
 	defer func() { platform.Stdout, platform.Stderr = oldOut, oldErr }()
 	code := cli.Run([]string{"dispatch", "worker", input, "--role", "implementer", "--timeout", "30s"}, f.env)
+	// The goroutine may still be finishing after the dispatch returned:
+	// join it before reading its error, so a late failure is never missed.
+	join()
 	select {
 	case err := <-goErr:
 		t.Fatalf("report goroutine failed: %v (dispatch code=%d)", err, code)
