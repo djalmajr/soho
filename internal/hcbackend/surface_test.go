@@ -71,12 +71,7 @@ func TestSurfaceCoversEveryMethod(t *testing.T) {
 		},
 		{"Transport.List", wantImplemented, nil},
 		{"Transport.Get", wantImplemented, nil},
-		{
-			"Transport.Send", wantUnsupported, func(b *backend) outcome {
-				rep := b.Send(context.Background(), transport.Target{ID: "t7"}, transport.Send{Text: "x"}, transport.Call{})
-				return outcome{valid: rep.Valid, kind: kind(rep.Err), msg: msg(rep.Err), zero: rep.Value == ""}
-			},
-		},
+		{"Transport.Send", wantImplemented, nil},
 		{"Transport.Keys", wantImplemented, nil},
 		{"Transport.Read", wantImplemented, nil},
 		{"Transport.Close", wantImplemented, nil},
@@ -175,12 +170,7 @@ func TestSurfaceCoversEveryMethod(t *testing.T) {
 				return outcome{valid: rep.Valid, kind: kind(rep.Err), msg: msg(rep.Err), zero: rep.Value == ""}
 			},
 		},
-		{
-			"Legacy.AgentListRaw", wantUnsupported, func(b *backend) outcome {
-				rep := b.AgentListRaw(context.Background(), transport.Call{})
-				return outcome{valid: rep.Valid, kind: kind(rep.Err), msg: msg(rep.Err), zero: rep.Value == nil}
-			},
-		},
+		{"Legacy.AgentListRaw", wantImplemented, nil},
 		{
 			"Legacy.AgentGetRaw", wantUnsupported, func(b *backend) outcome {
 				rep := b.AgentGetRaw(context.Background(), transport.Target{ID: "t7"}, transport.Call{})

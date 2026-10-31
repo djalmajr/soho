@@ -237,7 +237,8 @@ func (b *backend) Get(ctx context.Context, target transport.Target, call transpo
 	return transport.Reply[transport.Terminal]{Value: term, Valid: true}
 }
 
-// Send submits a prompt to a terminal and returns the merged output.
+// Send submits a prompt to the terminal and returns the merged output. It
+// ignores send.Queue: the herdr send has no idle guard to lift.
 func (b *backend) Send(ctx context.Context, target transport.Target, send transport.Send, call transport.Call) transport.Reply[string] {
 	res := AgentPrompt(target.ID, send.Text, b.env)
 	if !res.Ok {

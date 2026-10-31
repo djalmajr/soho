@@ -469,10 +469,39 @@ func (b *backend) Get(ctx context.Context, target transport.Target, call transpo
 	}
 }
 
-// Send is not supported with transport=hc: prompt delivery is the next
-// slice's `hc send` work.
+// Send pastes the prompt into the terminal and presses Enter: `hc send --if
+// idle -- <target> <text>` (the -- ends the options, so a text that starts
+// with a dash is a value), without --force, which is never passed. Queue
+// lifts the --if idle guard (a blocked worker still refuses it). The
+// reply's Value is the raw SendResult record: its started flag is the
+// immediate arrival proof and its turn the turn the send started. A worker
+// that sits on a person's prompt is FailureBlocked, a worker that is not
+// idle when the guard checks it is FailureBusy, and a finished or removed
+// terminal is FailureNotFound; anything else takes the backend's usual
+// mapping.
 func (b *backend) Send(ctx context.Context, target transport.Target, send transport.Send, call transport.Call) transport.Reply[string] {
-	return transport.Reply[string]{Err: unsupported("Send")}
+	args := []string{"send"}
+	if !send.Queue {
+		args = append(args, "--if", "idle")
+	}
+	args = append(args, "--", addr(target), send.Text)
+	out, err := b.run(ctx, call, args...)
+	if err != nil {
+		var hcErr *hc.Error
+		if errors.As(err, &hcErr) {
+			name := addr(target)
+			switch hcErr.Exit {
+			case hc.ExitBlocked:
+				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureBlocked, Message: fmt.Sprintf("worker %s is blocked: a person must answer its prompt", name)}}
+			case hc.ExitStatusMismatch:
+				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureBusy, Message: "worker " + name + " is not idle"}}
+			case hc.ExitFinished:
+				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureNotFound, Message: hcErr.Error(), Cause: err}}
+			}
+		}
+		return transport.Reply[string]{Err: failure(err)}
+	}
+	return transport.Reply[string]{Value: out, Valid: true}
 }
 
 // Keys sends one key on the terminal's channel (hc has one channel; the
@@ -641,9 +670,30 @@ func (b *backend) AgentReadRaw(ctx context.Context, target transport.Target, sou
 	return transport.Reply[string]{Err: unsupported("AgentReadRaw")}
 }
 
-// AgentListRaw is not supported with transport=hc.
+// AgentListRaw lists the session's raw terminal records: the terminals
+// array of `hc ls --label soho.session=<s> --json`, one JSON value each, so
+// callers that read fields beyond the terminal projection keep them. A
+// roster query names no target, so a failure is the backend being
+// unavailable, never a target not found.
 func (b *backend) AgentListRaw(ctx context.Context, call transport.Call) transport.Reply[[]json.RawMessage] {
-	return transport.Reply[[]json.RawMessage]{Err: unsupported("AgentListRaw")}
+	session, err := b.session(ctx, call)
+	if err != nil {
+		return transport.Reply[[]json.RawMessage]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: "cannot resolve the soho.session label: " + err.Error(), Cause: err}}
+	}
+	out, err := b.run(ctx, call, "ls", "--label", SessionLabel+"="+session)
+	if err != nil {
+		f := failure(err)
+		f.Kind = transport.FailureUnavailable
+		return transport.Reply[[]json.RawMessage]{Err: f}
+	}
+	if !json.Valid([]byte(out)) {
+		return transport.Reply[[]json.RawMessage]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned no JSON"}}
+	}
+	records := listRecords(out)
+	if records == nil {
+		return transport.Reply[[]json.RawMessage]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned no terminals list"}}
+	}
+	return transport.Reply[[]json.RawMessage]{Value: records, Valid: true}
 }
 
 // AgentGetRaw is not supported with transport=hc.
