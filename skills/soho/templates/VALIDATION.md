@@ -14,7 +14,7 @@ Template for the project's `VALIDATION.md`, the delivery contract of a change. T
 
 ## Test layers
 
-<one line per layer, in this order; the real command after running it, or `n/a: <reason>` for a layer that does not apply>
+<one line per layer, in this order; the real command after running it, or `n/a: <reason>` for a layer that does not apply, or `manual: <what runs it>` for a layer that is not one command>
 
 - unit: `<command>`
 - integration: `<command>`
