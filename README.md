@@ -129,3 +129,9 @@ go run ./cmd/soho-release build --version dev --dest dist
 Run focused tests while editing, then the integrated tests, race detector, formatting and vet gates before shipping. The integrated race suite uses a 30-minute package watchdog because native fixture CLIs are re-executed under instrumentation; individual behavior deadlines remain unchanged. The release tool builds six native artifacts plus `SHA256SUMS` into a fresh directory; it refuses an existing destination. Its publish command requires explicit release authority. Cross-compilation verifies compilation only; affected process, locking, installation and terminal behavior also need native target execution. Frozen compatibility JSON under `internal/testdata/legacy` preserves historical oracle bytes without a JavaScript generator. The [evaluation protocol](docs/evaluation-protocol.md) describes the native evaluator.
 
 For configuration, commands, and the report contract, see the [guide](docs/guide.md) and the [skill](skills/soho/SKILL.md). The [architecture](docs/architecture.md) explains the boundary between the CLI and optional plugin.
+
+## References
+
+External sources that shaped what soho does:
+
+- [agent-native](https://github.com/builderio/agent-native): the questions the `tester` answers before adding a test, and the rule that a check that exercised nothing is not a pass.

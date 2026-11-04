@@ -12,9 +12,9 @@ import (
 	textutil "github.com/djalmajr/soho/internal/text"
 )
 
-const EditRoles = "implementer designer tasker"
+const EditRoles = "implementer designer tasker tester"
 const ReviewRoles = "reviewer security-reviewer"
-const ReviewRolesAll = "reviewer security-reviewer ui-reviewer inspector"
+const ReviewRolesAll = "reviewer security-reviewer ui-reviewer inspector validator"
 
 var repeatedSpacesRE = regexp.MustCompile(` +`)
 

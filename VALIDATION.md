@@ -1,6 +1,6 @@
 # Pull request validation
 
-This document is the procedure a maintainer follows to validate a pull request before merge by running a real, supported `soho job` end to end on the exact pull request head, and to record the verdict (PASS, FAIL or BLOCKED) with raw evidence. The authority for every `job` command, flag, exit code, field and event is [docs/job-contract.md](docs/job-contract.md); this document adds the validation procedure on top of it and changes no product behavior.
+This document is the procedure a maintainer follows to validate a pull request before merge by running a real, supported `soho job` end to end on the exact pull request head, and to record the verdict (PASS, FAIL, NOT RUN or BLOCKED) with raw evidence. The authority for every `job` command, flag, exit code, field and event is [docs/job-contract.md](docs/job-contract.md); this document adds the validation procedure on top of it and changes no product behavior.
 
 ## Purpose and scope
 
@@ -38,6 +38,16 @@ If one of these is unavailable, the verdict is BLOCKED (see Verdict criteria), n
 `job start` creates the job workspace without forwarding environment variables. The supervisor therefore runs with the environment of the Herdr server and reads the user configuration file that environment resolves. `job supervise` finds the job by scanning `<job_repos_root>/*/*` from that configuration, and the other subcommands (`status`, `wait`, `events`, `collect`, `ack`, `cancel`, `close`, `list`) locate the job the same way from the configuration of the shell that runs them.
 
 The configuration that `job start` reads (for example through `XDG_CONFIG_HOME`) must resolve to the same user configuration file as the Herdr server's environment; otherwise the supervisor cannot find the job. Each side also resolves its own absolute state root: `SOHO_DIR` takes precedence over `SOHO_STATE_DIR`, which takes precedence over the `state_dir` setting, and the legacy `HERDR_SOHO_DIR` and `HERDR_SOHO_STATE_DIR` variables are copied when the new ones are absent, so a state override in only one environment is not a valid isolated setup. The machine keys are read only from the user configuration file, with no project or session override. Record the effective user configuration, the machine keys, the team and session configuration and the absolute state root for the invoking shell, the Herdr server environment and the worker environment, with secrets redacted, and stop, as BLOCKED, unless both job readers resolve the same stored job.
+
+## Test layers
+
+The repository gates run on the frozen head; `.github/workflows/check.yml` runs them as separate jobs per platform (ubuntu-24.04, macos-15, windows-2025) and per suite (native, race), with the formatting and vet gates (`gofmt -l` and `go vet ./...`) in the native job:
+
+- unit: `go test -timeout=30m ./...`
+- integration: n/a: there is no separate integration layer; `go test -race -timeout=45m ./...` re-runs the same suite under the race detector, and the job smoke below is the live end-to-end layer
+- contract: n/a: there is no separate contract suite; the `job` command contract of [docs/job-contract.md](docs/job-contract.md) is exercised by the job smoke below
+- e2e: the Procedure of this document, with the candidate binary built from the exact pull request head
+- mutation: n/a: manual today — a temporary change in a throwaway copy made with `soho mutation-copy` (guarded by `soho mutation-guard`) to see a test fail; the mutation tool will be chosen in a separate slice
 
 ## Build provenance
 
@@ -133,7 +143,7 @@ Observation is read-only. Never type into, answer a dialog in, or otherwise act 
 - `job wait` exits 0 for `done`, 7 for `blocked`, 9 for `timeout`, 19 for `failed` and 21 for `canceled`. It also returns when the job is `blocked`, and it exits 9 when its own `--timeout` bound elapses with the job still running, so read the `status` in the printed line instead of the exit code alone.
 - A `blocked` job is not finished. The validation does not answer it; record its events and `motivo`. `job wait` exits 7 for every `blocked` status, whether the reason is quota, a provider error or a dialog, so distinguish the cause using `motivo` and the recorded events, not exit codes. End the attempt with `<bin> job cancel --id <id>`, recording that command like the others. Cancel queues a stop request and returns without waiting for the finalization; it may commit and push unfinished files and create or retain a draft pull request. After cancel, observe the terminal `canceled` state, the `cleanup` event and the actual disappearance of the workspace, and retain all resulting evidence.
 
-## Verdict criteria (PASS, FAIL, BLOCKED)
+## Verdict criteria (PASS, FAIL, NOT RUN, BLOCKED)
 
 PASS requires all of these:
 
@@ -160,9 +170,11 @@ FAIL is any of these:
 
 BLOCKED is a prerequisite that is unavailable (no reachable Herdr server, authentication, sandbox, machine or team configuration, quota or provider capacity), or a job that ends `blocked` for a reason outside the product (quota, provider error, an unconfigured first-use dialog), recorded with its evidence. BLOCKED is never PASS and never waives a gate: the pull request stays unvalidated until a PASS is recorded.
 
+NOT RUN is a check this validation could run and did not: the prerequisites were available and the step or platform was simply not exercised, recorded with the reason. The distinction from BLOCKED is the precondition: a platform or prerequisite that is unavailable (no machine, no server, no authorization) is BLOCKED; one that was available and simply not exercised is NOT RUN. NOT RUN is never PASS: a procedure step or a platform that is NOT RUN forbids an overall PASS, like a FAIL.
+
 ## Native platform applicability (macOS, Linux, Windows)
 
-The smoke is native. Cross-compilation is not execution proof, and a run on one platform says nothing about another. Run it on each platform whose installation, process or terminal contract the pull request touches (macOS, Linux, Windows), and record the verdict and the evidence per platform. A platform that cannot be run is BLOCKED for that platform, with the reason.
+The smoke is native. Cross-compilation is not execution proof, and a run on one platform says nothing about another. Run it on each platform whose installation, process or terminal contract the pull request touches (macOS, Linux, Windows), and record the verdict and the evidence per platform. A platform that cannot be run (no machine available to run it) is BLOCKED for that platform, with the reason; a platform that could be run and was not is NOT RUN for that platform, with the reason.
 
 - Windows: the user configuration directory is `%APPDATA%\soho` unless `XDG_CONFIG_HOME` is set, in which case that variable takes precedence. The default `job_repos_root` is `%USERPROFILE%\repo.git`. A running Herdr server is required, because `job start` never starts one there.
 - macOS and Linux: the user configuration directory is `$XDG_CONFIG_HOME/soho` when that variable is set, otherwise `~/.config/soho`. The default `job_repos_root` is `~/repo.git`.

@@ -194,3 +194,16 @@ func readString(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// TestBuiltInEditRolesStayEditUnderReadOnlyOverride: the built-in list decides,
+// so a project override cannot turn an editing role into a review candidate.
+func TestBuiltInEditRolesStayEditUnderReadOnlyOverride(t *testing.T) {
+	env, root := reRoleFixture(t)
+	roles := filepath.Join(root, ".agents", "soho-roles")
+	for _, role := range []string{"implementer", "designer", "tasker", "tester"} {
+		reRoleWrite(t, roles, role, "---\nmode: read-only\n---\nbody\n")
+		if !core.RoleIsEdit(role, env, root) || !core.RoleIsEditReadOnly(role, env, root) {
+			t.Errorf("%s must stay an edit role under a read-only override", role)
+		}
+	}
+}
