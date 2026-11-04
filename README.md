@@ -36,25 +36,9 @@ go run ./cmd/soho install --version vX.Y.Z
 
 Run `soho env` once to resolve or materialize the embedded skill. To expose the skill to your agent's skill loader, copy the resource directory printed by `env` into that agent's supported skill directory, or keep an existing installed skill tree. `SOHO_SKILL_DIR` selects an explicit resource tree. No second legacy skill is installed.
 
+Run `soho setup` once per project: it writes the delegation block and the hooks. The skill's [What each assistant gets](skills/soho/SKILL.md#what-each-assistant-gets) lists every hook per assistant and what to commit.
+
 All commands, including `collaborate`, `send` and `find`, run through the same Go CLI. The [guide](docs/guide.md#worker-collaboration) documents the review cycle and `worker_messages` policy, and the [ephemeral job contract](docs/job-contract.md) specifies the dispatcher-driven `job` family (ephemeral jobs on a machine, with a draft pull request kept by the job supervisor). [VALIDATION.md](VALIDATION.md) describes how a maintainer validates a pull request before merge with a real job run on the exact pull request head.
-
-## Migrating from herdr-soho
-
-`soho` was named `herdr-soho` until `v0.3.0`. No former name is read anymore: not the `HERDR_SOHO_*` variables, the `herdr-soho` configuration files, the `.herdr-soho/` state directory, the `[herdr-soho:peer]` markers nor the `djalmajr.herdr-soho` plugin. Migrate each machine and project once:
-
-1. Install `soho` as described above. The installer leaves an old `herdr-soho` binary alone; remove it from your `PATH` (`soho doctor` shows where it is). On Windows its default directory was `LOCALAPPDATA/Programs/herdr-soho`.
-2. Run `soho setup` from each project root, in the mode the project already uses (`--local` or not). Without overwriting anything, it moves:
-   - the user configuration directory `herdr-soho` (or the older `herdr-agents`) into `soho`, `teams/` included;
-   - `.agents/herdr-soho.conf` (or `.agents/herdr-agents.conf`) to `.agents/soho.conf`;
-   - the `.herdr-soho/` state directory to `.soho/`, once no worker is left in its roster;
-   - the `<!-- herdr-soho:start -->` block and the `herdr-soho hook …` commands to their `soho` versions;
-   - the `djalmajr.herdr-soho` plugin to `djalmajr.soho`: for a release binary it installs the new plugin, points the Herdr shortcuts at `djalmajr.soho.*` (keeping a backup of `config.toml`) and unregisters the old plugin.
-
-   `soho setup --dry-run` lists the moves first. A name that exists on both sides is left in place and reported. Run it before any other `soho` command in that project: until the move, the commands that open the state dir refuse with exit 2, and `doctor` and `send` write nothing under `.soho/`.
-3. Rename each `HERDR_SOHO_<NAME>` variable to `SOHO_<NAME>`.
-4. Run `soho doctor`; it lists the former files, directories, variables and binary that are still present.
-
-Agents and scripts that called `herdr-soho` call `soho` with the same subcommands, and a job wake hook reads `SOHO_JOB_ID`, `SOHO_JOB_SEQ`, `SOHO_JOB_EVENT` and `SOHO_JOB_IDEMPOTENCY_KEY`.
 
 ## Optional Herdr plugin
 
@@ -72,8 +56,6 @@ Or install it from GitHub, for example with the tag of the installed release:
 ```sh
 herdr plugin install djalmajr/soho/plugin --ref <tag>
 ```
-
-A `djalmajr.herdr-soho` plugin registered before the rename is replaced by `soho setup`; see [Migrating from herdr-soho](#migrating-from-herdr-soho).
 
 The `team`, `roster` and `doctor` actions open the team panel on the workspace currently focused in Herdr (which can differ from the invoking shell's `HERDR_*` variables): `team` and `roster` start on the team view, `doctor` starts on the doctor view. The panel names the resolved workspace and cwd on its first line, and never refreshes by itself (`r` reloads). Its only writes are `x` (release the selected worker) and `g` (`gc --yes`), and only after their on-screen confirmation; every other CLI call runs with `SOHO_NOWRITE=1`.
 
