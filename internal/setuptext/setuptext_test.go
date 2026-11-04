@@ -150,16 +150,35 @@ func TestSetupTextCases(t *testing.T) {
 			}
 		}
 	})
-	t.Run("setupBlockResult: no end marker truncates everything after the start line (bash behavior)", func(t *testing.T) { // JS: "setupBlockResult: no end marker truncates everything after the start line (bash behavior)"
-		if got := SetupBlockResult(ptr("before\n" + SetupStart + "\nold stuff\n")); got == nil || *got != "before\n"+SetupBlock() {
-			t.Fatalf("result=%v", got)
+	t.Run("setupBlockResult: a start without its end is refused, the file is left to manual repair", func(t *testing.T) { // JS: "setupBlockResult: a start without its end is refused, the file is left to manual repair"
+		// DJA-701: the old bash behavior truncated everything after the
+		// start line; the Go path must instead refuse (nil), so an
+		// unpaired start can never delete the file's tail.
+		for _, c := range []string{"before\n" + SetupStart + "\nold stuff\n", SetupStart + "\nold stuff", "before\n" + LegacySetupStart + "\nold stuff\n", LegacySetupStart + "\nno end"} {
+			if got := SetupBlockResult(ptr(c)); got != nil {
+				t.Fatalf("unterminated start accepted: %v", got)
+			}
 		}
 	})
-	t.Run("setupBlockResult: end before start is consumed; a second start repeats the block; a line holding both counts as start", func(t *testing.T) { // JS: "setupBlockResult: end before start is consumed; a second start repeats the block; a line holding both counts as start"
-		cases := []struct{ in, want string }{{"x\n" + SetupEnd + "\n" + SetupStart + "\ny\n" + SetupEnd + "\n", "x\n" + SetupBlock()}, {"a\n" + SetupStart + "\n1\n" + SetupStart + "\n2\n" + SetupEnd + "\n", "a\n" + SetupBlock() + SetupBlock()}, {"a\n" + SetupStart + SetupEnd + "\nb\n", "a\n" + SetupBlock()}}
+	t.Run("setupBlockResult: invalid marker pairs are refused: end before start, nested start, both markers on one line", func(t *testing.T) { // JS: "setupBlockResult: invalid marker pairs are refused: end before start, nested start, both markers on one line"
+		// DJA-701: each shape the hunt probes named must come back nil,
+		// because the awk-era semantics (consume the stray end, repeat the
+		// block on a second start, treat a start|end line as a start)
+		// silently rewrote user content.
+		cases := []string{
+			"x\n" + SetupEnd + "\n" + SetupStart + "\ny\n" + SetupEnd + "\n", // end before start
+			SetupEnd + "\n", // end without any start
+			"a\n" + SetupStart + "\n1\n" + SetupStart + "\n2\n" + SetupEnd + "\n",             // a start inside another block
+			"a\n" + LegacySetupStart + "\n1\n" + SetupStart + "\n2\n" + LegacySetupEnd + "\n", // a start inside a legacy block
+			"a\n" + SetupStart + SetupEnd + "\nb\n",                                           // both markers on one line
+			SetupStart + LegacySetupStart + "\nx\n" + SetupEnd + "\n",                         // two starts on one line
+			SetupStart + "\nx\n" + SetupEnd + LegacySetupEnd + "\n",                           // two ends on one line
+			SetupStart + "\nx\n" + LegacySetupEnd + "\n",                                      // a current start closed by a legacy end
+			LegacySetupStart + "\nx\n" + SetupEnd + "\n",                                      // a legacy start closed by a current end
+		}
 		for _, c := range cases {
-			if got := SetupBlockResult(ptr(c.in)); got == nil || *got != c.want {
-				t.Errorf("markers result=%v, want %q", got, c.want)
+			if got := SetupBlockResult(ptr(c)); got != nil {
+				t.Errorf("invalid markers accepted: %v", got)
 			}
 		}
 	})

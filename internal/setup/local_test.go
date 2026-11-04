@@ -633,7 +633,7 @@ func TestSetupLocalJavaScriptHelperCases(t *testing.T) {
 		}},
 		{"assertSafeLocalRels: glob metas, injection and traversal die 4; plain, !/#-leading and trailing-slash names pass", func(t *testing.T) {
 			for _, rel := range []string{"cache", "!cache", "#cache", "nested/cache/"} {
-				assertSafeLocalRels([]string{rel}, "setup --local")
+				assertSafeLocalRels([]string{rel}, "setup --local", false)
 			}
 			for _, rel := range []string{"*", "a?b", "../escape", "cache "} {
 				func() {
@@ -642,18 +642,18 @@ func TestSetupLocalJavaScriptHelperCases(t *testing.T) {
 							t.Errorf("accepted unsafe rel %q", rel)
 						}
 					}()
-					assertSafeLocalRels([]string{rel}, "setup --local")
+					assertSafeLocalRels([]string{rel}, "setup --local", false)
 				}()
 			}
 			if runtime.GOOS == "windows" {
-				assertSafeLocalRels([]string{`a\nb`}, "setup --local")
+				assertSafeLocalRels([]string{`a\nb`}, "setup --local", false)
 			} else {
 				defer func() {
 					if recover() == nil {
 						t.Error(`accepted unsafe rel "a\nb"`)
 					}
 				}()
-				assertSafeLocalRels([]string{`a\nb`}, "setup --local")
+				assertSafeLocalRels([]string{`a\nb`}, "setup --local", false)
 			}
 		}},
 	}

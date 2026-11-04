@@ -351,11 +351,11 @@ func TestSetupLocalTM5BoundaryCases(t *testing.T) {
 						t.Errorf("accepted trailing whitespace in %q", rel)
 					}
 				}()
-				assertSafeLocalRels([]string{rel}, "setup")
+				assertSafeLocalRels([]string{rel}, "setup", false)
 			}()
 		}
 		for _, rel := range []string{"cache with spaces", "deep/cache/"} {
-			assertSafeLocalRels([]string{rel}, "setup")
+			assertSafeLocalRels([]string{rel}, "setup", false)
 		}
 	})
 	t.Run(`// JS: "localRels + stateDirShown: ./, interior . and relative-external spellings resolve before the containment test"`, func(t *testing.T) {

@@ -353,10 +353,21 @@ func localRels(root string, ctx *core.Config, env platform.Env, cwd string) []st
 	return rels
 }
 
-func refuseUnignorableStateDir(root string, ctx *core.Config, env platform.Env, cwd, cmdName string) {
+// changedNote is the state clause of the no-effect refusal messages: the
+// pre-migration pass can promise that nothing changed; the post-migration
+// pass, and the write-phase probes, may not, because the name migrations —
+// or an earlier write — may already have changed files.
+func changedNote(postMigration bool) string {
+	if postMigration {
+		return "files may already have changed"
+	}
+	return "no files were changed"
+}
+
+func refuseUnignorableStateDir(root string, ctx *core.Config, env platform.Env, cwd, cmdName string, postMigration bool) {
 	c := classifyLocalState(root, ctx, env, cwd)
 	if c.kind == "root" {
-		platform.DieFriction(fmt.Sprintf("%s: refusing to use state path '%s' because it is the root of a git work tree; a work tree root cannot be named in the git exclude file (no files were changed; point SOHO_DIR or state_dir at a directory inside — or outside — the work tree)", cmdName, c.shown), 4)
+		platform.DieFriction(fmt.Sprintf("%s: refusing to use state path '%s' because it is the root of a git work tree; a work tree root cannot be named in the git exclude file (%s; point SOHO_DIR or state_dir at a directory inside — or outside — the work tree)", cmdName, c.shown, changedNote(postMigration)), 4)
 	}
 	if c.kind == "symlink" {
 		reason := "it is a symlink to a directory inside the work tree and ignoring the symlink entry would not cover the path its target occupies"
@@ -365,7 +376,7 @@ func refuseUnignorableStateDir(root string, ctx *core.Config, env platform.Env, 
 		} else if c.link != "" {
 			reason = fmt.Sprintf("the path traverses the symlink '%s' below the work tree root and git cannot ignore a path through a symlink", c.link)
 		}
-		platform.DieFriction(fmt.Sprintf("%s: refusing to use state path '%s' because %s (no files were changed; point SOHO_DIR or state_dir at a directory that does not pass through an in-repo symlink)", cmdName, c.shown, reason), 4)
+		platform.DieFriction(fmt.Sprintf("%s: refusing to use state path '%s' because %s (%s; point SOHO_DIR or state_dir at a directory that does not pass through an in-repo symlink)", cmdName, c.shown, reason, changedNote(postMigration)), 4)
 	}
 }
 
@@ -379,7 +390,7 @@ func refuseTrackedLocal(root string, env platform.Env, cmdName string) {
 	}
 }
 
-func assertSafeLocalRels(rels []string, cmdName string) {
+func assertSafeLocalRels(rels []string, cmdName string, postMigration bool) {
 	for _, raw := range rels {
 		norm := raw
 		if platform.Current() == "win32" {
@@ -390,7 +401,7 @@ func assertSafeLocalRels(rels []string, cmdName string) {
 		for _, seg := range strings.Split(norm, "/") {
 			last, _ := utf8.DecodeLastRuneInString(seg)
 			if unicode.IsSpace(last) || last == '\ufeff' {
-				platform.DieFriction(fmt.Sprintf("%s: refusing to ignore state path '%s' via the git exclude file because a path segment ends in whitespace (git strips it from the exclude pattern, so the directory would stay untracked) (no files were changed; set SOHO_DIR or state_dir to a plain directory name such as .soho)", cmdName, raw), 4)
+				platform.DieFriction(fmt.Sprintf("%s: refusing to ignore state path '%s' via the git exclude file because a path segment ends in whitespace (git strips it from the exclude pattern, so the directory would stay untracked) (%s; set SOHO_DIR or state_dir to a plain directory name such as .soho)", cmdName, raw, changedNote(postMigration)), 4)
 			}
 		}
 		unsafe := strings.ContainsAny(norm, "*?[\\]\n\r")
@@ -400,7 +411,7 @@ func assertSafeLocalRels(rels []string, cmdName string) {
 			}
 		}
 		if unsafe {
-			platform.DieFriction(fmt.Sprintf("%s: refusing to ignore state path '%s' via the git exclude file because it contains git-ignore metacharacters or escapes the repo root (no files were changed; set SOHO_DIR or state_dir to a plain directory name such as .soho)", cmdName, raw), 4)
+			platform.DieFriction(fmt.Sprintf("%s: refusing to ignore state path '%s' via the git exclude file because it contains git-ignore metacharacters or escapes the repo root (%s; set SOHO_DIR or state_dir to a plain directory name such as .soho)", cmdName, raw, changedNote(postMigration)), 4)
 		}
 	}
 }
@@ -523,8 +534,13 @@ type localExcludePlan struct {
 	needed              []string
 }
 
-func preflightLocalExcludes(root string, rels []string, env platform.Env, cmdName string, active bool) *localExcludePlan {
-	assertSafeLocalRels(rels, cmdName)
+// createExcludeProbe is the real write test of the git exclude directory. The
+// permission check before it only sees the mode bits, which on Windows do not
+// show the ACL, so the second preflight pass still needs this write.
+var createExcludeProbe = os.CreateTemp
+
+func preflightLocalExcludes(root string, rels []string, env platform.Env, cmdName string, active, postMigration bool) *localExcludePlan {
+	assertSafeLocalRels(rels, cmdName, postMigration)
 	if !insideWorkTree(root, env) {
 		return nil
 	}
@@ -558,13 +574,13 @@ func preflightLocalExcludes(root string, rels []string, env platform.Env, cmdNam
 		}
 		up := filepath.Dir(probeDir)
 		if up == probeDir {
-			platform.DieFriction(fmt.Sprintf("%s: cannot write the git exclude file at %s (no files were changed)", cmdName, excl), 4)
+			platform.DieFriction(fmt.Sprintf("%s: cannot write the git exclude file at %s (%s)", cmdName, excl, changedNote(postMigration)), 4)
 		}
 		probeDir = up
 	}
 	if active {
-		if f, err := os.CreateTemp(probeDir, ".soho-probe-"); err != nil {
-			platform.DieFriction(fmt.Sprintf("%s: cannot write the git exclude file at %s (no files were changed)", cmdName, excl), 4)
+		if f, err := createExcludeProbe(probeDir, ".soho-probe-"); err != nil {
+			platform.DieFriction(fmt.Sprintf("%s: cannot write the git exclude file at %s (%s)", cmdName, excl, changedNote(postMigration)), 4)
 		} else {
 			name := f.Name()
 			_ = f.Close()
@@ -572,7 +588,7 @@ func preflightLocalExcludes(root string, rels []string, env platform.Env, cmdNam
 		}
 	} else {
 		if !localDirectoryWritable(probeDir) {
-			platform.DieFriction(fmt.Sprintf("%s: cannot write the git exclude file at %s (no files were changed)", cmdName, excl), 4)
+			platform.DieFriction(fmt.Sprintf("%s: cannot write the git exclude file at %s (%s)", cmdName, excl, changedNote(postMigration)), 4)
 		}
 	}
 	after, _ := excludeAfter(current, needed)
@@ -580,7 +596,7 @@ func preflightLocalExcludes(root string, rels []string, env platform.Env, cmdNam
 }
 
 func planLocalExcludes(root string, ctx *core.Config, env platform.Env, cwd, cmdName string) *localExcludePlan {
-	return preflightLocalExcludes(root, localRels(root, ctx, env, cwd), env, cmdName, false)
+	return preflightLocalExcludes(root, localRels(root, ctx, env, cwd), env, cmdName, false, false)
 }
 
 func localTarget(root string) string { return filepath.Join(root, localInstructionFile) }
@@ -593,7 +609,7 @@ func setupTargetPath(root, target string) string {
 }
 
 func ensureLocalExcludes(root string, rels []string, env platform.Env, cmdName string) (string, []string) {
-	pre := preflightLocalExcludes(root, rels, env, cmdName, true)
+	pre := preflightLocalExcludes(root, rels, env, cmdName, true, true)
 	if pre == nil {
 		return "", nil
 	}

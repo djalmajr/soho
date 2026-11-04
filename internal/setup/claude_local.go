@@ -46,19 +46,27 @@ func sharedHooksMigration(root string) (string, *string) {
 	hooks := value.(*jsonjs.Object)
 	changed := false
 	for _, event := range []string{"UserPromptSubmit", "SessionStart"} {
-		v, _ := hooks.Get(event)
-		rows := v.([]any)
-		kept := rows[:len(rows)-1]
 		old, exists := oldHooks.Get(event)
-		if oldRows, ok := old.([]any); ok && len(oldRows) > len(kept) {
-			changed = true
-			if len(kept) > 0 {
-				hooks.Set(event, kept)
+		oldRows, _ := old.([]any)
+		known := recognizedSohoCommands(event)
+		if !exists || !rowsContainSoho(oldRows, known) {
+			// The shared file carries no soho command for this event: the
+			// merge's appended row must not land in it; keep the file's own
+			// value (or the absence of it).
+			if exists {
+				hooks.Set(event, old)
 			} else {
 				hooks.Delete(event)
 			}
-		} else if exists {
-			hooks.Set(event, old)
+			continue
+		}
+		// Compare by content, not by row count: a mixed row survives the
+		// merge with only its foreign entries, so the count no longer tells
+		// whether the shared file still carries soho commands.
+		changed = true
+		target := rowsWithoutSoho(oldRows, known)
+		if len(target) > 0 {
+			hooks.Set(event, target)
 		} else {
 			hooks.Delete(event)
 		}
@@ -96,4 +104,144 @@ func sharedHooksTrackingWarning(status fileTracking) string {
 		warning += "; tracking status could not be determined; file left untouched"
 	}
 	return warning
+}
+
+// recognizedSohoCommands is the exact-command recognition of the generated
+// hook of an event plus the previous/legacy migration commands, the same
+// set the merge recognizes when it removes soho entries.
+func recognizedSohoCommands(event string) []string {
+	switch event {
+	case "UserPromptSubmit":
+		return []string{setuptext.SetupHookReminder(), setuptext.PreviousHookReminder(), setuptext.LegacyHookReminder()}
+	case "SessionStart":
+		return []string{setuptext.SetupHookDoctor(), setuptext.PreviousHookDoctor(), setuptext.LegacyHookDoctor()}
+	}
+	return nil
+}
+
+// rowsContainSoho reports whether any row of the event still carries a
+// soho-recognized command entry (exact command match only).
+func rowsContainSoho(rows []any, known []string) bool {
+	for _, row := range rows {
+		object, ok := row.(*jsonjs.Object)
+		if !ok {
+			continue
+		}
+		hooksValue, hasHooks := object.Get("hooks")
+		if !hasHooks || hooksValue == nil || isFalseValue(hooksValue) {
+			continue
+		}
+		list, ok := hooksValue.([]any)
+		if !ok {
+			continue
+		}
+		for _, hook := range list {
+			hookObject, ok := hook.(*jsonjs.Object)
+			if !ok {
+				continue
+			}
+			commandValue, _ := hookObject.Get("command")
+			if commandValue == nil || isFalseValue(commandValue) || jsonjs.IsUndefined(commandValue) {
+				continue
+			}
+			commandText, ok := commandValue.(string)
+			if !ok {
+				continue
+			}
+			for _, k := range known {
+				if commandText == k {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// rowsWithoutSoho returns the event's rows with the soho-recognized entries
+// removed from each row: a row that had soho commands among others keeps its
+// foreign entries, its other members and its place; a row that only had soho
+// commands leaves. The original rows are not mutated.
+func rowsWithoutSoho(rows []any, known []string) []any {
+	if rows == nil {
+		return nil
+	}
+	kept := make([]any, 0, len(rows))
+	for _, row := range rows {
+		if row == nil {
+			kept = append(kept, row)
+			continue
+		}
+		object, ok := row.(*jsonjs.Object)
+		if !ok {
+			kept = append(kept, row)
+			continue
+		}
+		hooksValue, hasHooks := object.Get("hooks")
+		if !hasHooks || hooksValue == nil || isFalseValue(hooksValue) {
+			kept = append(kept, row)
+			continue
+		}
+		list, ok := hooksValue.([]any)
+		if !ok {
+			kept = append(kept, row)
+			continue
+		}
+		filtered := make([]any, 0, len(list))
+		changed := false
+		for _, hook := range list {
+			hookObject, ok := hook.(*jsonjs.Object)
+			if !ok {
+				filtered = append(filtered, hook)
+				continue
+			}
+			commandValue, _ := hookObject.Get("command")
+			if commandValue == nil || isFalseValue(commandValue) || jsonjs.IsUndefined(commandValue) {
+				filtered = append(filtered, hook)
+				continue
+			}
+			commandText, ok := commandValue.(string)
+			if !ok {
+				// A non-text command: the merge already refused the file,
+				// so this row is kept unstrippable.
+				filtered = append(filtered, hook)
+				continue
+			}
+			matched := false
+			for _, k := range known {
+				if commandText == k {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				changed = true
+				continue
+			}
+			filtered = append(filtered, hook)
+		}
+		if !changed {
+			kept = append(kept, row)
+			continue
+		}
+		if len(filtered) == 0 {
+			continue
+		}
+		// Rebuild the row with its key order; the original stays as it was.
+		clone := jsonjs.O()
+		for _, key := range object.Keys() {
+			v, _ := object.Get(key)
+			if key == "hooks" {
+				v = filtered
+			}
+			clone.Set(key, v)
+		}
+		kept = append(kept, clone)
+	}
+	return kept
+}
+
+func isFalseValue(value any) bool {
+	b, ok := value.(bool)
+	return ok && !b
 }

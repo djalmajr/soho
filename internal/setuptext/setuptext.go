@@ -73,51 +73,97 @@ func PreviousHookDoctor() string    { return previousHookDoctorText }
 func LegacyHookReminder() string    { return legacyHookReminderText }
 func LegacyHookDoctor() string      { return legacyHookDoctorText }
 
-// SetupBlockResult returns the post-write text, or nil when an incomplete marked block must be refused.
+// SetupBlockResult returns the post-write text, or nil when an incomplete
+// or mispaired marked block must be refused. The markers are validated as
+// pairs in the original file: every start line must be closed later by its
+// own matching end line; an end with no open start, a start inside another
+// block, a cross-kind close, or a line holding both markers refuses, so a
+// broken block can never truncate the file or be silently rewritten.
 func SetupBlockResult(content *string) *string {
-	if content != nil && strings.Contains(*content, LegacySetupStart) && !strings.Contains(*content, SetupStart) {
-		return renameLegacyBlock(*content)
+	if content == nil {
+		block := SetupBlock()
+		return &block
+	}
+	text := *content
+	if strings.Contains(text, LegacySetupStart) && !strings.Contains(text, SetupStart) && !strings.Contains(text, SetupEnd) {
+		return renameLegacyBlock(text)
 	}
 	blockNoNewline := strings.TrimSuffix(SetupBlock(), "\n")
-	if content != nil && (strings.Contains(*content, SetupStart) || strings.Contains(*content, LegacySetupStart)) {
-		lines := strings.Split(*content, "\n")
-		if strings.HasSuffix(*content, "\n") {
-			lines = lines[:len(lines)-1]
+	lines := strings.Split(text, "\n")
+	if strings.HasSuffix(text, "\n") {
+		lines = lines[:len(lines)-1]
+	}
+	out := make([]string, 0, len(lines))
+	open := 0 // 0 closed, 1 a current start, 2 a legacy start
+	inserted := 0
+	for _, line := range lines {
+		starts := 0
+		ends := 0
+		if strings.Contains(line, SetupStart) || strings.Contains(line, LegacySetupStart) {
+			starts = 1
 		}
-		out := make([]string, 0, len(lines))
-		skip := false
-		for _, line := range lines {
-			if strings.Contains(line, SetupStart) || strings.Contains(line, LegacySetupStart) {
-				out = append(out, blockNoNewline)
-				skip = true
-				continue
-			}
-			if strings.Contains(line, SetupEnd) || strings.Contains(line, LegacySetupEnd) {
-				skip = false
-				continue
-			}
-			if !skip {
-				out = append(out, line)
-			}
+		if strings.Contains(line, SetupStart) && strings.Contains(line, LegacySetupStart) {
+			starts = 2
 		}
-		result := ""
-		if len(out) > 0 {
-			result = strings.Join(out, "\n") + "\n"
+		if strings.Contains(line, SetupEnd) || strings.Contains(line, LegacySetupEnd) {
+			ends = 1
 		}
-		if result == "" || !strings.Contains(result, SetupEnd) {
+		if strings.Contains(line, SetupEnd) && strings.Contains(line, LegacySetupEnd) {
+			ends = 2
+		}
+		if starts > 0 && ends > 0 {
+			return nil // a line holding both markers
+		}
+		if starts > 1 || ends > 1 {
 			return nil
 		}
-		return &result
+		if starts == 1 {
+			if open != 0 {
+				return nil // a start inside another block
+			}
+			out = append(out, blockNoNewline)
+			inserted++
+			open = 1
+			if strings.Contains(line, LegacySetupStart) {
+				open = 2
+			}
+			continue
+		}
+		if ends == 1 {
+			want := 1
+			if strings.Contains(line, LegacySetupEnd) {
+				want = 2
+			}
+			if open != want {
+				return nil // an end without a start, before one, or of the wrong kind
+			}
+			open = 0
+			continue
+		}
+		if open == 0 {
+			out = append(out, line)
+		}
 	}
-	head := ""
-	if content != nil {
-		value := *content
+	if open != 0 {
+		return nil // a start without its end
+	}
+	if inserted == 0 {
+		// No marker line: the block is appended after the file, separated
+		// by a blank line when the file needs one, exactly as before.
+		value := text
 		if value != "" && !strings.HasSuffix(value, "\n") {
 			value += "\n"
 		}
-		head = value + "\n"
+		result := value + "\n" + SetupBlock()
+		return &result
 	}
-	result := head + SetupBlock()
+	result := ""
+	if len(out) > 0 {
+		result = strings.Join(out, "\n") + "\n"
+	}
+	if result == "" || !strings.Contains(result, SetupEnd) {
+		return nil
+	}
 	return &result
 }
 
@@ -129,7 +175,13 @@ func renameLegacyBlock(content string) *string {
 	}
 	inside := false
 	for i, line := range lines {
+		if strings.Contains(line, LegacySetupStart) && strings.Contains(line, LegacySetupEnd) {
+			return nil // a line holding both markers
+		}
 		if strings.Contains(line, LegacySetupStart) {
+			if inside {
+				return nil // a start inside another block
+			}
 			inside = true
 		}
 		if inside {
@@ -137,9 +189,15 @@ func renameLegacyBlock(content string) *string {
 			line = strings.ReplaceAll(line, "HERDR_SOHO", "SOHO")
 		}
 		if strings.Contains(lines[i], LegacySetupEnd) {
+			if !inside {
+				return nil // an end without a start
+			}
 			inside = false
 		}
 		lines[i] = line
+	}
+	if inside {
+		return nil // a start without its end
 	}
 	result := strings.Join(lines, "\n")
 	if trailingNewline {
@@ -647,21 +705,13 @@ func settingsHooksResult(content *string) *string {
 }
 
 // putHook keeps every foreign hook entry (exact-command recognition only,
-// order preserved) and drops the entry that carries the generated command or
-// one of the exact recognized previous/legacy migration commands, so a rerun
-// is idempotent instead of stacking.
+// order and the row's other members, like matcher, preserved) and removes,
+// from each row, only the entries that carry the generated command or one
+// of the exact recognized previous/legacy migration commands, so a rerun is
+// idempotent instead of stacking. A row leaves only when its last command
+// was soho's; the new soho entry goes to the end.
 func putHook(hooks *jsonjs.Object, event, command string, recognized []string) bool {
-	matched := func(commandText string) bool {
-		if commandText == command {
-			return true
-		}
-		for _, previous := range recognized {
-			if commandText == previous {
-				return true
-			}
-		}
-		return false
-	}
+	known := append([]string{command}, recognized...)
 	value, exists := hooks.Get(event)
 	if !exists || value == nil || isFalse(value) {
 		value = []any{}
@@ -682,38 +732,67 @@ func putHook(hooks *jsonjs.Object, event, command string, recognized []string) b
 		}
 		hooksValue, hasHooks := object.Get("hooks")
 		if !hasHooks || hooksValue == nil || isFalse(hooksValue) {
-			hooksValue = []any{}
+			kept = append(kept, entry)
+			continue
 		}
-		entryHooks, arrayOK := hooksValue.([]any)
-		if !arrayOK {
+		filtered, changed, ok := stripSohoEntries(hooksValue, known)
+		if !ok {
 			return false
 		}
-		drop := false
-		for _, hook := range entryHooks {
-			hookObject, ok := hook.(*jsonjs.Object)
-			if !ok {
-				continue
-			}
-			commandValue, _ := hookObject.Get("command")
-			if commandValue == nil || isFalse(commandValue) || isUndefined(commandValue) {
-				commandValue = ""
-			}
-			commandText, ok := commandValue.(string)
-			if !ok {
-				return false
-			}
-			if matched(commandText) {
-				drop = true
-				break
-			}
-		}
-		if !drop {
+		if !changed {
 			kept = append(kept, entry)
+			continue
 		}
+		if len(filtered) == 0 {
+			continue
+		}
+		object.Set("hooks", filtered)
+		kept = append(kept, entry)
 	}
 	kept = append(kept, jsonjs.O("hooks", []any{jsonjs.O("type", "command", "command", command)}))
 	hooks.Set(event, kept)
 	return true
+}
+
+// stripSohoEntries returns the row's hooks list with the soho-recognized
+// entries removed, keeping every other entry and their order. changed is
+// true when a soho entry left; ok is false when a hook entry carries a
+// command that is not text, which the merge refuses.
+func stripSohoEntries(hooksList any, known []string) ([]any, bool, bool) {
+	list, ok := hooksList.([]any)
+	if !ok {
+		return nil, false, false
+	}
+	filtered := make([]any, 0, len(list))
+	changed := false
+	for _, hook := range list {
+		hookObject, ok := hook.(*jsonjs.Object)
+		if !ok {
+			filtered = append(filtered, hook)
+			continue
+		}
+		commandValue, _ := hookObject.Get("command")
+		if commandValue == nil || isFalse(commandValue) || isUndefined(commandValue) {
+			commandValue = ""
+		}
+		commandText, ok := commandValue.(string)
+		if !ok {
+			return nil, false, false
+		}
+		matched := false
+		for _, k := range known {
+			if commandText == k {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, hook)
+	}
+	return filtered, changed, true
 }
 
 func isFalse(value any) bool {
