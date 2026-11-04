@@ -420,7 +420,20 @@ func fitDisplayWidths(natural []int, weights []int, budget int) []int {
 // broad-to-specific order. The header text takes part in the column
 // sizing and the agent label is omitted with the agent column at narrow
 // widths.
-var sessionTableHeaders = []string{"Machine", "Workspace", "Pane", "Agent", "Status"}
+var sessionTableHeaders = []string{"Machine", "Workspace", "Pane", "ID", "Agent", "Status"}
+
+// sessionPaneID is the pane identifier both views show: the entry's
+// pane_id, or the pane parsed from its full reference; empty when neither
+// names one.
+func sessionPaneID(entry PickerEntry) string {
+	if id := StripPickerControls(pickerString(entry["pane_id"])); id != "" {
+		return id
+	}
+	if ref := sessionref.ParseRef(StripPickerControls(pickerString(entry["ref"]))); ref != nil {
+		return ref.PaneID
+	}
+	return ""
+}
 
 // sessionTableWorkspaceLabels disambiguates equal visible labels within
 // a machine without confusing display sanitization with group identity.
@@ -450,42 +463,52 @@ func sessionTableWorkspaceLabels(entries []PickerEntry) []string {
 // counting the one-column selection marker and letting the header
 // labels participate in the sizing. The agent column is dropped before
 // any essential column is compressed, so the pane column keeps as much
-// room as the window allows.
-func sessionTableWidths(cols [][]string, avail int) (widths []int, useAgent bool) {
+// room as the window allows. The identifier is never cut, because a
+// partial one can read as another pane: it stays whole while the other
+// columns keep at least one cell each, and leaves the row otherwise (the
+// detail line still carries the full reference).
+func sessionTableWidths(cols [][]string, avail int) (widths []int, useAgent, useID bool) {
 	if avail <= 0 {
-		return []int{0, 0, 0, 0, 0}, false
+		return make([]int, len(sessionTableHeaders)), false, false
 	}
-	natural := make([]int, 5)
-	for i := 0; i < 5; i++ {
+	natural := make([]int, len(sessionTableHeaders))
+	sum := 0
+	for i := range natural {
 		natural[i] = displayMax(cols[i])
 		if h := displayWidth(sessionTableHeaders[i]); h > natural[i] {
 			natural[i] = h
 		}
+		sum += natural[i]
 	}
-	if sum := natural[0] + natural[1] + natural[2] + natural[3] + natural[4]; 2+sum+8 <= avail {
-		return natural, true
+	if 2+sum+10 <= avail {
+		return natural, true, true
 	}
-	essential := []int{natural[0], natural[1], natural[2], natural[4]}
+	essential := []int{natural[0], natural[1], natural[2], natural[5]}
+	weights := []int{1, 1, 2, 1}
+	if budget := avail - 10 - natural[3]; budget >= len(essential) {
+		w := fitDisplayWidths(essential, weights, budget)
+		return []int{w[0], w[1], w[2], natural[3], 0, w[3]}, false, true
+	}
 	budget := avail - 8
 	if budget < 0 {
 		budget = 0
 	}
-	w := fitDisplayWidths(essential, []int{1, 1, 2, 1}, budget)
-	return []int{w[0], w[1], w[2], 0, w[3]}, false
+	w := fitDisplayWidths(essential, weights, budget)
+	return []int{w[0], w[1], w[2], 0, 0, w[3]}, false, false
 }
 
 // sessionTableLines renders the aligned, padded table: the fixed column
 // header row first, then one row per entry in the broad-to-specific
 // order machine, workspace, pane (the main cell via sessionPaneName, so
-// shell panes fall back to title/pane/ref), agent and status, each with
-// a two-column selection marker ("> " on the selected row). The selected
+// shell panes fall back to title/pane/ref), identifier, agent and status,
+// each with a two-column selection marker ("> " on the selected row). The selected
 // row is a full-width reverse band; the other rows stay plain so the
 // band reads as the marker.
 func sessionTableLines(entries []PickerEntry, sel int, avail int) []string {
 	if avail <= 0 || len(entries) == 0 {
 		return nil
 	}
-	cells := make([][]string, 5)
+	cells := make([][]string, len(sessionTableHeaders))
 	for i := range cells {
 		cells[i] = make([]string, len(entries))
 	}
@@ -494,10 +517,11 @@ func sessionTableLines(entries []PickerEntry, sel int, avail int) []string {
 		cells[0][i] = modalText(sessionMachineOf(entry))
 		cells[1][i] = workspaceLabels[i]
 		cells[2][i] = sessionPaneName(entry)
-		cells[3][i] = sessionAgentLabel(entry)
-		cells[4][i] = modalText(entry["status"])
+		cells[3][i] = modalText(sessionPaneID(entry))
+		cells[4][i] = sessionAgentLabel(entry)
+		cells[5][i] = modalText(entry["status"])
 	}
-	widths, useAgent := sessionTableWidths(cells, avail)
+	widths, useAgent, useID := sessionTableWidths(cells, avail)
 	pad := func(cell string, width int) string {
 		if width <= 0 {
 			return ""
@@ -513,10 +537,13 @@ func sessionTableLines(entries []PickerEntry, sel int, avail int) []string {
 			pad(col[1], widths[1]),
 			pad(col[2], widths[2]),
 		}
-		if useAgent {
+		if useID {
 			parts = append(parts, pad(col[3], widths[3]))
 		}
-		parts = append(parts, pad(col[4], widths[4]))
+		if useAgent {
+			parts = append(parts, pad(col[4], widths[4]))
+		}
+		parts = append(parts, pad(col[5], widths[5]))
 		line := marker + strings.Join(parts, "  ")
 		if displayWidth(line) > avail {
 			line = displaySlice(line, avail)
@@ -533,7 +560,7 @@ func sessionTableLines(entries []PickerEntry, sel int, avail int) []string {
 		if i == sel {
 			marker = "> "
 		}
-		rowCells := []string{cells[0][i], cells[1][i], cells[2][i], cells[3][i], cells[4][i]}
+		rowCells := []string{cells[0][i], cells[1][i], cells[2][i], cells[3][i], cells[4][i], cells[5][i]}
 		lines = append(lines, row(marker, rowCells, i == sel))
 	}
 	return lines
@@ -643,12 +670,7 @@ func sessionTreeNodes(entries []PickerEntry, avail int) (rows []sessionTreeRow, 
 			}
 			pane := sessionPaneName(entry)
 			status := StripPickerControls(pickerString(entry["status"]))
-			paneID := StripPickerControls(pickerString(entry["pane_id"]))
-			if paneID == "" {
-				if ref := sessionref.ParseRef(StripPickerControls(pickerString(entry["ref"]))); ref != nil {
-					paneID = ref.PaneID
-				}
-			}
+			paneID := sessionPaneID(entry)
 			suffix := ""
 			if paneID != "" {
 				suffix = " (" + paneID + ")"

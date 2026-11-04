@@ -273,12 +273,13 @@ func TestSessionRenderTableAlignedColumnsAndOrder(t *testing.T) {
 	lines := assertSessionBounded(t, out, 90, 20)
 	// Column geometry: pad(1) + marker(2) + machine(8) + 2 +
 	// workspace(13, including colliding workspace IDs) + 2 + pane(8) + 2 +
-	// agent(6) + 2 + status(7).
+	// id(2) + 2 + agent(6) + 2 + status(7).
 	const (
 		wsCol     = 13
 		paneCol   = 28
-		agentCol  = 38
-		statusCol = 46
+		idCol     = 38
+		agentCol  = 42
+		statusCol = 50
 	)
 	foundRows := 0
 	for _, line := range lines {
@@ -287,12 +288,12 @@ func TestSessionRenderTableAlignedColumnsAndOrder(t *testing.T) {
 		}
 		visible := stripSessionSGR(line)
 		// Column geometry: pad(1) + marker(2) + machine(8) + 2 +
-		// workspace(13) + 2 + pane(8) + 2 + agent(6) + 2 + status(7). The
-		// cell padding never doubles a space, so the column gaps are the
+		// workspace(13) + 2 + pane(8) + 2 + id(2) + 2 + agent(6) + 2 +
+		// status(7). The cell padding never doubles a space, so the column gaps are the
 		// only "  " runs at these offsets, which pins the alignment of
 		// every column.
 		runes := []rune(visible) // all fixture runes, including the middle dot, have width 1
-		if string(runes[11:13]) != "  " || string(runes[26:28]) != "  " || string(runes[36:38]) != "  " || string(runes[44:46]) != "  " {
+		if string(runes[11:13]) != "  " || string(runes[26:28]) != "  " || string(runes[36:38]) != "  " || string(runes[40:42]) != "  " || string(runes[48:50]) != "  " {
 			t.Fatalf("columns not aligned: %q", visible)
 		}
 		// Broad-to-specific order: machine < workspace < pane < agent <
@@ -324,7 +325,7 @@ func TestSessionRenderTableAlignedColumnsAndOrder(t *testing.T) {
 		if strings.Contains(line, modalHighlightOn) {
 			t.Fatalf("the column header must not be banded: %q", line)
 		}
-		for word, col := range map[string]int{"Machine": 3, "Workspace": wsCol, "Pane": paneCol, "Agent": agentCol, "Status": statusCol} {
+		for word, col := range map[string]int{"Machine": 3, "Workspace": wsCol, "Pane": paneCol, "ID": idCol, "Agent": agentCol, "Status": statusCol} {
 			if i := strings.Index(visible, word); i != col {
 				t.Fatalf("header word %q not at column %d: %q", word, col, visible)
 			}
@@ -1113,6 +1114,112 @@ func TestSessionRenderTreeIncomingOrderAndConnectors(t *testing.T) {
 	lines = assertSessionBounded(t, out, 90, 14)
 	if !strings.Contains(stripSessionSGR(strings.Join(lines, "\n")), "local (2)") {
 		t.Fatalf("a missing machine must read local:\n%s", out)
+	}
+}
+
+// sessionPaneIDEntries has a pane_id, a pane known only by its full
+// reference, and a pane with no identifier at all.
+func sessionPaneIDEntries() []PickerEntry {
+	base := func(name string) PickerEntry {
+		return PickerEntry{"name": name, "kind": "claude", "status": "idle", "workspace_label": "alpha", "workspace_id": "a1", "tab_label": "main", "cwd": "/tmp/a", "machine": "local"}
+	}
+	withID := base("with-pane-id")
+	withID["ref"] = "local/wAY:p1"
+	withID["pane_id"] = "wAY:p1"
+	fromRef := base("from-ref")
+	fromRef["ref"] = "local/w6S:pAY"
+	noID := base("no-id")
+	noID["ref"] = "not-a-ref"
+	return []PickerEntry{withID, fromRef, noID}
+}
+
+// sessionRowWith is the visible row carrying word, or "" without one.
+func sessionRowWith(lines []string, word string) string {
+	for _, line := range lines {
+		if visible := stripSessionSGR(line); strings.Contains(visible, word) {
+			return visible
+		}
+	}
+	return ""
+}
+
+func TestSessionRenderTableShowsThePaneIDOfTheTree(t *testing.T) {
+	entries := sessionPaneIDEntries()
+	table := assertSessionBounded(t, renderSessionTestFrame(entries, 0, 90, 20, false, false, ""), 90, 20)
+	tree := assertSessionBounded(t, renderSessionTestFrame(entries, 0, 90, 20, false, true, ""), 90, 20)
+
+	header := sessionRowWith(table, "Machine")
+	idCol := strings.Index(header, " ID ") + 1
+	if idCol == 0 || strings.Index(header, "Pane") >= idCol || idCol >= strings.Index(header, "Agent") {
+		t.Fatalf("the ID column must sit between Pane and Agent: %q", header)
+	}
+	for name, id := range map[string]string{"with-pane-id": "wAY:p1", "from-ref": "w6S:pAY"} {
+		row := sessionRowWith(table, name)
+		if got := strings.Index(row, id); got != idCol {
+			t.Fatalf("%s: id %q at column %d, want %d: %q", name, id, got, idCol, row)
+		}
+		if leaf := sessionRowWith(tree, name); !strings.Contains(leaf, "("+id+")") {
+			t.Fatalf("%s: the tree must show the same id %q: %q", name, id, leaf)
+		}
+	}
+	row := sessionRowWith(table, "no-id")
+	if got := strings.TrimSpace(string([]rune(row)[idCol : idCol+2])); got != "-" {
+		t.Fatalf("a pane with no identifier must read -, got %q: %q", got, row)
+	}
+	if leaf := sessionRowWith(tree, "no-id"); strings.Contains(leaf, "(") {
+		t.Fatalf("the tree must add no suffix without an identifier: %q", leaf)
+	}
+}
+
+func TestSessionTableWidthsIDStaysWholeOrLeaves(t *testing.T) {
+	entries := sessionPaneIDEntries()
+	// One long row keeps the essential columns wider than the narrow
+	// budgets, so the identifier competes with them for room.
+	entries[0]["name"] = strings.Repeat("long-pane-name-", 6)
+	sawNoAgent, sawNoID := false, false
+	for avail := 1; avail <= 140; avail++ {
+		lines := sessionTableLines(entries, 0, avail)
+		text := strings.Join(lines, "\n")
+		if strings.Contains(text, "wAY:") && !strings.Contains(text, "wAY:p1") {
+			t.Fatalf("avail %d: the identifier was cut:\n%s", avail, text)
+		}
+		if strings.Contains(text, "w6S:") && !strings.Contains(text, "w6S:pAY") {
+			t.Fatalf("avail %d: the identifier was cut:\n%s", avail, text)
+		}
+		hasAgent := strings.Contains(lines[0], "Agent")
+		hasID := strings.Contains(text, "w6S:pAY")
+		if hasAgent && !hasID {
+			t.Fatalf("avail %d: Agent must leave before the identifier:\n%s", avail, text)
+		}
+		sawNoAgent = sawNoAgent || (!hasAgent && hasID)
+		sawNoID = sawNoID || !hasID
+		for i, line := range lines {
+			if w := displayWidth(stripSessionSGR(line)); w > avail {
+				t.Fatalf("avail %d: line %d is %d columns: %q", avail, i, w, line)
+			}
+		}
+	}
+	if !sawNoAgent || !sawNoID {
+		t.Fatalf("the sweep must reach both narrow forms: no agent %v, no id %v", sawNoAgent, sawNoID)
+	}
+
+	// Without the identifier the row takes back its gap: a window that
+	// cannot hold it keeps the four essential columns in the same room.
+	widths, useAgent, useID := sessionTableWidths([][]string{{"local"}, {"alpha"}, {"pane"}, {"wAY:p1"}, {"claude"}, {"idle"}}, 14)
+	if useAgent || useID || widths[3] != 0 || widths[4] != 0 {
+		t.Fatalf("a window of 14 cannot hold the identifier: %v agent %v id %v", widths, useAgent, useID)
+	}
+	if got := widths[0] + widths[1] + widths[2] + widths[5]; got != 14-8 {
+		t.Fatalf("the four columns must take the whole budget: %v", widths)
+	}
+}
+
+func TestSessionRenderTablePaneIDIsSanitized(t *testing.T) {
+	entries := sessionPaneIDEntries()
+	entries[0]["pane_id"] = "wAY\x1b]0;evil\x07:p\x1b[31m1"
+	text := strings.Join(stripAll(sessionTableLines(entries, 1, 90)), "\n")
+	if strings.ContainsAny(text, "\x1b\x07") {
+		t.Fatalf("control bytes reached the table: %q", text)
 	}
 }
 
