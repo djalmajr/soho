@@ -171,7 +171,7 @@ func writePiInboundExtension(root string) bool {
 			platform.DieFriction("could not install extension into "+file, 4)
 		}
 	}
-	_, _ = fmt.Fprintf(platform.Stdout, "extension ready: %s (input inbound, pi)\n", file)
+	_, _ = fmt.Fprintf(platform.Stdout, "extension ready: %s (input + session, pi)\n", file)
 	return true
 }
 
