@@ -1034,34 +1034,40 @@ func reportLoadError(w io.Writer, err error) int {
 	return exitUsage
 }
 
-// redactingWriter wraps an output writer so that every line passes
-// through redactDenyTokens before it reaches the destination: a deny
-// literal held by a path or an error message never reaches stdout or
-// stderr. Bytes are buffered to the next line break, so a literal
-// split across several small writes (fmt prints its segments
-// separately) is still redacted; the lines this package writes always
-// end with a newline, so nothing is left in the buffer at the end of a
-// run.
+// redactingWriter wraps an output writer so that every unit passes
+// through maskRuleTokens and then redactDenyTokens before it reaches
+// the destination: a deny literal held by a path or an error message
+// never reaches stdout or stderr. The rule mask runs first because its
+// marker can itself hold a deny literal: the deny pass must see the
+// marker or a redacted literal would survive in it. The redacted unit
+// is everything buffered up to the last line break: fmt.Fprintf
+// delivers a whole message in a single Write, so a message holding
+// several lines reaches the passes together, and a literal or a token
+// split across several small writes is still handled. The rest, without
+// a line break, stays buffered, and this writer has no Flush: every
+// message of this package ends in a line break and leaves no rest.
 type redactingWriter struct {
 	w       io.Writer
 	toks    []denyToken
 	pending []byte
 }
 
-// Write appends b to the pending line and redacts and forwards each
-// complete line it forms.
+// Write appends b to the buffer and, for every unit it forms (from
+// the start of the buffer to its last line break), masks the built-in
+// rule tokens and then redacts the deny literals before forwarding
+// it.
 func (r *redactingWriter) Write(b []byte) (int, error) {
 	if len(r.toks) == 0 {
 		return r.w.Write(b)
 	}
 	r.pending = append(r.pending, b...)
 	for {
-		i := bytes.IndexByte(r.pending, '\n')
+		i := bytes.LastIndexByte(r.pending, '\n')
 		if i < 0 {
 			break
 		}
-		line := r.pending[:i+1]
-		if _, err := r.w.Write([]byte(redactDenyTokens(string(line), r.toks))); err != nil {
+		unit := r.pending[:i+1]
+		if _, err := r.w.Write([]byte(redactDenyTokens(maskRuleTokens(string(unit)), r.toks))); err != nil {
 			return len(b), err
 		}
 		r.pending = r.pending[i+1:]
@@ -1126,13 +1132,14 @@ func runContext(args []string, stdout, stderr io.Writer) int {
 }
 
 // walkContext walks dir in lexical order. Every entry gets the
-// forbidden-name check and the deny-token check on its path; files
-// and symlinks also get not-allowlisted; a symlink's target text gets
-// the deny-token, content-rule and forbidden-name checks (the link is
-// never followed or read, avoiding cycles and duplicate content);
-// only regular files are content-scanned. An entry whose path holds a
-// deny literal is printed under its ordinal in the walk, which no
-// accept entry can name.
+// forbidden-name check and the deny-token and content-rule checks on
+// its path; files and symlinks also get not-allowlisted; a symlink's
+// target text gets the deny-token, content-rule and forbidden-name
+// checks (the link is never followed or read, avoiding cycles and
+// duplicate content); only regular files are content-scanned. An entry
+// whose path holds a deny literal or matches a built-in content rule
+// is printed under its ordinal in the walk, which no accept entry can
+// name.
 func walkContext(dir string, allow []string, toks []denyToken, f *scanFindings) error {
 	ordinal := 0
 	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
@@ -1150,11 +1157,16 @@ func walkContext(dir string, allow []string, toks []denyToken, f *scanFindings) 
 		defer func() { ordinal++ }()
 		display := rel
 		key := rel
-		if lines := denyHitLines(rel, toks); len(lines) > 0 {
+		lines := denyHitLines(rel, toks)
+		hits := contentRuleHits(rel, scanRules)
+		if len(lines) > 0 || len(hits) > 0 {
 			display = redactedDisplay("", ordinal)
 			key = display
 			for _, ln := range lines {
 				f.addMeta("deny-token:"+strconv.Itoa(ln), display, "name")
+			}
+			for _, rule := range hits {
+				f.addMeta(rule, display, "name")
 			}
 		}
 		if d.IsDir() {
@@ -1209,8 +1221,9 @@ func walkContext(dir string, allow []string, toks []denyToken, f *scanFindings) 
 // link: the deny-token checks and the content rules run on the raw
 // os.Readlink target and, when sep is not "/", on its slash form
 // (slashLinkTarget, where a backslash is the OS separator); the
-// resolved name gets the deny-token checks and the forbidden-name
-// check. All findings are recorded at @link; addMeta de-duplicates.
+// resolved name gets the deny-token checks, the content rules and the
+// forbidden-name check. All findings are recorded at @link; addMeta
+// de-duplicates.
 // On Unix (sep == "/") the slash form equals the raw target, so the
 // findings and their order are exactly the historical ones.
 func checkContextLink(rel, target string, sep byte, display string, toks []denyToken, f *scanFindings) {
@@ -1234,6 +1247,9 @@ func checkContextLink(rel, target string, sep byte, display string, toks []denyT
 		for _, rule := range contentRuleHits(slashed, scanRules) {
 			f.addMeta(rule, display, "link")
 		}
+	}
+	for _, rule := range contentRuleHits(resolved, scanRules) {
+		f.addMeta(rule, display, "link")
 	}
 	if forbiddenName(resolved) {
 		f.addMeta("forbidden-name", display, "link")
@@ -1305,11 +1321,16 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 	for i, o := range img.Others {
 		display := "archive:" + o.Name
 		key := display
-		if lines := denyHitLines(o.Name, toks); len(lines) > 0 {
+		lines := denyHitLines(o.Name, toks)
+		hits := contentRuleHits(o.Name, scanRules)
+		if len(lines) > 0 || len(hits) > 0 {
 			display = redactedDisplay("archive:", i)
 			key = display
 			for _, ln := range lines {
 				f.addMeta("deny-token:"+strconv.Itoa(ln), display, "name")
+			}
+			for _, rule := range hits {
+				f.addMeta(rule, display, "name")
 			}
 		}
 		f.files++
@@ -1337,8 +1358,9 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 // on its link target (a genuine whiteout marker only records a
 // deletion and is skipped by those two rules), and regular files are
 // content-scanned. An entry whose raw or normalized name holds a deny
-// literal is printed under its ordinal in the layer, which no accept
-// entry can name.
+// literal or matches a built-in content rule is printed under its
+// ordinal in the layer, which no accept entry can name; a link target
+// never changes the display.
 func scanLayer(layer io.Reader, index int, toks []denyToken, f *scanFindings) error {
 	prefix := "layer" + strconv.Itoa(index) + ":"
 	ordinal := 0
@@ -1347,7 +1369,10 @@ func scanLayer(layer io.Reader, index int, toks []denyToken, f *scanFindings) er
 		name := normalizeArchiveName(h.Name)
 		display := prefix + name
 		key := name
-		if len(denyHitLines(h.Name, toks)) > 0 || len(denyHitLines(name, toks)) > 0 {
+		rawHits := contentRuleHits(h.Name, scanRules)
+		normHits := contentRuleHits(name, scanRules)
+		if len(denyHitLines(h.Name, toks)) > 0 || len(denyHitLines(name, toks)) > 0 ||
+			len(rawHits) > 0 || len(normHits) > 0 {
 			display = redactedDisplay(prefix, ordinal)
 			key = display
 		}
@@ -1366,9 +1391,15 @@ func scanLayer(layer io.Reader, index int, toks []denyToken, f *scanFindings) er
 		for _, ln := range denyHitLines(name, toks) {
 			f.addMeta("deny-token:"+strconv.Itoa(ln), display, "name")
 		}
+		for _, rule := range normHits {
+			f.addMeta(rule, display, "name")
+		}
 		if target := linkTargetName(name, h); target != "" {
 			for _, ln := range denyHitLines(target, toks) {
 				f.addMeta("deny-token:"+strconv.Itoa(ln), display, "link")
+			}
+			for _, rule := range contentRuleHits(target, scanRules) {
+				f.addMeta(rule, display, "link")
 			}
 		}
 		// A genuine whiteout records a deletion: its name is not
