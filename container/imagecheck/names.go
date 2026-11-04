@@ -1,13 +1,16 @@
 // names.go holds the pure name, link-target and metadata helpers of the
 // imagecheck scanner: deny-token coverage of entry names, symlink and
 // hard-link targets, tar owner names and PAX records, whiteout
-// recognition, and redaction of deny literals out of printed output.
+// recognition, and redaction of deny literals and built-in rule tokens
+// out of printed output.
 // The scanner calls these; they never do I/O.
 
 package main
 
 import (
 	"archive/tar"
+	"bytes"
+	"io"
 	"path"
 	"sort"
 	"strconv"
@@ -287,4 +290,95 @@ func redactPass(s string, items []redTok, placeholder func(line int) string) (st
 // "layer3:entry#17" or "entry#4" (context, empty prefix).
 func redactedDisplay(prefix string, ordinal int) string {
 	return prefix + "entry#" + strconv.Itoa(ordinal)
+}
+
+// maskRuleTokens replaces every match of every built-in content rule in s
+// with "[deny-token:<rule>]" (the aws-access-key match equal to
+// awsDocsExample does not count), so a token-shaped string held by a name,
+// a path or an error message never survives in output. The marker itself,
+// or a marker joined to the text next to it, can spell a token, so the
+// result is checked again: while any rule still occurs, every occurrence
+// is replaced by a single "?". Every match is longer than one byte, so
+// each such pass shortens the text and the loop ends with no rule left. A
+// line with no occurrence is returned byte for byte unchanged.
+func maskRuleTokens(s string) string {
+	out := s
+	changed := false
+	for _, r := range scanRules {
+		out = r.pattern.ReplaceAllStringFunc(out, func(m string) string {
+			if r.name == "aws-access-key" && m == awsDocsExample {
+				return m
+			}
+			changed = true
+			return "[deny-token:" + r.name + "]"
+		})
+	}
+	if !changed {
+		return s
+	}
+	for {
+		again := false
+		for _, r := range scanRules {
+			out = r.pattern.ReplaceAllStringFunc(out, func(m string) string {
+				if r.name == "aws-access-key" && m == awsDocsExample {
+					return m
+				}
+				again = true
+				return "?"
+			})
+		}
+		if !again {
+			return out
+		}
+	}
+}
+
+// ruleMaskWriter wraps an output writer so that every message passes
+// through maskRuleTokens before it reaches the destination: a
+// token-shaped string held by a name, a path or an error message never
+// reaches stdout or stderr, with or without a deny file. The masked
+// unit is everything buffered up to the last line break: fmt.Fprintf
+// delivers a whole message in a single Write, so a message holding
+// several lines (a private-key block in a name) reaches the rules
+// together and a multi-line match is not cut at its internal breaks,
+// and a token split across several small writes is still masked. The
+// rest, without a line break, stays buffered; Flush writes the final
+// partial unit, so output without a trailing newline is not lost. A
+// multi-line match that a caller splits across writes at an internal
+// break, or that has no line break after it in its Write, is not masked
+// whole; every message of this package is one Write ending in a line
+// break.
+type ruleMaskWriter struct {
+	w       io.Writer
+	pending []byte
+}
+
+// Write appends b to the buffer and masks and forwards every unit it
+// forms, where a unit runs from the start of the buffer to its last
+// line break.
+func (r *ruleMaskWriter) Write(b []byte) (int, error) {
+	r.pending = append(r.pending, b...)
+	for {
+		i := bytes.LastIndexByte(r.pending, '\n')
+		if i < 0 {
+			break
+		}
+		unit := r.pending[:i+1]
+		if _, err := r.w.Write([]byte(maskRuleTokens(string(unit)))); err != nil {
+			return len(b), err
+		}
+		r.pending = r.pending[i+1:]
+	}
+	return len(b), nil
+}
+
+// Flush masks and writes the partial unit left in the buffer, if any.
+func (r *ruleMaskWriter) Flush() error {
+	if len(r.pending) == 0 {
+		return nil
+	}
+	unit := string(r.pending)
+	r.pending = r.pending[:0]
+	_, err := r.w.Write([]byte(maskRuleTokens(unit)))
+	return err
 }
