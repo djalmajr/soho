@@ -95,7 +95,7 @@ RUN set -eu; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     mkdir -p /dl /out/bin; cd /dl; \
-    fetch() { curl -fsSL --proto '=https' --connect-timeout 30 --retry 5 --retry-delay 10 --retry-all-errors -o "$@"; }; \
+    fetch() { curl -fsSL --proto '=https' --connect-timeout 30 --speed-limit 1024 --speed-time 60 --max-time 600 --retry 5 --retry-delay 10 --retry-max-time 1200 --retry-all-errors -o "$@"; }; \
     fetch go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-${go_arch}.tar.gz"; \
     fetch node.txz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz"; \
     fetch claude "https://downloads.claude.ai/claude-code-releases/${CLAUDE_CODE_VERSION}/linux-${claude_arch}/claude"; \
