@@ -90,13 +90,19 @@ func PiOwnModelsWithConfig(ctx *core.Config, env platform.Env) []OwnModel {
 	}
 	var out []OwnModel
 	for _, p := range providers.Keys() {
+		// ownObjectValue turns null into an empty object; a null provider is
+		// malformed, not a provider without models.
+		if value, _ := providers.Get(p); value == nil {
+			return nil
+		}
 		provider := ownObjectValue(providers, p)
 		if provider == nil {
 			return nil
 		}
+		// A provider with only modelOverrides declares no model of its own.
 		raw, ok := provider.Get("models")
 		if !ok {
-			return nil
+			continue
 		}
 		list, ok := raw.([]any)
 		if !ok {
