@@ -4,8 +4,11 @@ package sessionmeta
 
 import (
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"syscall"
 	"testing"
 )
 
@@ -105,4 +108,14 @@ func TestWindowsUnsharedReaderRefusesPublication(t *testing.T) {
 	}
 	rec.Task = "new"
 	f.checkBytes("publication after reader closes", rec)
+}
+
+// TestWindowsAccessDeniedIsDeletePending pins the real error the CI
+// observed (mkdirat .orchestrator.lock: Access is denied): the native
+// ERROR_ACCESS_DENIED creation failure classifies as delete-pending.
+func TestWindowsAccessDeniedIsDeletePending(t *testing.T) {
+	err := &fs.PathError{Op: "mkdirat", Path: lockName, Err: syscall.ERROR_ACCESS_DENIED}
+	if !deletePending(err, runtime.GOOS) {
+		t.Fatalf("ERROR_ACCESS_DENIED on %s is not delete-pending", runtime.GOOS)
+	}
 }

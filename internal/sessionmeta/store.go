@@ -468,9 +468,36 @@ func acquireLock(sessRoot *os.Root) (os.FileInfo, *os.File, error) {
 // passes its own writer-then-open through this argument, so no mutable
 // package state is involved.
 func acquireLockOpen(sessRoot *os.Root, open func(*os.Root) (*os.File, error)) (os.FileInfo, *os.File, error) {
+	return acquireLockWith(sessRoot, mkdirOwnLock, open)
+}
+
+// mkdirOwnLock is the production creation of the own lock directory.
+func mkdirOwnLock(sessRoot *os.Root) error {
+	return sessRoot.Mkdir(lockName, 0o700)
+}
+
+// deletePending reports whether a failed creation of the lock directory
+// is the Windows delete-pending collision: a lock directory another
+// writer has just removed stays delete-pending while any handle on it is
+// open, and creating the name again fails with ERROR_ACCESS_DENIED
+// instead of "exists". That is contention, as the registry lock in
+// internal/core/copies.go already treats it. On every other platform a
+// permission error is a genuine failure.
+func deletePending(err error, goos string) bool {
+	return goos == "windows" && errors.Is(err, os.ErrPermission)
+}
+
+// acquireLockWith runs the bounded acquisition with the named per-call
+// creation and open; production passes mkdirOwnLock and openOwnLockDir.
+// An existing lock is retried until the deadline, which then reports
+// ErrLocked. A Windows delete-pending collision is retried the same way,
+// but the deadline then reports the original creation error, so a
+// genuine permission failure is still named.
+func acquireLockWith(sessRoot *os.Root, mkdir func(*os.Root) error, open func(*os.Root) (*os.File, error)) (os.FileInfo, *os.File, error) {
 	deadline := time.Now().Add(lockWait)
 	for {
-		if err := sessRoot.Mkdir(lockName, 0o700); err == nil {
+		err := mkdir(sessRoot)
+		if err == nil {
 			info, err := sessRoot.Lstat(lockName)
 			if err != nil || !info.IsDir() {
 				return nil, nil, errors.New("sessionmeta: the lock identity changed")
@@ -487,10 +514,15 @@ func acquireLockOpen(sessRoot *os.Root, open func(*os.Root) (*os.File, error)) (
 				return nil, nil, errors.New("sessionmeta: the lock identity changed")
 			}
 			return info, handle, nil
-		} else if !os.IsExist(err) {
+		}
+		pending := deletePending(err, runtime.GOOS)
+		if !os.IsExist(err) && !pending {
 			return nil, nil, fmt.Errorf("sessionmeta: the lock cannot be created: %v", err)
 		}
 		if time.Now().Add(lockPoll).After(deadline) {
+			if pending {
+				return nil, nil, fmt.Errorf("sessionmeta: the lock cannot be created: %v", err)
+			}
 			return nil, nil, ErrLocked
 		}
 		time.Sleep(lockPoll)
