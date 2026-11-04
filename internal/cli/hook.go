@@ -27,7 +27,10 @@ var hookStdin io.Reader = os.Stdin
 // cmdHook is native, advisory hook handling. A hook outside Herdr is silent;
 // doctor warnings never block the host agent's session startup. `reminder` and
 // `inbound` first check the peer messages of a UserPromptSubmit prompt
-// (peerauth) and may block it; the reminder itself stays Herdr-only.
+// (peerauth) and may block it; the reminder itself stays Herdr-only. With
+// --codex or --pi the reminder and the doctor stay silent in a worker pane:
+// the reminder says to delegate and the doctor's warnings are for the
+// orchestrator, and a worker acts on neither; the peer check always runs.
 func cmdHook(args []string, env platform.Env, cwd string) int {
 	codex := len(args) == 2 && (args[1] == "--codex" || args[1] == "--pi")
 	if (len(args) != 1 && !codex) || (args[0] != "reminder" && args[0] != "doctor" && args[0] != "inbound") {
@@ -38,11 +41,16 @@ func cmdHook(args []string, env platform.Env, cwd string) int {
 			return 0
 		}
 		if args[0] == "reminder" && backend.New(env).Runtime.Caller().Inside {
-			fmt.Fprintln(platform.Stdout, hookReminder)
+			if !(codex && hookCallerInRoster(env, cwd)) {
+				fmt.Fprintln(platform.Stdout, hookReminder)
+			}
 		}
 		return 0
 	}
 	if !backend.New(env).Runtime.Caller().Inside {
+		return 0
+	}
+	if codex && hookCallerInRoster(env, cwd) {
 		return 0
 	}
 	if project := env.Get("CLAUDE_PROJECT_DIR"); project != "" {
@@ -73,6 +81,34 @@ func cmdHook(args []string, env platform.Env, cwd string) int {
 		}
 	}
 	return 0
+}
+
+// hookCallerInRoster reports whether the calling pane holds a row of this
+// project's roster: the pane is a worker another orchestrator opened (the
+// same recognition as the roster row check in spawn, internal/spawn), and the
+// reminder and the doctor's warnings are for the orchestrator, not for it.
+// The identity comes from the transport's pure Caller() (the inherited
+// environment, never a server query) and the read is pure: the configuration
+// loads read-only (SOHO_NOWRITE) and the roster file is read in place. A
+// roster that cannot be read is the orchestrator: the hooks keep printing,
+// and the check creates nothing.
+func hookCallerInRoster(env platform.Env, cwd string) bool {
+	caller := backend.New(env).Runtime.Caller()
+	pane, workspace := caller.PaneID, caller.WorkspaceID
+	if pane == "" || workspace == "" {
+		return false
+	}
+	readEnv := env.Clone()
+	readEnv["SOHO_NOWRITE"] = "1"
+	ctx := core.LoadConfig(readEnv, cwd)
+	dir := filepath.Join(core.StateRootPath(&ctx, readEnv, cwd), workspace)
+	for _, line := range core.RosterRows(dir) {
+		f := strings.Split(line, "\t")
+		if len(f) > 3 && f[0] != "" && f[1] == pane {
+			return true
+		}
+	}
+	return false
 }
 
 // hookPromptInput is the part of a UserPromptSubmit input the check reads.

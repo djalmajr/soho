@@ -524,7 +524,16 @@ func nowriteReadInvocation(args []string) bool {
 	case "inventory":
 		return len(args) == 2 && args[1] == "--json"
 	case "hook":
-		return len(args) == 2 && (args[1] == "reminder" || args[1] == "doctor" || args[1] == "inbound")
+		// Advisory and never blocking: an exit 2 from a UserPromptSubmit
+		// hook would block the host assistant's prompt. The --codex/--pi
+		// forms run the same check and reminder or doctor, so they pass the
+		// gate too: a hook never fails or blocks a prompt because of the
+		// read-only refusal.
+		sub := len(args) >= 2 && (args[1] == "reminder" || args[1] == "doctor" || args[1] == "inbound")
+		if !sub {
+			return false
+		}
+		return len(args) == 2 || (len(args) == 3 && (args[2] == "--codex" || args[2] == "--pi"))
 	case "collaborate":
 		return len(args) >= 3 && len(args) <= 4 && args[1] == "status" && args[2] != "" && !strings.HasPrefix(args[2], "-") && (len(args) == 3 || args[3] == "--json")
 	case "capabilities":

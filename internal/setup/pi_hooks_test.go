@@ -69,7 +69,7 @@ func TestSetupPiPlanNoHooksAndLocal(t *testing.T) {
 		t.Run(arg, func(t *testing.T) {
 			root, env, ctx := codexSetupFixture(t)
 			code, out, warning := runSetupWrite([]string{arg}, ctx, env, root)
-			if code != 0 || (arg != "--no-hooks" && !strings.Contains(out, "# would write "+root+"/.pi/extensions/soho-inbound.ts: input extension (pi)")) {
+			if code != 0 || (arg != "--no-hooks" && !strings.Contains(out, "# would write "+root+"/.pi/extensions/soho-inbound.ts: input + session extension (pi)")) {
 				t.Fatalf("code=%d out=%s warning=%s", code, out, warning)
 			}
 			if _, err := os.Stat(piFile(root)); !os.IsNotExist(err) {
@@ -135,14 +135,31 @@ async function cleanup() {
 const watchdog = setTimeout(async () => { await cleanup(); process.exit(3); }, 45000);
 try {
   const { default: install } = await import(pathToFileURL(process.argv[2]).href);
-  let handler;
-  install({ on: (event, callback) => { if (event !== "input" || handler) throw Error("unexpected registration"); handler = callback; } });
-  if (!handler) throw Error("missing input handler");
+  const handlers = {}, registered = [];
+  install({ on: (event, callback) => { registered.push(event); handlers[event] = callback; } });
+  if (!handlers.input) throw Error("missing input handler");
   const notifications = [];
-  const result = await handler(JSON.parse(process.argv[3]), { ui: { notify: (message, type) => notifications.push({ message, type }) } });
+  const ctx = { ui: { notify: (message, type) => notifications.push({ message, type }) } };
+  const results = [];
+  for (const spec of JSON.parse(process.argv[3])) {
+    const handler = handlers[spec.type];
+    if (!handler) { results.push({ type: spec.type, error: "no handler" }); continue; }
+    const payload = { type: spec.type };
+    if (spec.reason !== undefined) payload.reason = spec.reason;
+    if (spec.source !== undefined) payload.source = spec.source;
+    if (spec.text !== undefined) payload.text = spec.text;
+    let value;
+    try {
+      value = await handler(payload, ctx);
+    } catch (error) {
+      results.push({ type: spec.type, error: String(error) });
+      continue;
+    }
+    results.push({ type: spec.type, result: value === undefined ? null : value });
+  }
   const closedAtReturn = children.every(child => child.closedForTest);
   await cleanup();
-  process.stdout.write(JSON.stringify({ result, notifications, calls, closedAtReturn, closed: children.every(child => child.closedForTest) }));
+  process.stdout.write(JSON.stringify({ registered, results, notifications, calls, closedAtReturn, closed: children.every(child => child.closedForTest) }));
 } finally { clearTimeout(watchdog); await cleanup(); }
 `
 
@@ -237,7 +254,7 @@ func TestSetupPiExtensionRuntime(t *testing.T) {
 			if tc.mode == "plain" {
 				text = "ordinary input"
 			}
-			event, _ := json.Marshal(map[string]string{"type": "input", "source": tc.source, "text": text})
+			event, _ := json.Marshal([]map[string]any{{"type": "input", "source": tc.source, "text": text}})
 			// A safety deadline only (DJA-468). It starts before node does, so it
 			// leaves the harness watchdog (45 s, counted from node's start) 75 s of
 			// room for a slow Windows runner to start node and the fake soho.
@@ -258,9 +275,19 @@ func TestSetupPiExtensionRuntime(t *testing.T) {
 				t.Fatalf("node=%s err=%v elapsed=%v stdout=%s stderr=%s", node, err, elapsed, output, stderr.String())
 			}
 			var got struct {
-				Result struct {
-					Action string `json:"action"`
-				} `json:"result"`
+				Registered []string `json:"registered"`
+				Results    []struct {
+					Type   string
+					Error  string
+					Result struct {
+						Action  string
+						Message *struct {
+							CustomType string
+							Content    string
+							Display    bool
+						} `json:"message"`
+					} `json:"result"`
+				} `json:"results"`
 				Notifications []struct{ Message, Type string } `json:"notifications"`
 				Calls         []struct {
 					Executable string
@@ -271,7 +298,7 @@ func TestSetupPiExtensionRuntime(t *testing.T) {
 				Closed         bool `json:"closed"`
 				ClosedAtReturn bool `json:"closedAtReturn"`
 			}
-			if err := json.Unmarshal(output, &got); err != nil || !got.Closed {
+			if err := json.Unmarshal(output, &got); err != nil || !got.Closed || len(got.Results) != 1 {
 				t.Fatalf("result=%s parse=%v", output, err)
 			}
 			if tc.mode != "absent" && !got.ClosedAtReturn {
@@ -281,8 +308,8 @@ func TestSetupPiExtensionRuntime(t *testing.T) {
 			if tc.mode == "block" {
 				wantAction = "handled"
 			}
-			if got.Result.Action != wantAction {
-				t.Fatalf("action=%s want=%s result=%s", got.Result.Action, wantAction, output)
+			if got.Results[0].Result.Action != wantAction {
+				t.Fatalf("action=%s want=%s result=%s", got.Results[0].Result.Action, wantAction, output)
 			}
 			if tc.mode == "plain" {
 				if len(got.Calls) != 0 || len(got.Notifications) != 0 {
@@ -323,4 +350,232 @@ func TestSetupPiExtensionRuntime(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The session delivery (DJA-668): session_start arms it for the startup and
+// new reasons only; the first before_agent_start after the arm runs the
+// reminder (the UserPromptSubmit JSON with the empty prompt on the stdin)
+// and the doctor, each under its deadline, disarms, and returns their text
+// as the soho-reminder message. A second before_agent_start delivers nothing;
+// resume, fork and reload never arm. A failed or timed-out helper notifies a
+// warning and never blocks or throws.
+func TestSetupPiSessionDelivery(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skipf("node not in PATH: %v", err)
+	}
+	const reminderOut = "fixture reminder line"
+	const doctorOut = "soho doctor: fixture warning"
+	for _, tc := range []struct {
+		name, mode, reason, cause string
+		wantMessages              int
+		wantCalls                 int
+	}{
+		{"startup delivers once", "text", "startup", "", 1, 2},
+		{"new delivers once", "text", "new", "", 1, 2},
+		{"resume does not deliver", "text", "resume", "", 0, 0},
+		{"fork does not deliver", "text", "fork", "", 0, 0},
+		{"reload does not deliver", "text", "reload", "", 0, 0},
+		{"no text no message", "empty", "startup", "", 0, 2},
+		{"absent notifies", "absent", "startup", "ENOENT", 0, 2},
+		{"nonzero notifies", "nonzero", "startup", "exit 7", 0, 2},
+		{"timeout notifies", "timeout", "startup", "timeout", 0, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, env, ctx := codexSetupFixture(t)
+			code, _, warning := runSetupWrite(nil, ctx, env, root)
+			if code != 0 {
+				t.Fatalf("setup=%d warning=%s", code, warning)
+			}
+			file := piFile(root)
+			if tc.mode == "timeout" {
+				// Only this test copy lowers the timeout; production stays at ten seconds.
+				const testTimeoutMS = 150
+				raw, err := os.ReadFile(file)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Count(string(raw), "const timeoutMS = 10000;") != 1 {
+					t.Fatal("missing timeout constant")
+				}
+				raw = []byte(strings.Replace(string(raw), "const timeoutMS = 10000;", fmt.Sprintf("const timeoutMS = %d;", testTimeoutMS), 1))
+				if err := os.WriteFile(file, raw, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bin := filepath.Join(t.TempDir(), "bin with spaces")
+			if err := os.MkdirAll(bin, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if tc.mode != "absent" {
+				if runtime.GOOS == "windows" {
+					rules := []fakecli.Rule{
+						{Argv: []string{"hook", "reminder", "--pi"}, Stdout: reminderOut},
+						{Argv: []string{"hook", "doctor", "--pi"}, Stdout: doctorOut},
+					}
+					if tc.mode == "timeout" {
+						rules[0].Delay, rules[1].Delay = 2000, 2000
+					}
+					if tc.mode == "nonzero" {
+						rules[0].Code, rules[1].Code = 7, 7
+					}
+					if tc.mode == "empty" {
+						rules[0].Stdout, rules[1].Stdout = "", ""
+					}
+					if _, err := fakecli.Install(t, bin, "soho", rules); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					script := "#!" + node + "\nrequire('node:fs').readFileSync(0,'utf8');\n"
+					switch tc.mode {
+					case "timeout":
+						script += "setTimeout(()=>process.exit(0),2000);\n"
+					case "nonzero":
+						script += "process.exit(7);\n"
+					case "empty":
+						// exit 0 with no output: the hooks succeed but deliver nothing
+					default:
+						script += "const a=process.argv.slice(2).join(' ');\n"
+						script += "if(a==='hook reminder --pi')process.stdout.write(" + mustJSONString(reminderOut) + ");\n"
+						script += "if(a==='hook doctor --pi')process.stdout.write(" + mustJSONString(doctorOut) + ");\n"
+					}
+					if err := os.WriteFile(filepath.Join(bin, "soho"), []byte(script), 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			harness := filepath.Join(t.TempDir(), "pi harness.mjs")
+			if err := os.WriteFile(harness, []byte(piRuntimeHarness), 0600); err != nil {
+				t.Fatal(err)
+			}
+			events, _ := json.Marshal([]map[string]any{
+				{"type": "session_start", "reason": tc.reason},
+				{"type": "before_agent_start"},
+				{"type": "before_agent_start"},
+			})
+			// A safety deadline only (DJA-468): it starts before node does, so it
+			// leaves the harness watchdog (45 s, counted from node's start) 75 s of
+			// room for a slow Windows runner to start node and the fake soho.
+			commandCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer cancel()
+			command := exec.CommandContext(commandCtx, node, harness, file, string(events))
+			command.Dir = root
+			command.Env = []string{"HOME=" + env["HOME"], "USERPROFILE=" + env["HOME"], "XDG_CONFIG_HOME=" + env["XDG_CONFIG_HOME"], "TMPDIR=" + env["TMPDIR"], "PATH=" + bin, "SOHO_FAKECLI_CONFIG=" + bin}
+			if runtime.GOOS == "windows" {
+				command.Env = append(command.Env, "SystemRoot="+os.Getenv("SystemRoot"))
+			}
+			var stderr bytes.Buffer
+			command.Stderr = &stderr
+			output, err := command.Output()
+			if err != nil || stderr.Len() != 0 {
+				t.Fatalf("node=%s err=%v stdout=%s stderr=%s", node, err, output, stderr.String())
+			}
+			var got struct {
+				Registered []string `json:"registered"`
+				Results    []struct {
+					Type   string
+					Error  string
+					Result *struct {
+						Message *struct {
+							CustomType string
+							Content    string
+							Display    bool
+						} `json:"message"`
+					} `json:"result"`
+				} `json:"results"`
+				Notifications []struct{ Message, Type string } `json:"notifications"`
+				Calls         []struct {
+					Executable string
+					Argv       []string
+					Stdin      string
+					Options    struct{ Shell bool }
+				} `json:"calls"`
+				Closed         bool `json:"closed"`
+				ClosedAtReturn bool `json:"closedAtReturn"`
+			}
+			if err := json.Unmarshal(output, &got); err != nil || !got.Closed || len(got.Results) != 3 {
+				t.Fatalf("result=%s parse=%v", output, err)
+			}
+			if !reflect.DeepEqual(got.Registered, []string{"input", "session_start", "before_agent_start"}) {
+				t.Fatalf("registered=%v: %s", got.Registered, output)
+			}
+			for _, result := range got.Results {
+				if result.Error != "" {
+					t.Fatalf("handler threw: %s", output)
+				}
+			}
+			if tc.mode != "absent" && !got.ClosedAtReturn {
+				t.Fatalf("handler returned with a running helper before fixture cleanup: %s", output)
+			}
+			if len(got.Calls) != tc.wantCalls {
+				t.Fatalf("calls=%d want=%d: %s", len(got.Calls), tc.wantCalls, output)
+			}
+			messages := 0
+			for _, result := range got.Results {
+				if result.Result == nil || result.Result.Message == nil {
+					continue
+				}
+				messages++
+				if result.Result.Message.CustomType != "soho-reminder" || !result.Result.Message.Display {
+					t.Fatalf("message=%+v: %s", result.Result.Message, output)
+				}
+			}
+			if messages != tc.wantMessages {
+				t.Fatalf("messages=%d want=%d: %s", messages, tc.wantMessages, output)
+			}
+			if tc.mode == "text" && tc.wantMessages > 0 {
+				if got.Results[1].Result == nil || got.Results[1].Result.Message == nil || got.Results[1].Result.Message.Content != reminderOut+"\n"+doctorOut {
+					t.Fatalf("no delivered content: %s", output)
+				}
+				if got.Results[2].Result != nil && got.Results[2].Result.Message != nil {
+					t.Fatalf("second before_agent_start delivered again: %s", output)
+				}
+				if len(got.Calls) != 2 || !reflect.DeepEqual(got.Calls[0].Argv, []string{"hook", "reminder", "--pi"}) || got.Calls[0].Options.Shell {
+					t.Fatalf("reminder spawn=%s", output)
+				}
+				var payload map[string]string
+				if err := json.Unmarshal([]byte(got.Calls[0].Stdin), &payload); err != nil || !reflect.DeepEqual(payload, map[string]string{"hook_event_name": "UserPromptSubmit", "prompt": "", "cwd": root}) {
+					t.Fatalf("reminder stdin=%q parse=%v", got.Calls[0].Stdin, err)
+				}
+				if !reflect.DeepEqual(got.Calls[1].Argv, []string{"hook", "doctor", "--pi"}) || got.Calls[1].Options.Shell {
+					t.Fatalf("doctor spawn=%s", output)
+				}
+				if len(got.Notifications) != 0 {
+					t.Fatalf("unexpected notifications=%s: %s", got.Notifications, output)
+				}
+				return
+			}
+			for _, result := range got.Results {
+				if result.Result != nil && result.Result.Message != nil {
+					t.Fatalf("an unexpected message was delivered: %s", output)
+				}
+			}
+			if tc.reason != "startup" || tc.mode == "empty" {
+				if len(got.Notifications) != 0 {
+					t.Fatalf("unexpected notifications=%s: %s", got.Notifications, output)
+				}
+				return
+			}
+			want := []struct{ message, kind string }{
+				{"soho: session reminder did not run (" + tc.cause + ")", "warning"},
+				{"soho: session doctor did not run (" + tc.cause + ")", "warning"},
+			}
+			if len(got.Notifications) != len(want) {
+				t.Fatalf("notifications=%s: %s", got.Notifications, output)
+			}
+			for i, w := range want {
+				if got.Notifications[i].Message != w.message || got.Notifications[i].Type != w.kind {
+					t.Fatalf("notifications=%s want=%s: %s", got.Notifications, w, output)
+				}
+			}
+		})
+	}
+}
+
+func mustJSONString(value string) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
 }

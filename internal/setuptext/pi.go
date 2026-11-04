@@ -31,11 +31,11 @@ import { spawn } from "node:child_process";
 
 const timeoutMS = 10000;
 
-function checkPeer(text) {
+function runHook(args, payload) {
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn("soho", ["hook", "inbound", "--pi"], {
+      child = spawn("soho", args, {
         shell: false,
         stdio: ["pipe", "pipe", "ignore"],
       });
@@ -69,17 +69,27 @@ function checkPeer(text) {
       else finish({ output });
     });
     child.stdin.on("error", () => {});
-    child.stdin.end(
-      JSON.stringify({
-        hook_event_name: "UserPromptSubmit",
-        prompt: text,
-        cwd: process.cwd(),
-      }),
-    );
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+
+function checkPeer(text) {
+  return runHook(["hook", "inbound", "--pi"], {
+    hook_event_name: "UserPromptSubmit",
+    prompt: text,
+    cwd: process.cwd(),
   });
 }
 
 export default function (pi) {
+  // The reminder and the doctor's warnings reach the model once per session
+  // start: session_start arms the delivery for the startup and new reasons,
+  // and the first before_agent_start after the arm runs both hooks (a
+  // ten-second deadline each), disarms, and returns their text as a custom
+  // message. A failed or timed-out hook notifies a warning and the session
+  // goes on; the hooks never block, and the text always comes from the
+  // soho binary, so nothing is delivered outside Herdr.
+  let deliveryArmed = false;
   pi.on("input", async (event, ctx) => {
     // The prefilter accepts the current format's opening tag
     // [soho:peer:<id>] and the previous format's marker [soho:peer]
@@ -120,6 +130,42 @@ export default function (pi) {
       return { action: "handled" };
     }
     return { action: "continue" };
+  });
+  pi.on("session_start", (event) => {
+    if (event.reason === "startup" || event.reason === "new") {
+      deliveryArmed = true;
+    }
+  });
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (!deliveryArmed) return;
+    deliveryArmed = false;
+    const text: string[] = [];
+    for (const [name, args, payload] of [
+      [
+        "reminder",
+        ["hook", "reminder", "--pi"],
+        { hook_event_name: "UserPromptSubmit", prompt: "", cwd: process.cwd() },
+      ],
+      ["doctor", ["hook", "doctor", "--pi"], {}],
+    ]) {
+      const result = await runHook(args, payload);
+      if (result.error) {
+        ctx.ui.notify(
+          "soho: session " + name + " did not run (" + result.error + ")",
+          "warning",
+        );
+        continue;
+      }
+      if (result.output.trim() !== "") text.push(result.output.trim());
+    }
+    if (text.length === 0) return;
+    return {
+      message: {
+        customType: "soho-reminder",
+        content: text.join("\n"),
+        display: true,
+      },
+    };
   });
 }
 `

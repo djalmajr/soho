@@ -242,9 +242,33 @@ func TestDoctorInboundNamesUnprotectedAgents(t *testing.T) {
 	var out strings.Builder
 	s := &Say{Out: &out}
 	doctorUnprotectedAgents(&ctx, env, root, s)
-	want := "warn   review (codex) is not protected: no 'soho hook inbound --codex' in UserPromptSubmit (run 'soho setup')\nwarn   plan (pi) is not protected: no inbound hook for pi yet (run 'soho setup')\n"
+	want := "warn   review (codex) is not protected: no 'soho hook reminder --codex' in UserPromptSubmit (run 'soho setup')\nwarn   plan (pi) is not protected: no inbound hook for pi yet (run 'soho setup')\n"
 	if out.String() != want {
 		t.Fatalf("output = %q\nwant     %q", out.String(), want)
+	}
+	// A previous-generation install (only the synchronous inbound line)
+	// keeps counting as protected and gets the separate gap warning naming
+	// the missing lines; the merged pair clears it.
+	codexFile := filepath.Join(root, ".codex", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(codexFile), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(codexFile, []byte(`{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	doctorUnprotectedAgents(&ctx, env, root, s)
+	gapWant := "warn   review (codex) is missing 'soho hook reminder --codex' in UserPromptSubmit and 'soho hook doctor --codex' in SessionStart (run 'soho setup')\nwarn   plan (pi) is not protected: no inbound hook for pi yet (run 'soho setup')\n"
+	if out.String() != gapWant {
+		t.Fatalf("gap output = %q\nwant         %q", out.String(), gapWant)
+	}
+	if err := os.WriteFile(codexFile, []byte(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"soho hook doctor --codex"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex"}]}]}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	doctorUnprotectedAgents(&ctx, env, root, s)
+	if want := "warn   plan (pi) is not protected: no inbound hook for pi yet (run 'soho setup')\n"; out.String() != want {
+		t.Fatalf("pair output = %q\nwant          %q", out.String(), want)
 	}
 	// A managed extension from an older release is named as out of date,
 	// not as a missing hook; the current text clears the warning.
@@ -257,7 +281,7 @@ func TestDoctorInboundNamesUnprotectedAgents(t *testing.T) {
 	}
 	out.Reset()
 	doctorUnprotectedAgents(&ctx, env, root, s)
-	staleWant := "warn   review (codex) is not protected: no 'soho hook inbound --codex' in UserPromptSubmit (run 'soho setup')\nwarn   plan (pi) may not be protected: .pi/extensions/soho-inbound.ts differs from this soho's inbound extension (run 'soho setup')\n"
+	staleWant := "warn   plan (pi) may not be protected: .pi/extensions/soho-inbound.ts differs from this soho's inbound extension (run 'soho setup')\n"
 	if out.String() != staleWant {
 		t.Fatalf("stale output = %q\nwant           %q", out.String(), staleWant)
 	}
@@ -266,8 +290,8 @@ func TestDoctorInboundNamesUnprotectedAgents(t *testing.T) {
 	}
 	out.Reset()
 	doctorUnprotectedAgents(&ctx, env, root, s)
-	if want := "warn   review (codex) is not protected: no 'soho hook inbound --codex' in UserPromptSubmit (run 'soho setup')\n"; out.String() != want {
-		t.Fatalf("current output = %q\nwant             %q", out.String(), want)
+	if out.Len() != 0 {
+		t.Fatalf("current output = %q", out.String())
 	}
 	if err := os.Remove(extension); err != nil {
 		t.Fatal(err)
@@ -282,30 +306,35 @@ func TestDoctorInboundNamesUnprotectedAgents(t *testing.T) {
 }
 
 func TestDoctorCodexInboundHook(t *testing.T) {
+	const notProtectedLine = "warn   review (codex) is not protected: no 'soho hook reminder --codex' in UserPromptSubmit (run 'soho setup')"
+	const gapBothLine = "warn   review (codex) is missing 'soho hook reminder --codex' in UserPromptSubmit and 'soho hook doctor --codex' in SessionStart (run 'soho setup')"
+	const gapDoctorLine = "warn   review (codex) is missing 'soho hook doctor --codex' in SessionStart (run 'soho setup')"
 	for _, tc := range []struct {
-		name, raw string
-		protected bool
+		name, raw, wantLine string
 	}{
-		{"missing", "", false}, {"empty", `{"hooks":{}}`, false}, {"wrong event", `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`, false},
-		{"without flag", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound"}]}]}}`, false},
-		{"wrong type", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"prompt","command":"soho hook inbound --codex"}]}]}}`, false},
-		{"installed", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`, true},
-		{"async true", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex","async":true}]}]}}`, false},
-		{"async false", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex","async":false}]}]}}`, true},
-		{"async null", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex","async":null}]}]}}`, false},
-		{"async string", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex","async":"false"}]}]}}`, false},
-		{"async number", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex","async":0}]}]}}`, false},
-		{"async array", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex","async":[]}]}]}}`, false},
-		{"async object", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex","async":{}}]}]}}`, false},
-		{"numeric-command", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":7}]}]}}`, false},
-		{"bad-row-before-protected", `{"hooks":{"UserPromptSubmit":[7,{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`, false},
-		{"bad-row-after-protected", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]},7]}}`, false},
-		{"bad-command-before-protected", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":7},{"type":"command","command":"soho hook inbound --codex"}]}]}}`, false},
-		{"bad-command-after-protected", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex"},{"command":7}]}]}}`, false},
-		{"bad-command-true", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":true},{"type":"command","command":"soho hook inbound --codex"}]}]}}`, false},
-		{"bad-command-array", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":[]},{"type":"command","command":"soho hook inbound --codex"}]}]}}`, false},
-		{"bad-command-object", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":{}},{"type":"command","command":"soho hook inbound --codex"}]}]}}`, false},
-		{"null-row-before-protected", `{"hooks":{"UserPromptSubmit":[null,{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`, true},
+		{"missing", "", notProtectedLine}, {"empty", `{"hooks":{}}`, notProtectedLine}, {"wrong event", `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"soho hook reminder --codex"}]}]}}`, notProtectedLine},
+		{"without flag", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder"}]}]}}`, notProtectedLine},
+		{"wrong type", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"prompt","command":"soho hook reminder --codex"}]}]}}`, notProtectedLine},
+		{"legacy inbound", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`, gapBothLine},
+		{"reminder only", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex"}]}]}}`, gapDoctorLine},
+		{"doctor only", `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"soho hook doctor --codex"}]}]}}`, notProtectedLine},
+		{"merged pair", `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"soho hook doctor --codex"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex"}]}]}}`, ""},
+		{"async reminder true", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex","async":true}]}]}}`, notProtectedLine},
+		{"async reminder false", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex","async":false}]}]}}`, gapDoctorLine},
+		{"async reminder null", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex","async":null}]}]}}`, notProtectedLine},
+		{"async reminder string", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex","async":"false"}]}]}}`, notProtectedLine},
+		{"async reminder number", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex","async":0}]}]}}`, notProtectedLine},
+		{"async reminder array", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex","async":[]}]}]}}`, notProtectedLine},
+		{"async reminder object", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex","async":{}}]}]}}`, notProtectedLine},
+		{"numeric-command", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":7}]}]}}`, notProtectedLine},
+		{"bad-row-before-protected", `{"hooks":{"UserPromptSubmit":[7,{"hooks":[{"type":"command","command":"soho hook reminder --codex"}]}]}}`, notProtectedLine},
+		{"bad-row-after-protected", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex"}]},7]}}`, notProtectedLine},
+		{"bad-command-before-protected", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":7},{"type":"command","command":"soho hook reminder --codex"}]}]}}`, notProtectedLine},
+		{"bad-command-after-protected", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex"},{"command":7}]}]}}`, notProtectedLine},
+		{"bad-command-true", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":true},{"type":"command","command":"soho hook reminder --codex"}]}]}}`, notProtectedLine},
+		{"bad-command-array", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":[]},{"type":"command","command":"soho hook reminder --codex"}]}]}}`, notProtectedLine},
+		{"bad-command-object", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":{}},{"type":"command","command":"soho hook reminder --codex"}]}]}}`, notProtectedLine},
+		{"null-row-before-protected", `{"hooks":{"UserPromptSubmit":[null,{"hooks":[{"type":"command","command":"soho hook reminder --codex"}]}]}}`, gapDoctorLine},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newInboundDoctor(t)
@@ -320,12 +349,14 @@ func TestDoctorCodexInboundHook(t *testing.T) {
 			ctx := core.Config{Entries: map[string]core.ConfigEntry{}}
 			var out strings.Builder
 			doctorUnprotectedAgents(&ctx, d.env, d.cwd, &Say{Out: &out})
-			has := strings.Contains(out.String(), "review (codex) is not protected")
-			if has == tc.protected {
-				t.Fatalf("protected=%v warnings=%s", tc.protected, out.String())
+			line := ""
+			for _, l := range strings.Split(out.String(), "\n") {
+				if strings.HasPrefix(l, "warn   review (codex)") {
+					line = l
+				}
 			}
-			if has && !strings.HasSuffix(strings.TrimSpace(out.String()), "(run 'soho setup')") {
-				t.Fatalf("no setup advice: %s", out.String())
+			if line != tc.wantLine {
+				t.Fatalf("want %q:\n%s", tc.wantLine, out.String())
 			}
 		})
 	}

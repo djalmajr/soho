@@ -134,7 +134,7 @@ func writeHooksSection(root string, env platform.Env, local bool) []string {
 		if err := platform.AtomicWrite(codex, *merged); err != nil {
 			platform.DieFriction("could not merge hooks into "+codex, 4)
 		}
-		_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit inbound, codex)\n", codex)
+		_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder + SessionStart doctor, codex)\n", codex)
 		ready = append(ready, codexHookRel)
 	}
 	// The generated hooks are the portable PATH commands 'soho hook
@@ -171,7 +171,7 @@ func writePiInboundExtension(root string) bool {
 			platform.DieFriction("could not install extension into "+file, 4)
 		}
 	}
-	_, _ = fmt.Fprintf(platform.Stdout, "extension ready: %s (input inbound, pi)\n", file)
+	_, _ = fmt.Fprintf(platform.Stdout, "extension ready: %s (input + session, pi)\n", file)
 	return true
 }
 
@@ -199,8 +199,8 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	if wantPlan {
 		CmdPlan(withoutSetupArg(args, "--plan"), ctx, env, cwd)
 		if !containsSetupArg(args, "--no-hooks") {
-			_, _ = fmt.Fprintf(platform.Stdout, "# would merge into %s/.codex/hooks.json: UserPromptSubmit hook (codex)\n", platform.ProjectRoot(env, cwd))
-			_, _ = fmt.Fprintf(platform.Stdout, "# would write %s/.pi/extensions/soho-inbound.ts: input extension (pi)\n", platform.ProjectRoot(env, cwd))
+			_, _ = fmt.Fprintf(platform.Stdout, "# would merge into %s/.codex/hooks.json: UserPromptSubmit reminder + SessionStart doctor (codex)\n", platform.ProjectRoot(env, cwd))
+			_, _ = fmt.Fprintf(platform.Stdout, "# would write %s/.pi/extensions/soho-inbound.ts: input + session extension (pi)\n", platform.ProjectRoot(env, cwd))
 			if containsSetupArg(args, "--local") || (!containsSetupArg(args, "--target") && core.Cfg(ctx, "setup_target", "canonical", env) == "local") {
 				root := platform.ProjectRoot(env, cwd)
 				rels := append(localRels(root, ctx, env, cwd), localHookRels(root, env)...)
@@ -353,8 +353,8 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 					}
 				}
 			}
-			_, _ = fmt.Fprintf(platform.Stdout, "# would merge into %s/.codex/hooks.json: UserPromptSubmit hook (codex)\n", root)
-			_, _ = fmt.Fprintf(platform.Stdout, "# would write %s/.pi/extensions/soho-inbound.ts: input extension (pi)\n", root)
+			_, _ = fmt.Fprintf(platform.Stdout, "# would merge into %s/.codex/hooks.json: UserPromptSubmit reminder + SessionStart doctor (codex)\n", root)
+			_, _ = fmt.Fprintf(platform.Stdout, "# would write %s/.pi/extensions/soho-inbound.ts: input + session extension (pi)\n", root)
 		}
 		if modeLocal {
 			rels := localRels(root, ctx, env, cwd)
