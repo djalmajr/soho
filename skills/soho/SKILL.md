@@ -428,6 +428,28 @@ soho setup --local --no-hooks   # keep the fork's Claude settings file untouched
 soho setup --no-hooks           # instruction block only
 ```
 
+### What each assistant gets
+
+`setup` generates exactly this. Do not add other soho hooks by hand.
+
+| Assistant | File | Event | Command | What it does |
+|---|---|---|---|---|
+| Claude Code | `.claude/settings.json` | `UserPromptSubmit` | `soho hook reminder` | Checks peer messages, then prints the delegation reminder inside Herdr |
+| Claude Code | `.claude/settings.json` | `SessionStart` | `soho hook doctor` | Prints `doctor` warnings inside Herdr; never blocks the session |
+| Codex | `.codex/hooks.json` | `UserPromptSubmit` | `soho hook inbound --codex` | Checks peer messages |
+| pi | `.pi/extensions/soho-inbound.ts` | input extension | `soho hook inbound --pi` | Checks peer messages |
+| `grok`, `agy`, `gemini`, `cursor`, `opencode`, `copilot` | none | — | — | `doctor` warns that a live worker of that kind `is not protected` |
+
+Codex and pi do not get the reminder or the session-start doctor yet; equivalents are planned. An orchestrator on either one runs `soho init`, which runs the doctor.
+
+**What goes in Git.** `setup` never commits, so these are yours to commit:
+
+- **Default mode:** commit the instruction block and the three hook files. A linked worktree holds only tracked files, so a hook file left uncommitted is missing from every worktree a worker runs in.
+- **`--local` mode:** hook files that Git does not track yet stay out of Git (see below), so that project's worktrees do not have them. A hook file Git already tracks stays tracked and `setup` can still change it, so check the diff before you commit.
+- **After a release:** the generated files carry no version, so they change only when a release changes their text. Run `soho setup` and commit the diff. While a pi worker from the roster is running, `doctor` names a pi extension that differs from the binary's.
+- **Trust:** committing a hook grants no trust. Codex and pi still need the project trusted on each machine (see below).
+- **`.agents/soho-roles/`:** project role overrides are versioned, so commit them. `setup` adds no ignore rule for this folder and does not carry a `.agents/herdr-roles` rule from `.gitignore`; delete that old rule. It does carry one from `.git/info/exclude`, which only that clone sees. A project that ignores all of `.agents/` needs `.agents/*` and `!.agents/soho-roles/` instead, because Git cannot re-include a folder under an ignored parent.
+
 Like ai-memory's routing snippet, `setup` writes the delegation rules between `<!-- soho:start -->` / `<!-- soho:end -->` markers in the project instruction file and merges the native commands `soho hook reminder` (UserPromptSubmit) and `soho hook doctor` (SessionStart) into Claude settings. Native hooks are silent outside Herdr; the doctor hook uses the explicit Claude project directory and emits advisory warnings only. Setup recognizes and replaces the legacy herdr-soho hooks — the pre-rename `herdr-soho hook reminder` / `herdr-soho hook doctor` commands and the historical shell hooks — as inert migration data, preserving unrelated commands.
 
 After `soho setup`, Codex checks peer messages through the project's `.codex/hooks.json` (`UserPromptSubmit` → `soho hook inbound --codex`). The project and its `.codex/` layer must be trusted by Codex for project hooks to load. New or changed hooks show `Hooks need review` once for that configuration; `hooks_review=trust` (the default) approves the owner's configured hooks on workers. No hook-trust bypass flag is installed.

@@ -36,6 +36,8 @@ go run ./cmd/soho install --version vX.Y.Z
 
 Run `soho env` once to resolve or materialize the embedded skill. To expose the skill to your agent's skill loader, copy the resource directory printed by `env` into that agent's supported skill directory, or keep an existing installed skill tree. `SOHO_SKILL_DIR` selects an explicit resource tree. No second legacy skill is installed.
 
+Run `soho setup` once per project: it writes the delegation block and the hooks. The skill's [What each assistant gets](skills/soho/SKILL.md#what-each-assistant-gets) lists every hook per assistant and what to commit.
+
 All commands, including `collaborate`, `send` and `find`, run through the same Go CLI. The [guide](docs/guide.md#worker-collaboration) documents the review cycle and `worker_messages` policy, and the [ephemeral job contract](docs/job-contract.md) specifies the dispatcher-driven `job` family (ephemeral jobs on a machine, with a draft pull request kept by the job supervisor). [VALIDATION.md](VALIDATION.md) describes how a maintainer validates a pull request before merge with a real job run on the exact pull request head.
 
 ## Migrating from herdr-soho
@@ -49,6 +51,8 @@ All commands, including `collaborate`, `send` and `find`, run through the same G
    - the `.herdr-soho/` state directory to `.soho/`, once no worker is left in its roster;
    - the `<!-- herdr-soho:start -->` block and the `herdr-soho hook …` commands to their `soho` versions;
    - the `djalmajr.herdr-soho` plugin to `djalmajr.soho`: for a release binary it installs the new plugin, points the Herdr shortcuts at `djalmajr.soho.*` (keeping a backup of `config.toml`) and unregisters the old plugin.
+
+   A `.agents/herdr-roles` rule in `.gitignore` is not carried over, because `.agents/soho-roles/` is versioned: delete the old rule and commit the folder.
 
    `soho setup --dry-run` lists the moves first. A name that exists on both sides is left in place and reported. Run it before any other `soho` command in that project: until the move, the commands that open the state dir refuse with exit 2, and `doctor` and `send` write nothing under `.soho/`.
 3. Rename each `HERDR_SOHO_<NAME>` variable to `SOHO_<NAME>`.
