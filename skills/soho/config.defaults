@@ -390,7 +390,7 @@ notify=off
 # local. local delivers the report as a file in feedback_dir, plus one line
 # to feedback_to when it is set (feedback send).
 feedback=ask
-feedback_repo=djalmajr/herdr-soho
+feedback_repo=djalmajr/soho
 # Absolute directory where feedback=local writes the report files.
 feedback_dir=
 # Pane (<workspace>:<pane>) or agent name that receives the one-line notice; empty = file only.
