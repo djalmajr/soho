@@ -492,18 +492,17 @@ func (o *validateLayerResult) failEvidence(msg string) {
 // directory and writes the command header: the child process inherits this
 // descriptor and writes its output here directly (merged stdout and
 // stderr, in write order), and the runner appends the trailing lines after
-// the tree has ended. The file is created O_RDWR|O_APPEND (DJA-695 Q2):
-// the runner appends the tail over the SAME descriptor the child wrote
+// the tree has ended. The file comes from eval.CreateOwnedOutput (DJA-695
+// Q2): the runner appends the tail over the SAME descriptor the child wrote
 // into, and then reads the finished log back over that same descriptor —
 // never by reopening the path — so a layer cannot swap the log for a link
-// or a FIFO between the run and the check. O_APPEND means the header
-// (before the run), the child's output and the tail (after the run) always
-// land at the end of what came before, the runner and the child owning
-// separate offsets, and 0600, so the evidence is private. It refuses a
-// pre-existing path (never following a link).
+// or a FIFO between the run and the check. The header (before the run), the
+// child's output and the tail (after the run) land in that order, and the
+// mode is 0600, so the evidence is private. It refuses a pre-existing path
+// (never following a link).
 func openValidateLog(dir string, l validation.Layer) (string, *os.File, string) {
 	path := filepath.Join(dir, l.Name+".log")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_EXCL|os.O_APPEND, 0o600)
+	f, err := eval.CreateOwnedOutput(path, 0o600)
 	if err != nil {
 		return "", nil, err.Error()
 	}
@@ -519,13 +518,17 @@ func openValidateLog(dir string, l validation.Layer) (string, *os.File, string) 
 // outcome and the duration — after the child's output, over the same
 // descriptor the child wrote into. The tree is dead when this runs (the
 // run ends the whole tree before it returns), so the append lands after
-// every byte the child wrote. The leading newline keeps the tail on its
-// own lines even when the child's output ended without one; a spare blank
-// line when it did is the price of the runner and the child owning
-// separate offsets. The write's error is returned (DJA-695 F2) and the
-// file stays open: the finalization reads the finished log back over this
-// same descriptor and closes it.
+// every byte the child wrote. The seek makes that true on Windows too, where
+// the child shares this descriptor's file position and could have moved it.
+// The leading newline keeps the tail on its own lines even when the child's
+// output ended without one; a spare blank line when it did is the price of
+// not reading the child's last byte. An error is returned (DJA-695 F2) and
+// the file stays open: the finalization reads the finished log back over
+// this same descriptor and closes it.
 func appendValidateLogTail(f *os.File, exitLine string, durMs int64) error {
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		return err
+	}
 	_, err := fmt.Fprintf(f, "\nexit: %s\nduration: %dms\n", exitLine, durMs)
 	return err
 }

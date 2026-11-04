@@ -6,9 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"syscall"
 )
+
+// ownedOutputAppendFlag keeps the runner's and the child's separate file
+// offsets from overwriting each other: every write lands at the end.
+const ownedOutputAppendFlag = os.O_APPEND
 
 // runOwnedProcess runs the owned process group (the Unix half of
 // RunOwnedProcess). The semantics mirror runOwnedGoProcess: the whole tree

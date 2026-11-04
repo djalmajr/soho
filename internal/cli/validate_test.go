@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -278,6 +279,9 @@ func TestValidateSilentCommandThatPassesIsPass(t *testing.T) {
 	writeValidationMD(t, cwd, "## Test layers\n"+
 		"- unit: `go vet ./...`\n"+
 		"- integration: n/a: r\n- contract: n/a: r\n- e2e: n/a: r\n- mutation: n/a: r\n")
+	// The go command needs a build cache; the fixture's small environment
+	// has none on Windows (no %LocalAppData%).
+	env["GOCACHE"] = t.TempDir()
 	code, out, errOut := runIn(t, []string{"validate", "--layer", "unit"}, env, cwd)
 	if code != 0 || errOut != "" {
 		t.Fatalf("code=%d err=%q out=%s", code, errOut, out)
@@ -969,6 +973,76 @@ func TestValidateUsageLineIsRegistered(t *testing.T) {
 
 // TestValidatePipeAndChainCommandsCoveredByShC covers the edge case: a
 // command with a pipe and a chain runs — it is `sh -c`, not a parsed argv.
+// TestValidateCommandReadingItsInputSeesTheEnd pins the input on every
+// platform: a command that reads it gets the end of input, not a bad handle
+// (on Windows a missing one fails in an MSYS tool) and not a hang.
+func TestValidateCommandReadingItsInputSeesTheEnd(t *testing.T) {
+	requireSh(t)
+	env, cwd := commandFixture(t)
+	writeValidationMD(t, cwd, "## Test layers\n"+
+		"- unit: `cat`\n"+
+		"- integration: n/a: r\n- contract: n/a: r\n- e2e: n/a: r\n- mutation: n/a: r\n")
+	code, out, errOut := runIn(t, []string{"validate", "--layer", "unit", "--timeout", "30000"}, env, cwd)
+	if code != 0 || errOut != "" {
+		t.Fatalf("code=%d err=%q out=%s", code, errOut, out)
+	}
+	if !hasLinePrefix(out, "unit: PASS (") {
+		t.Fatalf("the command reading its input did not PASS in:\n%s", out)
+	}
+}
+
+// TestValidateLogTailLandsAtTheEnd covers a position moved by the child, which
+// on Windows shares it with the runner: the tail still goes after every byte.
+func TestValidateLogTailLandsAtTheEnd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unit.log")
+	f, err := eval.CreateOwnedOutput(path, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("output\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendValidateLogTail(f, "0", 7); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "output\n\nexit: 0\nduration: 7ms\n"; string(raw) != want {
+		t.Fatalf("log = %q, want %q", raw, want)
+	}
+}
+
+// TestValidateLogKeepsTheOrderOfHeaderOutputAndTail reads the evidence log:
+// the header, then what the command wrote to either stream in that order, then
+// the tail. On Windows the runner and the child share one file position, so
+// this also proves nothing overwrites the header or the output.
+func TestValidateLogKeepsTheOrderOfHeaderOutputAndTail(t *testing.T) {
+	requireSh(t)
+	env, cwd := commandFixture(t)
+	writeValidationMD(t, cwd, "## Test layers\n"+
+		"- unit: `echo first; echo second 1>&2; echo third`\n"+
+		"- integration: n/a: r\n- contract: n/a: r\n- e2e: n/a: r\n- mutation: n/a: r\n")
+	code, out, errOut := runIn(t, []string{"validate", "--layer", "unit"}, env, cwd)
+	if code != 0 || errOut != "" {
+		t.Fatalf("code=%d err=%q out=%s", code, errOut, out)
+	}
+	raw, err := os.ReadFile(filepath.Join(validateEvidenceDir(t, out), "unit.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	want := "command: sh -c 'echo first; echo second 1>&2; echo third'\nfirst\nsecond\nthird\n\nexit: 0\nduration: "
+	if !strings.HasPrefix(log, want) {
+		t.Fatalf("log = %q, want the prefix %q", log, want)
+	}
+}
+
 func TestValidatePipeAndChainCommandsCoveredByShC(t *testing.T) {
 	requireSh(t)
 	env, cwd := commandFixture(t)

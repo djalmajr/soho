@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"io"
+	"os"
 	"time"
 )
 
@@ -18,8 +19,8 @@ type OwnedProcessOptions struct {
 	// child inherits the destination's descriptor (file descriptor on
 	// Unix, file handle on Windows), so the bytes go straight there. When
 	// the runner appends to the same destination after the run (the
-	// caller's trailing lines), Output must be a file opened for
-	// appending, so the runner's lines land after the child's.
+	// caller's trailing lines), create Output with CreateOwnedOutput, so
+	// the runner's lines land after the child's on every platform.
 	Output io.Writer
 	// WaitDelay bounds how long the run waits for the tree to release
 	// inherited handles after the run ends; zero leaves the platform
@@ -44,6 +45,15 @@ type OwnedProcessResult struct {
 	// ended. The exit information above is still the child's, but the caller
 	// must not report success.
 	CleanupErr error
+}
+
+// CreateOwnedOutput creates the file a RunOwnedProcess child writes into:
+// read and write, refusing a path that already exists (never following a
+// link in its place), with the append behavior the platform allows
+// (ownedOutputAppendFlag). The runner's own writes before and after the run
+// land in order around the child's.
+func CreateOwnedOutput(path string, perm os.FileMode) (*os.File, error) {
+	return os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_EXCL|ownedOutputAppendFlag, perm)
 }
 
 // RunOwnedProcess runs executable with args as an owned process tree and
