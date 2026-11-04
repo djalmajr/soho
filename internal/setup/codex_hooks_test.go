@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
@@ -410,4 +411,66 @@ func TestSetupCodexPlanNoHooksAndLocal(t *testing.T) {
 			t.Fatalf("local touched .gitignore: %v", e)
 		}
 	})
+}
+
+// TestSetupCodexMigrationKeepsUnknownMembers: migrating the legacy line only
+// rewrites its command. Unknown members of the entry and of the row, and the
+// line's place among other hooks, stay as they were.
+func TestSetupCodexMigrationKeepsUnknownMembers(t *testing.T) {
+	const reminder = `"command":"soho hook reminder --codex"`
+	for name, tc := range map[string]struct{ existing, want string }{
+		"single": {
+			`{"hooks":{"UserPromptSubmit":[{"customRow":"keep-row","hooks":[{"type":"command","command":"soho hook inbound --codex","customEntry":"keep-entry"}]}]}}`,
+			`{"customRow":"keep-row","hooks":[{"type":"command",` + reminder + `,"customEntry":"keep-entry"}]}`,
+		},
+		"mixed row keeps its place": {
+			`{"hooks":{"UserPromptSubmit":[{"customRow":"keep-row","hooks":[{"type":"command","command":"first"},{"type":"command","command":"soho hook inbound --codex","timeout":5},{"type":"command","command":"last"}]},{"hooks":[{"type":"command","command":"other"}]}]}}`,
+			`{"customRow":"keep-row","hooks":[{"type":"command","command":"first"},{"type":"command",` + reminder + `,"timeout":5},{"type":"command","command":"last"}]},{"hooks":[{"type":"command","command":"other"}]}`,
+		},
+		"a second soho line goes": {
+			`{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]},{"customRow":"keep-row","hooks":[{"type":"command","command":"soho hook reminder --codex"},{"type":"command","command":"other"}]}]}}`,
+			`{"hooks":[{"type":"command",` + reminder + `}]},{"customRow":"keep-row","hooks":[{"type":"command","command":"other"}]}`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root, env, ctx := codexSetupFixture(t)
+			file := codexFile(root)
+			if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(file, []byte(tc.existing), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if code, _, warning := runSetupWrite(nil, ctx, env, root); code != 0 {
+				t.Fatalf("code=%d warning=%s", code, warning)
+			}
+			first, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			compact := &bytes.Buffer{}
+			if err := json.Compact(compact, first); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(compact.String(), tc.want) {
+				t.Fatalf("got %s\nwant it to contain %s", compact, tc.want)
+			}
+			if strings.Contains(compact.String(), "soho hook inbound --codex") {
+				t.Fatalf("legacy line survived: %s", compact)
+			}
+			if strings.Count(compact.String(), "soho hook reminder --codex") != 1 {
+				t.Fatalf("reminder not exactly once: %s", compact)
+			}
+			if code, _, warning := runSetupWrite(nil, ctx, env, root); code != 0 {
+				t.Fatalf("rerun code=%d warning=%s", code, warning)
+			}
+			second, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(first, second) {
+				t.Fatalf("rerun changed bytes:\n%s\n%s", first, second)
+			}
+		})
+	}
 }

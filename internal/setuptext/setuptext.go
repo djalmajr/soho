@@ -302,15 +302,17 @@ func codexRowsValid(rows []json.RawMessage) bool {
 	return true
 }
 
-// codexMergeRows returns the event's rows with the soho line replaced by
-// newCommand: a row that carries an exact synchronous recognized entry drops
-// that entry (the row itself goes when no entry remains), every other row
-// and member is preserved in order, and the new line is appended last, so a
-// rerun over the merged text changes no byte. An async soho entry never
-// counts as the line and stays in place.
+// codexMergeRows returns the event's rows with the soho line on newCommand.
+// The first exact synchronous recognized entry is migrated in place: only its
+// command changes, so its other members, its row and its place among other
+// hooks stay. A further recognized entry goes (its row too when no entry
+// remains), every other row and member is preserved in order, and the line is
+// appended last only when no entry was recognized, so a rerun over the merged
+// text changes no byte. An async soho entry never counts as the line and stays
+// in place.
 func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []string) ([]json.RawMessage, error) {
 	recognized := append([]string{newCommand}, recognizedOld...)
-	kept := make([]json.RawMessage, 0, len(rows)+1)
+	kept, placed := make([]json.RawMessage, 0, len(rows)+1), false
 	for _, row := range rows {
 		if string(row) == "null" {
 			kept = append(kept, row)
@@ -333,11 +335,18 @@ func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []s
 		}
 		changed, filtered := false, make([]json.RawMessage, 0, len(entries))
 		for _, entry := range entries {
-			if codexSohoEntry(entry, recognized) {
+			if !codexSohoEntry(entry, recognized) {
+				filtered = append(filtered, entry)
+				continue
+			}
+			if placed {
 				changed = true
 				continue
 			}
-			filtered = append(filtered, entry)
+			placed = true
+			migrated, entryChanged := codexEntryWithCommand(entry, newCommand)
+			changed = changed || entryChanged
+			filtered = append(filtered, migrated)
 		}
 		if !changed {
 			kept = append(kept, row)
@@ -353,8 +362,26 @@ func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []s
 		object.set("hooks", newList)
 		kept = append(kept, object.encode())
 	}
-	kept = append(kept, json.RawMessage(`{"hooks":[{"type":"command","command":`+string(mustMarshal(newCommand))+`}]}`))
+	if !placed {
+		kept = append(kept, json.RawMessage(`{"hooks":[{"type":"command","command":`+string(mustMarshal(newCommand))+`}]}`))
+	}
 	return kept, nil
+}
+
+// codexEntryWithCommand rewrites a recognized entry's command member, keeping
+// every other member, and reports whether the entry changed. An entry already
+// on the command comes back as the same bytes.
+func codexEntryWithCommand(raw json.RawMessage, command string) (json.RawMessage, bool) {
+	object, ok := codexObjectParse(raw)
+	if !ok {
+		return raw, false
+	}
+	var current string
+	if value, has := object.get("command"); has && json.Unmarshal(value, &current) == nil && current == command {
+		return raw, false
+	}
+	object.set("command", mustMarshal(command))
+	return object.encode(), true
 }
 
 // codexSohoEntry is the exact synchronous command recognition shared by the
