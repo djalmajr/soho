@@ -76,7 +76,6 @@ func TestDispatchCursorMCPApprovalHistoryDelivers(t *testing.T) {
 	for _, screen := range []string{
 		cursorTUIScreen,
 		"MCP Server Approval Required\n",
-		"[a] Approve all   [c] Continue   [q] Quit\n",
 		"MCP Server Approval Required\n[a] Approve all   [c] Continue   [q] Quit\n" + cursorTUIScreen,
 		"MCP Server Approval Required\n" + cursorTUIScreen,
 		"[a] Approve all   [c] Continue   [q] Quit\n" + cursorTUIScreen,

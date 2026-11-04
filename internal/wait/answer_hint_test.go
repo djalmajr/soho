@@ -7,6 +7,7 @@ func TestWaitCursorTrustHintExactAndGenericNoInput(t *testing.T) {
 		{"trust", waitTrustScreen(t), `soho: warning: agent 'worker' is on the cursor workspace trust dialog; no approval key is sent — read the pane; ask the user before answering; to trust it: herdr agent send-keys worker a (answers "Trust this workspace"); then herdr agent wait worker --timeout 60000` + "\n"},
 		{"unknown", "Do you trust the contents of this directory?\nTrust this workspace\nQuit\n", "soho: warning: agent 'worker' is on the cursor workspace trust dialog; no approval key is sent — read the pane and answer it yourself (herdr agent send-keys worker <keys>)\n"},
 		{"mcp", "MCP Server Approval Required\n[a] Approve all\n", "soho: warning: agent 'worker' requires approval of MCP servers; no input is sent — the operator must answer in the pane\n"},
+		{"partial mcp", "or press the key shown\n", "soho: warning: agent 'worker' screen does not allow confirming there is no dialog; no input was sent — read the pane and answer it yourself\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, stderr := queuedRetryProbe(t, tc.screen, nil)
