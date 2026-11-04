@@ -108,6 +108,10 @@ func doctorUnprotectedAgents(ctx *core.Config, env platform.Env, cwd string, s *
 	}
 	codexHooks, codexReadError := platform.ReadTextFile(filepath.Join(platform.ProjectRoot(env, cwd), ".codex", "hooks.json"))
 	codexProtected := codexReadError == nil && setuptext.CodexHooksProtected(codexHooks)
+	codexCurrent := codexReadError == nil && setuptext.CodexHooksCurrent(codexHooks)
+	// The previous-generation inbound line still blocks the prompt, so a
+	// file that carries only it is protected: it gets the separate warning
+	// naming the missing reminder and doctor lines, not the not-protected one.
 	piExtension, piReadError := platform.ReadTextFile(filepath.Join(platform.ProjectRoot(env, cwd), ".pi", "extensions", "soho-inbound.ts"))
 	piProtected := piReadError == nil && setuptext.PiInboundProtected(piExtension)
 	// A managed extension that differs from this soho's text (an older
@@ -142,7 +146,9 @@ func doctorUnprotectedAgents(ctx *core.Config, env platform.Env, cwd string, s *
 					seen[f[0]] = true
 					if f[2] == "codex" {
 						if !codexProtected {
-							lines = append(lines, fmt.Sprintf("%s (codex) is not protected: no 'soho hook inbound --codex' in UserPromptSubmit (run 'soho setup')", f[0]))
+							lines = append(lines, fmt.Sprintf("%s (codex) is not protected: no 'soho hook reminder --codex' in UserPromptSubmit (run 'soho setup')", f[0]))
+						} else if !codexCurrent {
+							lines = append(lines, fmt.Sprintf("%s (codex) is missing %s (run 'soho setup')", f[0], strings.Join(setuptext.CodexHooksGap(codexHooks), " and ")))
 						}
 					} else if f[2] == "pi" {
 						if piStale {

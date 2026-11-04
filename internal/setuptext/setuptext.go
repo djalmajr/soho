@@ -51,8 +51,23 @@ func SetupBlock() string        { return setupBlockText }
 func SetupHookReminder() string { return setupHookReminderText }
 func SetupHookDoctor() string   { return setupHookDoctorText }
 
-// SetupHookCodexInbound is the project hook command Codex accepts.
-func SetupHookCodexInbound() string { return "soho hook inbound --codex" }
+// The Codex project hooks are the soho binary's own PATH commands with the
+// receiver flag: the UserPromptSubmit reminder carries the peer check (a
+// blocked prompt gets the Codex block JSON and no reminder) and the
+// SessionStart doctor carries the advisory warnings. SetupHookCodexInbound
+// is the pre-merge-generation line; setup replaces it with the reminder and
+// doctor pair and the doctor still counts it as peer protection.
+const (
+	setupHookCodexReminderText = "soho hook reminder --codex"
+	setupHookCodexDoctorText   = "soho hook doctor --codex"
+	setupHookCodexInboundText  = "soho hook inbound --codex"
+)
+
+func SetupHookCodexReminder() string { return setupHookCodexReminderText }
+func SetupHookCodexDoctor() string   { return setupHookCodexDoctorText }
+
+// SetupHookCodexInbound is the exact previous-generation UserPromptSubmit line.
+func SetupHookCodexInbound() string { return setupHookCodexInboundText }
 func PreviousHookReminder() string  { return previousHookReminderText }
 func PreviousHookDoctor() string    { return previousHookDoctorText }
 func LegacyHookReminder() string    { return legacyHookReminderText }
@@ -182,8 +197,13 @@ func SettingsHooksResult(content *string) *string {
 	return settingsHooksResult(content)
 }
 
-// CodexHooksResult preserves foreign JSON values, numeric lexemes and object key order.
-// Only the objects receiving new members and the prompt array need to be decoded.
+// CodexHooksResult merges the generated pair (UserPromptSubmit reminder,
+// SessionStart doctor) and returns jq-compatible indented JSON, or nil on
+// invalid input. It preserves foreign JSON values, numeric lexemes and
+// object key order, keeps every foreign row and member in place, and replaces
+// the exact previous-generation inbound line with the reminder: a file that
+// already carries the pair comes back byte for byte, so a rerun writes
+// nothing.
 func CodexHooksResult(content *string) *string {
 	document := codexObject{}
 	if content != nil {
@@ -193,20 +213,33 @@ func CodexHooksResult(content *string) *string {
 			return nil
 		}
 	}
-	hooks, rows, valid := codexDocumentHooks(document)
-	if !valid {
+	hooksRaw, hooksExists := document.get("hooks")
+	hooks := codexObject{}
+	if hooksExists && string(hooksRaw) != "null" {
+		var ok bool
+		hooks, ok = codexObjectParse(hooksRaw)
+		if !ok {
+			return nil
+		}
+	}
+	upRows, upValid := codexEventRows(hooks, "UserPromptSubmit")
+	if !upValid || !codexRowsValid(upRows) {
 		return nil
 	}
-	if codexRowsProtected(rows) {
-		return content
+	ssRows, ssValid := codexEventRows(hooks, "SessionStart")
+	if !ssValid || !codexRowsValid(ssRows) {
+		return nil
 	}
-	command, _ := json.Marshal(SetupHookCodexInbound())
-	rows = append(rows, json.RawMessage(`{"hooks":[{"type":"command","command":`+string(command)+`}]}`))
-	mergedRows, err := json.Marshal(rows)
+	mergedUp, err := codexMergeRows(upRows, SetupHookCodexReminder(), []string{SetupHookCodexInbound()})
 	if err != nil {
 		return nil
 	}
-	hooks.set("UserPromptSubmit", mergedRows)
+	mergedSs, err := codexMergeRows(ssRows, SetupHookCodexDoctor(), nil)
+	if err != nil {
+		return nil
+	}
+	hooks.set("UserPromptSubmit", mustMarshal(mergedUp))
+	hooks.set("SessionStart", mustMarshal(mergedSs))
 	document.set("hooks", hooks.encode())
 	var result bytes.Buffer
 	if json.Indent(&result, document.encode(), "", "  ") != nil {
@@ -217,38 +250,38 @@ func CodexHooksResult(content *string) *string {
 	return &text
 }
 
-// codexDocumentHooks validates every UserPromptSubmit row and command before
-// either consumer may recognize protection. Its compatibility rules match putHook.
-func codexDocumentHooks(document codexObject) (codexObject, []json.RawMessage, bool) {
-	hooksRaw, exists := document.get("hooks")
-	hooks := codexObject{}
-	if exists && string(hooksRaw) != "null" {
-		var ok bool
-		hooks, ok = codexObjectParse(hooksRaw)
-		if !ok {
-			return hooks, nil, false
-		}
+// codexEventRows is the rows of one hook event: empty when the event is
+// absent or its value is null or false, or not an array (ok false).
+func codexEventRows(hooks codexObject, event string) ([]json.RawMessage, bool) {
+	rowsRaw, exists := hooks.get(event)
+	if !exists || string(rowsRaw) == "null" || string(rowsRaw) == "false" {
+		return nil, true
 	}
-	rowsRaw, exists := hooks.get("UserPromptSubmit")
 	var rows []json.RawMessage
-	if exists && string(rowsRaw) != "null" && string(rowsRaw) != "false" {
-		if json.Unmarshal(rowsRaw, &rows) != nil {
-			return hooks, rows, false
-		}
+	if err := json.Unmarshal(rowsRaw, &rows); err != nil {
+		return nil, false
 	}
+	return rows, true
+}
+
+// codexRowsValid is the per-row validation the consumers apply before
+// recognizing a row: every row is an object whose hooks list, when present
+// and not null or false, is an array of entries whose command, when present
+// and not null or false, is a string.
+func codexRowsValid(rows []json.RawMessage) bool {
 	for _, row := range rows {
 		if string(row) == "null" {
 			continue
 		}
 		object, ok := codexObjectParse(row)
 		if !ok {
-			return hooks, rows, false
+			return false
 		}
 		list, exists := object.get("hooks")
 		if exists && string(list) != "null" && string(list) != "false" {
 			var entries []json.RawMessage
 			if json.Unmarshal(list, &entries) != nil {
-				return hooks, rows, false
+				return false
 			}
 			for _, entry := range entries {
 				hook, ok := codexObjectParse(entry)
@@ -261,45 +294,74 @@ func codexDocumentHooks(document codexObject) (codexObject, []json.RawMessage, b
 				}
 				var command string
 				if json.Unmarshal(commandRaw, &command) != nil {
-					return hooks, rows, false
+					return false
 				}
 			}
 		}
 	}
-	return hooks, rows, true
+	return true
 }
 
-// CodexHooksProtected is shared with doctor: only a synchronous exact command can block.
-func CodexHooksProtected(content string) bool {
-	document, ok := codexObjectParse([]byte(content))
-	if !ok {
-		return false
-	}
-	_, rows, valid := codexDocumentHooks(document)
-	return valid && codexRowsProtected(rows)
-}
-
-func codexRowsProtected(rows []json.RawMessage) bool {
+// codexMergeRows returns the event's rows with the soho line replaced by
+// newCommand: a row that carries an exact synchronous recognized entry drops
+// that entry (the row itself goes when no entry remains), every other row
+// and member is preserved in order, and the new line is appended last, so a
+// rerun over the merged text changes no byte. An async soho entry never
+// counts as the line and stays in place.
+func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []string) ([]json.RawMessage, error) {
+	recognized := append([]string{newCommand}, recognizedOld...)
+	kept := make([]json.RawMessage, 0, len(rows)+1)
 	for _, row := range rows {
+		if string(row) == "null" {
+			kept = append(kept, row)
+			continue
+		}
 		object, ok := codexObjectParse(row)
 		if !ok {
+			kept = append(kept, row)
 			continue
 		}
-		list, _ := object.get("hooks")
+		listRaw, hasList := object.get("hooks")
+		if !hasList || string(listRaw) == "null" || string(listRaw) == "false" {
+			kept = append(kept, row)
+			continue
+		}
 		var entries []json.RawMessage
-		if json.Unmarshal(list, &entries) != nil {
+		if err := json.Unmarshal(listRaw, &entries); err != nil {
+			kept = append(kept, row)
 			continue
 		}
+		changed, filtered := false, make([]json.RawMessage, 0, len(entries))
 		for _, entry := range entries {
-			if codexBlockingHook(entry) {
-				return true
+			if codexSohoEntry(entry, recognized) {
+				changed = true
+				continue
 			}
+			filtered = append(filtered, entry)
 		}
+		if !changed {
+			kept = append(kept, row)
+			continue
+		}
+		if len(filtered) == 0 {
+			continue
+		}
+		newList, err := json.Marshal(filtered)
+		if err != nil {
+			return nil, err
+		}
+		object.set("hooks", newList)
+		kept = append(kept, object.encode())
 	}
-	return false
+	kept = append(kept, json.RawMessage(`{"hooks":[{"type":"command","command":`+string(mustMarshal(newCommand))+`}]}`))
+	return kept, nil
 }
 
-func codexBlockingHook(raw json.RawMessage) bool {
+// codexSohoEntry is the exact synchronous command recognition shared by the
+// merge and the protection check: type command, one of the recognized
+// commands, and no async member that is not false. An async line never
+// counts as the soho line.
+func codexSohoEntry(raw json.RawMessage, recognized []string) bool {
 	object, ok := codexObjectParse(raw)
 	if !ok {
 		return false
@@ -315,7 +377,136 @@ func codexBlockingHook(raw json.RawMessage) bool {
 	if hasAsync && json.Unmarshal(asyncRaw, &async) != nil {
 		return false
 	}
-	return kind == "command" && command == SetupHookCodexInbound() && (!hasAsync || isFalse(async))
+	if kind != "command" || (hasAsync && !isFalse(async)) {
+		return false
+	}
+	for _, want := range recognized {
+		if command == want {
+			return true
+		}
+	}
+	return false
+}
+
+func mustMarshal(value any) json.RawMessage {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		panic(err) // json.Marshal of []json.RawMessage and strings never fails
+	}
+	return raw
+}
+
+// CodexHooksProtected is shared with doctor: only a synchronous exact command
+// can block. The previous-generation inbound line keeps counting, because the
+// guarantee it provides (the prompt check) is still true.
+func CodexHooksProtected(content string) bool {
+	rows, ok := codexProtectedRows(content)
+	return ok && codexRowsHave(rows, []string{SetupHookCodexReminder(), SetupHookCodexInbound()})
+}
+
+// CodexHooksCurrent reports the merged generation: the exact synchronous
+// reminder in UserPromptSubmit and the exact synchronous doctor in
+// SessionStart. An invalid or absent file is not current.
+func CodexHooksCurrent(content string) bool {
+	document, ok := codexObjectParse([]byte(content))
+	if !ok {
+		return false
+	}
+	hooks := codexHooksObject(document)
+	if hooks == nil {
+		return false
+	}
+	upRows, ok := codexEventRows(*hooks, "UserPromptSubmit")
+	if !ok || !codexRowsValid(upRows) {
+		return false
+	}
+	ssRows, ok := codexEventRows(*hooks, "SessionStart")
+	if !ok || !codexRowsValid(ssRows) {
+		return false
+	}
+	return codexRowsHave(upRows, []string{SetupHookCodexReminder()}) && codexRowsHave(ssRows, []string{SetupHookCodexDoctor()})
+}
+
+// CodexHooksGap names the merged pair's lines the content lacks, the way the
+// doctor reports them; empty when the pair is complete.
+func CodexHooksGap(content string) []string {
+	var missing []string
+	upRows, upOK := codexProtectedRows(content)
+	if !upOK || !codexRowsHave(upRows, []string{SetupHookCodexReminder()}) {
+		missing = append(missing, "'"+SetupHookCodexReminder()+"' in UserPromptSubmit")
+	}
+	ssRows, ssOK := codexSessionStartRows(content)
+	if !ssOK || !codexRowsHave(ssRows, []string{SetupHookCodexDoctor()}) {
+		missing = append(missing, "'"+SetupHookCodexDoctor()+"' in SessionStart")
+	}
+	return missing
+}
+
+func codexHooksObject(document codexObject) *codexObject {
+	hooksRaw, exists := document.get("hooks")
+	if !exists || string(hooksRaw) == "null" {
+		return nil
+	}
+	hooks, ok := codexObjectParse(hooksRaw)
+	if !ok {
+		return nil
+	}
+	return &hooks
+}
+
+// codexProtectedRows is the validated UserPromptSubmit rows of the content,
+// or not ok when the content is not a readable document with a readable
+// hooks object.
+func codexProtectedRows(content string) ([]json.RawMessage, bool) {
+	document, ok := codexObjectParse([]byte(content))
+	if !ok {
+		return nil, false
+	}
+	hooks := codexHooksObject(document)
+	if hooks == nil {
+		return nil, false
+	}
+	rows, ok := codexEventRows(*hooks, "UserPromptSubmit")
+	if !ok || !codexRowsValid(rows) {
+		return nil, false
+	}
+	return rows, true
+}
+
+func codexSessionStartRows(content string) ([]json.RawMessage, bool) {
+	document, ok := codexObjectParse([]byte(content))
+	if !ok {
+		return nil, false
+	}
+	hooks := codexHooksObject(document)
+	if hooks == nil {
+		return nil, false
+	}
+	rows, ok := codexEventRows(*hooks, "SessionStart")
+	if !ok || !codexRowsValid(rows) {
+		return nil, false
+	}
+	return rows, true
+}
+
+func codexRowsHave(rows []json.RawMessage, recognized []string) bool {
+	for _, row := range rows {
+		object, ok := codexObjectParse(row)
+		if !ok {
+			continue
+		}
+		list, _ := object.get("hooks")
+		var entries []json.RawMessage
+		if json.Unmarshal(list, &entries) != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if codexSohoEntry(entry, recognized) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Raw member values keep nested objects and number literals out of float64/maps.

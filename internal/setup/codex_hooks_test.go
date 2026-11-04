@@ -13,7 +13,9 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 )
 
-const codexCommand = "soho hook inbound --codex"
+const codexReminderCommand = "soho hook reminder --codex"
+const codexDoctorCommand = "soho hook doctor --codex"
+const codexLegacyCommand = "soho hook inbound --codex"
 
 func codexSetupFixture(t *testing.T) (string, platform.Env, *core.Config) {
 	t.Helper()
@@ -27,7 +29,7 @@ func codexSetupFixture(t *testing.T) (string, platform.Env, *core.Config) {
 }
 
 func codexFile(root string) string { return filepath.Join(root, ".codex", "hooks.json") }
-func codexHookCount(t *testing.T, file string) int {
+func codexHookCount(t *testing.T, file string, event, command string) int {
 	t.Helper()
 	b, e := os.ReadFile(file)
 	if e != nil {
@@ -41,20 +43,38 @@ func codexHookCount(t *testing.T, file string) int {
 	if !ok {
 		t.Fatal("missing hooks")
 	}
-	rows, ok := hooks["UserPromptSubmit"].([]any)
-	if !ok {
-		t.Fatal("missing UserPromptSubmit")
-	}
 	n := 0
-	for _, row := range rows {
-		for _, entry := range row.(map[string]any)["hooks"].([]any) {
-			obj := entry.(map[string]any)
-			if obj["type"] == "command" && obj["command"] == codexCommand {
-				n++
+	if rows, ok := hooks[event].([]any); ok {
+		for _, row := range rows {
+			for _, entry := range row.(map[string]any)["hooks"].([]any) {
+				obj := entry.(map[string]any)
+				if obj["type"] == "command" && obj["command"] == command {
+					n++
+				}
 			}
 		}
 	}
 	return n
+}
+
+// assertCodexPair is the merged generation of the file: one synchronous
+// reminder line in UserPromptSubmit, one synchronous doctor line in
+// SessionStart, and no legacy inbound line.
+func assertCodexPair(t *testing.T, file string) {
+	t.Helper()
+	b, e := os.ReadFile(file)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if n := codexHookCount(t, file, "UserPromptSubmit", codexReminderCommand); n != 1 {
+		t.Fatalf("got %d reminder hooks: %s", n, b)
+	}
+	if n := codexHookCount(t, file, "SessionStart", codexDoctorCommand); n != 1 {
+		t.Fatalf("got %d doctor hooks: %s", n, b)
+	}
+	if strings.Contains(string(b), codexLegacyCommand) {
+		t.Fatalf("legacy inbound line survived: %s", b)
+	}
 }
 
 // Tokens retain number lexemes and every object's key order, unlike a map/float64 comparison.
@@ -81,7 +101,8 @@ func TestSetupCodexForeignJSONLossless(t *testing.T) {
 	prefix := `{"z":9007199254740993,"10":1e+030,"2":-0,"\ud800":"foreign key","custom":{"z":1.234567890123456789,"a":"\u0061\\\""},"hooks":{"SessionStart":[{"z":true,"a":null,"hooks":[{"metadata":{"z":9007199254740993,"a":[-99999999999999999999,1E-009]},"command":"foreign start","type":"command"}]}],"UserPromptSubmit":[{"z":false,"a":{},"hooks":[{"metadata":{"z":9007199254740993,"10":2,"2":1,"a":"foreign"},"command":"foreign prompt","type":"command"}]}`
 	suffix := `]},"a":[{"z":0.00000000000000000001,"a":-0.0}]}`
 	existing := prefix + suffix
-	want := prefix + `,{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}` + suffix
+	want := strings.Replace(prefix, `],"UserPromptSubmit":`, `,{"hooks":[{"type":"command","command":"soho hook doctor --codex"}]}],"UserPromptSubmit":`, 1)
+	want += `,{"hooks":[{"type":"command","command":"soho hook reminder --codex"}]}` + suffix
 	if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -99,9 +120,7 @@ func TestSetupCodexForeignJSONLossless(t *testing.T) {
 	if !strings.Contains(string(got), `"\ud800"`) {
 		t.Fatalf("foreign key's code unit changed: %s", got)
 	}
-	if count := codexHookCount(t, file); count != 1 {
-		t.Fatalf("got %d soho hooks", count)
-	}
+	assertCodexPair(t, file)
 }
 
 func TestSetupCodexSynchronousHook(t *testing.T) {
@@ -111,7 +130,7 @@ func TestSetupCodexSynchronousHook(t *testing.T) {
 			file := codexFile(root)
 			entry := `{"z":"keep","hooks":[{"async":` + variant + `,"command":"soho hook inbound --codex","type":"command","metadata":{"z":1,"a":2}}]}`
 			existing := `{"hooks":{"UserPromptSubmit":[` + entry + `]}}`
-			want := `{"hooks":{"UserPromptSubmit":[` + entry + `,{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`
+			want := `{"hooks":{"UserPromptSubmit":[` + entry + `,{"hooks":[{"type":"command","command":"soho hook reminder --codex"}]}],"SessionStart":[{"hooks":[{"type":"command","command":"soho hook doctor --codex"}]}]}}`
 			if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -156,12 +175,10 @@ func TestSetupCodexHooksMergeAndIdempotence(t *testing.T) {
 				if code != 0 {
 					t.Fatalf("code=%d message=%s", code, msg)
 				}
-				if n := codexHookCount(t, file); n != 1 {
-					t.Fatalf("run %d: got %d codex hooks", i, n)
-				}
+				assertCodexPair(t, file)
 			}
 			b, _ := os.ReadFile(file)
-			if existing != "" {
+			if existing != "" && !strings.Contains(existing, "soho hook inbound --codex") {
 				assertCodexSettingsPreserved(t, existing, b)
 			}
 			if strings.Contains(existing, "other prompt") && !strings.Contains(string(b), "other prompt") {
@@ -178,6 +195,67 @@ func TestSetupCodexHooksMergeAndIdempotence(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The previous-generation line migrates to the merged pair: the legacy
+// inbound line goes (no duplication), the reminder and doctor land, foreign
+// rows of both events and their order are preserved.
+func TestSetupCodexLegacyMigratesToThePair(t *testing.T) {
+	for name, existing := range map[string]string{
+		"legacy only":         `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`,
+		"legacy with foreign": `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"other start"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"other prompt"}]},{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`,
+		"legacy with matcher": `{"hooks":{"UserPromptSubmit":[{"matcher":"keep","hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`,
+		"legacy and doctor":   `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"soho hook doctor --codex"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root, env, ctx := codexSetupFixture(t)
+			file := codexFile(root)
+			if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(file, []byte(existing), 0600); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 2; i++ {
+				code, _, msg := runSetupWrite(nil, ctx, env, root)
+				if code != 0 {
+					t.Fatalf("run=%d code=%d message=%s", i, code, msg)
+				}
+				assertCodexPair(t, file)
+			}
+			b, _ := os.ReadFile(file)
+			if strings.Contains(existing, "other prompt") && !strings.Contains(string(b), "other prompt") {
+				t.Fatalf("foreign prompt lost: %s", b)
+			}
+			if strings.Contains(existing, "other start") && !strings.Contains(string(b), "other start") {
+				t.Fatalf("foreign start lost: %s", b)
+			}
+		})
+	}
+	// A file that already carries the merged pair comes back byte for byte.
+	t.Run("current pair untouched", func(t *testing.T) {
+		root, env, ctx := codexSetupFixture(t)
+		file := codexFile(root)
+		if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
+			t.Fatal(err)
+		}
+		code, _, msg := runSetupWrite(nil, ctx, env, root)
+		if code != 0 {
+			t.Fatalf("code=%d message=%s", code, msg)
+		}
+		before, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code, _, msg = runSetupWrite(nil, ctx, env, root)
+		after, err := os.ReadFile(file)
+		if code != 0 || err != nil {
+			t.Fatalf("code=%d read=%v message=%s", code, err, msg)
+		}
+		if string(before) != string(after) {
+			t.Fatalf("the merged pair changed bytes:\nbefore=%s\nafter=%s", before, after)
+		}
+	})
 }
 
 func assertCodexSettingsPreserved(t *testing.T, original string, result []byte) {
@@ -272,7 +350,7 @@ func TestSetupCodexCompatibleStructures(t *testing.T) {
 			root, env, ctx := codexSetupFixture(t)
 			file := codexFile(root)
 			original := `{"hooks":{"UserPromptSubmit":[` + rows + `]}}`
-			want := `{"hooks":{"UserPromptSubmit":[` + rows + `,{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`
+			want := `{"hooks":{"UserPromptSubmit":[` + rows + `,{"hooks":[{"type":"command","command":"soho hook reminder --codex"}]}],"SessionStart":[{"hooks":[{"type":"command","command":"soho hook doctor --codex"}]}]}}`
 			if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -292,7 +370,7 @@ func TestSetupCodexPlanNoHooksAndLocal(t *testing.T) {
 	t.Run("plan", func(t *testing.T) {
 		root, env, ctx := codexSetupFixture(t)
 		code, out, msg := runSetupWrite([]string{"--plan"}, ctx, env, root)
-		want := "# would merge into " + root + "/.codex/hooks.json: UserPromptSubmit hook (codex)"
+		want := "# would merge into " + root + "/.codex/hooks.json: UserPromptSubmit reminder + SessionStart doctor (codex)"
 		if code != 0 || !strings.Contains(out, want) {
 			t.Fatalf("code=%d out=%s err=%s", code, out, msg)
 		}
@@ -325,7 +403,7 @@ func TestSetupCodexPlanNoHooksAndLocal(t *testing.T) {
 		after, e := os.ReadFile(exclude)
 		// DJA-342 also excludes the untracked local Claude hooks.
 		want := string(before) + "/.claude/settings.local.json\n/.pi/extensions/soho-inbound.ts\n/.codex/hooks.json\n"
-		if code != 0 || e != nil || want != string(after) || codexHookCount(t, codexFile(root)) != 1 {
+		if code != 0 || e != nil || want != string(after) || codexHookCount(t, codexFile(root), "UserPromptSubmit", codexReminderCommand) != 1 {
 			t.Fatalf("code=%d exclude=%s err=%v msg=%s", code, after, e, msg)
 		}
 		if _, e := os.Stat(filepath.Join(root, ".gitignore")); !os.IsNotExist(e) {

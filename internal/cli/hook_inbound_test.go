@@ -104,6 +104,17 @@ func (h *hookFix) run(sub, prompt string) (int, string, string) {
 	return h.runStdin(sub, promptInput(prompt, h.cwd))
 }
 
+// runFlagged drives `soho hook <sub> <flag>` (--codex or --pi) with the given
+// stdin text, the way the generated Codex hooks.json and the Pi extension call
+// it.
+func (h *hookFix) runFlagged(sub, flag, prompt string) (int, string, string) {
+	h.t.Helper()
+	old := hookStdin
+	hookStdin = strings.NewReader(promptInput(prompt, h.cwd))
+	defer func() { hookStdin = old }()
+	return runIn(h.t, []string{"hook", sub, flag}, h.env, h.cwd)
+}
+
 func blockJSON(lines ...string) string {
 	reason := strings.Join(append(lines, peerauth.ReasonTail), `\n`)
 	return `{"decision":"block","reason":"` + reason + `","hookSpecificOutput":{"hookEventName":"UserPromptSubmit","suppressOriginalPrompt":true}}` + "\n"

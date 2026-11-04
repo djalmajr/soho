@@ -312,6 +312,7 @@ func TestNowriteRejectsWritingInvocations(t *testing.T) {
 		{name: "gc without hours", argv: []string{"gc", "--older-than"}, rejected: "gc (1 extra argument not allowed)"},
 		{name: "spawn", argv: []string{"spawn", "implementer"}, rejected: "spawn (1 extra argument not allowed)"},
 		{name: "no command", argv: []string{}, rejected: "(none)"},
+		{name: "hook reminder extra flag", argv: []string{"hook", "reminder", "--codex", "extra"}, rejected: "hook (3 extra arguments not allowed)"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -379,6 +380,46 @@ func TestNowriteAcceptsExactConfigAndRoles(t *testing.T) {
 						}
 					}
 				})
+			}
+		})
+	}
+}
+
+// TestNowriteAcceptsFlaggedHookInvocations proves the DJA-668 nowrite gate
+// fix: `hook reminder|doctor|inbound --codex|--pi` pass the SOHO_NOWRITE
+// refusal and run (exit 0) — a hook that died with the refusal's exit 2 would
+// block the host agent's prompt, and the hooks run in exactly those worker
+// environments. The unflagged forms pass too.
+func TestNowriteAcceptsFlaggedHookInvocations(t *testing.T) {
+	for _, flag := range []string{"--codex", "--pi"} {
+		for _, sub := range []string{"reminder", "doctor", "inbound"} {
+			t.Run(sub+" "+flag, func(t *testing.T) {
+				env, cwd := commandFixture(t)
+				env["PATH"] = t.TempDir()
+				env["SOHO_NOWRITE"] = "1"
+				env["HERDR_ENV"] = "1"
+				old := hookStdin
+				hookStdin = strings.NewReader(promptInput("ordinary prompt", cwd))
+				defer func() { hookStdin = old }()
+				code, out, errOut := runIn(t, []string{"hook", sub, flag}, env, cwd)
+				if code != 0 || strings.Contains(errOut, "SOHO_NOWRITE=1 is read-only") {
+					t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
+				}
+			})
+		}
+	}
+	for _, args := range [][]string{{"hook", "reminder"}, {"hook", "doctor"}, {"hook", "inbound"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			env, cwd := commandFixture(t)
+			env["PATH"] = t.TempDir()
+			env["SOHO_NOWRITE"] = "1"
+			env["HERDR_ENV"] = "1"
+			old := hookStdin
+			hookStdin = strings.NewReader(promptInput("ordinary prompt", cwd))
+			defer func() { hookStdin = old }()
+			code, out, errOut := runIn(t, args, env, cwd)
+			if code != 0 || strings.Contains(errOut, "SOHO_NOWRITE=1 is read-only") {
+				t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 			}
 		})
 	}
