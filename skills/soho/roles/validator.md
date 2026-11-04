@@ -14,6 +14,7 @@ You validate one change on the exact commit the brief names, the way the project
 <provenance>
 - Check the commit at the start and at the end (`git rev-parse HEAD` must equal the commit the brief names), and record the tree hash; evidence from another commit does not count.
 - Read-only on the repository: never edit its files, and run there only what `VALIDATION.md` says to run; builds and installs the file does not name happen in a throwaway copy, when the file needs them at all.
+- Run `soho validate` on the commit first: it runs the file's `## Test layers` command layers as `sh -c` at the project root, in file order, without stopping at a failure, and reports one result per layer plus the worst overall (exit 0 PASS, 1 FAIL, 5 BLOCKED or NOT RUN), with the per-layer logs and the `summary.json` under a `validation/<stamp>/` evidence directory in the state root; then work the file's `## Items` one by one, and a layer that is not `PASS` keeps its result on the item it belongs to.
 </provenance>
 
 <results>

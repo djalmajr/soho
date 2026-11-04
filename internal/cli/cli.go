@@ -40,7 +40,7 @@ var knownCommands = map[string]bool{
 	"roster": true, "friction": true, "feedback": true, "tab-label": true,
 	"layout-plan": true, "env": true, "mutation-guard": true, "mutation-copy": true, "review-snapshot": true,
 	"reopen": true, "compact": true, "metrics": true, "copies": true, "gc": true,
-	"procs": true, "install": true, "promote": true,
+	"procs": true, "install": true, "promote": true, "validate": true,
 	"collaborate": true, "capabilities": true, "hook": true, "job": true, "inventory": true,
 }
 
@@ -178,7 +178,7 @@ func Run(args []string, env platform.Env) (code int) {
 	}
 	var commandConfig *core.Config
 	readOnlyRejectedDoctor := command == "doctor" && decisionEnv.Get("SOHO_NOWRITE") == "1" && len(args) > 1
-	if !readOnlyRejectedDoctor && (command == "review-snapshot" || command == "config" || command == "session" || command == "roles" || command == "role" || command == "explain" || command == "layout-plan" || command == "regrid" || command == "promote" || command == "tab-label" || command == "stats" || command == "metrics" || command == "collect" || command == "setup" || command == "release" || command == "doctor" || command == "init" || command == "spawn" || command == "dispatch" || command == "resume" || command == "run" || command == "lint" || command == "wait" || command == "status") {
+	if !readOnlyRejectedDoctor && (command == "review-snapshot" || command == "config" || command == "session" || command == "roles" || command == "role" || command == "explain" || command == "layout-plan" || command == "regrid" || command == "promote" || command == "tab-label" || command == "stats" || command == "metrics" || command == "collect" || command == "setup" || command == "release" || command == "doctor" || command == "init" || command == "spawn" || command == "dispatch" || command == "resume" || command == "run" || command == "lint" || command == "wait" || command == "status" || command == "validate") {
 		ctx := core.LoadConfigFor(decisionEnv, commandCwd, userSel)
 		configCtx = &ctx
 	}
@@ -448,6 +448,8 @@ func Run(args []string, env platform.Env) (code int) {
 		return waitpkg.CmdStatus(args[1:], ctx, decisionEnv, commandCwd)
 	case "lint":
 		return cmdLint(args[1:], ctx, decisionEnv, commandCwd)
+	case "validate":
+		return cmdValidate(args[1:], ctx, decisionEnv, commandCwd)
 	case "install":
 		return cmdInstall(args[1:], decisionEnv)
 	}
@@ -491,7 +493,10 @@ func hcCommandAllowed(command string) bool {
 		return true
 	case "status", "wait", "spawn", "dispatch", "release", "collaborate", "doctor", "config", "explain", "capabilities":
 		return true
-	case "kinds", "models", "model", "roles", "role", "lint", "install", "env":
+	case "kinds", "models", "model", "roles", "role", "lint", "install", "env", "validate":
+		// validate never touches the worker transport: it reads the project's
+		// VALIDATION.md and runs its declared test layers through sh, like env
+		// runs the herdr binary version probe, never the transport.
 		return true
 	case "inventory":
 		return true
