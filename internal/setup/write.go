@@ -1,7 +1,9 @@
 package setup
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,14 +17,37 @@ import (
 var inlineConfigComment = regexp.MustCompile(`[ \t]#.*$`)
 var setupPromptConfig = regexp.MustCompile(`^(multi_role=|role\.[A-Za-z0-9_-]+\.kind=|lane\.[A-Za-z0-9_-]+\.kind=)`)
 
-func setupWriteBlock(file string) string {
-	var content *string
-	if raw, err := platform.ReadTextFile(file); err == nil {
-		content = &raw
+// readOrRefuse reads a project instruction or Claude settings file for the
+// setup writers: only a missing file counts as absent. Any other error (an
+// unreadable file, a directory in place of the file, ENOTDIR above it)
+// refuses with exit 4 before any write, because a merge that could not read
+// the file would overwrite what it could not see.
+func readOrRefuse(file string, plan bool) *string {
+	raw, err := platform.ReadTextFile(file)
+	if err == nil {
+		return &raw
 	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	reason := err.Error()
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		reason = pathErr.Err.Error()
+	}
+	prefix, suffix := "setup: ", " (file left untouched)"
+	if plan {
+		prefix, suffix = "setup --plan: ", " (setup would refuse it and leave the file untouched)"
+	}
+	platform.DieFriction(fmt.Sprintf("%scould not read %s: %s%s", prefix, file, reason, suffix), 4)
+	return nil
+}
+
+func setupWriteBlock(file string) string {
+	content := readOrRefuse(file, false)
 	result := setuptext.SetupBlockResult(content)
 	if result == nil {
-		platform.DieFriction(fmt.Sprintf("setup: produced an incomplete file for %s (file left untouched)", file), 4)
+		platform.DieFriction(fmt.Sprintf("setup: %s has an unpaired soho marker; fix it by hand and run setup again (file left untouched)", file), 4)
 	}
 	had := content != nil && (strings.Contains(*content, setuptext.SetupStart) || strings.Contains(*content, setuptext.LegacySetupStart))
 	if err := platform.AtomicWrite(file, *result); err != nil {
@@ -35,10 +60,7 @@ func setupWriteBlock(file string) string {
 }
 
 func setupWriteHooks(file string) {
-	var content *string
-	if raw, err := platform.ReadTextFile(file); err == nil {
-		content = &raw
-	}
+	content := readOrRefuse(file, false)
 	merged := setuptext.SettingsHooksResult(content)
 	if merged == nil {
 		platform.DieFriction("could not merge hooks into "+file, 4)
@@ -204,7 +226,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			if containsSetupArg(args, "--local") || (!containsSetupArg(args, "--target") && core.Cfg(ctx, "setup_target", "canonical", env) == "local") {
 				root := platform.ProjectRoot(env, cwd)
 				rels := append(localRels(root, ctx, env, cwd), localHookRels(root, env)...)
-				if plan := preflightLocalExcludes(root, rels, env, "setup", false); plan != nil && plan.path != "" {
+				if plan := preflightLocalExcludes(root, rels, env, "setup", false, false); plan != nil && plan.path != "" {
 					if added := missingExcludeEntries(plan.before, plan.needed); len(added) > 0 {
 						_, _ = fmt.Fprintf(platform.Stdout, "# would ensure %s ignores: %s\n", plan.path, strings.Join(added, ", "))
 					}
@@ -217,7 +239,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		CmdProbe(withoutSetupArg(args, "--probe"), ctx, env, cwd)
 		return
 	}
-	var target, panes string
+	var target, panes, argTarget string
 	var lanes []string
 	local, hooks, dry, detect := false, true, false, false
 	for i := 0; i < len(args); i++ {
@@ -231,6 +253,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			v := args[i]
 			if a == "--target" {
 				target = v
+				argTarget = v
 			} else if a == "--panes" {
 				panes = v
 			} else {
@@ -260,25 +283,22 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	if skill := core.StatePathInSkill(env, root); skill != "" {
 		platform.DieFriction(core.StateInSkillMessage("setup", root, skill), 2)
 	}
-	// Migrate the herdr-soho and herdr-agents names before anything else is
-	// computed: everything after reads and writes only the soho names.
-	for _, line := range migrateNames(ctx, env, cwd, dry) {
-		_, _ = fmt.Fprintln(platform.Stdout, line)
+	// The argument-only checks come first: --local with --target, --panes,
+	// --lane. Nothing on disk may change before they can refuse.
+	// The check reads the raw --target argument (argTarget): the target
+	// defaulting below gives target a value in every run, and that is not
+	// a conflict with --local.
+	modeLocal := resolveSetupMode(local, argTarget, ctx, env, "setup")
+	if panes != "" && panes != "2" && panes != "3" && panes != "4" {
+		platform.DieFriction("setup: --panes must be 2, 3 or 4", 2)
 	}
-	for _, line := range migratePlugin(env, BuildVersion, dry) {
-		_, _ = fmt.Fprintln(platform.Stdout, line)
-	}
-	modeLocal := resolveSetupMode(local, target, ctx, env, "setup")
-	localFile := ""
-	if modeLocal {
-		localFile = localTarget(root)
-		refuseUnignorableStateDir(root, ctx, env, cwd, "setup")
-		refuseTrackedLocal(root, env, "setup")
-		rels := localRels(root, ctx, env, cwd)
-		if hooks {
-			rels = append(rels, localHookRels(root, env)...)
+	parsed := make([]core.LaneSpec, 0, len(lanes))
+	for _, spec := range lanes {
+		lane, err := core.SetupLaneSpec(spec)
+		if err != nil {
+			platform.DieFriction(err.Error(), 2)
 		}
-		preflightLocalExcludes(root, rels, env, "setup", !dry)
+		parsed = append(parsed, lane)
 	}
 	if target == "" {
 		target = setupTargetExisting(root)
@@ -294,42 +314,38 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 	}
 	target = setupTargetPath(root, target)
-	if panes != "" && panes != "2" && panes != "3" && panes != "4" {
-		platform.DieFriction("setup: --panes must be 2, 3 or 4", 2)
-	}
-	parsed := make([]core.LaneSpec, 0, len(lanes))
-	for _, spec := range lanes {
-		lane, err := core.SetupLaneSpec(spec)
-		if err != nil {
-			platform.DieFriction(err.Error(), 2)
-		}
-		parsed = append(parsed, lane)
-	}
-	conf := core.ConfigFileFor("project", env, cwd)
+	conf := core.ConfigFileFor("project", env, cwd) // Every no-effect refusal (an unwritable state dir or exclude file, a
+	// tracked local instruction file, an unreadable or marker-broken
+	// destination, an unmergeable settings file) runs before the name
+	// migrations can rename anything, and again after them: the migration
+	// can change the answer (setup_target=local in an old-named config).
 	dest := target
 	if modeLocal {
-		dest = localFile
+		dest = localTarget(root)
 	}
-	var before *string
-	if raw, err := platform.ReadTextFile(dest); err == nil {
-		before = &raw
+	// The first pass is strictly read-only (active=false): it never probes
+	// the git exclude directory, so a refusal there precedes no write at
+	// all. The second pass may probe (active=!dry), and only as the last
+	// preflight step, after the destination and settings are validated.
+	before, preview := setupPreflight(root, ctx, env, cwd, modeLocal, dest, hooks, false, false)
+	// Migrate the herdr-soho and herdr-agents names. Everything after reads
+	// and writes only the soho names.
+	for _, line := range migrateNames(ctx, env, cwd, dry) {
+		_, _ = fmt.Fprintln(platform.Stdout, line)
 	}
-	preview := setuptext.SetupBlockResult(before)
-	if preview == nil {
-		platform.DieFriction(fmt.Sprintf("setup: produced an incomplete file for %s (file left untouched)", dest), 4)
+	for _, line := range migratePlugin(env, BuildVersion, dry) {
+		_, _ = fmt.Fprintln(platform.Stdout, line)
 	}
-	if hooks {
-		settings := claudeSettingsPath(root, modeLocal)
-		var old *string
-		if raw, err := platform.ReadTextFile(settings); err == nil {
-			old = &raw
+	modeLocal = resolveSetupMode(local, argTarget, ctx, env, "setup")
+	dest = target
+	if modeLocal {
+		dest = localTarget(root)
+	}
+	before, preview = setupPreflight(root, ctx, env, cwd, modeLocal, dest, hooks, !dry, true)
+	if dry {
+		if panes != "" {
+			_, _ = fmt.Fprintf(platform.Stdout, "# would set panes=%s and the preset lanes in %s\n", panes, conf)
 		}
-		if setuptext.SettingsHooksResult(old) == nil {
-			platform.DieFriction("could not merge hooks into "+settings, 4)
-		}
-	}
-	if panes != "" && dry {
-		_, _ = fmt.Fprintf(platform.Stdout, "# would set panes=%s and the preset lanes in %s\n", panes, conf)
 		for _, spec := range lanes {
 			_, _ = fmt.Fprintf(platform.Stdout, "# would apply --lane %s\n", spec)
 		}
@@ -361,7 +377,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			if hooks {
 				rels = append(rels, localHookRels(root, env)...)
 			}
-			if plan := preflightLocalExcludes(root, rels, env, "setup", false); plan != nil && plan.path != "" {
+			if plan := preflightLocalExcludes(root, rels, env, "setup", false, false); plan != nil && plan.path != "" {
 				added := missingExcludeEntries(plan.before, plan.needed)
 				if len(added) > 0 {
 					_, _ = fmt.Fprintf(platform.Stdout, "# would ensure %s ignores: %s\n", plan.path, strings.Join(added, ", "))
@@ -370,13 +386,18 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 		return
 	}
-	if panes != "" && !modeLocal {
-		applySetupPreset(conf, panes, parsed, env, cwd)
+	if !modeLocal {
+		if panes != "" {
+			applySetupPreset(conf, panes, parsed, env, cwd)
+		} else if len(parsed) > 0 {
+			// --lane without --panes applies the lanes on their own.
+			writeSetupLanes(conf, parsed, env, cwd)
+		}
 	}
 	if modeLocal {
 		rels := localRels(root, ctx, env, cwd)
 		path, added := ensureLocalExcludes(root, rels, env, "setup")
-		_, _ = fmt.Fprintf(platform.Stdout, "block %s: %s\n", setupWriteBlock(localFile), localFile)
+		_, _ = fmt.Fprintf(platform.Stdout, "block %s: %s\n", setupWriteBlock(dest), dest)
 		if len(added) > 0 {
 			_, _ = fmt.Fprintf(platform.Stdout, "local excludes updated: %s (%s)\n", path, strings.Join(added, ", "))
 		}
@@ -389,6 +410,8 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 		if panes != "" {
 			applySetupPreset(conf, panes, parsed, env, cwd)
+		} else if len(parsed) > 0 {
+			writeSetupLanes(conf, parsed, env, cwd)
 		}
 		stateShown := classifyLocalState(root, ctx, env, cwd).shown
 		if path == "" {
@@ -402,9 +425,9 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		promptConfigNotice(conf, true)
 		return
 	}
-	_, _ = fmt.Fprintf(platform.Stdout, "block %s: %s\n", setupWriteBlock(target), target)
+	_, _ = fmt.Fprintf(platform.Stdout, "block %s: %s\n", setupWriteBlock(dest), dest)
 	claude := filepath.Join(root, "CLAUDE.md")
-	if info, err := os.Stat(claude); err == nil && info.Mode().IsRegular() && !setupIsSymlink(claude) && target != claude {
+	if info, err := os.Stat(claude); err == nil && info.Mode().IsRegular() && !setupIsSymlink(claude) && dest != claude {
 		text, readErr := platform.ReadTextFile(claude)
 		if readErr == nil && strings.Contains(text, setuptext.LegacySetupStart) && !strings.Contains(text, setuptext.SetupStart) {
 			core.Warn("CLAUDE.md exists separately and still has the legacy herdr-soho block: run 'setup --target CLAUDE.md' too", "", "setup")
@@ -440,12 +463,68 @@ func withoutSetupArg(args []string, remove string) []string {
 	return out
 }
 
+// setupPreflight runs every setup refusal that cannot change the disk:
+// the local state dir, the tracked-file check, the destination read and
+// marker check, and the settings read and merge check. The git exclude
+// check comes last, and only probes the exclude directory when active
+// (the second pass, non-dry runs): a read or marker refusal is never
+// preceded by a write, in either pass. It prints nothing, so it can run
+// twice around the name migrations without duplicating output.
+// postMigration marks the pass that runs after the migrations: its
+// refusals may not promise that nothing changed.
+func setupPreflight(root string, ctx *core.Config, env platform.Env, cwd string, modeLocal bool, dest string, hooks, active, postMigration bool) (before, preview *string) {
+	if modeLocal {
+		refuseUnignorableStateDir(root, ctx, env, cwd, "setup", postMigration)
+		refuseTrackedLocal(root, env, "setup")
+	}
+	before = readOrRefuse(dest, false)
+	preview = setuptext.SetupBlockResult(before)
+	if preview == nil {
+		markerNote := "file left untouched"
+		if postMigration {
+			markerNote += ", but files may already have changed"
+		}
+		platform.DieFriction(fmt.Sprintf("setup: %s has an unpaired soho marker; fix it by hand and run setup again (%s)", dest, markerNote), 4)
+	}
+	if hooks {
+		settings := claudeSettingsPath(root, modeLocal)
+		old := readOrRefuse(settings, false)
+		if setuptext.SettingsHooksResult(old) == nil {
+			platform.DieFriction("could not merge hooks into "+settings, 4)
+		}
+	}
+	// The exclude check is the final preflight step: its write probe
+	// (second pass only) and its refusals follow, never precede, the
+	// destination and settings validation.
+	if modeLocal {
+		rels := localRels(root, ctx, env, cwd)
+		if hooks {
+			rels = append(rels, localHookRels(root, env)...)
+		}
+		preflightLocalExcludes(root, rels, env, "setup", active, postMigration)
+	}
+	return before, preview
+}
+
 func applySetupPreset(conf, panes string, lanes []core.LaneSpec, env platform.Env, cwd string) {
 	if err := os.MkdirAll(filepath.Dir(conf), 0o755); err != nil {
 		platform.DieFriction(fmt.Sprintf("config set: could not rewrite %s (file left untouched)", conf), 4)
 	}
 	for _, line := range core.ApplyLaneFile(conf, panes, env, cwd) {
 		_, _ = fmt.Fprintln(platform.Stdout, line)
+	}
+	writeSetupLanes(conf, lanes, env, cwd)
+}
+
+// writeSetupLanes writes the --lane values on their own, without the panes
+// preset: --lane applies even when --panes is absent, in canonical and in
+// local mode.
+func writeSetupLanes(conf string, lanes []core.LaneSpec, env platform.Env, cwd string) {
+	if len(lanes) == 0 {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(conf), 0o755); err != nil {
+		platform.DieFriction(fmt.Sprintf("config set: could not rewrite %s (file left untouched)", conf), 4)
 	}
 	for _, lane := range lanes {
 		core.ConfigWritePair(conf, "lane."+lane.Name+".kind", lane.Kind, env, cwd)

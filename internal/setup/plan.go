@@ -317,7 +317,7 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	modeLocal := resolveSetupMode(local, target, ctx, env, "setup --plan")
 	var localPlan *localExcludePlan
 	if modeLocal {
-		refuseUnignorableStateDir(root, ctx, env, cwd, "setup --plan")
+		refuseUnignorableStateDir(root, ctx, env, cwd, "setup --plan", false)
 		refuseTrackedLocal(root, env, "setup --plan")
 		localPlan = planLocalExcludes(root, ctx, env, cwd, "setup --plan")
 	}
@@ -391,19 +391,15 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		sectionAfter[i] = readOrEmpty(tmp)
 	}
 	var instrBefore *string
-	instrRaw, e := platform.ReadTextFile(target)
-	if e == nil {
-		instrBefore = &instrRaw
-	}
+	instrBefore = readOrRefuse(target, true)
 	instrAfter := setuptext.SetupBlockResult(instrBefore)
 	if instrAfter == nil {
-		platform.DieFriction(fmt.Sprintf("setup --plan: could not produce the instruction block for %s (setup would refuse it and leave the file untouched)", target), 4)
+		platform.DieFriction(fmt.Sprintf("setup --plan: %s has an unpaired soho marker (setup would refuse it and leave the file untouched)", target), 4)
 	}
 	settingsFile := claudeSettingsPath(root, modeLocal)
 	var settingsBefore *string
-	settingsRaw, e := platform.ReadTextFile(settingsFile)
-	if e == nil {
-		settingsBefore = &settingsRaw
+	if hooks {
+		settingsBefore = readOrRefuse(settingsFile, true)
 	}
 	var settingsAfter *string
 	settingsFailed := false
