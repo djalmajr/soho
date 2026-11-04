@@ -272,13 +272,25 @@ func sendAgentKey(svc transport.Services, agent, key string) bool {
 
 // A fresh full visible read is required after reads that may fall back to
 // visible, and immediately before a wait consumer sends input to Cursor.
+// The screen is also a refusal when it cannot confirm there is no dialog:
+// the recognized approval, a clipped or wrapped approval (inconclusive
+// evidence), or a screen that cannot be read at all — overblocking is
+// preferred to typing into a dialog.
 func cursorMCPBlocked(sd, agent string, svc transport.Services) bool {
 	if rosterKind(sd, agent) != "cursor" {
 		return false
 	}
 	screen, ok := readScreen(svc, agent, "visible", nil)
-	if ok && cursorapproval.CursorMCPApproval(screen) {
+	if !ok {
+		sendWarning(fmt.Sprintf("agent '%s' screen cannot be read, so it does not allow confirming there is no dialog; no input was sent", agent))
+		return true
+	}
+	if cursorapproval.CursorMCPApproval(screen) {
 		sendWarning(fmt.Sprintf("agent '%s' requires approval of MCP servers; no input is sent — the operator must answer in the pane", agent))
+		return true
+	}
+	if cursorapproval.PartialMCPDialog(screen) {
+		sendWarning(fmt.Sprintf("agent '%s' screen does not allow confirming there is no dialog; no input was sent", agent))
 		return true
 	}
 	return false
@@ -597,6 +609,12 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 		if ev := cursorapproval.Evaluate(probeKind, st.State, cursorScreen, cursorScreenOK); ev.Verdict == startup.VerdictBlocked || ev.Reason == startup.ReasonScreenIncomplete {
 			if ev.Reason == "mcp-approval" {
 				sendWarning(fmt.Sprintf("agent '%s' requires approval of MCP servers; no input is sent — the operator must answer in the pane", agent))
+				return "blocked"
+			}
+			// An incomplete screen that is not the clipped trust dialog is
+			// a clipped or wrapped dialog the check cannot name.
+			if ev.Reason == startup.ReasonScreenIncomplete && !startup.PartialTrustDialog(cursorScreen) {
+				sendWarning(fmt.Sprintf("agent '%s' screen does not allow confirming there is no dialog; no input was sent — read the pane and answer it yourself", agent))
 				return "blocked"
 			}
 			if hint := ev.TrustHint(agent); hint != "" {
