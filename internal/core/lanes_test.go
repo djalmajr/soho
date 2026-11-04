@@ -19,7 +19,7 @@ func TestLanePresetsCapacityAndNames(t *testing.T) {
 	if got := LaneNames(&ctx, env); len(got) != 2 || got[0] != "build" || got[1] != "review" {
 		t.Fatalf("preset lanes = %#v", got)
 	}
-	if got := LaneRolesCSV(&ctx, "build", env); got != "implementer,designer,tasker,scouter,researcher,documenter" {
+	if got := LaneRolesCSV(&ctx, "build", env); got != "implementer,designer,tasker,scouter,researcher,documenter,tester" {
 		t.Fatalf("build roles = %q", got)
 	}
 	if LaneCapacity(&ctx, "build", env) != 2 || LaneCapacity(&ctx, "review", env) != 1 || MaxWorkers(&ctx, env) != "3" {
@@ -35,7 +35,7 @@ func TestLanePresetsCapacityAndNames(t *testing.T) {
 	if got := LaneNames(&ctx, env); len(got) != 3 || LaneCapacity(&ctx, "review", env) != 0 || LaneCapacity(&ctx, "docs", env) != 0 || MaxWorkers(&ctx, env) != "2" {
 		t.Fatalf("flex preset invalid: lanes=%v max=%s", got, MaxWorkers(&ctx, env))
 	}
-	if PresetSignature("2", "flex") != PresetSignature("4", "flex") || PresetRolesFlat("3", "flex") != "implementer,designer,tasker,scouter,researcher,reviewer,security-reviewer,ui-reviewer,inspector,documenter" {
+	if PresetSignature("2", "flex") != PresetSignature("4", "flex") || PresetRolesFlat("3", "flex") != "implementer,designer,tasker,scouter,researcher,tester,reviewer,security-reviewer,ui-reviewer,inspector,validator,documenter" {
 		t.Fatal("flex preset signature/role flattening changed")
 	}
 	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lane.ops.roles=implementer tasker\nlane.ops.panes=3\n")
@@ -120,7 +120,7 @@ func TestLaneFileMigrationAndSignatures(t *testing.T) {
 	// Mutation captured: a preset reconfiguration must stop freezing lane roles, while custom lanes retain roles and capacity.
 	env, repo := fixture(t)
 	file := filepath.Join(repo, ".agents", "soho.conf")
-	write(t, file, "# keep\npanes=4\nlane.build.roles=implementer,designer,tasker,scouter,researcher,documenter\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector\nlane.read.kind=codex\nlane.explore.model=gpt\nmax_workers=8\nsplit_max_panes=9\n")
+	write(t, file, "# keep\npanes=4\nlane.build.roles=implementer,designer,tasker,scouter,researcher,documenter,tester\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector,validator\nlane.read.kind=codex\nlane.explore.model=gpt\nmax_workers=8\nsplit_max_panes=9\n")
 	lines := ApplyLaneFile(file, "3", env, repo)
 	raw, _ := os.ReadFile(file)
 	text := string(raw)
@@ -223,6 +223,75 @@ func TestReviewLaneLocksAnEditor(t *testing.T) {
 	decision := LaneDecide(&ctx, "review", "reviewer", env, repo, true)
 	if decision.Decision != "locked" || decision.Name != "worker" || decision.N != 1 || len(decision.Occupants) != 1 || decision.Occupants[0] != "worker" {
 		t.Fatalf("review reuse decision = %#v", decision)
+	}
+}
+
+func TestLaneOfRoleForTesterAndValidatorPresets(t *testing.T) {
+	// DJA-695: the tester sits in the build lane and the validator in the review
+	// lane of every preset that has those lanes (strict and flex, panes 2/3/4);
+	// the strict 2-panel preset has no review lane, so the validator stays out
+	// of the lanes exactly like the other review roles.
+	env, repo := fixture(t)
+	for _, tc := range []struct {
+		panes, mode, role, want string
+	}{
+		{"4", "strict", "tester", "build"},
+		{"4", "strict", "validator", "review"},
+		{"3", "strict", "tester", "build"},
+		{"3", "strict", "validator", "review"},
+		{"2", "strict", "tester", "build"},
+		{"2", "strict", "validator", ""},
+		{"4", "flex", "tester", "build"},
+		{"4", "flex", "validator", "review"},
+		{"3", "flex", "tester", "build"},
+		{"3", "flex", "validator", "review"},
+		{"2", "flex", "tester", "build"},
+		{"2", "flex", "validator", "review"},
+	} {
+		t.Run(tc.panes+"/"+tc.mode+"/"+tc.role, func(t *testing.T) {
+			conf := "panes=" + tc.panes
+			if tc.mode == "flex" {
+				conf += "\npane_mode=flex"
+			}
+			write(t, filepath.Join(repo, ".agents", "soho.conf"), conf)
+			ctx := LoadConfig(env, repo)
+			if got := LaneOfRole(&ctx, tc.role, env); got != tc.want {
+				t.Fatalf("LaneOfRole(%s) panes=%s mode=%s = %q want %q", tc.role, tc.panes, tc.mode, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReviewLaneLocksAnEditorForTheValidator(t *testing.T) {
+	// DJA-695: the validator is a review role (ReviewRolesAll), so the
+	// edit-history lock refuses it on a worker that already wrote code, and a
+	// worker without an edit history is a valid candidate (control).
+	env, repo := fixture(t)
+	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lane.review.roles=reviewer,validator\n")
+	bin := t.TempDir()
+	_, err := fakecli.Install(t, bin, "herdr", []fakecli.Rule{
+		{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"agent_status":"idle"}}}`},
+		{Argv: []string{"agent", "get", "fresh"}, Stdout: `{"result":{"agent":{"agent_status":"idle"}}}`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range fakecli.Env(testutil.CleanEnv(t), bin) {
+		if k, v, ok := strings.Cut(pair, "="); ok {
+			env[k] = v
+		}
+	}
+	ctx := LoadConfig(env, repo)
+	state := StateDir(&ctx, env, repo)
+	RosterAppend(state, []string{"worker", "pane-1", "grok", "implementer", "xai", "pane-1", repo, "now", "grok-4.7", "task", "implementer", "review"})
+	decision := LaneDecide(&ctx, "review", "validator", env, repo, true)
+	if decision.Decision != "locked" || decision.Name != "worker" || decision.N != 1 || len(decision.Occupants) != 1 || decision.Occupants[0] != "worker" {
+		t.Fatalf("validator reuse decision = %#v", decision)
+	}
+	RosterAppend(state, []string{"fresh", "pane-2", "codex", "reviewer", "openai", "pane-2", repo, "now", "gpt-5", "task", "reviewer", "review"})
+	decision = LaneDecide(&ctx, "review", "validator", env, repo, true)
+	if decision.Decision != "reuse" || decision.Name != "fresh" || decision.Candidate != "fresh" {
+		t.Fatalf("validator control decision = %#v", decision)
 	}
 }
 

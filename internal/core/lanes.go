@@ -91,9 +91,9 @@ func PresetLaneRoles(lane, p, mode string) string {
 	if mode == "flex" {
 		switch lane {
 		case "build":
-			return "implementer,designer,tasker,scouter,researcher"
+			return "implementer,designer,tasker,scouter,researcher,tester"
 		case "review":
-			return "reviewer,security-reviewer,ui-reviewer,inspector"
+			return "reviewer,security-reviewer,ui-reviewer,inspector,validator"
 		case "docs":
 			return "documenter"
 		}
@@ -101,9 +101,9 @@ func PresetLaneRoles(lane, p, mode string) string {
 	}
 	switch p + ":" + lane {
 	case "2:build", "3:build", "4:build":
-		return "implementer,designer,tasker,scouter,researcher,documenter"
+		return "implementer,designer,tasker,scouter,researcher,documenter,tester"
 	case "3:review", "4:review":
-		return "reviewer,security-reviewer,ui-reviewer,inspector"
+		return "reviewer,security-reviewer,ui-reviewer,inspector,validator"
 	}
 	return ""
 }

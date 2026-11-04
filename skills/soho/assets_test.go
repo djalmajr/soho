@@ -87,6 +87,36 @@ func TestBundleRefusesSymlinkedCacheChild(t *testing.T) {
 	}
 }
 
+func TestBundleShipsTheValidationTemplateWithItsHeadings(t *testing.T) {
+	// DJA-695: templates/VALIDATION.md is part of the bundle and keeps the
+	// section order and the exact headings the delivery contract defines.
+	data, err := resources.ReadFile("templates/VALIDATION.md")
+	if err != nil {
+		t.Fatalf("bundle is missing templates/VALIDATION.md: %v", err)
+	}
+	lines := strings.Split(string(data), "\n")
+	headings := []string{"# Validation", "## Scope", "## Preconditions", "## Test layers", "## Items", "## Evidence", "## Results", "## What this does not prove"}
+	next := -1
+	for _, heading := range headings {
+		i := -1
+		for j, line := range lines {
+			if j > next && line == heading {
+				i = j
+				break
+			}
+		}
+		if i < 0 {
+			t.Fatalf("template lost the heading %q (or lost it out of order)", heading)
+		}
+		next = i
+	}
+	for _, layer := range []string{"- unit:", "- integration:", "- contract:", "- e2e:", "- mutation:"} {
+		if !strings.Contains(string(data), layer) {
+			t.Fatalf("template lost the %s layer line", layer)
+		}
+	}
+}
+
 func TestBundleConcurrentPublishCleansOwnedStages(t *testing.T) {
 	cache := t.TempDir()
 	var wg sync.WaitGroup

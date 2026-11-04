@@ -20,14 +20,6 @@ const (
 	metricsTableHeader      = "| Role | Type | Kind | Model | Effort | n | Median min | Partial | Precision | Missed | Confidence |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
 )
 
-// reviewRoles are the roles that carry Precision and Missed.
-var reviewRoles = map[string]bool{
-	"reviewer":          true,
-	"security-reviewer": true,
-	"ui-reviewer":       true,
-	"inspector":         true,
-}
-
 // tableLine is one line of a `metrics export` summary (issue #39, part 3).
 // Every key is optional; pointers distinguish absence from zero.
 type tableLine struct {
@@ -290,7 +282,7 @@ func partialPercent(seen, partial int) string {
 // followed by (k), the total labeled findings; "-" without labels or
 // outside them.
 func precisionCell(g *tableGroup) string {
-	if !reviewRoles[g.role] {
+	if !core.IsReviewRole(g.role) {
 		return "-"
 	}
 	labeled := g.findingsReal + g.findingsFalse
@@ -304,7 +296,7 @@ func precisionCell(g *tableGroup) string {
 // missedCell is only filled for review roles: the sum of every value of
 // missed; "-" outside them.
 func missedCell(g *tableGroup) string {
-	if !reviewRoles[g.role] {
+	if !core.IsReviewRole(g.role) {
 		return "-"
 	}
 	return formatCount(g.missedSum)

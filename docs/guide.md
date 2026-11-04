@@ -1,6 +1,6 @@
 # soho
 
-Give the calling agent an **omp-style team**: one CLI agent per role (`scouter`, `researcher`, `designer`, `implementer`, `tasker`, `reviewer`, `security-reviewer`, `ui-reviewer`, `inspector`, `documenter`) running in [Herdr](https://herdr.dev) panes. `planner` is the orchestrator itself (`spawn planner` exits 12 and opens no pane), and a nested orchestrator takes the `sub-orchestrator` role. The caller stays the orchestrator: it decomposes, writes briefs, dispatches, collects file-based reports, integrates, runs the gates, and owns git.
+Give the calling agent an **omp-style team**: one CLI agent per role (`scouter`, `researcher`, `designer`, `implementer`, `tasker`, `tester`, `reviewer`, `security-reviewer`, `ui-reviewer`, `inspector`, `validator`, `documenter`) running in [Herdr](https://herdr.dev) panes. `planner` is the orchestrator itself (`spawn planner` exits 12 and opens no pane), and a nested orchestrator takes the `sub-orchestrator` role. The caller stays the orchestrator: it decomposes, writes briefs, dispatches, collects file-based reports, integrates, runs the gates, and owns git.
 
 ## When to use
 
@@ -34,8 +34,8 @@ The other panes are **lanes**: sessions that take, in order, any role in their g
 | 3 | You + one builder + one reviewer |
 | 2 | You + one builder; you review, with a separate review pass |
 
-- The `build` lane holds `implementer`, `designer`, `tasker`, `scouter` and `researcher`. Research is build work: a free builder maps the code or reads another repository, or the orchestrator does it.
-- The `review` lane holds `reviewer`, `security-reviewer`, `ui-reviewer` and `inspector`; a session never reviews code it wrote.
+- The `build` lane holds `implementer`, `designer`, `tasker`, `tester`, `scouter` and `researcher`. Research is build work: a free builder maps the code or reads another repository, or the orchestrator does it.
+- The `review` lane holds `reviewer`, `security-reviewer`, `ui-reviewer`, `inspector` and `validator`; a session never reviews code it wrote.
 - A full lane means `wait` for its report, then dispatch — not a new pane (`spawn` reports the lane busy, exit 10).
 - Worker names follow the lanes: `build`, `build-2` (the second builder of a four-panel team), `review`, `docs`.
 

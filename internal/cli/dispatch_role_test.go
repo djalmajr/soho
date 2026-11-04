@@ -17,9 +17,9 @@ func roleDispatchFixture(t *testing.T) *dispatchArrivalFixture {
 	t.Helper()
 	f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
 	f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
-	for _, role := range []string{"scouter", "reviewer", "security-reviewer", "implementer", "designer", "documenter", "tasker"} {
+	for _, role := range []string{"scouter", "reviewer", "security-reviewer", "implementer", "designer", "documenter", "tasker", "tester", "validator"} {
 		mode, body := "edit", "Edit role instructions."
-		if role == "scouter" || role == "reviewer" || role == "security-reviewer" {
+		if role == "scouter" || role == "reviewer" || role == "security-reviewer" || role == "validator" {
 			mode, body = "read-only", "Read-only. Never write, edit, or modify files."
 		}
 		writeRoleFixture(t, filepath.Join(f.root, "roles", role+".md"), fmt.Sprintf("---\nname: %s\nmode: %s\n---\n%s\n", role, mode, body))

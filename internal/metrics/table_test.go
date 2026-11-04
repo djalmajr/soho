@@ -603,3 +603,17 @@ func tableUnescapedPipes(row string) int {
 	}
 	return count
 }
+
+// TestTable_ValidatorCarriesPrecisionAndMissed: every review role shows its
+// labels, so a new one cannot hide what it found behind a dash.
+func TestTable_ValidatorCarriesPrecisionAndMissed(t *testing.T) {
+	line := tableJSON(t, map[string]any{"project": "p", "role": "validator", "findings_real": 4, "findings_false": 1, "missed": map[string]any{"P2": 2}})
+	file := tableWriteFile(t, t.TempDir(), "export.jsonl", line+"\n")
+	code, out, err := tableRun(t, []string{file})
+	if code != 0 || err != "" {
+		t.Fatalf("exit = %d, stderr = %q", code, err)
+	}
+	if !strings.Contains(out, "| validator | - | - | - | - | 1 | - | - | 80% (5) | 2 | low |") {
+		t.Fatalf("stdout =\n%s", out)
+	}
+}
