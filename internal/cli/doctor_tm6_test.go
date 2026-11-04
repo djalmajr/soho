@@ -17,7 +17,7 @@ import (
 
 const tm6LegacyConfig = "# keep this comment\nsplit_max_panes=6\nrole.implementer.kind=grok\nrole.designer.kind=grok\nrole.tasker.kind=grok\nrole.scouter.kind=grok\nrole.researcher.kind=grok\nrole.reviewer.kind=grok\nrole.security-reviewer.kind=grok\nrole.ui-reviewer.kind=grok\nrole.inspector.kind=grok\nrole.planner.model=fable\n# tail comment\n"
 const tm6DivergentConfig = "# keep this comment\nsplit_max_panes=6\nrole.reviewer.kind=codex\nrole.security-reviewer.kind=claude\nrole.planner.model=fable\n# tail comment\n"
-const tm6FixInput = "role.implementer.kind=grok\nrole.designer.kind=grok\nrole.tasker.kind=grok\nrole.scouter.kind=grok\nrole.researcher.kind=grok\nrole.reviewer.kind=grok\nrole.security-reviewer.kind=grok\nrole.ui-reviewer.kind=grok\nrole.inspector.kind=grok\nrole.planner.model=fable\nmax_workers=9\nsplit_max_panes=8\n"
+const tm6FixInput = "role.implementer.kind=grok\nrole.designer.kind=grok\nrole.tasker.kind=grok\nrole.tester.kind=grok\nrole.scouter.kind=grok\nrole.researcher.kind=grok\nrole.reviewer.kind=grok\nrole.security-reviewer.kind=grok\nrole.ui-reviewer.kind=grok\nrole.inspector.kind=grok\nrole.validator.kind=grok\nrole.planner.model=fable\nmax_workers=9\nsplit_max_panes=8\n"
 
 func tm6CLIEnv(t *testing.T) (platform.Env, string) {
 	t.Helper()
