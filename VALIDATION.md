@@ -46,7 +46,7 @@ The repository gates run on the frozen head; `.github/workflows/check.yml` runs 
 - unit: `go test -timeout=30m ./...`
 - integration: n/a: there is no separate integration layer; `go test -race -timeout=45m ./...` re-runs the same suite under the race detector, and the job smoke below is the live end-to-end layer
 - contract: n/a: there is no separate contract suite; the `job` command contract of [docs/job-contract.md](docs/job-contract.md) is exercised by the job smoke below
-- e2e: the Procedure of this document, with the candidate binary built from the exact pull request head
+- e2e: manual: the Procedure of this document, with the candidate binary built from the exact pull request head
 - mutation: n/a: manual today — a temporary change in a throwaway copy made with `soho mutation-copy` (guarded by `soho mutation-guard`) to see a test fail; the mutation tool will be chosen in a separate slice
 
 ## Build provenance
