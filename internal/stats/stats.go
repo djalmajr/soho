@@ -804,7 +804,7 @@ func printAuthorStats(pairs []prompt, by string, asJSON bool, logFile string) in
 		return 0
 	}
 	output("reviews by " + by + ":\n" + table([]string{by, "reviews", "pass", "fail", "fail rate", "P0", "P1", "P2", "P3", "P0/review", "P1/review", "P2/review", "P3/review", "rounds/slice"}, rows) + "\n")
-	output(fmt.Sprintf("%d reviews have no author record (older dispatches)\n", missing))
+	output(fmt.Sprintf("%d reviews have no author record: the review's brief and the implementer's brief need the same Worktree: line, and older dispatches have no record\n", missing))
 	return 0
 }
 

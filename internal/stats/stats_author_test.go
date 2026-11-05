@@ -64,7 +64,7 @@ func TestStatsAuthor(t *testing.T) {
 		} else {
 			want += fmt.Sprintf(format, "backend", "3", "2", "1", "33.3%", "1", "2", "3", "4", "0.3", "0.7", "1.0", "1.3", "1.5")
 		}
-		want += "1 reviews have no author record (older dispatches)\n"
+		want += "1 reviews have no author record: the review's brief and the implementer's brief need the same Worktree: line, and older dispatches have no record\n"
 		if out != want {
 			t.Fatalf("table %s\ngot %q\nwant %q", by, out, want)
 		}
