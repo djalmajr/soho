@@ -33,23 +33,44 @@ func cmdLint(args []string, ctx *core.Config, env platform.Env, cwd string) int 
 		platform.DieFriction(fmt.Sprintf("lint: unknown role '%s'", role)+core.UnknownRoleHint(role, env, cwd), 3)
 	}
 	result := dispatch.BriefLintFindings(brief, ctx, env, dispatch.BriefLintOptions{ReadOnly: !core.RoleIsEdit(role, env, cwd)})
+	code := 0
 	if result.Mode == "off" {
 		fmt.Fprintf(platform.Stdout, "brief %s: lint off (brief_lint=off)\n", brief)
-		return 0
+	} else {
+		for _, warning := range result.Warnings {
+			fmt.Fprintf(platform.Stderr, "soho: warning: %s\n", warning)
+		}
+		if result.MissingMessage != "" && result.Mode == "strict" {
+			fmt.Fprintf(platform.Stderr, "soho: %s (brief_lint=strict)\n", result.MissingMessage)
+			code = 2
+		} else if result.MissingMessage != "" {
+			fmt.Fprintf(platform.Stderr, "soho: warning: %s\n", result.MissingMessage)
+			code = 1
+		} else if len(result.Warnings) > 0 {
+			code = 1
+		} else {
+			fmt.Fprintf(platform.Stdout, "brief %s: ok\n", brief)
+		}
 	}
-	for _, warning := range result.Warnings {
-		fmt.Fprintf(platform.Stderr, "soho: warning: %s\n", warning)
+	// The Worktree: line feeds review author measurement: a review-role
+	// brief without it gets the advisory, which never refuses and never
+	// changes lint's exit code.
+	if message := lintWorktreeWarning(brief, role); message != "" {
+		fmt.Fprintf(platform.Stderr, "soho: warning: %s\n", message)
 	}
-	if result.MissingMessage != "" && result.Mode == "strict" {
-		fmt.Fprintf(platform.Stderr, "soho: %s (brief_lint=strict)\n", result.MissingMessage)
-		return 2
+	return code
+}
+
+func lintWorktreeWarning(brief, role string) string {
+	if !core.IsReviewRole(role) {
+		return ""
 	}
-	if result.MissingMessage != "" {
-		fmt.Fprintf(platform.Stderr, "soho: warning: %s\n", result.MissingMessage)
+	body, err := os.ReadFile(brief)
+	if err != nil {
+		return ""
 	}
-	if len(result.Warnings) > 0 || result.MissingMessage != "" {
-		return 1
+	if dispatch.DeclaredWorktree(string(body)) != "" {
+		return ""
 	}
-	fmt.Fprintf(platform.Stdout, "brief %s: ok\n", brief)
-	return 0
+	return reviewWorktreeMessage(brief)
 }

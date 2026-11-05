@@ -659,7 +659,7 @@ func TestDispatchRemainingCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		line := "- Only you write this report, once all of the brief is done, including any part you handed to subagents or background tasks; a subagent never writes it. Before you write it, wait until every subagent and background task you started has finished, and change no file after it. Report every item as it stands in the files, not as a subagent summarized it.\n"
-		for _, prompt := range []string{dispatch.ComposePrompt(role, "implementer", "worker", "# Goal\nrun", "/r.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{"SOHO_SKILL_DIR": t.TempDir()}, "codex", "", "", false), dispatch.ComposeAmendment("# Amend\nchange", "/r.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{}, "codex", "", "", false)} {
+		for _, prompt := range []string{dispatch.ComposePrompt(role, "implementer", "worker", "# Goal\nrun", "/r.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{"SOHO_SKILL_DIR": t.TempDir()}, "codex", "", "", false), dispatch.ComposeAmendment("# Amend\nchange", "/r.md", "", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{}, "codex", "", "", false)} {
 			if strings.Count(prompt, line) != 1 || strings.Index(prompt, "- Write the report in one go") > strings.Index(prompt, line) {
 				t.Fatalf("report writer line missing or misplaced")
 			}
@@ -672,7 +672,7 @@ func TestDispatchRemainingCases(t *testing.T) {
 		if err := os.WriteFile(role, []byte("---\nname: Role\n---\nBody\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		for _, prompt := range []string{dispatch.ComposePrompt(role, "implementer", "worker", "# Goal\nrun", "/r.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{"SOHO_SKILL_DIR": t.TempDir()}, "codex", "", "", false), dispatch.ComposeAmendment("# Amend\nchange", "/r.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{}, "codex", "", "", false)} {
+		for _, prompt := range []string{dispatch.ComposePrompt(role, "implementer", "worker", "# Goal\nrun", "/r.md", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{"SOHO_SKILL_DIR": t.TempDir()}, "codex", "", "", false), dispatch.ComposeAmendment("# Amend\nchange", "/r.md", "", &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{}, "codex", "", "", false)} {
 			if strings.Count(prompt, line) != 1 || strings.Index(prompt, "# Report contract") > strings.Index(prompt, line) {
 				t.Fatalf("report scope line missing or misplaced")
 			}
@@ -849,8 +849,21 @@ func TestDispatchReviewerFamilyIsMetadata(t *testing.T) {
 			}
 			f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
 			code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
-			if code != 0 || !strings.Contains(out, `"wait_status":"submitted"`) || strings.Contains(strings.ToLower(stderr), "family") {
+			if code != 0 || !strings.Contains(out, `"wait_status":"submitted"`) || strings.Contains(out, `"family"`) {
 				t.Fatalf("code=%d out=%s stderr=%s", code, out, stderr)
+			}
+			// DJA-684: the fixture brief declares no Worktree: line, so the
+			// once-per-dispatch review author advisory is the expected stderr;
+			// family stays out of the message itself.
+			msg := stderr
+			if i := strings.Index(stderr, " has no Worktree: line:"); i > 0 {
+				msg = stderr[i:]
+			}
+			if !strings.Contains(msg, "has no Worktree: line: this review cannot be tied to its author") {
+				t.Fatalf("missing the worktree advisory: stderr=%s", stderr)
+			}
+			if strings.Contains(strings.ToLower(msg), "family") {
+				t.Fatalf("family leaked into the stderr message: stderr=%s", stderr)
 			}
 			calls := readArrivalCalls(t, f)
 			sent := false
