@@ -122,7 +122,9 @@ func procsStop(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 			// explicit --agent, which names whose lines the call acts on. The
 			// stop below keeps the identity check (a reused pid is never
 			// signalled).
-			isOwned := row.Owner == owner || (!agentSeen && row.Owner == "-" && row.Pane != "-" && row.Pane == callerPane)
+			// A caller outside the roster has no owner: an empty owner field
+			// on an old or hand-written line never matches that.
+			isOwned := (owner != "" && row.Owner == owner) || (!agentSeen && row.Owner == "-" && row.Pane != "-" && row.Pane == callerPane)
 			if !isOwned {
 				continue
 			}

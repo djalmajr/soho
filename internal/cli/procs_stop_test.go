@@ -423,6 +423,39 @@ func TestProcsStopAgentFlagDoesNotOpenUnownedRow(t *testing.T) {
 	}
 }
 
+// DJA-697: a caller outside the roster has no owner, and an old or hand-written
+// row with an empty owner field must not match that empty value.
+func TestProcsStopEmptyOwnerRowStaysClosed(t *testing.T) {
+	f := newProcsFixture(t)
+	f.env["HERDR_PANE_ID"] = "p-orch"
+	row := procsStopRow(t, f, f.sleeper(t), "")
+	row.Pane = "p-someone-else"
+	f.writeProcs(t, row)
+	code, out, errOut := f.run(t, "procs", "stop", strconv.Itoa(row.Pid))
+	if code != 2 || out != "" || !strings.Contains(errOut, "registered process belongs to another agent") {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
+	}
+	if !procAlive(t, f.env, row.Pid) || len(f.procsRows(t)) != 1 {
+		t.Fatal("a row with an empty owner was opened by a caller outside the roster")
+	}
+}
+
+// DJA-697: two empty pane values never open a "-" row through equality.
+func TestProcsStopEmptyPaneNeverMatchesEmptyRowPane(t *testing.T) {
+	f := newProcsFixture(t)
+	f.env["HERDR_PANE_ID"] = ""
+	row := procsStopRow(t, f, f.sleeper(t), "-")
+	row.Pane = ""
+	f.writeProcs(t, row)
+	code, out, errOut := f.run(t, "procs", "stop", strconv.Itoa(row.Pid))
+	if code != 2 || out != "" || !strings.Contains(errOut, "no calling agent in the roster (pane unset") {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
+	}
+	if !procAlive(t, f.env, row.Pid) || len(f.procsRows(t)) != 1 {
+		t.Fatal("an empty pane opened a row with an empty pane")
+	}
+}
+
 // DJA-697 scenario 2: a "-" row registered in another pane is refused with
 // no signal, whatever the caller's pane is.
 func TestProcsStopForeignPaneUnownedRow(t *testing.T) {
