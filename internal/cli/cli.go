@@ -224,7 +224,7 @@ func Run(args []string, env platform.Env) (code int) {
 			}
 			extra = fmt.Sprintf(" (%d extra %s not allowed)", count, noun)
 		}
-		platform.Die("soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json'; rejected: "+shown+extra+" — unset SOHO_NOWRITE to write", 2)
+		platform.Die("soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, --patterns, --json, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json'; rejected: "+shown+extra+" — unset SOHO_NOWRITE to write", 2)
 	}
 	if command == "help" || command == "-h" || command == "--help" || command == "" {
 		_, _ = io.WriteString(platform.Stdout, usage)
@@ -562,7 +562,7 @@ func nowriteReadInvocation(args []string) bool {
 		}
 		return true
 	case "friction":
-		return nowriteFlagOnly(args[1:], []string{"--since", "--level", "--command", "--agent"}, []string{"--summary"})
+		return nowriteFlagOnly(args[1:], []string{"--since", "--level", "--command", "--agent"}, []string{"--summary", "--patterns", "--json"})
 	case "collect":
 		return nowriteCollectRead(args[1:])
 	case "gc":

@@ -65,7 +65,9 @@ soho spawn implementer                 # the agent is named after its lane (`bui
 soho dispatch build brief.md           # waits for the report file
 soho collect build [--verify]          # active collaboration: metadata and last evidence path; otherwise prints the report; an agent still working or blocked with no report: stderr and exit 4 (`--lines` forces the terminal); --verify checks the evidence hash and its sha256 lines (exit 16 on changed/missing or no hash lines, 4 if unreadable)
 soho stats [--since <date>] [--by role|kind|model|agent|effort] [--json] # tasks, times and review findings; date is YYYY-MM-DD or ISO 8601
-soho friction add "<text>" [--brief P] # record one friction note (level note, command friction)
+soho friction [--since <date>] [--level L] [--command C] [--agent A] [--summary | --patterns [--json]] # errors/warnings of this workspace; the options AND together; --patterns groups the lines by their masked message template (quoted strings, absolute paths, standalone numbers) and prints count, after, key, last_seen, fixed_by, pattern per pattern (after = lines after the last fixed of the key, or -; --json returns the same as JSON)
+soho friction add "<text>" [--brief P] [--key <slug>] # record one friction note (level note, command friction; --key writes it as '[<slug>] <text>', the key of the pattern it belongs to)
+soho friction fixed <key> "<what resolved it>" # mark a friction pattern fixed (level fixed, command friction); the key must exist in the log, else exit 2; a second fixed replaces fixed_by and restarts the after count without erasing the first
 soho run scouter brief.md               # spawn + dispatch + collect
 soho wait build review                 # block until every report exists
 soho roster [--scope workspace|server] [--json]   # live agents with role/kind/pane/state/report and the current task (TASK); default workspace; --scope server adds the other local workspaces, grouped and identified
@@ -88,7 +90,7 @@ To change a brief a worker already has, busy or finished, write the amendment to
 - the exact `explain`;
 - the exact `config` and `config get <key>`, but not `config set` or `config --project`;
 - the exact `roles`, but not `role <name>`;
-- `friction` with its reading options, but not `friction add`;
+- `friction` with its reading options (including `--patterns`), but not `friction add` or `friction fixed`;
 - `collect <agent> [--lines N] [--verify]`;
 - the exact `copies`, but not `copies add`;
 - the exact `procs`, but not `procs add`;

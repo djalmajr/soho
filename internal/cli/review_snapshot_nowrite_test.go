@@ -106,7 +106,7 @@ func TestReviewSnapshotNowrite(t *testing.T) {
 				t.Fatalf("exit=%d want=%d stdout=%s stderr=%s", code, wantCode, out, stderr)
 			}
 			if wantCode == 2 {
-				want := "soho: soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json'; rejected: " + args[0] + " (1 extra argument not allowed) — unset SOHO_NOWRITE to write\n"
+				want := "soho: soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, --patterns, --json, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json'; rejected: " + args[0] + " (1 extra argument not allowed) — unset SOHO_NOWRITE to write\n"
 				if stderr != want {
 					t.Fatalf("refusal=%q want=%q", stderr, want)
 				}
