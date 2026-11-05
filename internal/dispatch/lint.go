@@ -436,6 +436,12 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 		}
 		result.Warnings = append(result.Warnings, fmt.Sprintf("brief %s failure matrix is missing: %s — %s", brief, strings.Join(markers, " "), strings.Join(reasons, "; ")))
 	}
+	// The per-Type section warnings are for edit roles only (the PathsOnly
+	// amendment already returned above); they never join the refusal
+	// message, even in strict mode.
+	if !options.ReadOnly {
+		result.Warnings = append(result.Warnings, TypeSectionWarnings(brief, body)...)
+	}
 	missing := BriefMissingSections(body, options.ReadOnly, aliases)
 	placeholderMarks := UnfilledPlaceholders(body, briefLintPlaceholderMarkers(core.Cfg(ctx, "brief_lint_placeholders", "", env)))
 	if missing == "" && len(placeholderMarks) == 0 {
