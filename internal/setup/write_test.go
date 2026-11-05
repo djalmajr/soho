@@ -80,6 +80,31 @@ func TestSetupWriteBlockAndHooks(t *testing.T) {
 			t.Fatalf("replacement=%q err=%v, want %q", updated, err, want)
 		}
 	})
+	t.Run("the block carries the design line as its own item", func(t *testing.T) { // DJA-695 fatia 2, scenario 8: the static line is in the managed block, and a legacy migration installs it in place while keeping the project lines.
+		const designLine = "- **Design**: when the project has a root `DESIGN.md`, read it, and the spec under\n  `design/` of what you touch, before changing UI, and run its `design` validation layer.\n"
+		if !strings.Contains(setuptext.SetupBlock(), designLine) {
+			t.Fatalf("the generated block lost the design line:\n%s", setuptext.SetupBlock())
+		}
+		file := filepath.Join(t.TempDir(), "AGENTS.md")
+		if got := setupWriteBlock(file); got != "written" {
+			t.Fatal(got)
+		}
+		content, err := os.ReadFile(file)
+		if err != nil || !strings.Contains(string(content), designLine) {
+			t.Fatalf("fresh write lost the design line: %q err=%v", content, err)
+		}
+		legacy := "before\n<!-- herdr-soho:start -->\n## Multi-agent workflow (herdr-soho)\n\n- **Keep**: a one-or-two-file change with no product decision, docs, config,\n  a question, a quick verification. If writing the brief takes longer than the\n  change, make the change.\n- **Briefs are contracts**: goal, expected result, acceptance criteria with\n  the command that proves each one, decisions already made, owned and\n  forbidden files, report format. Workers never invent names, flags,\n  endpoints, credentials or requirements; what the brief leaves open comes\n  back as an open question and is answered in the next brief.\n\nproject line: keep me\n<!-- herdr-soho:end -->\nafter\n"
+		if err := os.WriteFile(file, []byte(legacy), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := setupWriteBlock(file); got != "updated" {
+			t.Fatal(got)
+		}
+		content, _ = os.ReadFile(file)
+		if !strings.Contains(string(content), designLine) || !strings.Contains(string(content), "project line: keep me\n") {
+			t.Fatalf("the legacy migration must install the design line and keep the project line: %q", content)
+		}
+	})
 	t.Run("block replaces current block and preserves its file mode", func(t *testing.T) { // Mutation captured: append instead of replacing duplicates the managed block and replacing the file mode breaks user permissions.
 		file := filepath.Join(t.TempDir(), "AGENTS.md")
 		old := "before\n" + setuptext.SetupStart + "\nold\n" + setuptext.SetupEnd + "\nafter\n"
