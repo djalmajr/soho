@@ -27,7 +27,7 @@ cd -- "$copy_dir" || {
 # Only now edit files in the copy.
 ```
 
-Use the equivalent PowerShell script on Windows. Capture stdout alone, check each native command's exit code immediately, and use literal-path operations with terminating errors so brackets and other metacharacters are preserved. Set any required build-output setting inside the captured copy before the guard, and make edits only after `Set-Location` succeeds, relative to the copy or rooted at `$copyDir`.
+Use the equivalent PowerShell script on Windows. Capture stdout alone, check each native command's exit code immediately, and use literal-path operations with terminating errors so brackets and other metacharacters are preserved. Set any required build-output setting inside the captured copy before the guard. Make edits only after `Set-Location` succeeds, using absolute literal paths rooted at `$copyDir` and terminating edit errors; do not rely on relative paths for subsequent file operations.
 
 ```powershell
 $sourceDir = $PWD.Path
