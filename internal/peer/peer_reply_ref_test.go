@@ -214,7 +214,7 @@ func TestPeerReplyRefWaitTimeoutBlocked(t *testing.T) {
 		{Argv: []string{"agent", "wait", "w0test:p0a", "--until", "idle", "--until", "done", "--timeout", "1000"}, Stderr: `{"error":{"code":"timeout","message":"timed out"}}`, Code: 1},
 		{Argv: []string{"agent", "get", "w0test:p0a"}, Call: 2, Stdout: agentJSON("blocked", "1")},
 	})
-	code, _, stderr := f.run([]string{"send", "w0test:p0a", "--timeout", "1000", "hello"})
+	code, _, stderr := f.run([]string{"send", "w0test:p0a", "--timeout", "1000ms", "hello"})
 	want := "soho: send: local/w0test:p0a is still blocked after 1s; nothing was sent (it may be showing a dialog or waiting for an approval: read its pane before sending anything)\n"
 	if code != 17 || stderr != want {
 		t.Fatalf("code=%d stderr=%q want=%q", code, stderr, want)
@@ -239,7 +239,7 @@ func TestPeerReplyRefWaitTimeoutWorking(t *testing.T) {
 		{Argv: []string{"agent", "wait", "w0test:p0a", "--until", "idle", "--until", "done", "--timeout", "1000"}, Stderr: `{"error":{"code":"timeout","message":"timed out"}}`, Code: 1},
 		{Argv: []string{"agent", "get", "w0test:p0a"}, Call: 2, Stdout: agentJSON("working", "1")},
 	})
-	code, _, stderr := f.run([]string{"send", "w0test:p0a", "--timeout", "1000", "hello"})
+	code, _, stderr := f.run([]string{"send", "w0test:p0a", "--timeout", "1000ms", "hello"})
 	want := "soho: send: local/w0test:p0a is still working after 1s; nothing was sent (--now sends it without waiting; the target's CLI decides whether to queue it)\n"
 	if code != 17 || stderr != want {
 		t.Fatalf("code=%d stderr=%q want=%q", code, stderr, want)

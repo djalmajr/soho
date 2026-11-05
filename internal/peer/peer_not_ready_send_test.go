@@ -75,7 +75,7 @@ func callStartsOf(t *testing.T, f *fixture, argv []string) []time.Time {
 }
 
 func TestSendAgentNotReady(t *testing.T) {
-	t.Run("--now --timeout 5000 delivers once the starting agent idles (two agent_not_ready polls)", func(t *testing.T) { // DJA-377: "agent get returns agent_not_ready twice, then the agent idles: send --now --timeout 5000 delivers, exits 0 and the log records the delivery"
+	t.Run("--now --timeout 5000ms delivers once the starting agent idles (two agent_not_ready polls)", func(t *testing.T) { // DJA-377: "agent get returns agent_not_ready twice, then the agent idles: send --now --timeout 5000 delivers, exits 0 and the log records the delivery"
 		id := "01020304"
 		oldReader := rand.Reader
 		rand.Reader = bytes.NewReader([]byte{1, 2, 3, 4})
@@ -94,7 +94,7 @@ func TestSendAgentNotReady(t *testing.T) {
 		}
 		f := newFixture(t, rules)
 		start := time.Now()
-		code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "5000", "hello"})
+		code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "5000ms", "hello"})
 		elapsed := time.Since(start)
 		if code != 0 || out != "sent to local/w0test:p0a\n" || stderr != "" {
 			t.Fatalf("code=%d out=%q stderr=%q elapsed=%s", code, out, stderr, elapsed)
@@ -125,12 +125,12 @@ func TestSendAgentNotReady(t *testing.T) {
 			t.Fatalf("prompt calls=%d calls=%+v", got, calls)
 		}
 	})
-	t.Run("--now --timeout 1500 with the agent never ready exits 4 with today's message plus the waited time, no prompt", func(t *testing.T) { // DJA-377: "agent get always agent_not_ready: send --now --timeout 1500 exits 4 with the today message plus (still not ready after 1.5s) after at most about 1.5 s plus one poll, no prompt sent"
+	t.Run("--now --timeout 1500ms with the agent never ready exits 4 with today's message plus the waited time, no prompt", func(t *testing.T) { // DJA-377: "agent get always agent_not_ready: send --now --timeout 1500 exits 4 with the today message plus (still not ready after 1.5s) after at most about 1.5 s plus one poll, no prompt sent"
 		rules := []fakecli.Rule{
 			{Argv: []string{"agent", "get", "w0test:p0a"}, Stderr: notReadyErr, Code: 1},
 		}
 		f := newFixture(t, rules)
-		code, _, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "1500", "hello"})
+		code, _, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "1500ms", "hello"})
 		end := time.Now()
 		if code != 4 {
 			t.Fatalf("code=%d stderr=%q", code, stderr)
@@ -204,7 +204,7 @@ func TestSendAgentNotReady(t *testing.T) {
 			{Argv: []string{"--machine", "remote", "agent", "get", "w0test:p0a"}, Stderr: notReadyErr, Code: 1},
 		}
 		f := newFixture(t, rules)
-		code, _, stderr := f.run([]string{"send", "remote/w0test:p0a", "--now", "--timeout", "1500", "hello"})
+		code, _, stderr := f.run([]string{"send", "remote/w0test:p0a", "--now", "--timeout", "1500ms", "hello"})
 		end := time.Now()
 		if code != 4 {
 			t.Fatalf("code=%d stderr=%q", code, stderr)

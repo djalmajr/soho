@@ -193,7 +193,7 @@ func TestSendArrivalBusyClaudeTranscript(t *testing.T) {
 		const warning = "send: local/w0test:p0a is busy; waiting for its transcript to show the message (up to 4s)\n"
 		w := newStderrSignal(warning)
 		done := appendAfterSignal(t, w.seen, transcriptPath, userLine)
-		code, out, stderr := f.runWithStderr([]string{"send", "w0test:p0a", "--now", "--timeout", "4000", "hello"}, w)
+		code, out, stderr := f.runWithStderr([]string{"send", "w0test:p0a", "--now", "--timeout", "4000ms", "hello"}, w)
 		if code != 0 || out != "sent to local/w0test:p0a\n" {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 		}
@@ -238,7 +238,7 @@ func TestSendArrivalBusyClaudeTranscript(t *testing.T) {
 		const warning = "send: local/w0test:p0a is busy; waiting for its transcript to show the message (up to 4s)\n"
 		w := newStderrSignal(warning)
 		done := appendAfterSignal(t, w.seen, transcriptPath, userLine)
-		code, out, stderr := f.runWithStderr([]string{"send", "w0test:p0a", "--now", "--timeout", "4000", "hello"}, w)
+		code, out, stderr := f.runWithStderr([]string{"send", "w0test:p0a", "--now", "--timeout", "4000ms", "hello"}, w)
 		if code != 0 || !strings.HasPrefix(out, "queued for local/w0test:p0a") {
 			t.Fatalf("a visible queue line is queued, not sent: code=%d out=%q stderr=%q", code, out, stderr)
 		}
@@ -271,7 +271,7 @@ func TestSendArrivalBusyClaudeTranscript(t *testing.T) {
 		f := newFixture(t, rules)
 		f.env["CLAUDE_CONFIG_DIR"] = configRoot
 		f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1000", "100"
-		code, _, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "2000", "hello"})
+		code, _, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "2000ms", "hello"})
 		want := "send: local/w0test:p0a is busy; waiting for its transcript to show the message (up to 2s)\n" +
 			"soho: send: local/w0test:p0a did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane for #01020304 or a reply before sending again\n"
 		if code != 15 || stderr != want {
@@ -305,7 +305,7 @@ func TestSendArrivalBusyClaudeTranscript(t *testing.T) {
 		f := newFixture(t, rules)
 		f.env["CLAUDE_CONFIG_DIR"] = configRoot
 		f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1000", "100"
-		code, _, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "5000", "hello"})
+		code, _, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "5000ms", "hello"})
 		want := "send: local/w0test:p0a is busy; waiting for its transcript to show the message (up to 5s)\n" +
 			"soho: send: local/w0test:p0a did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane for #01020304 or a reply before sending again\n"
 		if code != 15 || stderr != want {

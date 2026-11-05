@@ -109,7 +109,7 @@ func TestTM10WorktreeCommandsReadMainState(t *testing.T) {
 		if code != 0 || statusErr != "" || !strings.Contains(statusOut, "build\tdone") {
 			t.Fatalf("status code=%d out=%q err=%q", code, statusOut, statusErr)
 		}
-		waitOut, waitErr, code := run("wait", "build", "--timeout", "1000")
+		waitOut, waitErr, code := run("wait", "build", "--timeout", "1000ms")
 		if code != 0 || waitErr != "" || !strings.Contains(waitOut, `"agent":"build"`) {
 			t.Fatalf("wait code=%d out=%q err=%q", code, waitOut, waitErr)
 		}

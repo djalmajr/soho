@@ -252,7 +252,7 @@ func TestSendReadsTheTooLargeRefusalFromTheTranscript(t *testing.T) {
 		f.env["CLAUDE_CONFIG_DIR"] = configRoot
 		f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
 		done := appendAfterPrompt(t, filepath.Join(filepath.Dir(f.bin), "herdr.calls.jsonl"), transcriptPath, signID, appended)
-		code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "1000", "hello"})
+		code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "1000ms", "hello"})
 		if !<-done {
 			t.Fatal("the transcript line was not appended after the prompt call")
 		}
@@ -351,7 +351,7 @@ func TestSendReadsTheTooLargeRefusalFromAReplacedTranscript(t *testing.T) {
 			}
 			done <- os.ErrDeadlineExceeded
 		}()
-		code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "1000", "hello"})
+		code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "1000ms", "hello"})
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
