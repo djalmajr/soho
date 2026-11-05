@@ -16,21 +16,20 @@ import (
 	"github.com/djalmajr/soho/internal/reportscan"
 )
 
-// checkFindingMarks is the done case's finding-marks coverage: the counts
-// go to the line when the header has findings or the report carries marks,
+// checkFindingMarks is the done case's finding-marks coverage: with a review
+// header, the counts go to the line when it has findings or the report carries marks,
 // and the warning fires at most once per report, through the
 // finding-marks-warned wait file.
 func checkFindingMarks(sd, agent, report, text string, header *reportscan.ReviewHeaderResult, line *jsonjs.Object) {
-	if text == "" {
-		return // an unreadable report stays exactly as today
+	// An unreadable report stays exactly as today. A report without a review
+	// header is not a review, whatever line it quotes: stats and the metrics
+	// leave it out too.
+	if text == "" || header == nil {
+		return
 	}
 	marks := reportscan.FindingMarks(text, header)
-	total := 0
-	if header != nil {
-		total = int(header.Findings)
-	}
 	counted := marks.Brief + marks.Impl + marks.Unknown
-	if total > 0 || counted > 0 {
+	if header.Findings > 0 || counted > 0 {
 		line.Set("finding_marks", jsonjs.O("brief", marks.Brief, "impl", marks.Impl, "unknown", marks.Unknown, "unmarked", marks.Unmarked))
 	}
 	if marks.Unmarked == 0 {

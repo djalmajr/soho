@@ -129,3 +129,29 @@ func TestStatsFindingMarksNoReviews(t *testing.T) {
 		t.Fatalf("header-less review report changed the view:\ngot %s\nwant %s", out, want)
 	}
 }
+
+// The class rows go by count first: the fixture's alphabetical order is the
+// opposite of its count order, so dropping the count comparison changes the
+// output.
+func TestStatsByClassOrdersByCount(t *testing.T) {
+	f := newAmendLostFixture(t)
+	stamp := "20261001T100000"
+	f.brief("reviewer", stamp, "You are running as the `reviewer` role\n")
+	f.report("reviewer", stamp, "findings: 3 (P0 0, P1 0, P2 0, P3 3) | verdict: pass\n\n"+
+		"- [F1] [origin: impl] [class: aaa-rare] once\n"+
+		"- [F2] [origin: impl] [class: zzz-common] first\n"+
+		"- [F3] [origin: impl] [class: zzz-common] second\n")
+	side := `{"version":1,"submission":"accepted","kind":"claude","model":"reviewer-model","effort":""}`
+	if err := os.WriteFile(filepath.Join(f.briefs, "reviewer-"+stamp+".dispatch.json"), []byte(side), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, rc := f.run(t, "--by", "class", "--json")
+	want := `{"by":"class","groups":{"zzz-common":{"findings":2},"aaa-rare":{"findings":1}},"unmarked":0}` + "\n"
+	if rc != 0 || out != want {
+		t.Fatalf("rc=%d\ngot %s\nwant %s", rc, out, want)
+	}
+	out, rc = f.run(t, "--by", "class")
+	if rc != 0 || strings.Index(out, "zzz-common") > strings.Index(out, "aaa-rare") {
+		t.Fatalf("rc=%d the table is not in count order:\n%s", rc, out)
+	}
+}

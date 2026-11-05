@@ -54,6 +54,7 @@ func TestFindingMarks(t *testing.T) {
 		// including a fence closed with a tab.
 		{"fenced block does not count", "```\n" + strings.TrimLeft(markedLine("F1", "impl", "missing-bound"), "- ") + "```\n", header(1), 0, 0, 0, 1, map[string]int{}},
 		{"a tab-closed fence does not count", "```\n" + strings.TrimLeft(markedLine("F1", "impl", "missing-bound"), "- ") + "```\t\n", header(1), 0, 0, 0, 1, map[string]int{}},
+		{"a mark after a tab-closed fence counts", "```\n" + strings.TrimLeft(markedLine("F1", "impl", "missing-bound"), "- ") + "```\t\n" + markedLine("F2", "brief", "doc-drift"), header(2), 1, 0, 0, 1, map[string]int{"doc-drift": 1}},
 		{"a tilde fence does not count", "~~~\n" + strings.TrimLeft(markedLine("F1", "impl", "missing-bound"), "- ") + "~~~\n", header(1), 0, 0, 0, 1, map[string]int{}},
 		{"a mark before and after a fence counts once", markedLine("F1", "brief", "doc-drift") + "```\n[F1] [origin: impl] [class: missing-bound]\n```\n" + markedLine("F2", "impl", "missing-bound"), header(2), 1, 1, 0, 0, map[string]int{"doc-drift": 1, "missing-bound": 1}},
 		// scenario 4: Unmarked is the total minus the counted lines, never
