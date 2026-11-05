@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,12 +12,15 @@ import (
 // brief's line, so the amended review stays tied to its author.
 func TestComposeAmendmentKeepsOriginalWorktree(t *testing.T) {
 	ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
+	// Absolute on the platform running the test, Windows included.
+	slice, amended := filepath.Join(t.TempDir(), "slice"), filepath.Join(t.TempDir(), "amend")
+	spaced := filepath.Join(t.TempDir(), "my slice")
 
 	// The original declares the worktree and the amendment does not: the
 	// composed amendment carries the original's line, outside any fenced
 	// block (DeclaredWorktree only reads unfenced lines).
-	composed := ComposeAmendment("# Amend\n\nFix the thing.\n", "/report.md", "Type: backend\nWorktree: /abs/slice\n", ctx, nil, "codex", "", "", false)
-	if tree := DeclaredWorktree(composed); tree != "/abs/slice" {
+	composed := ComposeAmendment("# Amend\n\nFix the thing.\n", "/report.md", "Type: backend\nWorktree: "+slice+"\n", ctx, nil, "codex", "", "", false)
+	if tree := DeclaredWorktree(composed); tree != slice {
 		t.Fatalf("amendment lost the original's worktree (DeclaredWorktree=%q):\n%s", tree, headOf(composed))
 	}
 	if !strings.Contains(composed, "# Amend\n\nFix the thing.") {
@@ -25,27 +29,27 @@ func TestComposeAmendmentKeepsOriginalWorktree(t *testing.T) {
 
 	// A path with spaces stays whole: the line is kept as written, so it reads
 	// the same in the composed amendment and in the next one.
-	composed = ComposeAmendment("Fix the thing.\n", "/report.md", "Worktree: `/abs/my slice` (the slice)\n", ctx, nil, "codex", "", "", false)
-	if tree := DeclaredWorktree(composed); tree != "/abs/my slice" {
+	composed = ComposeAmendment("Fix the thing.\n", "/report.md", "Worktree: `"+spaced+"` (the slice)\n", ctx, nil, "codex", "", "", false)
+	if tree := DeclaredWorktree(composed); tree != spaced {
 		t.Fatalf("a quoted path did not survive (DeclaredWorktree=%q):\n%s", tree, headOf(composed))
 	}
 	composed = ComposeAmendment("Fix it again.\n", "/report.md", composed, ctx, nil, "codex", "", "", false)
-	if tree := DeclaredWorktree(composed); tree != "/abs/my slice" {
+	if tree := DeclaredWorktree(composed); tree != spaced {
 		t.Fatalf("a quoted path did not survive a second amendment (DeclaredWorktree=%q):\n%s", tree, headOf(composed))
 	}
 
 	// The amendment's own line wins over the original's.
-	composed = ComposeAmendment("Worktree: /abs/amend\nFix the thing.\n", "/report.md", "Worktree: /abs/slice\n", ctx, nil, "codex", "", "", false)
-	if tree := DeclaredWorktree(composed); tree != "/abs/amend" {
+	composed = ComposeAmendment("Worktree: "+amended+"\nFix the thing.\n", "/report.md", "Worktree: "+slice+"\n", ctx, nil, "codex", "", "", false)
+	if tree := DeclaredWorktree(composed); tree != amended {
 		t.Fatalf("the amendment's own worktree must win (DeclaredWorktree=%q)", tree)
 	}
-	if strings.Contains(composed, "/abs/slice") {
+	if strings.Contains(composed, slice) {
 		t.Fatalf("the original's worktree leaked into the composed amendment:\n%s", headOf(composed))
 	}
 
 	// A Worktree: line fenced in the original is not a declaration: it is
 	// not preserved.
-	composed = ComposeAmendment("Fix the thing.\n", "/report.md", "```\nWorktree: /abs/slice\n```\n", ctx, nil, "codex", "", "", false)
+	composed = ComposeAmendment("Fix the thing.\n", "/report.md", "```\nWorktree: "+slice+"\n```\n", ctx, nil, "codex", "", "", false)
 	if tree := DeclaredWorktree(composed); tree != "" {
 		t.Fatalf("a fenced original worktree line must not be preserved (DeclaredWorktree=%q)", tree)
 	}
