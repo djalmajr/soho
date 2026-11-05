@@ -48,7 +48,9 @@ func readWaitFile(sd, agent, name string) (string, bool) {
 }
 
 func writeWaitFile(sd, agent, name, value string) {
-	if err := os.WriteFile(filepath.Join(sd, "wait", agent+"."+name), []byte(value), 0o666); err != nil {
+	// One rename: wait and status read the file in a loop, and a plain write
+	// would show them an empty or mixed value.
+	if err := platform.AtomicWrite(filepath.Join(sd, "wait", agent+"."+name), value); err != nil {
 		panic(err)
 	}
 }

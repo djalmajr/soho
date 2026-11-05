@@ -979,7 +979,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				if seq == "" {
 					seq = "-"
 				}
-				_ = os.WriteFile(filepath.Join(sd, "wait", agent+".queued"), []byte(fmt.Sprintf("%d %s %s\n", platform.Now().Unix(), seq, composed)), 0o666)
+				_ = writeQueuedMarker(filepath.Join(sd, "wait", agent+".queued"), fmt.Sprintf("%d %s %s\n", platform.Now().Unix(), seq, composed))
 				fmt.Fprintf(platform.Stderr, "soho: prompt queued: '%s' is working; it takes the prompt when its turn ends\n", agent)
 			}
 		}
@@ -1476,6 +1476,20 @@ func dispatchCauseOrUnknown(err error) string {
 // value.
 func writeReportPointer(path, value string) error { return platform.AtomicWrite(path, value) }
 
+// writeQueuedMarker replaces the queued marker in one rename: wait and status
+// read it while a dispatch runs, and a plain write would show them an empty or
+// mixed value.
+func writeQueuedMarker(path, value string) error { return platform.AtomicWrite(path, value) }
+
+// writeTaskTitleFile replaces the task title in one rename: status and the
+// pane title read it while a dispatch runs, and a plain write would show them
+// an empty or mixed value.
+func writeTaskTitleFile(path, value string) error { return platform.AtomicWrite(path, value) }
+
+// writeNotReceivedMarker replaces the not-received marker in one rename: the
+// next wait reads it, and a plain write would show it an empty or mixed value.
+func writeNotReceivedMarker(path, value string) error { return platform.AtomicWrite(path, value) }
+
 func restoreTaskDispatch(sd, agent, lastPath string, priorLast []byte, prior *jsonjs.Object) error {
 	if prior == nil {
 		_ = os.Remove(taskreport.TaskReportPointerPath(sd, agent))
@@ -1614,7 +1628,7 @@ func recordDispatchTask(sd, agent, role, brief string, amend bool, env platform.
 			}
 		}
 	}
-	if err := os.WriteFile(filepath.Join(sd, "task-"+agent), []byte(title+"\n"), 0o666); err != nil {
+	if err := writeTaskTitleFile(filepath.Join(sd, "task-"+agent), title+"\n"); err != nil {
 		panic(err)
 	}
 	core.PaneTaskTitle(sd, agent, &title, env)
@@ -1656,7 +1670,7 @@ func markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskRepo
 		marker += " " + seq
 	}
 	marker += "\n"
-	_ = os.WriteFile(filepath.Join(sd, "wait", agent+".not-received"), []byte(marker), 0o666)
+	_ = writeNotReceivedMarker(filepath.Join(sd, "wait", agent+".not-received"), marker)
 }
 
 // warnNotReceived warns that the prompt was not confirmed; waiting is set when
