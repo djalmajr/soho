@@ -987,7 +987,11 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	}
 	kindLayer := core.SpawnKindLayer(ctx, o.role, lane, o.kindSet, env)
 	if _, ok := platform.FindExecutable(kinds.KindExe(kind), env, platform.Current()); !ok {
-		Warn("executable '"+kinds.KindExe(kind)+"' not found in PATH; herdr agent start may fail", ctx, env, "spawn")
+		msg := "executable '" + kinds.KindExe(kind) + "' not found in PATH; herdr agent start may fail"
+		if lane != "" {
+			msg += "; choose another with 'soho setup --lane " + lane + "=<kind>'"
+		}
+		Warn(msg, ctx, env, "spawn")
 	}
 	if o.role == "sub-orchestrator" && kind == "codex" && !strings.Contains(core.Cfg(ctx, "args_codex", "", env), "danger-full-access") {
 		Warn("sub-orchestrator on codex: its sandbox blocks the Herdr socket (every 'herdr' call fails with Operation not permitted). Use --kind claude, or set args.codex=-s danger-full-access if you accept that.", ctx, env, "spawn")

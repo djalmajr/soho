@@ -26,18 +26,19 @@ roles/<role>.md  ──▶  spawn (pane split + agent start)  ──▶  dispatc
 
 ## The team: panels and lanes
 
-The other panes are **lanes**: sessions that take, in order, any role in their group, each with a capacity of workers (`lane.<name>.panes`). The preset is resolved at run time from `panes` (2|3|4, default 4), counting your pane:
+The other panes are **lanes**: sessions that take, in order, any role in their group, each with a capacity of workers (`lane.<name>.panes`). The preset is resolved at run time from `panes` (2|3|4, default 4): `panes` counts your pane and the fixed panels, and the `critical` panel is one more, open only when a slice needs it (four panels can reach five):
 
 | Panes | The team |
 |---|---|
-| 4 (default) | You + the `build` lane with **two** builders + the `review` lane with one reviewer |
-| 3 | You + one builder + one reviewer |
+| 4 (default) | You + the `build` lane with **two** builders + the `critical` lane with one worker + the `review` lane with one reviewer |
+| 3 | You + one builder + one `critical` + one reviewer |
 | 2 | You + one builder; you review, with a separate review pass |
 
 - The `build` lane holds `implementer`, `designer`, `tasker`, `tester`, `scouter` and `researcher`. Research is build work: a free builder maps the code or reads another repository, or the orchestrator does it.
+- The `critical` lane holds `critical-implementer` only: the panel opens when a slice touches billing, credits or payments; auth or RBAC; database atomicity or migrations; the AI runtime on the server; concurrency or idempotency — or a slice whose first round came back from review with a P1 — and it is released like any other worker. With `panes=2` the lane does not exist: `spawn critical-implementer` exits 3, like a review role.
 - The `review` lane holds `reviewer`, `security-reviewer`, `ui-reviewer`, `inspector` and `validator`; a session never reviews code it wrote.
 - A full lane means `wait` for its report, then dispatch — not a new pane (`spawn` reports the lane busy, exit 10).
-- Worker names follow the lanes: `build`, `build-2` (the second builder of a four-panel team), `review`, `docs`.
+- Worker names follow the lanes: `build`, `build-2` (the second builder of a four-panel team), `critical`, `review`, `docs`.
 
 ## Strict or flex, and the documenter
 
@@ -51,7 +52,7 @@ The **documenter** edits documentation only (README, guides, references, ADRs, C
 
 - **Orchestrator:** whichever agent runs the skill from a Herdr pane. Nothing to configure; today that is usually Claude Code, but a Codex pane running the skill would orchestrate the same way.
 - **Roles:** `roles/<role>.md` files. Change who plays a role with `--kind` at spawn time (one agent), a project override in `.agents/soho-roles/<role>.md` (one repo), or by editing the skill's file (everywhere).
-- **Names:** `init` renames the caller to `orchestrator`. With lanes on (the default) workers are named after their lane (`build`, `build-2`, `review`, `docs`), not after the role; agent names are global in Herdr, so a name another workspace already uses gets the next free suffix, and a `--name` that is taken does the same (with a warning). `lanes=off` keeps the old role names (`reviewer`, `reviewer-2`, …); a nested orchestrator is `sub-orchestrator`.
+- **Names:** `init` renames the caller to `orchestrator`. With lanes on (the default) workers are named after their lane (`build`, `build-2`, `critical`, `review`, `docs`), not after the role; agent names are global in Herdr, so a name another workspace already uses gets the next free suffix, and a `--name` that is taken does the same (with a warning). `lanes=off` keeps the old role names (`reviewer`, `reviewer-2`, …); a nested orchestrator is `sub-orchestrator`.
 - **Pane titles:** `init` titles an untitled pane `orchestrator: <project>`; `soho title "<objective>"` sets `orchestrator: <objective>` (the objective is cut at 60 code points) and `title --clear` clears it, so the sidebar shows what this session leads. Every `dispatch` also titles the worker's pane `<role>: <task>`.
 
 ## Commands

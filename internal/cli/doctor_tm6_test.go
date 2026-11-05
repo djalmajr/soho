@@ -195,6 +195,78 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 			t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
 		}
 	})
+	t.Run(`doctorFix: a clean project gets no lane.critical keys and first_run stays true`, func(t *testing.T) { // DJA-686: the single-role critical lane must not freeze a kind on the project file
+		// Mutation captured: writing lane.critical.kind on the fix flips first_run to false and freezes the choice.
+		env, cwd := tm6CLIEnv(t)
+		conf := filepath.Join(cwd, ".agents", "soho.conf")
+		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--panes", "4"}, env, cwd)
+		data, err := os.ReadFile(conf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if code != 0 || strings.Contains(string(data), "lane.critical") {
+			t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
+		}
+		code, out, stderr = runIn(t, []string{"doctor"}, env, cwd)
+		if code != 0 || !strings.Contains(out, "first_run: true") {
+			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+		}
+	})
+	t.Run(`doctorFix: the pre-critical preset file migrates without the custom warning`, func(t *testing.T) { // DJA-686 round 2: a file holding the exact preset the previous soho wrote is a preset, not custom
+		// Mutation captured: dropping a legacy signature reclassifies the file as custom and keeps its frozen roles.
+		env, cwd := tm6CLIEnv(t)
+		conf := filepath.Join(cwd, ".agents", "soho.conf")
+		tm6Write(t, conf, "panes=4\nlane.build.roles=implementer,designer,tasker,scouter,researcher,documenter,tester\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector,validator\nlane.review.kind=codex\n")
+		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--panes", "3"}, env, cwd)
+		data, err := os.ReadFile(conf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if code != 0 || strings.Contains(stderr, "custom") || strings.Contains(string(data), "lane.build.roles") || strings.Contains(string(data), "lane.review.roles") || !strings.Contains(string(data), "lane.review.kind=codex") || !strings.Contains(out, "set panes=3") {
+			t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
+		}
+	})
+	t.Run(`doctorFix: a custom critical lane keeps its roles with the custom warning`, func(t *testing.T) { // DJA-686 round 2: genuinely different roles stay custom
+		env, cwd := tm6CLIEnv(t)
+		conf := filepath.Join(cwd, ".agents", "soho.conf")
+		tm6Write(t, conf, "panes=4\nlane.build.roles=implementer,designer,tasker,scouter,researcher,documenter,tester\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector,validator\nlane.critical.roles=implementer,tasker\nlane.critical.panes=2\n")
+		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--panes", "4"}, env, cwd)
+		data, err := os.ReadFile(conf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if code != 0 || !strings.Contains(stderr, "custom") || !strings.Contains(string(data), "lane.critical.roles=implementer,tasker") || !strings.Contains(string(data), "lane.critical.panes=2") {
+			t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
+		}
+	})
+	t.Run(`doctorFix: a user-set lane.critical.kind survives the fix`, func(t *testing.T) { // DJA-686: an explicit lane.critical.* key is the owner's choice; the fix keeps it
+		// Mutation captured: treating the critical lane as an orphan removes the user's explicit choice.
+		env, cwd := tm6CLIEnv(t)
+		conf := filepath.Join(cwd, ".agents", "soho.conf")
+		tm6Write(t, conf, "lane.critical.kind=claude\n")
+		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--panes", "4"}, env, cwd)
+		data, err := os.ReadFile(conf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if code != 0 || !strings.Contains(string(data), "lane.critical.kind=claude") || strings.Contains(out, "removed lane.critical") {
+			t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
+		}
+	})
+	t.Run(`doctorFix: a custom critical lane (Kashes shape) stays custom with derived limits`, func(t *testing.T) { // DJA-686: lane.critical.roles makes the team custom; the preset must not touch it
+		// Mutation captured: letting the preset rewrite a custom critical lane changes a project that already runs the lane.
+		env, cwd := tm6CLIEnv(t)
+		conf := filepath.Join(cwd, ".agents", "soho.conf")
+		tm6Write(t, conf, "panes=4\nlane.build.roles=implementer,designer,tasker\nlane.critical.roles=critical-implementer\nlane.critical.panes=2\nlane.critical.kind=codex\nlane.review.roles=reviewer,security-reviewer\nmax_workers=9\nsplit_max_panes=10\n")
+		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--panes", "4"}, env, cwd)
+		data, err := os.ReadFile(conf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if code != 0 || !strings.Contains(string(data), "lane.critical.roles=critical-implementer") || !strings.Contains(string(data), "lane.critical.panes=2") || !strings.Contains(string(data), "lane.critical.kind=codex") || !strings.Contains(string(data), "max_workers=4") || !strings.Contains(string(data), "split_max_panes=5") {
+			t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
+		}
+	})
 	t.Run(`doctorFix: an orphan lane args key is removed like the other orphan lane keys`, func(t *testing.T) { // JS: "doctorFix: an orphan lane args key is removed like the other orphan lane keys"
 		// Mutation captured: omitting args from orphan cleanup leaves an inactive configuration key behind.
 		env, cwd := tm6CLIEnv(t)

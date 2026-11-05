@@ -268,9 +268,9 @@ func explainRecommendation(ctx *core.Config, env platform.Env) []string {
 	case "2":
 		out = append(out, "Recommendation: 2 panels - one writes code (research included) and the review happens here. The lightest choice. 3 panels add a reviewer panel.")
 	case "3":
-		out = append(out, "Recommendation: 3 panels - one writes code (research included) and one reviews. Lighter on quota. 4 panels add a second writer; with 2 panels the review happens here.")
+		out = append(out, "Recommendation: 3 panels - one writes code (research included) and one reviews. Lighter on quota. 4 panels add a second writer; with 2 panels the review happens here. A panel for risky code (auth, money, real data or concurrency) opens only when a slice needs it.")
 	default:
-		out = append(out, "Recommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here.")
+		out = append(out, "Recommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here. A panel for risky code (auth, money, real data or concurrency) opens only when a slice needs it.")
 	}
 	if !core.LanesEnabled(ctx, env) {
 		return append(out, "Each agent keeps its own assistant instead of sharing one panel.")
@@ -294,9 +294,20 @@ func explainRecommendation(ctx *core.Config, env platform.Env) []string {
 }
 func explainPrintRunning(rows []explainRow, stateDir string, ctx *core.Config, env platform.Env, cwd string) []string {
 	flex := core.LanesEnabled(ctx, env) && core.PaneMode(ctx, env) == "flex"
-	head := "Panels: " + core.PanesValue(ctx, env) + "."
-	if flex {
+	// The risky-code panel is one more pane than `panes`: it exists in the
+	// preset (not a custom team) and has capacity (strict panes=2 and flex
+	// panes=2 do not). With lanes=off or a custom team the old header stays.
+	risky := core.LanesEnabled(ctx, env) && !core.CustomLanesPresent(ctx, env) && core.LaneUsable(ctx, "critical", env)
+	var head string
+	switch {
+	case flex && risky:
+		head = "Panels: " + core.PanesValue(ctx, env) + " (+1 for risky code, +" + strconv.Itoa(core.FlexExtra(ctx, env)) + " temporary)."
+	case flex:
 		head = "Panels: " + core.PanesValue(ctx, env) + " (+" + strconv.Itoa(core.FlexExtra(ctx, env)) + " temporary)."
+	case risky:
+		head = "Panels: " + core.PanesValue(ctx, env) + " (+1 for risky code)."
+	default:
+		head = "Panels: " + core.PanesValue(ctx, env) + "."
 	}
 	out := []string{head}
 	lanes := core.LaneNames(ctx, env)

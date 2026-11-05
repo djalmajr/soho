@@ -76,12 +76,12 @@ func laneEnvName(k string) string {
 
 func PresetLaneNamesFor(p, mode string) []string {
 	if mode == "flex" {
-		return []string{"build", "review", "docs"}
+		return []string{"build", "critical", "review", "docs"}
 	}
 	if p == "2" {
 		return []string{"build"}
 	}
-	return []string{"build", "review"}
+	return []string{"build", "critical", "review"}
 }
 func PresetLaneNames(ctx *Config, env platform.Env) []string {
 	return PresetLaneNamesFor(PanesValue(ctx, env), PaneMode(ctx, env))
@@ -92,6 +92,8 @@ func PresetLaneRoles(lane, p, mode string) string {
 		switch lane {
 		case "build":
 			return "implementer,designer,tasker,scouter,researcher,tester"
+		case "critical":
+			return "critical-implementer"
 		case "review":
 			return "reviewer,security-reviewer,ui-reviewer,inspector,validator"
 		case "docs":
@@ -102,12 +104,24 @@ func PresetLaneRoles(lane, p, mode string) string {
 	switch p + ":" + lane {
 	case "2:build", "3:build", "4:build":
 		return "implementer,designer,tasker,scouter,researcher,documenter,tester"
+	case "3:critical", "4:critical":
+		return "critical-implementer"
 	case "3:review", "4:review":
 		return "reviewer,security-reviewer,ui-reviewer,inspector,validator"
 	}
 	return ""
 }
 func PresetLaneCapacity(lane, p, mode string) int {
+	found := false
+	for _, n := range PresetLaneNamesFor(p, mode) {
+		if n == lane {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return 0
+	}
 	if mode == "flex" {
 		if lane == "build" {
 			if p == "4" {
@@ -118,7 +132,7 @@ func PresetLaneCapacity(lane, p, mode string) int {
 		if lane == "docs" {
 			return 0
 		}
-		if lane == "review" && p == "2" {
+		if (lane == "review" || lane == "critical") && p == "2" {
 			return 0
 		}
 		return 1
@@ -149,6 +163,65 @@ func LegacyPresetSignature(p string) string {
 		lines = append(lines, k+"="+m[k])
 	}
 	return strings.Join(lines, "\n")
+}
+
+// legacyPresetShapes are the lane role lists that earlier soho versions wrote
+// as the panes preset, from oldest to newest: a strict pair without tester
+// and validator, the strict two-panel build-only shape, the flex shapes,
+// and the pre-critical strict/flex pairs. A config file whose lane.*.roles
+// lines match one of them for the effective pane mode is a preset file, not
+// a custom one: the migration drops the roles and applies the current
+// preset (which is what gives critical-implementer its slot).
+type legacyPresetShape struct {
+	mode  string
+	lanes map[string]string
+}
+
+var legacyPresetShapes = []legacyPresetShape{
+	{"strict", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,documenter", "review": "reviewer,security-reviewer,ui-reviewer,inspector"}},
+	{"strict", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,documenter"}},
+	{"flex", map[string]string{"build": "implementer,designer,tasker,scouter,researcher", "review": "reviewer,security-reviewer,ui-reviewer,inspector", "docs": "documenter"}},
+	{"strict", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,documenter,tester", "review": "reviewer,security-reviewer,ui-reviewer,inspector,validator"}},
+	{"flex", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,tester", "review": "reviewer,security-reviewer,ui-reviewer,inspector,validator", "docs": "documenter"}},
+}
+
+func legacyPresetSignature(s legacyPresetShape) string {
+	lines := make([]string, 0, len(s.lanes))
+	for k, v := range s.lanes {
+		lines = append(lines, k+"="+v)
+	}
+	textutil.SortUTF16(lines)
+	return strings.Join(lines, "\n")
+}
+
+// IsLegacyPresetSignature reports whether sig — in the FileLaneSignature
+// format — is one of the preset shapes an earlier soho version wrote, for
+// the given pane mode. The match is on mode and shape: the panes value is
+// what the caller writes, so the old two-panel build-only shape also
+// migrates when the owner moves the same file to three panels.
+func IsLegacyPresetSignature(sig, mode string) bool {
+	if sig == "" {
+		return false
+	}
+	for _, s := range legacyPresetShapes {
+		if s.mode == mode && legacyPresetSignature(s) == sig {
+			return true
+		}
+	}
+	return false
+}
+
+// LaneUsable reports whether a worker can open in the lane: the team has the
+// lane, with room for at least one. Capacity alone does not say it: a custom
+// lane defaults to 1, and an explicit lane.<name>.panes answers for a lane the
+// team does not have.
+func LaneUsable(ctx *Config, lane string, env platform.Env) bool {
+	for _, name := range LaneNames(ctx, env) {
+		if name == lane {
+			return LaneCapacity(ctx, lane, env) > 0
+		}
+	}
+	return false
 }
 
 func CustomLanesPresent(ctx *Config, env platform.Env) bool {
@@ -768,7 +841,7 @@ func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env 
 	first, have, agree := "", false, true
 	vals := []string{}
 	for _, role := range SplitRoles(rolesCSV) {
-		if role == "planner" || role == "documenter" {
+		if role == "planner" || role == "documenter" || role == "critical-implementer" {
 			continue
 		}
 		if existing != "" {
@@ -811,7 +884,7 @@ func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env 
 		ConfigWritePair(file, "lane."+lane+"."+attr, first, env, cwd)
 		acc.Lines = append(acc.Lines, "set lane."+lane+"."+attr+"="+first)
 		for _, role := range SplitRoles(rolesCSV) {
-			if role == "planner" || role == "documenter" {
+			if role == "planner" || role == "documenter" || role == "critical-implementer" {
 				continue
 			}
 			if attr == "kind" {
@@ -936,9 +1009,9 @@ func ApplyLaneFile(file, panes string, env platform.Env, cwd string) []string {
 			presetSigs[PresetSignature(p, mode)] = true
 		}
 	}
-	isPreset := sig == "" || presetSigs[sig] || sig == LegacyPresetSignature("3") || sig == LegacyPresetSignature("4")
 	ctx := LoadConfig(env, cwd)
 	mode := PaneMode(&ctx, env)
+	isPreset := sig == "" || presetSigs[sig] || IsLegacyPresetSignature(sig, mode) || sig == LegacyPresetSignature("3") || sig == LegacyPresetSignature("4")
 	lines := []string{}
 	if !isPreset {
 		_, _ = fmt.Fprintf(platform.Stderr, "soho: warning: lane roles in %s are custom; left in place. Remove them to restore the panes=%s preset.\n", file, panes)

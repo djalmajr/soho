@@ -239,7 +239,7 @@ func TestExplainCommandFootprintLine(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("explain exit=%d stderr=%q", code, stderr)
 		}
-		want := "Panels: 4.\nbuild: implementer, grok, model grok-4.7, idle\nreview: not started\n\nRecommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here.\n"
+		want := "Panels: 4 (+1 for risky code).\nbuild: implementer, grok, model grok-4.7, idle\ncritical: not started\nreview: not started\n\nRecommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here. A panel for risky code (auth, money, real data or concurrency) opens only when a slice needs it.\n"
 		if out != want {
 			t.Fatalf("out:\n%s\nwant:\n%s", out, want)
 		}

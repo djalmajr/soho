@@ -18,20 +18,20 @@ import (
 // its column fails loudly instead of silently misparsing.
 func rolesTextRow(t *testing.T, line string) (name, kind, model, effort, mode, from string) {
 	t.Helper()
-	if len(line) < 73 {
+	if len(line) < 75 {
 		t.Fatalf("roles row too short: %q", line)
 	}
-	for _, sep := range []int{18, 27, 52, 61, 72} {
+	for _, sep := range []int{20, 29, 54, 63, 74} {
 		if line[sep] != ' ' {
 			t.Fatalf("roles row columns shifted (fixture value too long): %q", line)
 		}
 	}
-	name = strings.TrimRight(line[0:18], " ")
-	kind = strings.TrimRight(line[19:27], " ")
-	model = strings.TrimRight(line[28:52], " ")
-	effort = strings.TrimRight(line[53:61], " ")
-	mode = strings.TrimRight(line[62:72], " ")
-	from = line[73:]
+	name = strings.TrimRight(line[0:20], " ")
+	kind = strings.TrimRight(line[21:29], " ")
+	model = strings.TrimRight(line[30:54], " ")
+	effort = strings.TrimRight(line[55:63], " ")
+	mode = strings.TrimRight(line[64:74], " ")
+	from = line[75:]
 	return
 }
 

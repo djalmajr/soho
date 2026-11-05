@@ -201,7 +201,7 @@ func TestLayoutPlanFixture(t *testing.T) {
 }
 
 func TestLayoutPlanFullFixtureMatrix(t *testing.T) {
-	t.Run(`layout-plan over a fixture: default cap full, cap 6 split, full grid`, func(t *testing.T) { // JS: "layout-plan over a fixture: default cap full, cap 6 split, full grid"
+	t.Run(`layout-plan over a fixture: cap 4 full, cap 6 split, full grid`, func(t *testing.T) { // JS: "layout-plan over a fixture: default cap full, cap 6 split, full grid"; DJA-686: the default cap grew to 5 (1 + the lanes sum 4), so the full case pins an explicit cap of 4
 		// Mutation captured: changing cap handling or grid overflow changes one of these three fixture plans.
 		const grid = `{"result":{"layout":{"area":{"x":0,"y":0,"width":213,"height":57},"panes":[{"pane_id":"C","rect":{"x":0,"y":0,"width":71,"height":57}},{"pane_id":"A","rect":{"x":71,"y":0,"width":71,"height":29}},{"pane_id":"B","rect":{"x":71,"y":29,"width":71,"height":28}},{"pane_id":"D","rect":{"x":142,"y":0,"width":71,"height":29}},{"pane_id":"E","rect":{"x":142,"y":29,"width":71,"height":28}}]}}}`
 		const full = `{"result":{"layout":{"area":{"x":0,"y":0,"width":213,"height":57},"panes":[{"pane_id":"C","rect":{"x":0,"y":0,"width":71,"height":29}},{"pane_id":"F","rect":{"x":0,"y":29,"width":71,"height":28}},{"pane_id":"A","rect":{"x":71,"y":0,"width":71,"height":29}},{"pane_id":"B","rect":{"x":71,"y":29,"width":71,"height":28}},{"pane_id":"D","rect":{"x":142,"y":0,"width":71,"height":29}},{"pane_id":"E","rect":{"x":142,"y":29,"width":71,"height":28}}]}}}`
@@ -225,7 +225,7 @@ func TestLayoutPlanFullFixtureMatrix(t *testing.T) {
 			}
 			return out.String()
 		}
-		if got := run(grid, "", "A B D"); !strings.Contains(got, `"placement":"herd"`) || !strings.Contains(got, `"reason":"full","cap":4`) {
+		if got := run(grid, "4", "A B D"); !strings.Contains(got, `"placement":"herd"`) || !strings.Contains(got, `"reason":"full","cap":4`) {
 			t.Fatalf("default plan=%q", got)
 		}
 		if got := run(grid, "6", "A B D E"); !strings.Contains(got, `"placement":"split","anchor":"C","direction":"down","reason":"largest-area","cap":6`) || !strings.Contains(got, `"grid":{"cells":6,"cols":3,"rows_per_col":[2,2,2]}`) {
