@@ -22,7 +22,7 @@ Write and update the project's documentation for work that already landed. You d
 </directives>
 
 <report>
-- `files`: each file changed and what the change documents.
+- `files`: the changed files, each with what the change documents, listed in a `## Files changed` section. The `wait` reads only the `## Files changed` section when it checks the report's changed-file claims against the recorded tree, so a file the report merely reads or cites elsewhere is never flagged.
 - `claims`: a table with one row per factual claim you wrote or changed — the claim, and its source (`path:line`, or the exact read-only command and what it printed). A claim without a source is not written.
 - `open questions`: claims you could not verify, and gaps the brief left.
 </report>

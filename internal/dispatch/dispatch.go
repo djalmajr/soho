@@ -3,7 +3,6 @@ package dispatch
 import (
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -323,59 +322,33 @@ func declaredReferences(body string) ([]Reference, []int) {
 // Malformed declarations are diagnosed separately by brief lint.
 func DeclaredReferences(body string) []Reference { refs, _ := declaredReferences(body); return refs }
 
+// SamePath reports whether the two spellings name the same path under the
+// shared platform.CanonPath normalization: on win32 backslashes become
+// slashes, path.Clean runs and the result folds to lower case (the drive
+// letter included); on the other platforms the paths are only cleaned, so
+// macOS and Linux stay case-sensitive.
 func SamePath(left, right, goos string) bool {
-	if goos == "win32" {
-		left, right = strings.ToLower(path.Clean(strings.ReplaceAll(left, `\`, "/"))), strings.ToLower(path.Clean(strings.ReplaceAll(right, `\`, "/")))
-		if len(left) >= 3 && left[1] == ':' && left[2] == '/' {
-			left = strings.ToLower(left[:2]) + left[2:]
-		}
-		if len(right) >= 3 && right[1] == ':' && right[2] == '/' {
-			right = strings.ToLower(right[:2]) + right[2:]
-		}
-		return left == right
-	}
-	return filepath.Clean(left) == filepath.Clean(right)
+	return platform.CanonPath(left, goos) == platform.CanonPath(right, goos)
 }
 
 // PathWithin reports whether child is the same path as parent or located
 // beneath it, after resolving symlinks on both sides when possible (an
-// unresolvable side keeps its cleaned form) and applying the normalization
-// SamePath applies: on Windows the paths fold to lower-case slash form, the
-// drive letter included; on the other platforms they are only cleaned.
+// unresolvable side keeps its cleaned form), canonicalizing the way
+// SamePath does (platform.CanonPath) and applying the shared
+// platform.PathInside containment rule (separator and root).
 func PathWithin(child, parent, goos string) bool {
-	child = pathWithinClean(child, goos)
-	parent = pathWithinClean(parent, goos)
-	if child == parent {
-		return true
-	}
-	sep := string(os.PathSeparator)
-	if goos == "win32" {
-		sep = "/"
-	}
-	// A root parent ("/") already ends with the separator; add one only
-	// when it is missing, so every absolute child of the root is inside it.
-	prefix := parent
-	if !strings.HasSuffix(prefix, sep) {
-		prefix += sep
-	}
-	return strings.HasPrefix(child, prefix)
+	return platform.PathInside(pathWithinClean(child, goos), pathWithinClean(parent, goos), goos)
 }
 
-// pathWithinClean normalizes one side of a PathWithin comparison exactly the
-// way SamePath normalizes its inputs; the symlink resolution the dispatch
-// rule needs (a state dir or a worker cwd can sit behind a symlinked
-// prefix) is done here, before the normalization.
+// pathWithinClean normalizes one side of a PathWithin comparison with the
+// shared platform.CanonPath — the normalization SamePath applies to its
+// inputs; the symlink resolution the dispatch rule needs (a state dir or a
+// worker cwd can sit behind a symlinked prefix) is done here, before the
+// normalization.
 func pathWithinClean(p, goos string) string {
 	resolved := p
 	if eval, err := filepath.EvalSymlinks(p); err == nil {
 		resolved = eval
 	}
-	if goos == "win32" {
-		v := strings.ToLower(path.Clean(strings.ReplaceAll(resolved, `\`, "/")))
-		if len(v) >= 3 && v[1] == ':' && v[2] == '/' {
-			v = strings.ToLower(v[:2]) + v[2:]
-		}
-		return v
-	}
-	return filepath.Clean(resolved)
+	return platform.CanonPath(resolved, goos)
 }

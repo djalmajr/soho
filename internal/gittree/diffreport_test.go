@@ -239,7 +239,9 @@ func TestDiffReportSettle(t *testing.T) {
 			case "outside":
 				owned = "# Owned files\n- src/a.go\n"
 			case "cited":
-				body = "Completed `src/a.go` and `src/b.go`.\n"
+				// DJA-666: the cited check reads only the report's Files changed
+				// section, so the report carries it.
+				body = "Completed `src/b.go`.\n\n## Files changed\n- `src/a.go`\n- `src/b.go`\n"
 			case "glob":
 				owned = "# Owned files\n- `src/*.go`\n"
 			case "directory":
