@@ -242,7 +242,7 @@ func TestCodexMcpListKeepsTheNamedServers(t *testing.T) {
 		if tail != want {
 			t.Fatalf("argv=%q, want %q (sigma stays on)", tail, want)
 		}
-		wantWarn := "soho: warning: spawn: codex cannot turn off MCP server(s) sigma for 'worker' (they are not defined in its config.toml); they stay on, like the servers in the list; the others are off"
+		wantWarn := "soho: warning: spawn: codex cannot turn off MCP server(s) sigma for 'worker' (they are not defined in its config.toml); they stay on; the others outside the list are off"
 		if got := stdErrCount(stderr, wantWarn); got != 1 {
 			t.Fatalf("the stayOn warning is not on stderr once: %q", stderr)
 		}

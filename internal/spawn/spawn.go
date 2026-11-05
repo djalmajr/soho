@@ -1385,7 +1385,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		mcpArgs, ok, reason, stayOn, projectOnly, missing := codexMcpTranslate(env, o.cwd, keep)
 		stayOnTail := "they stay on, the others are off"
 		if len(keep) > 0 {
-			stayOnTail = "they stay on, like the servers in the list; the others are off"
+			stayOnTail = "they stay on; the others outside the list are off"
 		}
 		if !ok {
 			Warn(fmt.Sprintf("spawn: codex could not list its MCP servers (%s); '%s' keeps the user's MCP servers", reason, o.name), ctx, env, "spawn")
