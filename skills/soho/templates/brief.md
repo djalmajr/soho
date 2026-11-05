@@ -1,7 +1,7 @@
 # Brief — <slice name>
 
 Role: <role> · Agent: <agent-name> · Run: <run-id> · Report language: <pt-BR|en>
-Worktree: `<absolute path>` (only when the slice has its own worktree)
+Worktree: `<absolute path>` — this line feeds review author measurement (`soho stats --by author-model`): it counts in the review's and the implementer's brief alike, including when the slice has no worktree of its own (declare the project root)
 
 <!-- Before dispatching, reread this brief as the worker and run the checklist in references/orchestration-contract.md § Brief checklist: any place where the worker would have to choose is a gap. Two or three items per brief. A change to a brief already in flight is its own file, sent with `dispatch <agent> amend.md --amend` — never a hand-rolled prompt. -->
 

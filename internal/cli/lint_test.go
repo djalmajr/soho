@@ -53,7 +53,9 @@ func TestLintCommandReadOnlyAndExitModes(t *testing.T) {
 		}
 		stdout.Reset()
 		stderr.Reset()
-		if code := Run([]string{"lint", brief, "--role", "reviewer"}, env); code != 0 || stdout.String() != "brief "+brief+": ok\n" || stderr.Len() != 0 {
+		// The reviewer role gets the Worktree: advisory (measurement only):
+		// it prints, never refuses, and the clean brief stays exit 0.
+		if code := Run([]string{"lint", brief, "--role", "reviewer"}, env); code != 0 || stdout.String() != "brief "+brief+": ok\n" || !strings.Contains(stderr.String(), "has no Worktree: line: this review cannot be tied to its author") {
 			t.Fatalf("read-only role: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 		}
 
@@ -63,7 +65,9 @@ func TestLintCommandReadOnlyAndExitModes(t *testing.T) {
 		}
 		stdout.Reset()
 		stderr.Reset()
-		if code := Run([]string{"lint", brief, "--role", "reviewer"}, env); code != 0 || stdout.String() != "brief "+brief+": ok\n" || stderr.Len() != 0 {
+		// The reviewer role without the Worktree: line gets the measurement
+		// advisory on stderr; the brief itself stays ok (exit 0).
+		if code := Run([]string{"lint", brief, "--role", "reviewer"}, env); code != 0 || stdout.String() != "brief "+brief+": ok\n" || !strings.Contains(stderr.String(), "has no Worktree: line: this review cannot be tied to its author") {
 			t.Fatalf("read-only role without owned files: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 		}
 		stdout.Reset()
