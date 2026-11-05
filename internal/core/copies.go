@@ -78,8 +78,9 @@ func lockRegistry(stateDir, lockName, kind string) (func(), error) {
 		// On Windows an exclusive create of a lock file that another
 		// process has just removed (its deletion still pending) fails with
 		// ERROR_ACCESS_DENIED instead of "exists": that is contention too,
-		// retried until the timeout, which then reports this error.
-		pendingDelete := runtime.GOOS == "windows" && errors.Is(err, os.ErrPermission)
+		// retried until the timeout, which then reports this error. The
+		// rule is shared with the other soho locks via platform.DeletePending.
+		pendingDelete := platform.DeletePending(err, runtime.GOOS)
 		if !errors.Is(err, os.ErrExist) && !pendingDelete {
 			return nil, err
 		}

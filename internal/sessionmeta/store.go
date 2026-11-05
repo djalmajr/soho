@@ -476,15 +476,14 @@ func mkdirOwnLock(sessRoot *os.Root) error {
 	return sessRoot.Mkdir(lockName, 0o700)
 }
 
-// deletePending reports whether a failed creation of the lock directory
-// is the Windows delete-pending collision: a lock directory another
-// writer has just removed stays delete-pending while any handle on it is
-// open, and creating the name again fails with ERROR_ACCESS_DENIED
-// instead of "exists". That is contention, as the registry lock in
-// internal/core/copies.go already treats it. On every other platform a
-// permission error is a genuine failure.
+// deletePending reports whether a failed creation of the lock directory is
+// the Windows delete-pending collision: a lock directory another writer has
+// just removed stays delete-pending while any handle on it is open, and
+// creating the name again fails with ERROR_ACCESS_DENIED instead of
+// "exists". The rule is shared with the other soho locks in the platform
+// package (platform.DeletePending); the store's tests keep this local name.
 func deletePending(err error, goos string) bool {
-	return goos == "windows" && errors.Is(err, os.ErrPermission)
+	return platform.DeletePending(err, goos)
 }
 
 // acquireLockWith runs the bounded acquisition with the named per-call
