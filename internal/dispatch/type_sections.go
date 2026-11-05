@@ -107,9 +107,23 @@ func TypeSectionWarnings(briefPath, body string) []string {
 	return out
 }
 
+// typeSectionTitleMatches accepts the title, case- and accent-insensitively,
+// alone or followed by a parenthesis, as in the template's "Risk markers (Type:
+// backend)". A title that only begins with it, like "Risk markers review", is
+// another section.
+func typeSectionTitleMatches(heading string, want []string) bool {
+	title := normalizeBriefHeading(heading)
+	for _, candidate := range want {
+		if rest, ok := strings.CutPrefix(title, candidate); ok && (rest == "" || strings.HasPrefix(rest, " (")) {
+			return true
+		}
+	}
+	return false
+}
+
 // findTypeSection locates the first level 1-3 heading (outside a fenced
-// block) whose title starts with the English title or the Portuguese
-// synonym, case- and accent-insensitively, and returns the section's body
+// block) whose title matches the English title or the Portuguese synonym, and
+// returns the section's body
 // range (the lines after the title up to the next heading of the same level
 // or higher). As in FailureMatrixMissing, when two titles are equal the
 // first one wins.
@@ -124,7 +138,7 @@ func findTypeSection(lines []string, mask []bool, title, synonym string) (int, i
 		if !ok {
 			continue
 		}
-		if startsWithHeadingPrefix(heading, want, false) {
+		if typeSectionTitleMatches(heading, want) {
 			start, level = i, gotLevel
 			break
 		}

@@ -37,6 +37,51 @@ func TestDispatchTypeSectionWarningsNeverRefuse(t *testing.T) {
 	}
 }
 
+// The strict refusal of a path the worker cannot see used to search the text of
+// every warning, so a brief whose own path holds that phrase was refused for a
+// warning that must never refuse.
+func TestDispatchStrictDoesNotReadTheBriefPathAsARefusal(t *testing.T) {
+	h := newTM3bHarness(t, tm3bFullBrief()+"Type: backend\n")
+	h.env["SOHO_BRIEF_LINT"] = "strict"
+	dir := filepath.Join(t.TempDir(), "which the worker in x")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	brief := filepath.Join(dir, "brief.md")
+	if err := os.WriteFile(brief, []byte(tm3bFullBrief()+"Type: backend\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := h.run(t, "build", brief, "--no-wait")
+	if code != 0 {
+		t.Fatalf("a warning was read as a refusal: code=%d stderr=%s", code, stderr)
+	}
+}
+
+// The other side of the same check: a path the worker cannot see stays refused
+// under strict.
+func TestDispatchStrictStillRefusesAnUnseenPath(t *testing.T) {
+	f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const cited = "cited-only-here.txt"
+	if err := os.WriteFile(filepath.Join(cwd, cited), []byte("fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	roster := "worker\tw0test:p0a\tcodex\timplementer\topenai\t0\t" + t.TempDir() + "\tnow\tgpt-5\ttask\timplementer\n"
+	if err := os.WriteFile(filepath.Join(f.state, "ws", "agents.tsv"), []byte(roster), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.env["SOHO_BRIEF_LINT"] = "strict"
+	f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
+	writeRoleFixture(t, f.brief, "# Goal\nrun\n# Expected result\nok\n# Owned files\nnone\n# Forbidden\nno commit or push\n# Report\ndone\n\nRead `"+cited+"`.\n")
+	code, _, stderr := f.run(t, "worker", f.brief, "--no-wait")
+	if code != 2 || !strings.Contains(stderr, "which the worker in") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+}
+
 func TestLintCommandTypeSectionWarningsExitModes(t *testing.T) {
 	root := t.TempDir()
 	skillDir, err := filepath.Abs(filepath.Join(packageDir, "..", "..", "skills", "soho"))

@@ -205,10 +205,18 @@ func TestTypeSectionWarnings(t *testing.T) {
 			"Type: ui\n## UI lifecycle\n- [async] a\n- [test-env] e\n## Mutations\n| m | c |\n",
 			nil,
 		},
+		{"mechanical-no-sections", "Type: mechanical\n## Goal\nDo it.\n", nil},
+		{"docs-no-sections", "Type: docs\n## Goal\nDo it.\n", nil},
+		{"review-no-sections", "Type: review\n## Goal\nDo it.\n", nil},
 		{
-			"mechanical-docs-review-no-sections",
-			"Type: mechanical\nType: docs\nType: review\n## Goal\nDo it.\n",
+			"title-with-the-template-annotation-counts",
+			"Type: ui\n## UI lifecycle (Type: ui)\n- [async] a\n- [test-env] b\n",
 			nil,
+		},
+		{
+			"title-that-only-begins-with-the-required-one-does-not-count",
+			"Type: ui\n## UI lifecycle review\n- [async] a\n- [test-env] b\n",
+			[]string{"brief brief.md has Type: ui and no 'UI lifecycle' section: nothing covers async states or what the tests cannot reproduce"},
 		},
 		{
 			"no-type-line",

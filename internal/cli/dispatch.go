@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -289,7 +290,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	}
 	if findings.Mode != "off" {
 		for _, w := range findings.Warnings {
-			if findings.Mode == "strict" && strings.Contains(w, "which the worker in ") {
+			if findings.Mode == "strict" && slices.Contains(findings.UnseenPaths, w) {
 				core.DieFriction(w, 2, frictionLogPath, "dispatch")
 			}
 			core.Warn(w, frictionLogPath, "dispatch")

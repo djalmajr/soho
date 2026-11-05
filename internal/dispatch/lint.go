@@ -70,6 +70,9 @@ type BriefLintResult struct {
 	Mode           string
 	Warnings       []string
 	MissingMessage string
+	// UnseenPaths are the warnings about a path the worker cannot see, the only
+	// warnings brief_lint=strict refuses. They are also in Warnings.
+	UnseenPaths []string
 }
 
 // ParseBriefLintAliases parses Section=Heading1|Heading2 values. Malformed
@@ -409,7 +412,8 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 		project := platform.ProjectRoot(env, options.OrchestratorCwd)
 		state := platform.StateProjectRoot(env, options.OrchestratorCwd)
 		if !SamePath(options.WorkerCwd, project, platform.Current()) || !SamePath(options.WorkerCwd, state, platform.Current()) {
-			result.Warnings = append(result.Warnings, unseenPathWarnings(brief, body, options.WorkerCwd, []string{project, state})...)
+			result.UnseenPaths = unseenPathWarnings(brief, body, options.WorkerCwd, []string{project, state})
+			result.Warnings = append(result.Warnings, result.UnseenPaths...)
 		}
 	}
 	if options.PathsOnly {
