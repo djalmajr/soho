@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -289,7 +290,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	}
 	if findings.Mode != "off" {
 		for _, w := range findings.Warnings {
-			if findings.Mode == "strict" && strings.Contains(w, "which the worker in ") {
+			if findings.Mode == "strict" && slices.Contains(findings.UnseenPaths, w) {
 				core.DieFriction(w, 2, frictionLogPath, "dispatch")
 			}
 			core.Warn(w, frictionLogPath, "dispatch")
@@ -1710,7 +1711,7 @@ func emitDispatchResult(agent, role, kind, composed, report, taskReport, status 
 		out.Set("amend", true)
 	}
 	if last != nil {
-		for _, key := range []string{"dialog", "verdict", "findings", "severity", "partial", "verdict_effective", "reference_parity", "test_layers", "validation", "finding_marks", "env", "idle_alerts"} {
+		for _, key := range []string{"dialog", "verdict", "findings", "severity", "partial", "verdict_effective", "reference_parity", "test_layers", "validation", "finding_marks", "review_responses", "env", "idle_alerts"} {
 			if v, ok := last.Get(key); ok {
 				out.Set(key, v)
 			}

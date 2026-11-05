@@ -7,13 +7,15 @@ import (
 )
 
 // FindingMarksResult is the origin and class breakdown of the findings of a
-// review report, plus the header's findings without a valid mark.
+// review report, plus the header's findings without a valid mark, and the
+// valid finding numbers in report order.
 type FindingMarksResult struct {
 	Brief    int
 	Impl     int
 	Unknown  int
 	Classes  map[string]int
 	Unmarked int
+	Numbers  []int
 }
 
 var (
@@ -96,4 +98,5 @@ func countFindingLine(line string, seen map[int]bool, out *FindingMarksResult) {
 	}
 	seen[n] = true
 	out.Classes[classMatch[1]]++
+	out.Numbers = append(out.Numbers, n)
 }

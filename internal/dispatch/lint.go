@@ -70,6 +70,9 @@ type BriefLintResult struct {
 	Mode           string
 	Warnings       []string
 	MissingMessage string
+	// UnseenPaths are the warnings about a path the worker cannot see, the only
+	// warnings brief_lint=strict refuses. They are also in Warnings.
+	UnseenPaths []string
 }
 
 // ParseBriefLintAliases parses Section=Heading1|Heading2 values. Malformed
@@ -409,7 +412,8 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 		project := platform.ProjectRoot(env, options.OrchestratorCwd)
 		state := platform.StateProjectRoot(env, options.OrchestratorCwd)
 		if !SamePath(options.WorkerCwd, project, platform.Current()) || !SamePath(options.WorkerCwd, state, platform.Current()) {
-			result.Warnings = append(result.Warnings, unseenPathWarnings(brief, body, options.WorkerCwd, []string{project, state})...)
+			result.UnseenPaths = unseenPathWarnings(brief, body, options.WorkerCwd, []string{project, state})
+			result.Warnings = append(result.Warnings, result.UnseenPaths...)
 		}
 	}
 	if options.PathsOnly {
@@ -435,6 +439,16 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 			}
 		}
 		result.Warnings = append(result.Warnings, fmt.Sprintf("brief %s failure matrix is missing: %s — %s", brief, strings.Join(markers, " "), strings.Join(reasons, "; ")))
+	}
+	// A Review: line the wait cannot answer from: a relative or malformed
+	// path (absent to the wait) or a file that does not exist. It is a
+	// warning, never a refusal — the wait simply skips the check.
+	if value, found := declaredReviewValue(body); found {
+		if !filepath.IsAbs(value) {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("brief %s has a Review: line that is not an absolute path: %s", brief, text.SanitizeCause(value)))
+		} else if _, statErr := os.Stat(value); statErr != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("brief %s has a Review: line that names a file that does not exist: %s", brief, text.SanitizeCause(value)))
+		}
 	}
 	missing := BriefMissingSections(body, options.ReadOnly, aliases)
 	placeholderMarks := UnfilledPlaceholders(body, briefLintPlaceholderMarkers(core.Cfg(ctx, "brief_lint_placeholders", "", env)))

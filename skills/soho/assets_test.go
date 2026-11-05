@@ -269,6 +269,20 @@ func TestTesterDeclaresTheDesignLayerWithoutNamingAStack(t *testing.T) {
 	}
 }
 
+// TestReviewResponseRolesCarryTheRule (DJA-684 slice C, scenario 15): the
+// four edit roles carry the review-response report rule in their report
+// block, with the same text, and the critical parity test keeps passing.
+func TestReviewResponseRolesCarryTheRule(t *testing.T) {
+	const rule = "When the brief names a review with a `Review:` line, the report carries a `## Review responses` section with one line per finding of that review, in one of the exact forms `- F<n>: fixed`, `- F<n>: fixed: <note>`, or `- F<n>: declined: <reason>` — silence is not an answer, `fixed` only after the proof ran, and `declined` with the reason. The `wait` counts the findings left without a response and warns; it only warns: it never blocks and never runs anything."
+	for _, name := range []string{"implementer.md", "critical-implementer.md", "tester.md", "designer.md"} {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(roleBody(t, name), rule) {
+				t.Fatalf("%s lost the review-response report rule", name)
+			}
+		})
+	}
+}
+
 // roleBody returns the markdown body of a shipped role file (everything
 // after its closing frontmatter ---).
 func roleBody(t *testing.T, name string) string {
