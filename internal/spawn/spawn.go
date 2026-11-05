@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -2378,17 +2379,36 @@ var e2ePortAvailable = func(port int) error {
 	return listener.Close()
 }
 
+// lockE2EPorts takes the bounded e2e-ports.lock directory: an existing
+// lock, and on Windows only a delete-pending permission error, are
+// retried until the bound, and the bound exits 4 naming the last creation
+// error. The delete-pending rule is shared with the other soho locks
+// through platform.DeletePending.
 func lockE2EPorts(sd string) func() {
+	unlock, err := acquireE2EPortLock(sd, os.Mkdir, runtime.GOOS, time.Sleep)
+	if err != nil {
+		core.DieFriction("spawn: "+err.Error(), 4, "", "spawn")
+	}
+	return unlock
+}
+
+// acquireE2EPortLock runs the bounded e2e-ports lock acquisition with the
+// named creation, pause and platform; production passes os.Mkdir, the 50 ms
+// poll and the host GOOS. An existing lock and, on Windows only, a
+// delete-pending permission error are retried until the 199-try bound, which
+// returns the original creation error.
+func acquireE2EPortLock(sd string, mkdir func(string, os.FileMode) error, goos string, pause func(time.Duration)) (func(), error) {
 	path := filepath.Join(sd, "e2e-ports.lock")
 	for tries := 0; ; tries++ {
-		err := os.Mkdir(path, 0700)
+		err := mkdir(path, 0700)
 		if err == nil {
-			return func() { _ = os.Remove(path) }
+			return func() { _ = os.Remove(path) }, nil
 		}
-		if !os.IsExist(err) || tries >= 199 {
-			core.DieFriction("spawn: "+err.Error(), 4, "", "spawn")
+		pending := platform.DeletePending(err, goos)
+		if (!os.IsExist(err) && !pending) || tries >= 199 {
+			return nil, err
 		}
-		time.Sleep(50 * time.Millisecond)
+		pause(50 * time.Millisecond)
 	}
 }
 

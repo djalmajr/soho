@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -381,10 +382,19 @@ func (s Store) lock() (func(), error) {
 	if err := os.MkdirAll(s.directory(), 0o700); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(s.directory(), "state.lock")
+	return acquireStateLock(filepath.Join(s.directory(), "state.lock"), os.OpenFile, runtime.GOOS, time.Sleep)
+}
+
+// acquireStateLock runs the bounded state.lock acquisition with the named
+// creation, platform and pause; production passes os.OpenFile, the host GOOS
+// and the 10 ms poll. An existing lock and, on Windows only, a
+// delete-pending permission error are retried until the 1-second bound: the
+// former then reports the held-lock error, and the latter returns the
+// original creation error, as the other soho locks do.
+func acquireStateLock(path string, open func(string, int, os.FileMode) (*os.File, error), goos string, pause func(time.Duration)) (func(), error) {
 	deadline := time.Now().Add(time.Second)
 	for {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		f, err := open(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
 			_, writeErr := fmt.Fprintf(f, "%d\n", os.Getpid())
 			closeErr := f.Close()
@@ -394,13 +404,17 @@ func (s Store) lock() (func(), error) {
 			}
 			return func() { _ = os.Remove(path) }, nil
 		}
-		if !errors.Is(err, os.ErrExist) {
+		pending := platform.DeletePending(err, goos)
+		if !errors.Is(err, os.ErrExist) && !pending {
 			return nil, err
 		}
 		if time.Now().After(deadline) {
+			if pending {
+				return nil, err
+			}
 			return nil, fmt.Errorf("collaboration lock held: %s; inspect its owner before explicit recovery", path)
 		}
-		time.Sleep(10 * time.Millisecond)
+		pause(10 * time.Millisecond)
 	}
 }
 
