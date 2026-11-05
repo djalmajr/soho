@@ -286,7 +286,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 
 	findings := dispatch.BriefLintFindings(brief, ctx, env, dispatch.BriefLintOptions{ReadOnly: !core.RoleIsEdit(role, env, cwd), WorkerCwd: workerCwd, OrchestratorCwd: cwd})
 	if amend {
-		findings = dispatch.BriefLintFindings(brief, ctx, env, dispatch.BriefLintOptions{ReadOnly: !core.RoleIsEdit(role, env, cwd), PathsOnly: true, WorkerCwd: workerCwd, OrchestratorCwd: cwd})
+		findings = dispatch.BriefLintFindings(brief, ctx, env, dispatch.BriefLintOptions{ReadOnly: !core.RoleIsEdit(role, env, cwd), PathsOnly: true, WorkerCwd: workerCwd, OrchestratorCwd: cwd, InheritedWorktree: dispatch.DeclaredWorktree(amendmentOriginalBrief(sd, taskreport.ReadTaskReportPointer(sd, agent)))})
 	}
 	if findings.Mode != "off" {
 		for _, w := range findings.Warnings {

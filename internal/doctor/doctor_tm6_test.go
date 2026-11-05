@@ -448,6 +448,31 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 			t.Fatalf("missing provider emitted diagnostics: %s", out)
 		}
 	})
+	t.Run(`doctor: the V2 providers format is read: a literal settings.apiKey warns without the value, and no budget warn comes out`, func(t *testing.T) { // DJA-655: scenario 7 (doctor with V2)
+		// Mutation captured: dropping the V2 settings.apiKey check silences the warn; keeping the V1-only budget warning on V2 adds a warn.
+		env, root := tm6DoctorEnv(t)
+		file := filepath.Join(root, "opencode.json")
+		if err := os.WriteFile(file, []byte(`{"providers":{"local":{"settings":{"apiKey":"v2-secret-literal"},"models":{"m":{}}}}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out := tm6DoctorOutput(t, tm6DoctorConfig(nil, "defaults"), env, root)
+		if !strings.Contains(out, "own provider 'local' (opencode) has a literal apiKey") {
+			t.Fatalf("output=%s", out)
+		}
+		if strings.Contains(out, "v2-secret-literal") {
+			t.Fatal("credential leaked")
+		}
+		if strings.Contains(out, "thinking_token_budget") {
+			t.Fatalf("V2 model warned for the V1-only budget field: %s", out)
+		}
+		if err := os.WriteFile(file, []byte(`{"providers":{"local":{"settings":{"apiKey":"{env:KEY}"},"models":{"m":{}}}}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out = tm6DoctorOutput(t, tm6DoctorConfig(nil, "defaults"), env, root)
+		if strings.Contains(out, "has a literal apiKey") || !strings.Contains(out, "own providers: no known trap") {
+			t.Fatalf("env reference output=%s", out)
+		}
+	})
 	t.Run(`doctor: the literal key value never appears on stdout/stderr`, func(t *testing.T) { // JS: "doctor: the literal key value never appears on stdout/stderr"
 		// Mutation captured: interpolating a provider key into diagnostics leaks the secret literal.
 		env, root := tm6DoctorEnv(t)

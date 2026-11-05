@@ -206,7 +206,7 @@ Result per kind/model: `ready` (exit 0), `no-auth` (a login message — the user
 For the generic kinds, `setup --detect` lists the models the user declared in their own provider files, as `custom_models` (`provider/model`, with the highest declared reasoning level when there is one). Only ids and levels are read; `apiKey`, headers and env values never leave the files:
 
 - **pi** — `~/.pi/agent/models.json`: `providers.<name>.models[].id`, max level from the model's `thinkingLevelMap` (the highest non-null `low|medium|high|xhigh|max`).
-- **opencode** — `opencode.json`: the project file first (its entries win on duplicate ids), then `$OPENCODE_CONFIG`, then `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json`, then `~/.opencode/opencode.json`; models are `provider.<name>.models.<id>`. opencode declares no per-model reasoning ladder, so `max_effort` is `""`.
+- **opencode** — `opencode.json`: the project file first (its entries win on duplicate ids), then `$OPENCODE_CONFIG`, then `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json`, then `~/.opencode/opencode.json`; each file is read in both formats — the current `providers.<name>.models.<id>` and the deprecated `provider.<name>.models.<id>` — and a model present in both counts once, with the current format winning. opencode declares no per-model reasoning ladder, so `max_effort` is `""`.
 
 Malformed files degrade to an empty list (not a failure). The probe and spawn pass a `provider/model` straight through to the CLI's model flag; `$S model pi my-provider/my-model` shows how it would resolve.
 
