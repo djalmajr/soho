@@ -2,6 +2,7 @@
 name: ui-reviewer
 description: Lightweight review of simple UI-only changes (markup, classes, tokens, small Solid components) — patch-anchored findings against the project design contract; read-only. Runs on agy with Gemini; fall back to agy's Sonnet when the Gemini quota is exhausted.
 kind: agy
+mcp: none
 alternatives: [agy]
 model: gemini|sonnet
 effort: high

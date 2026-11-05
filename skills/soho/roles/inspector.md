@@ -2,6 +2,7 @@
 name: inspector
 description: Visual and UX QA of a running UI — screenshots in every theme and breakpoint the project supports, actionable findings, no fixes.
 kind: agy
+mcp: playwright,chrome-devtools
 alternatives: [claude]
 effort: high
 mode: read-only

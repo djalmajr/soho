@@ -86,36 +86,50 @@ func mustGetwd() string { cwd, _ := os.Getwd(); return cwd }
 // line that is exactly codex's), and any other failure of the check is
 // ok=false ("override check exit <n>" or "override check timed out"). Only the
 // server name is read from the check's output.
-func mcpCodexOffArgs(env platform.Env, cwd string) (args []string, ok bool, reason string, stayOn, projectOnly []string) {
+func mcpCodexOffArgs(env platform.Env, cwd string, keep []string) (args []string, ok bool, reason string, stayOn, projectOnly, listed []string) {
 	servers, reason := mcpCodexList(env, cwd)
 	if reason != "" {
-		return nil, false, reason, nil, nil
+		return nil, false, reason, nil, nil, nil
+	}
+	// listed is every name the listing reports, in list order: the caller
+	// warns for a list choice whose name is not among them.
+	listed = make([]string, 0, len(servers))
+	for _, server := range servers {
+		if server.Name != "" {
+			listed = append(listed, server.Name)
+		}
+	}
+	// DJA-693: keep is the list choice's names (nil for mcp=none); an enabled
+	// server in keep is never turned off.
+	keepSet := map[string]bool{}
+	for _, name := range keep {
+		keepSet[name] = true
 	}
 	var enabled []string
 	for _, server := range servers {
-		if server.Enabled && server.Name != "" {
+		if server.Enabled && server.Name != "" && !keepSet[server.Name] {
 			enabled = append(enabled, server.Name)
 		}
 	}
 	if len(enabled) == 0 {
-		return nil, true, "", nil, nil
+		return nil, true, "", nil, nil, listed
 	}
 	// A relative CODEX_HOME resolves against each process's cwd, so the
 	// neutral listing would read another user layer than the worker.
 	if home := env.Get("CODEX_HOME"); home != "" && !filepath.IsAbs(home) {
-		return nil, false, "neutral listing: CODEX_HOME is not an absolute path", nil, nil
+		return nil, false, "neutral listing: CODEX_HOME is not an absolute path", nil, nil, nil
 	}
 	neutralDir, err := os.MkdirTemp("", "soho-codex-mcp-")
 	if err != nil {
-		return nil, false, "neutral listing: no empty directory", nil, nil
+		return nil, false, "neutral listing: no empty directory", nil, nil, nil
 	}
 	defer os.RemoveAll(neutralDir)
 	if codexProjectAbove(neutralDir, env) {
-		return nil, false, "neutral listing: the temporary directory is inside a project with its own .codex/config.toml", nil, nil
+		return nil, false, "neutral listing: the temporary directory is inside a project with its own .codex/config.toml", nil, nil, nil
 	}
 	neutral, reason := mcpCodexList(env, neutralDir)
 	if reason != "" {
-		return nil, false, "neutral listing " + reason, nil, nil
+		return nil, false, "neutral listing " + reason, nil, nil, nil
 	}
 	inNeutral := map[string]bool{}
 	for _, server := range neutral {
@@ -153,16 +167,16 @@ func mcpCodexOffArgs(env platform.Env, cwd string) (args []string, ok bool, reas
 		if len(kept) == 0 {
 			// Every override was refused (or none was left after the
 			// project's own servers): nothing is left to check.
-			return nil, true, "", stayOnList(), projectOnly
+			return nil, true, "", stayOnList(), projectOnly, listed
 		}
 		check := platform.RunCli("codex", append(append([]string(nil), args...), "mcp", "list", "--json"), platform.RunOptions{Env: env, TimeoutMs: mcpCodexListTimeoutMs, Cwd: cwd})
 		switch {
 		case check.NotFound:
-			return nil, false, "codex not found in PATH", nil, nil
+			return nil, false, "codex not found in PATH", nil, nil, nil
 		case check.TimedOut:
-			return nil, false, "override check timed out", nil, nil
+			return nil, false, "override check timed out", nil, nil, nil
 		case check.Status != nil && *check.Status == 0:
-			return args, true, "", stayOnList(), projectOnly
+			return args, true, "", stayOnList(), projectOnly, listed
 		}
 		code := -1
 		if check.Status != nil {
@@ -170,11 +184,83 @@ func mcpCodexOffArgs(env platform.Env, cwd string) (args []string, ok bool, reas
 		}
 		bad := mcpCodexNamedServer(check.Stderr+"\n"+check.Stdout, kept)
 		if bad == "" {
-			return nil, false, fmt.Sprintf("override check exit %d", code), nil, nil
+			return nil, false, fmt.Sprintf("override check exit %d", code), nil, nil, nil
 		}
 		dropped[bad] = true
 	}
-	return nil, false, "override check exit -1", nil, nil
+	return nil, false, "override check exit -1", nil, nil, nil
+}
+
+// codexMcpTranslate runs the codex listing and returns the off args (and the
+// projectOnly/stayOn names to warn about) for keep=nil (mcp=none) or the
+// list choice's names (DJA-693), plus the list names the listing does not
+// report. ok=false means the listing failed: the caller prints the one
+// listing-failure warning and keeps the user's servers.
+func codexMcpTranslate(env platform.Env, cwd string, keep []string) (args []string, ok bool, reason string, stayOn, projectOnly, missing []string) {
+	args, ok, reason, stayOn, projectOnly, listed := mcpCodexOffArgs(env, cwd, keep)
+	if !ok {
+		return nil, false, reason, nil, nil, nil
+	}
+	present := map[string]bool{}
+	for _, name := range listed {
+		present[name] = true
+	}
+	for _, name := range keep {
+		if !present[name] {
+			missing = append(missing, name)
+		}
+	}
+	return args, true, "", stayOn, projectOnly, missing
+}
+
+// mcpPiListNames runs `pi mcp list --json` in the spawn's own PATH and env,
+// in the worker's cwd (the same 10 s timeout as mcpCodexList) and returns
+// the server names in list order. Only name is read: the rest of the
+// listing never leaves this function. The reason is set when pi is not on
+// the PATH, the run times out, exits nonzero, or prints non-JSON output.
+func mcpPiListNames(env platform.Env, cwd string) ([]string, string) {
+	res := platform.RunCli("pi", []string{"mcp", "list", "--json"}, platform.RunOptions{Env: env, TimeoutMs: mcpCodexListTimeoutMs, Cwd: cwd})
+	switch {
+	case res.NotFound:
+		return nil, "pi not found in PATH"
+	case res.TimedOut:
+		return nil, "timed out after 10 s"
+	case res.Status == nil || *res.Status != 0:
+		code := -1
+		if res.Status != nil {
+			code = *res.Status
+		}
+		return nil, fmt.Sprintf("exit %d", code)
+	}
+	var out struct {
+		Servers []struct {
+			Name string `json:"name"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(res.Stdout)), &out); err != nil {
+		return nil, "non-JSON output"
+	}
+	names := make([]string, 0, len(out.Servers))
+	for _, server := range out.Servers {
+		if server.Name != "" {
+			names = append(names, server.Name)
+		}
+	}
+	return names, ""
+}
+
+// mcpNamePresent reports whether any of want is in have.
+func mcpNamePresent(want, have []string) bool {
+	set := map[string]bool{}
+	for _, name := range have {
+		set[name] = true
+	}
+	for _, name := range want {
+		if set[name] {
+			return true
+		}
+	}
+	return false
 }
 
 type mcpCodexServer struct {
@@ -862,8 +948,8 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 		case "--tab-label":
 			o.tabLabel = v
 		case "--mcp":
-			if v != "inherit" && v != "none" {
-				core.DieFriction("spawn: invalid --mcp '"+v+"' (inherit|none)", 2, "", "")
+			if detail := core.McpValueError(v); detail != "" {
+				core.DieFriction("spawn: invalid --mcp '"+text.SanitizeCause(v)+"': "+detail, 2, "", "")
 			}
 			o.mcp = v
 		case "--effort":
@@ -1004,6 +1090,13 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	// DJA-392: the per-role MCP server choice — flag > lane.<n>.mcp >
 	// role.<r>.mcp > the role file's mcp: > inherit.
 	o.mcp = ResolveMcp(o.mcp, lane, o.role, ctx, env, cwd)
+	// DJA-693: the value may come from a layer the flag parser never saw
+	// (lane.<n>.mcp, role.<r>.mcp, the frontmatter); an invalid name exits 2
+	// before any pane is opened.
+	if detail := core.McpValueError(o.mcp); detail != "" {
+		core.DieFriction("spawn: invalid mcp '"+text.SanitizeCause(o.mcp)+"': "+detail, 2, "", "")
+	}
+	o.mcp = core.McpCanonical(o.mcp)
 	if o.timeout == "" {
 		o.timeout = core.Cfg(ctx, "spawn_timeout", "60000", env)
 	} else if ms, ok := core.ParseTimeoutMS(o.timeout); !ok {
@@ -1269,30 +1362,70 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 	}
 	args := buildArgs(kind, approvalsForArgs, o.model, o.effort, ctx, env)
-	// DJA-392: mcp=none translates to the kind's per-process flag, right
-	// after the effort args (buildArgs ends with them) and before the
-	// config and user args; a kind without a per-process flag warns once
-	// and the agent keeps the user's MCP servers. Codex builds its off args
-	// per server from its live listing (R2): -c mcp_servers=<name>.enabled
-	// =false for every enabled server, in list order; a failed listing warns
-	// once and the agent keeps the user's MCP servers.
-	if o.mcp == "none" && kind == "codex" {
-		mcpArgs, ok, reason, stayOn, projectOnly := mcpCodexOffArgs(env, o.cwd)
+	// DJA-392/DJA-693: the mcp choice translates right after the effort args
+	// (buildArgs ends with them) and before the config and user args; a kind
+	// without a per-process flag warns once and the agent keeps the user's
+	// MCP servers. inherit and an absent choice change no argv, byte for
+	// byte. Codex builds its off args per server from its live listing (R2):
+	// -c mcp_servers=<name>.enabled=false for every enabled server not kept,
+	// in list order; a failed listing warns once and the agent keeps the
+	// user's MCP servers. A list keeps the named servers (DJA-693): codex
+	// turns the others off with the same technique (a name the listing does
+	// not report warns and the spawn continues), pi reads `pi mcp list
+	// --json` (--no-mcp when none of the names is present, the cannot-limit
+	// warning when at least one is, the listing-failure warning when the
+	// read fails), claude needs the server definition in JSON (not proved) so
+	// it keeps the servers with the cannot-limit warning, and every other
+	// kind keeps the servers with the mcp=none no-flag warning.
+	switch {
+	case o.mcp == "inherit":
+		// inherit changes nothing.
+	case kind == "codex" && (o.mcp == "none" || len(core.McpNames(o.mcp)) > 0):
+		keep := core.McpNames(o.mcp) // nil for mcp=none
+		mcpArgs, ok, reason, stayOn, projectOnly, missing := codexMcpTranslate(env, o.cwd, keep)
+		stayOnTail := "they stay on, the others are off"
+		if len(keep) > 0 {
+			stayOnTail = "they stay on; the others outside the list are off"
+		}
 		if !ok {
 			Warn(fmt.Sprintf("spawn: codex could not list its MCP servers (%s); '%s' keeps the user's MCP servers", reason, o.name), ctx, env, "spawn")
 		} else {
 			args = append(args, mcpArgs...)
 			if len(projectOnly) > 0 {
-				Warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are defined only in the project's .codex/config.toml); they stay on, the others are off", strings.Join(projectOnly, ", "), o.name), ctx, env, "spawn")
+				Warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are defined only in the project's .codex/config.toml); %s", strings.Join(projectOnly, ", "), o.name, stayOnTail), ctx, env, "spawn")
 			}
 			if len(stayOn) > 0 {
-				Warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are not defined in its config.toml); they stay on, the others are off", strings.Join(stayOn, ", "), o.name), ctx, env, "spawn")
+				Warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are not defined in its config.toml); %s", strings.Join(stayOn, ", "), o.name, stayOnTail), ctx, env, "spawn")
+			}
+			for _, name := range missing {
+				Warn(fmt.Sprintf("spawn: %s has no MCP server named %s for '%s'", kind, name, o.name), ctx, env, "spawn")
 			}
 		}
-	} else if mcpArgs, ok := kinds.KindMcpArgs(kind, o.mcp); !ok {
-		Warn(fmt.Sprintf("spawn: %s cannot turn MCP servers off per process; '%s' keeps the user's MCP servers", kind, o.name), ctx, env, "spawn")
-	} else {
-		args = append(args, mcpArgs...)
+	case len(core.McpNames(o.mcp)) > 0:
+		// DJA-693: a list on a kind without codex's per-server overrides.
+		switch kind {
+		case "pi":
+			present, reason := mcpPiListNames(env, o.cwd)
+			if reason != "" {
+				Warn(fmt.Sprintf("spawn: pi could not list its MCP servers (%s); '%s' keeps the user's MCP servers", reason, o.name), ctx, env, "spawn")
+			} else if !mcpNamePresent(core.McpNames(o.mcp), present) {
+				args = append(args, "--no-mcp")
+			} else {
+				Warn(fmt.Sprintf("spawn: pi cannot limit its MCP servers to the requested list per process; '%s' keeps the user's MCP servers", o.name), ctx, env, "spawn")
+			}
+		case "claude":
+			Warn(fmt.Sprintf("spawn: claude cannot limit its MCP servers to the requested list per process; '%s' keeps the user's MCP servers", o.name), ctx, env, "spawn")
+		default:
+			Warn(fmt.Sprintf("spawn: %s cannot turn MCP servers off per process; '%s' keeps the user's MCP servers", kind, o.name), ctx, env, "spawn")
+		}
+	default:
+		// mcp=none on a kind with a static flag (claude, pi), or without any
+		// (the kind keeps the user's servers with the one-line warning).
+		if mcpArgs, ok := kinds.KindMcpArgs(kind, o.mcp); !ok {
+			Warn(fmt.Sprintf("spawn: %s cannot turn MCP servers off per process; '%s' keeps the user's MCP servers", kind, o.name), ctx, env, "spawn")
+		} else {
+			args = append(args, mcpArgs...)
+		}
 	}
 	if kind == "codex" && core.TrustCwdMode(ctx, env) == "on" {
 		root, reason := trustRootEnv(o.cwd, env, trustOwned)
@@ -1467,7 +1600,8 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		core.RosterRemove(sd, stale[0])
 		Warn(fmt.Sprintf("replaced the stale roster line of '%s' (pane %s)", stale[0], stale[1]), ctx, env, "spawn")
 	}
-	// DJA-392 fatia 2 R2: the effective MCP choice (inherit|none) is the
+	// DJA-392 fatia 2 R2: the effective MCP choice (inherit, none or a
+	// canonical list, DJA-693) is the
 	// row's last field; reopen reads it and passes --mcp <value> to the
 	// respawn, so a worker keeps the MCP it was opened with.
 	row := []string{o.name, o.pane, kind, o.role, family, boolInt(created), o.cwd, core.NowStamp(platform.Now()), o.model, defaultValue(o.approvals, "auto"), o.role, lane, boolText(burst), native, o.effort, o.mcp}
@@ -1772,7 +1906,9 @@ func ResolveMcp(flag, lane, role string, ctx *core.Config, env platform.Env, cwd
 		return v
 	}
 	if file := core.RoleFile(role, env, cwd); file != "" {
-		if v := core.FmGet(file, "mcp"); v != "" {
+		// DJA-693: the mcp list keeps its commas; the ordinary FmGet
+		// collapses them to spaces for the other keys.
+		if v := core.FmGetMcp(file); v != "" {
 			return v
 		}
 	}

@@ -94,6 +94,9 @@ func TestFindReusableMcp(t *testing.T) {
 		{"the same MCP is reused", "none", "none", "worker"},
 		{"a row from before the MCP column is reused", "", "none", "worker"},
 		{"an empty request ignores the MCP", "inherit", "", "worker"},
+		{"the same list is reused", "a,b", "a,b", "worker"},
+		{"another list is not reused", "a,b", "a", ""},
+		{"none is not reused for a list", "none", "a,b", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

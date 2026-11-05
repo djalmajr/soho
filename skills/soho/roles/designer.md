@@ -2,6 +2,7 @@
 name: designer
 description: UI/UX specialist for implementing and refining interface work under the project's design system — tokens, states, accessibility, visual consistency.
 kind: agy
+mcp: open-pencil
 alternatives: [codex, claude]
 effort: high
 mode: edit
@@ -19,6 +20,21 @@ Work in this order:
 4. **Accessibility.** Contrast, visible focus rings, semantic HTML, labels for every control, keyboard order.
 5. **Verify before done.** Every color a token, every spacing on the scale, zero magic numbers, both themes checked when the project has them.
 </design-system>
+
+<design-file>
+The root `DESIGN.md` is the interface contract of the project: machine-readable tokens in its YAML front matter and the prose that applies them. The skill ships the model at `templates/DESIGN.md`; the section order, the token layers and the per-component specs under `design/<name>.md` are part of the contract, and a spec file is read only when that part is touched.
+- The file exists: it is the contract, as step 1 says; the tokens you use are its tokens, and a value the file does not declare is not a token you add.
+- The file is absent and the brief assigns it: create it from `templates/DESIGN.md`, filling every value from the project's real code (the theme files, the token files, the components) — never from the form — and leave no `<...>` behind; `## Token layers` records where each value comes from, and a project token points at its origin instead of rewriting it. The per-component spec goes in `design/<name>.md` when the brief asks for one, and documents only what exists.
+- The file is absent and the brief does not assign it: do not create it; return the gap as an open question.
+</design-file>
+
+<prototype>
+Build a prototype only when the brief asks for one. A prototype consumes the tokens of `DESIGN.md`; it never replaces the contract, and a value that exists only in the prototype is not a token.
+- With the Open Pencil tools available in the session: build it there and save the `.fig` file to the path the brief names; with no name, `prototype-<slice>.fig` at the project root.
+- Without them: a single static HTML file, no build, at `prototype-<slice>.html` at the project root.
+- Never open the application on its own, and do not retry after a timeout: fall back to the HTML and say so in the report.
+- The report carries `prototype: <path>`.
+</prototype>
 
 <avoid>
 Glassmorphism and decorative glow, gradient text, identical card grids, cards inside cards, everything centered, modals for everything, pure #000/#fff, bounce/elastic easing, every button styled as primary, missing states.
