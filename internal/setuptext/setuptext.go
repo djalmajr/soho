@@ -15,7 +15,21 @@ const (
 	LegacySetupEnd   = "<!-- herdr-soho:end -->"
 )
 
-const setupBlockHead = "<!-- soho:start -->\n## Multi-agent workflow (soho)\n\nInside Herdr (`HERDR_ENV=1`) non-trivial work in this project runs through\nthe `soho` skill. The calling agent is the **orchestrator**: it\ndecomposes the objective, writes one brief per slice, spawns role workers in\nsibling panes, waits on their report files, integrates, runs the gates and\nowns git. Load the skill (`/soho`) before planning such work.\n\n- **Delegate**: multi-file slices, UI under the design contract, anything\n  touching auth, secrets or input handling, work that parallelizes, any change\n  that needs a reviewer, and **research**: reading more than a handful of\n  files, another repository or several tools' conventions goes to a worker.\n  The orchestrator briefs it, reads the report and decides.\n- **Keep**: a one-or-two-file change with no product decision, docs, config,\n  a question, a quick verification. If writing the brief takes longer than the\n  change, make the change.\n- **Briefs are contracts**: goal, expected result, acceptance criteria with\n  the command that proves each one, decisions already made, owned and\n  forbidden files, report format. Workers never invent names, flags,\n  endpoints, credentials or requirements; what the brief leaves open comes\n  back as an open question and is answered in the next brief.\n- Workers never commit, push or open PRs; the orchestrator owns git.\n- The orchestrator is the planner. `spawn planner` opens no pane.\n- Every code slice gets a reviewer before push,\n  including code the orchestrator wrote itself.\n- The only completion signal is the worker's report file (`dispatch`,\n  `wait`, `status`); never poll agent state by hand. A busy worker is not a\n  reason for another pane: `wait`, then dispatch.\n- Quota (exit 11) stops that worker. Ask the user before switching the\n  assistant, waiting, taking the slice, or pausing.\n- How many panes, which assistant and model run each role, and their effort\n  come from the configuration (`.agents/soho.conf`, the user file,\n  the session layer), not from this block: the skill's `explain` and\n  `config` commands show what is in effect. Project roles override the\n  skill's in `.agents/soho-roles/<role>.md`; scratch state lives in\n  `.soho/` (git-ignored).\n"
+const setupBlockHead = "<!-- soho:start -->\n## Multi-agent workflow (soho)\n\nInside Herdr (`HERDR_ENV=1`) non-trivial work in this project runs through\nthe `soho` skill. The calling agent is the **orchestrator**: it\ndecomposes the objective, writes one brief per slice, spawns role workers in\nsibling panes, waits on their report files, integrates, runs the gates and\nowns git. Load the skill (`/soho`) before planning such work.\n\n- **Delegate**: multi-file slices, UI under the design contract, anything\n  touching auth, secrets or input handling, work that parallelizes, any change\n  that needs a reviewer, and **research**: reading more than a handful of\n  files, another repository or several tools' conventions goes to a worker.\n  The orchestrator briefs it, reads the report and decides.\n- **Keep**: a one-or-two-file change with no product decision, docs, config,\n  a question, a quick verification. If writing the brief takes longer than the\n  change, make the change.\n"
+
+// designBullet is the static design-contract line of the current generation
+// (DJA-695 fatia 2, decision 2): it is the single source of the bullet text,
+// spliced into the block after the Keep item and installed in place by the
+// legacy migration when the block predates it.
+const designBullet = "- **Design**: when the project has a root `DESIGN.md`, read it, and the spec under\n  `design/` of what you touch, before changing UI, and run its `design` validation layer.\n"
+
+// designBulletAnchor is the exact opening line of the generated "Briefs are
+// contracts" item, the line the design bullet precedes: the in-place
+// installation only fires on the unedited generated line, exactly like the
+// peer-bullet upgrade.
+const designBulletAnchor = "- **Briefs are contracts**: goal, expected result, acceptance criteria with\n"
+
+const setupBlockRest = "- **Briefs are contracts**: goal, expected result, acceptance criteria with\n  the command that proves each one, decisions already made, owned and\n  forbidden files, report format. Workers never invent names, flags,\n  endpoints, credentials or requirements; what the brief leaves open comes\n  back as an open question and is answered in the next brief.\n- Workers never commit, push or open PRs; the orchestrator owns git.\n- The orchestrator is the planner. `spawn planner` opens no pane.\n- Every code slice gets a reviewer before push,\n  including code the orchestrator wrote itself.\n- The only completion signal is the worker's report file (`dispatch`,\n  `wait`, `status`); never poll agent state by hand. A busy worker is not a\n  reason for another pane: `wait`, then dispatch.\n- Quota (exit 11) stops that worker. Ask the user before switching the\n  assistant, waiting, taking the slice, or pausing.\n- How many panes, which assistant and model run each role, and their effort\n  come from the configuration (`.agents/soho.conf`, the user file,\n  the session layer), not from this block: the skill's `explain` and\n  `config` commands show what is in effect. Project roles override the\n  skill's in `.agents/soho-roles/<role>.md`; scratch state lives in\n  `.soho/` (git-ignored).\n"
 
 // compactPeerBullet is the generated "Peer messages" item of the current
 // generation: the compact opening line (the message id inside the tag) plus
@@ -27,7 +41,7 @@ const compactPeerBullet = "- **Peer messages**: text that starts with the openin
 
 const setupBlockTail = "- Refresh this block and the hooks by loading `/soho` and running its\n  `setup` command from the project root.\n<!-- soho:end -->\n"
 
-var setupBlockText = setupBlockHead + compactPeerBullet + setupBlockTail
+var setupBlockText = setupBlockHead + designBullet + setupBlockRest + compactPeerBullet + setupBlockTail
 
 // The generated hooks are the native PATH commands of the soho
 // binary itself: no sh, no bash, no Node/Bun engine, no absolute personal
@@ -215,6 +229,7 @@ func renameLegacyBlock(content string) *string {
 		block = strings.Replace(block, "- Every code slice gets a reviewer from another model family before push,\n  including code the orchestrator wrote itself.\n", "- Every code slice gets a reviewer before push,\n  including code the orchestrator wrote itself.\n", 1)
 		result = result[:start] + block + result[end:]
 	}
+	result = installDesignBullet(result)
 	return &result
 }
 
@@ -247,6 +262,30 @@ func upgradePeerBullet(content string) string {
 		return content
 	}
 	block = block[:at] + compactPeerBullet + block[after:]
+	return content[:start] + block + content[end:]
+}
+
+// installDesignBullet installs the current generation's design line (DJA-695
+// fatia 2) in a migrated legacy block, the way upgradePeerBullet installs
+// the peer bullet: the legacy generation predates the line, so the exact
+// unedited generated block gains it in place, right before the generated
+// "Briefs are contracts" item it precedes. A block that already carries the
+// line, or one whose anchor line the project edited, is left as it is, and
+// the next setup replaces the whole block as usual.
+func installDesignBullet(content string) string {
+	if strings.Contains(content, designBullet) {
+		return content
+	}
+	start, end := strings.Index(content, SetupStart), strings.Index(content, SetupEnd)
+	if start < 0 || end < start {
+		return content
+	}
+	block := content[start:end]
+	at := strings.Index(block, designBulletAnchor)
+	if at < 0 {
+		return content
+	}
+	block = block[:at] + designBullet + block[at:]
 	return content[:start] + block + content[end:]
 }
 

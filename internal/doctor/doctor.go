@@ -531,6 +531,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	}
 	checkSetup(ctx, env, cwd, s)
 	doctorValidation(ctx, env, cwd, s)
+	doctorDesign(ctx, env, cwd, s)
 	doctorPeerInbound(ctx, env, cwd, s)
 	doctorFootprint(ctx, svc, env, cwd, s)
 	fmt.Fprintf(out, "first_run: %t\n%d ok, %d warning(s)\n", ProjectIsFirstRun(ctx, env, cwd), s.OK, s.Warn)
