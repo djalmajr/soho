@@ -61,7 +61,8 @@ func procsStop(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		sd = core.StateDir(ctx, env, cwd)
 	}
 	incorporatePendingProcs("procs stop", sd, env)
-	paneAgent := rosterAgentForPane(sd, backend.New(env).Runtime.Caller().PaneID)
+	callerPane := backend.New(env).Runtime.Caller().PaneID
+	paneAgent := rosterAgentForPane(sd, callerPane)
 	owner := paneAgent
 	if agentSeen {
 		if core.RosterLine(sd, agent) == "" || (paneAgent != "" && paneAgent != agent) {
@@ -100,12 +101,12 @@ func procsStop(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 			refuse("pid is system init, this soho process, or its parent")
 			continue
 		}
-		if owner == "" {
-			pane := backend.New(env).Runtime.Caller().PaneID
-			if pane == "" {
-				pane = "unset"
-			}
-			refuse(fmt.Sprintf("no calling agent in the roster (pane %s, state dir %s)", pane, sd))
+		// Without an explicit --agent, a caller whose pane is empty has no
+		// identity at all and is refused as today (the pane is named
+		// "unset"); a pane that is not in the roster proceeds to the line
+		// lookup, where only its own "-" line can be opened.
+		if !agentSeen && callerPane == "" {
+			refuse(fmt.Sprintf("no calling agent in the roster (pane unset, state dir %s)", sd))
 			continue
 		}
 		matched, owned := false, false
@@ -114,7 +115,17 @@ func procsStop(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 				continue
 			}
 			matched = true
-			if row.Owner != owner {
+			// A line without an owner ("-", the orchestrator's own
+			// registration) is opened by the pane that registered it, whatever
+			// the roster says about that pane; a line of another pane or of
+			// another owner stays closed, and so does any "-" line under an
+			// explicit --agent, which names whose lines the call acts on. The
+			// stop below keeps the identity check (a reused pid is never
+			// signalled).
+			// A caller outside the roster has no owner: an empty owner field
+			// on an old or hand-written line never matches that.
+			isOwned := (owner != "" && row.Owner == owner) || (!agentSeen && row.Owner == "-" && row.Pane != "-" && row.Pane == callerPane)
+			if !isOwned {
 				continue
 			}
 			owned = true
@@ -128,7 +139,15 @@ func procsStop(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 			}
 		}
 		if !matched {
-			refuse("pid is not registered")
+			// A caller without a roster identity (no --agent, a pane that is
+			// not in the roster - an empty pane was already refused above)
+			// and a pid the registry does not hold: the refusal keeps naming
+			// the pane and the state dir, as today.
+			if !agentSeen && paneAgent == "" {
+				refuse(fmt.Sprintf("no calling agent in the roster (pane %s, state dir %s)", callerPane, sd))
+			} else {
+				refuse("pid is not registered")
+			}
 		} else if !owned {
 			refuse("registered process belongs to another agent")
 		}

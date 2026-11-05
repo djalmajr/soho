@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
 func init() {
@@ -370,5 +372,89 @@ func TestOrphanCopyLinesMustPassTheCopyCheck(t *testing.T) {
 	if code != 0 || errOut != "" || !strings.Contains(out, "would stop 4000001  ") || strings.Count(out, "would stop ") != 1 ||
 		!strings.Contains(out, "listed only 4000004  ") || !strings.Contains(out, "listed only 4000006  ") {
 		t.Fatalf("gc: code=%d err=%q out=%q; only the valid copy's orphan is a would stop", code, errOut, out)
+	}
+}
+
+// dashRowPaneRules installs the fixture's herdr base rules plus one rule
+// for the machine-wide `pane list` read (the pane check of a "-" process
+// row) into a fresh directory at the front of PATH: a fake already
+// installed in the fixture's directory cannot be reinstalled.
+func dashRowPaneRules(t *testing.T, f *procsFixture, paneRule fakecli.Rule) {
+	t.Helper()
+	dir := t.TempDir()
+	base := []fakecli.Rule{
+		{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"name":"worker","agent_status":"idle"}}}`},
+		{Argv: []string{"agent", "get", "other"}, Stdout: `{"result":{"agent":{"name":"other","agent_status":"idle"}}}`},
+		{Argv: []string{"pane", "report-metadata", "p-worker", "--source", "soho", "--clear-title"}},
+		{Argv: []string{"pane", "report-metadata", "p-other", "--source", "soho", "--clear-title"}},
+		{Argv: []string{"pane", "list", "--workspace", "ws"}, Stdout: `{"result":{"panes":[]}}`},
+		{Argv: []string{"tab", "get", "t1"}, Stdout: `{"result":{"tab":{"label":"old"}}}`},
+		{Argv: []string{"tab", "rename", "t1", "herd"}},
+		paneRule,
+	}
+	if _, err := fakecli.Install(t, dir, "herdr", base); err != nil {
+		t.Fatal(err)
+	}
+	f.env["PATH"] = dir + string(os.PathListSeparator) + f.env.Get("PATH")
+	f.env["SOHO_FAKECLI_CONFIG"] = filepath.Join(dir, "herdr.json")
+}
+
+// DJA-697 scenarios 7 and 8: a running "-" row is not a gc orphan while its
+// registered pane is confirmed alive by the machine-wide pane list; a pane
+// that left the list, and a pane the transport cannot confirm (a failed
+// read), keep today's orphan behavior. The same rule governs the dry run
+// and --yes (one classification function).
+func TestGcDashRowOrphanByPane(t *testing.T) {
+	for _, mode := range []string{"pane-alive", "pane-gone", "pane-unverifiable"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newProcsFixture(t)
+			paneRule := fakecli.Rule{Argv: []string{"pane", "list"}}
+			switch mode {
+			case "pane-alive":
+				paneRule.Stdout = `{"result":{"panes":[{"pane_id":"p-orch"}]}}`
+			case "pane-gone":
+				paneRule.Stdout = `{"result":{"panes":[{"pane_id":"p-someone-else"}]}}`
+			case "pane-unverifiable":
+				paneRule.Code = 9 // the read fails; the pane cannot be confirmed
+			}
+			dashRowPaneRules(t, f, paneRule)
+			row := procsStopRow(t, f, f.sleeper(t), "-")
+			row.Pane = "p-orch"
+			f.writeProcs(t, row)
+			pressure := "resource pressure: none (disk 60% free, swap 30% used)\n"
+			alive := mode == "pane-alive"
+			code, out, errOut := f.run(t, "gc")
+			if code != 0 || errOut != "" {
+				t.Fatalf("gc: code=%d err=%q out=%q", code, errOut, out)
+			}
+			if alive {
+				if out != pressure+"nothing to remove\n" {
+					t.Fatalf("gc dry run = %q; the pane-alive dash row is not an orphan", out)
+				}
+			} else if !strings.Contains(out, fmt.Sprintf("orphan processes:\n%d  %s  -  ", row.Pid, row.Name)) ||
+				!strings.Contains(out, "run 'soho gc --yes' to stop them\n") {
+				t.Fatalf("gc dry run = %q; the dash row keeps today's orphan behavior", out)
+			}
+			assertProcsStopAlive(t, f, row)
+			code, out, errOut = f.run(t, "gc", "--yes")
+			if code != 0 || errOut != "" {
+				t.Fatalf("gc --yes: code=%d err=%q out=%q", code, errOut, out)
+			}
+			if alive {
+				if out != pressure+"nothing to remove\n" || !procAlive(t, f.env, row.Pid) {
+					t.Fatalf("gc --yes = %q; the pane-alive dash row is kept, nothing signalled", out)
+				}
+				if rows := f.procsRows(t); len(rows) != 1 || rows[0] != row {
+					t.Fatalf("rows changed: %+v", rows)
+				}
+			} else {
+				if !strings.Contains(out, fmt.Sprintf("stopped process %d (%s)\n", row.Pid, row.Name)) || !strings.Contains(out, "process lines handled: 1\n") || procAlive(t, f.env, row.Pid) {
+					t.Fatalf("gc --yes = %q; the orphan dash row is stopped", out)
+				}
+				if rows := f.procsRows(t); len(rows) != 0 {
+					t.Fatalf("rows remain: %+v", rows)
+				}
+			}
+		})
 	}
 }
