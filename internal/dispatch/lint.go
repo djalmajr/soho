@@ -512,6 +512,86 @@ func pathRune(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r) || strings.ContainsRune("._-/\\~", r)
 }
 
+var exampleMarker = []byte("example")
+
+// asciiExampleAt reports whether the ASCII marker "example",
+// case-insensitive, starts at i. The byte-wise comparison never folds
+// non-ASCII input, so a multibyte rune can neither match the marker nor
+// shift a position.
+func asciiExampleAt(line string, i int) bool {
+	if i+len(exampleMarker) > len(line) {
+		return false
+	}
+	for k, marker := range exampleMarker {
+		got := line[i+k]
+		if got >= 'A' && got <= 'Z' {
+			got += 'a' - 'A'
+		}
+		if got != marker {
+			return false
+		}
+	}
+	return true
+}
+
+// exampleSpanMask replaces every example-marked span in line with spaces,
+// keeping every other byte and its position intact. The marker is the
+// ASCII "example", case-insensitive, at the line start or right after
+// whitespace or one opening delimiter (, [ or {, followed by a colon, the
+// optional ASCII spaces or tabs, and exactly one ordinary single-backtick
+// span: one backtick that is not part of a longer run, opening a
+// non-empty span whose closing backtick is also a single delimiter, not
+// the start of a longer backtick run. Anything else — a missing colon
+// (including a line that ends exactly in the example word), an escaped or
+// word-attached marker, a double or triple backtick run at either end, an
+// empty or unclosed span — is ordinary text. Only the marked span is
+// exempted from the unseen-path scan; the rest of the line keeps its exact
+// positions, so an unmarked citation later on the same line is still
+// checked. The marker can repeat on one line.
+func exampleSpanMask(line string) string {
+	out := []byte(line)
+	n := len(line)
+	for i := 0; i+len(exampleMarker) <= n; i++ {
+		if !asciiExampleAt(line, i) {
+			continue
+		}
+		if i > 0 {
+			prev, _ := utf8.DecodeLastRuneInString(line[:i])
+			if prev != '(' && prev != '[' && prev != '{' && !unicode.IsSpace(prev) {
+				continue
+			}
+		}
+		p := i + len(exampleMarker)
+		if p >= n || line[p] != ':' {
+			continue
+		}
+		q := p + 1
+		for q < n && (line[q] == ' ' || line[q] == '\t') {
+			q++
+		}
+		if q+1 >= n || line[q] != '`' || line[q+1] == '`' {
+			continue
+		}
+		closeIdx := strings.IndexByte(line[q+1:], '`')
+		if closeIdx < 0 {
+			continue
+		}
+		closeEnd := q + 1 + closeIdx
+		// The closing backtick must be a single delimiter, not the start of
+		// a longer backtick run; a longer closing run is a malformed
+		// citation and stays visible to the ordinary extraction policy.
+		if closeEnd+1 < n && line[closeEnd+1] == '`' {
+			continue
+		}
+		end := q + 1 + closeIdx + 1
+		for k := q; k < end; k++ {
+			out[k] = ' '
+		}
+		i = end - 1
+	}
+	return string(out)
+}
+
 // ReferenceGit removes inherited Git routing/configuration and never relies on
 // the caller's repository selection. All callers supply read-only Git commands.
 func ReferenceGit(env platform.Env, args ...string) platform.RunResult {
@@ -587,13 +667,13 @@ func unseenPathWarnings(brief, body, workerCwd string, roots []string) []string 
 		if _, err := os.Stat(filepath.Join(workerCwd, candidate)); err == nil {
 			return
 		}
-		absolute := ""
+		absolute, matchedRoot := "", ""
 		for _, root := range roots {
 			p := filepath.Join(root, candidate)
 			rel, e := filepath.Rel(root, p)
 			if e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
 				if _, e = os.Stat(p); e == nil {
-					absolute = p
+					absolute, matchedRoot = p, root
 					break
 				}
 			}
@@ -606,14 +686,20 @@ func unseenPathWarnings(brief, body, workerCwd string, roots []string) []string 
 			return
 		}
 		seen[key] = true
-		out = append(out, fmt.Sprintf("brief %s line %d cites '%s', which the worker in %s cannot see; use the absolute path %s", brief, line, candidate, workerCwd, absolute))
+		out = append(out, fmt.Sprintf("brief %s line %d cites '%s', which the worker in %s does not find at that relative path; a matching path exists at %s under checkout %s, outside the worker tree; use it only if this brief intends that file", brief, line, candidate, workerCwd, absolute, matchedRoot))
 	}
 	for i, line := range lines {
-		for _, m := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(line, -1) {
-			add(m[1], i+1, true, line)
+		// A span marked `example:` is an explicit citation, not a path the
+		// worker must find. Mask it before both the candidate extraction
+		// and the same-line absolute-path suppression, so a marked absolute
+		// example cannot silence a real relative citation on the same line
+		// and a marked path with spaces cannot leak a bare suffix.
+		masked := exampleSpanMask(line)
+		for _, m := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(masked, -1) {
+			add(m[1], i+1, true, masked)
 		}
-		for _, m := range regexp.MustCompile(`(?:^|[\s"'(])([^\s"'<>`+"`"+`]+)`).FindAllStringSubmatch(line, -1) {
-			add(m[1], i+1, false, line)
+		for _, m := range regexp.MustCompile(`(?:^|[\s"'(])([^\s"'<>`+"`"+`]+)`).FindAllStringSubmatch(masked, -1) {
+			add(m[1], i+1, false, masked)
 		}
 	}
 	return out
