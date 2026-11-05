@@ -20,6 +20,10 @@ type ReviewResponsesResult struct {
 // followed by a colon and at least one space or tab.
 var responseIDColon = regexp.MustCompile(`^F([0-9]+):[ \t]+`)
 
+// responseBulletRE is the only bullet of the form. A star or a plus is a list
+// line too, and counts as one without a valid answer.
+var responseBulletRE = regexp.MustCompile(`^-[ \t]+`)
+
 // ReviewResponses parses the report's ## Review responses section, outside
 // fenced code blocks: one line per finding in one of the exact forms
 //
@@ -88,7 +92,7 @@ func responseHeadingLevel(trim string) (int, bool) {
 // declined reason does not match the exact grammar. A repeated number is a
 // valid line that keeps the first answer.
 func parseResponseLine(trim string, out *ReviewResponsesResult) bool {
-	m := layerBulletRE.FindStringIndex(trim)
+	m := responseBulletRE.FindStringIndex(trim)
 	if m == nil {
 		return false
 	}

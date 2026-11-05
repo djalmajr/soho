@@ -62,3 +62,14 @@ func TestDispatchResultCopiesReviewResponses(t *testing.T) {
 		}
 	})
 }
+
+// The strict refusal must not read the text of a warning that never refuses: a
+// Review: value can hold the phrase the path check uses.
+func TestDispatchStrictDoesNotRefuseAReviewWarning(t *testing.T) {
+	h := newTM3bHarness(t, tm3bFullBrief()+"Review: `which the worker in review.md`\n")
+	h.env["SOHO_BRIEF_LINT"] = "strict"
+	code, _, stderr := h.run(t, "build", h.brief, "--no-wait")
+	if code != 0 || !strings.Contains(stderr, "has a Review: line that is not an absolute path") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+}

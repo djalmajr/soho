@@ -38,6 +38,8 @@ func TestReviewResponses(t *testing.T) {
 		{name: "repeated number reversed keeps the first", text: "## Review responses\n\n- F1: declined: because\n- F1: fixed\n", found: true, fixed: []int{}, declined: []int{1}, unmarked: 0},
 		{name: "non-list line in the section is skipped", text: "## Review responses\n\nA prose line, not a list.\n\n- F1: fixed\n", found: true, fixed: []int{1}, declined: []int{}, unmarked: 0},
 		{name: "numbered list line without the form is unmarked", text: "## Review responses\n\n1. F1: fixed\n", found: true, fixed: []int{}, declined: []int{}, unmarked: 1},
+		{name: "a star bullet is not the form", text: "## Review responses\n\n* F1: fixed\n", found: true, fixed: []int{}, declined: []int{}, unmarked: 1},
+		{name: "a plus bullet is not the form", text: "## Review responses\n\n+ F1: fixed\n", found: true, fixed: []int{}, declined: []int{}, unmarked: 1},
 		{name: "empty section", text: "## Review responses\n\n", found: true, fixed: []int{}, declined: []int{}, unmarked: 0},
 	}
 	for _, tc := range tests {

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/core"
@@ -44,13 +45,13 @@ func checkReviewResponses(sd, agent, report, reportText string, line *jsonjs.Obj
 	}
 	data, err := core.ReadScratchReportLimited(declared, reviewResponsesLimit)
 	if err != nil {
-		warnReviewResponses(sd, agent, report, []string{fmt.Sprintf("brief of '%s' names a review that cannot be read: %s", agent, text.SanitizeCause(declared))})
+		warnReviewResponses(sd, agent, report, []reviewWarning{{"unreadable", fmt.Sprintf("brief of '%s' names a review that cannot be read: %s", agent, text.SanitizeCause(declared))}})
 		return
 	}
 	reviewText := platform.DecodeText(data)
 	reviewHeader := reportscan.ReviewHeader(reviewText)
 	if reviewHeader == nil {
-		warnReviewResponses(sd, agent, report, []string{fmt.Sprintf("review named by the brief of '%s' has no review header", agent)})
+		warnReviewResponses(sd, agent, report, []reviewWarning{{"no-header", fmt.Sprintf("review named by the brief of '%s' has no review header", agent)}})
 		return
 	}
 	marks := reportscan.FindingMarks(reviewText, reviewHeader)
@@ -71,39 +72,54 @@ func checkReviewResponses(sd, agent, report, reportText string, line *jsonjs.Obj
 		"unmarked", responses.Unmarked,
 		"unnumbered", unnumbered,
 	))
-	warnings := []string{}
+	warnings := []reviewWarning{}
 	if len(missing) > 0 {
-		warnings = append(warnings, fmt.Sprintf("report of '%s' leaves %d finding(s) of the review without a response (%s): read them before commit, push or release", agent, len(missing), formatFindingNumbers(missing)))
+		warnings = append(warnings, reviewWarning{"missing", fmt.Sprintf("report of '%s' leaves %d finding(s) of the review without a response (%s): read them before commit, push or release", agent, len(missing), formatFindingNumbers(missing))})
 	}
 	if len(unknown) > 0 {
-		warnings = append(warnings, fmt.Sprintf("report of '%s' answers %d finding(s) the review does not have (%s)", agent, len(unknown), formatFindingNumbers(unknown)))
+		warnings = append(warnings, reviewWarning{"unknown", fmt.Sprintf("report of '%s' answers %d finding(s) the review does not have (%s)", agent, len(unknown), formatFindingNumbers(unknown))})
 	}
 	if responses.Unmarked > 0 {
-		warnings = append(warnings, fmt.Sprintf("report of '%s' has %d Review responses line(s) without a valid answer", agent, responses.Unmarked))
+		warnings = append(warnings, reviewWarning{"unmarked", fmt.Sprintf("report of '%s' has %d Review responses line(s) without a valid answer", agent, responses.Unmarked)})
 	}
 	if unnumbered > 0 {
-		warnings = append(warnings, fmt.Sprintf("review named by the brief of '%s' has %d finding(s) without a number, so their responses cannot be checked", agent, unnumbered))
+		warnings = append(warnings, reviewWarning{"unnumbered", fmt.Sprintf("review named by the brief of '%s' has %d finding(s) without a number, so their responses cannot be checked", agent, unnumbered)})
 	}
 	warnReviewResponses(sd, agent, report, warnings)
 }
 
-// warnReviewResponses sends every message at most once per report, through
-// the review-responses-warned wait file. A marker that cannot persist only
+// reviewWarning is one kind of warning: the key the marker remembers, so a kind
+// that has not gone out yet is never silenced by another that has.
+type reviewWarning struct{ key, message string }
+
+// warnReviewResponses sends each kind of warning at most once per report,
+// through the review-responses-warned wait file: the report path on the first
+// line and the kinds already sent below it. A marker that cannot persist only
 // lets the warning repeat on the next poll, never aborting the settlement.
-func warnReviewResponses(sd, agent, report string, messages []string) {
-	if len(messages) == 0 {
+func warnReviewResponses(sd, agent, report string, warnings []reviewWarning) {
+	if len(warnings) == 0 {
 		return
 	}
+	sent := []string{}
 	prev, _ := readWaitFile(sd, agent, "review-responses-warned")
-	if prev == report {
-		return
+	if lines := strings.Split(prev, "\n"); lines[0] == report {
+		sent = lines[1:]
 	}
-	for _, message := range messages {
-		sendWarning(message)
+	fresh := false
+	for _, warning := range warnings {
+		if slices.Contains(sent, warning.key) {
+			continue
+		}
+		sendWarning(warning.message)
+		sent = append(sent, warning.key)
+		fresh = true
+	}
+	if !fresh {
+		return
 	}
 	// The warning already went out; a marker that cannot persist only lets
 	// it repeat on the next poll, never aborting the settlement.
-	_ = os.WriteFile(filepath.Join(sd, "wait", agent+".review-responses-warned"), []byte(report+"\n"), 0o666)
+	_ = os.WriteFile(filepath.Join(sd, "wait", agent+".review-responses-warned"), []byte(report+"\n"+strings.Join(sent, "\n")+"\n"), 0o666)
 }
 
 // declaredBriefReview returns the absolute path of the first Review: line in

@@ -185,6 +185,44 @@ func TestWaitReviewResponsesWarnsOncePerReport(t *testing.T) { // scenario 9
 			t.Fatalf("second poll lost the key: %q", out2)
 		}
 	})
+	t.Run("wait: a warning that has not gone out yet is not silenced by an earlier one", func(t *testing.T) {
+		dir := t.TempDir()
+		reviewPath := filepath.Join(dir, "review.md")
+		f := newMetricsFixture(t, "off", metricsImplementerRoster, responsesReport("- F1: fixed\n"), reviewBrief(reviewPath), "")
+		// The review does not exist yet: only the cannot-be-read warning.
+		_, err1, _ := f.run(t)
+		if !strings.Contains(err1, "names a review that cannot be read") {
+			t.Fatalf("first poll: %q", err1)
+		}
+		// The review appears: the missing response has never been reported.
+		writeReviewFile(t, reviewPath, markedReview(2))
+		_, err2, _ := f.run(t)
+		if !strings.Contains(err2, "without a response (F2)") || strings.Contains(err2, "cannot be read") {
+			t.Fatalf("second poll: %q", err2)
+		}
+		// Nothing new: silence.
+		_, err3, _ := f.run(t)
+		if hasReviewWarning(err3) {
+			t.Fatalf("third poll warned again: %q", err3)
+		}
+		// A new kind of problem in the same report warns once, alone.
+		writeReviewFile(t, f.report, responsesReport("- F1: fixed\n- F9: fixed\n"))
+		_, err4, _ := f.run(t)
+		if !strings.Contains(err4, "the review does not have (F9)") || strings.Contains(err4, "without a response") {
+			t.Fatalf("fourth poll: %q", err4)
+		}
+	})
+	t.Run("wait: a marker that names another report warns again", func(t *testing.T) {
+		dir := t.TempDir()
+		reviewPath := filepath.Join(dir, "review.md")
+		writeReviewFile(t, reviewPath, markedReview(2))
+		f := newMetricsFixture(t, "off", metricsImplementerRoster, responsesReport("- F1: fixed\n"), reviewBrief(reviewPath), "")
+		writeReviewFile(t, filepath.Join(f.sd, "wait", "worker.review-responses-warned"), "/another/report.md\nmissing\n")
+		_, errText, rc := f.run(t)
+		if rc != 0 || !strings.Contains(errText, "without a response (F2)") {
+			t.Fatalf("rc=%d err=%q", rc, errText)
+		}
+	})
 	t.Run("wait: an unwritable marker does not abort the wait, the warning goes out and repeats", func(t *testing.T) {
 		dir := t.TempDir()
 		reviewPath := filepath.Join(dir, "review.md")
