@@ -2,6 +2,7 @@
 name: sub-orchestrator
 description: Runs this skill as a nested orchestrator from another pane or harness — spawns, dispatches, waits, collects, releases its own workers. Never edits repository files.
 kind: claude
+mcp: none
 alternatives: [cursor, codex]
 effort: medium
 mode: read-only

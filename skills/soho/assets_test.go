@@ -273,3 +273,48 @@ func TestBundleCachedIsStrictlyReadOnly(t *testing.T) {
 		}
 	})
 }
+
+// DJA-693: the shipped mcp choices of the roles. ui-reviewer,
+// sub-orchestrator and planner carry mcp: none; designer carries the
+// open-pencil list and inspector the two browser servers. job-orchestrator
+// keeps inheriting (it reads memory only when the brief lists the scopes).
+func TestShippedRolesCarryTheMcpChoice(t *testing.T) {
+	want := map[string]string{
+		"ui-reviewer":      "none",
+		"sub-orchestrator": "none",
+		"planner":          "none",
+		"designer":         "open-pencil",
+		"inspector":        "playwright,chrome-devtools",
+	}
+	for role, value := range want {
+		if got := roleFm(t, role+".md", "mcp"); got != value {
+			t.Fatalf("%s mcp frontmatter=%q, want %q", role, got, value)
+		}
+	}
+	if got := roleFm(t, "job-orchestrator.md", "mcp"); got != "" {
+		t.Fatalf("job-orchestrator gained a mcp key %q, want none (it inherits)", got)
+	}
+}
+
+// roleFm returns one frontmatter key of a shipped role file ("" when absent).
+func roleFm(t *testing.T, file, key string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("roles", file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) == 0 || lines[0] != "---" {
+		t.Fatalf("%s: missing frontmatter", file)
+	}
+	for i := 1; i < len(lines); i++ {
+		if lines[i] == "---" {
+			return ""
+		}
+		if line, ok := strings.CutPrefix(lines[i], key+": "); ok {
+			return strings.TrimSpace(line)
+		}
+	}
+	t.Fatalf("%s: unterminated frontmatter", file)
+	return ""
+}

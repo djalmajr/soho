@@ -66,7 +66,7 @@ func TestCmdSpawnMcpPerRoleTranslation(t *testing.T) {
 		f := newSpawnFixture(t, freshSpawnRules())
 		configureSpawnFixture(t, &f)
 		f.env["SOHO_LAYOUT"] = "tab"
-		code, _, stderr, _ := runCmdSpawn(t, f, []string{"designer"})
+		code, _, stderr, _ := runCmdSpawn(t, f, []string{"job-orchestrator", "--kind", "agy", "--model", "grok-4.7"})
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
@@ -120,11 +120,11 @@ func TestCmdSpawnMcpPerRoleTranslation(t *testing.T) {
 		}
 	})
 
-	t.Run("--mcp off is a usage error before any herdr call", func(t *testing.T) {
+	t.Run("an invalid --mcp name is a usage error before any herdr call", func(t *testing.T) {
 		f := newSpawnFixture(t, freshSpawnRules())
 		configureSpawnFixture(t, &f)
-		code, stderr, _ := runCmdSpawnExpectError(t, f, []string{"implementer", "--mcp", "off"})
-		if code != 2 || !strings.Contains(stderr, "invalid --mcp 'off' (inherit|none)") {
+		code, stderr, _ := runCmdSpawnExpectError(t, f, []string{"implementer", "--mcp", "a b"})
+		if code != 2 || !strings.Contains(stderr, "invalid --mcp 'a b'") {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
 		calls, _ := fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))

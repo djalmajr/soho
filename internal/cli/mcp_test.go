@@ -56,13 +56,13 @@ func TestMcpConfigKeysAreSettableAndEnumerated(t *testing.T) {
 }
 
 func TestMcpFlagOnSpawnAndRun(t *testing.T) {
-	t.Run("spawn --mcp off is a usage error before any herdr call", func(t *testing.T) {
+	t.Run("spawn --mcp with an invalid name is a usage error before any herdr call", func(t *testing.T) {
 		f := newTM11SpawnFixture(t, nil)
-		code, out, errOut := runIn(t, []string{"spawn", "implementer", "--mcp", "off"}, f.env, f.cwd)
+		code, out, errOut := runIn(t, []string{"spawn", "implementer", "--mcp", "a b"}, f.env, f.cwd)
 		if code != 2 {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
 		}
-		if !strings.Contains(errOut, "spawn: invalid --mcp 'off' (inherit|none)") {
+		if !strings.Contains(errOut, "spawn: invalid --mcp 'a b': 'a b' is not a server name") {
 			t.Fatalf("stderr=%q", errOut)
 		}
 		got, _ := f.herdrCallLog()
@@ -73,14 +73,14 @@ func TestMcpFlagOnSpawnAndRun(t *testing.T) {
 
 	t.Run("run forwards --mcp to the spawn parser", func(t *testing.T) {
 		f := newTM11SpawnFixture(t, nil)
-		code, _, errOut := runIn(t, []string{"run", "implementer", "brief.md", "--mcp", "off"}, f.env, f.cwd)
+		code, _, errOut := runIn(t, []string{"run", "implementer", "brief.md", "--mcp", "a b"}, f.env, f.cwd)
 		if code != 2 {
 			t.Fatalf("code=%d stderr=%q", code, errOut)
 		}
 		if strings.Contains(errOut, "unknown option --mcp") {
 			t.Fatalf("run did not forward the flag: %q", errOut)
 		}
-		if !strings.Contains(errOut, "spawn: invalid --mcp 'off' (inherit|none)") {
+		if !strings.Contains(errOut, "spawn: invalid --mcp 'a b': 'a b' is not a server name") {
 			t.Fatalf("the spawn validation never ran: %q", errOut)
 		}
 	})
