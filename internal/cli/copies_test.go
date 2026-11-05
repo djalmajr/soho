@@ -773,7 +773,7 @@ func TestGc(t *testing.T) {
 			"resource pressure: none (disk 60% free, swap 30% used)",
 			gcUnregisteredHeader,
 			"removed " + l.unreg + "  40 B",
-			"kept " + link + " (is a symlink)",
+			"kept " + link + " (is a symlink" + gcKeptGuardSuffixText + ")",
 			"freed: 40 B (logical size; see volume free below)", gcUnchangedVolume(l.unreg),
 		}, "\n") + "\n"
 		if out != want {
@@ -909,7 +909,7 @@ func TestCopiesRefuseTheCaseVariantOfTheProtectedDirs(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(f.home, "sentinel")); err != nil {
 			t.Fatalf("the fake HOME was touched: %v (code=%d out=%q stderr=%q)", err, code, out, stderr)
 		}
-		if code != 0 || !strings.Contains(out, "kept "+upper+" (is HOME or above it)") {
+		if code != 0 || !strings.Contains(out, "kept "+upper+" (is HOME or above it"+gcKeptGuardSuffixText+")") {
 			t.Fatalf("code=%d out=%q; want kept with the HOME refusal", code, out)
 		}
 		if rows := f.copiesRows(t); len(rows) != 1 {
@@ -927,7 +927,7 @@ func TestCopiesRefuseTheCaseVariantOfTheProtectedDirs(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(f.repo, ".git")); err != nil {
 			t.Fatalf("the project root was touched: %v (code=%d out=%q stderr=%q)", err, code, out, stderr)
 		}
-		if code != 0 || !strings.Contains(out, "kept "+upper+" (is the project root or inside it)") {
+		if code != 0 || !strings.Contains(out, "kept "+upper+" (is the project root or inside it"+gcKeptGuardSuffixText+")") {
 			t.Fatalf("code=%d out=%q; want kept with the project root refusal", code, out)
 		}
 	})
@@ -949,7 +949,7 @@ func TestCopiesRefuseTheCaseVariantOfTheProtectedDirs(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(sub, "sentinel")); err != nil {
 			t.Fatalf("the path inside the project was touched: %v (code=%d out=%q stderr=%q)", err, code, out, stderr)
 		}
-		if code != 0 || !strings.Contains(out, "kept "+upper+" (is the project root or inside it)") {
+		if code != 0 || !strings.Contains(out, "kept "+upper+" (is the project root or inside it"+gcKeptGuardSuffixText+")") {
 			t.Fatalf("code=%d out=%q; want kept with the project root refusal", code, out)
 		}
 	})

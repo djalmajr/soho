@@ -737,7 +737,7 @@ func gcDiscardIdleOwnerCopy(cand gcCandidate, sd string, env platform.Env, cwd s
 	}
 	resolved, parentInfo, cause := checkedCopy(cand.path, env, cwd)
 	if cause != "" {
-		_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, cause)
+		gcKeptGuardLine(cand.path, cause)
 		return ""
 	}
 	discard, err := renameToDiscard(resolved, parentInfo)
@@ -1192,9 +1192,19 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			return 0
 		}
 		if len(candidates) > 0 {
+			removable := 0
 			gcMeasureCopies(candidatePaths, func(i int, size int64) {
 				cand := candidates[i]
 				cand.size = size
+				// The same guard the removal phase runs (checkedCopy): a
+				// copy it refuses is a kept line, not a promise.
+				if !cand.missing {
+					if _, _, cause := checkedCopy(cand.path, env, cwd); cause != "" {
+						gcKeptGuardLine(cand.path, cause)
+						return
+					}
+				}
+				removable++
 				total += size
 				if cand.idle != nil {
 					_, _ = fmt.Fprintf(platform.Stdout, "would remove %s  %s  %s  %s  %s\n", cand.path, humanSize(cand.size), cand.owner, humanAge(cand.age), gcIdleOwnerMark)
@@ -1202,8 +1212,12 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 				}
 				_, _ = fmt.Fprintf(platform.Stdout, "would remove %s  %s  %s  %s\n", cand.path, humanSize(cand.size), cand.owner, humanAge(cand.age))
 			})
-			_, _ = fmt.Fprintf(platform.Stdout, "total: %s\n", humanSize(total))
-			_, _ = fmt.Fprintln(platform.Stdout, "run 'soho gc --yes' to remove them")
+			if removable > 0 {
+				// The total counts only what --yes would remove; the hint
+				// names the flag that removes them, so it goes out with it.
+				_, _ = fmt.Fprintf(platform.Stdout, "total: %s\n", humanSize(total))
+				_, _ = fmt.Fprintln(platform.Stdout, "run 'soho gc --yes' to remove them")
+			}
 		}
 		if len(unregistered) > 0 {
 			_, _ = fmt.Fprintln(platform.Stdout, gcUnregisteredHeader)
@@ -1288,7 +1302,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		}
 		resolved, parentInfo, cause := checkedCopy(cand.path, env, cwd)
 		if cause != "" {
-			_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, cause)
+			gcKeptGuardLine(cand.path, cause)
 			continue
 		}
 		if err := removeCopy(resolved, parentInfo); err != nil {
@@ -1322,7 +1336,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 				}
 				resolved, parentInfo, cause := checkedCopy(entry.path, env, cwd)
 				if cause != "" {
-					_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", entry.path, cause)
+					gcKeptGuardLine(entry.path, cause)
 					continue
 				}
 				if err := removeCopy(resolved, parentInfo); err != nil {
@@ -1626,6 +1640,21 @@ func gcUsageError() int {
 // moved since the check, the error otherwise.
 func keptCopyError(path string, err error) {
 	_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", path, copyErrorCause(err))
+}
+
+// gcKeptGuardSuffix is the end of a kept line whose cause is the path
+// guard's (the checkCopyPath causes): the copy is the project root or
+// inside it (or another protected place), gc never removes it in any mode,
+// so the line says how to get rid of it.
+const gcKeptGuardSuffix = "; gc never removes it: delete it by hand if it is yours"
+
+// gcKeptGuardLine prints the kept line of a copy the path guard refused:
+// the same kept line the removal phase prints, with the suffix above. The
+// dry run and --yes both use it, so the preview promises nothing --yes
+// will not do. A removal failure (keptCopyError) and the discard line
+// (gcDiscardLeft) carry their own causes and keep their own form.
+func gcKeptGuardLine(path, cause string) {
+	_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s%s)\n", path, cause, gcKeptGuardSuffix)
 }
 
 // copyErrorCause is the reason a kept line gives for a failed removal.

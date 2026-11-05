@@ -405,6 +405,13 @@ func cleanupReviewSnapshots(sd, owner string, gc, yes bool, env platform.Env, cw
 		}
 		activity = true
 		if !yes {
+			// The same validation the removal runs: a snapshot it refuses
+			// is a kept line with its own reason, so the preview promises
+			// nothing --yes will not do.
+			if _, err := validateReviewSnapshot(sd, row, env, cwd); err != nil {
+				fmt.Fprintf(platform.Stdout, "kept snapshot %s (%v)\n", row[1], err)
+				continue
+			}
 			fmt.Fprintf(platform.Stdout, "would remove snapshot %s\n", row[1])
 			continue
 		}
