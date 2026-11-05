@@ -242,7 +242,7 @@ func TestCodexMcpListKeepsTheNamedServers(t *testing.T) {
 		if tail != want {
 			t.Fatalf("argv=%q, want %q (sigma stays on)", tail, want)
 		}
-		wantWarn := "soho: warning: spawn: codex cannot turn off MCP server(s) sigma for 'worker' (they are not defined in its config.toml); they stay on, the others are off"
+		wantWarn := "soho: warning: spawn: codex cannot turn off MCP server(s) sigma for 'worker' (they are not defined in its config.toml); they stay on, like the servers in the list; the others are off"
 		if got := stdErrCount(stderr, wantWarn); got != 1 {
 			t.Fatalf("the stayOn warning is not on stderr once: %q", stderr)
 		}
@@ -335,6 +335,32 @@ func TestPiMcpList(t *testing.T) {
 			t.Fatalf("the exact read-failure warning is not on stderr once: %q", stderr)
 		}
 	})
+
+	for _, tc := range []struct {
+		name, reason string
+		rule         fakecli.Rule
+	}{
+		{"a nonzero exit keeps the servers", "exit 3", fakecli.Rule{Argv: []string{"mcp", "list", "--json"}, Code: 3}},
+		{"a non-JSON listing keeps the servers", "non-JSON output", fakecli.Rule{Argv: []string{"mcp", "list", "--json"}, Stdout: "not json"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := mcpListFixture(t)
+			if _, err := fakecli.Install(t, f.bin, "pi", []fakecli.Rule{tc.rule, {AnyArgs: true}}); err != nil {
+				t.Fatal(err)
+			}
+			code, _, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "pi", "--effort", "high", "--mcp", "alpha"})
+			if code != 0 {
+				t.Fatalf("a read failure dropped the spawn: exit=%d", code)
+			}
+			if tail := strings.Join(startTail(t, f), " "); tail != "--thinking high" {
+				t.Fatalf("argv=%q, want the flag-free argv", tail)
+			}
+			want := "soho: warning: spawn: pi could not list its MCP servers (" + tc.reason + "); 'worker' keeps the user's MCP servers"
+			if got := stdErrCount(stderr, want); got != 1 {
+				t.Fatalf("the exact read-failure warning is not on stderr once: %q", stderr)
+			}
+		})
+	}
 
 	t.Run("a hung read hits the 10 s timeout and keeps the servers", func(t *testing.T) {
 		f := mcpListFixture(t)
@@ -445,6 +471,12 @@ func TestMcpInheritLeavesTheArgvByteForByte(t *testing.T) {
 		if strings.Contains(stderr, "could not list its MCP servers") {
 			t.Fatalf("inherit ran the listing: %q", stderr)
 		}
+		calls, _ := fakecli.ReadCalls(filepath.Join(f.bin, "pi.calls.jsonl"))
+		for _, call := range calls {
+			if len(call.Argv) > 0 && call.Argv[0] == "mcp" {
+				t.Fatalf("inherit ran the listing: %#v", call.Argv)
+			}
+		}
 	})
 }
 
@@ -536,6 +568,15 @@ func TestMcpListReuseFollowsTheNoneBehavior(t *testing.T) {
 		}
 	})
 
+	t.Run("the same list in another spelling is the same choice", func(t *testing.T) {
+		f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("old")}, "1")
+		f.roster(t, mcpLaneRow("old", "grok-4.7", f.cwd, "a,b"))
+		code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--mcp", "a, b,a"})
+		if code != 0 || !strings.Contains(stdout, `"name": "old"`) || !strings.Contains(stdout, `"reused": true`) {
+			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+	})
+
 	t.Run("no slot and another list is 13 with the MCP message", func(t *testing.T) {
 		f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("old")}, "1")
 		f.roster(t, mcpLaneRow("old", "grok-4.7", f.cwd, "none"))
@@ -547,10 +588,10 @@ func TestMcpListReuseFollowsTheNoneBehavior(t *testing.T) {
 	})
 }
 
-// The roster row is tab-separated and one line per worker: whatever whitespace
-// the value had around its names, the row keeps its 16 fields and one form.
+// The roster keeps one form of the value, whatever spaces it had around its
+// names.
 func TestMcpListRosterKeepsOneCanonicalValue(t *testing.T) {
-	for _, value := range []string{"alpha,\tbeta", "alpha,\nbeta", "alpha, beta,alpha"} {
+	for _, value := range []string{"alpha, beta", " alpha , beta ", "alpha, beta,alpha"} {
 		t.Run(value, func(t *testing.T) {
 			f := mcpListFixture(t)
 			code, _, _, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--mcp", value})
@@ -570,6 +611,20 @@ func TestMcpListRosterKeepsOneCanonicalValue(t *testing.T) {
 				t.Fatalf("row=%q, want 16 fields ending in alpha,beta", lines[1])
 			}
 		})
+	}
+}
+
+// A tab or a newline never reaches the roster: the value is refused first.
+func TestMcpFieldAndLineSeparatorsExitTwo(t *testing.T) {
+	for _, value := range []string{"alpha,\tbeta", "alpha,\nbeta"} {
+		f := mcpListFixture(t)
+		code, stderr, _ := runCmdSpawnExpectError(t, f, []string{"worker", "--mcp", value})
+		if code != 2 {
+			t.Fatalf("--mcp %q: exit=%d stderr=%q", value, code, stderr)
+		}
+		if strings.ContainsAny(stderr, "\t") {
+			t.Fatalf("--mcp %q: the message carries the tab: %q", value, stderr)
+		}
 	}
 }
 

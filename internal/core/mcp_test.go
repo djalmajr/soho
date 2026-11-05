@@ -78,21 +78,47 @@ func TestMcpNames(t *testing.T) {
 }
 
 // The value that travels on (roster column, reuse comparison, reopen flag) is
-// one canonical form: a tab or a newline around a name would split the
-// tab-separated roster row, and "a, b" and "a,b" are the same choice.
+// one canonical form: "a, b" and "a,b" are the same choice.
 func TestMcpCanonical(t *testing.T) {
 	cases := map[string]string{
-		"inherit":   "inherit",
-		"none":      "none",
-		"alpha":     "alpha",
-		"a, b ,a":   "a,b",
-		"a,\tb":     "a,b",
-		"a,\nb":     "a,b",
-		" a ,\r\nb": "a,b",
+		"inherit": "inherit",
+		"none":    "none",
+		"alpha":   "alpha",
+		"a, b ,a": "a,b",
+		" a , b ": "a,b",
 	}
 	for value, want := range cases {
 		if got := McpCanonical(value); got != want {
 			t.Fatalf("McpCanonical(%q)=%q, want %q", value, got, want)
+		}
+	}
+}
+
+// Only a space is trimmed. A tab or a newline around a name is an invalid
+// value: accepted, it would split the tab-separated roster row and, through
+// config set, write a second line into the configuration file.
+func TestMcpValueErrorRefusesLineAndFieldSeparators(t *testing.T) {
+	for _, value := range []string{"a,\tb", "a,\nb", "a,\r\nb", "\ta", "a\n", "a,\nrole.x.kind=codex"} {
+		if McpValueError(value) == "" {
+			t.Fatalf("McpValueError(%q) accepted the value", value)
+		}
+		if McpNames(value) != nil {
+			t.Fatalf("McpNames(%q) returned names", value)
+		}
+	}
+}
+
+// Every configuration writer goes through ConfigValueOk: the grammar the spawn
+// accepts is the grammar they accept.
+func TestConfigValueOkFollowsTheMcpGrammar(t *testing.T) {
+	for _, key := range []string{"role.designer.mcp", "lane.build.mcp"} {
+		for value, want := range map[string]bool{
+			"inherit": true, "none": true, "open-pencil": true, "a,b": true, "a, b": true,
+			"a b": false, ",": false, "none,x": false, "a,\nb": false, "a,\tb": false,
+		} {
+			if got := ConfigValueOk(key, value, nil, ""); got != want {
+				t.Fatalf("ConfigValueOk(%s, %q)=%v, want %v", key, value, got, want)
+			}
 		}
 	}
 }

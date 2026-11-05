@@ -19,16 +19,16 @@ func TestMcpDottedKeysAreConfiguredLikeTheOtherEnumeratedKeys(t *testing.T) {
 	})
 
 	env := platform.Env{}
-	t.Run("inherit and none are the only accepted values", func(t *testing.T) {
+	t.Run("the values follow the mcp grammar", func(t *testing.T) {
 		for _, key := range []string{"role.reviewer.mcp", "lane.build.mcp"} {
-			for _, value := range []string{"inherit", "none"} {
+			for _, value := range []string{"inherit", "none", "open-pencil", "a,b"} {
 				if !ConfigValueOk(key, value, env, "/tmp") {
 					t.Fatalf("%s=%s refused", key, value)
 				}
 			}
-			for _, value := range []string{"off", "on", "true", "inherit ", "NONE"} {
+			for _, value := range []string{"a b", ",", "inherit ", "none,x"} {
 				if ConfigValueOk(key, value, env, "/tmp") {
-					t.Fatalf("%s=%s accepted, want the enumerated refusal", key, value)
+					t.Fatalf("%s=%s accepted, want the refusal", key, value)
 				}
 			}
 		}

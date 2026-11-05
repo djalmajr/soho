@@ -86,6 +86,27 @@ func TestDoctorMcpEmptyAndFilteredValues(t *testing.T) {
 			t.Fatalf("an empty value warned:\n%s", out.String())
 		}
 	})
+	t.Run("the original key is filtered too", func(t *testing.T) {
+		ctx := core.Config{Entries: map[string]core.ConfigEntry{
+			"role_worker_mcp": {Value: "a b", Source: "project", Original: "role.\x1b[31mworker.mcp"},
+		}}
+		var out strings.Builder
+		doctorMcp(&ctx, platform.Env{}, &Say{Out: &out})
+		if out.String() == "" || strings.ContainsRune(out.String(), 0x1b) {
+			t.Fatalf("output=%q", out.String())
+		}
+	})
+	t.Run("a key without a role or lane name is not an mcp choice", func(t *testing.T) {
+		ctx := core.Config{Entries: map[string]core.ConfigEntry{
+			"role_mcp": {Value: "a b", Source: "project", Original: "role.mcp"},
+			"lane_mcp": {Value: "a b", Source: "project", Original: "lane.mcp"},
+		}}
+		var out strings.Builder
+		doctorMcp(&ctx, platform.Env{}, &Say{Out: &out})
+		if out.String() != "" {
+			t.Fatalf("output=%q", out.String())
+		}
+	})
 	t.Run("the warning filters control characters", func(t *testing.T) {
 		ctx := core.Config{Entries: map[string]core.ConfigEntry{
 			"role_worker_mcp": {Value: "a\x1b[31mb", Source: "project", Original: "role.worker.mcp"},

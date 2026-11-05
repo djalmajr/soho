@@ -41,9 +41,35 @@ func TestMcpConfigKeysAreSettableAndEnumerated(t *testing.T) {
 		}
 	})
 
+	t.Run("config set stores a list of server names", func(t *testing.T) {
+		env, cwd := commandFixture(t)
+		for _, kv := range [][]string{{"role.designer.mcp", "open-pencil"}, {"lane.build.mcp", "a,b"}} {
+			code, out, errOut := runIn(t, []string{"config", "set", kv[0], kv[1]}, env, cwd)
+			if code != 0 || !strings.Contains(out, "set "+kv[0]+"="+kv[1]+" in ") {
+				t.Fatalf("config set %s=%s: code=%d out=%q stderr=%q", kv[0], kv[1], code, out, errOut)
+			}
+		}
+		code, out, _ := runIn(t, []string{"config"}, env, cwd)
+		if code != 0 || !strings.Contains(out, "open-pencil") || !strings.Contains(out, "a,b") {
+			t.Fatalf("the config listing does not carry the lists: code=%d\n%s", code, out)
+		}
+	})
+
+	t.Run("config set never writes a second key through an mcp value", func(t *testing.T) {
+		env, cwd := commandFixture(t)
+		code, _, errOut := runIn(t, []string{"config", "set", "role.reviewer.mcp", "a,\nrole.reviewer.kind=codex"}, env, cwd)
+		if code != 2 {
+			t.Fatalf("code=%d stderr=%q", code, errOut)
+		}
+		_, out, _ := runIn(t, []string{"config"}, env, cwd)
+		if strings.Contains(out, "role.reviewer.kind") {
+			t.Fatalf("the value wrote a second key:\n%s", out)
+		}
+	})
+
 	t.Run("config set refuses any other value with the enumerated refusal", func(t *testing.T) {
 		env, cwd := commandFixture(t)
-		for _, kv := range [][]string{{"role.reviewer.mcp", "off"}, {"lane.build.mcp", "on"}, {"role.reviewer.mcp", "true"}} {
+		for _, kv := range [][]string{{"role.reviewer.mcp", "a b"}, {"lane.build.mcp", "none,x"}, {"role.reviewer.mcp", ","}} {
 			code, _, errOut := runIn(t, []string{"config", "set", kv[0], kv[1]}, env, cwd)
 			if code != 2 {
 				t.Fatalf("config set %s=%s: code=%d stderr=%q", kv[0], kv[1], code, errOut)

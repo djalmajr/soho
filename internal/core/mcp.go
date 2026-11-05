@@ -14,16 +14,17 @@ var mcpNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // McpValueError reports why an mcp value is not a choice soho accepts
 // (DJA-693), or "" when it is. The accepted values are inherit, none, and a
-// comma-separated list of server names: the spaces around each name are
-// trimmed, each name must match mcpNameRE, none and inherit are the whole
-// value only, never names inside a list, and an empty part is a missing
-// name. Duplicates are accepted; they count once (McpNames).
+// comma-separated list of server names: only the spaces around each name are
+// trimmed, so a tab or a line break fails the name rule and can never split a
+// roster row or a configuration line; each name must match mcpNameRE, none and
+// inherit are the whole value only, never names inside a list, and an empty
+// part is a missing name. Duplicates are accepted; they count once (McpNames).
 func McpValueError(value string) string {
 	if value == "inherit" || value == "none" {
 		return ""
 	}
 	for _, part := range strings.Split(value, ",") {
-		name := strings.TrimSpace(part)
+		name := strings.Trim(part, " ")
 		if name == "" {
 			return "empty name in the list"
 		}
@@ -46,7 +47,7 @@ func McpNames(value string) []string {
 	seen := map[string]bool{}
 	var names []string
 	for _, part := range strings.Split(value, ",") {
-		name := strings.TrimSpace(part)
+		name := strings.Trim(part, " ")
 		if !seen[name] {
 			seen[name] = true
 			names = append(names, name)
@@ -57,8 +58,7 @@ func McpNames(value string) []string {
 
 // McpCanonical is the one form of a valid value that travels on: the roster
 // column, the reuse comparison and the reopen flag. inherit and none stay as
-// they are; a list is its names joined by a comma, so a tab or a newline around
-// a name never reaches the tab-separated roster, and "a, b" equals "a,b". An
+// they are; a list is its names joined by a comma, so "a, b" equals "a,b". An
 // invalid value comes back unchanged: the caller has refused it already.
 func McpCanonical(value string) string {
 	names := McpNames(value)

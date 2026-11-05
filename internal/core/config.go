@@ -536,7 +536,7 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 	case strings.HasPrefix(key, "lane.") && strings.HasSuffix(key, ".effort"):
 		return contains(EffortLadder, value)
 	case strings.HasPrefix(key, "role.") && strings.HasSuffix(key, ".mcp"), strings.HasPrefix(key, "lane.") && strings.HasSuffix(key, ".mcp"):
-		return value == "inherit" || value == "none"
+		return McpValueError(value) == ""
 	case key == "job_timeout":
 		return jobTimeoutValueOk(value)
 	case key == "compact_timeout":

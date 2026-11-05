@@ -1360,8 +1360,11 @@ func doctorApprovals(ctx *core.Config, env platform.Env, s *Say) {
 func doctorMcp(ctx *core.Config, env platform.Env, s *Say) {
 	keys := map[string]string{}
 	for key, entry := range ctx.Entries {
-		if (strings.HasPrefix(key, "role_") || strings.HasPrefix(key, "lane_")) && strings.HasSuffix(key, "_mcp") {
-			keys[key] = entry.Original
+		for _, prefix := range []string{"role_", "lane_"} {
+			// role_mcp names no role: no resolver reads it.
+			if rest, ok := strings.CutPrefix(key, prefix); ok && strings.HasSuffix(rest, "_mcp") {
+				keys[key] = entry.Original
+			}
 		}
 	}
 	ordered := make([]string, 0, len(keys))
@@ -1376,7 +1379,7 @@ func doctorMcp(ctx *core.Config, env platform.Env, s *Say) {
 			continue
 		}
 		if detail := core.McpValueError(value); detail != "" {
-			s.Warning(fmt.Sprintf("config: %s=%s: %s", keys[key], textutil.SanitizeCause(value), detail))
+			s.Warning(fmt.Sprintf("config: %s=%s: %s", textutil.SanitizeCause(keys[key]), textutil.SanitizeCause(value), detail))
 		}
 	}
 }

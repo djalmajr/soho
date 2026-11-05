@@ -1383,15 +1383,19 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	case kind == "codex" && (o.mcp == "none" || len(core.McpNames(o.mcp)) > 0):
 		keep := core.McpNames(o.mcp) // nil for mcp=none
 		mcpArgs, ok, reason, stayOn, projectOnly, missing := codexMcpTranslate(env, o.cwd, keep)
+		stayOnTail := "they stay on, the others are off"
+		if len(keep) > 0 {
+			stayOnTail = "they stay on, like the servers in the list; the others are off"
+		}
 		if !ok {
 			Warn(fmt.Sprintf("spawn: codex could not list its MCP servers (%s); '%s' keeps the user's MCP servers", reason, o.name), ctx, env, "spawn")
 		} else {
 			args = append(args, mcpArgs...)
 			if len(projectOnly) > 0 {
-				Warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are defined only in the project's .codex/config.toml); they stay on, the others are off", strings.Join(projectOnly, ", "), o.name), ctx, env, "spawn")
+				Warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are defined only in the project's .codex/config.toml); %s", strings.Join(projectOnly, ", "), o.name, stayOnTail), ctx, env, "spawn")
 			}
 			if len(stayOn) > 0 {
-				Warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are not defined in its config.toml); they stay on, the others are off", strings.Join(stayOn, ", "), o.name), ctx, env, "spawn")
+				Warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are not defined in its config.toml); %s", strings.Join(stayOn, ", "), o.name, stayOnTail), ctx, env, "spawn")
 			}
 			for _, name := range missing {
 				Warn(fmt.Sprintf("spawn: %s has no MCP server named %s for '%s'", kind, name, o.name), ctx, env, "spawn")
