@@ -36,7 +36,7 @@ func TestSplitCapDeclared(t *testing.T) {
 			wantCap   int
 			wantNoCap bool
 		}{
-			{"no key keeps today's default cap", platform.Env{}, 4, false},
+			{"no key keeps today's default cap", platform.Env{}, 5, false},
 			{"balance (the default overflow) has no tab cap", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3"}, 0, true},
 			{"explicit last-column has no tab cap", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_PANE_OVERFLOW": "last-column"}, 0, true},
 			{"new-column has no tab cap", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_PANE_OVERFLOW": "new-column"}, 0, true},
@@ -45,7 +45,7 @@ func TestSplitCapDeclared(t *testing.T) {
 			{"an explicit split_max_panes wins in all cases", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_PANE_OVERFLOW": "tab", "SOHO_SPLIT_MAX_PANES": "9"}, 9, false},
 			{"an explicit split_max_panes wins for an uncapped overflow too", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_SPLIT_MAX_PANES": "9"}, 9, false},
 			{"an explicit split_max_panes=0 keeps today's meaning (a full tab)", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_SPLIT_MAX_PANES": "0"}, 0, false},
-			{"an invalid pane_columns keeps today's cap", platform.Env{"SOHO_PANE_COLUMNS": "1,,2"}, 4, false},
+			{"an invalid pane_columns keeps today's cap", platform.Env{"SOHO_PANE_COLUMNS": "1,,2"}, 5, false},
 			{"no key: an invalid explicit split_max_panes keeps today's fallback", platform.Env{"SOHO_SPLIT_MAX_PANES": "-1"}, 4, false},
 			{"declared: an invalid explicit split_max_panes keeps today's fallback", platform.Env{"SOHO_PANE_COLUMNS": "1,2,3", "SOHO_PANE_OVERFLOW": "tab", "SOHO_SPLIT_MAX_PANES": "+3"}, 4, false},
 		}

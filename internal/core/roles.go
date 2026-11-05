@@ -12,7 +12,7 @@ import (
 	textutil "github.com/djalmajr/soho/internal/text"
 )
 
-const EditRoles = "implementer designer tasker tester"
+const EditRoles = "implementer designer tasker tester critical-implementer"
 const ReviewRoles = "reviewer security-reviewer"
 const ReviewRolesAll = "reviewer security-reviewer ui-reviewer inspector validator"
 
@@ -348,7 +348,7 @@ func collectRoles(env platform.Env, cwd string) []roleTableRow {
 }
 
 func CmdRoles(env platform.Env, cwd string) {
-	lines := []string{padUTF16("ROLE", 18) + " " + padUTF16("KIND", 8) + " " + padUTF16("MODEL", 24) + " " + padUTF16("EFFORT", 8) + " " + padUTF16("MODE", 10) + " FROM"}
+	lines := []string{padUTF16("ROLE", 20) + " " + padUTF16("KIND", 8) + " " + padUTF16("MODEL", 24) + " " + padUTF16("EFFORT", 8) + " " + padUTF16("MODE", 10) + " FROM"}
 	cell := func(value string) string {
 		if value == "" {
 			return "-"
@@ -358,7 +358,7 @@ func CmdRoles(env platform.Env, cwd string) {
 	for _, row := range collectRoles(env, cwd) {
 		res := row.Res
 		from := fmt.Sprintf("source: %s; kind: %s; model: %s; effort: %s; file: %s", row.Source, res.KindFrom, res.ModelFrom, res.EffortFrom, row.File)
-		lines = append(lines, padUTF16(row.Role, 18)+" "+padUTF16(cell(res.Kind), 8)+" "+padUTF16(cell(res.ModelSpec), 24)+" "+padUTF16(cell(res.Effort), 8)+" "+padUTF16(cell(row.Mode), 10)+" "+from)
+		lines = append(lines, padUTF16(row.Role, 20)+" "+padUTF16(cell(res.Kind), 8)+" "+padUTF16(cell(res.ModelSpec), 24)+" "+padUTF16(cell(res.Effort), 8)+" "+padUTF16(cell(row.Mode), 10)+" "+from)
 	}
 	_, _ = fmt.Fprintln(platform.Stdout, strings.Join(lines, "\n"))
 }

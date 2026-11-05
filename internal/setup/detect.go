@@ -61,7 +61,7 @@ func Detect(ctx *core.Config, env platform.Env, cwd string) *jsonjs.Object {
 		}
 		presets.Set(p, rows)
 	}
-	config := jsonjs.O("max_workers", cfgEntry(ctx, "max_workers", "3", env), "multi_role", cfgEntry(ctx, "multi_role", "on", env), "reuse_workers", cfgEntry(ctx, "reuse_workers", "on", env), "panes", cfgEntry(ctx, "panes", "4", env), "lanes", cfgEntry(ctx, "lanes", "on", env), "effective_lanes", effective, "presets", presets, "role_kinds", roles, "worker_models", worker)
+	config := jsonjs.O("max_workers", jsonjs.O("value", core.MaxWorkers(ctx, env), "source", core.CfgSource(ctx, "max_workers", env)), "multi_role", cfgEntry(ctx, "multi_role", "on", env), "reuse_workers", cfgEntry(ctx, "reuse_workers", "on", env), "panes", cfgEntry(ctx, "panes", "4", env), "lanes", cfgEntry(ctx, "lanes", "on", env), "effective_lanes", effective, "presets", presets, "role_kinds", roles, "worker_models", worker)
 	return jsonjs.O("kinds", kindRows, "config", config)
 }
 
