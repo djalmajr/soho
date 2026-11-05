@@ -2,6 +2,7 @@
 name: designer
 description: UI/UX specialist for implementing and refining interface work under the project's design system — tokens, states, accessibility, visual consistency.
 kind: agy
+mcp: open-pencil
 alternatives: [codex, claude]
 effort: high
 mode: edit

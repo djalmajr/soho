@@ -515,6 +515,7 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	doctorContextWindow(ctx, env, s)
 	doctorBackgroundPatterns(ctx, env, s)
 	doctorApprovals(ctx, env, s)
+	doctorMcp(ctx, env, s)
 	doctorCodexApprovalOverrides(ctx, env, cwd, s)
 	doctorCodexNetwork(ctx, env, cwd, s)
 	codexenv.DoctorCodexPolicyWarnings(env, platform.Current(), s.Warning)
@@ -1348,6 +1349,37 @@ func doctorApprovals(ctx *core.Config, env platform.Env, s *Say) {
 	for _, key := range ordered {
 		if core.Cfg(ctx, key, "", env) == "unsandboxed" {
 			s.Warning(fmt.Sprintf("config: %s=unsandboxed; workers run without a sandbox by the owner's choice", keys[key]))
+		}
+	}
+}
+
+// doctorMcp warns about a role.<role>.mcp or lane.<lane>.mcp file value that
+// the spawn would refuse (DJA-693): the spawn exits 2 with the same detail
+// before opening a pane. The existence of the servers is not checked here —
+// only at the spawn, against the live listing.
+func doctorMcp(ctx *core.Config, env platform.Env, s *Say) {
+	keys := map[string]string{}
+	for key, entry := range ctx.Entries {
+		for _, prefix := range []string{"role_", "lane_"} {
+			// role_mcp names no role: no resolver reads it.
+			if rest, ok := strings.CutPrefix(key, prefix); ok && strings.HasSuffix(rest, "_mcp") {
+				keys[key] = entry.Original
+			}
+		}
+	}
+	ordered := make([]string, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	textutil.SortUTF16(ordered)
+	for _, key := range ordered {
+		value := core.Cfg(ctx, key, "", env)
+		if value == "" {
+			// The spawn skips an empty layer: nothing would be refused.
+			continue
+		}
+		if detail := core.McpValueError(value); detail != "" {
+			s.Warning(fmt.Sprintf("config: %s=%s: %s", textutil.SanitizeCause(keys[key]), textutil.SanitizeCause(value), detail))
 		}
 	}
 }
