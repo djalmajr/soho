@@ -60,7 +60,7 @@ func TestCommandHelpFirstPositionOnly(t *testing.T) {
 	})
 
 	t.Run("friction --help stops at the next soho line", func(t *testing.T) {
-		const want = "  soho friction [--since D] [--level L] [--command C] [--agent A] [--summary]  # errors/warnings of this workspace; options AND together\n"
+		const want = "  soho friction [--since D] [--level L] [--command C] [--agent A] [--summary | --patterns [--json]]  # errors/warnings of this workspace; options AND together; --patterns groups the lines by their masked message template (count, after, key, last_seen, fixed_by, pattern) and --json returns the same as JSON\n"
 		code, out, errOut := runIn(t, []string{"friction", "--help"}, env, cwd)
 		if code != 0 || out != want || errOut != "" {
 			t.Fatalf("code=%d out=%q err=%q; want the first friction usage line on stdout", code, out, errOut)

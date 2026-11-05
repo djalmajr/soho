@@ -134,4 +134,5 @@ For configuration, commands, and the report contract, see the [guide](docs/guide
 
 External sources that shaped what soho does:
 
-- [agent-native](https://github.com/builderio/agent-native): the questions the `tester` answers before adding a test, and the rule that a check that exercised nothing is not a pass.
+- [agent-native](https://github.com/builderio/agent-native): the questions the `tester` answers before adding a test, the rule that a check that exercised nothing is not a pass, and the habit of naming the recurring friction pattern a change is meant to stop before that change lands, so the fix is checked against the pattern stopping. The verdict a `researcher` or `scouter` gives on a bug, one-off, pattern, known or needs more information, comes from there too.
+- [Solving code review at Anthropic](https://claude.dev/blog/solving-code-review-at-anthropic/): a reviewer names the class of the error instead of each symptom, lists the places in one finding, and does not repeat a finding the author already answered.

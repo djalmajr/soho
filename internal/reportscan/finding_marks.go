@@ -2,6 +2,7 @@ package reportscan
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -27,9 +28,11 @@ var (
 // form — [F<n>] with n at least 1, [origin: brief|impl|unknown], and
 // [class: <slug>] with the slug matching ^[a-z0-9][a-z0-9-]{0,40}$ — in any
 // position of the line (heading, table row or list line alike). Each line
-// counts at most once, and the first valid marker of each kind on the line
-// decides. A marker with an origin outside the list, a class outside the
-// rule or a missing sibling is not the form, and the line does not count.
+// counts at most once, and the first marker of each kind on the line decides.
+// A marker with an origin outside the list, a class outside the rule or a
+// missing sibling is not the form, and the line does not count. F<n> is the
+// finding's number in the report, so a number counts once: a summary and a
+// detail that both carry it are one finding, and the first valid line decides.
 // Unmarked is the header's finding total minus the counted lines, never
 // negative; without a header the total is 0.
 func FindingMarks(text string, header *ReviewHeaderResult) FindingMarksResult {
@@ -40,6 +43,7 @@ func FindingMarks(text string, header *ReviewHeaderResult) FindingMarksResult {
 	}
 	if text != "" {
 		inFence, fenceChar, fenceLen := false, byte(0), 0
+		seen := map[int]bool{}
 		for _, raw := range strings.Split(text, "\n") {
 			if open := fenceOpen.FindStringSubmatch(raw); !inFence && open != nil {
 				inFence, fenceChar, fenceLen = true, open[1][0], len(open[1])
@@ -51,7 +55,7 @@ func FindingMarks(text string, header *ReviewHeaderResult) FindingMarksResult {
 				}
 				continue
 			}
-			countFindingLine(raw, &out)
+			countFindingLine(raw, seen, &out)
 		}
 	}
 	out.Unmarked = total - (out.Brief + out.Impl + out.Unknown)
@@ -66,16 +70,13 @@ func FindingMarks(text string, header *ReviewHeaderResult) FindingMarksResult {
 // the markers are matched case-sensitively and the class slug against its
 // rule, so an origin outside the list, a class outside the rule or a
 // missing sibling makes the whole line not count.
-func countFindingLine(line string, out *FindingMarksResult) {
-	id := findingIDRE.FindStringSubmatchIndex(line)
+func countFindingLine(line string, seen map[int]bool, out *FindingMarksResult) {
+	id := findingIDRE.FindStringSubmatch(line)
 	if id == nil {
 		return
 	}
-	n := 0
-	for _, c := range line[id[2]:id[3]] {
-		n = n*10 + int(c-'0')
-	}
-	if n < 1 {
+	n, err := strconv.Atoi(id[1])
+	if err != nil || n < 1 || seen[n] {
 		return
 	}
 	originMatch := findingOriginRE.FindStringSubmatch(line)
@@ -93,5 +94,6 @@ func countFindingLine(line string, out *FindingMarksResult) {
 	default:
 		return
 	}
+	seen[n] = true
 	out.Classes[classMatch[1]]++
 }

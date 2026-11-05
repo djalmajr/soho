@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -75,6 +76,64 @@ func withDispatchAuthor(path, role string, write func() error, contexts ...dispa
 // cleans paths and applies SamePath's Windows case/separator semantics.
 func sameAuthorWorktree(left, right string) bool {
 	return dispatch.PathWithin(left, right, platform.Current()) && dispatch.PathWithin(right, left, platform.Current())
+}
+
+// reviewWorktreeMessage is the advisory text for a review brief without a
+// Worktree: line: it names the measurement the review would be lost from,
+// never a refusal.
+func reviewWorktreeMessage(briefPath string) string {
+	return fmt.Sprintf("brief %s has no Worktree: line: this review cannot be tied to its author, so 'soho stats --by author-model' will not count it; add 'Worktree: <absolute path>' here and in the implementer's brief", briefPath)
+}
+
+// reviewAuthorWarning returns the once-per-dispatch advisory for a review
+// dispatch that is not tied to an author: the no-line message when the
+// composed brief has no Worktree: line, the no-candidate message otherwise.
+// A found or preserved author, or a non-review role, returns "".
+func reviewAuthorWarning(briefPath, role, sidecar string, ctx dispatchAuthorContext) string {
+	if !core.IsReviewRole(role) {
+		return ""
+	}
+	if authorString(authorObject(sidecar), "author_model") != "" {
+		return ""
+	}
+	tree := ""
+	if path := authorBriefPath(sidecar, ctx.stateDir); path != "" {
+		if body, err := core.ReadScratchReport(path); err == nil {
+			tree = dispatch.DeclaredWorktree(string(body))
+		}
+	}
+	if tree == "" {
+		return reviewWorktreeMessage(briefPath)
+	}
+	return fmt.Sprintf("no author found for this review: no accepted edit-role brief declares Worktree: %s, so 'soho stats --by author-model' will not count it", tree)
+}
+
+// amendmentOriginalBriefLimit bounds the read of the original brief. A composed
+// brief longer than this is not one the amendment takes a line from.
+const amendmentOriginalBriefLimit = 4 << 20
+
+// amendmentOriginalBrief returns the raw text of the open task's composed
+// brief, the pointer's current member, so an amendment that declares no
+// Worktree: line keeps the original's. No open task, or a member that is
+// unreadable, a link or over the limit, keeps the amendment as written.
+func amendmentOriginalBrief(sd string, prior *jsonjs.Object) string {
+	if prior == nil {
+		return ""
+	}
+	cur, _ := prior.Get("current")
+	s, _ := cur.(string)
+	if s == "" {
+		return ""
+	}
+	composed, ok := memberComposedPath(sd, s)
+	if !ok {
+		return ""
+	}
+	body, err := core.ReadScratchReportLimited(composed, amendmentOriginalBriefLimit)
+	if err != nil {
+		return ""
+	}
+	return string(body)
 }
 
 func authorBriefPath(sidecar, stateDir string) string {

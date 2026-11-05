@@ -203,7 +203,7 @@ func TestDispatchRemainingHelperCases(t *testing.T) {
 		}
 		ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
 		brief := ComposePrompt(role, "implementer", "agent", "# Goal\nrun", "/report.md", ctx, composeEnv(t), "codex", "", "", false)
-		amend := ComposeAmendment("# Amend\nfix", "/report.md", ctx, composeEnv(t), "codex", "", "", false)
+		amend := ComposeAmendment("# Amend\nfix", "/report.md", "", ctx, composeEnv(t), "codex", "", "", false)
 		line := "- Only you write this report, once all of the brief is done, including any part you handed to subagents or background tasks; a subagent never writes it. Before you write it, wait until every subagent and background task you started has finished, and change no file after it. Report every item as it stands in the files, not as a subagent summarized it.\n"
 		for name, prompt := range map[string]string{"brief": brief, "amendment": amend} {
 			if strings.Count(prompt, line) != 1 || strings.Index(prompt, "- Write the report in one go") > strings.Index(prompt, line) || strings.Index(prompt, line) > strings.Index(prompt, "- Nobody watches this terminal") {
@@ -218,7 +218,7 @@ func TestDispatchRemainingHelperCases(t *testing.T) {
 		}
 		ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
 		line := "- Report only the current brief and its explicit amendments; do not import unrelated work from earlier briefs retained in a reused session. Mention prior work only when it directly affects this brief, stating the relationship.\n"
-		for name, prompt := range map[string]string{"brief": ComposePrompt(role, "implementer", "agent", "# Goal\nrun", "/report.md", ctx, composeEnv(t), "codex", "", "", false), "amendment": ComposeAmendment("# Amend\nfix", "/report.md", ctx, composeEnv(t), "codex", "", "", false)} {
+		for name, prompt := range map[string]string{"brief": ComposePrompt(role, "implementer", "agent", "# Goal\nrun", "/report.md", ctx, composeEnv(t), "codex", "", "", false), "amendment": ComposeAmendment("# Amend\nfix", "/report.md", "", ctx, composeEnv(t), "codex", "", "", false)} {
 			if strings.Count(prompt, line) != 1 || strings.Index(prompt, "# Report contract") > strings.Index(prompt, line) || strings.Index(prompt, line) > strings.Index(prompt, "- Command output you put in the report") {
 				t.Errorf("%s report-scope rule ordering/count invalid", name)
 			}
@@ -313,7 +313,7 @@ func TestDispatchRemainingHelperCases(t *testing.T) {
 // contract now asks for every item to be checked again against the current files.
 func TestComposeAmendmentAsksForAFreshCheck(t *testing.T) {
 	ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
-	amend := ComposeAmendment("# Amend\nfix", "/report.md", ctx, composeEnv(t), "codex", "", "", false)
+	amend := ComposeAmendment("# Amend\nfix", "/report.md", "", ctx, composeEnv(t), "codex", "", "", false)
 	want := "- This amendment overrides your current brief where they differ; the rest of that brief still holds.\n" +
 		"- Check every item again against the files as they are now: rerun the checks it needs, and never copy findings, outputs or states from your earlier report.\n"
 	if !strings.Contains(amend, want) {

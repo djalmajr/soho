@@ -33,7 +33,11 @@ func TestFindingMarks(t *testing.T) {
 		{"a heading line counts", "## [F1] [origin: unknown] [class: follows-link] The title\n", header(1), 0, 0, 1, 0, map[string]int{"follows-link": 1}},
 		{"a table row counts", "| [F1] | [origin: brief] | [class: race-read-write] |\n", header(1), 1, 0, 0, 0, map[string]int{"race-read-write": 1}},
 		{"a numbered list line counts", "1. [F1] [origin: impl] [class: error-swallowed] text\n", header(1), 0, 1, 0, 0, map[string]int{"error-swallowed": 1}},
-		{"two lines with the same F count both", markedLine("F1", "impl", "missing-bound") + markedLine("F1", "brief", "doc-drift"), header(2), 1, 1, 0, 0, map[string]int{"missing-bound": 1, "doc-drift": 1}},
+		// F<n> is the finding's number in the report: a summary and a detail
+		// that both carry it are one finding, and the first valid line decides.
+		{"two lines with the same F are one finding", markedLine("F1", "impl", "missing-bound") + markedLine("F1", "brief", "doc-drift"), header(2), 0, 1, 0, 1, map[string]int{"missing-bound": 1}},
+		{"an invalid line does not take the number", "- [F1] [origin: other] [class: doc-drift] x\n" + markedLine("F1", "impl", "missing-bound"), header(1), 0, 1, 0, 0, map[string]int{"missing-bound": 1}},
+		{"a number too large for an int does not count", "- [F99999999999999999999999] [origin: brief] [class: doc-drift] x\n", header(1), 0, 0, 0, 1, map[string]int{}},
 		// scenario 2: an origin outside the list, a class outside the rule,
 		// or a missing marker: the line does not count.
 		{"origin other does not count", markedLine("F1", "other", "missing-bound"), header(1), 0, 0, 0, 1, map[string]int{}},

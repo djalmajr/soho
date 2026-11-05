@@ -329,3 +329,29 @@ func TestResearchRolesCarryTheBugVerdict(t *testing.T) {
 		})
 	}
 }
+
+func TestBundleBriefTemplateCitesTheAuthorMeasurement(t *testing.T) {
+	// DJA-684: the template's Worktree: line says the line feeds the review
+	// author measurement and belongs in both briefs, the project root when
+	// the slice has no worktree of its own.
+	data, err := resources.ReadFile("templates/brief.md")
+	if err != nil {
+		t.Fatalf("bundle is missing templates/brief.md: %v", err)
+	}
+	lines := strings.Split(string(data), "\n")
+	var worktreeLine string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Worktree:") {
+			worktreeLine = line
+			break
+		}
+	}
+	if worktreeLine == "" {
+		t.Fatal("template lost its Worktree: line")
+	}
+	for _, want := range []string{"author-model", "implementer", "root"} {
+		if !strings.Contains(worktreeLine, want) {
+			t.Fatalf("Worktree: line must cite the author measurement and the root declaration, lost %q: %s", want, worktreeLine)
+		}
+	}
+}

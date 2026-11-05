@@ -63,13 +63,21 @@ func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Con
 	return out.String()
 }
 
-func ComposeAmendment(raw, report string, ctx *core.Config, env platform.Env, kind, args, approvals string, shared bool, agents ...string) string {
+// ComposeAmendment composes the amendment prompt. When the amendment
+// declares no Worktree: line of its own, the original brief's line is kept,
+// outside any fenced block, so the amended task (a review included) stays
+// tied to the declared worktree; the amendment's own line wins.
+func ComposeAmendment(raw, report, original string, ctx *core.Config, env platform.Env, kind, args, approvals string, shared bool, agents ...string) string {
 	var out strings.Builder
 	cooperative := ""
 	if len(agents) != 0 {
 		cooperative = cooperativePrompt(agents[0], report, ctx, env)
 	}
 	out.WriteString("# Amendment to your current brief\n\n")
+	if DeclaredWorktree(raw) == "" && DeclaredWorktree(original) != "" {
+		out.WriteString(declaredWorktreeLine(original))
+		out.WriteString("\n\n")
+	}
 	out.WriteString(raw)
 	out.WriteString("\n\n# Report contract\n\n")
 	fmt.Fprintf(&out, "- This amendment overrides your current brief where they differ; the rest of that brief still holds.\n- Check every item again against the files as they are now: rerun the checks it needs, and never copy findings, outputs or states from your earlier report.\n- Write your report as Markdown to `%s` (create parent directories if needed). If you have not written the report of your current brief yet, write one report there that covers the brief and this amendment; otherwise report only on the amendment.\n", report)
@@ -192,6 +200,20 @@ func DeclaredWorktree(body string) string {
 			return tree
 		}
 		return ""
+	}
+	return ""
+}
+
+// declaredWorktreeLine returns the first Worktree: line outside fenced code
+// blocks as written, the one DeclaredWorktree reads, so that a copy of it reads
+// the same: a path with spaces only stays whole between its backticks.
+func declaredWorktreeLine(body string) string {
+	lines := strings.Split(body, "\n")
+	fenced := briefFenceMask(lines)
+	for i, line := range lines {
+		if !fenced[i] && strings.HasPrefix(line, "Worktree:") {
+			return strings.TrimRight(line, "\r")
+		}
 	}
 	return ""
 }
