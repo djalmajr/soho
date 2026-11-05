@@ -117,6 +117,51 @@ func TestBundleShipsTheValidationTemplateWithItsHeadings(t *testing.T) {
 	}
 }
 
+func TestCriticalImplementerKeepsTheImplementerBlocks(t *testing.T) {
+	// DJA-686: the shipped critical-implementer keeps the implementer's
+	// blocks byte-for-byte (the test fails if they drift) and adds the
+	// critical self-review; it names no project, machine path, team or model.
+	base := roleBody(t, "implementer.md")
+	crit := roleBody(t, "critical-implementer.md")
+	if !strings.Contains(crit, base) {
+		t.Fatal("critical-implementer lost or altered an implementer block")
+	}
+	if !strings.Contains(crit, "<critical>") || !strings.Contains(crit, "</critical>") {
+		t.Fatal("missing the critical self-review block")
+	}
+	for _, needle := range []string{"interleaves", "idempotency", "swallowed", "The red test existed before the fix"} {
+		if !strings.Contains(crit, needle) {
+			t.Fatalf("critical block missing %q", needle)
+		}
+	}
+	for _, banned := range []string{"Skedly", "Kashes", "zommehq", "/Users/", "gpt-"} {
+		if strings.Contains(crit, banned) {
+			t.Fatalf("critical-implementer names %q (machine- or team-specific)", banned)
+		}
+	}
+}
+
+// roleBody returns the markdown body of a shipped role file (everything
+// after its closing frontmatter ---).
+func roleBody(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("roles", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) == 0 || lines[0] != "---" {
+		t.Fatalf("%s: missing frontmatter", name)
+	}
+	for i := 1; i < len(lines); i++ {
+		if lines[i] == "---" {
+			return strings.Join(lines[i+1:], "\n")
+		}
+	}
+	t.Fatalf("%s: unterminated frontmatter", name)
+	return ""
+}
+
 func TestBundleConcurrentPublishCleansOwnedStages(t *testing.T) {
 	cache := t.TempDir()
 	var wg sync.WaitGroup

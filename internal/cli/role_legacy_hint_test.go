@@ -12,7 +12,7 @@ func TestRoleLegacyHintCLI(t *testing.T) {
 		for _, legacy := range []bool{false, true} {
 			t.Run(command+"/"+map[bool]string{false: "missing", true: "legacy"}[legacy], func(t *testing.T) {
 				f := newDispatchArrivalFixture(t, "idle", 1, 2, "", "0")
-				role := "critical-implementer"
+				role := "ghostrole"
 				if legacy {
 					path := filepath.Join(f.root, ".agents", "herdr-roles", role+".md")
 					if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
@@ -23,13 +23,13 @@ func TestRoleLegacyHintCLI(t *testing.T) {
 					}
 				}
 				args := []string{"dispatch", "worker", f.brief, "--role", role, "--no-wait"}
-				want := "soho: unknown role 'critical-implementer' (run: soho roles)"
+				want := "soho: unknown role 'ghostrole' (run: soho roles)"
 				if command == "lint" {
 					args = []string{"lint", f.brief, "--role", role}
-					want = "soho: lint: unknown role 'critical-implementer'"
+					want = "soho: lint: unknown role 'ghostrole'"
 				}
 				if legacy {
-					want += "; .agents/herdr-roles/critical-implementer.md is the old location: run soho setup --roles to move it to .agents/soho-roles/"
+					want += "; .agents/herdr-roles/ghostrole.md is the old location: run soho setup --roles to move it to .agents/soho-roles/"
 				}
 				code, out, msg := reopenDispatchRun(t, f.env, args...)
 				if code != 3 || out != "" || strings.TrimSuffix(msg, "\n") != want {

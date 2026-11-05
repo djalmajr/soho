@@ -300,3 +300,35 @@ func TestSetupDetectTM5PolicyCases(t *testing.T) {
 		}
 	})
 }
+
+func TestSetupDetectMaxWorkersDerived(t *testing.T) {
+	// DJA-686 round 2: config.max_workers reports the derived core.MaxWorkers
+	// (4 on a clean strict four-panel project) instead of the raw config value,
+	// keeping the source the entry comes from.
+	maxWorkers := func(t *testing.T, doc map[string]any) (string, string) {
+		t.Helper()
+		entry := doc["config"].(map[string]any)["max_workers"].(map[string]any)
+		return entry["value"].(string), entry["source"].(string)
+	}
+	t.Run("clean project: the derived limit", func(t *testing.T) {
+		root, _, env, ctx := tm5DetectFixture(t)
+		value, source := maxWorkers(t, tm5DetectDoc(t, ctx, env, root))
+		if value != "4" || source == "" {
+			t.Fatalf("max_workers value=%q source=%q, want 4 with its source", value, source)
+		}
+	})
+	t.Run("project max_workers=2: the explicit value with the project source", func(t *testing.T) {
+		root, _, env, _ := tm5DetectFixture(t)
+		if err := os.MkdirAll(filepath.Join(root, ".agents"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, ".agents", "soho.conf"), []byte("max_workers=2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ctx := core.LoadConfig(env, root)
+		value, source := maxWorkers(t, tm5DetectDoc(t, &ctx, env, root))
+		if value != "2" || source != "project" {
+			t.Fatalf("max_workers value=%q source=%q, want 2 with the project source", value, source)
+		}
+	})
+}

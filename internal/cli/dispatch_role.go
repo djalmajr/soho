@@ -71,3 +71,20 @@ func roleDeclaredReadOnly(role string, env platform.Env, cwd string) bool {
 	file := core.RoleFile(role, env, cwd)
 	return file != "" && core.FmGet(file, "mode") == "read-only"
 }
+
+// warnSecurityBriefOnBuildLane is advisory and never blocks: a brief that
+// declares Type: security routed to a build-lane worker points at the
+// critical lane. It reads only the declared Type value (never free text),
+// only the roster's lane column, only for the security type, and it stays
+// silent when the critical lane has no capacity (strict panes=2 has no
+// critical lane, flex panes=2 has one at capacity 0, and a custom team may
+// have none; lanes=off rows carry no lane).
+func warnSecurityBriefOnBuildLane(body, brief, agent, lane string, ctx *core.Config, env platform.Env) {
+	if dispatch.BriefType(body) != "security" || lane != "build" {
+		return
+	}
+	if !core.LaneUsable(ctx, "critical", env) {
+		return
+	}
+	core.Warn(fmt.Sprintf("brief %s declares Type: security but '%s' is in lane build: security work goes to the critical lane (spawn critical-implementer)", brief, agent), frictionLogPath, "dispatch")
+}

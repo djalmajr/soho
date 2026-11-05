@@ -17,6 +17,9 @@ func callerCapFixture(t *testing.T, rows []string, callerPane, callerName string
 		rules = append(rules, *callerNameRule)
 	}
 	env, cwd, state := tm9LiveWorkerFixture(t, rows, rules)
+	// DJA-686: the preset's lane sum grew to 4 for panes=4; these cases pin
+	// the cap at the old 3 so the caller-exclusion mechanics stay the point.
+	env["SOHO_MAX_WORKERS"] = "3"
 	if callerPane != "" {
 		env["HERDR_PANE_ID"] = callerPane
 	}
