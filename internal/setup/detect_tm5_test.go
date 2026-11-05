@@ -147,7 +147,7 @@ func TestSetupDetectTM5OwnProviderCases(t *testing.T) {
 			t.Fatalf("missing files=%v", got)
 		}
 		file := filepath.Join(root, "opencode.json")
-		for _, body := range []string{"not json", "{\r\n\"provider\":{\"p\":{\"models\":{}}}\r\n}", `{"providers":{"p":{"models":{"m":{}}}}}`, `{"provider":[]}`} {
+		for _, body := range []string{"not json", "{\r\n\"provider\":{\"p\":{\"models\":{}}}\r\n}", `{"other":true}`, `{"provider":[]}`} {
 			if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -201,6 +201,39 @@ func TestSetupDetectTM5OwnProviderCases(t *testing.T) {
 		got := kinds.OpencodeOwnModels(env, root)
 		if len(got) != 3 || got[0].ID != "p/m" || len(got[0].Warnings) != 1 || strings.Contains(strings.Join(got[0].Warnings, " "), "budget") || len(got[1].Warnings) != 2 || got[2].ID != "p/later" {
 			t.Fatalf("models=%+v", got)
+		}
+	})
+	t.Run(`// DJA-655: "opencodeCustomModelsJson: the V2 providers format: a literal settings.apiKey warns without the value, the env reference does not, a model in two roots counts once"`, func(t *testing.T) {
+		root, _, env, ctx := tm5DetectFixture(t)
+		write := func(path, body string) {
+			t.Helper()
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write(filepath.Join(root, "opencode.json"), `{"providers":{"p":{"settings":{"apiKey":"V2SECRET"},"models":{"m":{}}}}}`)
+		write(filepath.Join(env.Get("XDG_CONFIG_HOME"), "opencode", "opencode.json"), `{"providers":{"p":{"settings":{"apiKey":"{env:KEY}"},"models":{"m":{},"n":{}}}}}`)
+		doc := tm5DetectDoc(t, ctx, env, root)
+		encoded, _ := json.Marshal(doc)
+		models := tm5DetectKind(t, doc, "opencode")["custom_models"].([]any)
+		ids := []string{}
+		for _, v := range models {
+			ids = append(ids, v.(map[string]any)["id"].(string))
+		}
+		if !reflect.DeepEqual(ids, []string{"p/m", "p/n"}) {
+			t.Fatalf("ids=%v", ids)
+		}
+		if !strings.Contains(string(encoded), "own provider 'p' (opencode) has a literal apiKey") {
+			t.Fatalf("literal settings.apiKey not warned: %s", encoded)
+		}
+		if strings.Contains(string(encoded), "V2SECRET") {
+			t.Fatal("credential leaked")
+		}
+		if strings.Contains(string(encoded), "thinking_token_budget") {
+			t.Fatal("V2 model warned for the V1-only budget field")
 		}
 	})
 }
