@@ -215,3 +215,88 @@ func TestCheckSkipsARecordedComparison(t *testing.T) {
 		t.Fatalf("marker created for a recorded comparison: %v", err)
 	}
 }
+
+func TestGitTree(t *testing.T) {
+	t.Run("gitTree: the sidecar's git_tree is the worker's recorded root", func(t *testing.T) {
+		sd := t.TempDir()
+		root := t.TempDir()
+		report := filepath.Join(sd, "reports", "worker.md")
+		if err := os.MkdirAll(filepath.Dir(report), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		sidecar := filepath.Join(filepath.Dir(report), "worker.dispatch.json")
+		if err := core.WriteScratchFile(sidecar, jsonjs.Stringify(jsonjs.O("git_head", strings.Repeat("a", 40), "git_branch", "main", "git_tree", root))); err != nil {
+			t.Fatal(err)
+		}
+		if got := GitTree(sd, report); got != root {
+			t.Fatalf("got %q want %q", got, root)
+		}
+	})
+	t.Run("gitTree: without a sidecar the root is empty", func(t *testing.T) {
+		sd := t.TempDir()
+		report := filepath.Join(sd, "reports", "worker.md")
+		if got := GitTree(sd, report); got != "" {
+			t.Fatalf("got %q want empty", got)
+		}
+	})
+	t.Run("gitTree: a sidecar without git_tree has no root", func(t *testing.T) {
+		sd := t.TempDir()
+		report := filepath.Join(sd, "reports", "worker.md")
+		if err := os.MkdirAll(filepath.Dir(report), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		sidecar := filepath.Join(filepath.Dir(report), "worker.dispatch.json")
+		if err := core.WriteScratchFile(sidecar, jsonjs.Stringify(jsonjs.O("git_head", strings.Repeat("a", 40), "git_branch", "main"))); err != nil {
+			t.Fatal(err)
+		}
+		if got := GitTree(sd, report); got != "" {
+			t.Fatalf("got %q want empty", got)
+		}
+	})
+	t.Run("gitTree: a relative git_tree has no root", func(t *testing.T) {
+		for _, tree := range []string{".", "../project-c", "project-c"} {
+			sd := t.TempDir()
+			report := filepath.Join(sd, "reports", "worker.md")
+			if err := os.MkdirAll(filepath.Dir(report), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			sidecar := filepath.Join(filepath.Dir(report), "worker.dispatch.json")
+			if err := core.WriteScratchFile(sidecar, jsonjs.Stringify(jsonjs.O("git_head", strings.Repeat("a", 40), "git_tree", tree))+"\n"); err != nil {
+				t.Fatal(err)
+			}
+			if got := GitTree(sd, report); got != "" {
+				t.Fatalf("git_tree %q: got %q want empty", tree, got)
+			}
+		}
+	})
+	t.Run("gitTree: a sidecar over the inspection limit has no root", func(t *testing.T) {
+		sd := t.TempDir()
+		root := t.TempDir()
+		report := filepath.Join(sd, "reports", "worker.md")
+		if err := os.MkdirAll(filepath.Dir(report), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		sidecar := filepath.Join(filepath.Dir(report), "worker.dispatch.json")
+		padding := strings.Repeat("x", int(sidecarInspectLimit))
+		if err := core.WriteScratchFile(sidecar, jsonjs.Stringify(jsonjs.O("git_head", strings.Repeat("a", 40), "git_tree", root, "padding", padding))+"\n"); err != nil {
+			t.Fatal(err)
+		}
+		if got := GitTree(sd, report); got != "" {
+			t.Fatalf("got %q want empty", got)
+		}
+	})
+	t.Run("gitTree: a non-string git_tree has no root", func(t *testing.T) {
+		sd := t.TempDir()
+		report := filepath.Join(sd, "reports", "worker.md")
+		if err := os.MkdirAll(filepath.Dir(report), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		sidecar := filepath.Join(filepath.Dir(report), "worker.dispatch.json")
+		if err := core.WriteScratchFile(sidecar, jsonjs.Stringify(jsonjs.O("git_head", strings.Repeat("a", 40), "git_tree", 42))); err != nil {
+			t.Fatal(err)
+		}
+		if got := GitTree(sd, report); got != "" {
+			t.Fatalf("got %q want empty", got)
+		}
+	})
+}

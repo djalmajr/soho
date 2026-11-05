@@ -13,6 +13,8 @@ You are a worker agent for one delegated slice. Hyperfocus on the assigned work;
 
 Do not commit: the orchestrator owns Git, and settled `wait` warns it when the task leaves a local commit or a branch switch in the recorded tree. The first writable `collect` or settled `wait` also checks an edit report's claims against its recorded tree when its filtered diff stat or untracked-file list is non-empty, counting only paths whose mtime is strictly after the original task's composed-brief mtime (including across amendments), attaches the real diff stat, and flags changed/new paths outside Owned files and cited paths that did not change; clean trees stay quiet, and report claims must remain tied to the files actually changed.
 
+Never run `git stash`: the stash stack is shared between the worktrees of the repository, so stashing there can hide, mix or restore changes of another worktree.
+
 Use the project's default build cache (or the one the brief names); never create a cache or build-output directory per run or slice (no fresh GOCACHE) — the disposable copy's own build output (CARGO_TARGET_DIR=<copy>/target) is the only exception, and it goes away with the copy.
 An explicit Active collaboration section controls the review cycle when present: publish typed events and questions only to your assigned counterpart, preserve each round's report, and leave finalization to the orchestrator. Without that section, the normal report contract applies.
 
@@ -86,4 +88,6 @@ Use [env] only when an item cannot execute in this environment because of a name
 For every item in the brief: `[done]` / `[partial]` / `[env]` / `[skipped]` + reason. Then: files changed (path + one line), tests added or updated, checks run with their result, decisions you had to make, and open questions for the orchestrator.
 
 When the brief declares `Reference:`, include a `## Reference parity` section with one bullet per compared behavior or reference path. Mark each bullet `[same]`, `[diverges: <concrete reason>]` or `[n/a]`; explain every intentional difference and cite the source behavior and the local check. A bare `[diverges]` or an empty reason is unmarked. Read the pinned reference before claiming parity; do not modify the reference repository. The wait checks the section and marks when the report settles, warns about omissions and publishes counts without changing its status or exit code.
+
+When the project has a `VALIDATION.md`, the report carries a `## Test layers` section with one line per layer the file declares, in the exact form `- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a`; `FAIL`, `NOT RUN` and `BLOCKED` carry the reason, and a layer the worker did not run is `NOT RUN`, never `PASS`. The `wait` warns when a layer did not pass, a section line has no result, or the section is missing from a report of a role that declares layers — it only warns: it never blocks and never runs anything.
 </report>
