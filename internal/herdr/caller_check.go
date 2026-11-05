@@ -3,6 +3,8 @@ package herdr
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/djalmajr/soho/internal/platform"
@@ -18,12 +20,17 @@ const (
 	CallerVerified CallerState = "verified"
 	// CallerMismatch: the tree was read to the root without passing
 	// through the pane's shell: the id was inherited from another
-	// process (a forked session).
+	// process (a forked session), or a complete chain contains shared Codex
+	// executors that make inherited pane identity ambiguous.
 	CallerMismatch CallerState = "mismatch"
 	// CallerUnknown: no claim, an unreadable shell_pid, or a failed
 	// ancestry read. Commands proceed without the check's line.
 	CallerUnknown CallerState = "unknown"
 )
+
+// CallerReasonSharedCodexExecutor identifies an ambiguous inherited pane claim
+// in a process chain containing at least two Codex executables.
+const CallerReasonSharedCodexExecutor = "shared codex executor"
 
 // CallerCheck is the result of CheckCallerPane.
 type CallerCheck struct {
@@ -40,6 +47,10 @@ type CallerCheck struct {
 	Session     string
 	PaneSession string
 	ShownIn     string
+	// CodexSession is a validated CODEX_THREAD_ID in a shared-executor
+	// mismatch, used only for diagnostics. In that case ShownIn describes
+	// the unique other pane with that Codex session, never verification.
+	CodexSession string
 }
 
 // callerCheckMemo is the per-command memo (decision 8: one check per
@@ -77,7 +88,9 @@ func ResetCallerCheck() {
 //  3. `herdr pane process-info --pane <HERDR_PANE_ID>` reads
 //     result.process_info.shell_pid; a failure, timeout, or an absent or
 //     non-positive shell_pid gives unknown;
-//  4. the parent chain of this process (platform.ProcessAncestors) that
+//  4. a failed parent-chain read is unknown. A complete chain containing
+//     two or more Codex executable basenames is a dedicated mismatch,
+//     regardless of shell or session matches. Otherwise a chain that
 //     includes the shell_pid is verified; a chain read to the root
 //     (pid 1, 0 or a parentless pid) without it is a mismatch; a failed
 //     read midway is unknown;
@@ -118,6 +131,25 @@ func checkCallerPane(pane, delegated string, env platform.Env) CallerCheck {
 	chain, err := platform.ProcessAncestors(os.Getpid(), env)
 	if err != nil {
 		return CallerCheck{State: CallerUnknown, Pane: pane, ShellPID: shellPID, Reason: "ancestry read failed"}
+	}
+	codexCount := 0
+	for _, pid := range chain {
+		exe, err := platform.ProcExecutable(pid)
+		if err != nil {
+			continue
+		}
+		base := filepath.Base(exe)
+		if strings.EqualFold(base, "codex") || strings.EqualFold(base, "codex.exe") {
+			codexCount++
+		}
+	}
+	if codexCount >= 2 {
+		res := CallerCheck{State: CallerMismatch, Pane: pane, ShellPID: shellPID, Reason: CallerReasonSharedCodexExecutor}
+		if id := env.Get("CODEX_THREAD_ID"); validSessionID(id) {
+			res.CodexSession = id
+			res.ShownIn = codexShownIn(pane, id, env)
+		}
+		return res
 	}
 	for _, pid := range chain {
 		if pid == shellPID {

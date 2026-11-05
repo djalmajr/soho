@@ -215,13 +215,14 @@ func (b *backend) CheckCaller(ctx context.Context, call transport.Call) transpor
 	res := CheckCallerPane(b.env)
 	return transport.Reply[transport.CallerCheck]{
 		Value: transport.CallerCheck{
-			State:       string(res.State),
-			Pane:        res.Pane,
-			ShellPID:    res.ShellPID,
-			Reason:      res.Reason,
-			Session:     res.Session,
-			PaneSession: res.PaneSession,
-			ShownIn:     res.ShownIn,
+			State:        string(res.State),
+			Pane:         res.Pane,
+			ShellPID:     res.ShellPID,
+			Reason:       res.Reason,
+			Session:      res.Session,
+			PaneSession:  res.PaneSession,
+			ShownIn:      res.ShownIn,
+			CodexSession: res.CodexSession,
 		},
 		Valid: true,
 	}
