@@ -50,7 +50,7 @@ func TestDiffCleanTreeAddsNothing(t *testing.T) {
 }
 
 func TestDiffCollectOnceThenWaitSilent(t *testing.T) {
-	f := newDiffFixture(t, "# Owned files\n- src/*.go\n", "Completed `src/a.go` and `src/b.go`.\n", "implementer")
+	f := newDiffFixture(t, "# Owned files\n- src/*.go\n", "Completed `src/b.go`.\n\n## Files changed\n- `src/a.go`\n- `src/b.go`\n", "implementer")
 	diffWrite(t, filepath.Join(f.tree, "src", "b.go"), "changed\n")
 	diffWrite(t, filepath.Join(f.tree, "outside.txt"), "new\n")
 	var stderr bytes.Buffer

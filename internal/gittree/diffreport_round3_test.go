@@ -39,7 +39,7 @@ func diffAfterCurrentDispatch(f *diffFixture, report string, outside bool) error
 			return err
 		}
 	}
-	if err := os.WriteFile(report, []byte("Completed `src/a.go` and `src/b.go`.\n"), 0600); err != nil {
+	if err := os.WriteFile(report, []byte("Completed `src/b.go`.\n\n## Files changed\n- `src/a.go`\n- `src/b.go`\n"), 0600); err != nil {
 		return err
 	}
 	return diffReportAfterEdits(f, report)
@@ -146,7 +146,7 @@ func TestDiffMtimeEqualDispatchIgnored(t *testing.T) {
 }
 
 func TestDiffMtimeFiltersStatOwnedAndCitations(t *testing.T) {
-	f := newDiffFixture(t, "# Owned files\n- src/b.go\n", "Completed `src/a.go` and `src/b.go`.\n", "implementer")
+	f := newDiffFixture(t, "# Owned files\n- src/b.go\n", "Completed `src/b.go`.\n\n## Files changed\n- `src/a.go`\n- `src/b.go`\n", "implementer")
 	info, err := os.Stat(filepath.Join(f.state, "briefs", "worker-fixture.md"))
 	if err != nil {
 		t.Fatal(err)

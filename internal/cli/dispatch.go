@@ -1809,6 +1809,10 @@ func warnOwnedOverlap(brief, role, agent, sd string, ctx *core.Config, env platf
 		return
 	}
 	mineTree, _ := effectiveBriefTree(body, workerCwd)
+	goos := platform.Current()
+	for i, p := range mine {
+		mine[i] = ownedPathForOverlap(p, mineTree, goos)
+	}
 	for _, row := range core.RosterRows(sd) {
 		cols := strings.Split(row, "\t")
 		if len(cols) == 0 || cols[0] == "" || cols[0] == agent {
@@ -1834,6 +1838,9 @@ func warnOwnedOverlap(brief, role, agent, sd string, ctx *core.Config, env platf
 			continue
 		}
 		theirs := ownedPaths(pendingBody, aliases)
+		for i, q := range theirs {
+			theirs[i] = ownedPathForOverlap(q, mineTree, goos)
+		}
 		hits := []string{}
 		for _, p := range mine {
 			for _, q := range theirs {
@@ -1858,6 +1865,32 @@ func warnOwnedOverlap(brief, role, agent, sd string, ctx *core.Config, env platf
 }
 
 var ownershipStopwords = map[string]bool{"nenhum": true, "none": true}
+
+// ownedPathForOverlap rewrites an Owned entry for the overlap test so the
+// same entry crosses whatever spelling the other brief uses (DJA-661): an
+// absolute entry inside the brief's tree becomes its relative spelling via
+// the shared gittree conversion (the largest existing prefix resolved,
+// backslash and case under win32, the entry's own spelling kept in the
+// relative tail); an entry that is a folder keeps the folder marker, a
+// trailing slash or — on win32 — a trailing backslash (F3); a relative
+// entry is untouched, so every other pathsCross input keeps its behavior;
+// an absolute entry outside the tree keeps its absolute form, which crosses
+// nothing relative inside the tree.
+func ownedPathForOverlap(p, tree, goos string) string {
+	sp := strings.TrimSpace(p)
+	if tree == "" || !gittree.PathEntryAbsolute(sp, goos) {
+		return sp
+	}
+	rel := gittree.TreeRelative(sp, tree, goos)
+	if rel == "" {
+		return sp
+	}
+	if rel != "." && gittree.OwnedEntryIsFolder(sp, goos) {
+		rel += "/"
+	}
+	return rel
+}
+
 var ownershipExclusions = map[string]bool{"nenhum": true, "nenhuma": true, "nao": true, "nunca": true, "exceto": true, "not": true, "never": true, "none": true, "except": true, "excluding": true, "outside": true}
 
 // ownedSpanRE matches a backtick-quoted span with its contents; ownedAssignRE
@@ -1945,7 +1978,11 @@ func ownedPaths(body string, aliases map[string][]string) []string {
 		// The trailing slash is kept: it marks a directory owned in the brief,
 		// and pathsCross decides whether a glob can reach a file inside it.
 		trimmed := strings.TrimRight(p, ".,;:")
-		if trimmed == "" || strings.Contains(trimmed, " ") || ownershipStopwords[strings.ToLower(trimmed)] || !(strings.ContainsAny(trimmed, "/.")) || seen[strings.TrimRight(trimmed, "/")] {
+		// A Windows drive-prefixed root (D:\a\b\c) carries no slash or dot and
+		// would be mistaken for a word: the current platform's own
+		// absoluteness rule admits it, so a tree-root entry still converts to
+		// the root overlap form (DJA-661, native Windows).
+		if trimmed == "" || strings.Contains(trimmed, " ") || ownershipStopwords[strings.ToLower(trimmed)] || !(strings.ContainsAny(trimmed, "/.") || gittree.PathEntryAbsolute(trimmed, platform.Current())) || seen[strings.TrimRight(trimmed, "/")] {
 			return
 		}
 		seen[strings.TrimRight(trimmed, "/")] = true
@@ -2083,6 +2120,17 @@ func pendingBriefSection(file string) string {
 }
 
 func pathsCross(a, b string) bool {
+	// The tree root (`.` — an Owned entry that converts to it, or the
+	// relative `.` a brief may list) covers the tree and nothing outside it
+	// (DJA-661 F4): an entry the conversion left absolute is outside the
+	// tree, so it does not cross the root, on either side (round 3).
+	if a == "." || b == "." {
+		other := b
+		if b == "." {
+			other = a
+		}
+		return !gittree.PathEntryAbsolute(other, platform.Current())
+	}
 	inside := func(p, q string) bool { return p == q || strings.HasPrefix(p, q+"/") || strings.HasPrefix(q, p+"/") }
 	hasGlob := func(p string) bool { return strings.ContainsAny(p, "*?[") }
 	glob := func(pattern, value string) bool {

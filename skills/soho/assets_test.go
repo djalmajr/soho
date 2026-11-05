@@ -283,6 +283,26 @@ func TestReviewResponseRolesCarryTheRule(t *testing.T) {
 	}
 }
 
+// TestEditRolesListChangedFilesUnderFilesChanged (DJA-666): every edit role
+// tells the worker the changed-file list belongs in a `## Files changed`
+// section of the report, with the reason the wait audit reads only that
+// section; the critical parity test keeps passing because the implementer
+// text is the shared one.
+func TestEditRolesListChangedFilesUnderFilesChanged(t *testing.T) {
+	const core = "The `wait` reads only the `## Files changed` section when it checks the report's changed-file claims against the recorded tree, so a file the report merely reads or cites elsewhere is never flagged."
+	for _, name := range []string{"implementer.md", "critical-implementer.md", "tester.md", "tasker.md", "designer.md", "documenter.md"} {
+		t.Run(name, func(t *testing.T) {
+			body := roleBody(t, name)
+			if !strings.Contains(body, "## Files changed") {
+				t.Fatalf("%s lost the Files changed section instruction", name)
+			}
+			if !strings.Contains(body, core) {
+				t.Fatalf("%s lost the Files changed reason", name)
+			}
+		})
+	}
+}
+
 // roleBody returns the markdown body of a shipped role file (everything
 // after its closing frontmatter ---).
 func roleBody(t *testing.T, name string) string {

@@ -191,11 +191,13 @@ func diffEffectiveOwned(sidecar, agent string, o *jsonjs.Object) ([]string, bool
 // identity, the history order and the owned-files decision are one
 // algorithm.
 func diffEffectiveOwnedRead(sidecar, agent string, o *jsonjs.Object, seams ownedReadSeams) ([]string, bool, bool) {
+	tree, _ := stringField(o, "git_tree")
+	goos := platform.Current()
 	text, err := diffComposedBriefRead(sidecar, seams.brief)
 	if err != nil {
 		return nil, false, false
 	}
-	if owned, found := diffOwned(text); found {
+	if owned, found := diffOwned(text, tree, goos); found {
 		return owned, true, true
 	}
 	task, _ := stringField(o, "task_report")
@@ -289,7 +291,7 @@ func diffEffectiveOwnedRead(sidecar, agent string, o *jsonjs.Object, seams owned
 						if budgetExceeded {
 							return nil, false, false
 						}
-						if owned, found := diffOwned(text); found {
+						if owned, found := diffOwned(text, tree, goos); found {
 							return owned, true, true
 						}
 					}
@@ -307,7 +309,7 @@ func diffEffectiveOwnedRead(sidecar, agent string, o *jsonjs.Object, seams owned
 			}
 			return nil, false, false
 		}
-		if owned, found := diffOwned(text); found {
+		if owned, found := diffOwned(text, tree, goos); found {
 			return owned, true, true
 		}
 	}
@@ -498,7 +500,214 @@ func diffRelative(raw string) string {
 	return clean
 }
 
-func diffOwned(text string) ([]string, bool) {
+// PathEntryAbsolute reports whether the audit path entry is spelled
+// absolute under goos: a leading slash (every goos), a leading backslash
+// (treated as absolute the way diffRelative has always refused it), or a
+// Windows drive prefix (win32 only). Relative entries keep their spelling.
+func PathEntryAbsolute(entry, goos string) bool {
+	if strings.HasPrefix(entry, "\\") || strings.HasPrefix(entry, "/") {
+		return true
+	}
+	if goos == "win32" {
+		return len(entry) >= 3 && entry[1] == ':' && (entry[2] == '/' || entry[2] == '\\')
+	}
+	return false
+}
+
+// resolvedPrefix is one side of a recorded-tree comparison after symlink
+// resolution: the whole path when it exists, otherwise the largest existing
+// prefix resolved with the unresolvable tail re-attached — the entry file
+// may not exist yet (the worker has not created it), so the whole entry
+// often cannot be EvalSymlinks'd. A path with no existing prefix keeps its
+// cleaned lexical form, cleaned with the requested system's separator rules
+// (path.Clean outside win32: slash semantics, case preserved, a backslash a
+// name character; the host's filepath.Clean otherwise — win32 canonical
+// cleaning re-normalizes separators anyway), so a table comparison on
+// another platform stays purely lexical through platform.PathInside on
+// every host. A drive-prefixed path is absolute by its own prefix and is
+// never joined with the working directory, so a win32-style table on
+// another platform stays clean. A path from the foreign family (a win32
+// spelling on a POSIX host, or a POSIX spelling on a Windows host) skips
+// the host resolution entirely — on a Windows host the native walk would
+// resolve a Unix-rooted spelling against the host's drive (the drive root
+// is an existing prefix, so /work/repo would become D:\work\repo) or join
+// it to the host's cwd, and on a POSIX host a drive-prefixed spelling
+// carries no slash to anchor the walk — and the shared selected-system
+// canonicalization (platform.CanonPath) stands in for it.
+func resolvedPrefix(p, goos string) string {
+	// Foreign path family: no host EvalSymlinks, cwd join or prefix walk —
+	// only the shared selected-system lexical canonicalization, so a
+	// foreign spelling never acquires a native cwd or filesystem prefix
+	// (DJA-661, native Windows). Darwin and linux share the POSIX family
+	// and keep the native prefix/symlink resolution below; native win32
+	// resolution is unchanged. The comparison forms stay lexical only;
+	// spellingTail still recovers the entry's original relative case.
+	if (goos == "win32") != (platform.Current() == "win32") {
+		return platform.CanonPath(p, goos)
+	}
+	if eval, err := filepath.EvalSymlinks(p); err == nil {
+		return eval
+	}
+	cleaned := filepath.Clean(p)
+	if goos != "win32" {
+		cleaned = path.Clean(p)
+	}
+	abs := cleaned
+	if !filepath.IsAbs(cleaned) && !driveAbsolute(cleaned) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return cleaned
+		}
+		abs = filepath.Join(wd, cleaned)
+	}
+	var tail []string
+	for dir := abs; ; {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		tail = append([]string{filepath.Base(dir)}, tail...)
+		dir = parent
+		if eval, err := filepath.EvalSymlinks(dir); err == nil {
+			for _, comp := range tail {
+				eval = filepath.Join(eval, comp)
+			}
+			return eval
+		}
+	}
+	return cleaned
+}
+
+// auditPathCanon normalizes one side of a recorded-tree comparison the way
+// the shared comparator does (platform.CanonPath, the normalization
+// dispatch.SamePath applies): on a native path family the largest existing
+// prefix is resolved first (resolvedPrefix, where a plain EvalSymlinks
+// gives up); on a foreign family the selected-system canonicalization
+// stands in for the resolution outright. win32 then folds case, drive and
+// separators and the other platforms clean. The containment itself is the
+// shared platform.PathInside rule (auditWithin); this helper only produces
+// the two spellings it compares, so the tree-relative form can be read off
+// the same prefix.
+func auditPathCanon(p, goos string) string {
+	return platform.CanonPath(resolvedPrefix(p, goos), goos)
+}
+
+// auditWithin is the shared platform.PathInside containment decision for
+// two auditPathCanon spellings: equal, or the child carries the parent's
+// spelling plus the separator (a root parent already ends with it).
+func auditWithin(child, parent, goos string) bool {
+	return platform.PathInside(child, parent, goos)
+}
+
+// TreeRelative rewrites one audit path entry to the tree-relative spelling
+// the owned coverage and citation checks compare, or "" when the entry
+// covers nothing inside the recorded tree. A relative entry keeps today's
+// diffRelative decision (cleaned slash form; ".", ".." and "../x" cover
+// nothing). An absolute entry inside the tree — a file, a folder, a glob
+// or the root — is the same entry as its relative spelling, and the
+// comparison follows the shared platform rules (CanonPath/PathInside, the
+// SamePath/PathWithin normalization): a symlink on either side, backslash
+// and case under win32, and the largest existing prefix resolved (the
+// entry file may not exist yet). The canonical forms decide the comparison
+// only; the returned relative keeps the entry's own spelling: the entry,
+// cleaned with its separators normalized to slashes, contributes its last
+// n parts (n = the canonical relative's part count) when they canonicalize
+// to the canonical relative, which a `..`/`.` spelling or a different-depth
+// symlink prefix cannot break; only a symlink inside the suffix that
+// renames a part returns the canonical relative (DJA-661 round 3). An
+// absolute entry outside the tree covers nothing inside it; an entry that
+// resolves to the tree root itself is ".".
+func TreeRelative(entry, tree, goos string) string {
+	entry = strings.TrimSpace(entry)
+	if entry == "" || strings.HasPrefix(entry, "\\") || strings.Contains(entry, "://") {
+		return ""
+	}
+	if !PathEntryAbsolute(entry, goos) {
+		return diffRelative(entry)
+	}
+	if tree == "" {
+		return ""
+	}
+	ec, rc := auditPathCanon(entry, goos), auditPathCanon(tree, goos)
+	if ec == "" || rc == "" || !auditWithin(ec, rc, goos) {
+		return ""
+	}
+	if ec == rc {
+		return "."
+	}
+	if !strings.HasPrefix(ec, rc+"/") {
+		return ""
+	}
+	rel := ec[len(rc)+1:]
+	if tail := spellingTail(entry, rel, goos); tail != "" {
+		rel = tail
+	}
+	return rel
+}
+
+// spellingTail reads the tree-relative tail off the entry's own spelling:
+// the entry, with its separators normalized to slashes and path.Clean'd,
+// keeps its case; the last n parts (n = the canonical relative's part
+// count) are the spelling when they canonicalize to the canonical relative.
+// A mismatch — a symlink inside the suffix renaming a part, or a cleaned
+// entry with fewer parts than the relative — returns the canonical
+// relative instead (DJA-661 round 3).
+func spellingTail(entry, rel, goos string) string {
+	n := strings.Count(rel, "/") + 1
+	raw := entry
+	if goos == "win32" {
+		raw = strings.ReplaceAll(raw, `\`, "/")
+	}
+	parts := splitSpellingComponents(path.Clean(raw))
+	if len(parts) < n {
+		return ""
+	}
+	tail := strings.Join(parts[len(parts)-n:], "/")
+	folded := tail
+	if goos == "win32" {
+		folded = strings.ToLower(tail)
+	}
+	if folded != rel {
+		return ""
+	}
+	return tail
+}
+
+// driveAbsolute reports the win32 drive-prefix absolute form (x:/ or x:\
+// after any case folding): such a path is absolute by its own prefix,
+// whatever the host's notion of a leading slash is.
+func driveAbsolute(p string) bool {
+	return len(p) >= 3 && p[1] == ':' && (p[2] == '/' || p[2] == '\\')
+}
+
+// splitSpellingComponents splits an uncleaned path on both separators and
+// drops the empty pieces a leading or doubled separator leaves behind.
+func splitSpellingComponents(p string) []string {
+	var out []string
+	for _, part := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
+		out = append(out, part)
+	}
+	return out
+}
+
+// OwnedEntryIsFolder reports whether a recorded Owned entry carries the
+// folder marker: a trailing slash on every system, and a trailing backslash
+// on win32, where the backslash is the separator. Outside win32 the
+// backslash is a name character and the entry keeps its file spelling.
+// The marker makes the entry cover its children the way the
+// trailing-slash form always has (DJA-661 F3).
+func OwnedEntryIsFolder(entry, goos string) bool {
+	if strings.HasSuffix(entry, "/") {
+		return true
+	}
+	return goos == "win32" && strings.HasSuffix(entry, `\`)
+}
+
+// diffOwnedRootPattern is the converted form of an absolute Owned entry
+// that points at the recorded tree itself: it covers the whole tree.
+const diffOwnedRootPattern = "."
+
+func diffOwned(text, tree, goos string) ([]string, bool) {
 	lines := diffMarkdown(text)
 	// A composed role may itself contain headings. Only its brief is scope.
 	for i, line := range lines {
@@ -525,12 +734,14 @@ func diffOwned(text string) ([]string, bool) {
 			continue
 		}
 		push := func(raw string) {
-			if value := diffRelative(raw); value != "" {
-				if strings.HasSuffix(raw, "/") {
-					value += "/"
-				}
-				items = append(items, value)
+			value := TreeRelative(raw, tree, goos)
+			if value == "" {
+				return
 			}
+			if value != diffOwnedRootPattern && OwnedEntryIsFolder(raw, goos) {
+				value += "/"
+			}
+			items = append(items, value)
 		}
 		matches := diffTokenRE.FindAllStringSubmatch(line, -1)
 		if len(matches) > 0 {
@@ -587,6 +798,11 @@ func diffOwnedMatch(pattern, file string) bool {
 		// pattern covers by test-file name alone.
 		return diffNewTestFile(file)
 	}
+	if pattern == diffOwnedRootPattern {
+		// An absolute Owned entry that points at the recorded tree itself:
+		// it covers the whole tree.
+		return file != ""
+	}
 	directory := strings.HasSuffix(pattern, "/")
 	parts, names := strings.Split(strings.TrimSuffix(pattern, "/"), "/"), strings.Split(file, "/")
 	if (!directory && len(parts) != len(names)) || (directory && len(names) <= len(parts)) {
@@ -601,27 +817,56 @@ func diffOwnedMatch(pattern, file string) bool {
 	return true
 }
 
+// diffFilesChangedTitles are the report section titles that list the files
+// the worker claims to have changed, case-insensitive at any heading level
+// (DJA-666): the cited check reads only inside them, so a file the report
+// merely reads or cites elsewhere is never "cited unchanged". A section
+// ends at the next heading of the same or a lower level.
+var diffFilesChangedTitles = map[string]bool{
+	"files changed":        true,
+	"arquivos alterados":   true,
+	"arquivos modificados": true,
+	"arquivos mudados":     true,
+}
+
 func diffCited(tree, report string, changed map[string]bool) []string {
 	root, err := os.OpenRoot(tree)
 	if err != nil {
 		return nil
 	}
 	defer root.Close()
-	seen, forbiddenLevel := map[string]bool{}, 0
+	seen := map[string]bool{}
+	inChanged, changedLevel := false, 0
+	forbiddenLevel := 0
 	for _, line := range diffMarkdown(report) {
-		if title, level := diffHeading(line); level != 0 {
+		title, level := diffHeading(line)
+		if level != 0 {
+			// The section closes on any heading of the same or a lower
+			// level (the Files changed title re-opens it right after). The
+			// close never touches the forbidden state: forbidden has its
+			// own scope (DJA-661 round 3).
+			if inChanged && level <= changedLevel {
+				inChanged = false
+			}
+			// Forbidden ends only on a heading of the same or a lower level
+			// than the one that opened it — like any other heading, a Files
+			// changed title at that level ends it; a deeper one never does,
+			// and no section opening or closing ever does.
 			if forbiddenLevel > 0 && level <= forbiddenLevel {
 				forbiddenLevel = 0
 			}
-			if title == "forbidden" || title == "forbidden files" {
+			if diffFilesChangedTitles[title] {
+				inChanged, changedLevel = true, level
+			} else if forbiddenLevel == 0 && (title == "forbidden" || title == "forbidden files") {
 				forbiddenLevel = level
 			}
+			continue
 		}
-		if forbiddenLevel > 0 {
+		if !inChanged || forbiddenLevel > 0 {
 			continue
 		}
 		for _, m := range diffTokenRE.FindAllStringSubmatch(line, -1) {
-			file := diffRelative(m[1])
+			file := TreeRelative(m[1], tree, platform.Current())
 			if file == "" || (!strings.Contains(file, "/") && path.Ext(file) == "") || changed[file] {
 				continue
 			}
