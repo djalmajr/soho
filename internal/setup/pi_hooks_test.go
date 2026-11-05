@@ -163,11 +163,28 @@ try {
 } finally { clearTimeout(watchdog); await cleanup(); }
 `
 
-func TestSetupPiExtensionRuntime(t *testing.T) {
+// realNode returns the node binary itself. These tests run it with a minimal
+// PATH to prove the extension needs nothing else, and a version manager's shim
+// (asdf: #!/usr/bin/env bash) cannot start there (DJA-657).
+func realNode(t *testing.T) string {
+	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skipf("node not in PATH: %v", err)
 	}
+	out, err := exec.Command(node, "-p", "process.execPath").Output()
+	if err != nil {
+		t.Fatalf("%s -p process.execPath: %v", node, err)
+	}
+	real := strings.TrimSpace(string(out))
+	if real == "" {
+		t.Fatalf("%s -p process.execPath printed nothing", node)
+	}
+	return real
+}
+
+func TestSetupPiExtensionRuntime(t *testing.T) {
+	node := realNode(t)
 	for _, tc := range []struct{ name, mode, source string }{
 		{"block", "block", "interactive"}, {"block-rpc", "block", "rpc"}, {"block-extension", "block", "extension"},
 		{"plain", "plain", "interactive"}, {"absent", "absent", "interactive"}, {"timeout", "timeout", "rpc"},
@@ -360,10 +377,7 @@ func TestSetupPiExtensionRuntime(t *testing.T) {
 // resume, fork and reload never arm. A failed or timed-out helper notifies a
 // warning and never blocks or throws.
 func TestSetupPiSessionDelivery(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skipf("node not in PATH: %v", err)
-	}
+	node := realNode(t)
 	const reminderOut = "fixture reminder line"
 	const doctorOut = "soho doctor: fixture warning"
 	for _, tc := range []struct {
