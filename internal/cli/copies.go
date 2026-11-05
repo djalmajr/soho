@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -419,9 +420,12 @@ func copyRowState(row core.CopyRow, sd string, svc transport.Services) string {
 }
 
 // gcProcState classifies one process line for gc: owned (running, the
-// owner is a live roster agent — the copies' rule, never touched), orphan
-// (running, the owner is not live), or gone/reused (any owner: --yes drops
-// the line, and a reused pid is never signalled).
+// owner is a live roster agent - the copies' rule, never touched), owned
+// (running, the owner is "-" and the line's registered pane is still alive
+// in the machine-wide pane list - the orchestrator's own line), orphan
+// (running, the owner is not live - or a "-" line whose pane has left the
+// list or cannot be confirmed), or gone/reused (any owner: --yes drops the
+// line, and a reused pid is never signalled).
 func gcProcState(row core.ProcRow, sd string, env platform.Env, svc transport.Services) string {
 	if st := core.ProcRowState(row, env); st != "running" {
 		return st
@@ -429,7 +433,31 @@ func gcProcState(row core.ProcRow, sd string, env platform.Env, svc transport.Se
 	if row.Owner != "-" && core.RosterLine(sd, row.Owner) != "" && readState(svc, row.Owner, transport.Call{Timeout: herdr.Timeout}).State != "gone" {
 		return "owned"
 	}
+	if row.Owner == "-" && paneExists(svc, row.Pane) {
+		return "owned"
+	}
 	return "orphan"
+}
+
+// paneExists is the pane check of a "-" process line for gc: the pane is
+// confirmed alive by the transport's machine-wide pane list, and only then.
+// A read that fails (the transport cannot confirm the pane) or a line with
+// no recorded pane (an older version) confirms nothing: the line keeps
+// today's orphan behavior rather than one the check cannot prove safe.
+func paneExists(svc transport.Services, pane string) bool {
+	if svc.Window == nil || pane == "" || pane == "-" {
+		return false
+	}
+	rep := svc.Window.ListPanes(context.Background(), transport.Scope{All: true}, transport.Call{Timeout: herdr.Timeout})
+	if rep.Err != nil || !rep.Valid {
+		return false
+	}
+	for _, view := range rep.Value {
+		if view.PaneID == pane {
+			return true
+		}
+	}
+	return false
 }
 
 // gcOrphanProcs is the dry-run list: the running lines gc would stop.
