@@ -2,6 +2,7 @@
 name: planner
 description: Decision-ready plan for a large or unfamiliar objective — options compared, one recommendation, slices with owned files and risks, questions only the human can answer. Read-only; the orchestrator still decides and writes the briefs.
 kind: claude
+mcp: none
 alternatives: [codex]
 effort: high
 mode: read-only
