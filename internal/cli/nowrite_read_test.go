@@ -229,6 +229,7 @@ func TestNowriteReadCommandsWriteNothing(t *testing.T) {
 				{name: "friction", argv: []string{"friction"}, code: 0},
 				{name: "friction --level error", argv: []string{"friction", "--level", "error"}, code: 0},
 				{name: "friction --summary", argv: []string{"friction", "--summary"}, code: 0},
+				{name: "friction --patterns", argv: []string{"friction", "--patterns"}, code: 0},
 				{name: "collect worker", argv: []string{"collect", "worker"}, code: 0},
 				{name: "copies", argv: []string{"copies"}, code: 0},
 				{name: "gc", argv: []string{"gc"}, code: 0},
@@ -246,25 +247,30 @@ func TestNowriteReadCommandsWriteNothing(t *testing.T) {
 					"2026-01-01T10:00:00Z\terror(exit 4)\tspawn\tworker spawn failed\n"+
 					"2026-01-01T12:00:00Z\terror(exit 2)\tcollect\tno report file yet for 'worker'\n", frictionLog)
 				cases[5].wantOut = "count  level  command\n1  error(exit 2)  collect\n1  error(exit 4)  spawn\n1  warning  friction\n"
-				cases[6].wantOut = fmt.Sprintf("<!-- report: %s -->\nreport body line\n", nr.report)
-				cases[7].wantOut = fmt.Sprintf("%s  ghost  1d  orphan\n%s  worker  5h  owned\n", nr.orphan, nr.owned)
-				cases[8].wantOut = nowriteGcNoneLine +
+				cases[6].wantOut = "count  after  key  last_seen  fixed_by  pattern\n" +
+					"1  -  1ce1ba57  2026-01-01T10:00:00Z  -  worker spawn failed\n" +
+					"1  -  b738241c  2026-01-01T11:00:00Z  -  a warning note\n" +
+					"1  -  9721309b  2026-01-01T12:00:00Z  -  no report file yet for <q>\n"
+				cases[7].wantOut = fmt.Sprintf("<!-- report: %s -->\nreport body line\n", nr.report)
+				cases[8].wantOut = fmt.Sprintf("%s  ghost  1d  orphan\n%s  worker  5h  owned\n", nr.orphan, nr.owned)
+				cases[9].wantOut = nowriteGcNoneLine +
 					fmt.Sprintf("would remove %s  2.0 KB  ghost  1d\ntotal: 2.0 KB\nrun 'soho gc --yes' to remove them\n", nr.orphan) +
 					"unregistered mutation copies (another project or an older version may own them):\n" +
 					fmt.Sprintf("%s  100 B  3h  no origin marker\n", nr.mutation)
-				cases[9].wantOut = cases[8].wantOut
+				cases[10].wantOut = cases[9].wantOut
 			} else {
 				cases[1].wantOut = nowriteRosterHeader + nowriteRosterTail
 				cases[2].wantOut = nowriteExplainIdle
 				cases[3].wantOut = fmt.Sprintf("no friction recorded under %s\n", frictionLog)
 				cases[4].wantOut = fmt.Sprintf("no friction matches under %s\n", frictionLog)
 				cases[5].wantOut = fmt.Sprintf("no friction matches under %s\n", frictionLog)
-				cases[6].code = 6
-				cases[6].wantOut = "recent output line\n"
-				cases[6].wantErr = "soho: warning: no report file yet for 'worker' (expected <none dispatched>); falling back to recent terminal output\n"
-				cases[7].wantOut = "no registered copies\n"
-				cases[8].wantOut = nowriteGcNoneLine + "nothing to remove\n"
-				cases[9].wantOut = cases[8].wantOut
+				cases[6].wantOut = ""
+				cases[7].code = 6
+				cases[7].wantOut = "recent output line\n"
+				cases[7].wantErr = "soho: warning: no report file yet for 'worker' (expected <none dispatched>); falling back to recent terminal output\n"
+				cases[8].wantOut = "no registered copies\n"
+				cases[9].wantOut = nowriteGcNoneLine + "nothing to remove\n"
+				cases[10].wantOut = cases[9].wantOut
 			}
 			for _, c := range cases {
 				t.Run(c.name, func(t *testing.T) {
@@ -292,7 +298,7 @@ func TestNowriteReadCommandsWriteNothing(t *testing.T) {
 // command runs (nothing is written).
 func TestNowriteRejectsWritingInvocations(t *testing.T) {
 	nr := newNowriteReads(t, true)
-	const messagePrefix = "soho: soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json'; rejected: "
+	const messagePrefix = "soho: soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, --patterns, --json, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json'; rejected: "
 	const messageTail = " — unset SOHO_NOWRITE to write\n"
 	cases := []struct {
 		name     string
@@ -300,6 +306,8 @@ func TestNowriteRejectsWritingInvocations(t *testing.T) {
 		rejected string
 	}{
 		{name: "friction add", argv: []string{"friction", "add", "x"}, rejected: "friction (2 extra arguments not allowed)"},
+		{name: "friction add --key", argv: []string{"friction", "add", "x", "--key", "k"}, rejected: "friction (4 extra arguments not allowed)"},
+		{name: "friction fixed", argv: []string{"friction", "fixed", "k", "x"}, rejected: "friction (3 extra arguments not allowed)"},
 		{name: "copies add", argv: []string{"copies", "add", nr.f.repo}, rejected: "copies (2 extra arguments not allowed)"},
 		{name: "gc --yes", argv: []string{"gc", "--yes"}, rejected: "gc (1 extra argument not allowed)"},
 		{name: "release", argv: []string{"release", "worker"}, rejected: "release (1 extra argument not allowed)"},

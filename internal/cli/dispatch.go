@@ -536,7 +536,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	}
 	prompt := dispatch.ComposePrompt(roleFile, role, agent, briefRaw, report, ctx, env, kind, args, approvals, shared)
 	if amend {
-		prompt = dispatch.ComposeAmendment(briefRaw, report, ctx, env, kind, args, approvals, shared, agent)
+		prompt = dispatch.ComposeAmendment(briefRaw, report, amendmentOriginalBrief(sd, priorPointer), ctx, env, kind, args, approvals, shared, agent)
 		prompt = strings.Replace(prompt, "# Amendment to your current brief\n\n", "# Amendment to your current brief\n\n"+amendmentRoleHeader(roleFile, role, agent), 1)
 	}
 	prompt = dispatchReferencePrompt(prompt, briefRaw, role, sd, report, env)
@@ -778,6 +778,11 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	}
 	if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session, role); err != nil {
 		core.Warn(fmt.Sprintf("could not record the accepted submission in the attempt sidecar %s: %s; the prompt went out", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
+	}
+	// The review author warning fires once per dispatched review, after the
+	// accepted write settled the author fields: advisory, never a refusal.
+	if warning := reviewAuthorWarning(brief, role, sidecar, authorContext); warning != "" {
+		core.Warn(warning, frictionLogPath, "dispatch")
 	}
 	gitFields := dispatchGitFields(briefRaw, workerCwd, cwd, sd, amend, priorPointer, env)
 	gittree.Preserve(sidecar, gitFields)
@@ -1705,7 +1710,7 @@ func emitDispatchResult(agent, role, kind, composed, report, taskReport, status 
 		out.Set("amend", true)
 	}
 	if last != nil {
-		for _, key := range []string{"dialog", "verdict", "findings", "severity", "partial", "verdict_effective", "reference_parity", "env", "idle_alerts"} {
+		for _, key := range []string{"dialog", "verdict", "findings", "severity", "partial", "verdict_effective", "reference_parity", "test_layers", "validation", "env", "idle_alerts"} {
 			if v, ok := last.Get(key); ok {
 				out.Set(key, v)
 			}

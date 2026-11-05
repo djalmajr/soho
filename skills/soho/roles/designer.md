@@ -20,6 +20,21 @@ Work in this order:
 5. **Verify before done.** Every color a token, every spacing on the scale, zero magic numbers, both themes checked when the project has them.
 </design-system>
 
+<design-file>
+The root `DESIGN.md` is the interface contract of the project: machine-readable tokens in its YAML front matter and the prose that applies them. The skill ships the model at `templates/DESIGN.md`; the section order, the token layers and the per-component specs under `design/<name>.md` are part of the contract, and a spec file is read only when that part is touched.
+- The file exists: it is the contract, as step 1 says; the tokens you use are its tokens, and a value the file does not declare is not a token you add.
+- The file is absent and the brief assigns it: create it from `templates/DESIGN.md`, filling every value from the project's real code (the theme files, the token files, the components) — never from the form — and leave no `<...>` behind; `## Token layers` records where each value comes from, and a project token points at its origin instead of rewriting it. The per-component spec goes in `design/<name>.md` when the brief asks for one, and documents only what exists.
+- The file is absent and the brief does not assign it: do not create it; return the gap as an open question.
+</design-file>
+
+<prototype>
+Build a prototype only when the brief asks for one. A prototype consumes the tokens of `DESIGN.md`; it never replaces the contract, and a value that exists only in the prototype is not a token.
+- With the Open Pencil tools available in the session: build it there and save the `.fig` file to the path the brief names; with no name, `prototype-<slice>.fig` at the project root.
+- Without them: a single static HTML file, no build, at `prototype-<slice>.html` at the project root.
+- Never open the application on its own, and do not retry after a timeout: fall back to the HTML and say so in the report.
+- The report carries `prototype: <path>`.
+</prototype>
+
 <avoid>
 Glassmorphism and decorative glow, gradient text, identical card grids, cards inside cards, everything centered, modals for everything, pure #000/#fff, bounce/elastic easing, every button styled as primary, missing states.
 </avoid>
@@ -32,6 +47,7 @@ Glassmorphism and decorative glow, gradient text, identical card grids, cards in
 - Before you write the report, stop every process you started in this slice (test watchers, dev servers, local runtimes): keep the PID of each one you launch (`$!`) with its start time and command, read right after launch (`ps -p <pid> -o lstart=,comm=`), and stop only those. A PID or process group of a process that already exited can be reused by another program, so right before each signal confirm it is still yours: `soho procs` shows it `running` (not `gone` or `reused`), or `ps -p <pid> -o lstart=,comm=` still prints the start time and command you recorded. When they differ, or you cannot check, do not signal it: report the PID. Signal a process group (`kill -- -<pgid>`) only while its leader, the PID you launched, passes this check. Stop a process you registered with `soho procs stop <pid>`: it signals only your own registered processes, after the same check. Otherwise signal one recorded PID at a time; never build a PID list from `ps`, `pgrep`, `lsof` or `awk` output, and never run `kill $(…)`, `xargs kill`, `pkill`, `killall`, `kill -1`, `kill 0` or `kill -- -1`: one wrong filter signals every process of the user, the orchestrator's session included. Right after starting a background process, register it with `soho procs add <pid>` (`$!`): if you cannot stop it, or the slice ends early, `release` stops it. Never stop, signal or kill a process you did not start in this slice, even an orphan, a stale-looking one or one using a lot of CPU: report its PID and let the orchestrator decide. Never list the command lines of all processes: they can hold credentials. Some sandboxes block `ps`; then say so in the report.
 - Never search (grep, rg, find, ls -R, fd) outside the worktree, the directories the brief names and your own throwaway copy: not the home directory, not `/`, not all of `$TMPDIR`, not another repository. If something you need is not there, say so in the report instead of looking for it.
 - Do not commit, push, or open PRs.
+- Never run `git stash`: the stash stack is shared between the worktrees of the repository, so stashing there can hide, mix or restore changes of another worktree.
 - When the brief does not decide something that changes behavior, an interface, data, user-facing text, a public name or a requirement, do not choose: mark the item `partial`, list the gap and the options you see under open questions, and continue with the other items. Never invent names, endpoints, flags, credentials, URLs or requirements.
 - A source outside the repository that the brief does not require (a memory or rules service, such as an MCP server the sandbox refuses or that is off; a card's or a link's page; an external service) is a one-line note naming the source and why you could not reach it, not a `[partial]` item: the rules you follow come from the brief, this role and the project's instructions (`AGENTS.md`, `CLAUDE.md`). A source the brief requires (read the card, compare with doc X, run against service Y) stays `[partial]` when you cannot reach it.
 </directives>
