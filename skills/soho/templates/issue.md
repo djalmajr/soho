@@ -1,6 +1,5 @@
 ---
 title: "soho: <one line — what went wrong or what is missing>"
-labels: soho
 ---
 
 ## Scenario

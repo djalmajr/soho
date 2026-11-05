@@ -46,8 +46,12 @@ func refuseReadOnlyEditBrief(body, brief, agent, role string, explicit bool, ctx
 		signals = append(signals, "Type: "+typeValue)
 		suggested = map[string]string{"mechanical": "tasker", "backend": "implementer", "ui": "designer", "docs": "documenter"}[typeValue]
 	}
-	aliases, _ := dispatch.ParseBriefLintAliases(core.Cfg(ctx, "brief_lint_aliases", "", env))
-	if dispatch.BriefHasOwnedItems(body, aliases) {
+	// DJA-694: the read-only refusal counts only the literal "Owned files"
+	// title - a scope list under a synonym like "Arquivos" is not an edit
+	// request. Edit roles keep counting the synonyms (ownedPaths, section
+	// lint), which is why this signal uses the literal matcher instead of
+	// BriefHasOwnedItems.
+	if dispatch.BriefHasLiteralOwnedItems(body) {
 		signals = append(signals, "Owned files")
 	}
 	if len(signals) == 0 {
@@ -57,7 +61,12 @@ func refuseReadOnlyEditBrief(body, brief, agent, role string, explicit bool, ctx
 	if explicit {
 		wording = "was given"
 	}
-	core.DieFriction(fmt.Sprintf("dispatch: brief %s asks for edits (%s) but '%s' %s the read-only role '%s'; nothing was sent. Pass --role %s to give it an edit role, or drop the edit sections from the brief", brief, strings.Join(signals, ", "), agent, wording, role, suggested), 2, frictionLogPath, "dispatch")
+	// Renaming a title cannot lift a refusal the Type line caused.
+	remedy := "or rename the 'Owned files' title, or drop the edit sections from the brief"
+	if signals[0] != "Owned files" {
+		remedy = "or drop the '" + signals[0] + "' line and the edit sections from the brief"
+	}
+	core.DieFriction(fmt.Sprintf("dispatch: brief %s asks for edits (%s) but '%s' %s the read-only role '%s'; nothing was sent. Pass --role %s to give it an edit role, %s", brief, strings.Join(signals, ", "), agent, wording, role, suggested, remedy), 2, frictionLogPath, "dispatch")
 }
 
 func amendmentRoleHeader(roleFile, role, agent string) string {

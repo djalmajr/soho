@@ -190,7 +190,7 @@ func sessionFooterSegments(o *SessionRenderOptions, avail int) [][]string {
 	if displayWidth(strings.Join(withPage, " · ")) <= avail {
 		nav = withPage
 	}
-	filters := []string{"p Pane", "w Workspace", "s Status", "f " + sessionScopeLabel(o.Scope), "t " + sessionStatusLabel(o.Status)}
+	filters := []string{"Sort: p Pane", "w Workspace", "s Status", "f " + sessionScopeLabel(o.Scope), "t " + sessionStatusLabel(o.Status)}
 	actions := []string{"c Copy", "Enter Focus", "Esc Close"}
 	if o.TeamKey {
 		actions = append([]string{"i Team"}, actions...)
