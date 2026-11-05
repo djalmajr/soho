@@ -578,7 +578,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	if _, err := taskreport.SyncTaskReport(sd, agent); err != nil {
 		panic(err)
 	}
-	if err := os.WriteFile(lastPath, []byte(report+"\n"), 0o666); err != nil {
+	if err := writeReportPointer(lastPath, report+"\n"); err != nil {
 		panic(err)
 	}
 	clearDispatchWait := func() {
@@ -1470,6 +1470,12 @@ func dispatchCauseOrUnknown(err error) string {
 	}
 	return "unknown error"
 }
+
+// writeReportPointer replaces the pointer in one rename: wait and status read
+// it while a dispatch runs, and a plain write would show them an empty or mixed
+// value.
+func writeReportPointer(path, value string) error { return platform.AtomicWrite(path, value) }
+
 func restoreTaskDispatch(sd, agent, lastPath string, priorLast []byte, prior *jsonjs.Object) error {
 	if prior == nil {
 		_ = os.Remove(taskreport.TaskReportPointerPath(sd, agent))
@@ -1481,7 +1487,7 @@ func restoreTaskDispatch(sd, agent, lastPath string, priorLast []byte, prior *js
 		_ = os.Remove(lastPath)
 		return nil
 	}
-	return os.WriteFile(lastPath, priorLast, 0o666)
+	return writeReportPointer(lastPath, string(priorLast))
 }
 func writeDispatchError(agent, role, kind, composed, report, taskReport, sd, raw string, code int, warning string) int {
 	obj := jsonjs.O("wait_status", "error", "agent", agent, "role", role, "kind", kind, "composed_prompt", composed, "report", report, "task_report", taskReport, "report_exists", false, "raw", raw)

@@ -68,8 +68,8 @@ RUN set -eu; \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' \
       > /etc/apt/sources.list.d/snapshot.sources; \
-    apt-get -o Acquire::Check-Valid-Until=false update; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=8 update; \
+    DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=8 install -y --no-install-recommends \
       ca-certificates curl fd-find gcc git less libc6-dev openssh-client \
       patch procps ripgrep tini xz-utils; \
     ln -s /usr/bin/fdfind /usr/local/bin/fd; \

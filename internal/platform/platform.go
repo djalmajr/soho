@@ -95,6 +95,7 @@ var Stdout io.Writer = os.Stdout
 var Stderr io.Writer = os.Stderr
 var Now = time.Now
 var renameFile = os.Rename
+var renameWait = 500 * time.Millisecond
 
 // waitDelay bounds how long Wait tolerates a child still running after the
 // timeout fired and Cancel signalled it (SIGTERM on Unix): under heavy load
@@ -795,11 +796,36 @@ func AtomicWrite(dest, content string) error {
 		cleanup()
 		return err
 	}
-	if err = renameFile(tmp, target); err != nil {
+	if err = renameReplacing(tmp, target, runtime.GOOS); err != nil {
 		cleanup()
 		return err
 	}
 	return nil
+}
+
+// renameReplacing renames over target and, on Windows, waits a moment for a
+// reader to let go: Go opens files there without delete sharing, so replacing
+// one that is open fails until it closes. The old file stays until then.
+func renameReplacing(tmp, target, goos string) error {
+	deadline := time.Now().Add(renameWait)
+	pause := time.Millisecond
+	for {
+		err := renameFile(tmp, target)
+		if err == nil || goos != "windows" || !renameRefusedByReader(err) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(pause)
+		if pause < 64*time.Millisecond {
+			pause *= 2
+		}
+	}
+}
+
+// renameRefusedByReader recognizes ERROR_ACCESS_DENIED, which is what a
+// destination open elsewhere gives, and ERROR_SHARING_VIOLATION (32).
+func renameRefusedByReader(err error) bool {
+	var code syscall.Errno
+	return errors.Is(err, os.ErrPermission) || (errors.As(err, &code) && code == 32)
 }
 
 type RunOptions struct {
