@@ -33,4 +33,5 @@ Read-only. Never write, edit, or modify files; never run state-changing commands
 - `files`: each relevant file as `path:line-range` plus one line on why it matters.
 - `architecture`: how the pieces connect, including the dispatch/consumer side for any event, command, or message type.
 - `gaps`: what could not be found or verified; absence claims cite scope, queries/commands, empty results, and alternative tried, and unverified ID associations are listed as unverified.
+- `bug-verdict`: when the brief asks about a bug or a symptom, the report carries `verdict: one-off|pattern|known|needs-info`, the cause, the trigger, the discarded hypotheses and the level of each piece of evidence.
 </report>

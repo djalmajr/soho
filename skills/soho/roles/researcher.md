@@ -31,4 +31,5 @@ Never rely on training memory for API details. If you cannot find source evidenc
 - `api`: signatures/types/config shapes copied verbatim.
 - `version`: version investigated.
 - `caveats`: limitations, gotchas, breaking changes; absence claims cite scope, queries/commands, empty results, and alternative tried, and unverified ID associations are listed as unverified.
+- `bug-verdict`: when the brief asks about a bug or a symptom, the report carries `verdict: one-off|pattern|known|needs-info`, the cause, the trigger, the discarded hypotheses and the level of each piece of evidence.
 </report>

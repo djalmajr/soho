@@ -454,3 +454,52 @@ func TestMarkOpenFailureExits4(t *testing.T) { // mutation: panicking on the ope
 		t.Fatalf("metrics.jsonl changed: %q", lines)
 	}
 }
+
+// TestMarkFindingIgnoresFindingMarks (DJA-684 slice B, scenario 10):
+// mark --finding <n> keeps indexing the settled line's findings count
+// whether or not the line carries the new finding_marks and items.origins
+// keys.
+func TestMarkFindingIgnoresFindingMarks(t *testing.T) {
+	const withMarks = `{"ts":"2026-10-01T20:00:00Z","agent":"rev","report":"review-20261001T191548.md","role":"reviewer","kind":"codex","model":"gpt-5","effort":"max","family":"openai","type":"review","duration_s":312,"session":"20260930T210000","arrival":"queued","items":{"done":3,"partial":0,"skipped":0,"origins":{"brief":1,"impl":1,"unknown":0}},"verdict":"pass","findings":2,"severity":{"P0":0,"P1":0,"P2":2,"P3":0},"verdict_effective":"fail","finding_marks":{"brief":1,"impl":1,"unknown":0,"unmarked":1}}`
+	const withoutMarks = `{"ts":"2026-10-01T20:00:00Z","agent":"rev","report":"review-20261001T191548.md","role":"reviewer","kind":"codex","model":"gpt-5","effort":"max","family":"openai","type":"review","duration_s":312,"session":"20260930T210000","arrival":"queued","items":{"done":3,"partial":0,"skipped":0},"verdict":"pass","findings":2,"severity":{"P0":0,"P1":0,"P2":2,"P3":0},"verdict_effective":"fail"}`
+	normalize := func(t *testing.T, line string) string {
+		t.Helper()
+		match := markTsRE.FindStringSubmatch(line)
+		if match == nil {
+			t.Fatalf("mark line does not start with ts,label,report: %q", line)
+		}
+		return strings.Replace(line, match[1], "TS", 1)
+	}
+	markRun := func(t *testing.T, seeded string, args ...string) (int, string, string) {
+		t.Helper()
+		f := newMarkFixture(t)
+		f.seedLine(t, seeded)
+		return f.run(t, append([]string{"review-20261001T191548.md"}, args...)...)
+	}
+	t.Run("mark_: --finding 2=real appends the same mark line with finding_marks present", func(t *testing.T) {
+		code1, out1, err1 := markRun(t, withMarks, "--finding", "2=real")
+		code2, out2, err2 := markRun(t, withoutMarks, "--finding", "2=real")
+		if code1 != 0 || err1 != "" {
+			t.Fatalf("with marks: code=%d stderr=%q", code1, err1)
+		}
+		if code2 != 0 || err2 != "" {
+			t.Fatalf("without marks: code=%d stderr=%q", code2, err2)
+		}
+		if normalize(t, out1) != normalize(t, out2) {
+			t.Fatalf("the mark line differs with vs without the marks:\nwith=%q\nwithout=%q", out1, out2)
+		}
+		if !strings.Contains(out1, `"findings":{"2":"real"}`) {
+			t.Fatalf("the mark does not point at finding 2: %q", out1)
+		}
+	})
+	t.Run("mark_: --finding 3=real is refused on both lines (findings is 2)", func(t *testing.T) {
+		code1, _, err1 := markRun(t, withMarks, "--finding", "3=real")
+		code2, _, err2 := markRun(t, withoutMarks, "--finding", "3=real")
+		if code1 != 2 || code2 != 2 {
+			t.Fatalf("codes = %d and %d, want 2 and 2", code1, code2)
+		}
+		if !strings.Contains(err1, "outside 1..2") || !strings.Contains(err2, "outside 1..2") {
+			t.Fatalf("refusals differ:\nwith=%q\nwithout=%q", err1, err2)
+		}
+	})
+}

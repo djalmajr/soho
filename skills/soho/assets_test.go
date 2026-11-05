@@ -273,3 +273,59 @@ func TestBundleCachedIsStrictlyReadOnly(t *testing.T) {
 		}
 	})
 }
+
+// TestReviewRolesCarryTheFindingMarks (DJA-684 slice B, scenario 13): the
+// five review roles carry the exact finding-mark form and the two new
+// rules; implementer and critical-implementer are untouched (the byte
+// parity test keeps them matching).
+func TestReviewRolesCarryTheFindingMarks(t *testing.T) {
+	for _, name := range []string{"reviewer", "security-reviewer", "validator", "ui-reviewer", "inspector"} {
+		t.Run(name, func(t *testing.T) {
+			body := roleBody(t, name+".md")
+			for _, needle := range []string{
+				`[F<n>]`,
+				"starting at 1",
+				`[origin: brief|impl|unknown]`,
+				"does not name the implementer's brief",
+				`[class: <slug>]`,
+				"the class of the error, not the symptom",
+				`^[a-z0-9][a-z0-9-]{0,40}$`,
+				"race-read-write",
+				"missing-bound",
+				"follows-link",
+				"error-swallowed",
+				"doc-drift",
+				"the list is open",
+				"list the places in one finding",
+				`declined: <reason>`,
+				"new evidence",
+			} {
+				if !strings.Contains(body, needle) {
+					t.Fatalf("%s.md missing the finding-marks %s", name, needle)
+				}
+			}
+		})
+	}
+}
+
+// TestResearchRolesCarryTheBugVerdict (DJA-684 slice B, scenario 13): the
+// research roles carry the bug/symptom verdict block.
+func TestResearchRolesCarryTheBugVerdict(t *testing.T) {
+	for _, name := range []string{"researcher", "scouter"} {
+		t.Run(name, func(t *testing.T) {
+			body := roleBody(t, name+".md")
+			for _, needle := range []string{
+				"a bug or a symptom",
+				"verdict: one-off|pattern|known|needs-info",
+				"the cause",
+				"the trigger",
+				"the discarded hypotheses",
+				"the level of each piece of evidence",
+			} {
+				if !strings.Contains(body, needle) {
+					t.Fatalf("%s.md missing the bug verdict %s", name, needle)
+				}
+			}
+		})
+	}
+}
