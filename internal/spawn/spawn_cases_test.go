@@ -938,3 +938,55 @@ func Test_init_sub_orchestrator_spawn_lazy_rename_keeps_name(t *testing.T) {
 		}
 	}
 }
+
+func TestSpawnCriticalLaneMissingExecutableAndLaneKind(t *testing.T) {
+	// DJA-686: with a lane known and the executable missing, the PATH
+	// warning gains the 'soho setup --lane <lane>=<kind>' suggestion while
+	// the failure path (exit 4, pane kept) is unchanged. A user-written
+	// lane.critical.kind resolves the spawn kind for critical-implementer.
+	t.Run("spawn: critical-implementer without codex warns the lane suggestion and still fails 4", func(t *testing.T) {
+		f := newSpawnFixture(t, []fakecli.Rule{
+			{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},
+			{Argv: []string{"agent", "start"}, ArgvPrefix: true, Stderr: `{"error":{"code":"timeout","message":"timed out"}}`, Code: 1},
+			{Argv: []string{"agent", "read"}, ArgvPrefix: true, Stdout: "blocked screen\n"},
+			{Argv: []string{"pane", "close"}, ArgvPrefix: true},
+		})
+		configureSpawnFixture(t, &f)
+		delete(f.env, "SOHO_LANES")
+		code, _, stderr, _ := runCmdSpawn(t, f, []string{"critical-implementer", "--pane", "w0test:p0a", "--fresh"})
+		want := "soho: warning: executable 'codex' not found in PATH; herdr agent start may fail; choose another with 'soho setup --lane critical=<kind>'"
+		if code != 4 || !strings.Contains(stderr, want) {
+			t.Fatalf("exit=%d stderr=%q; want 4 with %q", code, stderr, want)
+		}
+	})
+	t.Run("spawn: lane.critical.kind=claude resolves the spawn kind", func(t *testing.T) {
+		f := newSpawnFixture(t, freshSpawnRules())
+		configureSpawnFixture(t, &f)
+		delete(f.env, "SOHO_LANES")
+		// The fixture's ctx is what CmdSpawn sees (it does not load repo
+		// files): the project layer's lane.critical.kind enters through the
+		// same key a file would set.
+		f.ctx.Entries["lane_critical_kind"] = core.ConfigEntry{Value: "claude", Source: "project"}
+		f.ctx.Order = []string{"lane_critical_kind"}
+		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"critical-implementer", "--pane", "w0test:p0a", "--fresh"})
+		if code != 0 {
+			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		kindFlag := false
+		for _, call := range calls {
+			if len(call.Argv) >= 2 && call.Argv[0] == "agent" && call.Argv[1] == "start" && containsArgPair(call.Argv, "--kind", "claude") {
+				kindFlag = true
+			}
+		}
+		if !kindFlag {
+			t.Fatalf("agent start did not get --kind claude: %#v", calls)
+		}
+		roster, err := os.ReadFile(filepath.Join(f.state, "ws", "agents.tsv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(roster), "claude") {
+			t.Fatalf("roster kind not claude: %q", roster)
+		}
+	})
+}

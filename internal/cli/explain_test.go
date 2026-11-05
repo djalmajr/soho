@@ -27,8 +27,8 @@ func TestExplainTextAndRecommendation(t *testing.T) {
 		}
 		want := []string{
 			"Recommendation: 2 panels - one writes code (research included) and the review happens here. The lightest choice. 3 panels add a reviewer panel.",
-			"Recommendation: 3 panels - one writes code (research included) and one reviews. Lighter on quota. 4 panels add a second writer; with 2 panels the review happens here.",
-			"Recommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here.",
+			"Recommendation: 3 panels - one writes code (research included) and one reviews. Lighter on quota. 4 panels add a second writer; with 2 panels the review happens here. A panel for risky code (auth, money, real data or concurrency) opens only when a slice needs it.",
+			"Recommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here. A panel for risky code (auth, money, real data or concurrency) opens only when a slice needs it.",
 		}
 		for i, panes := range []string{"2", "3", "4"} {
 			conf := "panes=" + panes + "\nlane.build.kind=grok\n"
@@ -73,10 +73,31 @@ func TestExplainTextAndRecommendation(t *testing.T) {
 			{lane: "review", role: "reviewer", kind: "codex", model: "gpt-5", activity: "idle"},
 		}
 		lines := explainPrintRunning(rows, "", &ctx, env, "")
-		for _, line := range []string{"Panels: 4.", "build: implementer, grok, model grok-4.7, working", "review: reviewer, codex, model gpt-5, idle"} {
+		for _, line := range []string{"Panels: 4 (+1 for risky code).", "build: implementer, grok, model grok-4.7, working", "review: reviewer, codex, model gpt-5, idle"} {
 			if !containsLocal(lines, line) {
 				t.Fatalf("running explanation missing %q: %#v", line, lines)
 			}
+		}
+		headers := []struct{ conf, want string }{
+			{conf: "panes=3\nlane.build.kind=grok\n", want: "Panels: 3 (+1 for risky code)."},
+			{conf: "panes=2\nlane.build.kind=grok\n", want: "Panels: 2."},
+			{conf: "panes=2\nlane.critical.panes=1\nlane.build.kind=grok\n", want: "Panels: 2."},
+			{conf: "panes=4\npane_mode=flex\nlane.build.kind=grok\n", want: "Panels: 4 (+1 for risky code, +1 temporary)."},
+			{conf: "panes=2\npane_mode=flex\nlane.build.kind=grok\n", want: "Panels: 2 (+1 temporary)."},
+			{conf: "panes=4\nlane.build.roles=implementer\nlane.review.roles=reviewer\n", want: "Panels: 4."},
+			{conf: "lanes=off\npanes=4\n", want: "Panels: 4."},
+		}
+		for _, h := range headers {
+			t.Run(h.want, func(t *testing.T) {
+				if err := os.WriteFile(filepath.Join(repo, ".agents", "soho.conf"), []byte(h.conf), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				ctx := core.LoadConfig(env, repo)
+				lines := explainPrintRunning(nil, "", &ctx, env, "")
+				if lines[0] != h.want {
+					t.Fatalf("header = %q, want %q (all: %#v)", lines[0], h.want, lines)
+				}
+			})
 		}
 		if got := strings.Join(explainIdleParagraph(), "\n"); !strings.Contains(got, "Nothing is running yet.") || !strings.Contains(got, "Four panels are recommended:") {
 			t.Fatalf("idle text changed: %s", got)
@@ -118,7 +139,7 @@ func TestExplainCommandRosterActivity(t *testing.T) {
 		tm6Write(t, filepath.Join(sd, "agents.tsv"), "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\n"+
 			"build\tp1\tgrok\timplementer\txai\t1\t/work\tt1\tgrok-4.7\tfull\timplementer\tbuild\n"+
 			"review\tp2\tcodex\treviewer\topenai\t1\t/work\tt2\tgpt-5\ttask\treviewer\treview\n")
-		check("build: implementer, grok, model grok-4.7, working", "review: reviewer, codex, model gpt-5, idle", "Panels: 4.", "Recommendation: 4 panels")
+		check("build: implementer, grok, model grok-4.7, working", "review: reviewer, codex, model gpt-5, idle", "Panels: 4 (+1 for risky code).", "Recommendation: 4 panels")
 		tm6Write(t, filepath.Join(sd, "agents.tsv"), "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\nqueued\tp1\tgrok\timplementer\txai\t1\t/work\tt1\tgrok-4.7\tfull\timplementer\tbuild\n")
 		tm6Write(t, filepath.Join(sd, "last-report-queued"), filepath.Join(sd, "reports", "queued.md")+"\n")
 		check("build: implementer, grok, model grok-4.7, waiting for report")

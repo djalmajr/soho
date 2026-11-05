@@ -38,7 +38,7 @@ const nowriteExplainIdle = "soho runs a small team of agents in Herdr panels. Yo
 // lane lines and before the blank line). The copies are fixed-length; the
 // state dir holds absolute temporary paths, so its size (and the total)
 // depends on the machine and is matched by nowriteFootprintSizes.
-const nowriteExplainRunning = "Panels: 4.\nbuild: implementer, grok, model grok-4.7, idle\nreview: not started\nFootprint: <total> logical size (copies 3.0 KB in 2, state <state>, scratch 0 B); no registered process running.\n\nRecommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here.\n"
+const nowriteExplainRunning = "Panels: 4 (+1 for risky code).\nbuild: implementer, grok, model grok-4.7, idle\ncritical: not started\nreview: not started\nFootprint: <total> logical size (copies 3.0 KB in 2, state <state>, scratch 0 B); no registered process running.\n\nRecommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here. A panel for risky code (auth, money, real data or concurrency) opens only when a slice needs it.\n"
 
 // nowriteFootprintSizes replaces the machine-dependent total and state sizes
 // of the footprint line with the placeholders nowriteExplainRunning uses.

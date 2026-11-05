@@ -18,10 +18,10 @@ layout=split
 
 # Live workers of this skill at once in the workspace; the orchestrator does
 # not count. With lanes on and no value set in a user/project/session/env
-# layer, it is the sum of the lane capacities (3 for panes=4: build x2 +
-# review), plus flex_extra in pane_mode=flex. `spawn` refuses a new pane past
-# it (exit 8): release a finished worker with `release --close` or let
-# `reuse_workers` pick an idle one. 0 = no cap.
+# layer, it is the sum of the lane capacities (4 for panes=4: build x2 +
+# critical + review), plus flex_extra in pane_mode=flex. `spawn` refuses a
+# new pane past it (exit 8): release a finished worker with `release
+# --close` or let `reuse_workers` pick an idle one. 0 = no cap.
 max_workers=3
 
 # Panes per tab before new workers overflow into the next herd tab. In the
@@ -92,14 +92,18 @@ herd_label_max=16
 # opens another pane. Reuse never counts against max_workers.
 reuse_workers=on
 
-# How many panes the team uses, counting the orchestrator: 4 (default) =
+# How many panes the team uses: `panes` counts the orchestrator and the
+# fixed panels; the critical slot's panel is one more, open only when a
+# risky slice needs it (four panels can reach five). 4 (default) =
 # orchestrator + build (2 workers: implementer, designer, tasker, tester,
-# scouter, researcher) + review (reviewer, security-reviewer, ui-reviewer,
-# inspector, validator); 3 = orchestrator + build (1) + review; 2 =
-# orchestrator + build (1), and the orchestrator reviews. The preset is
-# resolved at run time; when max_workers and split_max_panes are left at
-# their defaults they follow it. `lanes=off` keeps one pane per role and
-# the multi_role reuse from before lanes existed.
+# scouter, researcher) + critical (1: critical-implementer) + review
+# (reviewer, security-reviewer, ui-reviewer, inspector, validator); 3 =
+# orchestrator + build (1) + critical (1) + review; 2 = orchestrator +
+# build (1), and the orchestrator reviews (no critical lane: spawn
+# critical-implementer exits 3, like a review role). The preset is resolved
+# at run time; when max_workers and split_max_panes are left at their
+# defaults they follow it. `lanes=off` keeps one pane per role and the
+# multi_role reuse from before lanes existed.
 panes=4
 lanes=on
 
@@ -115,6 +119,9 @@ flex_extra=1
 flex_roles=reviewer,documenter
 
 # Optional lane overrides. Any lane.<name>.roles replaces the preset.
+# The preset's `critical` lane holds only critical-implementer, so
+# doctor --fix never writes its kind: a single-role lane would freeze the
+# choice. A lane.critical.* you set is kept and decides the spawn.
 # lane.<name>.kind is the CLI for every role in that lane. When it is empty,
 # the first spawn picks the role's own kind, and a later role with a different
 # kind, model, or effort exits 13 (kind-mismatch) instead of reusing. A live

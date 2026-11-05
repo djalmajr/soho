@@ -122,17 +122,18 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 			want   string
 		}{
 			{map[string]string{"panes": "4", "pane_mode": "flex", "split_max_panes": "4"}, "leaves no room for the whole team"},
-			{map[string]string{"panes": "4", "pane_mode": "flex", "split_max_panes": "5"}, ""},
-			{map[string]string{"panes": "4", "pane_mode": "flex", "split_max_panes": "6"}, "greater than 1 + max_workers=4"},
-			{map[string]string{"panes": "4", "split_max_panes": "5"}, "greater than 1 + max_workers=3"},
-			{map[string]string{"panes": "4", "pane_mode": "flex", "split_max_panes": "5"}, "no split cap diagnostic"},
+			{map[string]string{"panes": "4", "pane_mode": "flex", "split_max_panes": "5"}, "leaves no room for the whole team"},
+			{map[string]string{"panes": "4", "pane_mode": "flex", "split_max_panes": "6"}, "no split cap diagnostic"},
+			{map[string]string{"panes": "4", "pane_mode": "flex", "split_max_panes": "7"}, "greater than 1 + max_workers=5"},
+			{map[string]string{"panes": "4", "split_max_panes": "5"}, ""},
+			{map[string]string{"panes": "4", "split_max_panes": "6"}, "greater than 1 + max_workers=4"},
 		} {
 			var out strings.Builder
 			doctorLaneWarnings(tm6DoctorConfig(tc.values, "project"), env, root, &Say{Out: &out})
 			if tc.want != "" && tc.want != "no split cap diagnostic" && !strings.Contains(out.String(), tc.want) {
 				t.Fatalf("missing %q in %s", tc.want, out.String())
 			}
-			if tc.want == "no split cap diagnostic" && strings.Contains(out.String(), "split_max_panes=5") {
+			if tc.want == "no split cap diagnostic" && strings.Contains(out.String(), "split_max_panes=6") {
 				t.Fatalf("unexpected exact-cap warning: %s", out.String())
 			}
 			if tc.want == "" && strings.Contains(out.String(), "leaves no room") {
