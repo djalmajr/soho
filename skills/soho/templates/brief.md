@@ -71,7 +71,7 @@ issues.detail.linkProject = "…"
 ## Checks you may run
 
 - <the exact focused check commands for this project and slice>
-- Run only this slice's focused tests while iterating and before the report (in the herdr-soho repository: `go test ./internal/<package> -run <pattern>`). Run the full Go gates once at the end of the effort, not for every slice.
+- Run only this slice's focused tests while iterating and before the report. Run the project's full gates once at the end of the effort, not for every slice.
 - Do NOT run the formatter or e2e.
 - Give every test subprocess a bounded timeout; every branch of a fake CLI must handle its arguments explicitly.
 - UI slices: say who runs the browser smoke (you, when you can open a browser; otherwise the orchestrator or an `inspector` after your report).

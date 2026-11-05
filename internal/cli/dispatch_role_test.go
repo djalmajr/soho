@@ -66,6 +66,9 @@ func TestDispatchRoleEditSignals(t *testing.T) {
 		{name: "security", body: "Type: security\n", explicit: "reviewer"},
 		{name: "review-scope", body: "Type: review\n## Scope\n- app.go\n## Escopo\n- other.go\n", explicit: "reviewer"},
 		{name: "security-scope", body: "Type: security\n## Scope\n- app.go\n## Escopo\n- other.go\n", explicit: "security-reviewer"},
+		{name: "reviewer-arquivos-scope", body: "Type: review\n## Arquivos\n- app.go\n", explicit: "reviewer"},
+		{name: "reviewer-arquivos-empty", body: "Type: review\n## Arquivos\n\n## Outro\n- x\n", explicit: "reviewer"},
+		{name: "reviewer-both-titles", body: "## Arquivos\n- a.go\n\n## Owned files\n- b.go\n", explicit: "reviewer", signal: "Owned files", suggest: "implementer", word: "was given", refuse: true},
 		{name: "empty-owned", body: "# Owned files\n\n# Report\nDone\n"},
 		{name: "fenced-owned", body: "```md\nType: backend\n# Owned files\n- app.go\n```\nType: review\n"},
 	} {
@@ -86,7 +89,7 @@ func TestDispatchRoleEditSignals(t *testing.T) {
 				if role == "" {
 					role = "scouter"
 				}
-				want := fmt.Sprintf("dispatch: brief %s asks for edits (%s) but 'worker' %s the read-only role '%s'; nothing was sent. Pass --role %s to give it an edit role, or drop the edit sections from the brief", f.brief, tc.signal, tc.word, role, tc.suggest)
+				want := fmt.Sprintf("dispatch: brief %s asks for edits (%s) but 'worker' %s the read-only role '%s'; nothing was sent. Pass --role %s to give it an edit role, or rename the 'Owned files' title, or drop the edit sections from the brief", f.brief, tc.signal, tc.word, role, tc.suggest)
 				if code != 2 || !strings.Contains(msg, want) {
 					t.Fatalf("code=%d out=%s msg=%q want=%q", code, out, msg, want)
 				}
@@ -110,6 +113,22 @@ func TestDispatchRoleEditSignals(t *testing.T) {
 				t.Fatal("roster changed")
 			}
 		})
+	}
+}
+
+// DJA-694: the edit role keeps counting the synonyms as scope: "Arquivos"
+// still extracts the owned paths (the overlap warning and the section lint
+// ride on the same matching), so only the read-only refusal narrows to the
+// literal title.
+func TestOwnedPathsArquivosStillCountsAsScope(t *testing.T) {
+	for _, body := range []string{
+		"Type: backend\n## Arquivos\n- `app.go`\n",
+		"Type: backend\n## Arquivos\n- app.go\n",
+	} {
+		paths := ownedPaths(body, nil)
+		if len(paths) != 1 || !strings.HasSuffix(paths[0], "app.go") {
+			t.Fatalf("Arquivos no longer counts as scope for edit roles: %q -> %v", body, paths)
+		}
 	}
 }
 

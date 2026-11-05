@@ -2,6 +2,7 @@ package skill
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -298,4 +299,40 @@ func TestBundleBriefTemplateCitesTheAuthorMeasurement(t *testing.T) {
 			t.Fatalf("Worktree: line must cite the author measurement and the root declaration, lost %q: %s", want, worktreeLine)
 		}
 	}
+}
+
+// DJA-683: the "soho" GitHub label does not exist in the feedback repo, so
+// the issue template and the skill instructions must not ask for it; the
+// brief template must not name this repository or its Go commands, and the
+// orchestration reference must not claim the removed model-family rule.
+func TestSkillAssetsDropTheSoHoIssueLabelAndRepoLeftovers(t *testing.T) {
+	cases := []struct {
+		path   string
+		absent []string
+	}{
+		{"templates/issue.md", []string{"labels: soho", "--label soho"}},
+		{"SKILL.md", []string{"--label soho"}},
+		{"templates/brief.md", []string{"herdr-soho", "go test"}},
+		{"references/orchestration.md", []string{"different model families"}},
+	}
+	for _, tc := range cases {
+		data, err := resources.ReadFile(tc.path)
+		if err != nil {
+			t.Fatalf("bundle is missing %s: %v", tc.path, err)
+		}
+		for _, needle := range tc.absent {
+			if strings.Contains(string(data), needle) {
+				t.Fatalf("%s still carries %q: %s", tc.path, needle, firstLineContaining(string(data), needle))
+			}
+		}
+	}
+}
+
+func firstLineContaining(body, needle string) string {
+	for i, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, needle) {
+			return fmt.Sprintf("line %d: %s", i+1, line)
+		}
+	}
+	return ""
 }
