@@ -543,6 +543,44 @@ func TestBundleBriefTemplateCitesTheAuthorMeasurement(t *testing.T) {
 	}
 }
 
+func TestBundleBriefTemplateCarriesTheTypeSections(t *testing.T) {
+	// DJA-685: the template carries the per-Type sections and the Mutations
+	// section, each with its deletion comment and the marker meanings; a
+	// filled brief generated from it (every section kept, a Type: line
+	// added) produces no warning from this slice.
+	data, err := resources.ReadFile("templates/brief.md")
+	if err != nil {
+		t.Fatalf("bundle is missing templates/brief.md: %v", err)
+	}
+	body := string(data)
+	for _, want := range []string{
+		"## Risk markers (Type: backend)",
+		"<!-- Delete this section for every Type but backend. -->",
+		"## Input and response (Type: security)",
+		"<!-- Delete this section for every Type but security. -->",
+		"## UI lifecycle (Type: ui)",
+		"<!-- Delete this section for every Type but ui. -->",
+		"## Mutations (Type: backend or security)",
+		"<!-- Delete this section for every Type but backend and security. -->",
+		"- [boundary] limits, empty input, sizes, encodings at the edge of the slice",
+		"- [lifetime] what the slice opens or starts, who closes it, and what happens on timeout",
+		"- [shared] state other processes or callers touch, and how it stays consistent",
+		"- [identity] who owns each thing, how the caller is checked, and what a reused id does",
+		"- [hostile] input built to break it: links, paths outside the tree, control characters",
+		"- [async] loading, late, failed and repeated states",
+		"- [test-env] what the test environment does not reproduce",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("template lost %q", want)
+		}
+	}
+	// The filled-brief proof (no warning from this slice) runs in
+	// internal/dispatch, where the lint is importable without a cycle.
+	if !strings.Contains(body, "An unfinished item is [skipped], never silence.") {
+		t.Fatal("template Report section lost the skipped-item rule")
+	}
+}
+
 // DJA-683: the "soho" GitHub label does not exist in the feedback repo, so
 // the issue template and the skill instructions must not ask for it; the
 // brief template must not name this repository or its Go commands, and the

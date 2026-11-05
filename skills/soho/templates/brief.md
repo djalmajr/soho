@@ -5,7 +5,7 @@ Worktree: `<absolute path>` — this line feeds review author measurement (`soho
 <!-- A correction round names the review to answer with a `Review: <absolute path>` line outside fenced code (after Worktree:, the path between backticks when quoted, else the first field; a relative or malformed path is absent); the report then carries a `## Review responses` section with one line per finding of that review, and the wait counts what is left unanswered. Omit the line for every other brief. -->
 <!-- A review brief names the implementer's brief (its path or task pointer) under Sources; without it, the review marks every finding's origin `unknown`. -->
 
-<!-- Before dispatching, reread this brief as the worker and run the checklist in references/orchestration-contract.md § Brief checklist: any place where the worker would have to choose is a gap. Two or three items per brief. A change to a brief already in flight is its own file, sent with `dispatch <agent> amend.md --amend` — never a hand-rolled prompt. -->
+<!-- Before dispatching, reread this brief as the worker and run the checklist in references/orchestration-contract.md § Brief checklist: any place where the worker would have to choose is a gap. One slice covers one mechanism; the size alone does not decide. A change to a brief already in flight is its own file, sent with `dispatch <agent> amend.md --amend` — never a hand-rolled prompt. -->
 
 ## Goal
 
@@ -35,6 +35,43 @@ One executable fixture per step boundary of publish → prune/delete → retry:
 
 Say which items have local proof (fixtures) and which need operational proof.
 
+## Risk markers (Type: backend)
+
+<!-- Delete this section for every Type but backend. -->
+One line per marker; say `n/a: <reason>` for a marker the slice truly does not carry.
+
+- [boundary] limits, empty input, sizes, encodings at the edge of the slice
+- [lifetime] what the slice opens or starts, who closes it, and what happens on timeout
+- [shared] state other processes or callers touch, and how it stays consistent
+- [identity] who owns each thing, how the caller is checked, and what a reused id does
+- [hostile] input built to break it: links, paths outside the tree, control characters
+
+## Input and response (Type: security)
+
+<!-- Delete this section for every Type but security. -->
+List the inputs, built hostile where it matters, and the expected response.
+
+| Input | Expected response |
+|---|---|
+| <the input, hostile where it matters> | <what the slice does about it> |
+
+## UI lifecycle (Type: ui)
+
+<!-- Delete this section for every Type but ui. -->
+One line per marker; say `n/a: <reason>` for a marker the slice truly does not carry.
+
+- [async] loading, late, failed and repeated states
+- [test-env] what the test environment does not reproduce
+
+## Mutations (Type: backend or security)
+
+<!-- Delete this section for every Type but backend and security. -->
+One row per rule the slice adds or changes: the mutation (what the rule stops doing) and the case that must fail when it does. Say `n/a: <reason>` on the first line when the slice adds no rule worth mutating.
+
+| Mutation | The case that must fail |
+|---|---|
+| <what the rule stops doing> | <the test or check that must fail, named> |
+
 ## When the brief does not decide
 
 Do not choose. Mark the item `partial`, list the gap and the options you see under open questions, and continue with the other items. Never invent names, endpoints, flags, credentials, URLs or requirements.
@@ -42,6 +79,7 @@ Do not choose. Mark the item `partial`, list the gap and the options you see und
 ## Owned files
 
 <!-- read-only roles (the reviewers, the inspector) may omit this section; the dispatch lint skips it for them -->
+<!-- One path per line, no brace expansion: `src/lib/{a,b}.ts` is two lines. -->
 - `path/to/file.ts` — what changes here
 - `path/to/new-file.test.ts` — new
 
@@ -87,4 +125,4 @@ issues.detail.linkProject = "…"
 
 ## Report
 
-Write Markdown to `<report-path>` using the format in `templates/report.md` (per item: `[done]` / `[partial]` / `[skipped]` + reason). When finished, reply with only that path.
+Write Markdown to `<report-path>` using the format in `templates/report.md` (per item: `[done]` / `[partial]` / `[skipped]` + reason). An unfinished item is [skipped], never silence. When finished, reply with only that path.

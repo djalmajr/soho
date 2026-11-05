@@ -440,6 +440,12 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 		}
 		result.Warnings = append(result.Warnings, fmt.Sprintf("brief %s failure matrix is missing: %s — %s", brief, strings.Join(markers, " "), strings.Join(reasons, "; ")))
 	}
+	// The per-Type section warnings are for edit roles only (the PathsOnly
+	// amendment already returned above); they never join the refusal
+	// message, even in strict mode.
+	if !options.ReadOnly {
+		result.Warnings = append(result.Warnings, TypeSectionWarnings(brief, body)...)
+	}
 	// A Review: line the wait cannot answer from: a relative or malformed
 	// path (absent to the wait) or a file that does not exist. It is a
 	// warning, never a refusal — the wait simply skips the check.
