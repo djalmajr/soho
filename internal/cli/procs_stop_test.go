@@ -138,6 +138,15 @@ func TestProcsStopOwnerResolution(t *testing.T) {
 				if code != 0 || errOut != "" || out != fmt.Sprintf("stopped process %d (%s)\n", row.Pid, row.Name) || procAlive(t, f.env, row.Pid) || len(f.procsRows(t)) != 0 {
 					t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
 				}
+			} else if mode == "missing-pane" {
+				// DJA-697: the caller's pane is identifiable (not-in-roster),
+				// so the registered row is refused as a foreign row; the
+				// unknown pid keeps naming the pane and the state dir, as
+				// today.
+				want := fmt.Sprintf("procs stop: refusing %d: registered process belongs to another agent\nprocs stop: refusing 123456789: no calling agent in the roster (pane not-in-roster, state dir %s)\n", row.Pid, f.state)
+				if code != 2 || out != "" || errOut != want {
+					t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
+				}
 			} else {
 				cause := fmt.Sprintf("no calling agent in the roster (pane not-in-roster, state dir %s)", f.state)
 				if mode == "unknown-agent" {
@@ -368,6 +377,195 @@ func TestProcsStopUsage(t *testing.T) {
 		if code != 2 || out != "" || !strings.Contains(errOut, "procs stop exits: 0 stopped/already gone; 2 usage/refusal; 4 stop failed") {
 			t.Fatalf("args=%q code=%d out=%q stderr=%q", args, code, out, errOut)
 		}
+	}
+}
+
+// DJA-697: the orchestrator's own unowned row (owner "-") is stopped by
+// the pane that registered it - whatever the roster says about that pane -
+// through the same identity-checked stop.
+func TestProcsStopOwnUnownedRow(t *testing.T) {
+	for _, mode := range []string{"orchestrator-pane", "rostered-pane"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newProcsFixture(t)
+			pane := "p-orch" // not in the fixture's roster: the orchestrator case
+			if mode == "rostered-pane" {
+				pane = "p-worker" // the caller's pane is roster-mapped (worker)
+			}
+			f.env["HERDR_PANE_ID"] = pane
+			row := procsStopRow(t, f, f.sleeper(t), "-")
+			row.Pane = pane
+			f.writeProcs(t, row)
+			code, out, errOut := f.run(t, "procs", "stop", strconv.Itoa(row.Pid))
+			if code != 0 || out != fmt.Sprintf("stopped process %d (%s)\n", row.Pid, row.Name) || errOut != "" {
+				t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
+			}
+			if procAlive(t, f.env, row.Pid) || len(f.procsRows(t)) != 0 {
+				t.Fatal("own unowned process survived or its registry row remains")
+			}
+		})
+	}
+}
+
+// DJA-697 decision 3: --agent keeps its behavior. It names whose rows the call
+// acts on, so a "-" row stays closed even in the pane that registered it.
+func TestProcsStopAgentFlagDoesNotOpenUnownedRow(t *testing.T) {
+	f := newProcsFixture(t)
+	f.env["HERDR_PANE_ID"] = "p-worker"
+	row := procsStopRow(t, f, f.sleeper(t), "-")
+	row.Pane = "p-worker"
+	f.writeProcs(t, row)
+	code, out, errOut := f.run(t, "procs", "stop", "--agent", "worker", strconv.Itoa(row.Pid))
+	if code != 2 || out != "" || !strings.Contains(errOut, "registered process belongs to another agent") {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
+	}
+	if !procAlive(t, f.env, row.Pid) || len(f.procsRows(t)) != 1 {
+		t.Fatal("--agent opened an unowned row")
+	}
+}
+
+// DJA-697: a caller outside the roster has no owner, and an old or hand-written
+// row with an empty owner field must not match that empty value.
+func TestProcsStopEmptyOwnerRowStaysClosed(t *testing.T) {
+	f := newProcsFixture(t)
+	f.env["HERDR_PANE_ID"] = "p-orch"
+	row := procsStopRow(t, f, f.sleeper(t), "")
+	row.Pane = "p-someone-else"
+	f.writeProcs(t, row)
+	code, out, errOut := f.run(t, "procs", "stop", strconv.Itoa(row.Pid))
+	if code != 2 || out != "" || !strings.Contains(errOut, "registered process belongs to another agent") {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
+	}
+	if !procAlive(t, f.env, row.Pid) || len(f.procsRows(t)) != 1 {
+		t.Fatal("a row with an empty owner was opened by a caller outside the roster")
+	}
+}
+
+// DJA-697: two empty pane values never open a "-" row through equality.
+func TestProcsStopEmptyPaneNeverMatchesEmptyRowPane(t *testing.T) {
+	f := newProcsFixture(t)
+	f.env["HERDR_PANE_ID"] = ""
+	row := procsStopRow(t, f, f.sleeper(t), "-")
+	row.Pane = ""
+	f.writeProcs(t, row)
+	code, out, errOut := f.run(t, "procs", "stop", strconv.Itoa(row.Pid))
+	if code != 2 || out != "" || !strings.Contains(errOut, "no calling agent in the roster (pane unset") {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
+	}
+	if !procAlive(t, f.env, row.Pid) || len(f.procsRows(t)) != 1 {
+		t.Fatal("an empty pane opened a row with an empty pane")
+	}
+}
+
+// DJA-697 scenario 2: a "-" row registered in another pane is refused with
+// no signal, whatever the caller's pane is.
+func TestProcsStopForeignPaneUnownedRow(t *testing.T) {
+	f := newProcsFixture(t)
+	f.env["HERDR_PANE_ID"] = "p-orch"
+	row := procsStopRow(t, f, f.sleeper(t), "-")
+	row.Pane = "p-someone-else"
+	f.writeProcs(t, row)
+	code, out, errOut := f.run(t, "procs", "stop", strconv.Itoa(row.Pid))
+	if code != 2 || out != "" || !strings.Contains(errOut, fmt.Sprintf("procs stop: refusing %d: registered process belongs to another agent\n", row.Pid)) {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
+	}
+	assertProcsStopAlive(t, f, row)
+	if rows := f.procsRows(t); len(rows) != 1 || rows[0] != row {
+		t.Fatalf("foreign pane row changed: %+v", rows)
+	}
+}
+
+// DJA-697 scenario 3: the pane does not open a row of another owner, even
+// when the row's pane is the caller's pane.
+func TestProcsStopForeignOwnerSamePane(t *testing.T) {
+	f := newProcsFixture(t)
+	row := procsStopRow(t, f, f.sleeper(t), "other")
+	row.Pane = "p-worker" // the caller's pane
+	f.writeProcs(t, row)
+	code, out, errOut := f.run(t, "procs", "stop", strconv.Itoa(row.Pid))
+	if code != 2 || out != "" || !strings.Contains(errOut, fmt.Sprintf("procs stop: refusing %d: registered process belongs to another agent\n", row.Pid)) {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
+	}
+	assertProcsStopAlive(t, f, row)
+	if rows := f.procsRows(t); len(rows) != 1 || rows[0] != row {
+		t.Fatalf("row changed: %+v", rows)
+	}
+}
+
+// DJA-697 scenario 4: the pane rule reaches the row, but the identity
+// check keeps a reused pid from being signalled (the live process behind
+// the pid survives, the stale row is dropped, exit 0 - today's rule).
+func TestProcsStopUnownedRowReusedPid(t *testing.T) {
+	f := newProcsFixture(t)
+	f.env["HERDR_PANE_ID"] = "p-orch"
+	live := procsStopRow(t, f, f.sleeper(t), "-")
+	live.Pane = "p-orch"
+	row := live
+	row.Started = "Mon Jan  1 00:00:00 1990"
+	f.writeProcs(t, row)
+	code, out, errOut := f.run(t, "procs", "stop", strconv.Itoa(row.Pid))
+	if code != 0 || out != fmt.Sprintf("process %d was reused; not stopped\n", row.Pid) || errOut != "" || len(f.procsRows(t)) != 0 {
+		t.Fatalf("code=%d out=%q stderr=%q rows=%+v", code, out, errOut, f.procsRows(t))
+	}
+	assertProcsStopAlive(t, f, live)
+}
+
+// DJA-697 scenario 5: a caller without an identifiable pane refuses as
+// today, whatever the row says.
+func TestProcsStopEmptyPaneUnownedRow(t *testing.T) {
+	f := newProcsFixture(t)
+	f.env["HERDR_PANE_ID"] = ""
+	row := procsStopRow(t, f, f.sleeper(t), "-")
+	row.Pane = "p-orch"
+	f.writeProcs(t, row)
+	code, out, errOut := f.run(t, "procs", "stop", strconv.Itoa(row.Pid))
+	if code != 2 || out != "" || !strings.Contains(errOut, fmt.Sprintf("procs stop: refusing %d: no calling agent in the roster (pane unset, state dir %s)\n", row.Pid, f.state)) {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
+	}
+	assertProcsStopAlive(t, f, row)
+	if rows := f.procsRows(t); len(rows) != 1 || rows[0] != row {
+		t.Fatalf("row changed: %+v", rows)
+	}
+}
+
+// DJA-697 edge: a "-" row with no recorded pane (an older version)
+// refuses as today's foreign-row refusal; no pane is a pane.
+func TestProcsStopUnownedRowNoPane(t *testing.T) {
+	f := newProcsFixture(t)
+	f.env["HERDR_PANE_ID"] = "p-orch"
+	row := procsStopRow(t, f, f.sleeper(t), "-")
+	row.Pane = "-"
+	f.writeProcs(t, row)
+	code, out, errOut := f.run(t, "procs", "stop", strconv.Itoa(row.Pid))
+	if code != 2 || out != "" || !strings.Contains(errOut, fmt.Sprintf("procs stop: refusing %d: registered process belongs to another agent\n", row.Pid)) {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
+	}
+	assertProcsStopAlive(t, f, row)
+	if rows := f.procsRows(t); len(rows) != 1 || rows[0] != row {
+		t.Fatalf("row changed: %+v", rows)
+	}
+}
+
+// DJA-697 edge: several pids, one of them refused - today's rule: all pids
+// are processed and the worst code wins (the stop and the refusal together
+// exit 2).
+func TestProcsStopUnownedRowsMixed(t *testing.T) {
+	f := newProcsFixture(t)
+	f.env["HERDR_PANE_ID"] = "p-orch"
+	own := procsStopRow(t, f, f.sleeper(t), "-")
+	own.Pane = "p-orch"
+	foreign := procsStopRow(t, f, f.sleeper(t), "-")
+	foreign.Pane = "p-else"
+	f.writeProcs(t, own, foreign)
+	code, out, errOut := f.run(t, "procs", "stop", strconv.Itoa(own.Pid), strconv.Itoa(foreign.Pid))
+	if code != 2 || out != fmt.Sprintf("stopped process %d (%s)\n", own.Pid, own.Name) || !strings.Contains(errOut, fmt.Sprintf("procs stop: refusing %d: registered process belongs to another agent\n", foreign.Pid)) {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, errOut)
+	}
+	if procAlive(t, f.env, own.Pid) {
+		t.Fatal("own process survived")
+	}
+	assertProcsStopAlive(t, f, foreign)
+	if rows := f.procsRows(t); len(rows) != 1 || rows[0] != foreign {
+		t.Fatalf("rows=%+v", rows)
 	}
 }
 

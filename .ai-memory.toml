@@ -1,0 +1,6 @@
+# Project scope marker for ai-memory. Contains no credentials.
+workspace = "djalmajr"
+project = "herdr-soho"
+
+# Multi-agent orchestrator: accept but do not store its subagent captures.
+drop_subagent_captures = "true"

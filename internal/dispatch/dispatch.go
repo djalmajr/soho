@@ -218,6 +218,50 @@ func declaredWorktreeLine(body string) string {
 	return ""
 }
 
+// declaredReviewValue returns the value of the first Review: line outside
+// fenced code blocks, read the way DeclaredWorktree reads Worktree:: the
+// path between backticks when the value starts with one (an unclosed quote
+// is absent), else the first field. It applies no absoluteness check; that
+// is the caller's decision. found is true when a Review: line was present.
+func declaredReviewValue(body string) (value string, found bool) {
+	lines := strings.Split(body, "\n")
+	fenced := briefFenceMask(lines)
+	for i, line := range lines {
+		if fenced[i] || !strings.HasPrefix(line, "Review:") {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(line, "Review:"))
+		if raw == "" {
+			return "", true
+		}
+		if rest, quoted := strings.CutPrefix(raw, "`"); quoted {
+			tree, _, closed := strings.Cut(rest, "`")
+			if !closed {
+				return "", true
+			}
+			return tree, true
+		}
+		if fields := strings.Fields(raw); len(fields) > 0 {
+			return fields[0], true
+		}
+		return "", true
+	}
+	return "", false
+}
+
+// DeclaredReview returns the absolute path in the first Review: line outside
+// fenced code blocks, read the way DeclaredWorktree reads Worktree:: the path
+// between backticks when the value is quoted, else the first field. A
+// relative or malformed path has no review, and the first declaration
+// decides.
+func DeclaredReview(body string) string {
+	value, _ := declaredReviewValue(body)
+	if filepath.IsAbs(value) {
+		return value
+	}
+	return ""
+}
+
 // Reference identifies immutable source material for a mirror task.
 type Reference struct {
 	Repo   string

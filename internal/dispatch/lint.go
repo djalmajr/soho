@@ -446,6 +446,16 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 	if !options.ReadOnly {
 		result.Warnings = append(result.Warnings, TypeSectionWarnings(brief, body)...)
 	}
+	// A Review: line the wait cannot answer from: a relative or malformed
+	// path (absent to the wait) or a file that does not exist. It is a
+	// warning, never a refusal — the wait simply skips the check.
+	if value, found := declaredReviewValue(body); found {
+		if !filepath.IsAbs(value) {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("brief %s has a Review: line that is not an absolute path: %s", brief, text.SanitizeCause(value)))
+		} else if _, statErr := os.Stat(value); statErr != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("brief %s has a Review: line that names a file that does not exist: %s", brief, text.SanitizeCause(value)))
+		}
+	}
 	missing := BriefMissingSections(body, options.ReadOnly, aliases)
 	placeholderMarks := UnfilledPlaceholders(body, briefLintPlaceholderMarkers(core.Cfg(ctx, "brief_lint_placeholders", "", env)))
 	if missing == "" && len(placeholderMarks) == 0 {

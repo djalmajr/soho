@@ -35,9 +35,15 @@ var exportCopyKeys = []string{
 var exportForKeys = []string{"kind", "model", "effort", "family"}
 
 // exportItemsKeys are the only keys kept from the input `items` object (the
-// done/partial/skipped counters part 1 writes, and env for environment-limited
-// items, DJA-340).
-var exportItemsKeys = []string{"done", "partial", "skipped", "env"}
+// done/partial/skipped counters part 1 writes, env for environment-limited
+// items, DJA-340, and origins for the finding origin counts, DJA-684
+// slice B, projected to exportOriginsKeys).
+var exportItemsKeys = []string{"done", "partial", "skipped", "env", "origins"}
+
+// exportOriginsKeys are the only keys kept from the input `items.origins`
+// object (the finding origin counts; a class slug never reaches the
+// anonymized line).
+var exportOriginsKeys = []string{"brief", "impl", "unknown"}
 
 // exportSeverityKeys are the only keys kept from the input `severity` object
 // (the P0..P3 finding counters).
@@ -332,6 +338,13 @@ func exportSummaryLine(line exportLine, marks []exportMark, label string) string
 		switch key {
 		case "items":
 			if projected, isObject := projectClosedObject(value, exportItemsKeys); isObject {
+				if origins, ok := projected.Get("origins"); ok {
+					if nested, isObject := projectClosedObject(origins, exportOriginsKeys); isObject {
+						projected.Set("origins", nested)
+					} else {
+						projected.Delete("origins")
+					}
+				}
 				out.Set(key, projected)
 			}
 		case "severity":

@@ -116,6 +116,15 @@ func metricsLine(sd, agent, report, text string, header *reportscan.ReviewHeader
 	if envCount := reportscan.EnvCount(text); envCount > 0 {
 		items.Set("env", envCount)
 	}
+	if header != nil {
+		// The origin counts join the line under the same condition the wait
+		// line publishes finding_marks (a header finding or a marked line);
+		// the class slugs stay out (anonymization contract, package doc).
+		marks := reportscan.FindingMarks(text, header)
+		if header.Findings > 0 || marks.Brief+marks.Impl+marks.Unknown > 0 {
+			items.Set("origins", jsonjs.O("brief", marks.Brief, "impl", marks.Impl, "unknown", marks.Unknown))
+		}
+	}
 	line.Set("items", items)
 	// The review roles take the review fields with exactly the values the
 	// wait line prints (verdict/findings/severity from the header, the

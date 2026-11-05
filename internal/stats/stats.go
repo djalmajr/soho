@@ -60,7 +60,7 @@ func shaDropComment(p string) (string, []byte, bool) {
 	return p, nil, false
 }
 
-var dimensions = []string{"role", "kind", "model", "kind-model", "agent", "effort", "author-model", "type"}
+var dimensions = []string{"role", "kind", "model", "kind-model", "agent", "effort", "author-model", "type", "origin", "class"}
 var reviewRoles = strings.Fields(core.ReviewRolesAll)
 
 type CommandContext struct {
@@ -94,6 +94,7 @@ type prompt struct {
 	minutes                                                        *float64
 	partials                                                       int
 	header                                                         *reportscan.ReviewHeaderResult
+	marks                                                          reportscan.FindingMarksResult
 	isLast                                                         bool
 }
 type aggregate struct {
@@ -336,6 +337,9 @@ func loadMeta(p *prompt, logFile string) {
 	report := platform.DecodeText(reportRaw)
 	p.partials = reportscan.PartialCount(report)
 	p.header = reportscan.ReviewHeader(report)
+	if p.header != nil {
+		p.marks = reportscan.FindingMarks(report, p.header)
+	}
 }
 func dim(p prompt, d string) string {
 	switch d {
@@ -484,7 +488,7 @@ func CmdStats(args []string, command CommandContext) int {
 			}
 		}
 		if !ok {
-			die("stats: --by expects one of role, kind, model, kind-model, agent, effort, author-model, type (got '"+by+"')", 2, "stats", logFile)
+			die("stats: --by expects one of role, kind, model, kind-model, agent, effort, author-model, type, origin, class (got '"+by+"')", 2, "stats", logFile)
 		}
 	}
 	var since time.Time
@@ -651,6 +655,9 @@ func CmdStats(args []string, command CommandContext) int {
 	if by == "author-model" || by == "type" {
 		return printAuthorStats(pairs, by, asJSON, logFile)
 	}
+	if by == "origin" || by == "class" {
+		return printFindingStats(pairs, by, asJSON)
+	}
 	roster := map[string]bool{}
 	for _, line := range core.RosterRows(sd) {
 		f := strings.Split(line, "\t")
@@ -805,6 +812,61 @@ func printAuthorStats(pairs []prompt, by string, asJSON bool, logFile string) in
 	}
 	output("reviews by " + by + ":\n" + table([]string{by, "reviews", "pass", "fail", "fail rate", "P0", "P1", "P2", "P3", "P0/review", "P1/review", "P2/review", "P3/review", "rounds/slice"}, rows) + "\n")
 	output(fmt.Sprintf("%d reviews have no author record: the review's brief and the implementer's brief need the same Worktree: line, and older dispatches have no record\n", missing))
+	return 0
+}
+
+// printFindingStats is the --by origin and --by class view (DJA-684 slice
+// B): it reads the review reports' finding marks the way addReview reads
+// their headers (accepted pairs of a review role, with a report and a
+// header; an old report without marks is only its unmarked total), one row
+// per origin, or per class seen in count order (ties alphabetical), the
+// header findings without a mark as the footer. It never errors: a
+// header-less report is skipped and an empty workspace prints zeros.
+func printFindingStats(pairs []prompt, by string, asJSON bool) int {
+	brief, impl, unknown, unmarked := 0, 0, 0, 0
+	classes := map[string]int{}
+	for _, p := range pairs {
+		if !p.counted || !p.hasReport || !core.IsReviewRole(p.resolved) || p.header == nil {
+			continue
+		}
+		brief += p.marks.Brief
+		impl += p.marks.Impl
+		unknown += p.marks.Unknown
+		unmarked += p.marks.Unmarked
+		for slug, n := range p.marks.Classes {
+			classes[slug] += n
+		}
+	}
+	rows := [][]string{}
+	jsonRows := jsonjs.O()
+	if by == "origin" {
+		origins := map[string]int{"brief": brief, "impl": impl, "unknown": unknown}
+		for _, key := range []string{"brief", "impl", "unknown"} {
+			jsonRows.Set(key, jsObject("findings", number(origins[key])))
+			rows = append(rows, []string{key, strconv.Itoa(origins[key])})
+		}
+	} else {
+		keys := make([]string, 0, len(classes))
+		for key := range classes {
+			keys = append(keys, key)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			if classes[keys[i]] != classes[keys[j]] {
+				return classes[keys[i]] > classes[keys[j]]
+			}
+			return keys[i] < keys[j]
+		})
+		for _, key := range keys {
+			jsonRows.Set(key, jsObject("findings", number(classes[key])))
+			rows = append(rows, []string{key, strconv.Itoa(classes[key])})
+		}
+	}
+	if asJSON {
+		output(jsonjs.Stringify(jsonjs.O("by", by, "groups", jsonRows, "unmarked", unmarked)) + "\n")
+		return 0
+	}
+	output("findings by " + by + ":\n" + table([]string{by, "findings"}, rows) + "\n")
+	output(fmt.Sprintf("%d finding(s) without a mark\n", unmarked))
 	return 0
 }
 

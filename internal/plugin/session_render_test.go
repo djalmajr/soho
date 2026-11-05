@@ -790,6 +790,59 @@ func TestSessionRenderFooterAboveTheFixedStatusStrip(t *testing.T) {
 	}
 }
 
+// DJA-682: the footer labels the first three keys as the sort line so the
+// reader knows which shortcuts order and which filter; the exact text is
+// pinned in both views.
+func TestSessionFooterSortLabel(t *testing.T) {
+	entries := sessionTestEntries(3)
+	for _, tree := range []bool{false, true} {
+		out := renderSessionTestFrame(entries, 0, 70, 16, false, tree, "")
+		lines := assertSessionBounded(t, out, 70, 16)
+		got := strings.TrimSpace(stripSessionSGR(lines[len(lines)-4]))
+		if got != "Sort: p Pane · w Workspace · s Status · f All · t All" {
+			t.Fatalf("tree=%v: footer filter line = %q, want the Sort: label", tree, got)
+		}
+	}
+}
+
+// DJA-682: at narrow widths the filter line may lose whole segments (the
+// longest ones first, and a shorter left one can survive a longer one), but
+// no segment is ever cut: every part joined by " · " is a whole segment, and
+// when even the last one does not fit it shows as the displaySlice prefix
+// with the ellipsis.
+func TestSessionFooterNarrowKeepsWholeSegments(t *testing.T) {
+	entries := sessionTestEntries(3)
+	whole := map[string]bool{
+		"Sort: p Pane": true, "w Workspace": true, "s Status": true, "f All": true, "t All": true,
+	}
+	singleOK := map[string]bool{
+		"t All": true, "…": true, "t…": true, "t …": true, "t A…": true,
+	}
+	for _, tree := range []bool{false, true} {
+		for width := 1; width <= 70; width++ {
+			out := renderSessionTestFrame(entries, 0, width, 16, false, tree, "")
+			lines := assertSessionBounded(t, out, width, 16)
+			got := strings.TrimSpace(stripSessionSGR(lines[len(lines)-4]))
+			if !strings.Contains(got, " · ") {
+				if !singleOK[got] {
+					t.Fatalf("tree=%v width=%d: filter line cut a shortcut mid-word: %q", tree, width, got)
+				}
+				continue
+			}
+			parts := strings.Split(got, " · ")
+			for _, part := range parts {
+				if !whole[part] {
+					t.Fatalf("tree=%v width=%d: filter line cut a shortcut mid-word: %q (part %q)", tree, width, got, part)
+				}
+			}
+			// The last segment is the one that survives a narrow line.
+			if parts[len(parts)-1] != "t All" {
+				t.Fatalf("tree=%v width=%d: the filter line lost its last segment: %q", tree, width, got)
+			}
+		}
+	}
+}
+
 func TestSessionRenderResizeStaysBounded(t *testing.T) {
 	entries := sessionTestEntries(40)
 	for width := 1; width <= 120; width += 7 {

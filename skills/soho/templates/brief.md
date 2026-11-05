@@ -2,6 +2,8 @@
 
 Role: <role> · Agent: <agent-name> · Run: <run-id> · Report language: <pt-BR|en>
 Worktree: `<absolute path>` — this line feeds review author measurement (`soho stats --by author-model`): it counts in the review's and the implementer's brief alike, including when the slice has no worktree of its own (declare the project root)
+<!-- A correction round names the review to answer with a `Review: <absolute path>` line outside fenced code (after Worktree:, the path between backticks when quoted, else the first field; a relative or malformed path is absent); the report then carries a `## Review responses` section with one line per finding of that review, and the wait counts what is left unanswered. Omit the line for every other brief. -->
+<!-- A review brief names the implementer's brief (its path or task pointer) under Sources; without it, the review marks every finding's origin `unknown`. -->
 
 <!-- Before dispatching, reread this brief as the worker and run the checklist in references/orchestration-contract.md § Brief checklist: any place where the worker would have to choose is a gap. One slice covers one mechanism; the size alone does not decide. A change to a brief already in flight is its own file, sent with `dispatch <agent> amend.md --amend` — never a hand-rolled prompt. -->
 
@@ -109,7 +111,7 @@ issues.detail.linkProject = "…"
 ## Checks you may run
 
 - <the exact focused check commands for this project and slice>
-- Run only this slice's focused tests while iterating and before the report (in the herdr-soho repository: `go test ./internal/<package> -run <pattern>`). Run the full Go gates once at the end of the effort, not for every slice.
+- Run only this slice's focused tests while iterating and before the report. Run the project's full gates once at the end of the effort, not for every slice.
 - Do NOT run the formatter or e2e.
 - Give every test subprocess a bounded timeout; every branch of a fake CLI must handle its arguments explicitly.
 - UI slices: say who runs the browser smoke (you, when you can open a browser; otherwise the orchestrator or an `inspector` after your report).

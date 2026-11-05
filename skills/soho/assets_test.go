@@ -2,6 +2,7 @@ package skill
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -268,6 +269,20 @@ func TestTesterDeclaresTheDesignLayerWithoutNamingAStack(t *testing.T) {
 	}
 }
 
+// TestReviewResponseRolesCarryTheRule (DJA-684 slice C, scenario 15): the
+// four edit roles carry the review-response report rule in their report
+// block, with the same text, and the critical parity test keeps passing.
+func TestReviewResponseRolesCarryTheRule(t *testing.T) {
+	const rule = "When the brief names a review with a `Review:` line, the report carries a `## Review responses` section with one line per finding of that review, in one of the exact forms `- F<n>: fixed`, `- F<n>: fixed: <note>`, or `- F<n>: declined: <reason>` — silence is not an answer, `fixed` only after the proof ran, and `declined` with the reason. The `wait` counts the findings left without a response and warns; it only warns: it never blocks and never runs anything."
+	for _, name := range []string{"implementer.md", "critical-implementer.md", "tester.md", "designer.md"} {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(roleBody(t, name), rule) {
+				t.Fatalf("%s lost the review-response report rule", name)
+			}
+		})
+	}
+}
+
 // roleBody returns the markdown body of a shipped role file (everything
 // after its closing frontmatter ---).
 func roleBody(t *testing.T, name string) string {
@@ -401,6 +416,62 @@ func TestBundleCachedIsStrictlyReadOnly(t *testing.T) {
 	})
 }
 
+// TestReviewRolesCarryTheFindingMarks (DJA-684 slice B, scenario 13): the
+// five review roles carry the exact finding-mark form and the two new
+// rules; implementer and critical-implementer are untouched (the byte
+// parity test keeps them matching).
+func TestReviewRolesCarryTheFindingMarks(t *testing.T) {
+	for _, name := range []string{"reviewer", "security-reviewer", "validator", "ui-reviewer", "inspector"} {
+		t.Run(name, func(t *testing.T) {
+			body := roleBody(t, name+".md")
+			for _, needle := range []string{
+				`[F<n>]`,
+				"starting at 1",
+				`[origin: brief|impl|unknown]`,
+				"does not name the implementer's brief",
+				`[class: <slug>]`,
+				"the class of the error, not the symptom",
+				`^[a-z0-9][a-z0-9-]{0,40}$`,
+				"race-read-write",
+				"missing-bound",
+				"follows-link",
+				"error-swallowed",
+				"doc-drift",
+				"the list is open",
+				"list the places in one finding",
+				`declined: <reason>`,
+				"new evidence",
+			} {
+				if !strings.Contains(body, needle) {
+					t.Fatalf("%s.md missing the finding-marks %s", name, needle)
+				}
+			}
+		})
+	}
+}
+
+// TestResearchRolesCarryTheBugVerdict (DJA-684 slice B, scenario 13): the
+// research roles carry the bug/symptom verdict block.
+func TestResearchRolesCarryTheBugVerdict(t *testing.T) {
+	for _, name := range []string{"researcher", "scouter"} {
+		t.Run(name, func(t *testing.T) {
+			body := roleBody(t, name+".md")
+			for _, needle := range []string{
+				"a bug or a symptom",
+				"verdict: one-off|pattern|known|needs-info",
+				"the cause",
+				"the trigger",
+				"the discarded hypotheses",
+				"the level of each piece of evidence",
+			} {
+				if !strings.Contains(body, needle) {
+					t.Fatalf("%s.md missing the bug verdict %s", name, needle)
+				}
+			}
+		})
+	}
+}
+
 // DJA-693: the shipped mcp choices of the roles. ui-reviewer,
 // sub-orchestrator and planner carry mcp: none; designer carries the
 // open-pencil list and inspector the two browser servers. job-orchestrator
@@ -508,4 +579,40 @@ func TestBundleBriefTemplateCarriesTheTypeSections(t *testing.T) {
 	if !strings.Contains(body, "An unfinished item is [skipped], never silence.") {
 		t.Fatal("template Report section lost the skipped-item rule")
 	}
+}
+
+// DJA-683: the "soho" GitHub label does not exist in the feedback repo, so
+// the issue template and the skill instructions must not ask for it; the
+// brief template must not name this repository or its Go commands, and the
+// orchestration reference must not claim the removed model-family rule.
+func TestSkillAssetsDropTheSoHoIssueLabelAndRepoLeftovers(t *testing.T) {
+	cases := []struct {
+		path   string
+		absent []string
+	}{
+		{"templates/issue.md", []string{"labels: soho", "--label soho"}},
+		{"SKILL.md", []string{"--label soho"}},
+		{"templates/brief.md", []string{"herdr-soho", "go test"}},
+		{"references/orchestration.md", []string{"different model families"}},
+	}
+	for _, tc := range cases {
+		data, err := resources.ReadFile(tc.path)
+		if err != nil {
+			t.Fatalf("bundle is missing %s: %v", tc.path, err)
+		}
+		for _, needle := range tc.absent {
+			if strings.Contains(string(data), needle) {
+				t.Fatalf("%s still carries %q: %s", tc.path, needle, firstLineContaining(string(data), needle))
+			}
+		}
+	}
+}
+
+func firstLineContaining(body, needle string) string {
+	for i, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, needle) {
+			return fmt.Sprintf("line %d: %s", i+1, line)
+		}
+	}
+	return ""
 }

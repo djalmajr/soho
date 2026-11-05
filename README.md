@@ -134,7 +134,8 @@ For configuration, commands, and the report contract, see the [guide](docs/guide
 
 External sources that shaped what soho does:
 
-- [agent-native](https://github.com/builderio/agent-native): the questions the `tester` answers before adding a test, the rule that a check that exercised nothing is not a pass, and the habit of naming the recurring friction pattern a change is meant to stop before that change lands, so the fix is checked against the pattern stopping.
+- [agent-native](https://github.com/builderio/agent-native): the questions the `tester` answers before adding a test, the rule that a check that exercised nothing is not a pass, and the habit of naming the recurring friction pattern a change is meant to stop before that change lands, so the fix is checked against the pattern stopping. The verdict a `researcher` or `scouter` gives on a bug, one-off, pattern, known or needs more information, comes from there too.
 - [Google DESIGN.md](https://github.com/google-labs-code/design.md): the format the interface contract is written in — machine-readable design tokens with the prose that applies them.
 - [Expose your design system to LLMs](https://hvpandya.com/llm-design-systems): the case for spec files and token layers that keep a design system consumable by agents across sessions.
 - [@shadcn/lint](https://github.com/shadcn-ui/lint): design-system rules an agent can verify, with a diagnostic that names what is allowed instead of only what is wrong.
+- [Solving code review at Anthropic](https://claude.dev/blog/solving-code-review-at-anthropic/): a reviewer names the class of the error instead of each symptom, lists the places in one finding, and does not repeat a finding the author already answered.
