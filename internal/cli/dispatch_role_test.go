@@ -113,6 +113,64 @@ func TestDispatchRoleEditSignals(t *testing.T) {
 	}
 }
 
+func TestDispatchSecurityBriefOnBuildLaneWarns(t *testing.T) {
+	// DJA-686: a brief that declares Type: security routed to a build-lane
+	// worker warns on stderr and still sends; other declared Type values and
+	// the critical lane stay silent, and panes=2 (no critical lane) stays
+	// silent. The warning reads the declared Type field, never free text.
+	warnedLine := func(brief, agent string) string {
+		return fmt.Sprintf("soho: warning: brief %s declares Type: security but '%s' is in lane build: security work goes to the critical lane (spawn critical-implementer)", brief, agent)
+	}
+	for _, tc := range []struct {
+		name, body, lane, conf string
+		role                   string
+		warned                 bool
+	}{
+		{name: "security-build-warns-and-sends", body: "Type: security\nCheck the patch.\n", lane: "build", warned: true},
+		{name: "backend-build-silent", body: "Type: backend\nFix the slice.\n", lane: "build", role: "implementer"},
+		{name: "security-critical-silent", body: "Type: security\nCheck the patch.\n", lane: "critical"},
+		{name: "security-panes2-silent", body: "Type: security\nCheck the patch.\n", lane: "build", conf: "panes=2\n"},
+		{name: "security-flex-panes2-silent", body: "Type: security\nCheck the patch.\n", lane: "build", conf: "panes=2\npane_mode=flex\n"},
+		{name: "security-custom-team-without-critical-silent", body: "Type: security\nCheck the patch.\n", lane: "build", conf: "lane.build.roles=implementer,scouter\nlane.review.roles=reviewer\n"},
+		{name: "security-orphan-capacity-silent", body: "Type: security\nCheck the patch.\n", lane: "build", conf: "panes=2\nlane.critical.panes=1\n"},
+		{name: "security-custom-team-with-critical-warns", body: "Type: security\nCheck the patch.\n", lane: "build", conf: "lane.build.roles=implementer\nlane.critical.roles=critical-implementer\nlane.review.roles=reviewer\n", warned: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := roleDispatchFixture(t)
+			writeRoleFixture(t, f.brief, tc.body)
+			roster := filepath.Join(f.state, "ws", "agents.tsv")
+			writeRoleFixture(t, roster, "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\tmode\targs\teffort\nworker\tw0test:p0a\tcodex\tscouter\topenai\t0\t\tnow\tgpt-5\ttask\tscouter\t"+tc.lane+"\t\t\thigh\n")
+			if tc.conf != "" {
+				if err := os.MkdirAll(filepath.Join(f.root, ".agents"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				writeRoleFixture(t, filepath.Join(f.root, ".agents", "soho.conf"), tc.conf)
+			}
+			args := []string{"worker", f.brief, "--no-wait"}
+			if tc.role != "" {
+				args = append(args, "--role", tc.role)
+			}
+			code, out, msg := f.run(t, args...)
+			if code != 0 {
+				t.Fatalf("code=%d out=%s msg=%s", code, out, msg)
+			}
+			if tc.warned {
+				if !strings.Contains(msg, warnedLine(f.brief, "worker")) {
+					t.Fatalf("missing the lane warning: %q", msg)
+				}
+				return
+			}
+			if strings.Contains(msg, "declares Type: security") {
+				t.Fatalf("unexpected lane warning: %q", msg)
+			}
+			calls, err := fakecli.ReadCallsForConfig(filepath.Join(f.bin, "herdr.json"))
+			if err != nil || countArgvPrefix(calls, []string{"agent", "prompt"}) != 1 {
+				t.Fatalf("prompt was not sent exactly once: calls=%v err=%v", calls, err)
+			}
+		})
+	}
+}
+
 func TestDispatchAmendRoleSelection(t *testing.T) {
 	for _, tc := range []struct{ name, first, next string }{{"inherit", "implementer", ""}, {"switch", "scouter", "implementer"}, {"same", "implementer", "implementer"}, {"legacy", "scouter", ""}} {
 		t.Run(tc.name, func(t *testing.T) {

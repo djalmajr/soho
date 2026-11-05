@@ -330,7 +330,7 @@ func TestTM11KindAndModelCases(t *testing.T) {
 		if strings.Contains(string(defaults), "model_pi_") || strings.Contains(string(defaults), "model_opencode_") {
 			t.Fatal("generic kinds must not ship model defaults")
 		}
-		for role, fields := range map[string][]string{"implementer": {"kind: grok"}, "reviewer": {"kind: codex", "alternatives: [claude]"}, "security-reviewer": {"kind: claude"}, "tasker": {"kind: grok"}, "tester": {"kind: grok", "mcp: none", "mode: edit"}, "validator": {"kind: codex", "alternatives: [claude]", "mcp: none", "mode: read-only"}} {
+		for role, fields := range map[string][]string{"implementer": {"kind: grok"}, "critical-implementer": {"kind: codex", "mcp: none", "alternatives: [claude]", "effort: medium", "mode: edit"}, "reviewer": {"kind: codex", "alternatives: [claude]"}, "security-reviewer": {"kind: claude"}, "tasker": {"kind: grok"}, "tester": {"kind: grok", "mcp: none", "mode: edit"}, "validator": {"kind: codex", "alternatives: [claude]", "mcp: none", "mode: read-only"}} {
 			data, readErr := os.ReadFile(filepath.Join("..", "..", "skills", "soho", "roles", role+".md"))
 			if readErr != nil {
 				t.Fatal(readErr)

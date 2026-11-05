@@ -117,30 +117,49 @@ func TestBundleShipsTheValidationTemplateWithItsHeadings(t *testing.T) {
 	}
 }
 
-func TestBundleBriefTemplateCitesTheAuthorMeasurement(t *testing.T) {
-	// DJA-684: the template's Worktree: line says the line feeds the review
-	// author measurement and belongs in both briefs, the project root when
-	// the slice has no worktree of its own.
-	data, err := resources.ReadFile("templates/brief.md")
+func TestCriticalImplementerKeepsTheImplementerBlocks(t *testing.T) {
+	// DJA-686: the shipped critical-implementer keeps the implementer's
+	// blocks byte-for-byte (the test fails if they drift) and adds the
+	// critical self-review; it names no project, machine path, team or model.
+	base := roleBody(t, "implementer.md")
+	crit := roleBody(t, "critical-implementer.md")
+	if !strings.Contains(crit, base) {
+		t.Fatal("critical-implementer lost or altered an implementer block")
+	}
+	if !strings.Contains(crit, "<critical>") || !strings.Contains(crit, "</critical>") {
+		t.Fatal("missing the critical self-review block")
+	}
+	for _, needle := range []string{"interleaves", "idempotency", "swallowed", "The red test existed before the fix"} {
+		if !strings.Contains(crit, needle) {
+			t.Fatalf("critical block missing %q", needle)
+		}
+	}
+	for _, banned := range []string{"Skedly", "Kashes", "zommehq", "/Users/", "gpt-"} {
+		if strings.Contains(crit, banned) {
+			t.Fatalf("critical-implementer names %q (machine- or team-specific)", banned)
+		}
+	}
+}
+
+// roleBody returns the markdown body of a shipped role file (everything
+// after its closing frontmatter ---).
+func roleBody(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("roles", name))
 	if err != nil {
-		t.Fatalf("bundle is missing templates/brief.md: %v", err)
+		t.Fatal(err)
 	}
 	lines := strings.Split(string(data), "\n")
-	var worktreeLine string
-	for _, line := range lines {
-		if strings.HasPrefix(line, "Worktree:") {
-			worktreeLine = line
-			break
+	if len(lines) == 0 || lines[0] != "---" {
+		t.Fatalf("%s: missing frontmatter", name)
+	}
+	for i := 1; i < len(lines); i++ {
+		if lines[i] == "---" {
+			return strings.Join(lines[i+1:], "\n")
 		}
 	}
-	if worktreeLine == "" {
-		t.Fatal("template lost its Worktree: line")
-	}
-	for _, want := range []string{"author-model", "implementer", "root"} {
-		if !strings.Contains(worktreeLine, want) {
-			t.Fatalf("Worktree: line must cite the author measurement and the root declaration, lost %q: %s", want, worktreeLine)
-		}
-	}
+	t.Fatalf("%s: unterminated frontmatter", name)
+	return ""
 }
 
 func TestBundleConcurrentPublishCleansOwnedStages(t *testing.T) {
@@ -253,4 +272,30 @@ func TestBundleCachedIsStrictlyReadOnly(t *testing.T) {
 			t.Fatal("symlinked bundle accepted")
 		}
 	})
+}
+
+func TestBundleBriefTemplateCitesTheAuthorMeasurement(t *testing.T) {
+	// DJA-684: the template's Worktree: line says the line feeds the review
+	// author measurement and belongs in both briefs, the project root when
+	// the slice has no worktree of its own.
+	data, err := resources.ReadFile("templates/brief.md")
+	if err != nil {
+		t.Fatalf("bundle is missing templates/brief.md: %v", err)
+	}
+	lines := strings.Split(string(data), "\n")
+	var worktreeLine string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Worktree:") {
+			worktreeLine = line
+			break
+		}
+	}
+	if worktreeLine == "" {
+		t.Fatal("template lost its Worktree: line")
+	}
+	for _, want := range []string{"author-model", "implementer", "root"} {
+		if !strings.Contains(worktreeLine, want) {
+			t.Fatalf("Worktree: line must cite the author measurement and the root declaration, lost %q: %s", want, worktreeLine)
+		}
+	}
 }

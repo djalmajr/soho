@@ -545,7 +545,7 @@ func TestDoctorWarnsWhenSplitCapExceedsTheTeam(t *testing.T) { // A9: the refere
 	var out strings.Builder
 	s := &Say{Out: &out}
 	doctorLaneWarnings(&ctx, env, root, s)
-	if !strings.Contains(out.String(), "split_max_panes=8 is greater than 1 + max_workers=2. Set split_max_panes=3 (doctor --fix aligns it).") {
+	if !strings.Contains(out.String(), "split_max_panes=8 is greater than 1 + max_workers=3. Set split_max_panes=4 (doctor --fix aligns it).") {
 		t.Fatalf("split cap mismatch warning missing: %s", out.String())
 	}
 }
@@ -558,15 +558,15 @@ func TestDoctorSplitCapChecksTheWholeTeam(t *testing.T) { // A9: an explicit spl
 		values map[string]string
 		want   string
 	}{
-		{"a team of six fits under split_max_panes=7 without a split cap warning",
-			map[string]string{"lane_build_panes": "5", "lane_review_panes": "1", "split_max_panes": "7"},
+		{"a team of seven fits under split_max_panes=8 without a split cap warning",
+			map[string]string{"lane_build_panes": "5", "lane_review_panes": "1", "split_max_panes": "8"},
 			""},
-		{"split_max_panes=9 is greater than 1 + max_workers=6",
+		{"split_max_panes=9 is greater than 1 + max_workers=7",
 			map[string]string{"lane_build_panes": "5", "lane_review_panes": "1", "split_max_panes": "9"},
-			"config: split_max_panes=9 is greater than 1 + max_workers=6. Set split_max_panes=7 (doctor --fix aligns it)."},
-		{"split_max_panes=3 leaves no room for a team of five",
+			"config: split_max_panes=9 is greater than 1 + max_workers=7. Set split_max_panes=8 (doctor --fix aligns it)."},
+		{"split_max_panes=3 leaves no room for a team of six",
 			map[string]string{"lane_build_panes": "4", "lane_review_panes": "1", "split_max_panes": "3"},
-			"config: split_max_panes=3 leaves no room for the whole team (1 + max_workers=5); the last workers will open in a herd tab. Remove split_max_panes or set 6."},
+			"config: split_max_panes=3 leaves no room for the whole team (1 + max_workers=6); the last workers will open in a herd tab. Remove split_max_panes or set 7."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := &core.Config{Entries: make(map[string]core.ConfigEntry, len(tc.values))}

@@ -124,17 +124,17 @@ func TestSplitAnchorKeepsInfiniteYForTieBreak(t *testing.T) {
 func TestSplitLimitsFollowConfiguration(t *testing.T) {
 	t.Run(`splitCap/splitMin: validation and the lanes-on follows-panes rule`, func(t *testing.T) { // JS: "splitCap/splitMin: validation and the lanes-on follows-panes rule"
 		ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
-		if got := SplitCap(ctx, platform.Env{}); got != 4 {
-			t.Fatalf("default cap=%d, want 4", got)
+		if got := SplitCap(ctx, platform.Env{}); got != 5 {
+			t.Fatalf("default cap=%d, want 5", got)
 		}
 		if got := SplitMin(ctx, platform.Env{}); got != .18 {
 			t.Fatalf("default minimum=%v, want .18", got)
 		}
-		if got := SplitCap(ctx, platform.Env{"SOHO_PANES": "3"}); got != 3 {
-			t.Fatalf("lanes-on cap=%d, want panes value 3", got)
+		if got := SplitCap(ctx, platform.Env{"SOHO_PANES": "3"}); got != 4 {
+			t.Fatalf("lanes-on cap=%d, want 4 (1 + the lanes sum 3)", got)
 		}
-		if got := SplitCap(ctx, platform.Env{"SOHO_PANES": "3", "SOHO_PANE_MODE": "flex", "SOHO_FLEX_EXTRA": "2"}); got != 5 {
-			t.Fatalf("flex cap=%d, want 5", got)
+		if got := SplitCap(ctx, platform.Env{"SOHO_PANES": "3", "SOHO_PANE_MODE": "flex", "SOHO_FLEX_EXTRA": "2"}); got != 6 {
+			t.Fatalf("flex cap=%d, want 6 (1 + lanes 3 + flex 2)", got)
 		}
 		if got := SplitCap(ctx, platform.Env{"SOHO_LANES": "off", "SOHO_SPLIT_MAX_PANES": "6"}); got != 6 {
 			t.Fatalf("explicit cap=%d, want 6", got)
@@ -150,14 +150,14 @@ func TestSplitCapFollowsTheWholeTeam(t *testing.T) {
 	// plus the whole team (1 + the effective max_workers), so the team fits in
 	// the caller's tab; max_workers=0 keeps the old panes rule.
 	ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
-	t.Run(`panes=4 strict without max_workers: the lanes sum (3) plus the caller`, func(t *testing.T) { // A9: the cap follows the team, not panes
-		if got := SplitCap(ctx, platform.Env{"SOHO_PANES": "4"}); got != 4 {
-			t.Fatalf("cap=%d, want 4 (1 + lanes sum 3)", got)
+	t.Run(`panes=4 strict without max_workers: the lanes sum (4) plus the caller`, func(t *testing.T) { // A9: the cap follows the team, not panes
+		if got := SplitCap(ctx, platform.Env{"SOHO_PANES": "4"}); got != 5 {
+			t.Fatalf("cap=%d, want 5 (1 + lanes sum 4)", got)
 		}
 	})
 	t.Run(`flex with flex_extra=1 without max_workers`, func(t *testing.T) {
-		if got := SplitCap(ctx, platform.Env{"SOHO_PANE_MODE": "flex", "SOHO_FLEX_EXTRA": "1"}); got != 5 {
-			t.Fatalf("flex cap=%d, want 5 (1 + lanes 3 + flex 1)", got)
+		if got := SplitCap(ctx, platform.Env{"SOHO_PANE_MODE": "flex", "SOHO_FLEX_EXTRA": "1"}); got != 6 {
+			t.Fatalf("flex cap=%d, want 6 (1 + lanes 4 + flex 1)", got)
 		}
 	})
 	t.Run(`an explicit max_workers=5 in flex is the whole team`, func(t *testing.T) {

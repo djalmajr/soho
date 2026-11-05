@@ -62,7 +62,7 @@ func TestDoctorPaneColumnsLineAndWarnings(t *testing.T) {
 	})
 	t.Run(`no key: the line is today's and none of the three warnings appears`, func(t *testing.T) {
 		got := paneColumnsDoctor(t, nil)
-		if !strings.Contains(got, "ok     config: split_max_panes=4 split_min_pane=0.18\n") {
+		if !strings.Contains(got, "ok     config: split_max_panes=5 split_min_pane=0.18\n") {
 			t.Fatalf("today's line is missing:\n%s", got)
 		}
 		for _, forbidden := range []string{"pane_columns", "has no effect with layout=tab", "workers are placed by split only"} {
@@ -78,7 +78,7 @@ func TestDoctorPaneColumnsLineAndWarnings(t *testing.T) {
 			t.Fatalf("the invalid-value warning is missing:\n%s", got)
 		}
 		// Treated as empty: today's line, no suffix, no other warnings.
-		if !strings.Contains(got, "ok     config: split_max_panes=4 split_min_pane=0.18\n") {
+		if !strings.Contains(got, "ok     config: split_max_panes=5 split_min_pane=0.18\n") {
 			t.Fatalf("the invalid value must fall back to today's line:\n%s", got)
 		}
 		if strings.Contains(got, "has no effect with layout=tab") {

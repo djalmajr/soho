@@ -85,9 +85,9 @@ func TestTM9CoreCases(t *testing.T) {
 			t.Fatalf("env max workers=%q", got)
 		}
 	})
-	t.Run("maxWorkers: the sum of the lane capacities (3/2/1 for panes 4/3/2)", func(t *testing.T) { // JS: "maxWorkers: the sum of the lane capacities (3/2/1 for panes 4/3/2)"
+	t.Run("maxWorkers: the sum of the lane capacities (4/3/1 for panes 4/3/2)", func(t *testing.T) { // JS: "maxWorkers: the sum of the lane capacities (3/2/1 for panes 4/3/2)"; DJA-686: the preset gained the critical lane, so the strict sums are 4/3/1
 		env, repo := fixture(t)
-		for _, tc := range []struct{ panes, want string }{{"4", "3"}, {"3", "2"}, {"2", "1"}} {
+		for _, tc := range []struct{ panes, want string }{{"4", "4"}, {"3", "3"}, {"2", "1"}} {
 			env["SOHO_PANES"] = tc.panes
 			ctx := LoadConfig(env, repo)
 			if got := MaxWorkers(&ctx, env); got != tc.want {
@@ -212,6 +212,7 @@ func TestTM9LiveWorkerCases(t *testing.T) {
 			{Argv: []string{"agent", "list"}, Call: 2, Stdout: `{"result":{"agents":[{"name":"w1","pane_id":"p1"},{"name":"w2","pane_id":"p2"},{"name":"w3","pane_id":"p3"}]}}`},
 			{Argv: []string{"agent", "list"}, Call: 3, Stdout: `{"result":{"agents":[{"name":"w1","pane_id":"p1"}]}}`},
 		})
+		env["SOHO_MAX_WORKERS"] = "3"
 		ctx := LoadConfig(env, cwd)
 		if got := LiveWorkerNames(state, env); strings.Join(got, ",") != "w1,w2,w3" {
 			t.Fatalf("live names=%v", got)
@@ -237,7 +238,7 @@ func TestTM9LiveWorkerCases(t *testing.T) {
 		if len(LiveWorkerNames(state, env)) != 0 {
 			t.Fatal("gone roster row counted as live")
 		}
-		if got := MaxWorkers(&ctx, env); got != "3" {
+		if got := MaxWorkers(&ctx, env); got != "4" {
 			t.Fatalf("default cap=%q", got)
 		}
 	})
