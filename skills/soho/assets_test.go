@@ -616,3 +616,22 @@ func firstLineContaining(body, needle string) string {
 	}
 	return ""
 }
+
+// TestJobOrchestratorLeavesThePushToTheSupervisor: an orchestrator that listed
+// the push as its own item and marked it partial failed a job that had done
+// everything right (DJA-712).
+func TestJobOrchestratorLeavesThePushToTheSupervisor(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("roles", "job-orchestrator.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"The supervisor owns the push",
+		"your report carries no item about the push unless the brief asks for one",
+		"not being able to see the remote never makes such an item partial",
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("job-orchestrator.md lost %q", want)
+		}
+	}
+}
