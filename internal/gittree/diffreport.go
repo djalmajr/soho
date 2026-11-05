@@ -519,15 +519,39 @@ func PathEntryAbsolute(entry, goos string) bool {
 // prefix resolved with the unresolvable tail re-attached — the entry file
 // may not exist yet (the worker has not created it), so the whole entry
 // often cannot be EvalSymlinks'd. A path with no existing prefix keeps its
-// cleaned lexical form, so a table comparison on another platform stays
-// purely lexical through platform.PathInside. A drive-prefixed path is
-// absolute by its own prefix and is never joined with the working
-// directory, so a win32-style table on another platform stays clean.
-func resolvedPrefix(p string) string {
+// cleaned lexical form, cleaned with the requested system's separator rules
+// (path.Clean outside win32: slash semantics, case preserved, a backslash a
+// name character; the host's filepath.Clean otherwise — win32 canonical
+// cleaning re-normalizes separators anyway), so a table comparison on
+// another platform stays purely lexical through platform.PathInside on
+// every host. A drive-prefixed path is absolute by its own prefix and is
+// never joined with the working directory, so a win32-style table on
+// another platform stays clean. A path from the foreign family (a win32
+// spelling on a POSIX host, or a POSIX spelling on a Windows host) skips
+// the host resolution entirely — on a Windows host the native walk would
+// resolve a Unix-rooted spelling against the host's drive (the drive root
+// is an existing prefix, so /work/repo would become D:\work\repo) or join
+// it to the host's cwd, and on a POSIX host a drive-prefixed spelling
+// carries no slash to anchor the walk — and the shared selected-system
+// canonicalization (platform.CanonPath) stands in for it.
+func resolvedPrefix(p, goos string) string {
+	// Foreign path family: no host EvalSymlinks, cwd join or prefix walk —
+	// only the shared selected-system lexical canonicalization, so a
+	// foreign spelling never acquires a native cwd or filesystem prefix
+	// (DJA-661, native Windows). Darwin and linux share the POSIX family
+	// and keep the native prefix/symlink resolution below; native win32
+	// resolution is unchanged. The comparison forms stay lexical only;
+	// spellingTail still recovers the entry's original relative case.
+	if (goos == "win32") != (platform.Current() == "win32") {
+		return platform.CanonPath(p, goos)
+	}
 	if eval, err := filepath.EvalSymlinks(p); err == nil {
 		return eval
 	}
 	cleaned := filepath.Clean(p)
+	if goos != "win32" {
+		cleaned = path.Clean(p)
+	}
 	abs := cleaned
 	if !filepath.IsAbs(cleaned) && !driveAbsolute(cleaned) {
 		wd, err := os.Getwd()
@@ -556,14 +580,16 @@ func resolvedPrefix(p string) string {
 
 // auditPathCanon normalizes one side of a recorded-tree comparison the way
 // the shared comparator does (platform.CanonPath, the normalization
-// dispatch.SamePath applies): the largest existing prefix is resolved
-// first (resolvedPrefix, where a plain EvalSymlinks gives up), then win32
-// folds case, drive and separators and the other platforms clean. The
-// containment itself is the shared platform.PathInside rule (auditWithin);
-// this helper only produces the two spellings it compares, so the
-// tree-relative form can be read off the same prefix.
+// dispatch.SamePath applies): on a native path family the largest existing
+// prefix is resolved first (resolvedPrefix, where a plain EvalSymlinks
+// gives up); on a foreign family the selected-system canonicalization
+// stands in for the resolution outright. win32 then folds case, drive and
+// separators and the other platforms clean. The containment itself is the
+// shared platform.PathInside rule (auditWithin); this helper only produces
+// the two spellings it compares, so the tree-relative form can be read off
+// the same prefix.
 func auditPathCanon(p, goos string) string {
-	return platform.CanonPath(resolvedPrefix(p), goos)
+	return platform.CanonPath(resolvedPrefix(p, goos), goos)
 }
 
 // auditWithin is the shared platform.PathInside containment decision for

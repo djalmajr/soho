@@ -1978,7 +1978,11 @@ func ownedPaths(body string, aliases map[string][]string) []string {
 		// The trailing slash is kept: it marks a directory owned in the brief,
 		// and pathsCross decides whether a glob can reach a file inside it.
 		trimmed := strings.TrimRight(p, ".,;:")
-		if trimmed == "" || strings.Contains(trimmed, " ") || ownershipStopwords[strings.ToLower(trimmed)] || !(strings.ContainsAny(trimmed, "/.")) || seen[strings.TrimRight(trimmed, "/")] {
+		// A Windows drive-prefixed root (D:\a\b\c) carries no slash or dot and
+		// would be mistaken for a word: the current platform's own
+		// absoluteness rule admits it, so a tree-root entry still converts to
+		// the root overlap form (DJA-661, native Windows).
+		if trimmed == "" || strings.Contains(trimmed, " ") || ownershipStopwords[strings.ToLower(trimmed)] || !(strings.ContainsAny(trimmed, "/.") || gittree.PathEntryAbsolute(trimmed, platform.Current())) || seen[strings.TrimRight(trimmed, "/")] {
 			return
 		}
 		seen[strings.TrimRight(trimmed, "/")] = true
