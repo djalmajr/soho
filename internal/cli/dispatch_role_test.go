@@ -89,7 +89,12 @@ func TestDispatchRoleEditSignals(t *testing.T) {
 				if role == "" {
 					role = "scouter"
 				}
-				want := fmt.Sprintf("dispatch: brief %s asks for edits (%s) but 'worker' %s the read-only role '%s'; nothing was sent. Pass --role %s to give it an edit role, or rename the 'Owned files' title, or drop the edit sections from the brief", f.brief, tc.signal, tc.word, role, tc.suggest)
+				remedy := "or rename the 'Owned files' title, or drop the edit sections from the brief"
+				if typeLine, _, _ := strings.Cut(tc.signal, ", "); strings.HasPrefix(tc.signal, "Type: ") {
+					// Renaming a title cannot lift a refusal the Type line caused.
+					remedy = "or drop the '" + typeLine + "' line and the edit sections from the brief"
+				}
+				want := fmt.Sprintf("dispatch: brief %s asks for edits (%s) but 'worker' %s the read-only role '%s'; nothing was sent. Pass --role %s to give it an edit role, "+remedy, f.brief, tc.signal, tc.word, role, tc.suggest)
 				if code != 2 || !strings.Contains(msg, want) {
 					t.Fatalf("code=%d out=%s msg=%q want=%q", code, out, msg, want)
 				}

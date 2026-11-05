@@ -818,19 +818,26 @@ func TestSessionFooterNarrowKeepsWholeSegments(t *testing.T) {
 	singleOK := map[string]bool{
 		"t All": true, "…": true, "t…": true, "t …": true, "t A…": true,
 	}
-	for width := 1; width <= 70; width++ {
-		out := renderSessionTestFrame(entries, 0, width, 16, false, false, "")
-		lines := assertSessionBounded(t, out, width, 16)
-		got := strings.TrimSpace(stripSessionSGR(lines[len(lines)-4]))
-		if !strings.Contains(got, " · ") {
-			if !singleOK[got] {
-				t.Fatalf("width=%d: filter line cut a shortcut mid-word: %q", width, got)
+	for _, tree := range []bool{false, true} {
+		for width := 1; width <= 70; width++ {
+			out := renderSessionTestFrame(entries, 0, width, 16, false, tree, "")
+			lines := assertSessionBounded(t, out, width, 16)
+			got := strings.TrimSpace(stripSessionSGR(lines[len(lines)-4]))
+			if !strings.Contains(got, " · ") {
+				if !singleOK[got] {
+					t.Fatalf("tree=%v width=%d: filter line cut a shortcut mid-word: %q", tree, width, got)
+				}
+				continue
 			}
-			continue
-		}
-		for _, part := range strings.Split(got, " · ") {
-			if !whole[part] {
-				t.Fatalf("width=%d: filter line cut a shortcut mid-word: %q (part %q)", width, got, part)
+			parts := strings.Split(got, " · ")
+			for _, part := range parts {
+				if !whole[part] {
+					t.Fatalf("tree=%v width=%d: filter line cut a shortcut mid-word: %q (part %q)", tree, width, got, part)
+				}
+			}
+			// The last segment is the one that survives a narrow line.
+			if parts[len(parts)-1] != "t All" {
+				t.Fatalf("tree=%v width=%d: the filter line lost its last segment: %q", tree, width, got)
 			}
 		}
 	}

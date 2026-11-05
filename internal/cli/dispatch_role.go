@@ -61,7 +61,12 @@ func refuseReadOnlyEditBrief(body, brief, agent, role string, explicit bool, ctx
 	if explicit {
 		wording = "was given"
 	}
-	core.DieFriction(fmt.Sprintf("dispatch: brief %s asks for edits (%s) but '%s' %s the read-only role '%s'; nothing was sent. Pass --role %s to give it an edit role, or rename the 'Owned files' title, or drop the edit sections from the brief", brief, strings.Join(signals, ", "), agent, wording, role, suggested), 2, frictionLogPath, "dispatch")
+	// Renaming a title cannot lift a refusal the Type line caused.
+	remedy := "or rename the 'Owned files' title, or drop the edit sections from the brief"
+	if signals[0] != "Owned files" {
+		remedy = "or drop the '" + signals[0] + "' line and the edit sections from the brief"
+	}
+	core.DieFriction(fmt.Sprintf("dispatch: brief %s asks for edits (%s) but '%s' %s the read-only role '%s'; nothing was sent. Pass --role %s to give it an edit role, %s", brief, strings.Join(signals, ", "), agent, wording, role, suggested, remedy), 2, frictionLogPath, "dispatch")
 }
 
 func amendmentRoleHeader(roleFile, role, agent string) string {
