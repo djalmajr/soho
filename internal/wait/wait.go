@@ -1155,6 +1155,8 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					}
 				}
 				checkReferenceParity(sd, agent, report, text, line)
+				role := TaskRole(sd, agent)
+				checkTestLayers(sd, agent, report, text, line, role)
 				pointer := taskreport.ReadTaskReportPointer(sd, agent)
 				if pointer != nil {
 					current, _ := pointer.Get("current")
@@ -1212,7 +1214,6 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 						sendWarning(fmt.Sprintf("report of '%s': findings %s but P0..P3 add up to %s", agent, numberString(header.Findings), numberString(sum)))
 					}
 				} else {
-					role := TaskRole(sd, agent)
 					if core.IsReviewRole(role) {
 						sendWarning(fmt.Sprintf("report of '%s' has no 'findings: N (P0 a, P1 b, P2 c, P3 d) | verdict: pass|fail' first line", agent))
 					}

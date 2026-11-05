@@ -114,6 +114,24 @@ func Fields(path string) *jsonjs.Object {
 	return fields
 }
 
+// GitTree returns the worker's recorded project root from its sidecar: the
+// git_tree field the dispatch writes (the composed brief's Worktree:
+// declaration when it resolves, else the worker's cwd), and "" when the
+// sidecar is missing or over the inspection limit, or has no such field. A
+// relative value also has no root: Snapshot records absolute paths, and an old
+// relative one would resolve against the caller, possibly another project.
+func GitTree(sd, report string) string {
+	o := readSidecarInspect(SidecarInspect(sd, report))
+	if o == nil {
+		return ""
+	}
+	tree, _ := stringField(o, "git_tree")
+	if !filepath.IsAbs(tree) {
+		return ""
+	}
+	return tree
+}
+
 // Preserve merges missing Git fields through the protected sidecar writer.
 // Existing fields, including a check performed during blocking dispatch, win.
 func Preserve(path string, fields *jsonjs.Object) {

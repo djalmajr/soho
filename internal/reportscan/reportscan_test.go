@@ -32,6 +32,12 @@ func TestPartialCount(t *testing.T) {
 			}
 		}
 	})
+	t.Run("partialCount: a tilde fence closed with a tab still closes: the marker after it counts", func(t *testing.T) {
+		text := "## Items\n\n~~~\ncode\n~~~\t\n| item | state |\n| --- | --- |\n| step | [partial] |\n"
+		if got := PartialCount(text); got != 1 {
+			t.Fatalf("got %d want 1", got)
+		}
+	})
 	t.Run("partialCount: a line with two markers counts once", func(t *testing.T) { // JS: "partialCount: a line with two markers counts once"
 		if got := PartialCount("**Estado:** [partial] — e o segundo: [partial]\n"); got != 1 {
 			t.Fatalf("got %d", got)
@@ -213,4 +219,169 @@ func TestReviewHeader(t *testing.T) {
 			})
 		}
 	})
+}
+
+// Test layers report section and validator line (DJA-695 fatia 4).
+
+const testLayersHeader = "findings: 0 (p0 0, p1 0, p2 0, p3 0) | verdict: pass"
+
+func TestTestLayers(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		text     string
+		found    bool
+		pass     int
+		fail     int
+		notRun   int
+		blocked  int
+		na       int
+		unmarked int
+		nonPass  []LayerResult
+	}{
+		{
+			name:  "all five results count and the non-pass layers come back in order",
+			text:  "## Test layers\n- unit: PASS\n- integration: n/a\n- contract: NOT RUN: sh not in PATH\n- e2e: BLOCKED: the browser is not installed\n- mutation: FAIL: the suite failed\n",
+			found: true, pass: 1, fail: 1, notRun: 1, blocked: 1, na: 1,
+			nonPass: []LayerResult{{Name: "contract", Result: "NOT RUN"}, {Name: "e2e", Result: "BLOCKED"}, {Name: "mutation", Result: "FAIL"}},
+		},
+		{
+			name:  "missing or punctuation-only reasons are unmarked",
+			text:  "## Test layers\n- unit: FAIL\n- contract: NOT RUN:\n- e2e: BLOCKED: ...\n- mutation: FAIL: ---\n",
+			found: true, unmarked: 4,
+		},
+		{
+			name:  "lowercase pass is unmarked while n/a with a reason counts",
+			text:  "## Test layers\n- unit: pass\n- integration: n/a: not a CLI project\n",
+			found: true, na: 1, unmarked: 1,
+		},
+		{
+			name:  "pass and n/a accept ignored text after the colon",
+			text:  "## Test layers\n- unit: PASS: the full suite\n- contract: n/a\n",
+			found: true, pass: 1, na: 1,
+		},
+		{
+			name: "a section inside a fenced block does not count",
+			text: "```\n## Test layers\n- unit: PASS\n```\n",
+		},
+		{
+			name:  "a fenced heading is skipped and a later real section counts",
+			text:  "```\n## Test layers\n- unit: PASS\n```\n## Test layers\n- unit: PASS\n",
+			found: true, pass: 1,
+		},
+		{
+			name:  "a tilde fence closed with a tab still closes: the FAIL after it counts",
+			text:  "## Test layers\n- unit: PASS\n~~~\nexample\n~~~\t\n- e2e: FAIL: the suite failed\n",
+			found: true, pass: 1, fail: 1,
+			nonPass: []LayerResult{{Name: "e2e", Result: "FAIL"}},
+		},
+		{
+			name:  "the next h2 title ends the section",
+			text:  "## Test layers\n- unit: PASS\n## Next\n- integration: FAIL: after the title\n",
+			found: true, pass: 1,
+		},
+		{
+			name:  "an h1 title ends the section",
+			text:  "## Test layers\n- unit: PASS\n# Report\n- integration: FAIL: after the title\n",
+			found: true, pass: 1,
+		},
+		{
+			name: "a report without the section is not found",
+			text: "# Report\n- unit: PASS\n",
+		},
+		{
+			name:  "formatting marks are unmarked because the form is exact",
+			text:  "## Test layers\n- unit: **PASS**\n- integration: `PASS`\n",
+			found: true, unmarked: 2,
+		},
+		{
+			name:  "a portuguese reason is a reason",
+			text:  "## Test layers\n- mutation: FAIL: o teste não passou\n",
+			found: true, fail: 1,
+			nonPass: []LayerResult{{Name: "mutation", Result: "FAIL"}},
+		},
+		{
+			name:  "a layer name outside VALIDATION.md counts normally",
+			text:  "## Test layers\n- design: NOT RUN: sem comando\n",
+			found: true, notRun: 1,
+			nonPass: []LayerResult{{Name: "design", Result: "NOT RUN"}},
+		},
+		{
+			name:  "a name without the colon-space separator is unmarked",
+			text:  "## Test layers\n- unit:PASS\n- integration: n/a\n",
+			found: true, na: 1, unmarked: 1,
+		},
+		{
+			name:  "a dangling colon after pass is not the form",
+			text:  "## Test layers\n- unit: PASS:\n",
+			found: true, unmarked: 1,
+		},
+		{
+			name:  "numbered and table data rows are list lines without the form; a separator row is structure",
+			text:  "## Test layers\n1. unit: PASS\n| unit | PASS |\n| --- | --- |\n",
+			found: true, unmarked: 2,
+		},
+		{
+			name:  "prose inside the section is ignored",
+			text:  "## Test layers\nsome prose\n- unit: PASS\n",
+			found: true, pass: 1,
+		},
+		{
+			name:  "bullet variants are list lines",
+			text:  "## Test layers\n* unit: PASS\n+ integration: n/a\n",
+			found: true, pass: 1, na: 1,
+		},
+		{
+			name:  "a digit-only reason is a reason",
+			text:  "## Test layers\n- e2e: NOT RUN: 0\n",
+			found: true, notRun: 1,
+			nonPass: []LayerResult{{Name: "e2e", Result: "NOT RUN"}},
+		},
+		{
+			name: "empty text is not found and has no lines",
+			text: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := TestLayers(tc.text)
+			if got.Found != tc.found {
+				t.Fatalf("found=%v want %v", got.Found, tc.found)
+			}
+			if got.Pass != tc.pass || got.Fail != tc.fail || got.NotRun != tc.notRun || got.Blocked != tc.blocked || got.NA != tc.na || got.Unmarked != tc.unmarked {
+				t.Fatalf("counts got %+v want pass=%d fail=%d notRun=%d blocked=%d na=%d unmarked=%d",
+					got, tc.pass, tc.fail, tc.notRun, tc.blocked, tc.na, tc.unmarked)
+			}
+			if !reflect.DeepEqual(got.NonPass, tc.nonPass) {
+				t.Fatalf("nonPass got %+v want %+v", got.NonPass, tc.nonPass)
+			}
+		})
+	}
+}
+
+func TestValidationLine(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		want string
+		ok   bool
+	}{
+		{"header then validation fail", testLayersHeader + "\nvalidation: FAIL\n", "FAIL", true},
+		{"blank lines between header and line", testLayersHeader + "\n\n\nvalidation: NOT RUN\n", "NOT RUN", true},
+		{"pass as the second non-empty line", testLayersHeader + "\nvalidation: PASS\n", "PASS", true},
+		{"blocked as the second non-empty line", testLayersHeader + "\nvalidation: BLOCKED\n", "BLOCKED", true},
+		{"crlf endings", testLayersHeader + "\r\nvalidation: FAIL\r\n", "FAIL", true},
+		{"a later validation line does not count", testLayersHeader + "\nsome other line\nvalidation: PASS\n", "", false},
+		{"without a review header", "first line prose\nvalidation: PASS\n", "", false},
+		{"lowercase result", testLayersHeader + "\nvalidation: pass\n", "", false},
+		{"capital v does not match the form", testLayersHeader + "\nValidation: PASS\n", "", false},
+		{"a reason suffix is not the form", testLayersHeader + "\nvalidation: FAIL: because\n", "", false},
+		{"only the header", testLayersHeader + "\n", "", false},
+		{"empty text", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ValidationLine(tc.text)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("got (%q, %v) want (%q, %v)", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
 }
