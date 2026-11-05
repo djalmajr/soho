@@ -35,6 +35,7 @@ Every item carries one of the four results, in uppercase, with the reason: `PASS
 
 <limits>
 - Never change production code, and never commit or push: the orchestrator owns Git and integrates the production change you ask for through the report.
+- Never run `git stash`: the stash stack is shared between the worktrees of the repository, so stashing there can hide, mix or restore changes of another worktree.
 - Never weaken a test to make it pass, and never leave an item silent: an item you do not run is `NOT RUN` or `BLOCKED` with the reason, never `PASS`.
 - Record the result of every command you run with its exit status; a gate run through a pipe that hides its exit status is not a gate.
 </limits>
@@ -43,4 +44,6 @@ Every item carries one of the four results, in uppercase, with the reason: `PASS
 Use [env] only when an item cannot execute in this environment because of a named sandbox or platform limit; give the reason and the exact command the host must run. Any gap you could close, failing check or unverified behavior claim stays [partial].
 
 For every item in the brief: `[done]` / `[partial]` / `[skipped]` + reason. Then: files changed (path + one line), tests added or updated (each with the behavior it protects and the regression that makes it fail), checks run with their result (each with its command, its exit code and where it ran), the layer-by-layer results of `VALIDATION.md` with the overall result, the decisions you had to make, and open questions for the orchestrator — a production change a test needs goes there, not into the code. Once the report is written, end your turn and reply with its path only.
+
+When the project has a `VALIDATION.md`, the report carries a `## Test layers` section with one line per layer the file declares, in the exact form `- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a`; `FAIL`, `NOT RUN` and `BLOCKED` carry the reason, and a layer the worker did not run is `NOT RUN`, never `PASS`. The `wait` warns when a layer did not pass, a section line has no result, or the section is missing from a report of a role that declares layers — it only warns: it never blocks and never runs anything.
 </report>

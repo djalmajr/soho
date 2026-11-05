@@ -19,11 +19,14 @@ var (
 	cellAfter      = regexp.MustCompile(`^[ \t]*(?:\||$)`)
 	dashBefore     = regexp.MustCompile("[:\\x{2014}\\x{2013}-][`*]*[ \\t]+$")
 	fenceOpen      = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})")
-	fenceClose     = regexp.MustCompile("^ {0,3}(`{3,}|~{3,}) *$")
+	fenceClose     = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})[ \\t\\r]*$")
 	anyPartial     = regexp.MustCompile(`\[partial\]`)
 	anyDone        = regexp.MustCompile(`\[done\]`)
 	anySkipped     = regexp.MustCompile(`\[skipped\]`)
 	reviewHeaderRE = regexp.MustCompile(`^findings: ([0-9]+) \(p0 ([0-9]+), p1 ([0-9]+), p2 ([0-9]+), p3 ([0-9]+)\) \| verdict: (pass|fail)$`)
+	layerHeadingRE = regexp.MustCompile(`^#{1,6}[ \t]+`)
+	layerBulletRE  = regexp.MustCompile(`^[-*+][ \t]+`)
+	layerNumberRE  = regexp.MustCompile(`^[0-9]+[.)][ \t]+`)
 )
 
 // PartialCount counts report lines that state a [partial] item outside fenced
@@ -113,6 +116,178 @@ func PartialCountFile(file string) int {
 		return 0
 	}
 	return PartialCount(text)
+}
+
+// LayerResult is a ## Test layers line whose result is not PASS or n/a.
+type LayerResult struct {
+	Name   string
+	Result string // one of FAIL, NOT RUN or BLOCKED
+}
+
+// TestLayersResult is the parsed ## Test layers section of a report: the counts by
+// result and the layers that did not pass, in report order.
+type TestLayersResult struct {
+	Found    bool
+	Pass     int
+	Fail     int
+	NotRun   int
+	Blocked  int
+	NA       int
+	Unmarked int
+	NonPass  []LayerResult
+}
+
+// TestLayers parses the report's ## Test layers section, outside fenced code
+// blocks: one line per layer in the exact form `- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a`;
+// FAIL, NOT RUN and BLOCKED need a reason with at least one letter or digit
+// after ": ", and PASS and n/a accept text after ": " that is ignored. Any
+// other list line in the section is unmarked, and the section ends at the
+// next # or ## title. The form is exact on purpose: the report is not prose,
+// so a formatted or free-text line is never a result.
+func TestLayers(text string) TestLayersResult {
+	out := TestLayersResult{}
+	inFence, fenceChar, fenceLen := false, byte(0), 0
+	inSection := false
+	for _, raw := range strings.Split(text, "\n") {
+		if open := fenceOpen.FindStringSubmatch(raw); !inFence && open != nil {
+			inFence, fenceChar, fenceLen = true, open[1][0], len(open[1])
+			continue
+		}
+		if inFence {
+			if close := fenceClose.FindStringSubmatch(raw); close != nil && close[1][0] == fenceChar && len(close[1]) >= fenceLen {
+				inFence = false
+			}
+			continue
+		}
+		trim := strings.TrimSpace(raw)
+		if m := layerHeadingRE.FindStringIndex(trim); m != nil {
+			inSection = strings.TrimSpace(trim[m[0]:]) == "## Test layers"
+			if inSection {
+				out.Found = true
+			}
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		if layerIsStructuralRow(trim) || !layerIsListLine(trim) {
+			continue
+		}
+		if !parseLayerLine(trim, &out) {
+			out.Unmarked++
+		}
+	}
+	return out
+}
+
+func layerIsListLine(trim string) bool {
+	return layerBulletRE.MatchString(trim) || layerNumberRE.MatchString(trim) || strings.HasPrefix(trim, "|")
+}
+
+// layerIsStructuralRow is a table separator row (a | --- | row): pure
+// markdown structure, not a layer line; every other table row in the
+// section is a list line without the form and so unmarked.
+func layerIsStructuralRow(trim string) bool {
+	if !strings.HasPrefix(trim, "|") {
+		return false
+	}
+	return strings.IndexFunc(trim, func(r rune) bool {
+		return r != '|' && r != '-' && r != ':' && r != ' ' && r != '\t'
+	}) < 0
+}
+
+// parseLayerLine accepts only the bullet form `- <layer>: <result>`; a
+// numbered or table row is a list line without the form, and so is a layer
+// line whose result does not match the exact grammar.
+func parseLayerLine(trim string, out *TestLayersResult) bool {
+	m := layerBulletRE.FindStringIndex(trim)
+	if m == nil {
+		return false
+	}
+	body := strings.TrimSpace(trim[m[1]:])
+	idx := strings.Index(body, ": ")
+	if idx <= 0 {
+		return false
+	}
+	name := strings.TrimSpace(body[:idx])
+	if name == "" {
+		return false
+	}
+	result, reason, ok := matchLayerResult(strings.TrimSpace(body[idx+2:]))
+	if !ok {
+		return false
+	}
+	switch result {
+	case "PASS":
+		out.Pass++
+	case "n/a":
+		out.NA++
+	case "FAIL", "NOT RUN", "BLOCKED":
+		if !layerReasonOK(reason) {
+			return false
+		}
+		switch result {
+		case "FAIL":
+			out.Fail++
+		case "NOT RUN":
+			out.NotRun++
+		case "BLOCKED":
+			out.Blocked++
+		}
+		out.NonPass = append(out.NonPass, LayerResult{Name: name, Result: result})
+	}
+	return true
+}
+
+// matchLayerResult matches the exact result form: the bare result, or the
+// result followed by ": " and a reason. Free text without the colon is not
+// the form, and a trailing colon without the space is not the form.
+func matchLayerResult(rest string) (result, reason string, ok bool) {
+	for _, candidate := range []string{"NOT RUN", "PASS", "FAIL", "BLOCKED", "n/a"} {
+		if rest == candidate {
+			return candidate, "", true
+		}
+		if strings.HasPrefix(rest, candidate+": ") {
+			return candidate, strings.TrimSpace(rest[len(candidate)+2:]), true
+		}
+	}
+	return "", "", false
+}
+
+// layerReasonOK holds when the reason names something: at least one letter
+// or digit, in any language; whitespace, formatting or punctuation alone is
+// no reason.
+func layerReasonOK(reason string) bool {
+	return strings.IndexFunc(reason, func(r rune) bool {
+		return unicode.IsLetter(r) || unicode.IsDigit(r)
+	}) >= 0
+}
+
+// ValidationLine reads the validator's result: the second non-empty line of
+// the report in the exact form `validation: PASS|FAIL|NOT RUN|BLOCKED`, and
+// only when the first non-empty line is the review header.
+func ValidationLine(text string) (string, bool) {
+	if ReviewHeader(text) == nil {
+		return "", false
+	}
+	seen := 0
+	for _, raw := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		line := strings.TrimFunc(raw, isJSTrimSpace)
+		if line == "" {
+			continue
+		}
+		seen++
+		if seen != 2 {
+			continue
+		}
+		for _, result := range []string{"PASS", "FAIL", "NOT RUN", "BLOCKED"} {
+			if line == "validation: "+result {
+				return result, true
+			}
+		}
+		return "", false
+	}
+	return "", false
 }
 
 // ReviewHeader is the parsed first-line review summary.
