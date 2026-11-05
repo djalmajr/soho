@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -217,7 +218,7 @@ func TestWaitReviewResponsesWarnsOncePerReport(t *testing.T) { // scenario 9
 		reviewPath := filepath.Join(dir, "review.md")
 		writeReviewFile(t, reviewPath, markedReview(2))
 		f := newMetricsFixture(t, "off", metricsImplementerRoster, responsesReport("- F1: fixed\n"), reviewBrief(reviewPath), "")
-		writeReviewFile(t, filepath.Join(f.sd, "wait", "worker.review-responses-warned"), "/another/report.md\nmissing\n")
+		writeReviewFile(t, filepath.Join(f.sd, "wait", "worker.review-responses-warned"), strconv.Quote("/another/report.md")+"\nmissing\n")
 		_, errText, rc := f.run(t)
 		if rc != 0 || !strings.Contains(errText, "without a response (F2)") {
 			t.Fatalf("rc=%d err=%q", rc, errText)
@@ -487,4 +488,24 @@ func TestWaitReviewResponsesEdgeCases(t *testing.T) {
 			t.Fatalf("an unreadable report warned: %q", stderr.String())
 		}
 	})
+}
+
+// The marker's first line is the report path, quoted: a path with a line break
+// keeps its identity, so the warning still goes out once.
+func TestWarnReviewResponsesPathWithLineBreak(t *testing.T) {
+	sd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(sd, "wait"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	old := platform.Stderr
+	platform.Stderr = &out
+	defer func() { platform.Stderr = old }()
+	warnings := []reviewWarning{{"missing", "the message"}}
+	for range 2 {
+		warnReviewResponses(sd, "worker", "/a\nb.md", warnings)
+	}
+	if got := strings.Count(out.String(), "the message"); got != 1 {
+		t.Fatalf("warned %d times, want once: %q", got, out.String())
+	}
 }

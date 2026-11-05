@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/core"
@@ -93,8 +94,9 @@ func checkReviewResponses(sd, agent, report, reportText string, line *jsonjs.Obj
 type reviewWarning struct{ key, message string }
 
 // warnReviewResponses sends each kind of warning at most once per report,
-// through the review-responses-warned wait file: the report path on the first
-// line and the kinds already sent below it. A marker that cannot persist only
+// through the review-responses-warned wait file: the report path, quoted so a
+// line break cannot split it, on the first line and the kinds already sent below
+// it. A marker that cannot persist only
 // lets the warning repeat on the next poll, never aborting the settlement.
 func warnReviewResponses(sd, agent, report string, warnings []reviewWarning) {
 	if len(warnings) == 0 {
@@ -102,7 +104,8 @@ func warnReviewResponses(sd, agent, report string, warnings []reviewWarning) {
 	}
 	sent := []string{}
 	prev, _ := readWaitFile(sd, agent, "review-responses-warned")
-	if lines := strings.Split(prev, "\n"); lines[0] == report {
+	key := strconv.Quote(report)
+	if lines := strings.Split(prev, "\n"); lines[0] == key {
 		sent = lines[1:]
 	}
 	fresh := false
@@ -119,7 +122,7 @@ func warnReviewResponses(sd, agent, report string, warnings []reviewWarning) {
 	}
 	// The warning already went out; a marker that cannot persist only lets
 	// it repeat on the next poll, never aborting the settlement.
-	_ = os.WriteFile(filepath.Join(sd, "wait", agent+".review-responses-warned"), []byte(report+"\n"+strings.Join(sent, "\n")+"\n"), 0o666)
+	_ = os.WriteFile(filepath.Join(sd, "wait", agent+".review-responses-warned"), []byte(key+"\n"+strings.Join(sent, "\n")+"\n"), 0o666)
 }
 
 // declaredBriefReview returns the absolute path of the first Review: line in
