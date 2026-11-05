@@ -234,7 +234,7 @@ func TestCmdSpawnMcpRosterField(t *testing.T) {
 
 	t.Run("a role without the mcp key records inherit", func(t *testing.T) {
 		f := codexMcpFixture(t)
-		code, _, _, _ := runCmdSpawn(t, f, []string{"designer"})
+		code, _, _, _ := runCmdSpawn(t, f, []string{"job-orchestrator", "--kind", "grok", "--model", "grok-4.7"})
 		if code != 0 {
 			t.Fatalf("exit=%d", code)
 		}

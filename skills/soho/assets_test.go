@@ -142,6 +142,133 @@ func TestCriticalImplementerKeepsTheImplementerBlocks(t *testing.T) {
 	}
 }
 
+func TestBundleShipsTheDesignTemplateWithItsContract(t *testing.T) {
+	// DJA-695: templates/DESIGN.md is part of the bundle, in the format of
+	// the DESIGN.md specification: the delimited front matter with the
+	// required keys, the prose sections in the specification's order, and
+	// the token layers and specs sections after them.
+	data, err := resources.ReadFile("templates/DESIGN.md")
+	if err != nil {
+		t.Fatalf("bundle is missing templates/DESIGN.md: %v", err)
+	}
+	lines := strings.Split(string(data), "\n")
+	if lines[0] != "---" {
+		t.Fatal("template does not open with the front matter fence")
+	}
+	close := -1
+	for i := 1; i < len(lines); i++ {
+		if lines[i] == "---" {
+			close = i
+			break
+		}
+	}
+	if close < 0 {
+		t.Fatal("the front matter fence never closes")
+	}
+	fm := strings.Join(lines[1:close], "\n")
+	for _, key := range []string{"version:", "name:", "description:", "colors:", "typography:", "rounded:", "spacing:"} {
+		if !strings.Contains(fm, key) {
+			t.Fatalf("front matter lost the %s key", key)
+		}
+	}
+	body := strings.Join(lines[close+1:], "\n")
+	for _, needle := range []string{"fills this file reading", "never copies", "no `<...>` behind"} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("opening text lost %q", needle)
+		}
+	}
+	headings := []string{"## Overview", "## Colors", "## Typography", "## Layout", "## Elevation & Depth", "## Shapes", "## Components", "## Do's and Don'ts", "## Token layers", "## Specs"}
+	next := -1
+	for _, heading := range headings {
+		i := -1
+		for j, line := range lines {
+			if j > next && j > close && line == heading {
+				i = j
+				break
+			}
+		}
+		if i < 0 {
+			t.Fatalf("template lost the heading %q (or lost it out of order)", heading)
+		}
+		next = i
+	}
+	layersSection := ""
+	for i, line := range lines {
+		if line == "## Token layers" {
+			layersSection = strings.Join(lines[i+1:], "\n")
+			break
+		}
+	}
+	for _, needle := range []string{"origin", "project alias", "component"} {
+		if !strings.Contains(layersSection, needle) {
+			t.Fatalf("Token layers section lost %q", needle)
+		}
+	}
+}
+
+func TestDesignModelAndLintReferenceNameNoProjectOrMachine(t *testing.T) {
+	// DJA-695: the model and the lint reference ship generic English text:
+	// no project name, no machine path, no number of the sources.
+	for _, path := range []string{"templates/DESIGN.md", "references/design-lint.md"} {
+		data, err := resources.ReadFile(path)
+		if err != nil {
+			t.Fatalf("bundle is missing %s: %v", path, err)
+		}
+		for _, banned := range []string{"downtv", "cinzel", "dukto", "yatta", "kashes", "skedly", "pinar", "ai-memory", "zommehq", "apigate", "/Users/", "/home/", `C:\Users`, "DJA-", "w6X"} {
+			if strings.Contains(string(data), banned) {
+				t.Fatalf("%s names %q (project-, machine- or source-specific)", path, banned)
+			}
+		}
+	}
+}
+
+func TestDesignerCoversTheDesignFileAndThePrototypePaths(t *testing.T) {
+	// DJA-695: the designer names the model, the absent-file cases, the
+	// per-component spec path, the prototype paths (the .fig and the
+	// static HTML) and the rule against opening the application on its own.
+	body := roleBody(t, "designer.md")
+	for _, needle := range []string{
+		"templates/DESIGN.md",
+		"open question",
+		"design/<name>.md",
+		"prototype-<slice>.fig",
+		"prototype-<slice>.html",
+		"Never open the application",
+		"timeout",
+		"prototype: <path>",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("designer lost %q", needle)
+		}
+	}
+	if !strings.Contains(body, ".fig") {
+		t.Fatal("designer lost the .fig case")
+	}
+}
+
+func TestTesterDeclaresTheDesignLayerWithoutNamingAStack(t *testing.T) {
+	// DJA-695: with a DESIGN.md at the root the tester declares the design
+	// layer without starting a red gate, and the role points at the skill's
+	// lint reference instead of naming a stack.
+	body := roleBody(t, "tester.md")
+	for _, needle := range []string{
+		"DESIGN.md",
+		"the `design` layer",
+		"references/design-lint.md",
+		"A red gate never starts",
+		"the correct token",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("tester lost %q", needle)
+		}
+	}
+	for _, banned := range []string{"shadcn", "Tailwind", "React", "Vue", "Svelte", "Biome"} {
+		if strings.Contains(body, banned) {
+			t.Fatalf("tester names the stack %q (the reference does that)", banned)
+		}
+	}
+}
+
 // roleBody returns the markdown body of a shipped role file (everything
 // after its closing frontmatter ---).
 func roleBody(t *testing.T, name string) string {
@@ -273,6 +400,51 @@ func TestBundleCachedIsStrictlyReadOnly(t *testing.T) {
 			t.Fatal("symlinked bundle accepted")
 		}
 	})
+}
+
+// DJA-693: the shipped mcp choices of the roles. ui-reviewer,
+// sub-orchestrator and planner carry mcp: none; designer carries the
+// open-pencil list and inspector the two browser servers. job-orchestrator
+// keeps inheriting (it reads memory only when the brief lists the scopes).
+func TestShippedRolesCarryTheMcpChoice(t *testing.T) {
+	want := map[string]string{
+		"ui-reviewer":      "none",
+		"sub-orchestrator": "none",
+		"planner":          "none",
+		"designer":         "open-pencil",
+		"inspector":        "playwright,chrome-devtools",
+	}
+	for role, value := range want {
+		if got := roleFm(t, role+".md", "mcp"); got != value {
+			t.Fatalf("%s mcp frontmatter=%q, want %q", role, got, value)
+		}
+	}
+	if got := roleFm(t, "job-orchestrator.md", "mcp"); got != "" {
+		t.Fatalf("job-orchestrator gained a mcp key %q, want none (it inherits)", got)
+	}
+}
+
+// roleFm returns one frontmatter key of a shipped role file ("" when absent).
+func roleFm(t *testing.T, file, key string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("roles", file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) == 0 || lines[0] != "---" {
+		t.Fatalf("%s: missing frontmatter", file)
+	}
+	for i := 1; i < len(lines); i++ {
+		if lines[i] == "---" {
+			return ""
+		}
+		if line, ok := strings.CutPrefix(lines[i], key+": "); ok {
+			return strings.TrimSpace(line)
+		}
+	}
+	t.Fatalf("%s: unterminated frontmatter", file)
+	return ""
 }
 
 func TestBundleBriefTemplateCitesTheAuthorMeasurement(t *testing.T) {

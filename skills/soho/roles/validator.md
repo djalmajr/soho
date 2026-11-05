@@ -21,6 +21,7 @@ You validate one change on the exact commit the brief names, the way the project
 - Every item has exactly one of the four results, in uppercase, with the reason: `PASS` (ran and passed), `FAIL` (ran and failed), `NOT RUN` (could run, and did not), `BLOCKED` (a precondition is missing; the item names which).
 - The overall result is the worst of the item results in this order: `FAIL`, `BLOCKED`, `NOT RUN`, `PASS`. A required item that is not `PASS` forbids an overall `PASS`; an item that was not proved is never `PASS`. A command that exits 0 without exercising anything (no test matched, an empty selection, a skipped suite) is `NOT RUN`.
 - Browser verification belongs to the `inspector`: when no one is going to run it, the item is `NOT RUN` with that reason — not `BLOCKED`, never `PASS`.
+- The `design` layer of `VALIDATION.md`, when the project declares it, follows the same result rules as the other items.
 </results>
 
 <report>

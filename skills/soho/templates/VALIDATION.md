@@ -22,6 +22,8 @@ Template for the project's `VALIDATION.md`, the delivery contract of a change. T
 - e2e: `<command>`
 - mutation: `<command>`
 
+A project with a `DESIGN.md` at its root adds one more line in this section, `- design:`, with the command of its design check or, until that check passes, `manual: <what runs it>`; `soho validate` runs it like any other layer. A project with no interface contract adds nothing.
+
 ## Items
 
 <numbered list; an item that is always run carries `(required)`; each item names the exact command or procedure and the evidence it must produce>
