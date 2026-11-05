@@ -1157,6 +1157,7 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				checkReferenceParity(sd, agent, report, text, line)
 				role := TaskRole(sd, agent)
 				checkTestLayers(sd, agent, report, text, line, role)
+				checkFindingMarks(sd, agent, report, text, header, line)
 				pointer := taskreport.ReadTaskReportPointer(sd, agent)
 				if pointer != nil {
 					current, _ := pointer.Get("current")

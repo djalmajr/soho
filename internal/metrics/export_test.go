@@ -719,3 +719,22 @@ func TestExportNestedClosedLists(t *testing.T) {
 		t.Fatalf("the rest of the line must stay: %s", lines[1])
 	}
 }
+
+// TestExportCarriesFindingOrigins (DJA-684 slice B): the settled line's
+// items.origins joins the anonymized export with its closed origin keys, and
+// a class slug inside origins stays out like every other stray key.
+func TestExportCarriesFindingOrigins(t *testing.T) {
+	const settled = `{"ts":"2026-09-30T22:00:00Z","agent":"rev","report":"rev.md","role":"reviewer","kind":"codex","model":"gpt-5","effort":"max","family":"openai","type":"review","duration_s":80,"items":{"done":2,"partial":0,"skipped":0,"origins":{"brief":1,"impl":1,"unknown":1,"class":"missing-bound"}},"verdict":"pass","findings":3,"severity":{"P0":0,"P1":0,"P2":2,"P3":0},"verdict_effective":"fail"}`
+	f := newExportFixture(t, map[string]string{"ws1/metrics.jsonl": settled + "\n"})
+	stdout, stderr, code, _ := f.run(t)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr)
+	}
+	line := strings.TrimSuffix(stdout, "\n")
+	if !strings.Contains(line, `"origins":{"brief":1,"impl":1,"unknown":1}`) {
+		t.Fatalf("items.origins lost by the export: %q", line)
+	}
+	if strings.Contains(line, "missing-bound") || strings.Contains(line, `"class"`) {
+		t.Fatalf("a class slug leaked into the export line: %q", line)
+	}
+}

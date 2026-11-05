@@ -190,6 +190,51 @@ func TestMetricsReviewLine(t *testing.T) {
 			t.Fatalf("role wrong: %q", lines[0])
 		}
 	})
+	t.Run("wait: a marked review report records items.origins and never a class", func(t *testing.T) {
+		body := "findings: 3 (P0 0, P1 0, P2 0, P3 3) | verdict: pass\n\n" +
+			"- [F1] [origin: impl] [class: missing-bound] a bound\n" +
+			"- [F2] [origin: brief] [class: doc-drift] a doc\n" +
+			"- [F3] [origin: unknown] [class: follows-link] a link\n"
+		m := newMetricsFixture(t, "on", metricsReviewerRoster, body, metricsBriefBackend, "")
+		_, _, code := m.run(t)
+		if code != 0 {
+			t.Fatalf("code=%d", code)
+		}
+		lines := m.lines(t)
+		if len(lines) != 1 {
+			t.Fatalf("want exactly 1 line, got %d", len(lines))
+		}
+		line := parseMetricsLine(t, lines[0])
+		items, _ := line["items"].(map[string]any)
+		origins, _ := items["origins"].(map[string]any)
+		if origins == nil || origins["brief"] != 1.0 || origins["impl"] != 1.0 || origins["unknown"] != 1.0 {
+			t.Fatalf("items.origins wrong: %q", lines[0])
+		}
+		if len(origins) != 3 {
+			t.Fatalf("items.origins carries more than the origin counts: %q", lines[0])
+		}
+		for _, slug := range []string{"missing-bound", "doc-drift", "follows-link", `"class"`} {
+			if strings.Contains(lines[0], slug) {
+				t.Fatalf("a class slug leaked into the metrics line: %q", lines[0])
+			}
+		}
+	})
+	t.Run("wait: an implementer report records no origins", func(t *testing.T) {
+		m := newMetricsFixture(t, "on", metricsImplementerRoster, metricsImplementerReport, metricsBriefBackend, "")
+		_, _, code := m.run(t)
+		if code != 0 {
+			t.Fatalf("code=%d", code)
+		}
+		lines := m.lines(t)
+		if len(lines) != 1 {
+			t.Fatalf("want exactly 1 line, got %d", len(lines))
+		}
+		line := parseMetricsLine(t, lines[0])
+		items, _ := line["items"].(map[string]any)
+		if _, ok := items["origins"]; ok {
+			t.Fatalf("origins on a non-review line: %q", lines[0])
+		}
+	})
 }
 
 func TestMetricsOncePerReport(t *testing.T) { // mutation: dropping the metrics-recorded marker records the second wait again

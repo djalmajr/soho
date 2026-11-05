@@ -617,3 +617,27 @@ func TestTable_ValidatorCarriesPrecisionAndMissed(t *testing.T) {
 		t.Fatalf("stdout =\n%s", out)
 	}
 }
+
+// TestTable_LoadingFindingOrigins (DJA-684 slice B): an export line that
+// carries the new items.origins field parses and renders exactly like the
+// line without it — the table loads the field and renders no new column.
+func TestTable_LoadingFindingOrigins(t *testing.T) {
+	base := map[string]any{"project": "p", "role": "implementer", "type": "build", "kind": "fix", "model": "beta", "duration_s": 600}
+	withOrigins := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		withOrigins[k] = v
+	}
+	withOrigins["items"] = map[string]any{"done": 1, "partial": 0, "skipped": 0, "origins": map[string]any{"brief": 1, "impl": 1, "unknown": 0}}
+	without := map[string]any{"project": "p", "role": "implementer", "type": "build", "kind": "fix", "model": "alpha", "duration_s": 600}
+	file := tableWriteFile(t, t.TempDir(), "export.jsonl", tableJSON(t, withOrigins)+"\n"+tableJSON(t, without)+"\n")
+	code, out, err := tableRun(t, []string{file})
+	if code != 0 || err != "" {
+		t.Fatalf("exit = %d, stderr = %q", code, err)
+	}
+	want := tableHeader +
+		"| implementer | build | fix | alpha | - | 1 | 10.0 | - | - | - | low |\n" +
+		"| implementer | build | fix | beta | - | 1 | 10.0 | 0% | - | - | low |\n"
+	if out != want {
+		t.Fatalf("stdout =\n%s\nwant:\n%s", out, want)
+	}
+}
