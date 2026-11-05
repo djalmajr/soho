@@ -63,6 +63,9 @@ type BriefLintOptions struct {
 	PathsOnly       bool
 	WorkerCwd       string
 	OrchestratorCwd string
+	// InheritedWorktree is the tree of the original brief, for an amendment:
+	// one that declares no Worktree: line of its own keeps the original's.
+	InheritedWorktree string
 }
 
 // BriefLintResult is the diagnostic payload shared by lint and dispatch.
@@ -409,10 +412,20 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 	body := strings.ToValidUTF8(string(bodyBytes), "\uFFFD")
 	result.MissingMessage = strings.Join(referenceLintFindings(body, env), "; ")
 	if options.WorkerCwd != "" {
+		// The worker works in the tree the brief declares. A reused pane
+		// stays in the directory it opened in, often an older worktree, so
+		// the pane only decides when no tree is declared.
+		workerTree := DeclaredWorktree(body)
+		if workerTree == "" {
+			workerTree = options.InheritedWorktree
+		}
+		if workerTree == "" {
+			workerTree = options.WorkerCwd
+		}
 		project := platform.ProjectRoot(env, options.OrchestratorCwd)
 		state := platform.StateProjectRoot(env, options.OrchestratorCwd)
-		if !SamePath(options.WorkerCwd, project, platform.Current()) || !SamePath(options.WorkerCwd, state, platform.Current()) {
-			result.UnseenPaths = unseenPathWarnings(brief, body, options.WorkerCwd, []string{project, state})
+		if !SamePath(workerTree, project, platform.Current()) || !SamePath(workerTree, state, platform.Current()) {
+			result.UnseenPaths = unseenPathWarnings(brief, body, workerTree, []string{project, state})
 			result.Warnings = append(result.Warnings, result.UnseenPaths...)
 		}
 	}
