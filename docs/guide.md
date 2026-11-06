@@ -56,6 +56,8 @@ The **documenter** edits documentation only (README, guides, references, ADRs, C
 - **Names:** `init` renames the caller to `orchestrator`. With lanes on (the default) workers are named after their lane (`build`, `build-2`, `critical`, `review`, `docs`), not after the role; agent names are global in Herdr, so a name another workspace already uses gets the next free suffix, and a `--name` that is taken does the same (with a warning). `lanes=off` keeps the old role names (`reviewer`, `reviewer-2`, …); a nested orchestrator is `sub-orchestrator`.
 - **Pane titles:** `init` titles an untitled pane `orchestrator: <project>`; `soho title "<objective>"` sets `orchestrator: <objective>` (the objective is cut at 60 code points) and `title --clear` clears it, so the sidebar shows what this session leads. Every `dispatch` also titles the worker's pane `<role>: <task>`.
 
+With lanes on, a new explicit `spawn --name` opens a new worker when both the lane and `max_workers` have room, after the usual compatibility and creation checks. An omitted name or an existing compatible name keeps reuse. When capacity requires renaming a compatible idle worker, the warning names every limiting cap and says that the old name no longer works. Use `--fresh` for a new session when capacity permits. Dispatching an old name still exits 3 without sending anything; bounded rename history may suggest the current name. Releasing, replacing or recreating a referenced worker invalidates that suggestion.
+
 ## Commands
 
 ```text

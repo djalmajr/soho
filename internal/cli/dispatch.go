@@ -153,7 +153,11 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	sd := core.StateDirPath(ctx, env, cwd)
 	line := core.RosterLine(sd, agent)
 	if line == "" {
-		core.DieFriction(fmt.Sprintf("agent '%s' is not in this skill's roster (spawn it first, or pass a name you spawned)", agent), 3, frictionLogPath, "dispatch")
+		message := fmt.Sprintf("agent '%s' is not in this skill's roster (spawn it first, or pass a name you spawned)", agent)
+		if replacement := core.RosterRenameHint(sd, agent); replacement != "" {
+			message += fmt.Sprintf("; renamed to '%s'; use the current name for dispatch", replacement)
+		}
+		core.DieFriction(message, 3, frictionLogPath, "dispatch")
 	}
 	rosterFields := strings.Split(line, "\t")
 	if len(rosterFields) > 6 && waitpkg.WorkerCwdGone(rosterFields[6]) {

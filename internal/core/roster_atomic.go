@@ -25,37 +25,46 @@ const rosterReadLimit int64 = 1 << 20
 // read is bounded by the file's stat size — at most info.Size()+1 bytes —
 // and reading more proves the file grew between the stat and the read.
 func StrictRosterLines(dir string) ([]string, error) {
+	_, lines, err := readStrictRoster(dir)
+	return lines, err
+}
+
+// readStrictRoster retains the bounded raw snapshot as well as its raw lines.
+// Rename needs the original delimiters: the line split alone cannot tell a
+// final data CR from the CR in a CRLF delimiter. Existing strict readers keep
+// their raw-line policy through StrictRosterLines.
+func readStrictRoster(dir string) ([]byte, []string, error) {
 	path := filepath.Join(dir, "agents.tsv")
 	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return []string{}, nil
+			return nil, []string{}, nil
 		}
-		return nil, fmt.Errorf("the roster is unreadable: %w", err)
+		return nil, nil, fmt.Errorf("the roster is unreadable: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("the roster is unreadable: agents.tsv is not a regular file")
+		return nil, nil, fmt.Errorf("the roster is unreadable: agents.tsv is not a regular file")
 	}
 	if info.Size() > rosterReadLimit {
-		return nil, fmt.Errorf("the roster is unreadable: agents.tsv holds %d bytes (limit %d)", info.Size(), rosterReadLimit)
+		return nil, nil, fmt.Errorf("the roster is unreadable: agents.tsv holds %d bytes (limit %d)", info.Size(), rosterReadLimit)
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("the roster is unreadable: %w", err)
+		return nil, nil, fmt.Errorf("the roster is unreadable: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(f, info.Size()+1))
 	if err != nil {
-		return nil, fmt.Errorf("the roster is unreadable: %w", err)
+		return nil, nil, fmt.Errorf("the roster is unreadable: %w", err)
 	}
 	if int64(len(raw)) > info.Size() {
-		return nil, fmt.Errorf("the roster is unreadable: agents.tsv grew while it was read")
+		return nil, nil, fmt.Errorf("the roster is unreadable: agents.tsv grew while it was read")
 	}
 	lines := strings.Split(string(raw), "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
-	return lines, nil
+	return raw, lines, nil
 }
 
 // RosterRemoveRefusal is a beforeRemove refusal: the row was still intact
@@ -137,6 +146,7 @@ func RosterRemoveIf(dir, pane, expectedRow string, beforeRemove ...func() (strin
 			}
 			out = append(out, line)
 		}
+		out = compactRenames(out, strings.Split(expectedRow, "\t")[0])
 		content := ""
 		if len(out) != 0 {
 			content = strings.Join(out, "\n") + "\n"

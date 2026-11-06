@@ -35,6 +35,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		// spawn reviewer --name review -> herdr agent rename, roster renamed,
 		// JSON name review, the renamed warning.
 		f := newSpawnFixture(t, []fakecli.Rule{
+			{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"review-2","pane_id":"w0test:p0a","agent_status":"idle"}]}}`},
 			{Argv: []string{"agent", "get", "review-2"}, Stdout: `{"result":{"agent":{"name":"review-2","agent_status":"idle"}}}`},
 			{Argv: []string{"agent", "rename", "w0test:p0a", "review"}, Stdout: `{"result":{}}`},
 		})
@@ -61,8 +62,12 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(roster), "review\tw0test:p0a") || strings.Contains(string(roster), "review-2") {
+		sd := filepath.Join(f.state, "ws")
+		if !strings.Contains(string(roster), "review\tw0test:p0a") || core.RosterLine(sd, "review-2") != "" {
 			t.Fatalf("roster=%q", roster)
+		}
+		if hint := core.RosterRenameHint(sd, "review-2"); hint != "review" {
+			t.Fatalf("diagnostic history=%q want review", hint)
 		}
 		want := "soho: warning: reusing idle lane 'review' worker 'review-2' as reviewer, renamed to 'review'; existing session context is retained"
 		if !strings.Contains(stderr, want) {
@@ -74,6 +79,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		// A4.1, the friction.log:407 pair: the lane worker is named review and
 		// the requested name is review-2.
 		f := newSpawnFixture(t, []fakecli.Rule{
+			{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"review","pane_id":"w0test:p0a","agent_status":"idle"}]}}`},
 			{Argv: []string{"agent", "get", "review"}, Stdout: `{"result":{"agent":{"name":"review","agent_status":"idle"}}}`},
 			{Argv: []string{"agent", "rename", "w0test:p0a", "review-2"}, Stdout: `{"result":{}}`},
 		})
@@ -131,6 +137,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		// A4.1: herdr agent rename status != 0 -> exit 4, the cause in the
 		// message, the roster line of the old name intact.
 		f := newSpawnFixture(t, []fakecli.Rule{
+			{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"review-2","pane_id":"w0test:p0a","agent_status":"idle"}]}}`},
 			{Argv: []string{"agent", "get", "review-2"}, Stdout: `{"result":{"agent":{"name":"review-2","agent_status":"idle"}}}`},
 			{Argv: []string{"agent", "rename", "w0test:p0a", "review"}, Stderr: `{"error":{"code":"agent_name_taken","message":"an agent named review already exists"}}`, Code: 1},
 		})
@@ -214,6 +221,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		// R2-P2: after the rename, the per-agent state files follow the new
 		// name, and status under the new name shows the earlier report.
 		f := newSpawnFixture(t, []fakecli.Rule{
+			{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"review-2","pane_id":"w0test:p0a","agent_status":"idle"}]}}`},
 			{Argv: []string{"agent", "get", "review-2"}, Stdout: `{"result":{"agent":{"name":"review-2","agent_status":"idle"}}}`},
 			{Argv: []string{"agent", "rename", "w0test:p0a", "review"}, Stdout: `{"result":{}}`},
 		})
@@ -299,6 +307,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		// "spawn: could not move '<file>' to the name '<X>'" and the spawn
 		// still finishes with the new name; the other files still move.
 		f := newSpawnFixture(t, []fakecli.Rule{
+			{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"review-2","pane_id":"w0test:p0a","agent_status":"idle"}]}}`},
 			{Argv: []string{"agent", "get", "review-2"}, Stdout: `{"result":{"agent":{"name":"review-2","agent_status":"idle"}}}`},
 			{Argv: []string{"agent", "rename", "w0test:p0a", "review"}, Stdout: `{"result":{}}`},
 		})
