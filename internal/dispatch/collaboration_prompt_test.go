@@ -27,7 +27,7 @@ func TestPromptExplainsActiveAssignmentWithoutNormalCompletion(t *testing.T) {
 	if err := os.WriteFile(role, []byte("---\nname: implementer\n---\nRole body\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, prompt := range []string{ComposePrompt(role, "implementer", "author", "Brief", "/report.md", &ctx, env, "codex", "", "", false), ComposeAmendment("Amendment", "/report.md", "", &ctx, env, "codex", "", "", false, "author")} {
+	for _, prompt := range []string{ComposePrompt(role, "implementer", "author", "Brief", "/report.md", &ctx, env, "codex", "", "", false), ComposeAmendment("Amendment", "/report.md", "", "implementer", &ctx, env, "codex", "", "", false, "author")} {
 		for _, needle := range []string{a.ID, "counterpart: `reviewer`", "--type review.question", "immutable snapshot", "distinct sibling", "only the orchestrator may finalize", "do not resend"} {
 			if !strings.Contains(prompt, needle) {
 				t.Fatalf("missing collaboration contract: %s", needle)

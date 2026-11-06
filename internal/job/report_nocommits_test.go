@@ -43,24 +43,33 @@ func TestReportWorktreeNoCommits(t *testing.T) {
 		if len(*f.friction) != 0 {
 			t.Fatalf("friction = %v, want none", *f.friction)
 		}
+		// The branch sync is verified without fabricating a pull request
+		// requirement: the persisted snapshot has the heads and no pr.
+		pub := f.state(t).FinalPublication
+		if pub == nil || pub.LocalHead != head || pub.RemoteHead != head || len(pub.Commits) != 0 || pub.PR != nil {
+			t.Fatalf("final publication = %+v, want the verified branch heads, no commits and no pr", pub)
+		}
+		if st := f.state(t); st.Status != StatusDone || !st.FinishingSynced {
+			t.Fatalf("state = %s synced=%v, want done and synced", st.Status, st.FinishingSynced)
+		}
 	})
 
-	t.Run("a failed commit listing is never labeled sem commits", func(t *testing.T) {
+	t.Run("a failed commit listing is never labeled sem commits and is not a verified publication", func(t *testing.T) {
 		f := newSupGitFixture(t, nil)
 		f.sup.Git.Base = "no-such-base"
 		if _, err := f.store.Transition(supGitID, StatusFinishing); err != nil {
 			t.Fatal(err)
 		}
 		exit, done, err := f.sup.finishOutcome(StatusDone, "", 0)
-		if err != nil || !done || exit != 0 {
-			t.Fatalf("finishOutcome = %d done=%v err=%v, want done with exit 0", exit, done, err)
+		if err != nil || !done || exit != ExitFailed {
+			t.Fatalf("finishOutcome = %d done=%v err=%v, want failed with exit 19 (the publication is not verified)", exit, done, err)
 		}
 		rep := f.report(t)
-		if rep["motivo"] != nil {
-			t.Fatalf("motivo = %v, want null (the commit listing failed, it is not known empty)", rep["motivo"])
+		if rep["status"] != "failed" || rep["motivo"] != finalPublicationMotivo {
+			t.Fatalf("report status=%v motivo=%v, want failed with %q (not sem commits: the listing is unknown, not empty)", rep["status"], rep["motivo"], finalPublicationMotivo)
 		}
-		if head, _ := rep["head"].(string); head == "" {
-			t.Fatalf("head = %v, want the worktree head (the listing, not the head, failed)", rep["head"])
+		if f.state(t).FinalPublication != nil {
+			t.Fatalf("final publication = %+v, want none", f.state(t).FinalPublication)
 		}
 		if len(*f.friction) == 0 {
 			t.Fatal("friction is empty, want the commit listing failure")

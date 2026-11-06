@@ -541,7 +541,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	}
 	prompt := dispatch.ComposePrompt(roleFile, role, agent, briefRaw, report, ctx, env, kind, args, approvals, shared)
 	if amend {
-		prompt = dispatch.ComposeAmendment(briefRaw, report, amendmentOriginalBrief(sd, priorPointer), ctx, env, kind, args, approvals, shared, agent)
+		prompt = dispatch.ComposeAmendment(briefRaw, report, amendmentOriginalBrief(sd, priorPointer), role, ctx, env, kind, args, approvals, shared, agent)
 		prompt = strings.Replace(prompt, "# Amendment to your current brief\n\n", "# Amendment to your current brief\n\n"+amendmentRoleHeader(roleFile, role, agent), 1)
 	}
 	prompt = dispatchReferencePrompt(prompt, briefRaw, role, sd, report, env)

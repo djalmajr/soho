@@ -440,24 +440,71 @@ func (s *Supervisor) gitSyncRecovered() {
 // (finishing_synced), so a restart does not run it again: a step that was cut
 // or failed for another reason (a git or gh error, a refused push, a store
 // error) leaves the field false, and the restart runs the sync again.
-func (s *Supervisor) finalSync(status string) (cut bool) {
+func (s *Supervisor) finalSync(status string, announced bool) (cut, verified bool) {
 	// The terminal procedure starts here: the repeats of the watch loop's
 	// last failure are written now, so the count is never lost.
 	s.flushGitRepeats()
 	if s.Git == nil {
-		return false
+		// A Git-free (workspace) job has no publication to verify.
+		return false, true
 	}
 	s.ensureFinishingBase()
-	if snap, err := s.Store.Snapshot(s.ID); err == nil && snap.State.FinishingSynced {
-		return false
+	s.pubCause = ""
+	snap, snapErr := s.Store.Snapshot(s.ID)
+	if announced {
+		// A terminal event already announced the outcome: it stands, and the
+		// publication it was announced with (or without) is never upgraded
+		// retroactively — no snapshot is captured after the announcement.
+		if snapErr == nil && snap.State.FinishingSynced {
+			return false, snap.State.verifiedPublication() != nil
+		}
+		return s.syncAndCapture(status, false)
 	}
+	if snapErr == nil && snap.State.FinishingSynced {
+		if pub := snap.State.verifiedPublication(); pub != nil {
+			// An earlier observation of an unfinished job is trusted only
+			// while the local head is still the one it verified.
+			s.Git.Limit = s.finCap
+			if !s.beginFinStep("the final push", s.FinishingLimits.git()) {
+				s.Git.Limit = nil
+				return true, false
+			}
+			head, err := s.Git.Head()
+			s.Git.Limit = nil
+			s.stepDeadline, s.stepName = 0, ""
+			if err == nil && head == pub.LocalHead {
+				return false, true
+			}
+			if err != nil {
+				s.frictionGit(err)
+				s.pubCause = err.Error()
+				return false, false
+			}
+			if err := s.invalidatePublication(); err != nil {
+				s.frictionf("job: the supervisor could not invalidate the stale final publication: " + err.Error())
+				s.pubCause = err.Error()
+				return false, false
+			}
+		}
+		// A legacy completion marker without a verified snapshot is not a
+		// verified publication: the final sync runs again.
+	}
+	return s.syncAndCapture(status, true)
+}
+
+// syncAndCapture runs the bounded final sync and, when capture is set and
+// the sync ended clean, captures and persists the verified final
+// publication. verified is true only when the snapshot was saved with the
+// completion marker; capture false (an announced outcome) records the plain
+// marker as before and verifies nothing.
+func (s *Supervisor) syncAndCapture(status string, capture bool) (cut, verified bool) {
 	s.Git.Limit = s.finCap
 	defer func() {
 		s.Git.Limit = nil
 		s.stepDeadline, s.stepName = 0, ""
 	}()
 	if !s.beginFinStep("the final push", s.FinishingLimits.git()) {
-		return true
+		return true, false
 	}
 	fin := &finSync{}
 	if status == StatusCanceled || status == StatusTimeout {
@@ -468,23 +515,53 @@ func (s *Supervisor) finalSync(status string) (cut bool) {
 		}
 	}
 	if fin.cut {
-		return true
+		return true, false
 	}
 	// The final sync ignores the watch cadence.
 	if _, _, err := s.syncGitPass(fin); err != nil {
 		// A store error returned by the pass: the sync is not clean.
 		fin.fail()
+		s.pubCause = err.Error()
 	}
 	if fin.cut {
-		return true
+		return true, false
 	}
 	if fin.failed {
-		return false
+		if s.pubCause == "" {
+			s.pubCause = "the final sync did not complete"
+		}
+		return false, false
 	}
-	if _, err := s.Store.Record(s.ID, func(st *State) { st.FinishingSynced = true }); err != nil {
+	if !capture {
+		if _, err := s.Store.Record(s.ID, func(st *State) { st.FinishingSynced = true }); err != nil {
+			s.frictionf("job: the supervisor could not record the completed final sync: " + err.Error())
+		}
+		return false, false
+	}
+	jobDir, err := s.Store.readDir(s.ID)
+	var events []Event
+	if err == nil {
+		events, err = readEvents(jobDir)
+	}
+	if err != nil {
+		s.frictionf("job: the final publication could not be read: " + err.Error())
+		s.pubCause = err.Error()
+		return false, false
+	}
+	pub, err := s.capturePublication(fin, events)
+	if fin.cut {
+		return true, false
+	}
+	if err != nil {
+		s.pubCause = err.Error()
+		return false, false
+	}
+	if err := s.persistPublication(pub); err != nil {
 		s.frictionf("job: the supervisor could not record the completed final sync: " + err.Error())
+		s.pubCause = err.Error()
+		return false, false
 	}
-	return false
+	return false, true
 }
 
 // finalize finishes every terminal outcome the same way, after the

@@ -77,7 +77,7 @@ func TestCmdSpawnMcpCodexPerServerTranslation(t *testing.T) {
 			t.Fatalf("exit=%d", code)
 		}
 		tail := startTail(t, f)
-		want := `-m gpt-5 -c model_reasoning_effort="high" -c mcp_servers.alpha.enabled=false -c mcp_servers.beta.enabled=false --user-x`
+		want := `-m gpt-5 -c model_reasoning_effort="high" -c features.apps=false -c mcp_servers.alpha.enabled=false -c mcp_servers.beta.enabled=false --user-x`
 		if got := strings.Join(tail, " "); got != want {
 			t.Fatalf("argv=%q, want %q", got, want)
 		}
@@ -110,7 +110,7 @@ func TestCmdSpawnMcpCodexPerServerTranslation(t *testing.T) {
 			t.Fatalf("the exact exit-1 warning is not on stderr once: %q", stderr)
 		}
 		tail := startTail(t, f)
-		if got := strings.Join(tail, " "); got != `-m gpt-5 -c model_reasoning_effort="high"` {
+		if got := strings.Join(tail, " "); got != `-m gpt-5 -c model_reasoning_effort="high" -c features.apps=false` {
 			t.Fatalf("argv=%q, want the listing-free argv", got)
 		}
 	})
@@ -126,7 +126,7 @@ func TestCmdSpawnMcpCodexPerServerTranslation(t *testing.T) {
 			t.Fatalf("the exact non-JSON warning is not on stderr once: %q", stderr)
 		}
 		tail := startTail(t, f)
-		if got := strings.Join(tail, " "); got != `-m gpt-5 -c model_reasoning_effort="high"` {
+		if got := strings.Join(tail, " "); got != `-m gpt-5 -c model_reasoning_effort="high" -c features.apps=false` {
 			t.Fatalf("argv=%q, want the listing-free argv", got)
 		}
 	})
@@ -141,7 +141,7 @@ func TestCmdSpawnMcpCodexPerServerTranslation(t *testing.T) {
 			t.Fatalf("the exact not-found warning is not on stderr once: %q", stderr)
 		}
 		tail := startTail(t, f)
-		if got := strings.Join(tail, " "); got != `-m gpt-5 -c model_reasoning_effort="high"` {
+		if got := strings.Join(tail, " "); got != `-m gpt-5 -c model_reasoning_effort="high" -c features.apps=false` {
 			t.Fatalf("argv=%q, want the listing-free argv", got)
 		}
 	})
@@ -157,7 +157,7 @@ func TestCmdSpawnMcpCodexPerServerTranslation(t *testing.T) {
 			t.Fatalf("the exact timeout warning is not on stderr once: %q", stderr)
 		}
 		tail := startTail(t, f)
-		if got := strings.Join(tail, " "); got != `-m gpt-5 -c model_reasoning_effort="high"` {
+		if got := strings.Join(tail, " "); got != `-m gpt-5 -c model_reasoning_effort="high" -c features.apps=false` {
 			t.Fatalf("argv=%q, want the listing-free argv", got)
 		}
 	})
@@ -173,7 +173,7 @@ func TestCmdSpawnMcpCodexPerServerTranslation(t *testing.T) {
 			t.Fatalf("zero enabled servers warned: %q", stderr)
 		}
 		tail := startTail(t, f)
-		if got := strings.Join(tail, " "); got != `-m gpt-5 -c model_reasoning_effort="high"` {
+		if got := strings.Join(tail, " "); got != `-m gpt-5 -c model_reasoning_effort="high" -c features.apps=false` {
 			t.Fatalf("argv=%q, want the listing-free argv", got)
 		}
 	})

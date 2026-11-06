@@ -267,7 +267,7 @@ func TestSpawnTrustCwd(t *testing.T) {
 			} else if index != -1 {
 				t.Fatalf("unexpected trust argv=%q", tail)
 			}
-			if enabled && (index < 5 || !reflect.DeepEqual(tail[index-5:index-1], []string{"-c", `model_reasoning_effort="high"`, "-c", "mcp_servers.fixture.enabled=false"})) {
+			if enabled && (index < 7 || !reflect.DeepEqual(tail[index-7:index-1], []string{"-c", `model_reasoning_effort="high"`, "-c", "features.apps=false", "-c", "mcp_servers.fixture.enabled=false"})) {
 				t.Fatalf("trust must follow effort and MCP: %q", tail)
 			}
 			if tc.refused {

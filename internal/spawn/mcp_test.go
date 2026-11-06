@@ -190,7 +190,7 @@ func TestCmdSpawnMcpArgvPosition(t *testing.T) {
 			t.Fatalf("exit=%d", code)
 		}
 		tail := startTail(t, f)
-		want := `-m gpt-5 -c model_reasoning_effort="high" -c mcp_servers.alpha.enabled=false`
+		want := `-m gpt-5 -c model_reasoning_effort="high" -c features.apps=false -c mcp_servers.alpha.enabled=false`
 		if got := strings.Join(tail, " "); got != want {
 			t.Fatalf("argv=%q, want %q", got, want)
 		}

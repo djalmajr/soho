@@ -142,7 +142,7 @@ func TestCmdSpawnMcpCodexNeutralListingRefusesATempDirInsideAProject(t *testing.
 	if strings.Contains(stderr, "cannot turn off MCP") {
 		t.Fatalf("a refused neutral listing still warned about servers that stay on: %q", stderr)
 	}
-	wantTail(t, f, codexMcpBaseArgv)
+	wantTail(t, f, codexMcpAppsOffArgv)
 	wantCodexCalls(t, f, codexListArgv)
 	entries, err := os.ReadDir(filepath.Join(project, "tmp"))
 	if err != nil {
@@ -205,6 +205,6 @@ func TestCmdSpawnMcpCodexRefusesARelativeCodexHome(t *testing.T) {
 	if got := stdErrCount(stderr, codexMcpWarn("neutral listing: CODEX_HOME is not an absolute path", "worker")); got != 1 {
 		t.Fatalf("the exact listing-failure warning is not on stderr once: %q", stderr)
 	}
-	wantTail(t, f, codexMcpBaseArgv)
+	wantTail(t, f, codexMcpAppsOffArgv)
 	wantCodexCalls(t, f, codexListArgv)
 }

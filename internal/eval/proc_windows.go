@@ -280,11 +280,11 @@ func runOwnedGoProcess(ctx context.Context, goExecutable string, dir string, arg
 	startup.StartupInfo.StdErr = syscall.Handle(errF.Fd())
 	startup.attributeList = attrList.list()
 
-	var processInfo syscall.ProcessInformation
-	createErr := syscall.CreateProcess(application, commandLine, nil, nil, true,
-		winCreateSuspended|winCreateUnicodeEnvironment|winExtendedStartupInfoPresent, environment, workingDir,
-		&startup.StartupInfo, &processInfo)
-	syscall.ForkLock.Unlock()
+	run := runOwnedJob(ctx, winOwnedJobOptions{
+		application: application, commandLine: commandLine, environment: environment,
+		workingDir: workingDir, startup: &startup,
+		captureFiles: []*os.File{outF, errF}, captureDir: dir,
+	})
 	// Keep the raw-pointer backing buffers, the handle-list backing array,
 	// the working-directory backing pointer and the owned output files
 	// alive through the call, the way the stdlib keeps its own: syscall
@@ -299,97 +299,12 @@ func runOwnedGoProcess(ctx context.Context, goExecutable string, dir string, arg
 	runtime.KeepAlive(workingDir)
 	runtime.KeepAlive(outF)
 	runtime.KeepAlive(errF)
-	if createErr != nil {
-		return errors.Join(fmt.Errorf("create suspended go process: %v", winCallError(createErr)), captureCleanup())
+	if run.createErr != nil {
+		return errors.Join(fmt.Errorf("create suspended go process: %v", winCallError(run.createErr)), captureCleanup())
 	}
-	processHandle := syscall.Handle(processInfo.Process)
-	threadHandle := syscall.Handle(processInfo.Thread)
-
-	// Containment is a precondition: if the kill-on-close job cannot be
-	// created, configured, or the still-suspended root cannot be assigned
-	// to it, fail closed BEFORE resuming — terminate the suspended root
-	// (bounded drain) and refuse. The silent fallback to an uncontained
-	// tree is gone. Both steps go through the typed seams so the native
-	// regressions can fail them deterministically with the exact production
-	// signatures. Every refusal path releases the process/thread handles
-	// once, closes the owned output-file ends and removes the files.
-	job, jobErr := winCreateOwnedJob()
-	if jobErr != nil {
-		// The refusal is fail-closed, and the teardown error is truthful,
-		// never swallowed.
-		termErr := terminateOwnedSuspendedRoot(processHandle)
-		closeRunEnds(processHandle, threadHandle, outF, errF)
-		cleanErr := captureCleanup()
-		if termErr != nil {
-			return errors.Join(fmt.Errorf("refusing to run without containment: %v (root teardown: %v)", jobErr, termErr), cleanErr)
-		}
-		return errors.Join(fmt.Errorf("refusing to run without containment: %v", jobErr), cleanErr)
+	if run.refusalErr != nil {
+		return errors.Join(run.refusalErr, captureCleanup())
 	}
-	if err := winAssignOwnedJobProcess(job, processHandle); err != nil {
-		_ = syscall.CloseHandle(job)
-		termErr := terminateOwnedSuspendedRoot(processHandle)
-		closeRunEnds(processHandle, threadHandle, outF, errF)
-		cleanErr := captureCleanup()
-		if termErr != nil {
-			return errors.Join(fmt.Errorf("refusing to run without containment: %v (root teardown: %v)", err, termErr), cleanErr)
-		}
-		return errors.Join(fmt.Errorf("refusing to run without containment: %v", err), cleanErr)
-	}
-
-	resumed, _, resumeErr := winResumeThread.Call(uintptr(processInfo.Thread))
-	resumeFailed := winResumeThreadFailed(resumed)
-	if resumeFailed {
-		// The root never ran: terminate the owned process so the exit
-		// information read below is the truthful termination code; the root
-		// handles are released exactly once before the drain proof and only
-		// then is the job finished — the ActiveProcesses==0 proof never
-		// runs with the root references still open.
-		_ = syscall.TerminateProcess(processHandle, 1)
-	}
-
-	// Wait for the go process, polling the context so cancellation or the
-	// bounded deadline terminates the whole job promptly. A poll failure
-	// is not treated as an exit and is not swallowed: it breaks the poll
-	// and the kill path below (terminate + drain) keeps the result
-	// truthful. While the process is alive, the on-disk growth of the
-	// owned output files is measured against the bounded disk allowance.
-	canceled := false
-	var waitErr error
-	overflow := false
-	for {
-		select {
-		case <-ctx.Done():
-			canceled = true
-		default:
-		}
-		if canceled {
-			break
-		}
-		event, pollErr := syscall.WaitForSingleObject(processHandle, 50)
-		if pollErr != nil {
-			waitErr = pollErr
-			break
-		}
-		if event != syscall.WAIT_TIMEOUT {
-			break
-		}
-		if winOutputOverflow(dir) {
-			overflow = true
-			break
-		}
-	}
-
-	// Read the exit code BEFORE releasing the process handle; then release
-	// the root process/thread handles and the owned output-file handles
-	// exactly once each before the ActiveProcesses==0 drain proof.
-	var exitCode uint32
-	codeErr := syscall.GetExitCodeProcess(processHandle, &exitCode)
-	closeRunEnds(processHandle, threadHandle, outF, errF)
-
-	// Stop the whole owned job and drain it boundedly on every path
-	// (cancel, resume failure, overflow and normal); the drain is proven
-	// by the verified primary contract (ActiveProcesses == 0).
-	jobErr = finishOwnedJob(job)
 
 	// Synchronous bounded capture: on a successful drain the owned tree
 	// is dead and the files are final; on a FAILED drain the bounded read
@@ -409,17 +324,17 @@ func runOwnedGoProcess(ctx context.Context, goExecutable string, dir string, arg
 	// a capture refusal alone.
 	var mainErr error
 	switch {
-	case resumeFailed:
-		mainErr = fmt.Errorf("resume suspended go process: %v", winCallError(resumeErr))
-		if jobErr != nil {
-			mainErr = errors.Join(mainErr, fmt.Errorf("drain owned job: %v", jobErr))
+	case run.resumeFailed:
+		mainErr = fmt.Errorf("resume suspended go process: %v", winCallError(run.resumeErr))
+		if run.drainErr != nil {
+			mainErr = errors.Join(mainErr, fmt.Errorf("drain owned job: %v", run.drainErr))
 		}
 		if captureErr != nil {
 			mainErr = errors.Join(mainErr, captureErr)
 		}
-	case jobErr != nil:
-		mainErr = errors.Join(fmt.Errorf("drain owned job: %v", jobErr), captureErr)
-	case overflow:
+	case run.drainErr != nil:
+		mainErr = errors.Join(fmt.Errorf("drain owned job: %v", run.drainErr), captureErr)
+	case run.overflow:
 		mainErr = errors.Join(fmt.Errorf("output exceeded the bounded disk cap (%d bytes per stream)", 2*boundedOutputCap), captureErr)
 	case captureErr != nil:
 		mainErr = captureErr
@@ -431,10 +346,10 @@ func runOwnedGoProcess(ctx context.Context, goExecutable string, dir string, arg
 	// actually removed: a removal failure is returned, not a claim that
 	// the drain and the cleanup both succeeded.
 	var resultErr error
-	if canceled || waitErr != nil || codeErr != nil {
+	if run.canceled || run.waitErr != nil || run.codeErr != nil {
 		resultErr = &ownedProcessResult{killed: true}
-	} else if exitCode != 0 {
-		resultErr = &ownedProcessResult{code: int(exitCode)}
+	} else if run.exitCode != 0 {
+		resultErr = &ownedProcessResult{code: int(run.exitCode)}
 	}
 	return errors.Join(resultErr, cleanErr)
 }

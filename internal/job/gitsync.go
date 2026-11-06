@@ -184,8 +184,15 @@ func (g *GitSync) RemoteHead() (string, error) {
 // with the Push field left empty for the caller. Zero commits is an empty
 // non-nil slice.
 func (g *GitSync) Commits() ([]Commit, error) {
+	return g.CommitsAt("HEAD")
+}
+
+// CommitsAt is Commits with the end of the range pinned to rev (a commit
+// sha, or "HEAD" for the moving head): a listing tied to a sha read earlier
+// cannot pick up a commit another participant made in between.
+func (g *GitSync) CommitsAt(rev string) ([]Commit, error) {
 	commits := []Commit{}
-	out, detail, err := runStepDetailInCtx("", "git", []string{"-C", g.Dir, "log", "--reverse", "--format=%H%x09%s", "refs/remotes/origin/" + g.Base + "..HEAD"}, g.localTimeout(), g.gitEnv(), g.Context)
+	out, detail, err := runStepDetailInCtx("", "git", []string{"-C", g.Dir, "log", "--reverse", "--format=%H%x09%s", "refs/remotes/origin/" + g.Base + ".." + rev}, g.localTimeout(), g.gitEnv(), g.Context)
 	if err != nil {
 		if g.cancelled() {
 			return nil, errCancelled
