@@ -6,3 +6,7 @@ package platform
 func procExec(pid int) (string, []string, error) {
 	return "", nil, errProcExecUnsupported
 }
+
+func procExecutable(pid int) (string, error) { return "", errProcExecUnsupported }
+
+func procExecArguments(id uintptr) ([]string, error) { return nil, errProcExecUnsupported }

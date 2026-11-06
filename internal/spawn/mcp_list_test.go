@@ -129,6 +129,7 @@ func TestResolveMcpListPrecedence(t *testing.T) {
 // Scenario 3: a name outside the rule exits 2 before any pane is opened,
 // citing the filtered value — from the flag and from the resolved layers.
 func TestMcpInvalidNameExitsTwoBeforePane(t *testing.T) {
+	isolateCodexMcpTemp(t)
 	for _, value := range []string{"a b", ",", "none,x", "inherit,x", "a,,b"} {
 		t.Run("flag "+value, func(t *testing.T) {
 			f := mcpListFixture(t)

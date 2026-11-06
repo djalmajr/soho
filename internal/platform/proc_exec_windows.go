@@ -38,6 +38,23 @@ func procExec(pid int) (string, []string, error) {
 	if err != nil {
 		return "", nil, err
 	}
+	argv, err := procExecReadArguments(handle)
+	if err != nil {
+		return "", nil, err
+	}
+	return exe, argv, nil
+}
+
+func procExecutable(pid int) (string, error) {
+	handle, err := windowsOpenProcess(windowsProcessQueryLimitedInformation, pid)
+	if err != nil {
+		return "", err
+	}
+	defer windowsProcCloseHandle.Call(handle)
+	return windowsImageName(handle)
+}
+
+func procExecArguments(handle uintptr) ([]string, error) {
 	size := uint32(64 << 10)
 	var buf []byte
 	for {
@@ -53,35 +70,35 @@ func procExec(pid int) (string, []string, error) {
 			size = needed
 			continue
 		}
-		return "", nil, errors.New("platform: process command line not readable")
+		return nil, errors.New("platform: process command line not readable")
 	}
 	us := (*windowsUnicodeString)(unsafe.Pointer(&buf[0]))
 	if us.Buffer == nil || us.Length == 0 || us.Length%2 != 0 {
-		return "", nil, errors.New("platform: empty process command line")
+		return nil, errors.New("platform: empty process command line")
 	}
 	// The string must lie inside buf, after its header.
 	start := uintptr(unsafe.Pointer(&buf[0]))
 	offset := uintptr(unsafe.Pointer(us.Buffer)) - start
 	if uintptr(unsafe.Pointer(us.Buffer)) < start || offset < unsafe.Sizeof(*us) || offset+uintptr(us.Length) > uintptr(len(buf)) {
-		return "", nil, errors.New("platform: malformed process command line")
+		return nil, errors.New("platform: malformed process command line")
 	}
 	chars := unsafe.Slice(us.Buffer, int(us.Length)/2)
 	line := append(append([]uint16(nil), chars...), 0)
 	var argc int32
 	argvp, err := syscall.CommandLineToArgv(&line[0], &argc)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	defer syscall.LocalFree(syscall.Handle(uintptr(unsafe.Pointer(argvp))))
 	// syscall.CommandLineToArgv types the result as at most 8192 arguments
 	// of at most 8192 units each: more arguments is refused, and a longer
 	// argument reads only up to that bound (never a supervise id).
 	if argc < 0 || argc > 8192 {
-		return "", nil, errors.New("platform: too many process arguments")
+		return nil, errors.New("platform: too many process arguments")
 	}
 	argv := make([]string, 0, argc)
 	for i := int32(0); i < argc; i++ {
 		argv = append(argv, syscall.UTF16ToString((*argvp[i])[:]))
 	}
-	return exe, argv, nil
+	return argv, nil
 }

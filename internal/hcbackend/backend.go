@@ -1171,13 +1171,19 @@ func (b *backend) waitReady(ctx context.Context, call transport.Call, name, addr
 		}
 		getCtx, cancel := context.WithTimeout(ctx, time.Until(deadlineAt))
 		out, err := b.run(getCtx, call, "get", address)
+		getCtxErr := getCtx.Err()
 		cancel()
+		if cerr := ctx.Err(); cerr != nil {
+			return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCancelled, Message: cerr.Error(), Cause: cerr}}
+		}
+		// A startup deadline interruption is not a completed get result.
+		// A shorter per-call timeout leaves getCtx live and stays diagnostic.
+		if getCtxErr == context.DeadlineExceeded {
+			return timeoutReply(name, address, deadline, lastErr)
+		}
 		if err != nil {
 			if notFound(err) {
 				return transport.Reply[string]{Value: address, Err: exitedFailure(name, nil)}
-			}
-			if ctx.Err() != nil {
-				return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCancelled, Message: ctx.Err().Error(), Cause: ctx.Err()}}
 			}
 			lastErr = failure(err)
 		} else {
