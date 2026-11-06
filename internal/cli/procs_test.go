@@ -114,15 +114,68 @@ func runProcsHelperRole(role, childExe, kidFile string) (code int) {
 // and a timer sleep does not hold a syscall thread either. The default
 // SIGTERM and SIGKILL still stop the process while it is blocked.
 func blockForever() {
+	_ = blockOnPipe(nil)
+	os.Exit(1) // unreachable: the read blocks until a signal stops the process
+}
+
+// blockOnPipe is the blocking read of blockForever. The write end is kept
+// reachable until after the read (runtime.KeepAlive): a plain `_ = w` leaves
+// it unreachable, so a garbage collection runs its os.File finalizer, closes
+// the write end and the read returns io.EOF, which ends the purported
+// never-ending process. It returns only when the read ends, closing the
+// writer it owns. When started is
+// not nil, the read end is sent on it before the read, so a test can unblock
+// the read by closing it.
+func blockOnPipe(started chan<- *os.File) error {
 	r, w, err := os.Pipe()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fixture: pipe: %v\n", err)
 		os.Exit(1)
 	}
-	_ = w // held open for the life of the process: the read never returns.
+	// The writer is closed on every returning path (the caller owns and
+	// closes the read end), and the deferred call keeps it reachable through
+	// the blocking read, which is what holds the read open.
+	defer func() { _ = w.Close() }()
+	if started != nil {
+		started <- r
+	}
 	buf := make([]byte, 1)
-	_, _ = r.Read(buf)
-	os.Exit(1) // unreachable: the read blocks until a signal stops the process
+	_, err = r.Read(buf)
+	runtime.KeepAlive(w) // held open for the life of the process: the read never returns.
+	return err
+}
+
+// The never-ending fixture helper must survive garbage collection: its pipe
+// writer is its only reason to keep blocking, and a collected writer ends the
+// read with io.EOF and the helper with it. The test lets the collector and
+// the finalizers run for a bounded window and expects the read to still be
+// blocked; closing the read end then ends it, so nothing leaks.
+func TestProcsFixtureBlockForeverSurvivesGarbageCollection(t *testing.T) {
+	started := make(chan *os.File, 1)
+	ended := make(chan error, 1)
+	go func() { ended <- blockOnPipe(started) }()
+	r := <-started
+	consumed := false
+	defer func() {
+		_ = r.Close()
+		if consumed {
+			return
+		}
+		select {
+		case <-ended:
+		case <-time.After(5 * time.Second):
+			t.Error("the blocked read did not end after its read end was closed")
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		runtime.GC()
+		select {
+		case err := <-ended:
+			consumed = true
+			t.Fatalf("the blocking read returned after %d collections with %v; the pipe writer was collected", i+1, err)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 
 // helperExe places an executable under dir/name so ps prints name as the
