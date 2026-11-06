@@ -1404,6 +1404,10 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		// inherit changes nothing.
 	case kind == "codex" && (o.mcp == "none" || len(core.McpNames(o.mcp)) > 0):
 		keep := core.McpNames(o.mcp) // nil for mcp=none
+		// SOH-253: Apps/connector tools are a source of worker context apart
+		// from mcp_servers.*; a restricted launch turns them off per process,
+		// before the per-server args and whatever the listing returns.
+		args = append(args, "-c", "features.apps=false")
 		mcpArgs, ok, reason, stayOn, projectOnly, missing := codexMcpTranslate(env, o.cwd, keep)
 		stayOnTail := "they stay on, the others are off"
 		if len(keep) > 0 {
