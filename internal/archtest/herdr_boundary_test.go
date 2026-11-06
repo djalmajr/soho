@@ -102,7 +102,7 @@ var allowedSites = []allowedSite{
 	},
 	{
 		file:     "internal/doctor/doctor.go",
-		function: "DoctorCheck",
+		function: "doctorCheck",
 		rules:    "1",
 		reason:   "the FindExecutable(\"herdr\") lookup reports whether the binary is installed; it never runs it",
 	},
