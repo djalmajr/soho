@@ -62,7 +62,7 @@ func TestCmdSpawnMcpCodexKeepsTheProjectsOwnServersOn(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
-		wantTail(t, f, codexMcpBaseArgv+" -c mcp_servers.a.enabled=false")
+		wantTail(t, f, codexMcpAppsOffArgv+" -c mcp_servers.a.enabled=false")
 		wantCodexCalls(t, f, codexListArgv, codexListArgv, codexCheckArgv("a"))
 		warn := codexProjectOnlyWarn("p1, p2", "worker")
 		if got := stdErrCount(stderr, "soho: warning: "+warn); got != 1 {
@@ -83,7 +83,7 @@ func TestCmdSpawnMcpCodexKeepsTheProjectsOwnServersOn(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
-		wantTail(t, f, codexMcpBaseArgv)
+		wantTail(t, f, codexMcpAppsOffArgv)
 		wantCodexCalls(t, f, codexListArgv, codexListArgv)
 		if got := stdErrCount(stderr, "soho: warning: "+codexProjectOnlyWarn("p1, p2", "worker")); got != 1 {
 			t.Fatalf("the exact project-only warning is not on stderr once: %q", stderr)
@@ -100,7 +100,7 @@ func TestCmdSpawnMcpCodexKeepsTheProjectsOwnServersOn(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
-		wantTail(t, f, codexMcpBaseArgv+" -c mcp_servers.a.enabled=false")
+		wantTail(t, f, codexMcpAppsOffArgv+" -c mcp_servers.a.enabled=false")
 		wantCodexCalls(t, f, codexListArgv, codexListArgv, codexCheckArgv("a", "b"), codexCheckArgv("a"))
 		for _, warn := range []string{codexProjectOnlyWarn("p1", "worker"), codexStayOnWarn("b", "worker")} {
 			if got := stdErrCount(stderr, "soho: warning: "+warn); got != 1 {
@@ -121,7 +121,7 @@ func TestCmdSpawnMcpCodexKeepsTheProjectsOwnServersOn(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
-		wantTail(t, f, codexMcpBaseArgv+" -c mcp_servers.a.enabled=false -c mcp_servers.playwright.enabled=false")
+		wantTail(t, f, codexMcpAppsOffArgv+" -c mcp_servers.a.enabled=false -c mcp_servers.playwright.enabled=false")
 		wantCodexCalls(t, f, codexListArgv, codexListArgv, codexCheckArgv("a", "playwright"))
 		if strings.Contains(stderr, "cannot turn off MCP") || strings.Contains(stderr, "could not list") {
 			t.Fatalf("servers in both listings warned: %q", stderr)
@@ -150,7 +150,7 @@ func TestCmdSpawnMcpCodexKeepsTheProjectsOwnServersOn(t *testing.T) {
 			if strings.Contains(stderr, "cannot turn off MCP") {
 				t.Fatalf("a failed neutral listing also warned about servers that stay on: %q", stderr)
 			}
-			wantTail(t, f, codexMcpBaseArgv)
+			wantTail(t, f, codexMcpAppsOffArgv)
 			wantCodexCalls(t, f, codexListArgv, codexListArgv)
 			if strings.Contains(stdout+stderr+codexFriction(t, f), secret) {
 				t.Fatalf("the neutral listing's output leaked: %q %q", stdout, stderr)
@@ -226,7 +226,7 @@ func TestCmdSpawnMcpCodexKeepsTheProjectsOwnServersOn(t *testing.T) {
 			if _, err := os.Stat(neutral); !os.IsNotExist(err) {
 				t.Fatalf("the neutral directory %q is still there after the spawn: %v", neutral, err)
 			}
-			wantTail(t, f, codexMcpBaseArgv+" -c mcp_servers.a.enabled=false")
+			wantTail(t, f, codexMcpAppsOffArgv+" -c mcp_servers.a.enabled=false")
 		})
 	}
 

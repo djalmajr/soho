@@ -230,6 +230,14 @@ func buildReport(dir string, st State, events []Event, facts ReportFacts) (Repor
 	if err != nil {
 		return Report{}, err
 	}
+	// A verified final publication is a point-in-time fact: the head fields,
+	// the commits and the pull request come from it, whatever a later read
+	// found. The removal fact stays what the caller read now (the snapshot
+	// is never the cleanup's authority): clean and in sync at this moment.
+	removable := facts.Clean && facts.Head != "" && facts.Head == facts.HeadRemoto
+	if pub := st.verifiedPublication(); pub != nil {
+		facts = pub.applyTo(facts)
+	}
 	global, projeto, decisions := decisionAggregates(events)
 	items, parciais, artefatos, mdResumo := readReportMD(dir)
 	// The report is built only from known facts. When the state carries no
@@ -306,6 +314,9 @@ func buildReport(dir string, st State, events []Event, facts ReportFacts) (Repor
 		ids = append(ids, "PR#"+strconv.Itoa(facts.PR.Numero))
 	}
 	inSync := facts.Head != "" && facts.Head == facts.HeadRemoto
+	if st.verifiedPublication() == nil {
+		removable = facts.Clean && inSync
+	}
 	verdict := ""
 	if facts.Revisao != nil {
 		verdict = facts.Revisao.Verdict
@@ -367,7 +378,7 @@ func buildReport(dir string, st State, events []Event, facts ReportFacts) (Repor
 			Workspace:     facts.Workspace,
 			Worktree:      worktreeLimpeza(st),
 			PanesFechados: facts.PanesFechados,
-			Removivel:     facts.Clean && inSync,
+			Removivel:     removable,
 		},
 		Publico: Publico{Verdict: verdict, Blockers: blockers, IDs: ids},
 	}, nil
@@ -564,6 +575,13 @@ func cutRunes(value string, limit int) string {
 // (head, pr, resumo, removivel, ...) is kept as stored; a missing report is
 // built from the known facts.
 func refreshReport(dir string, st State) error {
+	return refreshReportAs(dir, st, "")
+}
+
+// refreshReportAs is refreshReport with an optional forced outcome: when
+// forced is not empty, the stored outcome is replaced by it whatever the
+// report held (the provisional report of a job that is still finishing).
+func refreshReportAs(dir string, st State, forced string) error {
 	events, err := readEvents(dir)
 	if err != nil {
 		return err
@@ -582,8 +600,18 @@ func refreshReport(dir string, st State) error {
 	if isTerminalOutcome(st.Status) {
 		rep.Status = st.Status
 	}
+	if forced != "" {
+		rep.Status = forced
+	}
 	if st.Motivo != nil {
 		rep.Motivo = st.Motivo
+	}
+	// A verified final publication stands in the stored report as the state
+	// has it: no refresh, close or retry replaces it with unknown facts.
+	if pub := st.verifiedPublication(); pub != nil {
+		facts := pub.applyTo(ReportFacts{})
+		rep.Head, rep.HeadRemoto, rep.Sincronizado = facts.Head, facts.HeadRemoto, true
+		rep.Commits, rep.PR = facts.Commits, facts.PR
 	}
 	// The collaboration facts stand as the state has them: never re-derived
 	// from anything else, never erased.
@@ -603,6 +631,27 @@ func refreshReport(dir string, st State) error {
 	rep.Memoria.DecisionsAckedSeq = effectiveWatermark(st.DecisionsAckedSeq, events)
 	rep.Limpeza.Worktree = worktreeLimpeza(st)
 	return saveReport(dir, rep)
+}
+
+// PublishReportBeforeTerminal writes report.json with the verified
+// publication projection while the state is still finishing, so a reader that
+// sees the terminal event already finds the report in place. The report
+// outcome stays provisional (finishing, whatever an earlier report held)
+// until the terminal event is appended: the terminal transition republishes
+// the report with the final outcome before the terminal state, so an append
+// error or an interruption never leaves a report that claims a terminal
+// outcome no event announced. The state is not changed.
+func (s *Store) PublishReportBeforeTerminal(id, status string) error {
+	return s.withExisting(id, func(dir string) error {
+		st, err := readState(dir)
+		if err != nil {
+			return err
+		}
+		if st.Status != StatusFinishing || !isTerminalOutcome(status) {
+			return errUsage("job: the report can be published early only for a terminal outcome of a finishing job")
+		}
+		return refreshReportAs(dir, st, StatusFinishing)
+	})
 }
 
 // isTerminalOutcome reports the terminal outcomes: done, failed, timeout or

@@ -138,6 +138,10 @@ type Supervisor struct {
 	announced    map[string]bool
 	prTitle      string
 	lastPR       *PullRequest
+	// pubCause is the last reason the final publication was not verified
+	// ("" when it was, or before the terminal sync): it names the cause in
+	// the friction line of a done outcome rewritten to failed.
+	pubCause string
 
 	// gitFail groups the friction of repeated git sync failures
 	// (supervise_git.go): the cause of the last one, the identical ones
@@ -1290,8 +1294,18 @@ func (s *Supervisor) finishOutcome(status, motivo string, exit int) (int, bool, 
 	// else, so a restart converges on it — unless the terminal event
 	// already announced the outcome, which the rewrite may not undo.
 	s.ensureFinishingBase()
-	if cut := s.finalSync(status); cut && status == StatusDone && !announced {
-		status, motivo, exit = StatusFailed, finishingBudgetMotivo, ExitFailed
+	cut, verified := s.finalSync(status, announced)
+	prospective := status == StatusDone && !announced && s.Git != nil
+	// rewriteUnverified turns a prospective done into the durable failed
+	// outcome: the budget motivo for a cut step, the plain publication motivo
+	// (with the cause in friction) otherwise.
+	rewriteUnverified := func(cut bool, cause string) error {
+		status, motivo, exit = StatusFailed, finalPublicationMotivo, ExitFailed
+		if cut {
+			motivo = finishingBudgetMotivo
+		} else {
+			s.frictionf("job: " + finalPublicationMotivo + ": " + cause)
+		}
 		intent = &TerminalIntent{Status: status, Motivo: motivo, Exit: exit}
 		stored := motivo
 		if _, err := s.Store.Record(s.ID, func(st *State) {
@@ -1299,6 +1313,14 @@ func (s *Supervisor) finishOutcome(status, motivo string, exit int) (int, bool, 
 			st.Motivo = &stored
 		}); err != nil {
 			s.frictionf("job: the supervisor could not record the terminal intent: " + err.Error())
+			return err
+		}
+		return nil
+	}
+	if prospective && (cut || !verified) {
+		// A prospective worktree done is announced only with a verified,
+		// persisted final publication.
+		if err := rewriteUnverified(cut, s.pubCause); err != nil {
 			return 0, true, err
 		}
 	}
@@ -1316,6 +1338,30 @@ func (s *Supervisor) finishOutcome(status, motivo string, exit int) (int, bool, 
 	if err := s.persistCollabOutcomes(outcomes); err != nil {
 		s.frictionf("job: the supervisor could not persist the collaboration outcomes: " + err.Error())
 		return 0, true, err
+	}
+	if prospective && verified && status == StatusDone {
+		// The settlement boundary: job participants may have committed while
+		// the collaborations ended, so the verified head is checked again
+		// (one bounded step) before success is announced.
+		rcut, rerr := s.revalidatePublication()
+		if rcut || rerr != nil {
+			cause := ""
+			if rerr != nil {
+				cause = rerr.Error()
+			}
+			if err := rewriteUnverified(rcut, cause); err != nil {
+				return 0, true, err
+			}
+		}
+	}
+	if prospective && verified && status == StatusDone {
+		// The report projection of the verified publication is durable before
+		// the success event is visible; a failed write leaves the job
+		// finishing with its intent and no terminal event.
+		if err := s.Store.PublishReportBeforeTerminal(s.ID, status); err != nil {
+			s.frictionf("job: the supervisor could not publish the report before the terminal event: " + err.Error())
+			return 0, true, err
+		}
 	}
 	// The terminal event lands at most once: a crashed earlier pass may
 	// have appended it already, and the restart converges without a
@@ -1599,7 +1645,21 @@ func (s *Supervisor) fail(motivo string, exit int) error {
 		}
 	}
 	s.ensureFinishingBase()
-	s.finalSync(StatusFailed)
+	// A failed terminal event an earlier pass already appended announced the
+	// outcome: the resume neither captures nor replaces a publication then.
+	announced := false
+	if dir, derr := s.Store.readDir(s.ID); derr == nil {
+		if events, eerr := readEvents(dir); eerr == nil {
+			announced = hasTipo(events, "terminal")
+		} else {
+			s.frictionf("job: the supervisor could not read the events for the terminal event: " + eerr.Error())
+			announced = true
+		}
+	} else {
+		s.frictionf("job: the supervisor could not read the job directory for the terminal event: " + derr.Error())
+		announced = true
+	}
+	s.finalSync(StatusFailed, announced)
 	// The collaboration capture, persisted before the failure walk; an
 	// enumeration that could not be restored by the deadline still
 	// persists every known id, and the friction names it.

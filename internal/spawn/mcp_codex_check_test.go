@@ -22,6 +22,10 @@ import (
 
 const codexMcpBaseArgv = `-m gpt-5 -c model_reasoning_effort="high"`
 
+// codexMcpAppsOffArgv is the base argv of a restricted (none or list) codex
+// launch: SOH-253 adds the per-process Apps override right after the effort.
+const codexMcpAppsOffArgv = codexMcpBaseArgv + " -c features.apps=false"
+
 func codexOffArgv(names ...string) []string {
 	argv := []string{}
 	for _, name := range names {
@@ -134,7 +138,7 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
-		wantTail(t, f, codexMcpBaseArgv+" -c mcp_servers.a.enabled=false -c mcp_servers.c.enabled=false")
+		wantTail(t, f, codexMcpAppsOffArgv+" -c mcp_servers.a.enabled=false -c mcp_servers.c.enabled=false")
 		warn := codexStayOnWarn("b", "worker")
 		if got := stdErrCount(stderr, "soho: warning: "+warn); got != 1 {
 			t.Fatalf("the exact stay-on warning is not on stderr once: %q", stderr)
@@ -157,7 +161,7 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
-		wantTail(t, f, codexMcpBaseArgv+" -c mcp_servers.a.enabled=false")
+		wantTail(t, f, codexMcpAppsOffArgv+" -c mcp_servers.a.enabled=false")
 		if got := stdErrCount(stderr, "soho: warning: "+codexStayOnWarn("b, c", "worker")); got != 1 {
 			t.Fatalf("the exact two-server warning is not on stderr once: %q", stderr)
 		}
@@ -192,7 +196,7 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
-		wantTail(t, f, codexMcpBaseArgv)
+		wantTail(t, f, codexMcpAppsOffArgv)
 		if got := stdErrCount(stderr, "soho: warning: "+codexStayOnWarn("a, b", "worker")); got != 1 {
 			t.Fatalf("the exact all-refused warning is not on stderr once: %q", stderr)
 		}
@@ -209,7 +213,7 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
-		wantTail(t, f, codexMcpBaseArgv+" -c mcp_servers.a.enabled=false -c mcp_servers.c.enabled=false")
+		wantTail(t, f, codexMcpAppsOffArgv+" -c mcp_servers.a.enabled=false -c mcp_servers.c.enabled=false")
 		if strings.Contains(stderr, "cannot turn off MCP") || strings.Contains(stderr, "could not list") {
 			t.Fatalf("a clean check warned: %q", stderr)
 		}
@@ -226,7 +230,7 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
-		wantTail(t, f, codexMcpBaseArgv)
+		wantTail(t, f, codexMcpAppsOffArgv)
 		if strings.Contains(stderr, "MCP server") {
 			t.Fatalf("zero enabled servers warned: %q", stderr)
 		}
@@ -253,7 +257,7 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 				if got := stdErrCount(stderr, codexMcpWarn(tc.reason, "worker")); got != 1 {
 					t.Fatalf("the exact listing-failure warning is not on stderr once: %q", stderr)
 				}
-				wantTail(t, f, codexMcpBaseArgv)
+				wantTail(t, f, codexMcpAppsOffArgv)
 				wantCodexCalls(t, f, codexListArgv, codexListArgv, codexCheckArgv("a", "b"))
 			})
 		}
@@ -276,7 +280,7 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 		if strings.Contains(stderr, "cannot turn off MCP") {
 			t.Fatalf("a failed check also warned about the servers that stay on: %q", stderr)
 		}
-		wantTail(t, f, codexMcpBaseArgv)
+		wantTail(t, f, codexMcpAppsOffArgv)
 		wantCodexCalls(t, f, codexListArgv, codexListArgv, codexCheckArgv("a", "b", "c"), codexCheckArgv("a", "c"))
 	})
 
@@ -293,7 +297,7 @@ func TestCmdSpawnMcpCodexChecksTheOverrides(t *testing.T) {
 		if got := stdErrCount(stderr, codexMcpWarn("override check timed out", "worker")); got != 1 {
 			t.Fatalf("the exact check-timeout warning is not on stderr once: %q", stderr)
 		}
-		wantTail(t, f, codexMcpBaseArgv)
+		wantTail(t, f, codexMcpAppsOffArgv)
 	})
 
 	t.Run("mcp=inherit never runs a check", func(t *testing.T) {
@@ -427,7 +431,7 @@ func TestCmdSpawnMcpCodexNeverDropsAnOverrideItCannotNameWhole(t *testing.T) {
 			if strings.Contains(stderr, "cannot turn off MCP") {
 				t.Fatalf("an override the check did not name whole was dropped: %q", stderr)
 			}
-			wantTail(t, f, codexMcpBaseArgv)
+			wantTail(t, f, codexMcpAppsOffArgv)
 			wantCodexCalls(t, f, codexListArgv, codexListArgv, codexCheckArgv(tc.names...))
 		})
 	}
