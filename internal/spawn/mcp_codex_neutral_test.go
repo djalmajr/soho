@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
 // The inherited temp directory can be beneath the real user's Codex config.
@@ -27,6 +28,18 @@ func isolateCodexMcpTemp(t *testing.T) {
 		base := filepath.Join(root, "Temp")
 		t.Setenv("TMP", base)
 		t.Setenv("TEMP", base)
+		// Prepare the process-wide fake image now, before the redirect to
+		// the test-owned child below: the first fakecli.Install drops the
+		// image under the current TMP, and a later parent relinks from that
+		// file, so the image must outlive this test's temp tree. Prepared
+		// here it lands in the neutral system temp beside the test's parent
+		// tree, stays valid across parents, and keeps fakecli.RunTests as
+		// its only cleanup; the primer's own files stay ordinary t.TempDir
+		// cleanup.
+		primer := t.TempDir()
+		if _, err := fakecli.Install(t, primer, "codex-mcp-primer", nil); err != nil {
+			t.Fatalf("fakecli: prepare the process-wide image before the temp redirect: %v", err)
+		}
 	}
 	tmp := t.TempDir()
 	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {

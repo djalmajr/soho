@@ -204,6 +204,7 @@ func TestTrustCwdArgumentHasNoDoubleQuoteForAPlainRoot(t *testing.T) {
 }
 
 func TestSpawnTrustCwd(t *testing.T) {
+	isolateCodexMcpTemp(t)
 	for _, tc := range []struct {
 		kind, mode string
 		refused    bool

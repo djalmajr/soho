@@ -45,6 +45,9 @@ func CallerCheckMode(ctx *Config, env platform.Env) string {
 // continued-in record links them, and the one other pane that shows this
 // process's session. The suggestion is only text; no pane is ever switched.
 func callerGateLine(res herdr.CallerCheck) string {
+	if res.Reason == herdr.CallerReasonSharedCodexExecutor {
+		return SharedCodexCallerDescription(res.Pane, res.CodexSession, res.ShownIn)
+	}
 	line := fmt.Sprintf("HERDR_PANE_ID='%s' is a live pane but this process does not run in it (its process tree does not reach the pane's shell %d); the id was inherited from another process, such as a forked session. ", res.Pane, res.ShellPID)
 	if res.Session != "" && res.PaneSession != "" {
 		line += fmt.Sprintf("This process is Claude Code session %s; the pane hosts session %s, and no continued-in record links them. ", res.Session, res.PaneSession)
@@ -53,6 +56,20 @@ func callerGateLine(res herdr.CallerCheck) string {
 		line += fmt.Sprintf("This Claude Code session is shown in pane '%s'; run with HERDR_PANE_ID=%s. ", res.ShownIn, res.ShownIn)
 	}
 	return line
+}
+
+// SharedCodexCallerDescription formats validated diagnostic fields from the
+// shared-executor decision for both the command gate and doctor. It suggests
+// a resume command without promoting the mismatch or switching panes.
+func SharedCodexCallerDescription(pane, session, shownIn string) string {
+	line := fmt.Sprintf("HERDR_PANE_ID='%s' cannot identify this Codex executor: its complete ancestry contains at least two Codex executables, so it may carry another pane's identity. ", pane)
+	if shownIn != "" {
+		line += fmt.Sprintf("This Codex session is shown in pane '%s'. ", shownIn)
+	}
+	if session == "" {
+		session = "<session>"
+	}
+	return line + fmt.Sprintf("Resume this agent in the intended pane with 'codex resume --no-daemon %s'. ", session)
 }
 
 const callerGateFix = " Run soho from the pane that hosts this agent (a Claude Code background session runs with HERDR_PANE_ID set to the pane that shows it), or set caller_check=warn"
@@ -93,16 +110,21 @@ func CallerGate(command string, ctx *Config, env platform.Env, cwd string) {
 	svc := backend.New(env)
 	res := svc.Runtime.CheckCaller(nil, transport.Call{})
 	check := herdr.CallerCheck{
-		State:       herdr.CallerState(res.Value.State),
-		Pane:        res.Value.Pane,
-		ShellPID:    res.Value.ShellPID,
-		Reason:      res.Value.Reason,
-		Session:     res.Value.Session,
-		PaneSession: res.Value.PaneSession,
-		ShownIn:     res.Value.ShownIn,
+		State:        herdr.CallerState(res.Value.State),
+		Pane:         res.Value.Pane,
+		ShellPID:     res.Value.ShellPID,
+		Reason:       res.Value.Reason,
+		Session:      res.Value.Session,
+		PaneSession:  res.Value.PaneSession,
+		ShownIn:      res.Value.ShownIn,
+		CodexSession: res.Value.CodexSession,
 	}
 	if check.State != herdr.CallerMismatch {
 		return
+	}
+	fix := callerGateFix
+	if check.Reason == herdr.CallerReasonSharedCodexExecutor {
+		fix = " For intentional nested codex exec, caller_check=warn is available."
 	}
 	logFile := ""
 	if !callerGateStateless(ctx, env, cwd) {
@@ -111,11 +133,11 @@ func CallerGate(command string, ctx *Config, env platform.Env, cwd string) {
 		_ = os.MkdirAll(filepath.Dir(logFile), 0o777)
 	}
 	if mode == "refuse" {
-		message := command + ": " + callerGateLine(check) + "Nothing was changed." + callerGateFix
+		message := command + ": " + callerGateLine(check) + "Nothing was changed." + fix
 		RecordFrictionError(message, 2, logFile, command)
 		platform.Die(message, 2)
 	}
-	Warn(command+": "+callerGateLine(check)+"Continuing because caller_check=warn."+callerGateFix, logFile, command)
+	Warn(command+": "+callerGateLine(check)+"Continuing because caller_check=warn."+fix, logFile, command)
 }
 
 // callerGateStateless reports the two cases where the state dir is not
