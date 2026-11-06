@@ -61,6 +61,14 @@ Cursor's active MCP approval dialog — the `MCP Server Approval Required` title
 - **Last screen lines:** a start that fails, or an agent that exits right after start with an empty screen, reads the pane itself (`herdr pane read <pane> --source recent-unwrapped --lines 40`), so `last screen lines:` shows what the CLI printed even when the agent never registered.
 - **Do:** to run with those servers on without the warning, `--mcp inherit` on the `spawn`, or `lane.<lane>.mcp=inherit`.
 
+## Peer `send` exits 15: reconcile delivery before retrying
+
+Exit 15 means delivery is uncertain: the prompt was submitted once, but the supported receipt checks did not prove consumption. It may still be in the composer or an unobservable queue. A recognized queued outcome is separate: exit 0 and `queued` mean the CLI accepted it for a later turn, not that the model processed it. Stalled Codex queue success checks available recent history for refusal first; stalled Claude/Pi queues retain uncertainty, and a matching readable refusal wins with exit 18. See [Peer messages](../../../docs/guide.md#peer-messages) for receipt scope, bounds and provider policy.
+
+Read the target pane and reconcile this attempt's exact message ID or a receiver reply before retrying; uncertainty is not proof of nondelivery and never triggers an automatic text resend. The ordinary exit 15 diagnostic appends `screen saved to <state>/wait/send-<id>.screen` only after saving its last successfully read visible screen. This is the last observed frame, which may precede a later redraw. Assignment uncertainty instead labels its saved snapshot `pre-submit screen saved to ...`; it describes the screen before submission and cannot prove the assignment arrived.
+
+An absent artifact path is expected when no screen was available, saving failed or the directory was unsafe. HC assignment delivery has no screen; CLI `send` is unsupported under HC, and NOWRITE creates no artifact. Do not infer delivery or fabricate a diagnostic from a missing file. Keep saved screen contents private: Unix diagnostics use 0600 files and an owned 0700 directory, while Windows inherited ACL access needs separate native validation. Read the reported file locally and the metadata-only delivery status, then decide whether another submission is necessary after reconciliation.
+
 ## `send` exits 18 with `refused the message (refused-…)`; a pane holds a refused peer message
 
 - **Symptom:** `soho: send: <target> refused the message (refused-…); the refused text stays in its input until someone clears it` (exit 18), `refused` in `peer-messages.tsv`; the target's screen shows `UserPromptSubmit operation blocked by hook:` and a line `[soho:peer-refused:<id>] <result>` (an older receiver prints the previous `[soho:peer-refused] #<id> <result>` line, which `send` recognizes too). Afterwards that pane's input box holds `[Pasted text #1 +N lines]`.

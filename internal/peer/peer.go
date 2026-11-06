@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 
@@ -73,7 +74,9 @@ type agentInfo struct {
 	Seq         string
 	// SessionKind is the agent's agent_session kind ("" when the get does
 	// not report an agent_session); the local transcript proof arms from it.
-	SessionKind string
+	SessionKind  string
+	SessionAgent string
+	SessionValue string
 }
 
 type resolvedTarget struct {
@@ -419,7 +422,9 @@ func agentGet(svc transport.Services, machine, target string, timeoutMS int) age
 	}
 	return agentInfo{OK: true, Status: valueString(state), PaneID: nonEmptyString(ag["pane_id"]),
 		Cwd: stringValue(ag["cwd"]), WorkspaceID: stringValue(ag["workspace_id"]), Kind: stringValue(ag["agent"]), Seq: optionalString(ag["state_change_seq"]),
-		SessionKind: stringValue(object(ag["agent_session"])["kind"])}
+		SessionKind:  stringValue(object(ag["agent_session"])["kind"]),
+		SessionAgent: stringValue(object(ag["agent_session"])["agent"]),
+		SessionValue: stringValue(object(ag["agent_session"])["value"])}
 }
 
 func nonEmptyString(v any) string {
@@ -709,7 +714,9 @@ func readScreen(machine, pane, source string, lines int, env platform.Env, timeo
 	return r.Stdout, ""
 }
 
-// SaveStalledScreen writes the last visible screen read of a stalled send to
+var screenTempSequence atomic.Uint64
+
+// SaveStalledScreen writes the last visible screen read of an uncertain send to
 // <stateDir>/wait/send-<id>.screen, next to spawn's shared-tree markers,
 // atomically: a temp file in the wait dir renamed over the target, so a crash
 // never leaves a half-written screen. It returns the path, or "" when there
@@ -719,32 +726,104 @@ func readScreen(machine, pane, source string, lines int, env platform.Env, timeo
 // state dir's gitignore already covers — its content never reaches stderr
 // (but the path in the message), the peer log or the friction.
 func SaveStalledScreen(stateDir, id, screen string, env platform.Env) string {
-	if core.Nowrite(env) || stateDir == "" || screen == "" {
+	return savePrivateScreen(stateDir, id, screen, env, nil)
+}
+
+func savePrivateScreen(stateDir, id, screen string, env platform.Env, hook func(string)) string {
+	if core.Nowrite(env) || stateDir == "" || screen == "" || id == "" || id == "." || id == ".." || strings.ContainsAny(id, "/\\") {
 		return ""
 	}
-	waitDir := filepath.Join(stateDir, "wait")
-	if err := os.MkdirAll(waitDir, 0o777); err != nil {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return ""
 	}
-	dest := filepath.Join(waitDir, "send-"+id+".screen")
-	tmp, err := os.CreateTemp(waitDir, ".send-*.screen")
+	stateInfo, err := os.Lstat(stateDir)
+	if err != nil || !stateInfo.IsDir() {
+		return ""
+	}
+	root, err := os.OpenRoot(stateDir)
 	if err != nil {
 		return ""
 	}
-	if _, err = tmp.WriteString(screen); err == nil {
-		err = tmp.Chmod(0o666)
+	defer root.Close()
+	boundState, err := root.Stat(".")
+	if err != nil || !os.SameFile(stateInfo, boundState) {
+		return ""
+	}
+	if err := root.Mkdir("wait", 0o700); err != nil && !os.IsExist(err) {
+		return ""
+	}
+	before, err := root.Lstat("wait")
+	if err != nil || !before.IsDir() {
+		return ""
+	}
+	dir, err := root.OpenFile("wait", platform.ReadOnlyNonBlocking, 0)
+	if err != nil {
+		return ""
+	}
+	defer dir.Close()
+	info, err := dir.Stat()
+	if err != nil || !info.IsDir() || !os.SameFile(before, info) {
+		return ""
+	}
+	// Pin the same directory as a capability before descriptor-bound chmod.
+	wait, err := root.OpenRoot("wait")
+	if err != nil {
+		return ""
+	}
+	defer wait.Close()
+	coherent := func() bool {
+		current, e := root.Lstat("wait")
+		pinned, pe := wait.Stat(".")
+		state, se := os.Lstat(stateDir)
+		return e == nil && pe == nil && se == nil && current.IsDir() && state.IsDir() && os.SameFile(stateInfo, state) && os.SameFile(info, current) && os.SameFile(info, pinned)
+	}
+	if hook != nil {
+		hook("before-chmod")
+	}
+	if !coherent() || dir.Chmod(0o700) != nil || !coherent() {
+		return ""
+	}
+	name := fmt.Sprintf(".send-%d-%d.screen", time.Now().UnixNano(), screenTempSequence.Add(1))
+	tmp, err := wait.OpenFile(name, os.O_CREATE|os.O_EXCL|platform.ReadWriteNonBlocking, 0o600)
+	if err != nil {
+		return ""
+	}
+	defer wait.Remove(name)
+	if err = tmp.Chmod(0o600); err == nil {
+		_, err = tmp.WriteString(screen)
+	}
+	tmpInfo, statErr := tmp.Stat()
+	if statErr == nil && !tmpInfo.Mode().IsRegular() {
+		statErr = platform.ErrNotRegular
+	}
+	if err == nil {
+		err = statErr
 	}
 	if closeErr := tmp.Close(); err == nil {
 		err = closeErr
 	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), dest)
-	}
-	if err != nil {
-		_ = os.Remove(tmp.Name())
+	if err != nil || !coherent() {
 		return ""
 	}
-	return dest
+	named, err := wait.Lstat(name)
+	if err != nil || !named.Mode().IsRegular() || !os.SameFile(tmpInfo, named) {
+		return ""
+	}
+	dest := "send-" + id + ".screen"
+	if hook != nil {
+		hook("before-rename")
+	}
+	if !coherent() {
+		return ""
+	}
+	if wait.Rename(name, dest) != nil || !coherent() {
+		return ""
+	}
+	final, err := wait.Lstat(dest)
+	if err != nil || !final.Mode().IsRegular() || !os.SameFile(tmpInfo, final) {
+		return ""
+	}
+	return filepath.Join(stateDir, "wait", dest)
 }
 
 func sendKey(svc transport.Services, machine, pane, key string) bool {
@@ -1337,9 +1416,23 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		}
 		return base
 	}
+	exit15 := func(base string) { platform.Die(stalledExitMessage(base), 15) }
+	queuedScreen := func(screen string) bool {
+		return !isDialogScreen(screen, t.Kind, currentStatus) && (steeringQueued(screen, id) || claudeQueued(screen, id) || t.Kind == "codex" && codexQueued(screen, id))
+	}
+	finishQueued := func(screen string) bool {
+		if !queuedScreen(screen) {
+			return false
+		}
+		log(senderRef, t.RefShown, "queued")
+		fmt.Fprintf(platform.Stdout, "queued for %s: it takes the message when its current turn ends\n", t.RefShown)
+		return true
+	}
 	clean := LiteralPeerText
 	quotedBody := QuotePeerBody(clean(body))
 	endLine := PeerEndLine(id)
+	codexReceipt := newCodexReceipt(t, preGet, endLine, env)
+	defer codexReceipt.Close()
 	field := HeaderField
 	sender := PeerSender{Ref: field(senderRef), Name: field(senderName), Kind: field(senderKind), Role: field(senderRole), Model: field(senderModel)}
 	header := PeerHeaderFor(sender, id)
@@ -1431,11 +1524,28 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		}
 		return text, cause
 	}
-	pollWindow := func() proofResult {
-		deadline := time.Now().Add(time.Duration(windowMS) * time.Millisecond)
+	finishStalledQueue := func(screen string, deadline time.Time) bool {
+		if !queuedScreen(screen) {
+			return false
+		}
+		// Even a legacy queue that stays uncertain must not hide a receiver
+		// refusal. A recent-read fallback may also update the visible frame.
+		_, _ = readAfter("recent-unwrapped", recentLines, floorCallBudget(int(time.Until(deadline).Milliseconds())))
+		return t.Kind == "codex" && finishQueued(lastVisibleScreen)
+	}
+	pollWindow := func(deadline time.Time) proofResult {
 		result := proofResult{}
 		for {
 			curGet := agentGet(svc, t.Machine, t.TargetArg, HerdrCallTimeoutMS)
+			if codexReceipt != nil {
+				if !sameCodexBinding(preGet, curGet) {
+					codexReceipt.Close()
+				}
+				visible, cause := readAfter("visible", 0, HerdrCallTimeoutMS)
+				if cause == "" && codexReceiptTaken(codexReceipt, preGet, svc, t, visible, id, statusOr(curGet, currentStatus), recentLines, deadline, readAfter) {
+					return proofResult{Proven: true}
+				}
+			}
 			if curGet.OK {
 				preIdle := preStatus == "idle" || preStatus == "done"
 				// An idle/done agent's state sequence moves only when its
@@ -1447,7 +1557,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 				if preSeq != "" && curGet.Seq != "" && curGet.Seq != preSeq && preIdle {
 					visible, readErr := readAfter("visible", 0, HerdrCallTimeoutMS)
 					if readErr == "" {
-						if !isDialogScreen(visible, t.Kind, curGet.Status) {
+						if positiveScreenClear(t.Kind, visible, id, curGet.Status) {
 							// The sequence moved, but a refusal can have scrolled
 							// off the visible screen: the recent history is read
 							// for it before the send is proved. readAfter ends
@@ -1457,7 +1567,9 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 							// send, and the send stays proved when the history cannot
 							// be read to look for a refusal that may have scrolled off.
 							_, _ = readAfter("recent-unwrapped", recentLines, HerdrCallTimeoutMS)
-							return proofResult{Proven: true, RecentReadSucceeded: result.RecentReadSucceeded, LastCause: result.LastCause}
+							if positiveScreenClear(t.Kind, lastVisibleScreen, id, curGet.Status) {
+								return proofResult{Proven: true, RecentReadSucceeded: result.RecentReadSucceeded, LastCause: result.LastCause}
+							}
 						}
 					} else {
 						result.LastCause = readErr
@@ -1473,8 +1585,11 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 					// not proof while the visible queue line still holds the id.
 					visible, visibleErr := readAfter("visible", 0, HerdrCallTimeoutMS)
 					if visibleErr == "" {
-						if !transcript.queued(visible, id) {
-							return proofResult{Proven: true, RecentReadSucceeded: result.RecentReadSucceeded, LastCause: result.LastCause}
+						if !transcript.queued(visible, id) && positiveScreenClear(t.Kind, visible, id, statusOr(curGet, currentStatus)) {
+							_, _ = readAfter("recent-unwrapped", recentLines, HerdrCallTimeoutMS)
+							if positiveScreenClear(t.Kind, lastVisibleScreen, id, statusOr(curGet, currentStatus)) {
+								return proofResult{Proven: true, RecentReadSucceeded: result.RecentReadSucceeded, LastCause: result.LastCause}
+							}
 						}
 					} else {
 						result.LastCause = visibleErr
@@ -1491,7 +1606,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 				if receiptLineInText(recent, id) {
 					visible, visibleErr := readAfter("visible", 0, HerdrCallTimeoutMS)
 					if visibleErr == "" {
-						if visible != preScreen && !isDialogScreen(visible, t.Kind, statusOr(curGet, currentStatus)) {
+						if visible != preScreen && positiveScreenClear(t.Kind, visible, id, statusOr(curGet, currentStatus)) {
 							// A message in pi's Steering queue, in Claude Code's queued
 							// messages, or in codex's follow-up queue sits above the input
 							// area but is not read yet: it is queued (reported after the
@@ -1550,6 +1665,12 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		if visibleErr != "" {
 			return false
 		}
+		if !positiveScreenClear(t.Kind, visible, id, currentStatus) {
+			return false
+		}
+		if codexReceiptTaken(codexReceipt, preGet, svc, t, visible, id, currentStatus, recentLines, deadline, readAfter) {
+			return true
+		}
 		// The transcript proof, like pollWindow's, applies before the screen
 		// rules and presses no key: the target writes the taken message to the
 		// transcript as a user line, so the count of the user lines carrying
@@ -1559,7 +1680,8 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		// line alone is not the receipt.
 		if transcript.armed {
 			if count, ok := transcript.count(transcript.path, PeerEndLine(id)); ok && count > transcript.pre {
-				return !transcript.queued(visible, id)
+				_, _ = readAfter("recent-unwrapped", recentLines, stalledCheckBudget(deadline))
+				return !transcript.queued(visible, id) && positiveScreenClear(t.Kind, lastVisibleScreen, id, currentStatus)
 			}
 		}
 		// The moved-sequence shortcut below checks only the dialog, so the
@@ -1571,9 +1693,13 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			return false
 		}
 		curGet := agentGet(svc, t.Machine, t.TargetArg, stalledCheckBudget(deadline))
+		if codexReceipt != nil && !sameCodexBinding(preGet, curGet) {
+			codexReceipt.Close()
+		}
 		preIdle := preStatus == "idle" || preStatus == "done"
 		if preSeq != "" && curGet.Seq != "" && curGet.Seq != preSeq && preIdle {
-			return !isDialogScreen(visible, t.Kind, curGet.Status)
+			_, _ = readAfter("recent-unwrapped", recentLines, stalledCheckBudget(deadline))
+			return positiveScreenClear(t.Kind, lastVisibleScreen, id, curGet.Status)
 		}
 		// Like pollWindow's recent gate, the marker must be this message's
 		// receipt line — its exact closing line, unquoted and the id complete
@@ -1582,9 +1708,9 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		if readErr != "" || !receiptLineInText(recent, id) {
 			return false
 		}
-		return visible != preScreen && !isDialogScreen(visible, t.Kind, statusOr(curGet, currentStatus)) &&
-			!messageStillInScreen(t.Kind, visible, endLine, id) && !steeringQueued(visible, id) && !claudeQueued(visible, id) &&
-			!(t.Kind == "codex" && codexQueued(visible, id))
+		latest := lastVisibleScreen
+		return latest != preScreen && positiveScreenClear(t.Kind, latest, id, statusOr(curGet, currentStatus)) &&
+			!messageStillInScreen(t.Kind, latest, endLine, id)
 	}
 	// stalledWindow repeats stalledTaken on every poll until the end of the
 	// same proof window pollWindow runs (windowMS, from arrivalWindowMS):
@@ -1598,8 +1724,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	// its deadline. The first taken read is sent; the window's end without
 	// proof keeps the stalled 15 below. No key is pressed and the text is
 	// never resent.
-	stalledWindow := func() bool {
-		deadline := time.Now().Add(time.Duration(windowMS) * time.Millisecond)
+	stalledWindow := func(deadline time.Time) bool {
 		for {
 			if !time.Now().Before(deadline) {
 				return false
@@ -1621,6 +1746,13 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			// Enter and run the proof window. One Enter at most, no resend;
 			// agent_blocked and timeout keep today's exit below.
 			vis, visErr := readAfter("visible", 0, HerdrCallTimeoutMS)
+			var deadline time.Time
+			if visErr == "" && queuedScreen(vis) {
+				deadline = time.Now().Add(time.Duration(windowMS) * time.Millisecond)
+				if finishStalledQueue(vis, deadline) {
+					return 0
+				}
+			}
 			if visErr == "" && idInInputBox(t.Kind, vis, id) {
 				// A dialog on screen takes the Enter as its answer: press
 				// nothing, as the Enter of the ok path does.
@@ -1632,9 +1764,13 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 				// (herdr send-keys exited 0); a failed send is never claimed as
 				// pressed, and no second Enter or resend follows.
 				entered := sendKey(svc, t.Machine, t.TargetArg, "enter")
-				if res := pollWindow(); res.Proven {
+				deadline = time.Now().Add(time.Duration(windowMS) * time.Millisecond)
+				if res := pollWindow(deadline); res.Proven {
 					log(senderRef, t.RefShown, "sent")
 					_, _ = fmt.Fprintf(platform.Stdout, "sent to %s\n", t.RefShown)
+					return 0
+				}
+				if finishStalledQueue(lastVisibleScreen, deadline) {
 					return 0
 				}
 				log(senderRef, t.RefShown, "stalled")
@@ -1642,7 +1778,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 				if !entered {
 					cause = "the last read showed it in its input box, but the Enter did not send"
 				}
-				platform.Die(stalledExitMessage(fmt.Sprintf("send: %s did not confirm taking the message: %s; delivery is uncertain; %s for #%s or a reply before sending again", t.RefShown, cause, readPaneHint(t), id)), 15)
+				exit15(fmt.Sprintf("send: %s did not confirm taking the message: %s; delivery is uncertain; %s for #%s or a reply before sending again", t.RefShown, cause, readPaneHint(t), id))
 			}
 			// The marker is not in the input box (or the screen could not be
 			// read), yet the prompt can have been taken anyway: a taken codex
@@ -1653,9 +1789,15 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			// redraw late, so prove the arrival over the proof window: the
 			// check repeats on every poll until it proves or the window ends;
 			// taken is sent, not taken by the end keeps the 15.
-			if stalledWindow() {
+			if deadline.IsZero() {
+				deadline = time.Now().Add(time.Duration(windowMS) * time.Millisecond)
+			}
+			if stalledWindow(deadline) {
 				log(senderRef, t.RefShown, "sent")
 				_, _ = fmt.Fprintf(platform.Stdout, "sent to %s\n", t.RefShown)
+				return 0
+			}
+			if finishStalledQueue(lastVisibleScreen, deadline) {
 				return 0
 			}
 		}
@@ -1671,21 +1813,20 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			// uncertain and names the reconciliation (the marker or a reply),
 			// never that the message was not delivered.
 			msg := fmt.Sprintf("send: %s did not confirm taking the message (%s); delivery is uncertain; %s for #%s or a reply before sending again", t.RefShown, cause, readPaneHint(t), id)
-			// Only the stalled exits record the screen: agent_blocked and
-			// timeout keep today's message untouched.
+			// Preserve each original cause; exit15 adds only an actual saved
+			// screen path for stalled, blocked and timeout alike.
 			if p.Code == "agent_prompt_stalled" {
 				// The proof window ran and ended without proof: say so, in
 				// seconds. The cause keeps Herdr's own "within ... ms" text,
 				// which is part of the cause.
 				msg = fmt.Sprintf("send: %s did not confirm taking the message (%s); delivery is uncertain: no proof within the %ss window; %s for #%s or a reply before sending again", t.RefShown, cause, numberSeconds(windowMS), readPaneHint(t), id)
-				msg = stalledExitMessage(msg)
 			}
-			platform.Die(msg, 15)
+			exit15(msg)
 		}
 		log(senderRef, t.RefShown, "error")
 		platform.Die(fmt.Sprintf("send: %s unavailable: %s", t.RefShown, p.Cause), 4)
 	}
-	res := pollWindow()
+	res := pollWindow(time.Now().Add(time.Duration(windowMS) * time.Millisecond))
 	if res.Proven {
 		log(senderRef, t.RefShown, "sent")
 		_, _ = fmt.Fprintf(platform.Stdout, "sent to %s\n", t.RefShown)
@@ -1749,9 +1890,14 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 							_, _ = fmt.Fprintf(platform.Stdout, "queued for %s: it takes the message when its current turn ends\n", t.RefShown)
 							return 0
 						}
-						log(senderRef, t.RefShown, "sent")
-						_, _ = fmt.Fprintf(platform.Stdout, "sent to %s\n", t.RefShown)
-						return 0
+						if positiveScreenClear(t.Kind, visible, id, "working") {
+							_, _ = readAfter("recent-unwrapped", recentLines, HerdrCallTimeoutMS)
+							if positiveScreenClear(t.Kind, lastVisibleScreen, id, "working") {
+								log(senderRef, t.RefShown, "sent")
+								_, _ = fmt.Fprintf(platform.Stdout, "sent to %s\n", t.RefShown)
+								return 0
+							}
+						}
 					}
 				}
 				if g := agentGet(svc, t.Machine, t.TargetArg, HerdrCallTimeoutMS); !g.OK || g.Status != "working" {
@@ -1773,21 +1919,19 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		if cause == "" {
 			cause = "read failed"
 		}
-		platform.Die(fmt.Sprintf("send: could not confirm that %s took the message (%s); %s before sending again", t.RefShown, cause, readPaneHint(t)), 15)
+		exit15(fmt.Sprintf("send: could not confirm that %s took the message (%s); %s before sending again", t.RefShown, cause, readPaneHint(t)))
 	}
 	preEnterVis, readErr := readAfter("visible", 0, HerdrCallTimeoutMS)
-	if readErr == "" && (steeringQueued(preEnterVis, id) || claudeQueued(preEnterVis, id) || (t.Kind == "codex" && codexQueued(preEnterVis, id))) {
+	if readErr == "" && finishQueued(preEnterVis) {
 		// pi keeps a message sent during a turn in its Steering queue, Claude
 		// Code keeps it in its queued messages, and codex keeps it in its
 		// follow-up queue: it is queued, not lost, and not yet read; no Enter
 		// (and no ctrl+enter) goes to a busy agent.
-		log(senderRef, t.RefShown, "queued")
-		_, _ = fmt.Fprintf(platform.Stdout, "queued for %s: it takes the message when its current turn ends\n", t.RefShown)
 		return 0
 	}
 	if readErr != "" {
 		log(senderRef, t.RefShown, "unverified")
-		platform.Die(fmt.Sprintf("send: could not confirm that %s took the message (%s); %s before sending again", t.RefShown, readErr, readPaneHint(t)), 15)
+		exit15(fmt.Sprintf("send: could not confirm that %s took the message (%s); %s before sending again", t.RefShown, readErr, readPaneHint(t)))
 	}
 	preEnterGet := agentGet(svc, t.Machine, t.TargetArg, HerdrCallTimeoutMS)
 	if !preEnterGet.OK {
@@ -1796,7 +1940,7 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		if cause == "" {
 			cause = "status read failed"
 		}
-		platform.Die(fmt.Sprintf("send: could not confirm that %s took the message (%s); %s before sending again", t.RefShown, cause, readPaneHint(t)), 15)
+		exit15(fmt.Sprintf("send: could not confirm that %s took the message (%s); %s before sending again", t.RefShown, cause, readPaneHint(t)))
 	}
 	if isDialogScreen(preEnterVis, t.Kind, preEnterGet.Status) {
 		log(senderRef, t.RefShown, "dialog")
@@ -1804,17 +1948,20 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	}
 	idInBox := idInInputBox(t.Kind, preEnterVis, id)
 	if !idInBox {
-		log(senderRef, t.RefShown, "lost")
-		platform.Die(fmt.Sprintf("send: %s did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; %s for #%s or a reply before sending again", t.RefShown, readPaneHint(t), id), 15)
+		log(senderRef, t.RefShown, "uncertain")
+		exit15(fmt.Sprintf("send: %s did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; %s for #%s or a reply before sending again", t.RefShown, readPaneHint(t), id))
 	}
 	// The key transport reports whether the Enter actually landed (herdr
 	// send-keys exited 0); a failed send is never claimed as pressed, and no
 	// second Enter or resend follows.
 	entered := sendKey(svc, t.Machine, t.TargetArg, "enter")
-	res = pollWindow()
+	res = pollWindow(time.Now().Add(time.Duration(windowMS) * time.Millisecond))
 	if res.Proven {
 		log(senderRef, t.RefShown, "sent")
 		_, _ = fmt.Fprintf(platform.Stdout, "sent to %s\n", t.RefShown)
+		return 0
+	}
+	if finishQueued(lastVisibleScreen) {
 		return 0
 	}
 	if !res.RecentReadSucceeded {
@@ -1823,14 +1970,14 @@ func CmdSend(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		if cause == "" {
 			cause = "read failed"
 		}
-		platform.Die(fmt.Sprintf("send: could not confirm that %s took the message (%s); %s before sending again", t.RefShown, cause, readPaneHint(t)), 15)
+		exit15(fmt.Sprintf("send: could not confirm that %s took the message (%s); %s before sending again", t.RefShown, cause, readPaneHint(t)))
 	}
-	log(senderRef, t.RefShown, "lost")
+	log(senderRef, t.RefShown, "uncertain")
 	lostCause := "no sign of it in its state or screen"
 	if !entered {
 		lostCause = "the Enter did not send and there is no sign of it in its state or screen"
 	}
-	platform.Die(fmt.Sprintf("send: %s did not confirm taking the message (%s); delivery is uncertain; %s for #%s or a reply before sending again", t.RefShown, lostCause, readPaneHint(t), id), 15)
+	exit15(fmt.Sprintf("send: %s did not confirm taking the message (%s); delivery is uncertain; %s for #%s or a reply before sending again", t.RefShown, lostCause, readPaneHint(t), id))
 	return 15
 }
 

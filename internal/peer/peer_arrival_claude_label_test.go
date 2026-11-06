@@ -123,13 +123,19 @@ func TestSendReadPaneHint(t *testing.T) {
 				if machine != "local" {
 					hint += " (herdr --machine windows agent read w0test:p0a --source visible)"
 				}
-				want := "soho: send: " + target + " did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; " + hint + " for #01020304 or a reply before sending again\n"
+				want := "soho: send: " + target + " did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; " + hint + " for #01020304 or a reply before sending again"
 				if variant == "without-id" {
-					want = "soho: send: could not confirm that " + target + " took the message (agent_read_failed: denied); " + hint + " before sending again\n"
+					want = "soho: send: could not confirm that " + target + " took the message (agent_read_failed: denied); " + hint + " before sending again"
 				}
+				want += "; screen saved to " + filepath.Join(dja651StateDir(f), "wait", "send-01020304.screen") + "\n"
 				if code != 15 || out != "" || stderr != want {
 					t.Fatalf("code=%d out=%q stderr=%q want=%q", code, out, stderr, want)
 				}
+				saved := claudeLabelVisible("No receipt yet", "❯")
+				if variant == "without-id" {
+					saved = claudeLabelVisible("Earlier response", "❯")
+				}
+				dja651Screen(t, dja651StateDir(f), "01020304", saved, out, stderr, true)
 			})
 		}
 	}
