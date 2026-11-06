@@ -15,7 +15,7 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 )
 
-const mutationCopyUsage = "usage: mutation-copy [--source <dir>] [--dest <dir>] [--exclude <glob>]... [--link <relpath>=<target>]..."
+const mutationCopyUsage = "usage: mutation-copy [--source <dir>] [--dest <dir>] [--print-path] [--exclude <glob>]... [--link <relpath>=<target>]..."
 
 // mutation-copy builds the throwaway mutation copy of the repository that the
 // guard was written for, from the worktree's repository files only (never
@@ -69,6 +69,15 @@ func runMutationCopy(args []string, env platform.Env) int {
 			_ = os.RemoveAll(dest)
 		}
 		return mutationCopyRefuse("destination", destGiven, reason)
+	}
+	// A captured path must fit on one line. Check the resolved path (an
+	// alias or TMPDIR can introduce a newline), before copy/marker/registry
+	// writes, and preserve a destination the caller already owned.
+	if parsed.printPath && !mutationCopyPrintablePath(dest) {
+		if destCreated {
+			_ = os.RemoveAll(dest)
+		}
+		return mutationCopyRefuse("destination", destGiven, "--print-path cannot represent a path containing CR or LF")
 	}
 	// Refuse a repository destination before copying files, creating links
 	// or writing an origin marker. Never remove a caller-owned directory.
@@ -324,8 +333,16 @@ func runMutationCopy(args []string, env platform.Env) int {
 		return failIO(err.Error())
 	}
 	registerMutationCopy(env, source, dest)
-	_, _ = fmt.Fprintln(platform.Stdout, string(encoded))
+	if parsed.printPath {
+		_, _ = fmt.Fprintln(platform.Stdout, dest)
+	} else {
+		_, _ = fmt.Fprintln(platform.Stdout, string(encoded))
+	}
 	return 0
+}
+
+func mutationCopyPrintablePath(path string) bool {
+	return !strings.ContainsAny(path, "\r\n")
 }
 
 // Mirror dispatch.SamePath's case folding, extending it to Darwin as required
@@ -401,18 +418,27 @@ func mutationCopyNotRegistered(cause string) {
 }
 
 type mutationCopyArgs struct {
-	source   string
-	dest     string
-	links    []string
-	excludes []string
+	source    string
+	dest      string
+	printPath bool
+	links     []string
+	excludes  []string
 }
 
 func parseMutationCopyArgs(args []string) (mutationCopyArgs, bool) {
 	var parsed mutationCopyArgs
 	sourceSeen := false
 	destSeen := false
+	positionalSeen := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if arg == "--print-path" {
+			if parsed.printPath {
+				return mutationCopyArgs{}, false
+			}
+			parsed.printPath = true
+			continue
+		}
 		if arg == "--source" || arg == "--dest" || arg == "--link" || arg == "--exclude" {
 			if i+1 >= len(args) || args[i+1] == "" {
 				return mutationCopyArgs{}, false
@@ -445,6 +471,12 @@ func parseMutationCopyArgs(args []string) (mutationCopyArgs, bool) {
 		if strings.HasPrefix(arg, "-") {
 			return mutationCopyArgs{}, false
 		}
+		positionalSeen = true
+	}
+	// The legacy JSON grammar ignores positional tokens. Preserve that
+	// behavior there, but refuse values for the new boolean in any order.
+	if parsed.printPath && positionalSeen {
+		return mutationCopyArgs{}, false
 	}
 	return parsed, true
 }
