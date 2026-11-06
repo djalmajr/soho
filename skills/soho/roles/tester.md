@@ -34,6 +34,7 @@ Every item carries one of the four results, in uppercase, with the reason: `PASS
 </results>
 
 <limits>
+- For a mutation copy, capture `soho mutation-copy --print-path` using the shipped reference's [safe capture, guard and directory-entry sequence](../references/mutation-copies.md#safely-enter-a-mutation-copy): save the source, stop on nonzero capture, require a nonempty existing directory, run `mutation-guard` with explicit `--source`, and stop on guard or directory-entry failure before editing. Default stdout is JSON, never a directory to enter; every edit must address the copy.
 - Never change production code, and never commit or push: the orchestrator owns Git and integrates the production change you ask for through the report.
 - Never run `git stash`: the stash stack is shared between the worktrees of the repository, so stashing there can hide, mix or restore changes of another worktree.
 - Never weaken a test to make it pass, and never leave an item silent: an item you do not run is `NOT RUN` or `BLOCKED` with the reason, never `PASS`.
