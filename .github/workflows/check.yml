@@ -107,7 +107,7 @@ jobs:
         if: matrix.suite == 'race'
         shell: pwsh
         run: |
-          go test -race -timeout=45m ./...
+          go test -race -timeout=30m ./...
           if ($LASTEXITCODE -ne 0) { throw "go test -race failed" }
       - name: Free disk after the tests
         if: always() && runner.os == 'Windows'
