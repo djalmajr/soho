@@ -231,7 +231,7 @@ func TestComposeAmendmentWindowsRuntimeNote(t *testing.T) {
 	standRules := "- Only you write this report"
 	t.Run("win32 sandboxed codex gets the note in the amendment", func(t *testing.T) {
 		withPlatform(t, "win32")
-		a := ComposeAmendment("# Amend\nDo X.\n", "/report.md", "", ctx, composeEnv(t), "codex", "", "", false)
+		a := ComposeAmendment("# Amend\nDo X.\n", "/report.md", "", "implementer", ctx, composeEnv(t), "codex", "", "", false)
 		if strings.Count(a, sandboxWinRuntimeNote) != 1 {
 			t.Fatalf("the note must appear exactly once:\n%s", a)
 		}
@@ -244,7 +244,7 @@ func TestComposeAmendmentWindowsRuntimeNote(t *testing.T) {
 	})
 	t.Run("the external-evidence rule is delivered in the amendment", func(t *testing.T) {
 		withPlatform(t, "win32")
-		a := ComposeAmendment("# Amend\nDo X.\n", "/report.md", "", ctx, composeEnv(t), "codex", "", "", false)
+		a := ComposeAmendment("# Amend\nDo X.\n", "/report.md", "", "implementer", ctx, composeEnv(t), "codex", "", "", false)
 		for _, part := range []string{
 			"check any external evidence for the same command, source and revision",
 			"it must never silently turn an unresolved [partial] into a pass",
@@ -258,7 +258,7 @@ func TestComposeAmendmentWindowsRuntimeNote(t *testing.T) {
 	})
 	t.Run("win32 codex with network-only access keeps the note", func(t *testing.T) {
 		withPlatform(t, "win32")
-		a := ComposeAmendment("# Amend\nDo X.\n", "/report.md", "", ctx, composeEnv(t), "codex", "-c sandbox_workspace_write.network_access=true", "", false)
+		a := ComposeAmendment("# Amend\nDo X.\n", "/report.md", "", "implementer", ctx, composeEnv(t), "codex", "-c sandbox_workspace_write.network_access=true", "", false)
 		if !strings.Contains(a, sandboxWinRuntimeNote) || strings.Contains(a, sandboxNetNote) {
 			t.Fatalf("network release must keep the note and lift only the network note:\n%s", a)
 		}
@@ -266,7 +266,7 @@ func TestComposeAmendmentWindowsRuntimeNote(t *testing.T) {
 	t.Run("win32 codex bypass forms omit every sandbox note", func(t *testing.T) {
 		for _, args := range []string{"danger-full-access", "--dangerously-bypass-approvals-and-sandbox"} {
 			withPlatform(t, "win32")
-			a := ComposeAmendment("# Amend\nDo X.\n", "/report.md", "", ctx, composeEnv(t), "codex", args, "", false)
+			a := ComposeAmendment("# Amend\nDo X.\n", "/report.md", "", "implementer", ctx, composeEnv(t), "codex", args, "", false)
 			if strings.Contains(a, sandboxWinRuntimeNote) || strings.Contains(a, sandboxGitNote) || strings.Contains(a, sandboxNetNote) {
 				t.Fatalf("%s must omit every sandbox note:\n%s", args, a)
 			}
@@ -274,14 +274,14 @@ func TestComposeAmendmentWindowsRuntimeNote(t *testing.T) {
 	})
 	t.Run("win32 non-codex gets no note", func(t *testing.T) {
 		withPlatform(t, "win32")
-		a := ComposeAmendment("# Amend\nDo X.\n", "/report.md", "", ctx, composeEnv(t), "grok", "", "", false)
+		a := ComposeAmendment("# Amend\nDo X.\n", "/report.md", "", "implementer", ctx, composeEnv(t), "grok", "", "", false)
 		if strings.Contains(a, sandboxWinRuntimeNote) || strings.Contains(a, sandboxGitNote) {
 			t.Fatalf("another kind must get no sandbox note:\n%s", a)
 		}
 	})
 	t.Run("non-Windows codex stays byte-for-byte", func(t *testing.T) {
 		withPlatform(t, "darwin")
-		a := ComposeAmendment("# Amend\nDo X.\n", "/report.md", "", ctx, composeEnv(t), "codex", "", "", false)
+		a := ComposeAmendment("# Amend\nDo X.\n", "/report.md", "", "implementer", ctx, composeEnv(t), "codex", "", "", false)
 		if !strings.Contains(a, sandboxGitNote) || !strings.Contains(a, sandboxNetNote) || strings.Contains(a, sandboxWinRuntimeNote) {
 			t.Fatalf("non-Windows amendment must not change:\n%s", a)
 		}
