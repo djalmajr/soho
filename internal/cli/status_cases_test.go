@@ -601,7 +601,7 @@ func TestWaitJavaScriptTimeoutAndAnyCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.env["SOHO_NOTIFY"] = "on"
-		code, out, stderr := f.runWait(t, "ready", "working", "--timeout", "2000", "--any")
+		code, out, stderr := f.runWait(t, "ready", "working", "--timeout", "2000ms", "--any")
 		if code != 0 || stderr != "" || strings.Count(out, `"status":"done"`) != 1 {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 		}

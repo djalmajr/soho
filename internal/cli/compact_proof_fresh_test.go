@@ -165,7 +165,7 @@ func TestCompactD22Screens(t *testing.T) {
 				{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 				{Argv: []string{"pane", "send-keys", "p1", "ctrl+u"}, Stdout: `{"result":{}}`},
 			})
-			code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000")
+			code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000ms")
 			if code != c.wantCode {
 				t.Fatalf("code=%d want %d out=%s stderr=%s", code, c.wantCode, out, errText)
 			}
@@ -220,7 +220,7 @@ func TestCompactProofObservedBeforeScrollKeepsCompacted(t *testing.T) {
 		{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 		{Argv: []string{"pane", "send-keys", "p1", "ctrl+u"}, Stdout: `{"result":{}}`},
 	})
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000")
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000ms")
 	if code != 0 || errText != "" {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
@@ -269,7 +269,7 @@ func TestCompactProofObservedLatchStillTimesOutWhenNeverIdle(t *testing.T) {
 		{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 		{Argv: []string{"pane", "send-keys", "p1", "ctrl+u"}, Stdout: `{"result":{}}`},
 	})
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000")
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000ms")
 	if code != 9 || errText != "" {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}
@@ -324,7 +324,7 @@ func TestCompactCodexStuckTransitionsToHistoryEcho(t *testing.T) {
 			{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 			{Argv: []string{"pane", "send-keys", "p1", "ctrl+u"}, Stdout: `{"result":{}}`},
 		})
-		code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000")
+		code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000ms")
 		if code != 9 || compactJSON(t, out)["status"] != "timeout" {
 			t.Fatalf("code=%d out=%s stderr=%s (the delivered echo with the stale proof is not fresh proof)", code, out, errText)
 		}
@@ -362,7 +362,7 @@ func TestCompactCodexStuckTransitionsToHistoryEcho(t *testing.T) {
 			{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 			{Argv: []string{"pane", "send-keys", "p1", "ctrl+u"}, Stdout: `{"result":{}}`},
 		})
-		code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000")
+		code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000ms")
 		if code != 9 || compactJSON(t, out)["status"] != "timeout" {
 			t.Fatalf("code=%d out=%s stderr=%s (the delivered echo with the stale proof is not fresh proof)", code, out, errText)
 		}
@@ -474,7 +474,7 @@ func TestCompactNewEchoWithoutProofTimesOut(t *testing.T) {
 		{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
 		{Argv: []string{"pane", "send-keys", "p1", "ctrl+u"}, Stdout: `{"result":{}}`},
 	})
-	code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000")
+	code, out, errText := f.run(t, "compact", "worker", "--timeout", "5000ms")
 	if code != 9 || errText != "" {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
 	}

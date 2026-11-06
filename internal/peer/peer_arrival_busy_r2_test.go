@@ -193,7 +193,7 @@ func TestSendArrivalBusyR2QueueDuringWait(t *testing.T) {
 	f.env["CLAUDE_CONFIG_DIR"] = configRoot
 	f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
 	started := time.Now()
-	code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "3000", "hello"})
+	code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "3000ms", "hello"})
 	if code != 0 || !strings.HasPrefix(out, "queued for local/w0test:p0a") {
 		t.Fatalf("a queue line that appears during the wait is queued: code=%d out=%q stderr=%q", code, out, stderr)
 	}
@@ -350,7 +350,7 @@ func TestSendArrivalBusyR2SubsecondWindow(t *testing.T) {
 	f.env["CLAUDE_CONFIG_DIR"] = configRoot
 	f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "500", "50"
 	done := appendTranscriptLineOnVisibleRead(t, filepath.Join(filepath.Dir(f.bin), "herdr.calls.jsonl"), transcriptPath, userLine, 2)
-	code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "4000", "hello"})
+	code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "4000ms", "hello"})
 	if code != 0 || out != "sent to local/w0test:p0a\n" {
 		t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 	}

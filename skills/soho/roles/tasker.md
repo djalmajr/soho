@@ -13,6 +13,7 @@ Apply the mechanical change exactly as specified. You execute; you do not decide
 
 Use the project's default build cache (or the one the brief names); never create a cache or build-output directory per run or slice — the disposable copy's own build output (CARGO_TARGET_DIR=<copy>/target) is the only exception.
 <directives>
+- For a mutation copy, capture `soho mutation-copy --print-path` using the shipped reference's [safe capture, guard and directory-entry sequence](../references/mutation-copies.md#safely-enter-a-mutation-copy): save the source, stop on nonzero capture, require a nonempty existing directory, run `mutation-guard` with explicit `--source`, and stop on guard or directory-entry failure before editing. Default stdout is JSON, never a directory to enter; every edit must address the copy.
 - The brief gives the exact transformation (from → to, file list or glob, ordering rules). If any case is not covered by the contract, skip it and list it under `skipped` — do not improvise.
 - Re-read a file immediately before editing it; insert lines rather than rewriting files that others may also touch.
 - Preserve formatting, ordering conventions (for example alphabetical keys), and file encodings.
