@@ -293,12 +293,13 @@ func TestSendClaudeTranscriptProof(t *testing.T) {
 		f := newFixture(t, rules)
 		f.env["CLAUDE_CONFIG_DIR"] = t.TempDir() // present, but no session to resolve
 		f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
-		code, _, stderr := f.run([]string{"send", "w0test:p0a", "--now", "hello"})
-		// Exactly today's message: no new warning for the absent transcript.
-		want := "soho: send: local/w0test:p0a did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane for #01020304 or a reply before sending again\n"
+		code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "hello"})
+		// Preserve the original cause and add only the actual saved path.
+		want := "soho: send: local/w0test:p0a did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane for #01020304 or a reply before sending again; screen saved to " + filepath.Join(dja651StateDir(f), "wait", "send-"+id+".screen") + "\n"
 		if code != 15 || stderr != want {
 			t.Fatalf("code=%d stderr=%q", code, stderr)
 		}
+		dja651Screen(t, dja651StateDir(f), id, "✻ Cranking out changes…\n", out, stderr, true)
 		if gets := countGets(t, f); gets != 6 {
 			// resolve + screen + pre + the transcript-path get (which finds no
 			// session) + window poll + pre-Enter: the send stays on the

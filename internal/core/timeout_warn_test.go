@@ -2,6 +2,8 @@ package core_test
 
 import (
 	"bytes"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,15 +48,25 @@ func TestWarnShortTimeoutCases(t *testing.T) {
 			t.Fatalf("friction log=%q", log)
 		}
 	})
-	t.Run("1000 and a full minute: no warning, no friction log", func(t *testing.T) {
+	for _, ms := range []int64{1, 1000, 1800, 9999} {
+		t.Run(fmt.Sprint(ms), func(t *testing.T) {
+			logFile := filepath.Join(t.TempDir(), "friction.log")
+			stderr, log := run(t, "dispatch", ms, logFile)
+			if strings.Count(stderr, "dispatch: --timeout is in milliseconds;") != 1 || strings.Count(log, "warning\tdispatch\t") != 1 {
+				t.Fatalf("ms=%d stderr=%q log=%q; want one warning", ms, stderr, log)
+			}
+			if ms >= 1000 && (!strings.Contains(stderr, fmt.Sprintf("%d means %dms", ms, ms)) || !strings.Contains(stderr, "30m") || strings.Contains(stderr, "under a second")) {
+				t.Fatalf("ms=%d stderr=%q; want accurate milliseconds and an explicit duration", ms, stderr)
+			}
+		})
+	}
+	t.Run("10000 and larger values: no warning, no friction log", func(t *testing.T) {
 		logFile := filepath.Join(t.TempDir(), "friction.log")
-		stderr, log := run(t, "dispatch", 1000, logFile)
-		if stderr != "" || log != "" {
-			t.Fatalf("ms=1000 stderr=%q log=%q", stderr, log)
-		}
-		stderr, log = run(t, "spawn", 60000, logFile)
-		if stderr != "" || log != "" {
-			t.Fatalf("ms=60000 stderr=%q log=%q", stderr, log)
+		for _, ms := range []int64{10000, 60000, 1800000, math.MaxInt64} {
+			stderr, log := run(t, "dispatch", ms, logFile)
+			if stderr != "" || log != "" {
+				t.Fatalf("ms=%d stderr=%q log=%q", ms, stderr, log)
+			}
 		}
 	})
 	t.Run("0 and negative values: no warning", func(t *testing.T) {

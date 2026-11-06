@@ -293,7 +293,11 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 		// gate.
 		if core.CallerCheckMode(ctx, env) != "off" {
 			if res := svc.Runtime.CheckCaller(context.Background(), transport.Call{}).Value; res.State == string(herdr.CallerMismatch) {
-				s.Warning(fmt.Sprintf("Herdr context invalid: HERDR_PANE_ID='%s' is live but this process does not run in it (its process tree does not reach shell pid %d); fix the inherited HERDR_* environment", res.Pane, res.ShellPID))
+				if res.Reason == herdr.CallerReasonSharedCodexExecutor {
+					s.Warning("Herdr context invalid: " + core.SharedCodexCallerDescription(res.Pane, res.CodexSession, res.ShownIn))
+				} else {
+					s.Warning(fmt.Sprintf("Herdr context invalid: HERDR_PANE_ID='%s' is live but this process does not run in it (its process tree does not reach shell pid %d); fix the inherited HERDR_* environment", res.Pane, res.ShellPID))
+				}
 			}
 		}
 	} else {

@@ -92,7 +92,7 @@ func TestCompactCodexLowContextSkipsInput(t *testing.T) {
 	})
 	compactLowContextEnv(t, f.env)
 	t.Chdir(f.root)
-	code, out, stderr := f.run(t, "compact", "worker", "--timeout", "1000")
+	code, out, stderr := f.run(t, "compact", "worker", "--timeout", "1000ms")
 	calls := f.calls(t)
 	assertCompactNoInput(t, calls)
 	value := compactJSON(t, out)
@@ -123,7 +123,7 @@ func TestCompactCodexLowContextBoundaryStillSends(t *testing.T) {
 			})
 			compactLowContextEnv(t, f.env)
 			t.Chdir(f.root)
-			code, out, stderr := f.run(t, "compact", "worker", "--timeout", "5000")
+			code, out, stderr := f.run(t, "compact", "worker", "--timeout", "5000ms")
 			calls := f.calls(t)
 			if code != 0 || stderr != "" || compactJSON(t, out)["status"] != "compacted" || countArgv(calls, []string{"pane", "send-text", "p1", "/compact"}) != 1 || countArgv(calls, []string{"pane", "send-keys", "p1", "Enter"}) != 1 {
 				t.Fatalf("code=%d stdout=%q stderr=%q calls=%#v before=%q", code, out, stderr, calls, before)

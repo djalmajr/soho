@@ -436,11 +436,15 @@ func TestStartReadiness(t *testing.T) {
 	})
 
 	t.Run("never ready: the timeout failure, bounded, no error to report", func(t *testing.T) {
-		start := time.Now()
-		rep := startWorker(t, []fakecli.Rule{
+		// Fixture installation includes Windows image preparation, outside
+		// the production Start call whose unchanged bounds are asserted below.
+		env, _ := startEnv(t, []fakecli.Rule{
 			{Argv: runArgv("claude"), Stdout: startRunResult},
 			{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":false,"status":{"state":"working"}}`},
-		}, "300")
+		})
+		b := newBackend(env)
+		start := time.Now()
+		rep := b.Start(context.Background(), transport.Start{Name: "w7", Kind: "claude", Timeout: "300"}, transport.Call{})
 		elapsed := time.Since(start)
 		if rep.Err == nil || rep.Err.Kind != transport.FailureCommand {
 			t.Fatalf("rep: %+v want FailureCommand", rep)
@@ -542,6 +546,284 @@ func TestStartReadiness(t *testing.T) {
 			{"get", "t7", "--json"},
 		})
 	})
+}
+
+// startReadinessRunner keeps Start, session resolution and hc decoding real;
+// only the per-client process launcher is replaced. Every launch is targeted
+// explicitly, so these context fixtures cannot invoke a real hc process.
+func startReadinessRunner(t *testing.T, get func(context.Context) platform.RunResult) (*backend, func() []fakecli.Call) {
+	t.Helper()
+	env := platform.Env{"HC_TERMINAL_ID": "t1"}
+	b := &backend{env: env, client: hc.New(env)}
+	var calls []fakecli.Call
+	b.client.Launch = func(ctx context.Context, _ platform.Env, args ...string) platform.RunResult {
+		calls = append(calls, fakecli.Call{Argv: append([]string(nil), args...)})
+		zero := 0
+		switch {
+		case len(args) > 0 && args[0] == "run":
+			wantArgv(t, calls[len(calls)-1:], [][]string{runArgv("claude")})
+			return platform.RunResult{Status: &zero, Stdout: startRunResult}
+		case len(args) > 1 && args[0] == "get" && args[1] == "t1":
+			wantArgv(t, calls[len(calls)-1:], [][]string{{"get", "t1", "--json"}})
+			return platform.RunResult{Status: &zero, Stdout: startCaller}
+		case len(args) > 1 && args[0] == "get" && args[1] == "t7":
+			wantArgv(t, calls[len(calls)-1:], [][]string{{"get", "t7", "--json"}})
+			return get(ctx)
+		default:
+			t.Fatalf("unexpected hc argv: %#v", args)
+			return platform.RunResult{}
+		}
+	}
+	return b, func() []fakecli.Call { return calls }
+}
+
+func TestStartReadinessDeadlineInterruptedGet(t *testing.T) {
+	zero, one, three := 0, 1, 3
+	for _, tc := range []struct {
+		name       string
+		earlier    *platform.RunResult
+		late       platform.RunResult
+		diagnostic string
+		causeKind  transport.FailureKind
+	}{
+		{name: "empty_exit_1_without_prior_error", late: platform.RunResult{Status: &one}},
+		{name: "empty_exit_0_without_prior_error", late: platform.RunResult{Status: &zero}},
+		{
+			name:       "earlier_command_error_is_retained",
+			earlier:    &platform.RunResult{Status: &one, Stderr: `{"error":{"kind":"core_unreachable","message":"connection refused"}}`},
+			late:       platform.RunResult{Status: &one},
+			diagnostic: "hc exited 1: core_unreachable: connection refused",
+			causeKind:  transport.FailureUnavailable,
+		},
+		{
+			name:       "earlier_command_error_survives_empty_output",
+			earlier:    &platform.RunResult{Status: &one, Stderr: `{"error":{"kind":"core_unreachable","message":"connection refused"}}`},
+			late:       platform.RunResult{Status: &zero},
+			diagnostic: "hc exited 1: core_unreachable: connection refused",
+			causeKind:  transport.FailureUnavailable,
+		},
+		{
+			name:       "earlier_protocol_error_is_retained",
+			earlier:    &platform.RunResult{Status: &zero, Stdout: "{"},
+			late:       platform.RunResult{Status: &one},
+			diagnostic: "hc get returned no terminal record",
+			causeKind:  transport.FailureProtocol,
+		},
+		{name: "late_idle_is_not_ready", late: platform.RunResult{Status: &zero, Stdout: startReadyIdle}},
+		{name: "late_not_found_is_not_exited", late: platform.RunResult{Status: &three, Stderr: `{"error":{"kind":"not_found","message":"no such terminal t7"}}`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			gets := 0
+			var getErr error
+			b, calls := startReadinessRunner(t, func(getCtx context.Context) platform.RunResult {
+				gets++
+				if getCtx.Err() != nil {
+					t.Fatalf("get %d entered with error %v", gets, getCtx.Err())
+				}
+				if tc.earlier != nil && gets == 1 {
+					return *tc.earlier
+				}
+				deadline, ok := getCtx.Deadline()
+				if !ok || time.Until(deadline) > 300*time.Millisecond {
+					t.Fatal("readiness get did not inherit the bounded startup deadline")
+				}
+				// The actual child deadline releases this receive. No manual
+				// cancellation occurs before its error has been captured.
+				<-getCtx.Done()
+				getErr = getCtx.Err()
+				return tc.late
+			})
+			rep := b.Start(ctx, transport.Start{Name: "w7", Kind: "claude", Timeout: "300"}, transport.Call{})
+			if getErr != context.DeadlineExceeded || ctx.Err() != nil {
+				t.Fatalf("child error=%v caller error=%v, want only the child deadline", getErr, ctx.Err())
+			}
+			wantCalls := [][]string{{"get", "t1", "--json"}, runArgv("claude"), {"get", "t7", "--json"}}
+			if tc.earlier != nil {
+				wantCalls = append(wantCalls, []string{"get", "t7", "--json"})
+			}
+			wantArgv(t, calls(), wantCalls)
+			if rep.Err == nil || rep.Err.Kind != transport.FailureCommand || rep.Valid || rep.Value != "t7" {
+				t.Fatalf("rep: %+v want the startup timeout with address t7", rep)
+			}
+			want := "agent w7 still not ready after 0.3s"
+			if tc.diagnostic != "" {
+				want += ": " + tc.diagnostic
+			}
+			if rep.Err.Message != want {
+				t.Fatalf("message %q want %q (child=%v, caller=%v, gets=%d)", rep.Err.Message, want, getErr, ctx.Err(), gets)
+			}
+			if tc.earlier != nil {
+				cause, ok := rep.Err.Cause.(*transport.Failure)
+				if !ok || cause == nil || cause.Kind != tc.causeKind || cause.Message != tc.diagnostic {
+					t.Fatalf("cause: %#v want the earlier %s diagnostic", rep.Err.Cause, tc.causeKind)
+				}
+			}
+		})
+	}
+}
+
+func TestStartReadinessCompletedGetDiagnostics(t *testing.T) {
+	zero, one := 0, 1
+	for _, tc := range []struct {
+		name       string
+		result     platform.RunResult
+		diagnostic string
+		causeKind  transport.FailureKind
+	}{
+		{"command_error", platform.RunResult{Status: &one, Stderr: `{"error":{"kind":"core_unreachable","message":"connection refused"}}`}, "hc exited 1: core_unreachable: connection refused", transport.FailureUnavailable},
+		{"empty_exit_1", platform.RunResult{Status: &one}, "hc exited 1: ", transport.FailureUnavailable},
+		{"empty_exit_0", platform.RunResult{Status: &zero}, "hc get returned no terminal record", transport.FailureProtocol},
+		{"malformed_output", platform.RunResult{Status: &zero, Stdout: "{"}, "hc get returned no terminal record", transport.FailureProtocol},
+		{"deadline_words_in_stderr", platform.RunResult{Status: &one, Stderr: "context deadline exceeded"}, "hc exited 1: context deadline exceeded", transport.FailureUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			gets := 0
+			b, calls := startReadinessRunner(t, func(getCtx context.Context) platform.RunResult {
+				gets++
+				if err := getCtx.Err(); err != nil {
+					t.Fatalf("completed get %d entered with error %v", gets, err)
+				}
+				return tc.result
+			})
+			rep := b.Start(ctx, transport.Start{Name: "w7", Kind: "claude", Timeout: "300"}, transport.Call{})
+			if gets == 0 || ctx.Err() != nil {
+				t.Fatalf("gets=%d caller error=%v, want completed gets and a live caller", gets, ctx.Err())
+			}
+			wantArgv(t, calls()[:3], [][]string{{"get", "t1", "--json"}, runArgv("claude"), {"get", "t7", "--json"}})
+			if rep.Err == nil || rep.Err.Kind != transport.FailureCommand || rep.Valid || rep.Value != "t7" {
+				t.Fatalf("rep: %+v want the startup timeout with address t7", rep)
+			}
+			want := "agent w7 still not ready after 0.3s: " + tc.diagnostic
+			if rep.Err.Message != want {
+				t.Fatalf("message %q want %q", rep.Err.Message, want)
+			}
+			cause, ok := rep.Err.Cause.(*transport.Failure)
+			if !ok || cause == nil || cause.Kind != tc.causeKind || cause.Message != tc.diagnostic {
+				t.Fatalf("cause: %#v want the completed %s diagnostic", rep.Err.Cause, tc.causeKind)
+			}
+		})
+	}
+}
+
+func TestStartReadinessCallerCancellationPriority(t *testing.T) {
+	zero, one, three := 0, 1, 3
+	for _, tc := range []struct {
+		name   string
+		result platform.RunResult
+	}{
+		{"empty_exit_1", platform.RunResult{Status: &one}},
+		{"empty_exit_0", platform.RunResult{Status: &zero}},
+		{"idle", platform.RunResult{Status: &zero, Stdout: startReadyIdle}},
+		{"not_found", platform.RunResult{Status: &three, Stderr: `{"error":{"kind":"not_found","message":"no such terminal t7"}}`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			var getErr error
+			b, calls := startReadinessRunner(t, func(getCtx context.Context) platform.RunResult {
+				cancel()
+				getErr = getCtx.Err()
+				return tc.result
+			})
+			rep := b.Start(ctx, transport.Start{Name: "w7", Kind: "claude", Timeout: "300"}, transport.Call{})
+			if getErr != context.Canceled || ctx.Err() != context.Canceled {
+				t.Fatalf("child error=%v caller error=%v, want caller cancellation", getErr, ctx.Err())
+			}
+			wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}, runArgv("claude"), {"get", "t7", "--json"}})
+			if rep.Err == nil || rep.Err.Kind != transport.FailureCancelled || rep.Valid || rep.Value != "t7" {
+				t.Fatalf("rep: %+v want cancellation with address t7", rep)
+			}
+			if rep.Err.Message != "context canceled" || rep.Err.Cause != context.Canceled {
+				t.Fatalf("failure: %+v want the caller cancellation message and cause", rep.Err)
+			}
+		})
+	}
+}
+
+func TestStartReadinessTimelyGetResult(t *testing.T) {
+	zero, three := 0, 3
+	for _, tc := range []struct {
+		name   string
+		result platform.RunResult
+		ready  bool
+	}{
+		{"idle", platform.RunResult{Status: &zero, Stdout: startReadyIdle}, true},
+		{"done", platform.RunResult{Status: &zero, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"done"}}`}, true},
+		{"not_found", platform.RunResult{Status: &three, Stderr: `{"error":{"kind":"not_found","message":"no such terminal t7"}}`}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			b, calls := startReadinessRunner(t, func(getCtx context.Context) platform.RunResult {
+				if err := getCtx.Err(); err != nil {
+					t.Fatalf("timely get entered with error %v", err)
+				}
+				return tc.result
+			})
+			rep := b.Start(ctx, transport.Start{Name: "w7", Kind: "claude", Timeout: "300"}, transport.Call{})
+			wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}, runArgv("claude"), {"get", "t7", "--json"}})
+			if ctx.Err() != nil || rep.Value != "t7" || rep.Valid != tc.ready {
+				t.Fatalf("rep: %+v caller error=%v, want address t7 and ready=%v", rep, ctx.Err(), tc.ready)
+			}
+			if tc.ready {
+				if rep.Err != nil {
+					t.Fatalf("timely ready result failed: %v", rep.Err)
+				}
+			} else if rep.Err == nil || rep.Err.Kind != transport.FailureCommand || rep.Err.Message != "agent w7 exited during startup" {
+				t.Fatalf("rep: %+v want the timely not-found startup exit", rep)
+			}
+		})
+	}
+}
+
+func TestStartReadinessShorterCallDeadlineKeepsDiagnostic(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	const callBudget = 25 * time.Millisecond
+	var firstErr error
+	var firstFinished time.Time
+	gets := 0
+	b, calls := startReadinessRunner(t, func(launchCtx context.Context) platform.RunResult {
+		gets++
+		deadline, ok := launchCtx.Deadline()
+		if !ok || time.Until(deadline) > callBudget || launchCtx.Err() != nil {
+			t.Fatal("get did not enter with a live, bounded per-call context")
+		}
+		<-launchCtx.Done()
+		if gets == 1 {
+			firstErr = launchCtx.Err()
+			firstFinished = time.Now()
+		}
+		exit := 124
+		return platform.RunResult{Status: &exit, Stderr: `{"error":{"kind":"timeout","message":"timed out"}}`}
+	})
+	begin := time.Now()
+	rep := b.Start(ctx, transport.Start{Name: "w7", Kind: "claude", Timeout: "300"}, transport.Call{Timeout: callBudget})
+	elapsed := time.Since(begin)
+	// Start establishes its readiness deadline after begin. Finishing the
+	// first call before begin+300ms proves that only its shorter budget expired.
+	if firstErr != context.DeadlineExceeded || !firstFinished.Before(begin.Add(300*time.Millisecond)) || ctx.Err() != nil {
+		t.Fatalf("first get error=%v finished after=%v caller error=%v, want a shorter call deadline", firstErr, firstFinished.Sub(begin), ctx.Err())
+	}
+	wantArgv(t, calls()[:3], [][]string{{"get", "t1", "--json"}, runArgv("claude"), {"get", "t7", "--json"}})
+	if rep.Err == nil || rep.Err.Kind != transport.FailureCommand || rep.Valid || rep.Value != "t7" {
+		t.Fatalf("rep: %+v want the startup timeout with address t7", rep)
+	}
+	want := "agent w7 still not ready after 0.3s: hc exited 124: timeout: timed out"
+	if rep.Err.Message != want {
+		t.Fatalf("message %q want %q (gets=%d)", rep.Err.Message, want, gets)
+	}
+	cause, ok := rep.Err.Cause.(*transport.Failure)
+	if !ok || cause == nil || cause.Kind != transport.FailureUnavailable || cause.Message != "hc exited 124: timeout: timed out" {
+		t.Fatalf("cause: %#v want the shorter call timeout diagnostic", rep.Err.Cause)
+	}
+	if elapsed < 300*time.Millisecond || elapsed >= 300*time.Millisecond+2*time.Second {
+		t.Fatalf("elapsed %v, want the unchanged 300 ms startup bound", elapsed)
+	}
 }
 
 // TestStartTimeoutParsing: the deadline is milliseconds as a decimal
