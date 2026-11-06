@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 
@@ -38,6 +39,9 @@ func cmdInventory(args []string, env platform.Env) int {
 	}
 	if _, err := platform.Stdout.Write(append(body, '\n')); err != nil {
 		platform.Die("inventory: unavailable", 4)
+	}
+	if doc.MissingRegistration {
+		fmt.Fprintln(platform.Stderr, inventory.MissingRegistrationAdvisory)
 	}
 	return 0
 }

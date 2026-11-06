@@ -93,6 +93,12 @@ A short Windows Cursor viewport can clip the trust question while retaining its 
 - **Cause:** the role is the first *message*; the worker's harness still loads the project `CLAUDE.md`/`AGENTS.md`, hooks and memory first. Codex on this machine read every ai-memory `_rules/*` page before touching the brief.
 - **Do:** budget 1–3 minutes of startup per worker in `--timeout`; do not treat it as a hang.
 
+## Doctor or inventory advises missing orchestrator registration
+
+- **Symptom:** `an apparent orchestrator is not registered; run soho init in its pane`. Inventory prints it once on stderr after successful JSON output; doctor emits a normal warning for its current strict project and runtime caller session. Init's pre-registration check skips this suggestion without suppressing its other warnings.
+- **Cause:** in a project and session opted into `inventory=show` or `hidden`, a local unambiguous known-kind terminal matches `orchestrator_name` or its hyphen suffix, has no raw roster row claiming its pane and no valid record bound to that exact terminal, and answers a fresh known live state. A record on another pane does not cover this terminal. An ordinary terminal with the matching name can trigger the heuristic; it is not caller verification.
+- **Do:** run `soho init` from the pane intended to orchestrate. The advisory itself never registers, repairs, writes state or reads the unregistered terminal's screen. It checks existing source/record bindings and fresh state during the invocation, leaving a window for later terminal changes. Off mode, unsafe or corrupt sources, and gone, unknown or unavailable state suppress advice; silence alone does not prove registration.
+
 ## `roster`/`clean` print nothing and exit non-zero
 
 - **Cause:** `set -o pipefail` plus `grep -v '^#'` on a roster with only the header. Fixed by `roster_rows()` (`|| true`). Keep using it for any new roster read.

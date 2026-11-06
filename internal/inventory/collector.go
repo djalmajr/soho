@@ -18,7 +18,6 @@ import (
 	"github.com/djalmajr/soho/internal/dispatch"
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
-	"github.com/djalmajr/soho/internal/sessionmeta"
 	"github.com/djalmajr/soho/internal/transport"
 	"github.com/djalmajr/soho/internal/wait"
 )
@@ -178,7 +177,14 @@ func Collect(req Request) (Document, error) {
 	if reply.Err != nil || !reply.Valid {
 		return Document{}, ErrTerminalUnavailable
 	}
-	c := &collector{
+	c := collectorFromSnapshot(req, env, svc, reply)
+	c.observe(reply.Value)
+	return c.assemble()
+}
+
+func collectorFromSnapshot(req Request, env platform.Env, svc transport.Services, reply transport.Reply[[]transport.Terminal]) *collector {
+	svc.Runtime = snapshotList{Transport: svc.Runtime, all: reply}
+	return &collector{
 		req:         req,
 		env:         env,
 		svc:         svc,
@@ -187,10 +193,6 @@ func Collect(req Request) (Document, error) {
 		sessionSeen: map[string]bool{},
 		sessions:    map[string][]string{},
 	}
-	svc.Runtime = snapshotList{Transport: svc.Runtime, all: reply}
-	c.svc = svc
-	c.observe(reply.Value)
-	return c.assemble()
 }
 
 // observe aggregates every nonremote local observation of each physical
@@ -331,8 +333,12 @@ func (c *collector) assemble() (Document, error) {
 			if err != nil {
 				continue
 			}
-			agents := c.sessionAgents(root, session, &sess, source)
-			_ = source.Close()
+			registration := c.readRegistration(root, session, &sess)
+			agents := c.sessionAgents(root, session, &sess, source, registration)
+			missing := !doc.MissingRegistration && c.missingRegistration(root, session, &sess, source.Roster(), registration)
+			if closeErr := source.Close(); closeErr == nil && missing {
+				doc.MissingRegistration = true
+			}
 			if smode == ModeHidden {
 				// Hidden agents contribute exactly one of the five
 				// counts; they never consume the shown bound.
@@ -467,7 +473,7 @@ outer:
 // not superseded by a roster row on its terminal), then the roster
 // workers in roster order — only the snapshot's last row for each name,
 // each matched exactly against a live observed terminal.
-func (c *collector) sessionAgents(root, session string, sess *core.ReadOnlyConfig, source *core.SessionSource) []Agent {
+func (c *collector) sessionAgents(root, session string, sess *core.ReadOnlyConfig, source *core.SessionSource, registration registrationObservation) []Agent {
 	snap := source.Roster()
 	var agents []Agent
 	for _, row := range snap.Rows {
@@ -551,42 +557,26 @@ func (c *collector) sessionAgents(root, session string, sess *core.ReadOnlyConfi
 		}
 		agents = append(agents, a)
 	}
-	if orch := c.orchestrator(root, session, sess, snap); orch != nil {
+	if orch := c.orchestrator(sess, snap, registration); orch != nil {
 		agents = append([]Agent{*orch}, agents...)
 	}
 	return agents
 }
 
-// orchestrator verifies the registered orchestrator record against a
+// orchestrator renders the shared registration observation against a
 // live observed terminal and returns its agent, or nil: a malformed or
 // absent record never invents one, and a roster row on the record's
 // terminal supersedes the stale record. Its state is the terminal-only
 // inspection, never a fabricated worker row; its model and effort are
 // null and its report-ready is false.
-func (c *collector) orchestrator(root, session string, sess *core.ReadOnlyConfig, snap core.RosterSnapshot) *Agent {
-	rec, found, err := sessionmeta.Store{StateBase: sess.StateRoot, SessionID: session}.Read()
-	if err != nil || !found {
+func (c *collector) orchestrator(sess *core.ReadOnlyConfig, snap core.RosterSnapshot, registration registrationObservation) *Agent {
+	if registration.err != nil || !registration.bound {
 		return nil
 	}
-	if rec.ProjectRoot != root || rec.SessionID != session || rec.StartedMS < 0 {
+	rec := registration.record
+	if rosterClaimsPane(snap, rec.Terminal) {
+		// A raw worker claim supersedes the stale record, valid row or not.
 		return nil
-	}
-	if !cleanIdentity(rec.Name) || !cleanIdentity(rec.Terminal) || !cleanIdentity(rec.Kind) {
-		return nil
-	}
-	if !slices.Contains(kinds.KnownKinds, rec.Kind) {
-		return nil
-	}
-	lt, live := c.terms[rec.Terminal]
-	if !live || lt.term.Name != rec.Name || lt.kind != rec.Kind || lt.root != root || lt.term.WorkspaceID != session {
-		return nil
-	}
-	for _, row := range snap.Rows {
-		if len(row.Fields) > rosterColPane && row.Fields[rosterColPane] == rec.Terminal {
-			// A roster worker or sub-orchestrator holds the terminal:
-			// the stale orchestrator record is suppressed.
-			return nil
-		}
 	}
 	view := wait.InspectTerminalStatus(wait.TerminalStatusRequest{
 		Terminal: rec.Name,

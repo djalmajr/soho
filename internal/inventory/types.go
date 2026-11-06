@@ -38,6 +38,9 @@ type Document struct {
 	// stays within MaxDocumentBytes. It is the only field of the
 	// document that is omitted when false.
 	Truncated bool `json:"truncated,omitempty"`
+	// MissingRegistration is aggregate advice for emitters after successful
+	// output. It is never a schema field or registration authority.
+	MissingRegistration bool `json:"-"`
 }
 
 // Project is one show-mode project: its display name and the sessions
