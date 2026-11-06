@@ -44,7 +44,7 @@ The configuration that `job start` reads (for example through `XDG_CONFIG_HOME`)
 The repository gates run on the frozen head; `.github/workflows/check.yml` runs them as separate jobs per platform (ubuntu-24.04, macos-15, windows-2025) and per suite (native, race), with the formatting and vet gates (`gofmt -l` and `go vet ./...`) in the native job:
 
 - unit: `go test -timeout=30m ./...`
-- integration: n/a: there is no separate integration layer; `go test -race -timeout=45m ./...` re-runs the same suite under the race detector, and the job smoke below is the live end-to-end layer
+- integration: n/a: there is no separate integration layer; `go test -race -timeout=30m ./...` re-runs the same suite under the race detector, and the job smoke below is the live end-to-end layer
 - contract: n/a: there is no separate contract suite; the `job` command contract of [docs/job-contract.md](docs/job-contract.md) is exercised by the job smoke below
 - e2e: manual: the Procedure of this document, with the candidate binary built from the exact pull request head
 - mutation: n/a: manual today — a temporary change in a throwaway copy made with `soho mutation-copy` (guarded by `soho mutation-guard`) to see a test fail; the mutation tool will be chosen in a separate slice
