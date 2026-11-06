@@ -63,7 +63,7 @@ func TestSendDialogWithoutNowKeepsTodayWaits(t *testing.T) {
 		{Argv: []string{"agent", "get", "w0test:p0a"}, ArgvPrefix: true, Stdout: agentJSON("blocked", "1")},
 		{Argv: []string{"agent", "wait", "w0test:p0a", "--until", "idle", "--until", "done", "--timeout", "3000"}, Code: 1, Stderr: `{"error":{"code":"timeout","message":"agent wait timed out after 3s"}}`},
 	})
-	code, out, stderr := f.run([]string{"send", "w0test:p0a", "--timeout", "3000", "hello"})
+	code, out, stderr := f.run([]string{"send", "w0test:p0a", "--timeout", "3000ms", "hello"})
 	if code != 17 || out != "" {
 		t.Fatalf("without --now the blocked wait keeps today's 17: code=%d out=%q stderr=%q", code, out, stderr)
 	}
@@ -97,7 +97,7 @@ func TestSendDialogWithoutNowWaitsTheDialogLoop(t *testing.T) {
 		{Argv: []string{"agent", "read", "w0test:p0a", "--source", "visible"}, ArgvPrefix: true, Stdout: sendNowDialogScreen},
 	})
 	f.env["SOHO_SEND_POLL_MS"] = "50"
-	code, out, stderr := f.run([]string{"send", "w0test:p0a", "--timeout", "1000", "hello"})
+	code, out, stderr := f.run([]string{"send", "w0test:p0a", "--timeout", "1000ms", "hello"})
 	if code != 17 || out != "" {
 		t.Fatalf("the dialog loop without --now keeps today's 17: code=%d out=%q stderr=%q", code, out, stderr)
 	}

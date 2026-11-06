@@ -331,7 +331,7 @@ func TestCompactClaudeTranscriptLatchSurvivesLostTranscript(t *testing.T) {
 		var out, errText string
 		done := make(chan struct{})
 		go func() {
-			code, out, errText = f.run(t, "compact", "worker", "--timeout", "5000")
+			code, out, errText = f.run(t, "compact", "worker", "--timeout", "5000ms")
 			close(done)
 		}()
 		// The baseline count ran before the send: once the Enter reached the
