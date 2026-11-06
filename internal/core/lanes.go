@@ -417,23 +417,6 @@ func LaneWorkers(sd, lane string) []string {
 	return out
 }
 
-// RosterRename changes the name (first column) of oldName's roster line to
-// newName; the rest of the line stays the same. It is the roster half of the
-// spawn rename, paired with the herdr agent rename.
-func RosterRename(sd, oldName, newName string) {
-	WithRosterLock(sd, func() {
-		lines := tsvLines(sd)
-		for i, line := range lines {
-			f := strings.Split(line, "\t")
-			if len(f) > 0 && f[0] == oldName {
-				f[0] = newName
-				lines[i] = strings.Join(f, "\t")
-			}
-		}
-		atomicRoster(filepath.Join(sd, "agents.tsv"), lines)
-	})
-}
-
 type LaneDecision struct {
 	Decision, Name, State, Cause string
 	Gone                         []string
@@ -681,16 +664,29 @@ func LiveBurstWorkers(sd string, env platform.Env) []string {
 	}
 	return out
 }
-func EnforceWorkerCap(ctx *Config, env platform.Env, cwd string) {
+
+// WorkerCapacity uses the enforcement path's caller-adjusted count. Unlimited
+// capacity returns before listing; caller resolution is needed only at the cap.
+// Native list failure policy is unchanged, including HC's zero-count limitation.
+type WorkerCapacity struct {
+	Limit string
+	Count int
+	Full  bool
+	Names []string
+}
+
+func CurrentWorkerCapacity(ctx *Config, env platform.Env, cwd string) WorkerCapacity {
 	capStr := MaxWorkers(ctx, env)
 	cap, _ := strconv.Atoi(capStr)
+	result := WorkerCapacity{Limit: capStr}
 	if cap <= 0 {
-		return
+		return result
 	}
 	sd := StateDir(ctx, env, cwd)
 	names := LiveWorkerNames(sd, env)
+	result.Count, result.Names = len(names), names
 	if len(names) < cap {
-		return
+		return result
 	}
 	// The calling agent does not count against its own cap: a promoted
 	// sub-orchestrator keeps its roster row until it is demoted, and a worker
@@ -710,10 +706,16 @@ func EnforceWorkerCap(ctx *Config, env platform.Env, cwd string) {
 		}
 		names = kept
 	}
-	if len(names) < cap {
+	result.Count, result.Names, result.Full = len(names), names, len(names) >= cap
+	return result
+}
+
+func EnforceWorkerCap(ctx *Config, env platform.Env, cwd string) {
+	capacity := CurrentWorkerCapacity(ctx, env, cwd)
+	if !capacity.Full {
 		return
 	}
-	platform.DieFriction(fmt.Sprintf("max_workers=%s reached (%d live: %s). Release a finished worker (release <name> --close), let spawn reuse an idle one of the same role (reuse_workers=on / --reuse), or raise max_workers.", capStr, len(names), strings.Join(names, " ")), 8)
+	platform.DieFriction(fmt.Sprintf("max_workers=%s reached (%d live: %s). Release a finished worker (release <name> --close), let spawn reuse an idle one of the same role (reuse_workers=on / --reuse), or raise max_workers.", capacity.Limit, capacity.Count, strings.Join(capacity.Names, " ")), 8)
 }
 
 func FileLaneSignature(file string) string {
