@@ -305,15 +305,16 @@ func RosterE2EPort(fields []string) string {
 
 func RosterAppend(dir string, fields []string) {
 	WithRosterLock(dir, func() {
-		f, err := os.OpenFile(filepath.Join(dir, "agents.tsv"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
-		if err != nil {
-			panic(err)
-		}
+		lines := tsvLines(dir)
+		additions := []string{}
 		// Append a schema comment rather than rewrite any existing row/header.
 		// Off-mode keeps the original bytes and column count exactly.
 		if RosterE2EPort(fields) != "" {
 			hasHeader, hasPortHeader := false, false
-			for _, line := range tsvLines(dir) {
+			for _, line := range lines {
+				if strings.HasPrefix(line, renamePrefix) {
+					continue
+				}
 				if strings.HasPrefix(line, "#") {
 					hasHeader = true
 					if strings.HasSuffix(line, "\te2e_port") {
@@ -322,12 +323,55 @@ func RosterAppend(dir string, fields []string) {
 				}
 			}
 			if hasHeader && !hasPortHeader {
-				_, err = f.WriteString("# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\tburst\targs\teffort\tmcp\te2e_port\n")
+				additions = append(additions, "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\tburst\targs\teffort\tmcp\te2e_port")
 			}
 		}
-		if err == nil {
-			_, err = f.WriteString(strings.Join(fields, "\t") + "\n")
+		// Only a recreation touching syntactically valid history needs an
+		// invalidation. Include stale tuples too, so recreating an identical
+		// pane/stamp cannot revive a previously stale mapping.
+		invalidations := []string{}
+		invalidNames := []string{}
+		seenInvalidation := map[string]bool{}
+		if len(fields) > 0 {
+			for _, r := range parseRenames(lines) {
+				name := ""
+				if r.From == fields[0] || r.To == fields[0] {
+					name = fields[0]
+				}
+				if len(fields) > 1 && fields[1] == r.Pane {
+					name = r.To
+				}
+				if name != "" && !seenInvalidation[name] {
+					seenInvalidation[name] = true
+					invalidNames = append(invalidNames, name)
+					invalidations = append(invalidations, renameLine(renameRecord{Version: 1, Invalidate: name}))
+				}
+			}
 		}
+		additions = append(additions, strings.Join(fields, "\t"))
+		if len(invalidations) > 0 {
+			size := 0
+			for _, line := range invalidations {
+				size += len(line) + 1
+			}
+			for _, line := range lines {
+				if strings.HasPrefix(line, renamePrefix) {
+					size += len(line) + 1
+				}
+			}
+			if size > renameMetadataLimit {
+				// Only relevant, already near-limit metadata takes the existing
+				// atomic rewrite path. Ordinary appends never rewrite bytes.
+				atomicRoster(filepath.Join(dir, "agents.tsv"), append(compactRenames(lines, invalidNames...), additions...))
+				return
+			}
+			additions = append(invalidations, additions...)
+		}
+		f, err := os.OpenFile(filepath.Join(dir, "agents.tsv"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
+		if err != nil {
+			panic(err)
+		}
+		_, err = f.WriteString(strings.Join(additions, "\n") + "\n")
 		if closeErr := f.Close(); err == nil {
 			err = closeErr
 		}
@@ -338,6 +382,7 @@ func RosterAppend(dir string, fields []string) {
 }
 
 func atomicRoster(file string, lines []string) {
+	lines = compactRenames(lines)
 	content := ""
 	if len(lines) != 0 {
 		content = strings.Join(lines, "\n") + "\n"
@@ -356,7 +401,7 @@ func RosterRemove(dir, name string) {
 				out = append(out, line)
 			}
 		}
-		atomicRoster(filepath.Join(dir, "agents.tsv"), out)
+		atomicRoster(filepath.Join(dir, "agents.tsv"), compactRenames(out, name))
 	})
 }
 

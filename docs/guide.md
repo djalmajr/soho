@@ -60,6 +60,8 @@ When `doctor` or `inventory --json` reports `an apparent orchestrator is not reg
 
 The advisory reads existing state and never repairs or writes it. A raw roster claim on the pane, including an invalid worker row, or a valid registration bound to that exact terminal suppresses it; a valid record for another pane does not. Unsafe or corrupt sources and unavailable, unknown or gone status suppress advice too, so silence is not proof of registration. The observations can change after their checks. Inventory emits the generic message once on stderr only after successful JSON output, without adding JSON fields or changing hidden counts; doctor checks only the current strict project and runtime caller session and counts a normal warning. Init's pre-registration doctor check skips this one suggestion while retaining its other diagnostics.
 
+With lanes on, a new explicit `spawn --name` opens a new worker when both the lane and `max_workers` have room, after the usual compatibility and creation checks. An omitted name or an existing compatible name keeps reuse. When capacity requires renaming a compatible idle worker, the warning names every limiting cap and says that the old name no longer works. Use `--fresh` for a new session when capacity permits. Dispatching an old name still exits 3 without sending anything; bounded rename history may suggest the current name. Releasing, replacing or recreating a referenced worker invalidates that suggestion.
+
 ## Commands
 
 ```text
