@@ -19,6 +19,7 @@ import (
 	"github.com/djalmajr/soho/internal/dispatch"
 	"github.com/djalmajr/soho/internal/hc"
 	"github.com/djalmajr/soho/internal/herdr"
+	"github.com/djalmajr/soho/internal/inventory"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/layout"
@@ -114,7 +115,7 @@ func CmdInit(ctx *core.Config, env platform.Env, cwd string) {
 	}
 	oldOut := platform.Stdout
 	platform.Stdout = platform.Stderr
-	DoctorCheck(ctx, env, cwd, platform.Stderr)
+	doctorCheck(ctx, env, cwd, platform.Stderr, false)
 	platform.Stdout = oldOut
 	state := core.StateDir(ctx, env, cwd)
 	friction := filepath.Join(state, "friction.log")
@@ -280,6 +281,12 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 	}
 }
 func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) {
+	doctorCheck(ctx, env, cwd, out, true)
+}
+
+// Init's pre-registration check keeps every existing diagnostic and only
+// suppresses the advice to perform the registration init is about to do.
+func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, adviseRegistration bool) {
 	s := &Say{Out: out}
 	// One backend for this invocation: every herdr probe of the doctor runs
 	// through it (DJA-596).
@@ -539,6 +546,9 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	doctorDesign(ctx, env, cwd, s)
 	doctorPeerInbound(ctx, env, cwd, s)
 	doctorFootprint(ctx, svc, env, cwd, s)
+	if adviseRegistration && inventory.CurrentMissingRegistration(env, cwd, ctx.User, svc) {
+		s.Warning(inventory.MissingRegistrationAdvisory)
+	}
 	fmt.Fprintf(out, "first_run: %t\n%d ok, %d warning(s)\n", ProjectIsFirstRun(ctx, env, cwd), s.OK, s.Warn)
 }
 
