@@ -204,7 +204,7 @@ func TestCodexMcpListKeepsTheNamedServers(t *testing.T) {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
 		tail := strings.Join(startTail(t, f), " ")
-		want := `-m gpt-5 -c model_reasoning_effort="high" -c mcp_servers.beta.enabled=false`
+		want := `-m gpt-5 -c model_reasoning_effort="high" -c features.apps=false -c mcp_servers.beta.enabled=false`
 		if tail != want {
 			t.Fatalf("argv=%q, want %q", tail, want)
 		}
@@ -221,7 +221,7 @@ func TestCodexMcpListKeepsTheNamedServers(t *testing.T) {
 			t.Fatalf("exit=%d", code)
 		}
 		tail := strings.Join(startTail(t, f), " ")
-		want := `-m gpt-5 -c model_reasoning_effort="high" -c mcp_servers.gamma.enabled=false -c mcp_servers.delta.enabled=false --user-x`
+		want := `-m gpt-5 -c model_reasoning_effort="high" -c features.apps=false -c mcp_servers.gamma.enabled=false -c mcp_servers.delta.enabled=false --user-x`
 		if tail != want {
 			t.Fatalf("argv=%q, want %q", tail, want)
 		}
@@ -239,7 +239,7 @@ func TestCodexMcpListKeepsTheNamedServers(t *testing.T) {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
 		tail := strings.Join(startTail(t, f), " ")
-		want := `-m gpt-5 -c model_reasoning_effort="high" -c mcp_servers.beta.enabled=false`
+		want := `-m gpt-5 -c model_reasoning_effort="high" -c features.apps=false -c mcp_servers.beta.enabled=false`
 		if tail != want {
 			t.Fatalf("argv=%q, want %q (sigma stays on)", tail, want)
 		}
@@ -266,7 +266,7 @@ func TestCodexMcpListKeepsTheNamedServers(t *testing.T) {
 			t.Fatalf("the exact missing-name warning is not on stderr once: %q", stderr)
 		}
 		tail := strings.Join(startTail(t, f), " ")
-		want := `-m gpt-5 -c model_reasoning_effort="high" -c mcp_servers.beta.enabled=false`
+		want := `-m gpt-5 -c model_reasoning_effort="high" -c features.apps=false -c mcp_servers.beta.enabled=false`
 		if tail != want {
 			t.Fatalf("argv=%q, want %q", tail, want)
 		}
@@ -516,7 +516,7 @@ func TestShippedListRolesKeepTheNamedServers(t *testing.T) {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
 		tail := strings.Join(startTail(t, f), " ")
-		want := `-m gpt-5 -c model_reasoning_effort="high" -c mcp_servers.gamma.enabled=false`
+		want := `-m gpt-5 -c model_reasoning_effort="high" -c features.apps=false -c mcp_servers.gamma.enabled=false`
 		if tail != want {
 			t.Fatalf("argv=%q, want %q", tail, want)
 		}
