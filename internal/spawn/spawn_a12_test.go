@@ -243,6 +243,7 @@ func TestSpawnA12NameDoesNotSwapNames(t *testing.T) {
 
 	t.Run("--name not on the lane still renames a candidate to it (the pre-existing flow)", func(t *testing.T) {
 		f := a12Fixture(t, []fakecli.Rule{
+			{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"b","pane_id":"p-b","agent_status":"idle"}]}}`},
 			idleHerdrRule("b"),
 			{Argv: []string{"agent", "rename", "p-b", "a"}, Stdout: `{"result":{}}`},
 		}, "1")

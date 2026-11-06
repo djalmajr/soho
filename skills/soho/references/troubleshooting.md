@@ -101,6 +101,12 @@ A short Windows Cursor viewport can clip the trust question while retaining its 
 - **Cause:** the role is the first *message*; the worker's harness still loads the project `CLAUDE.md`/`AGENTS.md`, hooks and memory first. Codex on this machine read every ai-memory `_rules/*` page before touching the brief.
 - **Do:** budget 1–3 minutes of startup per worker in `--timeout`; do not treat it as a hang.
 
+## Doctor or inventory advises missing orchestrator registration
+
+- **Symptom:** `an apparent orchestrator is not registered; run soho init in its pane`. Inventory prints it once on stderr after successful JSON output; doctor emits a normal warning for its current strict project and runtime caller session. Init's pre-registration check skips this suggestion without suppressing its other warnings.
+- **Cause:** in a project and session opted into `inventory=show` or `hidden`, a local unambiguous known-kind terminal matches `orchestrator_name` or its hyphen suffix, has no raw roster row claiming its pane and no valid record bound to that exact terminal, and answers a fresh known live state. A record on another pane does not cover this terminal. An ordinary terminal with the matching name can trigger the heuristic; it is not caller verification.
+- **Do:** run `soho init` from the pane intended to orchestrate. The advisory itself never registers, repairs, writes state or reads the unregistered terminal's screen. It checks existing source/record bindings and fresh state during the invocation, leaving a window for later terminal changes. Off mode, unsafe or corrupt sources, and gone, unknown or unavailable state suppress advice; silence alone does not prove registration.
+
 ## `roster`/`clean` print nothing and exit non-zero
 
 - **Cause:** `set -o pipefail` plus `grep -v '^#'` on a roster with only the header. Fixed by `roster_rows()` (`|| true`). Keep using it for any new roster read.
@@ -211,6 +217,10 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 - With `multi_role=on`, `spawn` may reuse an idle worker of another role when kind, cwd and resolved model match and the worker's approvals are at least the request. A worker that has edited is not reused as `reviewer`, `security-reviewer`, `ui-reviewer` or `inspector`.
 
 ## Orphan lines in the roster (a line of an agent that died)
+
+- **Named lane spawn:** a new explicit name opens a new worker only when both caps allow it. Existing or omitted names retain reuse; when capacity requires a compatible rename, the warning lists the actual limiting caps and says the old name no longer works. `--fresh` still requires capacity.
+- **Dispatch after a rename:** an old name exits 3 and sends nothing. Valid bounded history may suggest the current name; stale, released, replaced or recreated names have no suggestion. Use the current roster name explicitly.
+- **Rename reconciliation:** native rename can succeed before registry publication detects a changed source or a persistence error. Spawn then exits 4 before moving per-name state or claiming readiness. Reconcile the native worker with the roster before retrying; there is no automatic reversal or second rename.
 
 - **Symptom:** `roster` shows a line whose pane is dead or whose name is used by another live agent; the worker count seems off.
 - **Cause:** a worker exited without `release`; its roster line stayed.

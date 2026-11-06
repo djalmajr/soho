@@ -1245,13 +1245,27 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 				Warn(fmt.Sprintf("lane '%s' worker '%s' was started with other native args ('%s'); this spawn wants '%s'. Release the lane, then spawn again.", lane, selected, args, wanted), ctx, env, "spawn")
 				platform.Die("", 13)
 			}
+			var renameCapacity core.WorkerCapacity
+			if o.name != "" && o.name != selected && core.RosterLine(sd, o.name) == "" {
+				renameCapacity = core.CurrentWorkerCapacity(ctx, env, cwd)
+				if d.N < d.Capacity && !renameCapacity.Full {
+					break // A new explicit name requests a new worker when both caps allow it.
+				}
+			}
 			name := selected
 			renamedTo := ""
 			if o.name != "" && o.name != selected {
 				if cause := renameLaneWorker(svc, o.name, fieldAt(f, 1)); cause != "" {
 					core.DieFriction(fmt.Sprintf("spawn: could not rename worker '%s' to '%s': %s", selected, o.name, cause), 4, "", "")
 				}
-				core.RosterRename(sd, selected, o.name)
+				published, err := core.RosterRenameIf(sd, selected, o.name, line)
+				if err != nil || !published {
+					cause := "the selected source row changed or disappeared"
+					if err != nil {
+						cause = err.Error()
+					}
+					core.DieFriction(fmt.Sprintf("spawn: native rename of '%s' to '%s' succeeded, but roster publication failed: %s. Reconcile the native worker and roster before retrying; no automatic reversal was attempted.", selected, o.name, text.SanitizeCause(cause)), 4, "", "")
+				}
 				moveNameStateFiles(sd, selected, o.name, ctx, env)
 				name = o.name
 				renamedTo = o.name
@@ -1263,6 +1277,13 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			warnMsg := fmt.Sprintf("reusing idle lane '%s' worker '%s' as %s; existing session context is retained", lane, selected, o.role)
 			if renamedTo != "" {
 				warnMsg = fmt.Sprintf("reusing idle lane '%s' worker '%s' as %s, renamed to '%s'; existing session context is retained", lane, selected, o.role, renamedTo)
+				warnMsg += fmt.Sprintf("; the old name '%s' no longer works; use --fresh to open a new worker when capacity permits", selected)
+				if d.N >= d.Capacity {
+					warnMsg += fmt.Sprintf("; the lane '%s' is at capacity (%d of %d), so no new pane can open until a worker is released", lane, d.N, d.Capacity)
+				}
+				if renameCapacity.Full {
+					warnMsg += fmt.Sprintf("; max_workers=%s is at capacity (%d of %s)", renameCapacity.Limit, renameCapacity.Count, renameCapacity.Limit)
+				}
 			}
 			Warn(warnMsg, ctx, env, "spawn")
 			return
