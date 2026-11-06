@@ -277,12 +277,13 @@ func TestSendPiTranscriptProof(t *testing.T) {
 		}
 		f := newFixture(t, rules)
 		f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
-		code, _, stderr := f.run([]string{"send", "w0test:p0a", "--now", "hello"})
-		// Exactly today's message: no new warning for the absent session.
-		want := "soho: send: local/w0test:p0a did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane for #01020304 or a reply before sending again\n"
+		code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "hello"})
+		// Preserve the original cause and add only the actual saved path.
+		want := "soho: send: local/w0test:p0a did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane for #01020304 or a reply before sending again; screen saved to " + filepath.Join(dja651StateDir(f), "wait", "send-"+id+".screen") + "\n"
 		if code != 15 || stderr != want {
 			t.Fatalf("code=%d stderr=%q", code, stderr)
 		}
+		dja651Screen(t, dja651StateDir(f), id, piWorkingScreen, out, stderr, true)
 		if gets := countGets(t, f); gets != 5 {
 			// resolve + screen + pre + the window poll + the pre-Enter one:
 			// without an agent_session the pi target makes no transcript get.
@@ -366,13 +367,14 @@ func TestSendRemotePiTranscriptNotArmed(t *testing.T) {
 	f := newFixture(t, rules)
 	f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
 	done := appendAfterPrompt(t, filepath.Join(filepath.Dir(f.bin), "herdr.calls.jsonl"), localSessionPath, id, userLine)
-	code, _, stderr := f.run([]string{"send", "windows/w3:p1", "hello"})
+	code, out, stderr := f.run([]string{"send", "windows/w3:p1", "hello"})
 	// Today's result for a remote send with no sign in its own state or
 	// screen: not 0 on the planted local session.
-	want := "soho: send: windows/w3:p1 did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane (herdr --machine windows agent read w3:p1 --source visible) for #01020304 or a reply before sending again\n"
+	want := "soho: send: windows/w3:p1 did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane (herdr --machine windows agent read w3:p1 --source visible) for #01020304 or a reply before sending again; screen saved to " + filepath.Join(dja651StateDir(f), "wait", "send-"+id+".screen") + "\n"
 	if code != 15 || stderr != want {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
 	}
+	dja651Screen(t, dja651StateDir(f), id, preScreen, out, stderr, true)
 	if !<-done {
 		t.Fatal("the planted session line was not appended after the prompt call")
 	}

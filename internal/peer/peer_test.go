@@ -1400,7 +1400,7 @@ func TestSendAmendmentCases(t *testing.T) {
 		rules[0].Stdout = agentJSON("idle", "1")
 		f := newFixture(t, rules)
 		f.env["SOHO_SEND_WINDOW_MS"], f.env["SOHO_SEND_POLL_MS"] = "1", "1"
-		code, _, stderr := f.run([]string{"send", "w0test:p0a", "hi"})
+		code, out, stderr := f.run([]string{"send", "w0test:p0a", "hi"})
 		calls, err := fakecli.ReadCallsForConfig(filepath.Join(filepath.Dir(f.bin), "herdr.json"))
 		if err != nil {
 			t.Fatal(err)
@@ -1422,9 +1422,11 @@ func TestSendAmendmentCases(t *testing.T) {
 		lines := strings.Split(strings.TrimSpace(string(log)), "\n")
 		cols := strings.Split(lines[len(lines)-1], "\t")
 		// Mutation captured: logging a failed recent read as "lost" or sending Enter after the read failure violates this command contract.
-		if code != 15 || !strings.HasPrefix(stderr, "soho: send: could not confirm that local/w0test:p0a took the message (") || !strings.HasSuffix(stderr, "); read its pane before sending again\n") || prompts != 1 || enters != 0 || len(cols) < 4 || cols[3] != "unverified" {
+		want := "soho: send: could not confirm that local/w0test:p0a took the message (read failed); read its pane before sending again; screen saved to " + filepath.Join(dja651StateDir(f), "wait", "send-"+id+".screen") + "\n"
+		if code != 15 || out != "" || stderr != want || prompts != 1 || enters != 0 || len(cols) < 4 || cols[3] != "unverified" {
 			t.Fatalf("code=%d stderr=%q prompts=%d enters=%d log=%q", code, stderr, prompts, enters, string(log))
 		}
+		dja651Screen(t, dja651StateDir(f), id, "before prompt\n", out, stderr, true)
 	})
 
 	t.Run("arrival: --now working target with moving seq but no id exits 15, not sent", func(t *testing.T) { // JS: "arrival: --now working target with moving seq but no id exits 15, not sent"

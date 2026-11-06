@@ -154,6 +154,7 @@ func SendAssignmentMessage(options AssignmentMessageOptions) (collaboration.Deli
 	// queued send below is the submission. The herdr path keeps its
 	// screen read, machine get and dialog refusal.
 	isHc := env.Get("SOHO_TRANSPORT") == "hc"
+	preSubmitScreen := ""
 	if isHc {
 		rep := svc.Runtime.Get(ctx, transport.Target{ID: to.Pane}, transport.Call{Timeout: time.Duration(remaining()) * time.Millisecond})
 		if rep.Err != nil || rep.Value.State == "gone" || rep.Value.PaneID != to.Pane {
@@ -174,6 +175,7 @@ func SendAssignmentMessage(options AssignmentMessageOptions) (collaboration.Deli
 		if isDialogScreen(screen, to.Kind, state.Status) {
 			return refused(errors.New("recipient is showing a dialog; nothing was sent"))
 		}
+		preSubmitScreen = screen
 	}
 	current, err := collaboration.ResolveParticipant(sd, to.Name, env, ctx)
 	if err != nil || !collaboration.SameParticipant(to, current) {
@@ -214,6 +216,11 @@ func SendAssignmentMessage(options AssignmentMessageOptions) (collaboration.Deli
 			if code == "agent_blocked" || code == "agent_not_found" || r.NotFound {
 				result.Status = "refused"
 			}
+		}
+	}
+	if result.Status == "uncertain" && !isHc {
+		if path := SaveStalledScreen(sd, id, preSubmitScreen, env); path != "" {
+			result.Cause += "; pre-submit screen saved to " + path
 		}
 	}
 	appendPeerAssignmentLog(sd, sessionref.FormatRef(sessionref.Ref{Machine: sessionref.LocalMachine, PaneID: from.Pane}), sessionref.FormatRef(sessionref.Ref{Machine: sessionref.LocalMachine, PaneID: to.Pane}), result.Status, utf16Length(options.Body), id, env, a.ID, options.Type, fmt.Sprint(a.Round))
