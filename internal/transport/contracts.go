@@ -228,6 +228,9 @@ type CallerCheck struct {
 	Session     string
 	PaneSession string
 	ShownIn     string
+	// CodexSession is diagnostic only for a shared Codex executor mismatch;
+	// ShownIn then names the unique other pane with that Codex session.
+	CodexSession string
 }
 
 // View is one pane or tab as a backend reports it. Raw keeps the backend's

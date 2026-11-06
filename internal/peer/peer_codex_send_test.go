@@ -119,10 +119,11 @@ func TestSendCodexHistory(t *testing.T) {
 		if code != 15 || out != "" {
 			t.Fatalf("a message still in the composer is not sent: code=%d out=%q", code, out)
 		}
-		want := "soho: send: local/w0test:p0a did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane for #b8ba14bf or a reply before sending again\n"
+		want := "soho: send: local/w0test:p0a did not confirm taking the message (no sign of it in its state or screen); delivery is uncertain; read its pane for #b8ba14bf or a reply before sending again; screen saved to " + filepath.Join(dja651StateDir(f), "wait", "send-"+id+".screen") + "\n"
 		if stderr != want {
 			t.Fatalf("code=%d stderr=%q", code, stderr)
 		}
+		dja651Screen(t, dja651StateDir(f), id, box, out, stderr, true)
 		if enters := countSendKeyEnters(t, f); enters != 1 {
 			t.Fatalf("the composer message gets exactly one Enter: %d", enters)
 		}
