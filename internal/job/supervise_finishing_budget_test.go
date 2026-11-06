@@ -283,6 +283,57 @@ func requireBudgetFailed(t *testing.T, f *supGitFixture, exit int, err error, fr
 	}
 }
 
+// requirePublicationFailed asserts the truthful result of a prospective
+// worktree done whose final publication could not be verified: failed, exit
+// 19, the plain motivo in the state, the intent and report.json, no snapshot
+// and no completion marker, unknown report facts (not synchronized), exactly
+// one terminal event carrying the failure, and a friction line with the
+// plain explanation.
+func requirePublicationFailed(t *testing.T, f *supGitFixture, exit int, err error) {
+	t.Helper()
+	if err != nil {
+		t.Errorf("finishOutcome error = %v, want nil", err)
+	}
+	if exit != ExitFailed {
+		t.Errorf("exit = %d, want %d", exit, ExitFailed)
+	}
+	st := f.state(t)
+	if st.Status != StatusFailed || st.Motivo == nil || *st.Motivo != finalPublicationMotivo {
+		t.Errorf("state = %s motivo=%v, want failed with %q", st.Status, st.Motivo, finalPublicationMotivo)
+	}
+	if st.TerminalIntent == nil || st.TerminalIntent.Status != StatusFailed || st.TerminalIntent.Exit != ExitFailed || st.TerminalIntent.Motivo != finalPublicationMotivo {
+		t.Errorf("terminal intent = %+v, want the failed intent", st.TerminalIntent)
+	}
+	if st.FinishingSynced || st.FinalPublication != nil {
+		t.Errorf("synced=%v publication=%+v, want neither (nothing was verified)", st.FinishingSynced, st.FinalPublication)
+	}
+	rep := f.report(t)
+	if rep["status"] != "failed" || rep["motivo"] != finalPublicationMotivo {
+		t.Errorf("report.json status=%v motivo=%v, want failed with the plain motivo", rep["status"], rep["motivo"])
+	}
+	terminals := 0
+	for _, ev := range f.events(t) {
+		if ev.Tipo == "terminal" {
+			terminals++
+			if ev.Refs["exit"] != "19" || ev.Refs["motivo"] != finalPublicationMotivo {
+				t.Errorf("terminal event refs = %v, want exit 19 with the plain motivo", ev.Refs)
+			}
+		}
+	}
+	if terminals != 1 {
+		t.Errorf("terminal events = %d, want exactly one", terminals)
+	}
+	found := false
+	for _, line := range *f.friction {
+		if strings.Contains(line, finalPublicationMotivo) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("friction = %q, want a line saying %q", *f.friction, finalPublicationMotivo)
+	}
+}
+
 // A push that hangs far beyond the budget: the terminal path still ends
 // within the budget (plus a fixed slack) as failed with the budget motivo.
 func TestSuperviseFinishingStalledPushIsBoundedAndFailsTruthfully(t *testing.T) {
@@ -428,9 +479,11 @@ func TestSuperviseFinishingRestartKeepsTheDeadline(t *testing.T) {
 	}
 }
 
-// A restart that finds the final sync recorded as done does not run it
-// again, whatever is left of the budget: the done intent ends done.
-func TestSuperviseFinishingSyncedRestartDoesNotPushAgain(t *testing.T) {
+// A legacy completion marker (the Boolean alone, no verified snapshot) is
+// not a verified publication: over a spent budget the restart cannot verify
+// it, so the unannounced done is rewritten to the budget failure and nothing
+// is pushed.
+func TestSuperviseFinishingLegacySyncedMarkerOverASpentBudgetFails(t *testing.T) {
 	f := newSupGitFixture(t, supGitGhRules)
 	f.job.commitIn(t, "feat: first")
 	anchor := f.clock.Now().Add(-11 * time.Minute).Format(time.RFC3339Nano)
@@ -445,17 +498,175 @@ func TestSuperviseFinishingSyncedRestartDoesNotPushAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	exit, err := f.supRestarted(t).Run()
-	if err != nil || exit != 0 {
-		t.Fatalf("restart Run = %d %v, want done with exit 0", exit, err)
-	}
-	if st := f.state(t); st.Status != StatusDone {
-		t.Errorf("state = %s, want done", st.Status)
-	}
-	if _, err := f.job.base.git(f.job.base.bare, "rev-parse", "--verify", "-q", "refs/heads/"+supGitBranch); err == nil {
-		t.Errorf("the job branch reached the remote, want no second sync")
+	requireBudgetFailed(t, f, exit, err, "the final push")
+	if remoteHasBranch(f) {
+		t.Errorf("the job branch reached the remote, want no sync over the spent budget")
 	}
 	if n := countTipes(f.events(t), "push"); n != 0 {
 		t.Errorf("push events = %d, want none", n)
+	}
+}
+
+// The legacy marker with budget left is run again, not trusted: the push
+// lands, the snapshot is captured and persisted, and only then the job is
+// done.
+func TestSuperviseFinishingLegacySyncedMarkerIsNotAVerifiedPublication(t *testing.T) {
+	f := newSupGitFixture(t, supGitGhRules)
+	f.job.commitIn(t, "feat: first")
+	if _, err := f.store.Record(supGitID, func(st *State) {
+		st.TerminalIntent = &TerminalIntent{Status: StatusDone}
+		st.FinishingSynced = true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Transition(supGitID, StatusFinishing); err != nil {
+		t.Fatal(err)
+	}
+	exit, err := f.supRestarted(t).Run()
+	if err != nil || exit != 0 {
+		t.Fatalf("restart Run = %d %v, want done with exit 0 after a real verification", exit, err)
+	}
+	if !remoteHasBranch(f) {
+		t.Errorf("the job branch is not on the remote: the legacy marker was trusted instead of verified")
+	}
+	st := f.state(t)
+	if st.Status != StatusDone || st.FinalPublication == nil || st.FinalPublication.LocalHead == "" || st.FinalPublication.LocalHead != st.FinalPublication.RemoteHead {
+		t.Errorf("state = %s publication=%+v, want done with a verified snapshot", st.Status, st.FinalPublication)
+	}
+}
+
+// publicationRunOne runs process one of a done job to the persisted
+// snapshot and leaves the job finishing. With afterAnnouncement false the
+// interruption lands between the snapshot and the terminal event (the append
+// fails at once); with it true the terminal event is announced and every
+// terminal state write fails until the process's retries end — the retry
+// loop runs on the fake clock, so the real Git steps keep their production
+// bounds and no real deadline is shortened. The wall clock the retries
+// advanced is put back afterwards, so the restart starts with the budget
+// the interrupted process had.
+func publicationRunOne(t *testing.T, f *supGitFixture, afterAnnouncement bool) {
+	t.Helper()
+	if afterAnnouncement {
+		wall := f.clock.now
+		previous := renameAtomic
+		injected := 0
+		renameAtomic = func(from, to string) error {
+			if filepath.Base(to) == "state.json" {
+				var pending State
+				if raw, err := os.ReadFile(from); err == nil && json.Unmarshal(raw, &pending) == nil && pending.Status == StatusDone {
+					injected++
+					return errors.New("injected terminal write error")
+				}
+			}
+			return previous(from, to)
+		}
+		defer func() {
+			renameAtomic = previous
+			f.clock.now = wall
+			if injected == 0 {
+				t.Fatal("the terminal write error was never injected")
+			}
+		}()
+	} else {
+		previous := appendEventFn
+		appendEventFn = func(dir string, now time.Time, in EventIn) (Event, error) {
+			if in.Tipo == "terminal" {
+				return Event{}, errors.New("injected terminal append error")
+			}
+			return previous(dir, now, in)
+		}
+		defer func() { appendEventFn = previous }()
+	}
+	if _, err := f.store.Transition(supGitID, StatusFinishing); err != nil {
+		t.Fatal(err)
+	}
+	if _, done, err := f.sup.finishOutcome(StatusDone, "", 0); err == nil || !done {
+		t.Fatalf("process one finishOutcome = done %v err %v, want the injected terminal error", done, err)
+	}
+	st := f.state(t)
+	if st.Status != StatusFinishing || st.FinalPublication == nil || !st.FinishingSynced {
+		t.Fatalf("state after process one = %s synced=%v publication=%+v, want finishing with the persisted snapshot", st.Status, st.FinishingSynced, st.FinalPublication)
+	}
+	if announced := countTipes(f.events(t), "terminal") == 1; announced != afterAnnouncement {
+		t.Fatalf("terminal announced = %v, want %v", announced, afterAnnouncement)
+	}
+}
+
+// A verified snapshot of an interrupted job whose local head did not move is
+// trusted: the restart pushes nothing again and ends done on the very
+// observation process one persisted.
+func TestSuperviseFinishingVerifiedSnapshotRestartDoesNotPushAgain(t *testing.T) {
+	f := newSupGitFixture(t, supGitGhRules)
+	f.job.commitIn(t, "feat: first")
+	publicationRunOne(t, f, false)
+	before := f.state(t).FinalPublication
+	exit, err := f.supRestarted(t).Run()
+	if err != nil || exit != 0 {
+		t.Fatalf("restart Run = %d %v, want done with exit 0", exit, err)
+	}
+	st := f.state(t)
+	if st.Status != StatusDone || !reflect.DeepEqual(st.FinalPublication, before) {
+		t.Errorf("state = %s publication=%+v, want done on the persisted observation %+v", st.Status, st.FinalPublication, before)
+	}
+	if n := pushedEvents(f.events(t)); n != 1 {
+		t.Errorf("pushed events = %d, want only process one's push", n)
+	}
+	if n := countTipes(f.events(t), "terminal"); n != 1 {
+		t.Errorf("terminal events = %d, want exactly one", n)
+	}
+	rep := f.report(t)
+	if rep["head"] != before.LocalHead || rep["head_remoto"] != before.RemoteHead || rep["sincronizado"] != true {
+		t.Errorf("report head=%v remote=%v sincronizado=%v, want the verified heads %q", rep["head"], rep["head_remoto"], rep["sincronizado"], before.LocalHead)
+	}
+}
+
+// A snapshot persisted before an interruption is invalid once the local head
+// moved: the restart never blesses the new head with the old observation.
+// The new commit is refused by the remote, so nothing is verified and the
+// job fails truthfully, with the snapshot dropped.
+func TestSuperviseFinishingChangedHeadInvalidatesTheSnapshotAndFailsWhenUnpublished(t *testing.T) {
+	f := newSupGitFixture(t, supGitGhRules)
+	f.job.commitIn(t, "feat: first")
+	installRemoteHook(t, f, []fakecli.Rule{
+		{AnyArgs: true, Call: 2, Code: 1, Stderr: "rejected by the fixture\n"},
+		{AnyArgs: true},
+	})
+	publicationRunOne(t, f, false)
+	old := f.state(t).FinalPublication
+	f.job.commitIn(t, "feat: second")
+	exit, err := f.supRestarted(t).Run()
+	if err != nil || exit != ExitFailed {
+		t.Fatalf("restart Run = %d %v, want failed with exit 19", exit, err)
+	}
+	requireRemoteHookCalls(t, f, 2)
+	st := f.state(t)
+	if st.Status != StatusFailed || st.Motivo == nil || *st.Motivo != finalPublicationMotivo {
+		t.Errorf("state = %s motivo=%v, want failed with %q", st.Status, st.Motivo, finalPublicationMotivo)
+	}
+	if st.FinalPublication != nil || st.FinishingSynced {
+		t.Errorf("publication=%+v synced=%v, want the stale snapshot dropped", st.FinalPublication, st.FinishingSynced)
+	}
+	rep := f.report(t)
+	if rep["sincronizado"] != false || rep["head_remoto"] == rep["head"] || rep["head_remoto"] != old.RemoteHead {
+		t.Errorf("report sincronizado=%v head=%v remote=%v, want the new local head unsynchronized from the remote %q", rep["sincronizado"], rep["head"], rep["head_remoto"], old.RemoteHead)
+	}
+}
+
+// When the new head is published, the restart verifies it again: the
+// snapshot is replaced by one for the new head, never kept for the old one.
+func TestSuperviseFinishingChangedHeadIsVerifiedAgainWhenPublished(t *testing.T) {
+	f := newSupGitFixture(t, supGitGhRules)
+	f.job.commitIn(t, "feat: first")
+	publicationRunOne(t, f, false)
+	old := f.state(t).FinalPublication
+	f.job.commitIn(t, "feat: second")
+	exit, err := f.supRestarted(t).Run()
+	if err != nil || exit != 0 {
+		t.Fatalf("restart Run = %d %v, want done with exit 0", exit, err)
+	}
+	st := f.state(t)
+	if st.FinalPublication == nil || st.FinalPublication.LocalHead == old.LocalHead || st.FinalPublication.LocalHead != st.FinalPublication.RemoteHead || len(st.FinalPublication.Commits) != 2 {
+		t.Errorf("publication=%+v, want a new snapshot of the new head (old %q) with both commits", st.FinalPublication, old.LocalHead)
 	}
 }
 
@@ -754,68 +965,74 @@ func pushedEvents(events []Event) int {
 	return n
 }
 
-// A push that the remote refuses at once is not cut by any bound: the job
-// keeps today's done, and the final sync is not recorded as complete.
-func TestSuperviseFinishingRejectedPushKeepsDoneAndIsNotSynced(t *testing.T) {
+// A push that the remote refuses at once is not cut by any bound, but the
+// publication is not verified: a prospective worktree done fails with exit
+// 19 and the plain motivo, and the final sync is not recorded as complete.
+func TestSuperviseFinishingRejectedPushFailsAndIsNotSynced(t *testing.T) {
 	f := newSupGitFixture(t, supGitGhRules)
 	f.job.commitIn(t, "feat: first")
 	rejectFirstRemotePush(t, f)
 	exit, err, _ := finishDone(t, f)
-	if err != nil || exit != 0 {
-		t.Fatalf("finishOutcome = %d %v, want done with exit 0", exit, err)
-	}
 	requireRemoteHookCalls(t, f, 1)
-	st := f.state(t)
-	if st.Status != StatusDone || st.Motivo != nil {
-		t.Errorf("state = %s motivo=%v, want done without a motivo (a rejected push is not a cut)", st.Status, st.Motivo)
-	}
-	if st.FinishingSynced {
-		t.Errorf("finishing_synced = true after a rejected push, want false")
-	}
+	requirePublicationFailed(t, f, exit, err)
 	if remoteHasBranch(f) {
 		t.Errorf("the job branch reached the remote, want the push refused")
 	}
+	rep := f.report(t)
+	if rep["head_remoto"] != nil || rep["sincronizado"] != false {
+		t.Errorf("head_remoto=%v sincronizado=%v, want unknown remote head and not synchronized (the remote has no branch)", rep["head_remoto"], rep["sincronizado"])
+	}
 }
 
-// A restart over a done intent whose final sync did not complete cleanly (a
-// refused push) runs the final sync again, as the baseline did: the push
-// lands, the sync is then recorded, and the job ends done.
+// A restart over a failed intent whose final sync did not complete cleanly
+// (a refused push, rewritten to the failed outcome before the terminal event
+// could land) runs the final sync again, as the baseline did: the push lands
+// and the publication is verified, but the unannounced rewrite stays — the
+// job ends failed, never upgraded to done.
 func TestSuperviseFinishingRestartRunsTheSyncAgainAfterARejectedPush(t *testing.T) {
 	f := newSupGitFixture(t, supGitGhRules)
 	f.job.commitIn(t, "feat: first")
 	rejectFirstRemotePush(t, f)
-	// Process one: the push is refused and the terminal write fails with no
-	// budget to retry it, so the job stays finishing with its done intent.
+	// Process one: the push is refused (the publication is not verified, the
+	// intent is rewritten to failed) and the terminal event cannot be
+	// appended, so the job stays finishing with the failed intent and no
+	// announcement.
 	f.sup.FinishingLimits = finishingLimits{Budget: time.Second}
-	fired := failStateWrite(t, errors.New("injected terminal write error"), func(p State) bool { return p.Status == StatusDone })
+	previous := appendEventFn
+	appendEventFn = func(dir string, now time.Time, in EventIn) (Event, error) {
+		if in.Tipo == "terminal" {
+			return Event{}, errors.New("injected terminal append error")
+		}
+		return previous(dir, now, in)
+	}
 	if _, err := f.store.Transition(supGitID, StatusFinishing); err != nil {
 		t.Fatal(err)
 	}
 	if _, done, err := f.sup.finishOutcome(StatusDone, "", 0); err == nil || !done {
-		t.Fatalf("process one finishOutcome = done %v err %v, want the terminal write error", done, err)
+		t.Fatalf("process one finishOutcome = done %v err %v, want the terminal append error", done, err)
 	}
-	if !*fired {
-		t.Fatal("the terminal write error was never injected")
-	}
+	appendEventFn = previous
 	requireRemoteHookCalls(t, f, 1)
 	st := f.state(t)
-	if st.Status != StatusFinishing || st.TerminalIntent == nil || st.TerminalIntent.Status != StatusDone {
-		t.Fatalf("state after process one = %s intent=%+v, want finishing with the done intent", st.Status, st.TerminalIntent)
+	if st.Status != StatusFinishing || st.TerminalIntent == nil || st.TerminalIntent.Status != StatusFailed || st.TerminalIntent.Motivo != finalPublicationMotivo {
+		t.Fatalf("state after process one = %s intent=%+v, want finishing with the rewritten failed intent", st.Status, st.TerminalIntent)
 	}
-	if st.FinishingSynced {
-		t.Errorf("finishing_synced = true after a refused push, want false")
+	if st.FinishingSynced || st.FinalPublication != nil {
+		t.Errorf("synced=%v publication=%+v after a refused push, want neither", st.FinishingSynced, st.FinalPublication)
 	}
 	if remoteHasBranch(f) {
 		t.Fatalf("the job branch reached the remote in process one, want the push refused")
 	}
-	// Process two: the remote accepts now; the restart pushes again.
+	// Process two: the remote accepts now; the restart pushes again and
+	// converges on the durable failed outcome.
 	exit, err := f.supRestarted(t).Run()
-	if err != nil || exit != 0 {
-		t.Fatalf("restart Run = %d %v, want done with exit 0", exit, err)
+	if err != nil || exit != ExitFailed {
+		t.Fatalf("restart Run = %d %v, want failed with exit 19", exit, err)
 	}
 	requireRemoteHookCalls(t, f, 2)
-	if st := f.state(t); st.Status != StatusDone || !st.FinishingSynced {
-		t.Errorf("state after the restart = %s synced=%v, want done and synced", st.Status, st.FinishingSynced)
+	st = f.state(t)
+	if st.Status != StatusFailed || st.Motivo == nil || *st.Motivo != finalPublicationMotivo {
+		t.Errorf("state after the restart = %s motivo=%v, want failed with the durable motivo (never upgraded to done)", st.Status, st.Motivo)
 	}
 	if !remoteHasBranch(f) {
 		t.Errorf("the job branch is not on the remote after the restart, want the final sync run again")
@@ -823,32 +1040,32 @@ func TestSuperviseFinishingRestartRunsTheSyncAgainAfterARejectedPush(t *testing.
 	if n := pushedEvents(f.events(t)); n != 1 {
 		t.Errorf("pushed events = %d, want the one push of the restart", n)
 	}
+	if n := countTipes(f.events(t), "terminal"); n != 1 {
+		t.Errorf("terminal events = %d, want exactly one", n)
+	}
 }
 
-// A draft pull request step that fails at once (not cut) leaves the sync
-// unrecorded and the job done.
-func TestSuperviseFinishingGhErrorKeepsDoneAndIsNotSynced(t *testing.T) {
+// A draft pull request step that fails at once (not cut) means the required
+// pull request is not established: the publication is not verified and the
+// prospective done fails truthfully; the push itself landed.
+func TestSuperviseFinishingGhErrorFailsAndIsNotSynced(t *testing.T) {
 	rules := []fakecli.Rule{{Argv: ghListArgv(), Code: 1, Stderr: "gh failed\n"}}
 	f := newSupGitFixture(t, rules)
 	f.job.commitIn(t, "feat: first")
 	exit, err, _ := finishDone(t, f)
-	if err != nil || exit != 0 {
-		t.Fatalf("finishOutcome = %d %v, want done with exit 0", exit, err)
-	}
-	st := f.state(t)
-	if st.Status != StatusDone || st.FinishingSynced {
-		t.Errorf("state = %s synced=%v, want done and not synced", st.Status, st.FinishingSynced)
-	}
+	requirePublicationFailed(t, f, exit, err)
 	if !remoteHasBranch(f) {
 		t.Errorf("the push did not land, want the gh failure to be the only failed step")
 	}
 }
 
 // A push that fails on its own command timeout (not the step's clamp) is a
-// plain step error: the job keeps done and the sync is not recorded. The
-// 2 s command timeout stays below the 20 s step bound while giving the
-// remote hook time to start and log on a slow Windows CI; the hook is held
-// for 10 s, so it is still waiting when the timeout kills the push.
+// plain step error, not a cut: the publication is not verified, the done
+// fails with the plain motivo (not the budget one) and the sync is not
+// recorded. The 2 s command timeout stays below the 20 s step bound while
+// giving the remote hook time to start and log on a slow Windows CI; the
+// hook is held for 10 s, so it is still waiting when the timeout kills the
+// push.
 func TestSuperviseFinishingPushErrorBelowTheStepBoundIsNotSynced(t *testing.T) {
 	f := newSupGitFixture(t, supGitGhRules)
 	f.job.commitIn(t, "feat: first")
@@ -856,18 +1073,13 @@ func TestSuperviseFinishingPushErrorBelowTheStepBoundIsNotSynced(t *testing.T) {
 	f.sup.Git.NetTimeout = 2 * time.Second
 	finishingRealClock(f, finishingLimits{Budget: 30 * time.Second, Git: 20 * time.Second})
 	exit, err, _ := finishDone(t, f)
-	if err != nil || exit != 0 {
-		t.Fatalf("finishOutcome = %d %v, want done with exit 0 (the command timeout is not a cut)", exit, err)
-	}
 	requireRemoteHookCalls(t, f, 1)
-	st := f.state(t)
-	if st.Status != StatusDone || st.FinishingSynced {
-		t.Errorf("state = %s synced=%v, want done and not synced", st.Status, st.FinishingSynced)
-	}
+	requirePublicationFailed(t, f, exit, err)
 }
 
 // A git read that fails at once (the head, the commit listing) is a plain
-// step error too: the job keeps done and the sync is not recorded.
+// step error too: nothing is verified, the done fails and the sync is not
+// recorded.
 func TestSuperviseFinishingGitReadErrorsAreNotSynced(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -881,18 +1093,13 @@ func TestSuperviseFinishingGitReadErrorsAreNotSynced(t *testing.T) {
 			f.job.commitIn(t, "feat: first")
 			tc.break_(f.sup.Git, t)
 			exit, err, _ := finishDone(t, f)
-			if err != nil || exit != 0 {
-				t.Fatalf("finishOutcome = %d %v, want done with exit 0", exit, err)
-			}
-			if st := f.state(t); st.Status != StatusDone || st.FinishingSynced {
-				t.Errorf("state = %s synced=%v, want done and not synced", st.Status, st.FinishingSynced)
-			}
+			requirePublicationFailed(t, f, exit, err)
 		})
 	}
 }
 
 // A store error returned by the sync pass (the commit event cannot be
-// appended) is not a clean sync either.
+// appended) is not a clean sync either: nothing is verified.
 func TestSuperviseFinishingStoreErrorInTheSyncIsNotSynced(t *testing.T) {
 	f := newSupGitFixture(t, supGitGhRules)
 	f.job.commitIn(t, "feat: first")
@@ -905,12 +1112,7 @@ func TestSuperviseFinishingStoreErrorInTheSyncIsNotSynced(t *testing.T) {
 	}
 	t.Cleanup(func() { appendEventFn = previous })
 	exit, err, _ := finishDone(t, f)
-	if err != nil || exit != 0 {
-		t.Fatalf("finishOutcome = %d %v, want done with exit 0", exit, err)
-	}
-	if st := f.state(t); st.Status != StatusDone || st.FinishingSynced {
-		t.Errorf("state = %s synced=%v, want done and not synced", st.Status, st.FinishingSynced)
-	}
+	requirePublicationFailed(t, f, exit, err)
 }
 
 // The production team adapter lowers its command timeout to the step's
@@ -1018,38 +1220,36 @@ func TestSuperviseFinishingBudgetStartsAtTheTerminalIntent(t *testing.T) {
 	}
 }
 
-// A terminal event an earlier pass already published is final: pass one
-// pushes (the remote refuses it at once — not a cut), records the terminal
-// event with exit 0, and then fails to persist the done state; the restart
-// over the spent budget still runs the final sync and gets cut, but must
-// not rewrite the announced outcome, so the state, report.json and the
-// single terminal event agree on done with exit 0.
-func TestSuperviseFinishingRestartKeepsTheAnnouncedOutcome(t *testing.T) {
-	f := newSupGitFixture(t, supGitGhRules)
-	f.job.commitIn(t, "feat: first")
-	rejectFirstRemotePush(t, f)
-	// Pass one: the push is refused and the done state write fails after
-	// the terminal event landed, so the job stays finishing with its done
-	// intent and the announced outcome.
-	f.sup.FinishingLimits = finishingLimits{Budget: time.Second}
-	fired := failStateWrite(t, errors.New("injected terminal write error"), func(p State) bool { return p.Status == StatusDone })
+// announceLegacyDone leaves a done job finishing the way a binary before the
+// verified publication left it: the terminal event announced exit 0, the
+// done intent stored, and neither the completion marker nor a snapshot.
+func announceLegacyDone(t *testing.T, f *supGitFixture) {
+	t.Helper()
+	if _, err := f.store.Record(supGitID, func(st *State) {
+		f.sup.anchorFinishing(st)
+		st.TerminalIntent = &TerminalIntent{Status: StatusDone}
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.store.Transition(supGitID, StatusFinishing); err != nil {
 		t.Fatal(err)
 	}
-	if _, done, err := f.sup.finishOutcome(StatusDone, "", 0); err == nil || !done {
-		t.Fatalf("pass one finishOutcome = done %v err %v, want the terminal write error", done, err)
+	if _, err := f.store.Append(supGitID, EventIn{Tipo: "terminal", Refs: map[string]string{"exit": "0"}}); err != nil {
+		t.Fatal(err)
 	}
-	if !*fired {
-		t.Fatal("the terminal write error was never injected")
-	}
-	if n := countTipes(f.events(t), "terminal"); n != 1 {
-		t.Fatalf("terminal events = %d after pass one, want the one announced", n)
-	}
-	if st := f.state(t); st.Status != StatusFinishing || st.TerminalIntent == nil || st.TerminalIntent.Status != StatusDone {
-		t.Fatalf("state after pass one = %s intent=%+v, want finishing with the done intent", st.Status, st.TerminalIntent)
-	}
-	// Pass two: the clock is past the default budget, so the sync is cut —
-	// and the announced outcome stands over the cut.
+}
+
+// A terminal event an earlier pass already published is final: the restart
+// over the spent budget still runs the final sync and gets cut, but must not
+// rewrite the announced outcome, so the state, report.json and the single
+// terminal event agree on done with exit 0 (an already-announced legacy
+// outcome, never rewritten retroactively).
+func TestSuperviseFinishingRestartKeepsTheAnnouncedOutcome(t *testing.T) {
+	f := newSupGitFixture(t, supGitGhRules)
+	f.job.commitIn(t, "feat: first")
+	announceLegacyDone(t, f)
+	// The clock is past the default budget, so the sync is cut — and the
+	// announced outcome stands over the cut.
 	f.clock.now = f.clock.now.Add(11 * time.Minute)
 	exit, err := f.supRestarted(t).Run()
 	if err != nil {
@@ -1062,20 +1262,17 @@ func TestSuperviseFinishingRestartKeepsTheAnnouncedOutcome(t *testing.T) {
 	if st.Status != StatusDone || st.Motivo != nil || st.TerminalIntent == nil || st.TerminalIntent.Status != StatusDone {
 		t.Errorf("state = %s motivo=%v intent=%+v, want done without a rewrite to the budget failure", st.Status, st.Motivo, st.TerminalIntent)
 	}
-	if st.FinishingSynced {
-		t.Errorf("finishing_synced = true after a cut sync, want false")
+	if st.FinishingSynced || st.FinalPublication != nil {
+		t.Errorf("synced=%v publication=%+v after a cut sync, want neither", st.FinishingSynced, st.FinalPublication)
 	}
 	if remoteHasBranch(f) {
 		t.Errorf("the job branch reached the remote, want no push over the spent budget")
 	}
-	if n := len(remoteHookCalls(t, f)); n != 1 {
-		t.Errorf("hook calls = %d, want the one refused push of pass one", n)
-	}
 	rep := f.report(t)
 	// The state keeps no motivo, but the commit never reached the remote:
 	// the report says so (push pendente) instead of leaving the motivo empty.
-	if rep["status"] != "done" || rep["motivo"] != "push pendente" {
-		t.Errorf("report.json status=%v motivo=%v, want done with push pendente", rep["status"], rep["motivo"])
+	if rep["status"] != "done" || rep["motivo"] != "push pendente" || rep["sincronizado"] != false {
+		t.Errorf("report.json status=%v motivo=%v sincronizado=%v, want done with push pendente, unknown facts stay unsynchronized", rep["status"], rep["motivo"], rep["sincronizado"])
 	}
 	events := f.events(t)
 	if n := countTipes(events, "terminal"); n != 1 {
@@ -1094,5 +1291,51 @@ func TestSuperviseFinishingRestartKeepsTheAnnouncedOutcome(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("friction = %q, want the cut line: the sync ran and was cut, only the rewrite is skipped", *f.friction)
+	}
+}
+
+// An already-announced legacy done is not upgraded either when the budget
+// allows the sync: the push lands as before, the marker is recorded, but no
+// verified snapshot is captured after the announcement.
+func TestSuperviseFinishingAnnouncedLegacyDoneIsNeverUpgradedToVerified(t *testing.T) {
+	f := newSupGitFixture(t, supGitGhRules)
+	f.job.commitIn(t, "feat: first")
+	announceLegacyDone(t, f)
+	exit, err := f.supRestarted(t).Run()
+	if err != nil || exit != 0 {
+		t.Fatalf("restart Run = %d %v, want the announced done with exit 0", exit, err)
+	}
+	st := f.state(t)
+	if st.Status != StatusDone || st.FinalPublication != nil {
+		t.Errorf("state = %s publication=%+v, want done with no retroactive snapshot", st.Status, st.FinalPublication)
+	}
+	if n := countTipes(f.events(t), "terminal"); n != 1 {
+		t.Errorf("terminal events = %d, want exactly one", n)
+	}
+}
+
+// Once the terminal event announced the outcome with a verified snapshot, a
+// restart keeps both: a local head that moved afterwards neither revalidates
+// nor rewrites the announced done, and the report keeps the observation.
+func TestSuperviseFinishingAnnouncedVerifiedDoneKeepsItsObservation(t *testing.T) {
+	f := newSupGitFixture(t, supGitGhRules)
+	f.job.commitIn(t, "feat: first")
+	publicationRunOne(t, f, true)
+	before := f.state(t).FinalPublication
+	f.job.commitIn(t, "feat: second")
+	exit, err := f.supRestarted(t).Run()
+	if err != nil || exit != 0 {
+		t.Fatalf("restart Run = %d %v, want the announced done with exit 0", exit, err)
+	}
+	st := f.state(t)
+	if st.Status != StatusDone || !reflect.DeepEqual(st.FinalPublication, before) {
+		t.Errorf("state = %s publication=%+v, want done on the announced observation %+v", st.Status, st.FinalPublication, before)
+	}
+	if n := countTipes(f.events(t), "terminal"); n != 1 {
+		t.Errorf("terminal events = %d, want exactly one", n)
+	}
+	rep := f.report(t)
+	if rep["head"] != before.LocalHead || rep["head_remoto"] != before.RemoteHead || rep["sincronizado"] != true {
+		t.Errorf("report head=%v remote=%v sincronizado=%v, want the announced point-in-time observation %q", rep["head"], rep["head_remoto"], rep["sincronizado"], before.LocalHead)
 	}
 }

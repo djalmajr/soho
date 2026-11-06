@@ -122,6 +122,11 @@ type State struct {
 	// restart does not run them again. Both are internal and omitempty.
 	FinishingStartedAt string `json:"finishing_started_at,omitempty"`
 	FinishingSynced    bool   `json:"finishing_synced,omitempty"`
+	// FinalPublication is the verified final publication observation of a
+	// worktree job (publication.go), saved in the same write as
+	// FinishingSynced. A state with only the Boolean (written before it
+	// existed) carries no verified publication. Internal and omitempty.
+	FinalPublication *PublicationSnapshot `json:"final_publication,omitempty"`
 	// CancelRequestedAt and CancelDeadline are the wall ts (RFC3339Nano)
 	// the cancel's grace counts from, recorded at the acceptance (the
 	// requestControlFlag write of control/cancel.json, in the same locked

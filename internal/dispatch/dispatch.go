@@ -25,6 +25,27 @@ const standingRules = "- Only you write this report, once all of the brief is do
 	"- Do not commit, push, tag, or open pull requests.\n" +
 	"- When finished, reply in the terminal with exactly the report path and nothing else.\n"
 
+// jobOrchestratorRole is the canonical role string the CLI dispatcher
+// resolved for the job orchestrator. It is the only selector of the job-local
+// Git rule: never the agent name, a role file's display name, or text of the
+// brief.
+const jobOrchestratorRole = "job-orchestrator"
+
+const workerGitRule = "- Do not commit, push, tag, or open pull requests.\n"
+
+const jobOrchestratorGitRule = "- As job-orchestrator, commit integrated changes only inside this job's own worktree when the job brief requires them. Do not push, tag, merge, or open pull requests; the job supervisor owns publication.\n"
+
+// standingRulesFor returns the standing rules for the resolved role. Only the
+// canonical job-orchestrator role, outside an active collaboration (cooperative
+// is that collaboration's prompt, empty when none), replaces the blanket Git
+// line; empty, unknown and every other role keep it unchanged.
+func standingRulesFor(role, cooperative string) string {
+	if role != jobOrchestratorRole || cooperative != "" {
+		return standingRules
+	}
+	return strings.Replace(standingRules, workerGitRule, jobOrchestratorGitRule, 1)
+}
+
 const sharedTreeNote = "- Another worker edits this same tree now: run the global checks the brief asks for, but report failures in files you do not own as outside your slice (name the files), not as [partial] items of yours.\n"
 
 func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Config, env platform.Env, kind, args, approvals string, shared bool) string {
@@ -57,7 +78,7 @@ func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Con
 	if shared {
 		out.WriteString(sharedTreeNote)
 	}
-	out.WriteString(standingRules)
+	out.WriteString(standingRulesFor(role, cooperative))
 	out.WriteString(cooperative)
 	return out.String()
 }
@@ -66,7 +87,7 @@ func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Con
 // declares no Worktree: line of its own, the original brief's line is kept,
 // outside any fenced block, so the amended task (a review included) stays
 // tied to the declared worktree; the amendment's own line wins.
-func ComposeAmendment(raw, report, original string, ctx *core.Config, env platform.Env, kind, args, approvals string, shared bool, agents ...string) string {
+func ComposeAmendment(raw, report, original, role string, ctx *core.Config, env platform.Env, kind, args, approvals string, shared bool, agents ...string) string {
 	var out strings.Builder
 	cooperative := ""
 	if len(agents) != 0 {
@@ -96,7 +117,7 @@ func ComposeAmendment(raw, report, original string, ctx *core.Config, env platfo
 	if shared {
 		out.WriteString(sharedTreeNote)
 	}
-	out.WriteString(standingRules)
+	out.WriteString(standingRulesFor(role, cooperative))
 	out.WriteString(cooperative)
 	return out.String()
 }
