@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -54,7 +55,12 @@ var ErrNotInHcTerminal = errors.New("not inside an hc terminal: HC_TERMINAL_ID i
 // given. It never runs hc itself: the first launch happens on the first
 // method that needs one (the session read among them).
 func New(env platform.Env) transport.Services {
-	b := &backend{env: env, client: hc.New(env)}
+	return NewWithClient(env, hc.New(env))
+}
+
+// NewWithClient builds the hc backend's Services using the provided hc client.
+func NewWithClient(env platform.Env, client *hc.Client) transport.Services {
+	b := &backend{env: env, client: client}
 	return transport.Services{Runtime: b, Window: b, Legacy: b, Terminal: b}
 }
 
@@ -1130,11 +1136,9 @@ func startDeadlineSeconds(deadline time.Duration) string {
 }
 
 // Start starts the worker in a new hc terminal of this session and waits
-// for its first reported status (DJA-604 slice 2b-2a). The command is
-// `hc run --bg --json --name <name> [--cwd <cwd>] --label
-// soho.session=<session> --no-notify --outlive-parent -- <exe> <args…>`,
-// where <exe> is the kind's name; the request's args go out byte for byte,
-// with no quoting added. Value carries the new terminal's address on
+// for its first reported status. The run is dispatched through the native
+// terminal.run JSON-RPC client on the per-instance hc client.
+// Value carries the new terminal's address on
 // success. An unsupported kind and an invalid name refuse before any
 // launch; a run that fails with hc's name_taken error is a FailureConflict
 // (spawn picks the next suffix; this slice does not retry); readiness is
@@ -1162,29 +1166,58 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 		}
 		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: err.Error(), Cause: err}}
 	}
-	args := []string{"run", "--bg", "--json", "--name", start.Name}
-	if start.Cwd != "" {
-		args = append(args, "--cwd", start.Cwd)
+
+	cwd := start.Cwd
+	if cwd == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return transport.Reply[string]{Err: &transport.Failure{
+				Kind:    transport.FailureUnavailable,
+				Message: "getwd: " + err.Error(),
+				Cause:   err,
+			}}
+		}
+		cwd = wd
 	}
-	args = append(args, "--label", SessionLabel+"="+session, "--no-notify", "--outlive-parent", "--", start.Kind)
-	args = append(args, start.Args...)
-	out, err := b.run(ctx, call, args...)
+
+	budget := hcTimeoutDefault
+	if call.Timeout > 0 {
+		budget = call.Timeout
+	}
+	runCtx, runCancel := context.WithTimeout(ctx, budget)
+	address, err := b.client.RunTerminal(runCtx, hc.TerminalRun{
+		Name:    start.Name,
+		Kind:    start.Kind,
+		Cwd:     cwd,
+		Caller:  b.env.Get("HC_TERMINAL_ID"),
+		Session: session,
+		Args:    start.Args,
+	})
+	runCancel()
+
 	if err != nil {
-		// A run the request's cancellation interrupted is a cancellation,
-		// not a failed command.
+		if errors.Is(err, hc.ErrRunOutcomeUnknown) {
+			return transport.Reply[string]{
+				Value: address,
+				Err: &transport.Failure{
+					Kind:    transport.FailureRunOutcomeUnknown,
+					Message: err.Error(),
+					Cause:   err,
+				},
+			}
+		}
 		if cerr := ctx.Err(); cerr != nil {
-			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: cerr.Error(), Cause: cerr}}
+			return transport.Reply[string]{
+				Err: &transport.Failure{
+					Kind:    transport.FailureCancelled,
+					Message: cerr.Error(),
+					Cause:   cerr,
+				},
+			}
 		}
 		return startRunFailure(start.Name, err)
 	}
-	obj, ok := terminalObject(out)
-	if !ok {
-		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc run returned no terminal record"}}
-	}
-	address := addressOf(obj)
-	if address == "" {
-		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc run returned no terminal address"}}
-	}
+
 	return b.waitReady(ctx, call, start.Name, address, startTimeout(start.Timeout))
 }
 
