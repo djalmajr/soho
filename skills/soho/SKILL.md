@@ -6,13 +6,13 @@ description: >
   inspector). The calling agent stays the orchestrator: it spawns one CLI
   agent per role in sibling panes, dispatches self-contained briefs, collects
   file-based reports, and owns integration, gates, and git. Use when running
-  inside Herdr (HERDR_ENV=1) for any non-trivial work: the user asks for a
-  herd, team, roles, a designer or reviewer agent, parallel workers, or the
-  task needs a survey (several files, another repo, tool
-  conventions), touches more than a couple of files, or the project's
-  AGENTS.md routes work through this skill (or through its former name,
-  herdr-agents). Do not use outside Herdr; a one-or-two-file change with no
-  product decision is done directly.
+  inside native Herdr Core (SOHO_TRANSPORT=hc with HC_TERMINAL_ID) or legacy
+  Herdr (HERDR_ENV=1) for any non-trivial work: the user asks for a herd,
+  team, roles, a designer or reviewer agent, parallel workers, or the task
+  needs a survey (several files, another repo, tool conventions), touches more
+  than a couple of files, or the project's AGENTS.md routes work through this
+  skill (or through its former name, herdr-agents). Do not use outside Herdr;
+  a one-or-two-file change with no product decision is done directly.
 argument-hint: "<objective> | roles | roster | spawn <role> | run <role> <brief> | release <agent>"
 user-invocable: true
 metadata:
@@ -23,7 +23,7 @@ metadata:
 
 *soho* stands for **SO**ftware **HO**use (formerly `herdr-agents`).
 
-Turn the calling agent into an **orchestrator** and give it a team of **role agents** running as real CLI agents in Herdr panes. The orchestrator is not configured anywhere: it is whichever agent runs this skill from a Herdr pane (`HERDR_ENV=1`). Every other role is a file under `roles/` whose `kind` says which CLI agent plays it. Roles are markdown files with frontmatter (like omp's `.omp/agents/*.md`); the `herdr` CLI is the transport. The orchestrator decomposes, briefs, waits, integrates, verifies, and commits. Workers implement, research, or review one slice each and report to a file.
+Turn the calling agent into an **orchestrator** and give it a team of **role agents** running as real CLI agents in Herdr panes. The orchestrator is not configured anywhere: it is whichever agent runs this skill from a Herdr pane — either under native Herdr Core (`SOHO_TRANSPORT=hc` with `$HC_TERMINAL_ID` set) or legacy Herdr (`HERDR_ENV=1`). Every other role is a file under `roles/` whose `kind` says which CLI agent plays it. Roles are markdown files with frontmatter (like omp's `.omp/agents/*.md`); the transport is either native `hc` or legacy `herdr` CLI. The orchestrator decomposes, briefs, waits, integrates, verifies, and commits. Workers implement, research, or review one slice each and report to a file.
 
 ## Non-negotiables (each one is a mistake that was actually made)
 
@@ -37,6 +37,13 @@ A mirror brief may declare one or more `Reference: <absolute-repository-path>@<7
 6. **Nested orchestrators must not be sandboxed Codex**: its sandbox blocks the Herdr socket. Use `claude` (or Codex with its sandbox disabled).
 7. **Read `soho friction` and run `soho gc` at the end of every run** and file what the skill caused as an issue (see "Improving this skill").
 
+## Transport detection and readiness
+
+Detect the active transport before issuing setup, lifecycle, or UI commands:
+
+- **Native Herdr Core (`SOHO_TRANSPORT=hc`)**: Active when `$HC_TERMINAL_ID` is set and `SOHO_TRANSPORT=hc`. Native readiness requires an actual `$HC_TERMINAL_ID`, `SOHO_TRANSPORT=hc`, verified caller identity, verified current working directory, and supported installed CLI tools (`hc` and `herdr-app`). Window and layout presentation belongs to `herdr-app`, while terminal lifecycles belong to `hc`. Current installed native `herdr-app` commands have no terminal/pane rename or title setter, and there is no native counterpart to legacy automatic `<role>: <task> ✓` titles (never propose fake OSC, CLI aliases, or duplicate agents to mimic it). Native Soho commands remain experimental. Admission by rc.5's transport allowlist does not establish successful caller validation or command execution; verified unnamed Core callers have a known init limitation in rc.5. Treat the actual command result as authoritative, and do not imply private init/client corrections are installed. Worker identity comes from `soho spawn --name <name>`, tab labels identify project or phase scope via explicit `herdr-app do tab.rename --id <id> --name <name>`, and completion comes strictly from the settled report or assignment. Default background inspection uses read-only `hc read <terminal>`; UI commands (`peek`, `keep`, `open`, `show`, `focus`) require the intended owned visible location and user intent, not automatic background execution over an unverified screen. See [references/herdr-ui.md](references/herdr-ui.md) for caller hierarchy discovery through `herdr-app ls`, bounded caller projection from `hc`, user-intended UI placement/show, keep/park lifecycle constraints, and safe multi-project UI routines.
+- **Legacy Herdr (`transport=herdr`)**: Active when `HERDR_ENV=1`. The `herdr` CLI (`herdr --skill`) remains authoritative for legacy transport syntax and preconditions below.
+
 ## Preconditions
 
 In a third-party fork, run `soho setup --local` before the first `soho init` if the state directory is not yet Git-ignored. Otherwise `init` can add that directory to the fork's tracked `.gitignore` before local setup runs.
@@ -45,7 +52,7 @@ In a third-party fork, run `soho setup --local` before the first `soho init` if 
 soho init
 ```
 
-Verify `HERDR_ENV=1`, the native `soho` binary and Herdr before orchestrating. Install a verified platform binary as described in the repository README; no interpreter fallback exists. If initialization fails under Codex, run `soho doctor` before concluding that the pane is outside Herdr. Never control a Herdr session from outside Herdr. The `herdr` skill (`herdr --skill`) remains the authority for transport syntax.
+In legacy Herdr environments (`transport=herdr`), verify `HERDR_ENV=1`, the native `soho` binary and Herdr before orchestrating. Install a verified platform binary as described in the repository README; no interpreter fallback exists. If initialization fails under Codex, run `soho doctor` before concluding that the pane is outside Herdr. Never control a Herdr session from outside Herdr. For legacy transport, the `herdr` skill (`herdr --skill`) remains the authority for transport syntax.
 
 ## First run
 
@@ -80,15 +87,15 @@ When the user asks what is happening ("what's going on?"), run `soho explain` an
 
 ## Names: who is who in the roster
 
-Run `soho init` first, after any required first `setup --local` in a fork. It runs `doctor` (advisory: inside Herdr, Herdr client vs server version, the **official `herdr` skill present and identical to `herdr --skill`**, kinds in `PATH`, state dir writable, config sane, an orphan pane left by a `release` without `--close`), then renames the caller's own agent to `orchestrator` (config `orchestrator_name`; `orchestrator-2` when taken) so the Herdr sidebar and `roster` show who leads, and prints the context (pane, tab, workspace, layout, state dir). A caller pane that is already in the roster is a worker another orchestrator opened: its name is kept and one line goes to stderr, `soho: init: this pane is '<name>' in the roster (a <role> opened by another orchestrator); keeping its name` (`spawn`, which does the rename lazily, prints the same line with `spawn`). Act on `warn` lines before spawning; a stale official skill means the CLI syntax you read may be wrong. When `first_run` is true, follow [First run](#first-run) before any spawn.
+In legacy Herdr (`transport=herdr`), run `soho init` first, after any required first `setup --local` in a fork. It runs `doctor` (advisory: inside Herdr, Herdr client vs server version, the **official `herdr` skill present and identical to `herdr --skill`**, kinds in `PATH`, state dir writable, config sane, an orphan pane left by a `release` without `--close`), then renames the caller's own agent to `orchestrator` (config `orchestrator_name`; `orchestrator-2` when taken) so the Herdr sidebar and `roster` show who leads, and prints the context (pane, tab, workspace, layout, state dir). A caller pane that is already in the roster is a worker another orchestrator opened: its name is kept and one line goes to stderr, `soho: init: this pane is '<name>' in the roster (a <role> opened by another orchestrator); keeping its name` (`spawn`, which does the rename lazily, prints the same line with `spawn`). Act on `warn` lines before spawning; a stale official skill means the CLI syntax you read may be wrong. When `first_run` is true, follow [First run](#first-run) before any spawn.
 
 `doctor` and `inventory --json` may advise `an apparent orchestrator is not registered; run soho init in its pane` when a local terminal matches the configured orchestrator name or its hyphen suffix in a project and session opted into `inventory=show` or `hidden`, with no raw worker pane claim or valid exact-terminal registration and a fresh known live status. Run `init` from the intended orchestrator pane; naming is a heuristic, never caller authority. Unsafe sources and unavailable evidence suppress advice, so silence does not establish registration. The advisory writes no state, reads no unregistered terminal screen, and observes a listing and fresh probe that can change afterward. Inventory warns once on stderr after successful JSON output; doctor limits the check to its current strict project and runtime caller session. Init skips only this suggestion during its pre-registration check.
 
 With lanes on (the default), a worker is named after its lane (`build`, then `build-2` for the second worker of a lane that holds two, `review`, and `docs` for the documenter in flex mode). Agent names are global in Herdr: a name another workspace already uses gets the next free suffix, and a `--name` that is taken does the same with a warning. Pass `--name` for something more telling. `lanes=off` keeps the old names: the role (`scouter`, `implementer`, …), then `implementer-2`. A nested orchestrator uses the `sub-orchestrator` role and stays outside the lanes unless a `lane.*.roles` list includes it.
 
-The orchestrator's pane is titled too: `init` sets `orchestrator: <project>` when the pane has no title (a pane that is in the roster is not titled by this `init`), and `soho title "<objective>"` sets `orchestrator: <objective>` (the objective is cut at 60 code points). Set it right after `init` and again whenever the objective changes, so the sidebar shows what this session leads.
+In legacy Herdr (`transport=herdr`), the orchestrator's pane is titled too: `init` sets `orchestrator: <project>` when the pane has no title (a pane that is in the roster is not titled by this `init`), and `soho title "<objective>"` sets `orchestrator: <objective>` (the objective is cut at 60 code points). In legacy Herdr, set it right after `init` and again whenever the objective changes, so the sidebar shows what this session leads.
 
-The name says the role; the pane title says the task. Every `dispatch` titles the worker's pane `<role>: <task>`, the task being the brief's first line when it is an H1 title (`# Brief — <task>`), else the brief's file name; the title gains ` ✓` once the report exists, and `release` without `--close` clears it. So the user always sees what each worker is doing, even when one worker is reused across tasks.
+In legacy Herdr (`transport=herdr`), the name says the role and the pane title says the task: every `dispatch` titles the worker's pane `<role>: <task>`, the task being the brief's first line when it is an H1 title (`# Brief — <task>`), else the brief's file name; the title gains ` ✓` once the report exists, and `release` without `--close` clears it. On native Herdr Core (`SOHO_TRANSPORT=hc`), graphical pane titles and checkmarks do not exist in installed `herdr-app`; refer to the Transport detection section above and [references/herdr-ui.md](references/herdr-ui.md).
 
 ## Roles
 
@@ -601,6 +608,7 @@ Cursor's active MCP approval dialog — the `MCP Server Approval Required` title
 
 ## References
 
+- [references/herdr-ui.md](references/herdr-ui.md) — native Herdr.app and Herdr Core window management, command matrix, and UI organization rules
 - [references/troubleshooting.md](references/troubleshooting.md) — observed failures, causes, fixes, and how to validate a kind; read before changing the script
 - [references/orchestration-contract.md](references/orchestration-contract.md) — the delegation contract this skill enforces
 - [references/orchestration.md](references/orchestration.md) — the worker collaboration cycle: the `worker_messages` policy, the assignment and its events, revisions and snapshots, delivery, finalize and recovery

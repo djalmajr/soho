@@ -38,6 +38,34 @@ Run `soho env` once to resolve or materialize the embedded skill. To expose the 
 
 Run `soho setup` once per project: it writes the delegation block and the hooks. The skill's [What each assistant gets](skills/soho/SKILL.md#what-each-assistant-gets) lists every hook per assistant and what to commit.
 
+### Installing via skills.sh
+
+The repository distributes one installable skill, [`skills/soho/`](skills/soho/), with its roles, references, templates, and defaults packaged as relative supporting resources. The external `skills` installer uses Node.js, but Soho itself retains Go as its sole runtime and tooling without adding any Node.js, Bun, or Bash dependency.
+
+To inspect available skills in a local checkout (note: `skills` CLI does not support `--list` combined with `--json`):
+
+```sh
+npx skills add ./skills/soho --list
+```
+
+To install the skill globally into supported coding assistants from a permanent local checkout (do not point global installs at a disposable worktree):
+
+```sh
+npx skills add ./skills/soho --global --skill soho --agent codex claude-code -y
+```
+
+Pass the assistants you use to `--agent` (for example `codex`, `claude-code`, `opencode`, `pi`, or other agents supported by your `skills` CLI installation).
+
+To install a specific release directly from GitHub matching your installed Soho binary version, replace `<tag>` with an existing release tag matching the installed Soho binary before running:
+
+```sh
+npx skills add "djalmajr/soho#<tag>" --global --skill soho
+```
+
+The `#` fragment selects a Git ref, whereas `@` in the `skills` CLI shorthand acts as a skill filter; double quotes prevent the placeholder from being interpreted as shell redirection.
+
+Installing the skill registers prompt and role instructions with your assistant; it does not install or update the `soho` binary, and does not replace running `soho setup` once per project to write delegation markers and hooks.
+
 All commands, including `collaborate`, `send` and `find`, run through the same Go CLI. The [guide](docs/guide.md#worker-collaboration) documents the review cycle and `worker_messages` policy, and the [ephemeral job contract](docs/job-contract.md) specifies the dispatcher-driven `job` family (ephemeral jobs on a machine, with a draft pull request kept by the job supervisor). [VALIDATION.md](VALIDATION.md) describes how a maintainer validates a pull request before merge with a real job run on the exact pull request head.
 
 ## Optional Herdr plugin
