@@ -36,7 +36,7 @@ func TestComposeEnvironmentAndReferenceContract(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			for name, prompt := range map[string]string{
 				"prompt":    ComposePrompt(role, "reviewer", "worker", tc.body, "/report.md", ctx, env, "codex", "", "", false),
-				"amendment": ComposeAmendment(tc.body, "/report.md", "", ctx, env, "codex", "", "", false),
+				"amendment": ComposeAmendment(tc.body, "/report.md", "", "implementer", ctx, env, "codex", "", "", false),
 			} {
 				if strings.Count(prompt, environment) != 1 || strings.Count(prompt, search) != 1 || !strings.Contains(prompt, "- Never invent names, endpoints, flags, credentials, URLs or requirements.\n"+environment+search+"- Stop only processes") {
 					t.Errorf("%s: environment or search rule missing, duplicated or misplaced", name)

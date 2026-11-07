@@ -14,13 +14,13 @@ func TestDispatchTM3bAmendmentContract(t *testing.T) {
 	// JS: "composeAmendment: the report_language line, in order, only when set"
 	t.Run("composeAmendment: the report_language line, in order, only when set", func(t *testing.T) {
 		ctx.Entries["report_language"] = core.ConfigEntry{Value: "pt-BR"}
-		got := ComposeAmendment("# Amend\n\nDo X.\n", "/tmp/report.md", "", ctx, nil, "codex", "", "", false)
+		got := ComposeAmendment("# Amend\n\nDo X.\n", "/tmp/report.md", "", "implementer", ctx, nil, "codex", "", "", false)
 		lang := "- Write the report in pt-BR.\n"
 		if strings.Count(got, lang) != 1 || strings.Index(got, lang) < strings.Index(got, "Write your report as Markdown") || strings.Index(got, lang) > strings.Index(got, "Write the report in one go") {
 			t.Fatalf("report_language line missing or out of order:\n%s", got)
 		}
 		ctx.Entries = map[string]core.ConfigEntry{}
-		plain := ComposeAmendment("# Amend\n", "/tmp/report.md", "", ctx, nil, "codex", "", "", false)
+		plain := ComposeAmendment("# Amend\n", "/tmp/report.md", "", "implementer", ctx, nil, "codex", "", "", false)
 		if strings.Contains(plain, "Write the report in pt-BR") {
 			t.Fatalf("unset report_language leaked into contract:\n%s", plain)
 		}

@@ -130,12 +130,11 @@ func runOwnedProcess(ctx context.Context, executable string, args []string, opts
 	startup.StartupInfo.StdErr = logHandle
 	startup.attributeList = attrList.list()
 
-	var processInfo syscall.ProcessInformation
-	createErr := syscall.CreateProcess(application, commandLine, nil, nil, true,
-		winCreateSuspended|winCreateUnicodeEnvironment|winExtendedStartupInfoPresent, environment, workingDir,
-		&startup.StartupInfo, &processInfo)
-	clearErr := clearInherit()
-	syscall.ForkLock.Unlock()
+	run := runOwnedJob(ctx, winOwnedJobOptions{
+		application: application, commandLine: commandLine, environment: environment,
+		workingDir: workingDir, startup: &startup,
+		restoreInherit: true, finishUnassignedJob: true,
+	})
 	// Keep the raw-pointer backing buffers, the handle-list backing array
 	// (kept by name, through the retained slice, and through attrList),
 	// the working-directory backing pointer, the environment backing block
@@ -149,124 +148,39 @@ func runOwnedProcess(ctx context.Context, executable string, args []string, opts
 	runtime.KeepAlive(workingDir)
 	runtime.KeepAlive(out)
 	runtime.KeepAlive(input)
-	if createErr != nil {
-		return OwnedProcessResult{}, fmt.Errorf("create suspended process: %v", winCallError(createErr))
+	if run.createErr != nil {
+		return OwnedProcessResult{}, fmt.Errorf("create suspended process: %v", winCallError(run.createErr))
 	}
-	processHandle := syscall.Handle(processInfo.Process)
-	threadHandle := syscall.Handle(processInfo.Thread)
-
-	// Containment is a precondition: if the kill-on-close job cannot be
-	// created, configured, or the still-suspended root cannot be assigned
-	// to it, fail closed BEFORE resuming — terminate the suspended root
-	// (bounded drain), finish the job (it holds no assigned process on the
-	// refusal paths) and refuse. Both steps go through the typed seams
-	// (the same seams the native regressions substitute fakes into).
-	if clearErr != nil {
-		// The handle stayed inheritable: refuse before the child runs.
-		termErr := terminateOwnedSuspendedRoot(processHandle)
-		closeRunEnds(processHandle, threadHandle)
-		return OwnedProcessResult{}, errors.Join(fmt.Errorf("clear output file inheritance: %v", clearErr), termErr)
+	if run.refusalErr != nil {
+		return OwnedProcessResult{}, run.refusalErr
 	}
-	job, jobErr := winCreateOwnedJob()
-	if jobErr != nil {
-		termErr := terminateOwnedSuspendedRoot(processHandle)
-		closeRunEnds(processHandle, threadHandle)
-		if termErr != nil {
-			return OwnedProcessResult{}, fmt.Errorf("refusing to run without containment: %v (root teardown: %v)", jobErr, termErr)
-		}
-		return OwnedProcessResult{}, fmt.Errorf("refusing to run without containment: %v", jobErr)
-	}
-	if err := winAssignOwnedJobProcess(job, processHandle); err != nil {
-		drainErr := finishOwnedJob(job)
-		termErr := terminateOwnedSuspendedRoot(processHandle)
-		closeRunEnds(processHandle, threadHandle)
-		switch {
-		case termErr != nil:
-			return OwnedProcessResult{}, fmt.Errorf("refusing to run without containment: %v (root teardown: %v)", err, termErr)
-		case drainErr != nil:
-			return OwnedProcessResult{}, errors.Join(fmt.Errorf("refusing to run without containment: %v", err), fmt.Errorf("finish owned job: %v", drainErr))
-		default:
-			return OwnedProcessResult{}, fmt.Errorf("refusing to run without containment: %v", err)
-		}
-	}
-
-	resumed, _, resumeErr := winResumeThread.Call(uintptr(processInfo.Thread))
-	resumeFailed := winResumeThreadFailed(resumed)
-	if resumeFailed {
-		// The root never ran: terminate the owned process so the exit
-		// information read below is the truthful termination code; the
-		// root handles are released exactly once before the drain proof.
-		_ = syscall.TerminateProcess(processHandle, 1)
-	}
-
-	// Wait for the process, polling the context so cancellation of ctx
-	// (a timeout of the caller) terminates the whole job promptly. A poll
-	// failure is not treated as an exit and is not swallowed: it breaks
-	// the poll and the kill path below (terminate + drain) keeps the
-	// result truthful. There is no on-disk overflow allowance here: the
-	// output IS the caller's file and the disk is its bound, so the loop
-	// only watches the process and the context.
-	canceled := false
-	var waitErr error
-	for {
-		select {
-		case <-ctx.Done():
-			canceled = true
-		default:
-		}
-		if canceled {
-			break
-		}
-		event, pollErr := syscall.WaitForSingleObject(processHandle, 50)
-		if pollErr != nil {
-			waitErr = pollErr
-			break
-		}
-		if event != syscall.WAIT_TIMEOUT {
-			break
-		}
-	}
-
-	// Read the exit code BEFORE releasing the process handle; then release
-	// the root process/thread handles exactly once. The output file stays
-	// open in the runner: the caller owns it and appends the trailing
-	// lines after this return.
-	var exitCode uint32
-	codeErr := syscall.GetExitCodeProcess(processHandle, &exitCode)
-	_ = syscall.CloseHandle(processHandle)
-	_ = syscall.CloseHandle(threadHandle)
-
-	// Stop the whole owned job and drain it boundedly on every path
-	// (cancel, resume failure and normal); the drain is proven by the
-	// verified primary contract (ActiveProcesses == 0).
-	drainErr := finishOwnedJob(job)
 
 	// One dominant error, with the non-dominant ones joined, not masked:
 	// resume failure dominates, then a failed drain, then a canceled run,
 	// then a poll failure.
 	var mainErr error
 	switch {
-	case resumeFailed:
-		mainErr = fmt.Errorf("resume suspended process: %v", winCallError(resumeErr))
-		if drainErr != nil {
-			mainErr = errors.Join(mainErr, fmt.Errorf("drain owned job: %v", drainErr))
+	case run.resumeFailed:
+		mainErr = fmt.Errorf("resume suspended process: %v", winCallError(run.resumeErr))
+		if run.drainErr != nil {
+			mainErr = errors.Join(mainErr, fmt.Errorf("drain owned job: %v", run.drainErr))
 		}
-	case drainErr != nil:
-		mainErr = fmt.Errorf("drain owned job: %v", drainErr)
-	case canceled:
+	case run.drainErr != nil:
+		mainErr = fmt.Errorf("drain owned job: %v", run.drainErr)
+	case run.canceled:
 		mainErr = fmt.Errorf("the run was canceled and the whole owned job was terminated and drained")
-	case waitErr != nil:
-		mainErr = fmt.Errorf("wait for the owned process: %v", winCallError(waitErr))
+	case run.waitErr != nil:
+		mainErr = fmt.Errorf("wait for the owned process: %v", winCallError(run.waitErr))
 	}
-	res := OwnedProcessResult{Started: true}
-	if !canceled && !resumeFailed && waitErr == nil && codeErr == nil {
-		res.ExitCode = int(exitCode)
+	res := OwnedProcessResult{Started: run.started}
+	if !run.canceled && !run.resumeFailed && run.waitErr == nil && run.codeErr == nil {
+		res.ExitCode = int(run.exitCode)
 	}
 	if mainErr != nil {
 		return res, mainErr
 	}
-	if codeErr != nil {
-		return res, fmt.Errorf("read the owned process exit code: %v", winCallError(codeErr))
+	if run.codeErr != nil {
+		return res, fmt.Errorf("read the owned process exit code: %v", winCallError(run.codeErr))
 	}
 	return res, nil
 }
