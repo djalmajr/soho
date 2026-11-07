@@ -993,6 +993,10 @@ func effortOk(value string) bool {
 }
 
 func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
+	cmdSpawnWithHcStarter(argv, ctx, env, cwd, startHcAgent)
+}
+
+func cmdSpawnWithHcStarter(argv []string, ctx *core.Config, env platform.Env, cwd string, startHC func(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string)) {
 	svc := backend.New(env)
 	// Machine under pressure: warn before opening more work (stderr only;
 	// the spawn proceeds as usual).
@@ -1592,7 +1596,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		// DJA-604 2b-2b: Runtime.Start opens the new terminal and waits for
 		// the worker's first reported status, so there is no start window to
 		// check; a failed start dies here and closes the terminal it left.
-		startHcAgent(ctx, &o, kind, env, agentArgs)
+		startHC(ctx, &o, kind, env, agentArgs)
 	} else {
 		blocked = startAgent(o, kind, env, created, agentArgs)
 	}
@@ -2065,7 +2069,10 @@ func startAgent(o spawnOptions, kind string, env platform.Env, created bool, arg
 // failure's message, no roster row. It takes o by pointer: the retries
 // rename o, and the roster row and the JSON use the final name.
 func startHcAgent(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string) {
-	svc := backend.New(env)
+	startHcAgentUsingServices(ctx, o, kind, env, args, backend.New(env))
+}
+
+func startHcAgentUsingServices(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string, svc transport.Services) {
 	rt := svc.Terminal
 	base := o.name
 	for tries := 0; ; tries++ {
@@ -2073,6 +2080,12 @@ func startHcAgent(ctx *core.Config, o *spawnOptions, kind string, env platform.E
 		if rep.Err == nil {
 			o.pane = rep.Value
 			return
+		}
+		if rep.Err.Kind == transport.FailureRunOutcomeUnknown {
+			if rep.Value != "" {
+				core.DieFriction(fmt.Sprintf("spawn: terminal creation outcome is uncertain; terminal %s preserved for manual inspection", rep.Value), 4, "", "spawn")
+			}
+			core.DieFriction(fmt.Sprintf("spawn: terminal creation outcome is uncertain; requested terminal '%s' preserved for manual inspection", o.name), 4, "", "spawn")
 		}
 		if rep.Err.Kind == transport.FailureConflict {
 			if tries+1 >= 10 {

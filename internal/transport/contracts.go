@@ -89,6 +89,10 @@ const (
 	// FailureBusy: the idle guard found the target not idle (hc send's exit
 	// 10); the send was not made.
 	FailureBusy FailureKind = "busy"
+	// FailureRunOutcomeUnknown: the run operation was dispatched but the outcome
+	// is uncertain (e.g. response missing or dropped after mutation); the terminal
+	// may have been created. Automatic retry or cleanup must be refused.
+	FailureRunOutcomeUnknown FailureKind = "run-outcome-unknown"
 )
 
 // Failure is a structured transport error. Code carries an observed wire code
