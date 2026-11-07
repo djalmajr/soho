@@ -256,6 +256,9 @@ func stateOf(obj *jsonjs.Object) string {
 	if !ok || raw == nil {
 		return "unknown"
 	}
+	if word, isString := raw.(string); isString && word != "" {
+		return word
+	}
 	status, ok := raw.(*jsonjs.Object)
 	if !ok {
 		return "unknown"
@@ -266,6 +269,20 @@ func stateOf(obj *jsonjs.Object) string {
 		}
 	}
 	return "unknown"
+}
+
+// nativeStateOf extracts the terminal record's raw string lifecycle
+// ("live", "finished", etc.). Missing or non-string values return "".
+func nativeStateOf(obj *jsonjs.Object) string {
+	if obj == nil {
+		return ""
+	}
+	if v, ok := obj.Get("state"); ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 // statusMsgOf returns the terminal record's status message (the hc
@@ -353,18 +370,27 @@ func addressOf(obj *jsonjs.Object) string {
 // cwdOf reads the record's cwd ("" when the terminal reports none).
 func cwdOf(obj *jsonjs.Object) string {
 	if v, ok := obj.Get("cwd"); ok {
-		if cwd, isString := v.(string); isString {
+		if cwd, isString := v.(string); isString && cwd != "" {
 			return cwd
+		}
+	}
+	if raw, ok := obj.Get("foreground"); ok && raw != nil {
+		if fg, ok := raw.(*jsonjs.Object); ok {
+			if v, ok := fg.Get("cwd"); ok {
+				if cwd, isString := v.(string); isString && cwd != "" {
+					return cwd
+				}
+			}
 		}
 	}
 	return ""
 }
 
 // programHints renders one terminal record's program hints: the nonempty
-// status app first, then the basename of argv[0] when present and different
-// (both slash styles normalized for the basename; no shell parsing and no
-// other argv element is inspected). Hints only: canonical kind matching
-// stays in the kinds catalog.
+// status app first, then foreground.name when present and different, then the
+// basename of argv[0] when present and different (both slash styles normalized
+// for the basename; no shell parsing and no other argv element is inspected).
+// Hints only: canonical kind matching stays in the kinds catalog.
 func programHints(obj *jsonjs.Object) []string {
 	var hints []string
 	if raw, ok := obj.Get("status"); ok && raw != nil {
@@ -376,11 +402,31 @@ func programHints(obj *jsonjs.Object) []string {
 			}
 		}
 	}
+	if raw, ok := obj.Get("foreground"); ok && raw != nil {
+		if fg, ok := raw.(*jsonjs.Object); ok {
+			if v, ok := fg.Get("name"); ok {
+				if name, isString := v.(string); isString && name != "" {
+					if len(hints) == 0 || hints[0] != name {
+						hints = append(hints, name)
+					}
+				}
+			}
+		}
+	}
 	if raw, ok := obj.Get("argv"); ok {
 		if args, ok := raw.([]any); ok && len(args) > 0 {
 			if exe, ok := args[0].(string); ok && exe != "" {
-				if base := executableBase(exe); base != "" && (len(hints) == 0 || hints[0] != base) {
-					hints = append(hints, base)
+				if base := executableBase(exe); base != "" {
+					dup := false
+					for _, h := range hints {
+						if h == base {
+							dup = true
+							break
+						}
+					}
+					if !dup {
+						hints = append(hints, base)
+					}
 				}
 			}
 		}
@@ -512,11 +558,12 @@ func (b *backend) List(ctx context.Context, scope transport.Scope, call transpor
 			return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned a non-object terminal"}}
 		}
 		terms = append(terms, transport.Terminal{
-			Target:   transport.Target{ID: addressOf(rec)},
-			Name:     nameOf(rec),
-			PaneID:   addressOf(rec),
-			State:    stateOf(rec),
-			Sequence: listTurn(records, i),
+			Target:      transport.Target{ID: addressOf(rec)},
+			Name:        nameOf(rec),
+			PaneID:      addressOf(rec),
+			State:       stateOf(rec),
+			NativeState: nativeStateOf(rec),
+			Sequence:    listTurn(records, i),
 		})
 	}
 	return transport.Reply[[]transport.Terminal]{Value: terms, Valid: true}
@@ -571,6 +618,7 @@ func (b *backend) listAllLocal(ctx context.Context, call transport.Call) transpo
 			Name:         nameOf(rec),
 			PaneID:       address,
 			State:        stateOf(rec),
+			NativeState:  nativeStateOf(rec),
 			Sequence:     listTurn(records, i),
 			Msg:          statusMsgOf(rec),
 			Cwd:          cwdOf(rec),
@@ -597,15 +645,19 @@ func (b *backend) Get(ctx context.Context, target transport.Target, call transpo
 	if !ok {
 		return transport.Reply[transport.Terminal]{Value: transport.Terminal{Target: target, State: "unknown"}, Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc get returned no terminal record"}}
 	}
+	address := addressOf(obj)
 	return transport.Reply[transport.Terminal]{
 		Value: transport.Terminal{
-			Target:   target,
-			Name:     nameOf(obj),
-			PaneID:   addressOf(obj),
-			State:    stateOf(obj),
-			Sequence: turnRaw(json.RawMessage(out)),
-			Msg:      statusMsgOf(obj),
-			Cwd:      cwdOf(obj),
+			Target:       transport.Target{ID: address, Machine: target.Machine},
+			Name:         nameOf(obj),
+			PaneID:       address,
+			State:        stateOf(obj),
+			NativeState:  nativeStateOf(obj),
+			Sequence:     turnRaw(json.RawMessage(out)),
+			Msg:          statusMsgOf(obj),
+			Cwd:          cwdOf(obj),
+			WorkspaceID:  sessionOfRecord(obj),
+			ProgramHints: programHints(obj),
 		},
 		Valid: true,
 	}
