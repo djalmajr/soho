@@ -9,12 +9,15 @@ import (
 
 // CleanEnv returns the current environment without inherited Herdr session
 // values (the machine-state resource pressure limits included, so a test
-// never warns because of the host it runs on) or soho state roots
-// (SOHO_REGISTRY_DIR, SOHO_DIR and SOHO_STATE_DIR, so a test run inside a
-// soho pane never writes into the session's real registry or state), points
-// Herdr at a socket path that cannot resolve a live session, and gives the
-// test its own TMPDIR: caches live there (the model lists), and a shared one
-// let a test in one package read what another package wrote.
+// never warns because of the host it runs on), native caller context
+// (HC_TERMINAL_ID and SOHO_TRANSPORT, so a test runner invoked from a live
+// soho session does not leak transport selection or terminal id into legacy
+// fixtures), or soho state roots (SOHO_REGISTRY_DIR, SOHO_DIR and
+// SOHO_STATE_DIR, so a test run inside a soho pane never writes into the
+// session's real registry or state), points Herdr at a socket path that cannot
+// resolve a live session, and gives the test its own TMPDIR: caches live there
+// (the model lists), and a shared one let a test in one package read what
+// another package wrote.
 func CleanEnv(t testing.TB) []string {
 	t.Helper()
 
@@ -27,7 +30,9 @@ func CleanEnv(t testing.TB) []string {
 			strings.EqualFold(key, "TMPDIR") ||
 			strings.EqualFold(key, "SOHO_REGISTRY_DIR") ||
 			strings.EqualFold(key, "SOHO_DIR") ||
-			strings.EqualFold(key, "SOHO_STATE_DIR") {
+			strings.EqualFold(key, "SOHO_STATE_DIR") ||
+			strings.EqualFold(key, "HC_TERMINAL_ID") ||
+			strings.EqualFold(key, "SOHO_TRANSPORT") {
 			continue
 		}
 		env = append(env, item)

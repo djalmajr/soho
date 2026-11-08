@@ -2,14 +2,17 @@ package fakecli
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/platform"
 )
@@ -307,5 +310,101 @@ func TestReexecRecordsTheWorkingDirectory(t *testing.T) {
 		if calls[i].Cwd == "" || gotReal != wantReal {
 			t.Fatalf("call %d cwd=%q, want %q", i, calls[i].Cwd, want)
 		}
+	}
+}
+
+const runnerTestHelperEnv = "SOHO_FAKECLI_TEST_RUNNER_ENV"
+
+func TestHelperNativeEnvClearedInRunner(t *testing.T) {
+	if os.Getenv(runnerTestHelperEnv) != "1" {
+		return
+	}
+	if v := os.Getenv("HC_TERMINAL_ID"); v != "" {
+		t.Fatalf("HC_TERMINAL_ID was not cleared: %q", v)
+	}
+	if v := os.Getenv("SOHO_TRANSPORT"); v != "" {
+		t.Fatalf("SOHO_TRANSPORT was not cleared: %q", v)
+	}
+}
+
+// Mutation captured: failing to clear HC_TERMINAL_ID and SOHO_TRANSPORT in
+// RunTests allows ambient native terminal and transport settings to leak
+// from the invoking environment into legacy test fixtures.
+func TestRunTestsClearsInheritedNativeContext(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, exe, "-test.run=^TestHelperNativeEnvClearedInRunner$", "-test.count=1")
+	var env []string
+	for _, entry := range os.Environ() {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && (strings.EqualFold(key, "HC_TERMINAL_ID") || strings.EqualFold(key, "SOHO_TRANSPORT") || strings.EqualFold(key, runnerTestHelperEnv)) {
+			continue
+		}
+		env = append(env, entry)
+	}
+	cmd.Env = append(env,
+		runnerTestHelperEnv+"=1",
+		"HC_TERMINAL_ID=hc-term-leak",
+		"SOHO_TRANSPORT=hc",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("runner failed: %v: %s", err, string(out))
+	}
+}
+
+// Mutation captured: stripping HC_TERMINAL_ID or SOHO_TRANSPORT unconditionally
+// from fakecli.Env(base) drops explicit native test inputs, and fake CLI
+// re-execution must preserve environment explicitly passed to child commands.
+func TestFakeCLICapturesNativeContextWhenExplicitlyPassed(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := InstallWithOptions(t, dir, "probe", []Rule{{Argv: []string{"check"}, Stdout: "ok\n"}}, InstallOptions{
+		CaptureEnv: []string{"HC_TERMINAL_ID", "SOHO_TRANSPORT", "CUSTOM_KEY"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{
+		"HC_TERMINAL_ID=custom-term-123",
+		"SOHO_TRANSPORT=hc",
+		"CUSTOM_KEY=custom-val",
+	}
+	envList := Env(base, dir)
+	env := platform.Env{}
+	for _, entry := range envList {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			env[key] = value
+		}
+	}
+	if env["HC_TERMINAL_ID"] != "custom-term-123" {
+		t.Fatalf("Env(base) lost HC_TERMINAL_ID: %#v", env)
+	}
+	if env["SOHO_TRANSPORT"] != "hc" {
+		t.Fatalf("Env(base) lost SOHO_TRANSPORT: %#v", env)
+	}
+	r := platform.RunCli("probe", []string{"check"}, platform.RunOptions{
+		Env:       env,
+		Platform:  platform.Current(),
+		TimeoutMs: 5000,
+	})
+	if r.Status == nil || *r.Status != 0 || r.Stdout != "ok\n" {
+		t.Fatalf("result: %+v", r)
+	}
+	calls, err := ReadCallsForConfig(filepath.Join(dir, "probe.json"))
+	if err != nil || len(calls) != 1 {
+		t.Fatalf("calls=%#v err=%v", calls, err)
+	}
+	if calls[0].Env["HC_TERMINAL_ID"] != "custom-term-123" {
+		t.Fatalf("captured HC_TERMINAL_ID = %q, want custom-term-123", calls[0].Env["HC_TERMINAL_ID"])
+	}
+	if calls[0].Env["SOHO_TRANSPORT"] != "hc" {
+		t.Fatalf("captured SOHO_TRANSPORT = %q, want hc", calls[0].Env["SOHO_TRANSPORT"])
+	}
+	if calls[0].Env["CUSTOM_KEY"] != "custom-val" {
+		t.Fatalf("captured CUSTOM_KEY = %q, want custom-val", calls[0].Env["CUSTOM_KEY"])
 	}
 }

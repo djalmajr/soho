@@ -103,11 +103,16 @@ func waitForFile(path string, timeout time.Duration) error {
 	}
 }
 
-// RunTests handles fake CLI re-execution, runs the package tests, and cleans up
-// a lazily prepared Windows binary after the package finishes.
+// RunTests handles fake CLI re-execution, clears inherited native caller
+// context (HC_TERMINAL_ID and SOHO_TRANSPORT) so legacy test fixtures do not
+// leak ambient session configuration from the invoking environment, runs the
+// package tests, and cleans up a lazily prepared Windows binary after the
+// package finishes.
 func RunTests(m *testing.M, after ...func()) {
 	Main()
 	GuardSuiteRun()
+	_ = os.Unsetenv("HC_TERMINAL_ID")
+	_ = os.Unsetenv("SOHO_TRANSPORT")
 	code := m.Run()
 	if preparedBinary != "" {
 		_ = os.RemoveAll(filepath.Dir(preparedBinary))
