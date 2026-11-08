@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/djalmajr/soho/internal/hc"
@@ -795,53 +796,111 @@ func TestStartReadinessDeadlineInterruptedGet(t *testing.T) {
 		{name: "late_not_found_is_not_exited", late: platform.RunResult{Status: &three, Stderr: `{"error":{"kind":"not_found","message":"no such terminal t7"}}`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			gets := 0
-			var getErr error
-			b, calls := startReadinessRunner(t, func(getCtx context.Context) platform.RunResult {
-				gets++
-				if getCtx.Err() != nil {
-					t.Fatalf("get %d entered with error %v", gets, getCtx.Err())
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				gets := 0
+				var getErr error
+				b, calls := startReadinessRunner(t, func(getCtx context.Context) platform.RunResult {
+					gets++
+					if getCtx.Err() != nil {
+						t.Fatalf("get %d entered with error %v", gets, getCtx.Err())
+					}
+					if tc.earlier != nil && gets == 1 {
+						return *tc.earlier
+					}
+					deadline, ok := getCtx.Deadline()
+					if !ok || time.Until(deadline) > 300*time.Millisecond {
+						t.Fatal("readiness get did not inherit the bounded startup deadline")
+					}
+					// The actual child deadline releases this receive. No manual
+					// cancellation occurs before its error has been captured.
+					<-getCtx.Done()
+					getErr = getCtx.Err()
+					return tc.late
+				})
+				rep := b.Start(ctx, transport.Start{Name: "w7", Kind: "claude", Timeout: "300"}, transport.Call{})
+				if getErr != context.DeadlineExceeded || ctx.Err() != nil {
+					t.Fatalf("child error=%v caller error=%v, want only the child deadline", getErr, ctx.Err())
 				}
-				if tc.earlier != nil && gets == 1 {
-					return *tc.earlier
+				wantCalls := [][]string{{"get", "t1", "--json"}, {"get", "t7", "--json"}}
+				if tc.earlier != nil {
+					wantCalls = append(wantCalls, []string{"get", "t7", "--json"})
 				}
-				deadline, ok := getCtx.Deadline()
-				if !ok || time.Until(deadline) > 300*time.Millisecond {
-					t.Fatal("readiness get did not inherit the bounded startup deadline")
+				wantArgv(t, calls(), wantCalls)
+				if rep.Err == nil || rep.Err.Kind != transport.FailureCommand || rep.Valid || rep.Value != "t7" {
+					t.Fatalf("rep: %+v want the startup timeout with address t7", rep)
 				}
-				// The actual child deadline releases this receive. No manual
-				// cancellation occurs before its error has been captured.
-				<-getCtx.Done()
-				getErr = getCtx.Err()
-				return tc.late
+				want := "agent w7 still not ready after 0.3s"
+				if tc.diagnostic != "" {
+					want += ": " + tc.diagnostic
+				}
+				if rep.Err.Message != want {
+					t.Fatalf("message %q want %q (child=%v, caller=%v, gets=%d)", rep.Err.Message, want, getErr, ctx.Err(), gets)
+				}
+				if tc.earlier != nil {
+					cause, ok := rep.Err.Cause.(*transport.Failure)
+					if !ok || cause == nil || cause.Kind != tc.causeKind || cause.Message != tc.diagnostic {
+						t.Fatalf("cause: %#v want the earlier %s diagnostic", rep.Err.Cause, tc.causeKind)
+					}
+				}
 			})
-			rep := b.Start(ctx, transport.Start{Name: "w7", Kind: "claude", Timeout: "300"}, transport.Call{})
-			if getErr != context.DeadlineExceeded || ctx.Err() != nil {
-				t.Fatalf("child error=%v caller error=%v, want only the child deadline", getErr, ctx.Err())
-			}
-			wantCalls := [][]string{{"get", "t1", "--json"}, {"get", "t7", "--json"}}
-			if tc.earlier != nil {
-				wantCalls = append(wantCalls, []string{"get", "t7", "--json"})
-			}
-			wantArgv(t, calls(), wantCalls)
-			if rep.Err == nil || rep.Err.Kind != transport.FailureCommand || rep.Valid || rep.Value != "t7" {
-				t.Fatalf("rep: %+v want the startup timeout with address t7", rep)
-			}
-			want := "agent w7 still not ready after 0.3s"
-			if tc.diagnostic != "" {
-				want += ": " + tc.diagnostic
-			}
-			if rep.Err.Message != want {
-				t.Fatalf("message %q want %q (child=%v, caller=%v, gets=%d)", rep.Err.Message, want, getErr, ctx.Err(), gets)
-			}
-			if tc.earlier != nil {
+		})
+	}
+}
+
+func TestStartReadinessTimeoutBetweenPolls(t *testing.T) {
+	zero, one := 0, 1
+	for _, tc := range []struct {
+		name       string
+		result     platform.RunResult
+		diagnostic string
+		causeKind  transport.FailureKind
+	}{
+		{
+			name:       "earlier_command_error_retained_when_deadline_expires_between_polls",
+			result:     platform.RunResult{Status: &one, Stderr: `{"error":{"kind":"core_unreachable","message":"connection refused"}}`},
+			diagnostic: "hc exited 1: core_unreachable: connection refused",
+			causeKind:  transport.FailureUnavailable,
+		},
+		{
+			name:       "earlier_protocol_error_retained_when_deadline_expires_between_polls",
+			result:     platform.RunResult{Status: &zero, Stdout: "{"},
+			diagnostic: "hc get returned no terminal record",
+			causeKind:  transport.FailureProtocol,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				gets := 0
+				b, calls := startReadinessRunner(t, func(getCtx context.Context) platform.RunResult {
+					gets++
+					if getCtx.Err() != nil {
+						t.Fatalf("get %d entered with error %v", gets, getCtx.Err())
+					}
+					return tc.result
+				})
+				// A 100ms startup budget with a 200ms poll interval expires while
+				// sleeping for the remainder of the interval between polls.
+				rep := b.Start(ctx, transport.Start{Name: "w7", Kind: "claude", Timeout: "100"}, transport.Call{})
+				if gets != 1 || ctx.Err() != nil {
+					t.Fatalf("gets=%d caller error=%v, want exactly 1 completed get before deadline between polls", gets, ctx.Err())
+				}
+				wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}, {"get", "t7", "--json"}})
+				if rep.Err == nil || rep.Err.Kind != transport.FailureCommand || rep.Valid || rep.Value != "t7" {
+					t.Fatalf("rep: %+v want startup timeout with address t7", rep)
+				}
+				want := "agent w7 still not ready after 0.1s: " + tc.diagnostic
+				if rep.Err.Message != want {
+					t.Fatalf("message %q want %q", rep.Err.Message, want)
+				}
 				cause, ok := rep.Err.Cause.(*transport.Failure)
 				if !ok || cause == nil || cause.Kind != tc.causeKind || cause.Message != tc.diagnostic {
 					t.Fatalf("cause: %#v want the earlier %s diagnostic", rep.Err.Cause, tc.causeKind)
 				}
-			}
+			})
 		})
 	}
 }
@@ -1148,7 +1207,7 @@ func TestStartRunOutcomeUnknown(t *testing.T) {
 	})
 
 	t.Run("post-submission deadline expiry classifies as unknown", func(t *testing.T) {
-		env, _, calls := startEnv(t, nil)
+		env := platform.Env{"HC_TERMINAL_ID": "t1"}
 		parentCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var childCtx context.Context
@@ -1169,6 +1228,18 @@ func TestStartRunOutcomeUnknown(t *testing.T) {
 			}
 		}
 		b := newBackend(env, conn)
+		var calls []fakecli.Call
+		b.client.Launch = func(ctx context.Context, _ platform.Env, args ...string) platform.RunResult {
+			calls = append(calls, fakecli.Call{Argv: append([]string(nil), args...)})
+			zero := 0
+			switch {
+			case len(args) > 1 && args[0] == "get" && args[1] == "t1":
+				return platform.RunResult{Status: &zero, Stdout: startCaller}
+			default:
+				t.Fatalf("unexpected hc argv: %#v", args)
+				return platform.RunResult{}
+			}
+		}
 		const callTimeout = 25 * time.Millisecond
 		rep := b.Start(parentCtx, transport.Start{Name: "w7", Kind: "claude", Timeout: "3000"}, transport.Call{Timeout: callTimeout})
 		if rep.Err == nil || rep.Err.Kind != transport.FailureRunOutcomeUnknown {
@@ -1196,7 +1267,7 @@ func TestStartRunOutcomeUnknown(t *testing.T) {
 		if req["method"] != "terminal.run" {
 			t.Fatalf("method = %v, want terminal.run", req["method"])
 		}
-		wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}})
+		wantArgv(t, calls, [][]string{{"get", "t1", "--json"}})
 	})
 }
 
