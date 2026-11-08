@@ -1,0 +1,175 @@
+name: Windows race single-test trace (diagnostic, db88)
+
+# Additive diagnostic; triggered only by pushes to this exact branch.
+# check.yml, container-image.yml, release.yml and the implementation source are untouched.
+on:
+  push:
+    branches:
+      - diag/win-race-trace-db88
+
+permissions:
+  contents: read
+
+concurrency:
+  group: win-race-trace-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trace:
+    name: Windows race trace (TestDispatchHcNoPreSendScreenWork, db88)
+    runs-on: windows-2025
+    timeout-minutes: 75
+    env:
+      GOTOOLCHAIN: auto
+      GOMAXPROCS: 2
+      CGO_ENABLED: 1
+      CHECK_REPO: ${{ github.repository }}
+      TRACE_SHA: "db88c53ad4443619afd85c30edb6b5b3b694b71f"
+    steps:
+      - name: Initialize the owned evidence directory and initial manifest
+        id: init_evidence
+        shell: pwsh
+        run: |
+          $art = Join-Path $env:RUNNER_TEMP "win-race-trace-${env:GITHUB_RUN_ID}-${env:GITHUB_RUN_ATTEMPT}"
+          Add-Content -Path $env:GITHUB_ENV -Value "ART_DIR=$art"
+          try {
+            New-Item -ItemType Directory -Force -Path $art | Out-Null
+            "EVIDENCE_INIT=ok run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT dir=$art" |
+              Out-File -LiteralPath (Join-Path $art 'manifest.txt') -Encoding utf8
+          } catch {
+            Write-Error "evidence initialization failed; artifact retention is NOT guaranteed; failing without widening upload paths: $($_.Exception.Message)"
+            throw "evidence initialization failed"
+          }
+      - name: Check out the exact db88 commit and assert HEAD equals TRACE_SHA
+        id: checkout
+        shell: pwsh
+        run: |
+          git init .
+          if ($LASTEXITCODE -ne 0) { throw "git init failed" }
+          git config core.autocrlf false
+          if ($LASTEXITCODE -ne 0) { throw "git config core.autocrlf failed" }
+          git remote add origin "https://github.com/${env:CHECK_REPO}.git"
+          if ($LASTEXITCODE -ne 0) { throw "git remote add failed" }
+          git fetch --depth 1 origin "${env:TRACE_SHA}"
+          if ($LASTEXITCODE -ne 0) { throw "git fetch failed" }
+          git checkout --detach "${env:TRACE_SHA}"
+          if ($LASTEXITCODE -ne 0) { throw "git checkout failed" }
+          $head = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw "git rev-parse HEAD failed" }
+          if ($head -ne $env:TRACE_SHA) { throw "checked-out HEAD $head does not equal TRACE_SHA $env:TRACE_SHA" }
+          "SOURCE_HEAD=$head" | Add-Content -LiteralPath (Join-Path $env:ART_DIR 'manifest.txt')
+      - name: Resolve the Go toolchain (same as the gate)
+        id: toolchain
+        shell: pwsh
+        run: |
+          if (Get-Command go -ErrorAction SilentlyContinue) { return }
+          $arch = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' }
+          $toolcache = $env:RUNNER_TOOL_CACHE
+          if (-not $toolcache) { $toolcache = $env:AGENT_TOOLSDIRECTORY }
+          if (-not $toolcache) { throw "Go is not on PATH and the runner toolcache is unset" }
+          $bin = Get-ChildItem (Join-Path $toolcache 'go') -Directory |
+            Where-Object { $_.Name -match '^1\.25\.\d+$' } |
+            Sort-Object { [version]$_.Name } -Descending |
+            ForEach-Object { Join-Path $_.FullName "$arch/bin" } |
+            Where-Object { Test-Path (Join-Path $_ 'go.exe') } |
+            Select-Object -First 1
+          if (-not $bin) { throw "Go is not on PATH and no 1.25.x toolcache entry was found" }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+      - name: Keep the Go build cache and the test temp on the work drive
+        id: cache
+        shell: pwsh
+        run: |
+          $cache = Join-Path $env:RUNNER_TEMP 'go-build'
+          $tmp = Join-Path $env:RUNNER_TEMP 'go-tmp'
+          $testTmp = Join-Path $env:RUNNER_TEMP 'test-tmp'
+          New-Item -ItemType Directory -Force -Path $cache, $tmp, $testTmp | Out-Null
+          Add-Content -Path $env:GITHUB_ENV -Value "GOCACHE=$cache"
+          Add-Content -Path $env:GITHUB_ENV -Value "GOTMPDIR=$tmp"
+          Add-Content -Path $env:GITHUB_ENV -Value "TEMP=$testTmp"
+          Add-Content -Path $env:GITHUB_ENV -Value "TMP=$testTmp"
+      - name: Record checked Go/compiler and runner metadata (exit-checked, no suppression)
+        id: record_metadata
+        shell: pwsh
+        run: |
+          $meta = Join-Path $env:ART_DIR 'metadata.txt'
+          "GOMAXPROCS(runtime env)=$env:GOMAXPROCS" | Out-File -LiteralPath $meta -Encoding utf8
+          $gv = go version
+          if ($LASTEXITCODE -eq 0) { "go version=$gv" | Add-Content -LiteralPath $meta } else { "go version=FAILED(exit $LASTEXITCODE; parity limit)" | Add-Content -LiteralPath $meta }
+          foreach ($k in @('GOVERSION','GOOS','GOARCH','CGO_ENABLED','CC','CXX','GOTOOLCHAIN')) {
+            $v = go env $k
+            if ($LASTEXITCODE -eq 0) { "GOENV_$k=$v" | Add-Content -LiteralPath $meta } else { "GOENV_$k=FAILED(exit $LASTEXITCODE; parity limit)" | Add-Content -LiteralPath $meta }
+          }
+          "RUNNER_IMAGE=${{ runner.os }}/${{ runner.arch }}" | Add-Content -LiteralPath $meta
+          "IMAGE_OS=$env:ImageOS IMAGE_VERSION=$env:ImageVersion" | Add-Content -LiteralPath $meta
+          $cc = ((go env CC) 2>&1) -join ' '
+          $ccExit = $LASTEXITCODE
+          $cc = $cc.Trim()
+          if ($ccExit -ne 0) { "CC=go-env-CC-failed(exit $ccExit; parity limit)" | Add-Content -LiteralPath $meta }
+          elseif ($cc -eq '') { "CC=empty(parity limit: race/cgo needs a C compiler)" | Add-Content -LiteralPath $meta }
+          elseif ($cc -match '\s') { "CC=compound(parity limit; shell evaluation refused)" | Add-Content -LiteralPath $meta }
+          else {
+            $ccCmd = Get-Command $cc -CommandType Application -ErrorAction SilentlyContinue
+            if (-not $ccCmd) { "CC=not-found(parity limit: '$cc' not on PATH)" | Add-Content -LiteralPath $meta }
+            else {
+              "CC_RESOLVED=$($ccCmd.Source)" | Add-Content -LiteralPath $meta
+              $ccVersionLines = & $ccCmd.Source --version 2>&1
+              $ccVersionExit = $LASTEXITCODE
+              $ccVer = ($ccVersionLines | Select-Object -First 3) -join ' '
+              if ($ccVersionExit -eq 0) { "CC_VERSION(bounded)=$ccVer" | Add-Content -LiteralPath $meta }
+              else { "CC_VERSION=unavailable(parity limit: cc --version exited $ccVersionExit)" | Add-Content -LiteralPath $meta }
+            }
+          }
+      - name: Race-trace one representative test (unchanged source, 30m watchdog)
+        id: run_test
+        shell: pwsh
+        run: |
+          $trace = Join-Path $env:ART_DIR 'cli-race.trace'
+          $log = Join-Path $env:ART_DIR 'test.log'
+          "TEST_START_SENTINEL run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT" | Out-File -LiteralPath (Join-Path $env:ART_DIR 'test-start.txt') -Encoding utf8
+          go test -race -count=1 -run '^TestDispatchHcNoPreSendScreenWork$' -timeout=30m -trace="$trace" ./internal/cli 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          "TEST_EXIT=$code" | Out-File -LiteralPath (Join-Path $env:ART_DIR 'test-exit.txt') -Encoding utf8
+          if ($code -ne 0) { throw "native test exit $code (nonzero); TEST_EXIT preserved separately from trace validity" }
+          if (-not (Test-Path -LiteralPath $trace -PathType Leaf)) { throw "test exited 0 but the leaf trace is missing (trace-validity failure)" }
+          if ((Get-Item -LiteralPath $trace).Length -le 0) { throw "test exited 0 but the leaf trace is empty (trace-validity failure)" }
+      - name: 'Finalize evidence (always): step outcomes, sentinel, TEST_EXIT, trace, HEAD'
+        id: finalize_evidence
+        if: always()
+        shell: pwsh
+        run: |
+          $art = Join-Path $env:RUNNER_TEMP "win-race-trace-${env:GITHUB_RUN_ID}-${env:GITHUB_RUN_ATTEMPT}"
+          if (-not (Test-Path -LiteralPath $art)) {
+            Write-Warning "ART_DIR missing (evidence init likely failed); finalizer cannot record; the uploader will fail (no retention guaranteed)"
+            return
+          }
+          $m = Join-Path $art 'manifest.txt'
+          "FINALIZE run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT" | Add-Content -LiteralPath $m
+          "CONCL_INIT_EVIDENCE=${{ steps.init_evidence.conclusion }}" | Add-Content -LiteralPath $m
+          "CONCL_CHECKOUT=${{ steps.checkout.conclusion }}" | Add-Content -LiteralPath $m
+          "CONCL_TOOLCHAIN=${{ steps.toolchain.conclusion }}" | Add-Content -LiteralPath $m
+          "CONCL_CACHE=${{ steps.cache.conclusion }}" | Add-Content -LiteralPath $m
+          "CONCL_RECORD_METADATA=${{ steps.record_metadata.conclusion }}" | Add-Content -LiteralPath $m
+          "CONCL_RUN_TEST=${{ steps.run_test.conclusion }}" | Add-Content -LiteralPath $m
+          $sentinel = Join-Path $art 'test-start.txt'
+          if (Test-Path -LiteralPath $sentinel) { "TEST_STARTED=yes" | Add-Content -LiteralPath $m } else { "TEST_STARTED=no" | Add-Content -LiteralPath $m }
+          $exitFile = Join-Path $art 'test-exit.txt'
+          if (Test-Path -LiteralPath $exitFile) { "RECORDED_TEST_EXIT=$(Get-Content -LiteralPath $exitFile -Raw)" | Add-Content -LiteralPath $m } else { "RECORDED_TEST_EXIT=none" | Add-Content -LiteralPath $m }
+          $trace = Join-Path $art 'cli-race.trace'
+          if (Test-Path -LiteralPath $trace) { "TRACE_PRESENT=yes SIZE_BYTES=$((Get-Item -LiteralPath $trace).Length)" | Add-Content -LiteralPath $m } else { "TRACE_PRESENT=no" | Add-Content -LiteralPath $m }
+          $head = git rev-parse HEAD
+          if ($LASTEXITCODE -eq 0) { "FINAL_HEAD=$head" | Add-Content -LiteralPath $m } else { "FINAL_HEAD=unavailable" | Add-Content -LiteralPath $m }
+      - name: Retain the diagnostic artifact (always, on success or failure)
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: win-race-trace-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/win-race-trace-${{ github.run_id }}-${{ github.run_attempt }}/manifest.txt
+            ${{ runner.temp }}/win-race-trace-${{ github.run_id }}-${{ github.run_attempt }}/metadata.txt
+            ${{ runner.temp }}/win-race-trace-${{ github.run_id }}-${{ github.run_attempt }}/test-start.txt
+            ${{ runner.temp }}/win-race-trace-${{ github.run_id }}-${{ github.run_attempt }}/test-exit.txt
+            ${{ runner.temp }}/win-race-trace-${{ github.run_id }}-${{ github.run_attempt }}/test.log
+            ${{ runner.temp }}/win-race-trace-${{ github.run_id }}-${{ github.run_attempt }}/cli-race.trace
+          if-no-files-found: error
+          retention-days: 7
