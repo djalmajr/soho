@@ -306,6 +306,8 @@ func spawnHcExitWithConn(t *testing.T, bin string, argv []string, ctx *core.Conf
 	client := hc.New(env)
 	if conn != nil {
 		client.Connect = conn.Connect
+	} else {
+		client.Connect = nil
 	}
 	origLaunch := client.Launch
 	client.Launch = func(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
@@ -740,8 +742,10 @@ func TestSpawnHcUnknownOutcomeMalformedJSON(t *testing.T) {
 }
 
 func TestSpawnHcUnknownOutcomeWithObservedAddress(t *testing.T) {
-	// When terminal.run outcome is unknown but address was observed,
-	// spawn dies with exit 4, naming the terminal address for manual inspection.
+	// Synthetic consumer guard evidence: verifies spawn-side guard behavior when backend
+	// Start reports an unknown outcome with an observed address (proves one Start submission,
+	// zero Close calls, no cleanup, no roster registration, and exit 4 manual inspection diagnostic).
+	// This is synthetic consumer guard evidence, not an address-bearing RPC reply or backend state transition.
 	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
 	rules := hcFixtureRules()
 	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
@@ -749,7 +753,16 @@ func TestSpawnHcUnknownOutcomeWithObservedAddress(t *testing.T) {
 	}
 
 	client := hc.New(env)
+	termFake := &fakeObservedAddressRuntime{observedAddress: "t99"}
+	transFake := &fakeCloseCountingTransport{}
+
 	var exit *platform.ExitError
+	var calls []fakecli.Call
+	oldOut, oldErr := platform.Stdout, platform.Stderr
+	out, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	platform.Stdout, platform.Stderr = out, stderr
+	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
+
 	func() {
 		defer func() {
 			if value := recover(); value != nil {
@@ -762,13 +775,13 @@ func TestSpawnHcUnknownOutcomeWithObservedAddress(t *testing.T) {
 		}()
 		cmdSpawnWithHcStarter([]string{"worker", "--kind", "pi"}, ctx, env, cwd, func(c *core.Config, o *spawnOptions, k string, e platform.Env, a []string) {
 			svc := backend.NewWithClient(e, client)
-			// Wrap svc.Terminal to return FailureRunOutcomeUnknown with observed address t99
-			origTerm := svc.Terminal
-			_ = origTerm
-			svc.Terminal = &fakeObservedAddressRuntime{observedAddress: "t99"}
+			transFake.Transport = svc.Runtime
+			svc.Terminal = termFake
+			svc.Runtime = transFake
 			startHcAgentUsingServices(c, o, k, e, a, svc)
 		})
 	}()
+	calls = hcCallLog(t, bin)
 
 	if exit == nil || exit.Code != 4 {
 		t.Fatalf("exit=%+v, want exit 4", exit)
@@ -776,6 +789,17 @@ func TestSpawnHcUnknownOutcomeWithObservedAddress(t *testing.T) {
 	want := "spawn: terminal creation outcome is uncertain; terminal t99 preserved for manual inspection"
 	if exit.Msg != want {
 		t.Fatalf("exit.Msg=%q, want %q", exit.Msg, want)
+	}
+	if termFake.startCalls != 1 {
+		t.Fatalf("startCalls = %d, want exactly 1 submission", termFake.startCalls)
+	}
+	if transFake.closeCalls != 0 {
+		t.Fatalf("closeCalls = %d, want 0 close calls on uncertain outcome", transFake.closeCalls)
+	}
+	for _, c := range calls {
+		if c.Argv[0] == "kill" || c.Argv[0] == "rm" {
+			t.Fatalf("unexpected cleanup call %v on uncertain outcome", c.Argv)
+		}
 	}
 	if data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv")); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -788,9 +812,11 @@ func TestSpawnHcUnknownOutcomeWithObservedAddress(t *testing.T) {
 
 type fakeObservedAddressRuntime struct {
 	observedAddress string
+	startCalls      int
 }
 
 func (f *fakeObservedAddressRuntime) Start(ctx context.Context, start transport.Start, call transport.Call) transport.Reply[string] {
+	f.startCalls++
 	return transport.Reply[string]{
 		Value: f.observedAddress,
 		Err: &transport.Failure{
@@ -813,6 +839,16 @@ func (f *fakeObservedAddressRuntime) GetGone(ctx context.Context, target transpo
 	return transport.Reply[bool]{}
 }
 
+type fakeCloseCountingTransport struct {
+	transport.Transport
+	closeCalls int
+}
+
+func (f *fakeCloseCountingTransport) Close(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[bool] {
+	f.closeCalls++
+	return f.Transport.Close(ctx, target, call)
+}
+
 func TestSpawnHcZeroConnectOnValidationRefusal(t *testing.T) {
 	// When spawn options fail initial validation (e.g. non-existent cwd),
 	// zero RPC connections must be made.
@@ -825,4 +861,22 @@ func TestSpawnHcZeroConnectOnValidationRefusal(t *testing.T) {
 	if conn.getConnectCount() != 0 {
 		t.Fatalf("connect count = %d, want 0 on validation refusal", conn.getConnectCount())
 	}
+}
+
+func TestSpawnHcNilConnectFailsLocally(t *testing.T) {
+	// A test client with nil Connect fails locally before any Core call or external creation.
+	cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "")
+	rules := hcFixtureRules()
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	exit, _, _, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, nil)
+	if exit == nil || exit.Code != 4 {
+		t.Fatalf("exit=%+v, want exit 4", exit)
+	}
+	wantMsg := "terminal run: client connect seam is not configured"
+	if exit.Msg != wantMsg {
+		t.Fatalf("exit.Msg=%q, want %q", exit.Msg, wantMsg)
+	}
+	assertHcOnlyReads(t, bin, calls)
 }

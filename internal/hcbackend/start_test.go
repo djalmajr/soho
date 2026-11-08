@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +40,8 @@ type fakeRPCConn struct {
 	responses    string
 	connectErr   error
 	connectCount int
+	lastCtx      context.Context
+	onConnect    func(ctx context.Context)
 	beforeRead   func(req []byte)
 }
 
@@ -53,6 +56,10 @@ func (fc *fakeRPCConn) Connect(ctx context.Context, _ platform.Env) (io.WriteClo
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 	fc.connectCount++
+	fc.lastCtx = ctx
+	if fc.onConnect != nil {
+		fc.onConnect(ctx)
+	}
 	if fc.connectErr != nil {
 		return nil, nil, nil, fc.connectErr
 	}
@@ -65,6 +72,12 @@ func (fc *fakeRPCConn) Connect(ctx context.Context, _ platform.Env) (io.WriteClo
 		return nil
 	}
 	return in, out, reap, nil
+}
+
+func (fc *fakeRPCConn) getLastCtx() context.Context {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	return fc.lastCtx
 }
 
 type fakeRPCIn struct {
@@ -161,6 +174,8 @@ func newBackend(env platform.Env, conn *fakeRPCConn) *backend {
 	client := hc.New(env)
 	if conn != nil {
 		client.Connect = conn.Connect
+	} else {
+		client.Connect = nil
 	}
 	origLaunch := client.Launch
 	client.Launch = func(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
@@ -308,6 +323,40 @@ func TestStartCwd(t *testing.T) {
 		if params["cwd"] != wd {
 			t.Fatalf("cwd=%v want %v", params["cwd"], wd)
 		}
+	})
+
+	t.Run("getwd failure fails before connect", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("skipping directory deletion on Windows: native OS locks current working directory")
+		}
+		origDir, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		disposable := t.TempDir()
+		if err := os.Chdir(disposable); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = os.Chmod(disposable, 0o700)
+			_ = os.Chdir(origDir)
+		})
+		_ = os.Chmod(disposable, 0o000)
+		_ = os.Remove(disposable)
+
+		env, conn, calls := startEnv(t, nil)
+		b := newBackend(env, conn)
+		rep := b.Start(context.Background(), transport.Start{Name: "w7", Kind: "claude", Cwd: "", Timeout: "3000"}, transport.Call{})
+		if rep.Err == nil || rep.Err.Kind != transport.FailureUnavailable {
+			t.Fatalf("rep: %+v want FailureUnavailable", rep)
+		}
+		if !strings.HasPrefix(rep.Err.Message, "getwd: ") {
+			t.Fatalf("message %q want prefix 'getwd: '", rep.Err.Message)
+		}
+		if conn.getConnectCount() != 0 {
+			t.Fatalf("connect count = %d, want 0 when getwd fails before connect", conn.getConnectCount())
+		}
+		wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}})
 	})
 }
 
@@ -1073,5 +1122,181 @@ func TestStartRunOutcomeUnknown(t *testing.T) {
 			t.Fatalf("message %q want %q", rep.Err.Message, "connection refused by core")
 		}
 		wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}})
+	})
+
+	t.Run("pre-submission deadline expiry has no submitted run", func(t *testing.T) {
+		env, _, calls := startEnv(t, nil)
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-1*time.Millisecond))
+		defer cancel()
+		conn := newFakeRPCConn("")
+		b := newBackend(env, conn)
+		rep := b.Start(ctx, transport.Start{Name: "w7", Kind: "claude", Timeout: "3000"}, transport.Call{})
+		if rep.Err == nil || rep.Err.Kind != transport.FailureCancelled {
+			t.Fatalf("rep: %+v want FailureCancelled", rep)
+		}
+		if got := len(calls()); got != 0 {
+			t.Fatalf("calls = %d want 0", got)
+		}
+		if conn.getConnectCount() != 0 {
+			t.Fatalf("connectCount = %d want 0", conn.getConnectCount())
+		}
+		if strings.Contains(string(conn.getWritten()), "terminal.run") {
+			t.Fatal("terminal.run must not be written on pre-submission deadline expiry")
+		}
+	})
+
+	t.Run("post-submission deadline expiry classifies as unknown", func(t *testing.T) {
+		env, _, calls := startEnv(t, nil)
+		parentCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		conn := newFakeRPCConn("")
+		conn.beforeRead = func(req []byte) {
+			if strings.Contains(string(req), "terminal.run") {
+				cancel()
+			}
+		}
+		b := newBackend(env, conn)
+		rep := b.Start(parentCtx, transport.Start{Name: "w7", Kind: "claude", Timeout: "3000"}, transport.Call{})
+		if rep.Err == nil || rep.Err.Kind != transport.FailureRunOutcomeUnknown {
+			t.Fatalf("rep: %+v want FailureRunOutcomeUnknown", rep)
+		}
+		if !errors.Is(rep.Err.Cause, hc.ErrRunOutcomeUnknown) {
+			t.Fatalf("cause %v want ErrRunOutcomeUnknown", rep.Err.Cause)
+		}
+		if !strings.Contains(string(conn.getWritten()), "terminal.run") {
+			t.Fatal("terminal.run must have been submitted before post-submission expiry")
+		}
+		wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}})
+	})
+}
+
+func TestStartNilConnectFailsLocally(t *testing.T) {
+	env, _, calls := startEnv(t, nil)
+	b := newBackend(env, nil)
+	rep := b.Start(context.Background(), transport.Start{Name: "w7", Kind: "claude", Timeout: "3000"}, transport.Call{})
+	if rep.Err == nil || rep.Err.Kind != transport.FailureUnavailable {
+		t.Fatalf("rep: %+v want FailureUnavailable", rep)
+	}
+	wantMsg := "terminal run: client connect seam is not configured"
+	if rep.Err.Message != wantMsg {
+		t.Fatalf("message %q want %q", rep.Err.Message, wantMsg)
+	}
+	wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}})
+}
+
+func TestStartCreationTimeoutsAndCancellation(t *testing.T) {
+	t.Run("default 30s budget clamps run context", func(t *testing.T) {
+		env, conn, _ := startEnv(t, []fakecli.Rule{
+			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: startReadyIdle},
+		})
+		b := newBackend(env, conn)
+		rep := b.Start(context.Background(), transport.Start{Name: "w7", Kind: "claude", Timeout: "3000"}, transport.Call{})
+		if rep.Err != nil || !rep.Valid {
+			t.Fatalf("rep: %+v", rep)
+		}
+		lastCtx := conn.getLastCtx()
+		if lastCtx == nil {
+			t.Fatal("lastCtx was nil; Connect was not called with context")
+		}
+		deadline, ok := lastCtx.Deadline()
+		if !ok {
+			t.Fatal("expected deadline on creation context from default 30s budget")
+		}
+		remaining := time.Until(deadline)
+		if remaining > 30*time.Second || remaining < 20*time.Second {
+			t.Fatalf("remaining deadline %v, want ~30s", remaining)
+		}
+	})
+
+	t.Run("positive call timeout clamps run context", func(t *testing.T) {
+		env, conn, _ := startEnv(t, []fakecli.Rule{
+			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: startReadyIdle},
+		})
+		b := newBackend(env, conn)
+		rep := b.Start(context.Background(), transport.Start{Name: "w7", Kind: "claude", Timeout: "3000"}, transport.Call{Timeout: 5 * time.Second})
+		if rep.Err != nil || !rep.Valid {
+			t.Fatalf("rep: %+v", rep)
+		}
+		lastCtx := conn.getLastCtx()
+		if lastCtx == nil {
+			t.Fatal("lastCtx was nil")
+		}
+		deadline, ok := lastCtx.Deadline()
+		if !ok {
+			t.Fatal("expected deadline on creation context from call.Timeout")
+		}
+		remaining := time.Until(deadline)
+		if remaining > 5*time.Second || remaining < 3*time.Second {
+			t.Fatalf("remaining deadline %v, want ~5s", remaining)
+		}
+	})
+
+	t.Run("earlier parent deadline is inherited by run context", func(t *testing.T) {
+		env, conn, _ := startEnv(t, []fakecli.Rule{
+			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: startReadyIdle},
+		})
+		b := newBackend(env, conn)
+		parentDeadline := time.Now().Add(2 * time.Second)
+		parentCtx, cancel := context.WithDeadline(context.Background(), parentDeadline)
+		defer cancel()
+		rep := b.Start(parentCtx, transport.Start{Name: "w7", Kind: "claude", Timeout: "3000"}, transport.Call{Timeout: 10 * time.Second})
+		if rep.Err != nil || !rep.Valid {
+			t.Fatalf("rep: %+v", rep)
+		}
+		lastCtx := conn.getLastCtx()
+		if lastCtx == nil {
+			t.Fatal("lastCtx was nil")
+		}
+		deadline, ok := lastCtx.Deadline()
+		if !ok {
+			t.Fatal("expected deadline on creation context")
+		}
+		if deadline.After(parentDeadline) {
+			t.Fatalf("run deadline %v was later than parent deadline %v", deadline, parentDeadline)
+		}
+	})
+
+	t.Run("child context promptly cancelled upon creation while readiness proceeds", func(t *testing.T) {
+		var childCtx context.Context
+		parentCtx := context.Background()
+		readinessVerified := false
+
+		env, calls := fakeHc(t, []fakecli.Rule{
+			{Argv: []string{"get", "t1", "--json"}, Stdout: startCaller},
+			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: startReadyIdle},
+		})
+		conn := newFakeRPCConn("")
+		conn.onConnect = func(ctx context.Context) {
+			childCtx = ctx
+			if childCtx.Err() != nil {
+				t.Fatalf("child context should not be canceled during Connect: %v", childCtx.Err())
+			}
+		}
+		b := newBackend(env, conn)
+		origLaunch := b.client.Launch
+		b.client.Launch = func(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
+			if len(args) >= 2 && args[0] == "get" && args[1] == "t7" {
+				readinessVerified = true
+				if childCtx == nil {
+					t.Fatal("child context was not captured before readiness get")
+				}
+				if childCtx.Err() != context.Canceled {
+					t.Fatalf("child context must be promptly canceled before readiness get: %v", childCtx.Err())
+				}
+				if ctx.Err() != nil {
+					t.Fatalf("parent context must not be canceled during readiness get: %v", ctx.Err())
+				}
+			}
+			return origLaunch(ctx, env, args...)
+		}
+
+		rep := b.Start(parentCtx, transport.Start{Name: "w7", Kind: "claude", Timeout: "3000"}, transport.Call{})
+		if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+			t.Fatalf("rep: %+v want success t7", rep)
+		}
+		if !readinessVerified {
+			t.Fatal("readiness get t7 was not verified")
+		}
+		wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}, {"get", "t7", "--json"}})
 	})
 }
