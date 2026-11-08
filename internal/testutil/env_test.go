@@ -49,3 +49,45 @@ func TestCleanEnvGivesEachTestItsOwnTMPDIR(t *testing.T) {
 		t.Fatalf("TMPDIR entries = %q, want one test-owned directory", got)
 	}
 }
+
+// Mutation captured: leaking HC_TERMINAL_ID or SOHO_TRANSPORT into test
+// fixtures causes commands to attempt native terminal lookups against a
+// missing or invalid terminal session.
+func TestCleanEnvDropsInheritedNativeContext(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		keys []string
+	}{
+		{name: "uppercase", keys: []string{"HC_TERMINAL_ID", "SOHO_TRANSPORT"}},
+		{name: "lowercase", keys: []string{"hc_terminal_id", "soho_transport"}},
+		{name: "mixedcase", keys: []string{"Hc_Terminal_Id", "Soho_Transport"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, k := range tc.keys {
+				t.Setenv(k, "leak-value")
+			}
+			t.Setenv("TEST_CLEAN_ENV_KEEP", "keep-val")
+
+			env := CleanEnv(t)
+			for _, item := range env {
+				key, value, ok := strings.Cut(item, "=")
+				if !ok {
+					continue
+				}
+				if strings.EqualFold(key, "HC_TERMINAL_ID") || strings.EqualFold(key, "SOHO_TRANSPORT") {
+					t.Fatalf("inherited %s reached CleanEnv fixture: %q", key, value)
+				}
+			}
+			foundKeep := false
+			for _, item := range env {
+				if strings.HasPrefix(item, "TEST_CLEAN_ENV_KEEP=") {
+					foundKeep = true
+					break
+				}
+			}
+			if !foundKeep {
+				t.Fatal("unrelated environment variable was unexpectedly dropped")
+			}
+		})
+	}
+}

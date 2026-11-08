@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 
@@ -99,18 +100,21 @@ func placeJSON(args []string) []string {
 // the per-instance runner: it runs the hc binary with the given sub-argv
 // (no binary name) and returns the raw process result; it defaults to
 // platform.RunCli for "hc", so a test can replace it to count and script
-// launches. There is no package-global seam: the package-level Run and
-// RunInput keep their behavior through the default launcher.
+// launches. Connect starts a live duplex connection to hc connect --json.
+// There is no package-global seam: the package-level Run and RunInput
+// keep their behavior through the default launcher.
 type Client struct {
 	// Env is the environment every launch runs with.
 	Env platform.Env
 	// Launch runs the hc binary with the given sub-argv.
 	Launch func(ctx context.Context, env platform.Env, args ...string) platform.RunResult
+	// Connect starts a live duplex connection to hc connect --json.
+	Connect func(ctx context.Context, env platform.Env) (in io.WriteCloser, out io.Reader, reap func() error, err error)
 }
 
-// New builds a client for env with the default launcher.
+// New builds a client for env with the default launcher and connector.
 func New(env platform.Env) *Client {
-	return &Client{Env: env, Launch: defaultLaunch}
+	return &Client{Env: env, Launch: defaultLaunch, Connect: defaultConnect}
 }
 
 // defaultLaunch is the client's default runner: platform.RunCli for "hc".

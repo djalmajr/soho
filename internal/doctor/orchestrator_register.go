@@ -204,6 +204,53 @@ func SetTaskAfterTitle(cfg *core.Config, env platform.Env, cwd, pane, objective 
 	return nil
 }
 
+// verifyCallerDetail performs strict response validation on the detailed
+// caller terminal (Runtime.Get) for unnamed callers or summaries lacking
+// recognized program identity (DJA-611 D4): it verifies that the response
+// is valid, live, matches the caller's address, session, and project root,
+// and identifies a known program kind. It returns the recognized kind and
+// the display name (the terminal's explicit name, or pane ID fallback).
+func verifyCallerDetail(env platform.Env, svc transport.Services, pane, session, root string) (string, string) {
+	detailRep := svc.Runtime.Get(context.Background(), transport.Target{ID: pane}, transport.Call{})
+	if detailRep.Err != nil {
+		platform.Die("init: the caller terminal detail could not be read: "+detailRep.Err.Error(), 2)
+	}
+	if !detailRep.Valid {
+		platform.Die("init: the caller terminal detail is malformed", 2)
+	}
+	detail := detailRep.Value
+	if detail.NativeState != "live" {
+		platform.Die("init: the caller terminal is not live", 2)
+	}
+	switch detail.State {
+	case "idle", "working", "blocked", "done", "error":
+	default:
+		platform.Die("init: the caller terminal activity is not known", 2)
+	}
+	if detail.PaneID == "" || detail.PaneID != pane {
+		platform.Die("init: the detailed caller address does not match", 2)
+	}
+	if detail.WorkspaceID == "" || detail.WorkspaceID != session {
+		platform.Die("init: the detailed caller session does not match the session", 2)
+	}
+	if detail.Cwd == "" {
+		platform.Die("init: the detailed caller reports no cwd", 2)
+	}
+	detailRoot, err := StrictProjectRoot(env, detail.Cwd)
+	if err != nil || detailRoot != root {
+		platform.Die("init: the detailed caller root does not match the project root", 2)
+	}
+	kind := kinds.KindFromProgramHints(detail.ProgramHints)
+	if kind == "" {
+		platform.Die("init: the caller terminal names no known kind", 2)
+	}
+	name := detail.Name
+	if name == "" {
+		name = detail.PaneID
+	}
+	return kind, name
+}
+
 // cmdInitHc is the explicit HC branch of an explicit init (DJA-611 D4): it
 // validates the real HC terminal, session, canonical root and roster
 // before any state write, safely initializes the minimum session state,
@@ -242,19 +289,22 @@ func cmdInitHc(ctx *core.Config, env platform.Env, cwd string) {
 		platform.Die("init: "+reason, 2)
 	}
 	kind := kinds.KindFromProgramHints(matched.ProgramHints)
-	if kind == "" {
-		platform.Die("init: the caller terminal names no known kind", 2)
-	}
-	nameReply := svc.Terminal.CallerAgentName(context.Background(), transport.Call{})
-	if nameReply.Err != nil {
-		platform.Die("init: the caller terminal's name could not be read: "+nameReply.Err.Error(), 2)
+	var name string
+	if matched.Name != "" && kind != "" {
+		nameReply := svc.Terminal.CallerAgentName(context.Background(), transport.Call{})
+		if nameReply.Err != nil {
+			platform.Die("init: the caller terminal's name could not be read: "+nameReply.Err.Error(), 2)
+		}
+		name = nameReply.Value
+	} else {
+		kind, name = verifyCallerDetail(env, svc, caller.PaneID, session, root)
 	}
 	record := sessionmeta.Record{
 		Schema:      sessionmeta.Schema,
 		ProjectRoot: root,
 		SessionID:   session,
 		Terminal:    caller.PaneID,
-		Name:        nameReply.Value,
+		Name:        name,
 		Kind:        kind,
 		StartedMS:   platform.Now().UTC().UnixMilli(),
 		Task:        filepath.Base(root),
@@ -270,7 +320,7 @@ func cmdInitHc(ctx *core.Config, env platform.Env, cwd string) {
 		platform.Die("init: the orchestrator record could not be registered: "+err.Error(), 2)
 	}
 	obj := jsonjs.O(
-		"orchestrator", nameReply.Value,
+		"orchestrator", name,
 		"pane_id", caller.PaneID,
 		"tab_id", caller.TabID,
 		"workspace_id", session,

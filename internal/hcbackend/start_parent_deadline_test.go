@@ -38,7 +38,7 @@ func TestStartReadinessParentDeadlinePriority(t *testing.T) {
 			if !entered {
 				t.Fatal("the readiness boundary was not exercised")
 			}
-			wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}, runArgv("claude"), {"get", "t7", "--json"}})
+			wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}, {"get", "t7", "--json"}})
 			if rep.Err == nil || rep.Err.Kind != transport.FailureCancelled || rep.Valid || rep.Value != "t7" {
 				t.Fatalf("parent deadline was mistaken for a startup result: %+v", rep)
 			}

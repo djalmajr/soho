@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -352,4 +353,43 @@ func TestDispatchHcBusyRetryIsFinal(t *testing.T) {
 		t.Errorf("retry not final or hint wrong: %q", stderr)
 	}
 	f.assertHcNeverTouchedHerdr(t)
+}
+
+// TestDispatchHcFixtureAppliesChildRaceOptions verifies that newDispatchHcFixture
+// propagates inherited race detector options to fixture children with
+// atexit_sleep_ms=0.
+func TestDispatchHcFixtureAppliesChildRaceOptions(t *testing.T) {
+	t.Setenv("GORACE", "halt_on_error=1 atexit_sleep_ms=700")
+	f := newDispatchHcFixture(t, nil)
+	target, err := fakecli.InstallWithOptions(t, f.bin, "race-env-probe", []fakecli.Rule{{AnyArgs: true}}, fakecli.InstallOptions{
+		CaptureEnv: []string{"GORACE"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(target, "probe")
+	cmd.Env = f.env.List()
+	out, err := cmd.CombinedOutput()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			t.Fatalf("exec probe child: %v: %s", err, out)
+		}
+	}
+	if exitCode != 0 {
+		t.Fatalf("probe exit code = %d, want 0 (output=%s)", exitCode, out)
+	}
+	calls, err := fakecli.ReadCalls(filepath.Join(f.bin, "race-env-probe.calls.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("observed probe calls = %d, want 1: %#v", len(calls), calls)
+	}
+	wantOption := "halt_on_error=1 atexit_sleep_ms=0"
+	if got := calls[0].Env["GORACE"]; got != wantOption {
+		t.Fatalf("received GORACE = %q, want %q", got, wantOption)
+	}
 }

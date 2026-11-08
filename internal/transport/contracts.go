@@ -89,6 +89,10 @@ const (
 	// FailureBusy: the idle guard found the target not idle (hc send's exit
 	// 10); the send was not made.
 	FailureBusy FailureKind = "busy"
+	// FailureRunOutcomeUnknown: the run operation was dispatched but the outcome
+	// is uncertain (e.g. response missing or dropped after mutation); the terminal
+	// may have been created. Automatic retry or cleanup must be refused.
+	FailureRunOutcomeUnknown FailureKind = "run-outcome-unknown"
 )
 
 // Failure is a structured transport error. Code carries an observed wire code
@@ -138,6 +142,11 @@ type Terminal struct {
 	PaneID   string
 	State    string
 	Sequence json.RawMessage
+	// NativeState is the terminal record's actual string lifecycle as
+	// reported by the backend (e.g. hc record's actual "live" or "finished";
+	// missing/non-string stays empty), independent of mapped agent activity
+	// in State. Source metadata for local verification, never a public field.
+	NativeState string
 	// Msg carries the message the terminal record reports next to its
 	// state word (the hc status message, "" when the backend reports
 	// none), so a consumer that maps the state word can also carry the

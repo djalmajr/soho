@@ -90,6 +90,7 @@ func newDispatchHcFixture(t *testing.T, rules []fakecli.Rule) *dispatchHcFixture
 		"SOHO_DIR": state, "SOHO_TRANSPORT": "hc", "HC_TERMINAL_ID": "t1",
 		"SOHO_LANES": "off", "SOHO_BRIEF_LINT": "off",
 		"SOHO_PROMPT_CHECK_SECONDS": "1", "SOHO_WAIT_POLL_MS": "50",
+		"GORACE": fakecli.RaceOptions(os.Environ()),
 	}
 	return &dispatchHcFixture{root: root, state: state, sd: sd, bin: bin, brief: brief, env: env, ctx: &core.Config{Entries: map[string]core.ConfigEntry{}}}
 }

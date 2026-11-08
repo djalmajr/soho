@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -54,7 +55,12 @@ var ErrNotInHcTerminal = errors.New("not inside an hc terminal: HC_TERMINAL_ID i
 // given. It never runs hc itself: the first launch happens on the first
 // method that needs one (the session read among them).
 func New(env platform.Env) transport.Services {
-	b := &backend{env: env, client: hc.New(env)}
+	return NewWithClient(env, hc.New(env))
+}
+
+// NewWithClient builds the hc backend's Services using the provided hc client.
+func NewWithClient(env platform.Env, client *hc.Client) transport.Services {
+	b := &backend{env: env, client: client}
 	return transport.Services{Runtime: b, Window: b, Legacy: b, Terminal: b}
 }
 
@@ -256,6 +262,9 @@ func stateOf(obj *jsonjs.Object) string {
 	if !ok || raw == nil {
 		return "unknown"
 	}
+	if word, isString := raw.(string); isString && word != "" {
+		return word
+	}
 	status, ok := raw.(*jsonjs.Object)
 	if !ok {
 		return "unknown"
@@ -266,6 +275,20 @@ func stateOf(obj *jsonjs.Object) string {
 		}
 	}
 	return "unknown"
+}
+
+// nativeStateOf extracts the terminal record's raw string lifecycle
+// ("live", "finished", etc.). Missing or non-string values return "".
+func nativeStateOf(obj *jsonjs.Object) string {
+	if obj == nil {
+		return ""
+	}
+	if v, ok := obj.Get("state"); ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 // statusMsgOf returns the terminal record's status message (the hc
@@ -353,18 +376,27 @@ func addressOf(obj *jsonjs.Object) string {
 // cwdOf reads the record's cwd ("" when the terminal reports none).
 func cwdOf(obj *jsonjs.Object) string {
 	if v, ok := obj.Get("cwd"); ok {
-		if cwd, isString := v.(string); isString {
+		if cwd, isString := v.(string); isString && cwd != "" {
 			return cwd
+		}
+	}
+	if raw, ok := obj.Get("foreground"); ok && raw != nil {
+		if fg, ok := raw.(*jsonjs.Object); ok {
+			if v, ok := fg.Get("cwd"); ok {
+				if cwd, isString := v.(string); isString && cwd != "" {
+					return cwd
+				}
+			}
 		}
 	}
 	return ""
 }
 
 // programHints renders one terminal record's program hints: the nonempty
-// status app first, then the basename of argv[0] when present and different
-// (both slash styles normalized for the basename; no shell parsing and no
-// other argv element is inspected). Hints only: canonical kind matching
-// stays in the kinds catalog.
+// status app first, then foreground.name when present and different, then the
+// basename of argv[0] when present and different (both slash styles normalized
+// for the basename; no shell parsing and no other argv element is inspected).
+// Hints only: canonical kind matching stays in the kinds catalog.
 func programHints(obj *jsonjs.Object) []string {
 	var hints []string
 	if raw, ok := obj.Get("status"); ok && raw != nil {
@@ -376,11 +408,31 @@ func programHints(obj *jsonjs.Object) []string {
 			}
 		}
 	}
+	if raw, ok := obj.Get("foreground"); ok && raw != nil {
+		if fg, ok := raw.(*jsonjs.Object); ok {
+			if v, ok := fg.Get("name"); ok {
+				if name, isString := v.(string); isString && name != "" {
+					if len(hints) == 0 || hints[0] != name {
+						hints = append(hints, name)
+					}
+				}
+			}
+		}
+	}
 	if raw, ok := obj.Get("argv"); ok {
 		if args, ok := raw.([]any); ok && len(args) > 0 {
 			if exe, ok := args[0].(string); ok && exe != "" {
-				if base := executableBase(exe); base != "" && (len(hints) == 0 || hints[0] != base) {
-					hints = append(hints, base)
+				if base := executableBase(exe); base != "" {
+					dup := false
+					for _, h := range hints {
+						if h == base {
+							dup = true
+							break
+						}
+					}
+					if !dup {
+						hints = append(hints, base)
+					}
 				}
 			}
 		}
@@ -512,11 +564,12 @@ func (b *backend) List(ctx context.Context, scope transport.Scope, call transpor
 			return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned a non-object terminal"}}
 		}
 		terms = append(terms, transport.Terminal{
-			Target:   transport.Target{ID: addressOf(rec)},
-			Name:     nameOf(rec),
-			PaneID:   addressOf(rec),
-			State:    stateOf(rec),
-			Sequence: listTurn(records, i),
+			Target:      transport.Target{ID: addressOf(rec)},
+			Name:        nameOf(rec),
+			PaneID:      addressOf(rec),
+			State:       stateOf(rec),
+			NativeState: nativeStateOf(rec),
+			Sequence:    listTurn(records, i),
 		})
 	}
 	return transport.Reply[[]transport.Terminal]{Value: terms, Valid: true}
@@ -571,6 +624,7 @@ func (b *backend) listAllLocal(ctx context.Context, call transport.Call) transpo
 			Name:         nameOf(rec),
 			PaneID:       address,
 			State:        stateOf(rec),
+			NativeState:  nativeStateOf(rec),
 			Sequence:     listTurn(records, i),
 			Msg:          statusMsgOf(rec),
 			Cwd:          cwdOf(rec),
@@ -597,15 +651,19 @@ func (b *backend) Get(ctx context.Context, target transport.Target, call transpo
 	if !ok {
 		return transport.Reply[transport.Terminal]{Value: transport.Terminal{Target: target, State: "unknown"}, Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc get returned no terminal record"}}
 	}
+	address := addressOf(obj)
 	return transport.Reply[transport.Terminal]{
 		Value: transport.Terminal{
-			Target:   target,
-			Name:     nameOf(obj),
-			PaneID:   addressOf(obj),
-			State:    stateOf(obj),
-			Sequence: turnRaw(json.RawMessage(out)),
-			Msg:      statusMsgOf(obj),
-			Cwd:      cwdOf(obj),
+			Target:       transport.Target{ID: address, Machine: target.Machine},
+			Name:         nameOf(obj),
+			PaneID:       address,
+			State:        stateOf(obj),
+			NativeState:  nativeStateOf(obj),
+			Sequence:     turnRaw(json.RawMessage(out)),
+			Msg:          statusMsgOf(obj),
+			Cwd:          cwdOf(obj),
+			WorkspaceID:  sessionOfRecord(obj),
+			ProgramHints: programHints(obj),
 		},
 		Valid: true,
 	}
@@ -1078,11 +1136,9 @@ func startDeadlineSeconds(deadline time.Duration) string {
 }
 
 // Start starts the worker in a new hc terminal of this session and waits
-// for its first reported status (DJA-604 slice 2b-2a). The command is
-// `hc run --bg --json --name <name> [--cwd <cwd>] --label
-// soho.session=<session> --no-notify --outlive-parent -- <exe> <args…>`,
-// where <exe> is the kind's name; the request's args go out byte for byte,
-// with no quoting added. Value carries the new terminal's address on
+// for its first reported status. The run is dispatched through the native
+// terminal.run JSON-RPC client on the per-instance hc client.
+// Value carries the new terminal's address on
 // success. An unsupported kind and an invalid name refuse before any
 // launch; a run that fails with hc's name_taken error is a FailureConflict
 // (spawn picks the next suffix; this slice does not retry); readiness is
@@ -1110,29 +1166,58 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 		}
 		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: err.Error(), Cause: err}}
 	}
-	args := []string{"run", "--bg", "--json", "--name", start.Name}
-	if start.Cwd != "" {
-		args = append(args, "--cwd", start.Cwd)
+
+	cwd := start.Cwd
+	if cwd == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return transport.Reply[string]{Err: &transport.Failure{
+				Kind:    transport.FailureUnavailable,
+				Message: "getwd: " + err.Error(),
+				Cause:   err,
+			}}
+		}
+		cwd = wd
 	}
-	args = append(args, "--label", SessionLabel+"="+session, "--no-notify", "--outlive-parent", "--", start.Kind)
-	args = append(args, start.Args...)
-	out, err := b.run(ctx, call, args...)
+
+	budget := hcTimeoutDefault
+	if call.Timeout > 0 {
+		budget = call.Timeout
+	}
+	runCtx, runCancel := context.WithTimeout(ctx, budget)
+	address, err := b.client.RunTerminal(runCtx, hc.TerminalRun{
+		Name:    start.Name,
+		Kind:    start.Kind,
+		Cwd:     cwd,
+		Caller:  b.env.Get("HC_TERMINAL_ID"),
+		Session: session,
+		Args:    start.Args,
+	})
+	runCancel()
+
 	if err != nil {
-		// A run the request's cancellation interrupted is a cancellation,
-		// not a failed command.
+		if errors.Is(err, hc.ErrRunOutcomeUnknown) {
+			return transport.Reply[string]{
+				Value: address,
+				Err: &transport.Failure{
+					Kind:    transport.FailureRunOutcomeUnknown,
+					Message: err.Error(),
+					Cause:   err,
+				},
+			}
+		}
 		if cerr := ctx.Err(); cerr != nil {
-			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: cerr.Error(), Cause: cerr}}
+			return transport.Reply[string]{
+				Err: &transport.Failure{
+					Kind:    transport.FailureCancelled,
+					Message: cerr.Error(),
+					Cause:   cerr,
+				},
+			}
 		}
 		return startRunFailure(start.Name, err)
 	}
-	obj, ok := terminalObject(out)
-	if !ok {
-		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc run returned no terminal record"}}
-	}
-	address := addressOf(obj)
-	if address == "" {
-		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc run returned no terminal address"}}
-	}
+
 	return b.waitReady(ctx, call, start.Name, address, startTimeout(start.Timeout))
 }
 

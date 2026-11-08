@@ -41,7 +41,7 @@ var hcRefusedCommands = []string{
 	"session", "find", "run", "resume", "collect",
 	"send", "stats", "clean", "setup",
 	"regrid", "roster", "friction", "feedback", "tab-label",
-	"layout-plan", "mutation-guard", "mutation-copy", "review-snapshot",
+	"layout-plan", "mutation-copy", "review-snapshot",
 	"reopen", "compact", "metrics", "copies", "gc", "procs", "promote",
 	"job", "plugin",
 }

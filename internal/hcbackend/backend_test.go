@@ -148,6 +148,124 @@ func TestBackendGet(t *testing.T) {
 		}
 	})
 
+	t.Run("detailed native shape projects identity hints and cwd", func(t *testing.T) {
+		const nativeDetailed = `{
+  "address": "t2c",
+  "name": null,
+  "state": "live",
+  "pid": 54449,
+  "labels": {"soho.session": "sDetailed"},
+  "status": {"app": "codex", "state": "working"},
+  "foreground": {"name": "codex", "pid": 54449, "cwd": "/repo/path"}
+}`
+		env, _ := fakeHc(t, []fakecli.Rule{{Argv: []string{"get", "t2c", "--json"}, Stdout: nativeDetailed}})
+		b := &backend{env: env, client: hc.New(env)}
+		rep := b.Get(context.Background(), transport.Target{ID: "t2c"}, transport.Call{})
+		if rep.Err != nil || !rep.Valid {
+			t.Fatalf("get failed: err=%v valid=%v", rep.Err, rep.Valid)
+		}
+		if rep.Value.PaneID != "t2c" || rep.Value.Target.ID != "t2c" {
+			t.Fatalf("pane/target %q/%q want t2c", rep.Value.PaneID, rep.Value.Target.ID)
+		}
+		if rep.Value.WorkspaceID != "sDetailed" {
+			t.Fatalf("workspace %q want sDetailed", rep.Value.WorkspaceID)
+		}
+		if rep.Value.Cwd != "/repo/path" {
+			t.Fatalf("cwd %q want /repo/path", rep.Value.Cwd)
+		}
+		if rep.Value.State != "working" {
+			t.Fatalf("state %q want working", rep.Value.State)
+		}
+		if rep.Value.NativeState != "live" {
+			t.Fatalf("native state %q want live", rep.Value.NativeState)
+		}
+		if !reflect.DeepEqual(rep.Value.ProgramHints, []string{"codex"}) {
+			t.Fatalf("hints %#v want [codex]", rep.Value.ProgramHints)
+		}
+	})
+
+	t.Run("string status maps to state word directly", func(t *testing.T) {
+		const stringStatus = `{"address":"t2c","state":"live","status":"working"}`
+		env, _ := fakeHc(t, []fakecli.Rule{{Argv: []string{"get", "t2c", "--json"}, Stdout: stringStatus}})
+		b := &backend{env: env, client: hc.New(env)}
+		rep := b.Get(context.Background(), transport.Target{ID: "t2c"}, transport.Call{})
+		if rep.Err != nil || !rep.Valid {
+			t.Fatalf("get failed: err=%v valid=%v", rep.Err, rep.Valid)
+		}
+		if rep.Value.State != "working" {
+			t.Fatalf("state %q want working", rep.Value.State)
+		}
+	})
+
+	t.Run("NativeState lifecycle decoding", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			json       string
+			wantNative string
+			wantState  string
+		}{
+			{
+				name:       "live lifecycle with working status",
+				json:       `{"address":"t2c","state":"live","status":{"state":"working"}}`,
+				wantNative: "live",
+				wantState:  "working",
+			},
+			{
+				name:       "missing native state",
+				json:       `{"address":"t2c","status":{"state":"working"}}`,
+				wantNative: "",
+				wantState:  "working",
+			},
+			{
+				name:       "numeric native state",
+				json:       `{"address":"t2c","state":123,"status":{"state":"working"}}`,
+				wantNative: "",
+				wantState:  "working",
+			},
+			{
+				name:       "null native state",
+				json:       `{"address":"t2c","state":null,"status":{"state":"working"}}`,
+				wantNative: "",
+				wantState:  "working",
+			},
+			{
+				name:       "finished native state",
+				json:       `{"address":"t2c","state":"finished","status":{"state":"working"}}`,
+				wantNative: "finished",
+				wantState:  "gone",
+			},
+			{
+				name:       "raw live with unknown/missing activity",
+				json:       `{"address":"t2c","state":"live"}`,
+				wantNative: "live",
+				wantState:  "unknown",
+			},
+			{
+				name:       "literal address-only detail",
+				json:       `{"address":"t2c"}`,
+				wantNative: "",
+				wantState:  "unknown",
+			},
+		}
+		for _, tc := range cases {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				env, _ := fakeHc(t, []fakecli.Rule{{Argv: []string{"get", "t2c", "--json"}, Stdout: tc.json}})
+				b := &backend{env: env, client: hc.New(env)}
+				rep := b.Get(context.Background(), transport.Target{ID: "t2c"}, transport.Call{})
+				if rep.Err != nil || !rep.Valid {
+					t.Fatalf("get failed: err=%v valid=%v", rep.Err, rep.Valid)
+				}
+				if rep.Value.NativeState != tc.wantNative {
+					t.Fatalf("NativeState=%q want %q", rep.Value.NativeState, tc.wantNative)
+				}
+				if rep.Value.State != tc.wantState {
+					t.Fatalf("State=%q want %q", rep.Value.State, tc.wantState)
+				}
+			})
+		}
+	})
+
 	t.Run("another failure is unavailable with the cause", func(t *testing.T) {
 		env, _ := fakeHc(t, []fakecli.Rule{{Argv: []string{"get", "t7", "--json"}, Code: 1, Stderr: `{"error":{"kind":"internal","message":"core exploded"}}`}})
 		b := &backend{env: env, client: hc.New(env)}
