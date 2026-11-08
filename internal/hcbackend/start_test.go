@@ -339,7 +339,9 @@ func TestStartCwd(t *testing.T) {
 		}
 		t.Cleanup(func() {
 			_ = os.Chmod(disposable, 0o700)
-			_ = os.Chdir(origDir)
+			if err := os.Chdir(origDir); err != nil {
+				t.Errorf("failed to restore working directory: %v", err)
+			}
 		})
 		_ = os.Chmod(disposable, 0o000)
 		_ = os.Remove(disposable)
@@ -1147,24 +1149,52 @@ func TestStartRunOutcomeUnknown(t *testing.T) {
 
 	t.Run("post-submission deadline expiry classifies as unknown", func(t *testing.T) {
 		env, _, calls := startEnv(t, nil)
-		parentCtx, cancel := context.WithCancel(context.Background())
+		parentCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		var childCtx context.Context
 		conn := newFakeRPCConn("")
+		conn.onConnect = func(ctx context.Context) {
+			childCtx = ctx
+		}
 		conn.beforeRead = func(req []byte) {
 			if strings.Contains(string(req), "terminal.run") {
-				cancel()
+				if childCtx == nil {
+					t.Fatal("child creation context was not captured by Connect before terminal.run write")
+				}
+				select {
+				case <-childCtx.Done():
+				case <-time.After(500 * time.Millisecond):
+					t.Fatal("timed out waiting for child creation context deadline expiry")
+				}
 			}
 		}
 		b := newBackend(env, conn)
-		rep := b.Start(parentCtx, transport.Start{Name: "w7", Kind: "claude", Timeout: "3000"}, transport.Call{})
+		const callTimeout = 25 * time.Millisecond
+		rep := b.Start(parentCtx, transport.Start{Name: "w7", Kind: "claude", Timeout: "3000"}, transport.Call{Timeout: callTimeout})
 		if rep.Err == nil || rep.Err.Kind != transport.FailureRunOutcomeUnknown {
 			t.Fatalf("rep: %+v want FailureRunOutcomeUnknown", rep)
 		}
 		if !errors.Is(rep.Err.Cause, hc.ErrRunOutcomeUnknown) {
 			t.Fatalf("cause %v want ErrRunOutcomeUnknown", rep.Err.Cause)
 		}
-		if !strings.Contains(string(conn.getWritten()), "terminal.run") {
-			t.Fatal("terminal.run must have been submitted before post-submission expiry")
+		if !errors.Is(rep.Err.Cause, context.DeadlineExceeded) {
+			t.Fatalf("cause %v want context.DeadlineExceeded", rep.Err.Cause)
+		}
+		if childCtx == nil {
+			t.Fatal("expected child context to be captured by Connect")
+		}
+		if !errors.Is(childCtx.Err(), context.DeadlineExceeded) {
+			t.Fatalf("child context error = %v, want context.DeadlineExceeded", childCtx.Err())
+		}
+		if parentCtx.Err() != nil {
+			t.Fatalf("parent context was unexpectedly canceled or expired: %v", parentCtx.Err())
+		}
+		if got := strings.Count(string(conn.getWritten()), "terminal.run"); got != 1 {
+			t.Fatalf("terminal.run occurrences = %d, want 1", got)
+		}
+		req, _ := parseTerminalRunReq(t, conn.getWritten())
+		if req["method"] != "terminal.run" {
+			t.Fatalf("method = %v, want terminal.run", req["method"])
 		}
 		wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}})
 	})
