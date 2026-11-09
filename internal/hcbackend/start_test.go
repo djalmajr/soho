@@ -1423,6 +1423,9 @@ func TestStart_CallerExecutableInPathWithSpaces(t *testing.T) {
 		{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: startReadyIdle},
 	})
 	env["PATH"] = spaceDir + string(filepath.ListSeparator) + env["PATH"]
+	if runtime.GOOS == "windows" {
+		env["PATHEXT"] = ".exe"
+	}
 
 	b := newBackend(env, conn)
 	rep := b.Start(context.Background(), transport.Start{
@@ -1565,6 +1568,9 @@ func TestStart_RelativePathNormalization(t *testing.T) {
 	})
 	// Inject relative path directory into caller's PATH
 	env["PATH"] = relPath + string(filepath.ListSeparator) + env["PATH"]
+	if runtime.GOOS == "windows" {
+		env["PATHEXT"] = ".exe"
+	}
 
 	// Set worker Cwd to a distinct directory, proving caller PATH is not reinterpreted via worker Cwd
 	workerCwd := filepath.Join(t.TempDir(), "worker_distinct_dir")

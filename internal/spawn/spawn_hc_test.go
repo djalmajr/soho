@@ -368,6 +368,9 @@ func TestSpawnHcWorkersRunWithTheHerdrArgv(t *testing.T) {
 		tc := tc
 		t.Run(tc.kind+" "+tc.role, func(t *testing.T) {
 			cwd, bin, state, env, ctx := hcSpawnFixture(t, tc.role, tc.kind)
+			if runtime.GOOS == "windows" {
+				env["PATHEXT"] = ".exe"
+			}
 			res := core.ResolveRoleSettings(tc.role, ctx, env, cwd, core.RoleFlags{})
 			agent := hcAgentArgs(t, tc.role, res, ctx, env, cwd)
 			rules := append(hcFixtureRules(),
