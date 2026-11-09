@@ -39,6 +39,7 @@ var ErrRunOutcomeUnknown = errors.New("terminal run outcome unknown")
 type TerminalRun struct {
 	Name    string
 	Kind    string
+	Program string
 	Cwd     string
 	Caller  string
 	Session string
@@ -204,7 +205,7 @@ func (c *Client) RunTerminal(ctx context.Context, input TerminalRun) (string, er
 
 	// 2. Prepare terminal.run request (id 2)
 	argv := make([]string, 0, 1+len(input.Args))
-	argv = append(argv, input.Kind)
+	argv = append(argv, input.Program)
 	argv = append(argv, input.Args...)
 
 	req := runRequest{
@@ -283,6 +284,12 @@ func validateTerminalRun(input TerminalRun) error {
 	}
 	if !utf8.ValidString(input.Kind) {
 		return errors.New("terminal run: kind contains invalid UTF-8")
+	}
+	if strings.TrimSpace(input.Program) == "" {
+		return errors.New("terminal run: program is required")
+	}
+	if !utf8.ValidString(input.Program) {
+		return errors.New("terminal run: program contains invalid UTF-8")
 	}
 	if strings.TrimSpace(input.Cwd) == "" {
 		return errors.New("terminal run: cwd is required")

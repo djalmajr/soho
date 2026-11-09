@@ -524,6 +524,7 @@ func TestSuperviseFinishingLegacySyncedMarkerIsNotAVerifiedPublication(t *testin
 	}
 	exit, err := f.supRestarted(t).Run()
 	if err != nil || exit != 0 {
+		t.Logf("finishing friction: %v", *f.friction)
 		t.Fatalf("restart Run = %d %v, want done with exit 0 after a real verification", exit, err)
 	}
 	if !remoteHasBranch(f) {

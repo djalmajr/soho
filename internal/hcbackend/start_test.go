@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -167,6 +168,9 @@ func startEnv(t *testing.T, readyRules []fakecli.Rule) (platform.Env, *fakeRPCCo
 	rules := []fakecli.Rule{{Argv: []string{"get", "t1", "--json"}, Stdout: startCaller}}
 	rules = append(rules, readyRules...)
 	env, calls := fakeHc(t, rules)
+	if fakeDir := env["SOHO_FAKECLI_CONFIG"]; fakeDir != "" {
+		env["PATH"] = fakeDir
+	}
 	conn := newFakeRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
 	return env, conn, calls
 }
@@ -575,15 +579,15 @@ func TestStartReadiness(t *testing.T) {
 		rep := startWorker(t, []fakecli.Rule{
 			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"blocked","msg":"permission: write to file"}}`},
 		}, "3000")
-		if rep.Err == nil || rep.Err.Kind != transport.FailureCommand {
-			t.Fatalf("rep: %+v want FailureCommand", rep)
+		if rep.Err == nil || rep.Err.Kind != transport.FailureBlocked {
+			t.Fatalf("rep: %+v want FailureBlocked", rep)
 		}
 		want := "agent w7 is blocked during startup: permission: write to file"
 		if rep.Err.Message != want {
 			t.Fatalf("message %q want %q", rep.Err.Message, want)
 		}
 		if rep.Value != "t7" {
-			t.Fatalf("rep: %+v want the address t7 in Value so the caller can close it", rep)
+			t.Fatalf("rep: %+v want the address t7 in Value", rep)
 		}
 	})
 
@@ -591,15 +595,15 @@ func TestStartReadiness(t *testing.T) {
 		rep := startWorker(t, []fakecli.Rule{
 			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"blocked"}}`},
 		}, "3000")
-		if rep.Err == nil || rep.Err.Kind != transport.FailureCommand {
-			t.Fatalf("rep: %+v want FailureCommand", rep)
+		if rep.Err == nil || rep.Err.Kind != transport.FailureBlocked {
+			t.Fatalf("rep: %+v want FailureBlocked", rep)
 		}
 		want := "agent w7 is blocked during startup"
 		if rep.Err.Message != want {
 			t.Fatalf("message %q want %q", rep.Err.Message, want)
 		}
 		if rep.Value != "t7" {
-			t.Fatalf("rep: %+v want the address t7 in Value so the caller can close it", rep)
+			t.Fatalf("rep: %+v want the address t7 in Value", rep)
 		}
 	})
 
@@ -1400,4 +1404,252 @@ func TestStartCreationTimeoutsAndCancellation(t *testing.T) {
 		}
 		wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}, {"get", "t7", "--json"}})
 	})
+}
+
+func installFakeAgentExecutable(t *testing.T, dir, name string) string {
+	t.Helper()
+	exePath, err := fakecli.Install(t, dir, name, nil)
+	if err != nil {
+		t.Fatalf("install fake agent executable %s in %s: %v", name, dir, err)
+	}
+	return exePath
+}
+
+func TestStart_CallerExecutableInPathWithSpaces(t *testing.T) {
+	spaceDir := filepath.Join(t.TempDir(), "bin with spaces")
+	exePath := installFakeAgentExecutable(t, spaceDir, "claude")
+
+	env, conn, calls := startEnv(t, []fakecli.Rule{
+		{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: startReadyIdle},
+	})
+	env["PATH"] = spaceDir + string(filepath.ListSeparator) + env["PATH"]
+
+	b := newBackend(env, conn)
+	rep := b.Start(context.Background(), transport.Start{
+		Name:    "w-space",
+		Kind:    "claude",
+		Timeout: "3000",
+		Args:    []string{"--profile", "custom spaced"},
+	}, transport.Call{})
+
+	if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+		t.Fatalf("rep: %+v, want valid t7 without error", rep)
+	}
+	wantArgv(t, calls(), [][]string{
+		{"get", "t1", "--json"},
+		{"get", "t7", "--json"},
+	})
+
+	if conn.getConnectCount() != 1 {
+		t.Fatalf("connectCount=%d want 1 (no extra request)", conn.getConnectCount())
+	}
+	if conn.getReapCount() != 1 {
+		t.Fatalf("reapCount=%d want 1", conn.getReapCount())
+	}
+
+	req, params := parseTerminalRunReq(t, conn.getWritten())
+	if req["method"] != "terminal.run" {
+		t.Fatalf("method=%v want terminal.run", req["method"])
+	}
+	if params["name"] != "w-space" {
+		t.Fatalf("name=%v want w-space", params["name"])
+	}
+	if params["caller"] != "t1" {
+		t.Fatalf("caller=%v want t1", params["caller"])
+	}
+
+	argvRaw, ok := params["argv"].([]any)
+	if !ok || len(argvRaw) != 3 {
+		t.Fatalf("argv=%v, want 3 elements", params["argv"])
+	}
+	if argvRaw[0] != exePath {
+		t.Fatalf("argv[0]=%q, want literal space-bearing declared path %q", argvRaw[0], exePath)
+	}
+	if !strings.Contains(fmt.Sprint(argvRaw[0]), "bin with spaces") {
+		t.Fatalf("argv[0]=%q does not contain expected space path", argvRaw[0])
+	}
+	if !reflect.DeepEqual(argvRaw[1:], []any{"--profile", "custom spaced"}) {
+		t.Fatalf("argv[1:]=%v, want unchanged arguments", argvRaw[1:])
+	}
+}
+
+func TestStart_UnsupportedKindCursorRefusedBeforeConnect(t *testing.T) {
+	env, conn, calls := startEnv(t, nil)
+	b := newBackend(env, conn)
+	rep := b.Start(context.Background(), transport.Start{
+		Name:    "w-cursor-unsupported",
+		Kind:    "cursor",
+		Timeout: "3000",
+		Args:    []string{"--some-arg"},
+	}, transport.Call{})
+
+	if rep.Err == nil || rep.Err.Kind != transport.FailureUnsupported {
+		t.Fatalf("rep: %+v, want FailureUnsupported", rep)
+	}
+	wantMsg := "kind cursor does not report status under transport=hc; use transport=herdr"
+	if rep.Err.Message != wantMsg {
+		t.Fatalf("rep.Err.Message=%q, want %q", rep.Err.Message, wantMsg)
+	}
+	if conn.getConnectCount() != 0 {
+		t.Fatalf("connectCount=%d, want 0 when unsupported kind is refused before connect", conn.getConnectCount())
+	}
+	if got := len(calls()); got != 0 {
+		t.Fatalf("launches=%d, want 0 (no session or other hc launches)", got)
+	}
+}
+
+func TestStart_AbsoluteNormalizationFailureRefusedBeforeConnect(t *testing.T) {
+	spaceDir := filepath.Join(t.TempDir(), "bin with mock")
+	installFakeAgentExecutable(t, spaceDir, "claude")
+
+	env, conn, calls := startEnv(t, nil)
+	env["PATH"] = spaceDir + string(filepath.ListSeparator) + env["PATH"]
+
+	b := newBackend(env, conn)
+	expectedErr := errors.New("simulated normalization error")
+	b.abs = func(p string) (string, error) {
+		return "", expectedErr
+	}
+
+	workerCwd := filepath.Join(t.TempDir(), "worker_cwd")
+	rep := b.Start(context.Background(), transport.Start{
+		Name:    "w-norm-fail",
+		Kind:    "claude",
+		Cwd:     workerCwd,
+		Timeout: "3000",
+		Args:    []string{"--arg1"},
+	}, transport.Call{})
+
+	if rep.Err == nil || rep.Err.Kind != transport.FailureUnavailable {
+		t.Fatalf("rep: %+v, want FailureUnavailable", rep)
+	}
+	if !strings.Contains(rep.Err.Message, "abs: simulated normalization error") {
+		t.Fatalf("rep.Err.Message=%q, want containing 'abs: simulated normalization error'", rep.Err.Message)
+	}
+	if !errors.Is(rep.Err.Cause, expectedErr) {
+		t.Fatalf("rep.Err.Cause=%v, want %v", rep.Err.Cause, expectedErr)
+	}
+	if errors.Is(rep.Err.Cause, hc.ErrRunOutcomeUnknown) {
+		t.Fatalf("normalization failure must not wrap ErrRunOutcomeUnknown")
+	}
+	if conn.getConnectCount() != 0 {
+		t.Fatalf("connectCount=%d, want 0 on normalization failure before connect", conn.getConnectCount())
+	}
+	if rep.Value != "" {
+		t.Fatalf("rep.Value=%q, want empty (no terminal created)", rep.Value)
+	}
+	wantArgv(t, calls(), [][]string{
+		{"get", "t1", "--json"},
+	})
+}
+
+func TestStart_RelativePathNormalization(t *testing.T) {
+	callerWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	relDirName := fmt.Sprintf("test_rel_bin_%d_%d", os.Getpid(), time.Now().UnixNano())
+	relPath := filepath.Join(".", relDirName)
+	if err := os.MkdirAll(relPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(relPath)
+	})
+
+	exePath := installFakeAgentExecutable(t, relPath, "codex")
+
+	env, conn, calls := startEnv(t, []fakecli.Rule{
+		{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: startReadyIdle},
+	})
+	// Inject relative path directory into caller's PATH
+	env["PATH"] = relPath + string(filepath.ListSeparator) + env["PATH"]
+
+	// Set worker Cwd to a distinct directory, proving caller PATH is not reinterpreted via worker Cwd
+	workerCwd := filepath.Join(t.TempDir(), "worker_distinct_dir")
+	if err := os.MkdirAll(workerCwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	b := newBackend(env, conn)
+	rep := b.Start(context.Background(), transport.Start{
+		Name:    "w-rel",
+		Kind:    "codex",
+		Cwd:     workerCwd,
+		Timeout: "3000",
+		Args:    []string{"--rel-check"},
+	}, transport.Call{})
+
+	if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+		t.Fatalf("rep: %+v, want valid t7", rep)
+	}
+	wantArgv(t, calls(), [][]string{
+		{"get", "t1", "--json"},
+		{"get", "t7", "--json"},
+	})
+	if conn.getConnectCount() != 1 {
+		t.Fatalf("connectCount=%d want 1", conn.getConnectCount())
+	}
+
+	_, params := parseTerminalRunReq(t, conn.getWritten())
+	if params["cwd"] != workerCwd {
+		t.Fatalf("params[cwd]=%v, want worker cwd %v", params["cwd"], workerCwd)
+	}
+
+	expectedAbs := filepath.Join(callerWd, relDirName, filepath.Base(exePath))
+	argvRaw, ok := params["argv"].([]any)
+	if !ok || len(argvRaw) != 2 {
+		t.Fatalf("argv=%v, want 2 elements", params["argv"])
+	}
+	if argvRaw[0] != expectedAbs {
+		t.Fatalf("argv[0]=%q, want normalized absolute path %q in caller filesystem context", argvRaw[0], expectedAbs)
+	}
+	if !filepath.IsAbs(fmt.Sprint(argvRaw[0])) {
+		t.Fatalf("argv[0]=%q is not an absolute path", argvRaw[0])
+	}
+	if strings.HasPrefix(fmt.Sprint(argvRaw[0]), workerCwd) {
+		t.Fatalf("argv[0]=%q unexpectedly resolved against worker Cwd instead of caller context", argvRaw[0])
+	}
+	if !reflect.DeepEqual(argvRaw[1:], []any{"--rel-check"}) {
+		t.Fatalf("argv[1:]=%v, want unchanged args", argvRaw[1:])
+	}
+}
+
+func TestStart_CallerLookupFindsNothingDelegatesToCore(t *testing.T) {
+	env, conn, calls := startEnv(t, []fakecli.Rule{
+		{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: startReadyIdle},
+	})
+	// env["PATH"] contains only fakeDir (only hc exists, no claude)
+
+	b := newBackend(env, conn)
+	rep := b.Start(context.Background(), transport.Start{
+		Name:    "w-core-lookup",
+		Kind:    "claude",
+		Timeout: "3000",
+		Args:    []string{"--arg1", "val1"},
+	}, transport.Call{})
+
+	if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+		t.Fatalf("rep: %+v, want valid t7", rep)
+	}
+	wantArgv(t, calls(), [][]string{
+		{"get", "t1", "--json"},
+		{"get", "t7", "--json"},
+	})
+	if conn.getConnectCount() != 1 {
+		t.Fatalf("connectCount=%d want 1 (single submission to Core, no retry)", conn.getConnectCount())
+	}
+
+	_, params := parseTerminalRunReq(t, conn.getWritten())
+	argvRaw, ok := params["argv"].([]any)
+	if !ok || len(argvRaw) != 3 {
+		t.Fatalf("argv=%v, want 3 elements", params["argv"])
+	}
+	if argvRaw[0] != "claude" {
+		t.Fatalf("argv[0]=%q, want catalog executable name 'claude' passed directly to Core", argvRaw[0])
+	}
+	if !reflect.DeepEqual(argvRaw[1:], []any{"--arg1", "val1"}) {
+		t.Fatalf("argv[1:]=%v, want unchanged args", argvRaw[1:])
+	}
 }

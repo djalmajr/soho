@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/djalmajr/soho/internal/agentexec"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -63,10 +64,7 @@ func AgentFamily(kind, model string) string {
 }
 
 func KindExe(kind string) string {
-	if kind == "cursor" {
-		return "cursor-agent"
-	}
-	return kind
+	return agentexec.Executable(kind)
 }
 
 func EffortRank(effort string) int {

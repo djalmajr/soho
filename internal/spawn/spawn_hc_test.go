@@ -3,10 +3,10 @@ package spawn
 // DJA-604 2b-2b: spawn through hc. The worker is a new hc terminal of the
 // session: one terminal.run JSON-RPC call with the herdr path's agent argv,
 // no pane work, the roster row holds the returned address, name_taken
-// retries the existing suffix rule, and a failed start dies like the herdr
-// failed-start path (exit 4, the Start failure's message) after closing the
-// terminal. The native JSON-RPC transport uses hc.Client.Connect while
-// existing scripted get/ls/cleanup calls go through Launch.
+// retries the existing suffix rule. Confirmed blocked starts preserve the
+// terminal and managed row with exit 7; ordinary failed starts close it and
+// exit 4. The native JSON-RPC transport uses hc.Client.Connect while existing
+// scripted get/ls/cleanup calls go through Launch.
 
 import (
 	"bytes"
@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -255,7 +256,7 @@ func assertHcOnlyReads(t *testing.T, bin string, calls []fakecli.Call) {
 	t.Helper()
 	for _, c := range calls {
 		switch c.Argv[0] {
-		case "get", "ls", "kill", "rm":
+		case "get", "ls", "kill", "rm", "read":
 		default:
 			t.Fatalf("hc call outside reads and cleanup: %q", c.Argv)
 		}
@@ -400,7 +401,11 @@ func TestSpawnHcWorkersRunWithTheHerdrArgv(t *testing.T) {
 			if childEnv["SOHO_TRANSPORT"] != "hc" || len(childEnv) != 1 {
 				t.Fatalf("env=%v, want exactly SOHO_TRANSPORT=hc", childEnv)
 			}
-			wantArgv := append([]string{tc.kind}, agent...)
+			exe := filepath.Join(bin, tc.kind)
+			if runtime.GOOS == "windows" {
+				exe += ".exe"
+			}
+			wantArgv := append([]string{exe}, agent...)
 			gotArgv, ok := params["argv"].([]any)
 			if !ok {
 				t.Fatalf("argv not a slice: %v", params["argv"])
@@ -563,13 +568,260 @@ func TestSpawnHcSuffixSearchIsBounded(t *testing.T) {
 	}
 }
 
-func TestSpawnHcBlockedStartClosesTheTerminal(t *testing.T) {
-	// DJA-604 2b-2b acceptance (e): a readiness blocked kills and rms the
-	// address, dies with the herdr failed-start exit code and the Start
-	// failure's message, and writes no roster row.
-	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
+func TestSpawnHcBlockedStartPreservesTerminalAndExitsSeven(t *testing.T) {
+	// A confirmed native blocked start with message preserves the terminal,
+	// performs exactly one RPC terminal creation, reads the screen via hc read
+	// on the exact address, writes the managed roster row, emits status
+	// blocked_at_startup with exit 7, and executes zero kill, rm, send or keys.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "pi")
 	rules := append(hcFixtureRules(),
 		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"blocked","msg":"permission: write to file"}}`},
+		fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Stdout: `{"text":"Permission prompt on screen\n"}`},
+	)
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
+	exit, out, stderr, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	if exit == nil || exit.Code != 7 {
+		t.Fatalf("exit=%+v, want exit 7", exit)
+	}
+	runs := parseAllTerminalRunReqs(t, conn.getWritten())
+	if len(runs) != 1 {
+		t.Fatalf("terminal.run count = %d, want exactly 1 creation", len(runs))
+	}
+	for _, c := range calls {
+		switch c.Argv[0] {
+		case "kill", "rm", "send", "keys":
+			t.Fatalf("unexpected %s call on blocked start: %v", c.Argv[0], c.Argv)
+		}
+	}
+	assertHcOnlyReads(t, bin, calls)
+	wantWarn := "soho: warning: agent 'worker' is blocked during startup (update prompt, login, trust dialog…). Screen follows; ask the user before answering it, then: hc read t7\n"
+	if !strings.Contains(stderr.String(), wantWarn) {
+		t.Fatalf("stderr = %q, want warning %q", stderr.String(), wantWarn)
+	}
+	if strings.Contains(wantWarn, "herdr") {
+		t.Fatalf("warning contains legacy herdr instruction: %q", wantWarn)
+	}
+	outStr := out.String()
+	if !strings.Contains(outStr, `"status": "blocked_at_startup"`) {
+		t.Fatalf("stdout JSON missing status blocked_at_startup: %q", outStr)
+	}
+	if !strings.Contains(outStr, `"pane_id": "t7"`) {
+		t.Fatalf("stdout JSON missing pane_id t7: %q", outStr)
+	}
+	if !strings.Contains(outStr, `"placement": "hc"`) {
+		t.Fatalf("stdout JSON missing placement hc: %q", outStr)
+	}
+	if !strings.Contains(outStr, `"created_pane": true`) {
+		t.Fatalf("stdout JSON missing created_pane true: %q", outStr)
+	}
+	if !strings.Contains(outStr, "Permission prompt on screen\n") {
+		t.Fatalf("stdout missing screen read output: %q", outStr)
+	}
+	// Exactly one screen read call on address t7
+	readCalls := 0
+	for _, c := range calls {
+		if c.Argv[0] == "read" {
+			readCalls++
+			if len(c.Argv) < 2 || c.Argv[1] != "t7" {
+				t.Fatalf("read call %v does not target address t7", c.Argv)
+			}
+		}
+	}
+	if readCalls != 1 {
+		t.Fatalf("read calls = %d, want exactly 1 screen read", readCalls)
+	}
+	// Verify managed roster row
+	f := rosterRow(t, state, "sX")
+	if f[0] != "worker" || f[1] != "t7" || f[2] != "pi" || f[5] != "1" {
+		t.Fatalf("roster row = %v, want worker, t7, pi, created_pane=1", f)
+	}
+}
+
+func TestSpawnHcBlockedStartWithoutMsg(t *testing.T) {
+	// A blocked startup without msg also preserves terminal and exits 7.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
+	rules := append(hcFixtureRules(),
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"blocked"}}`},
+		fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Stdout: `{"text":"Login screen\n"}`},
+	)
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
+	exit, out, _, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	if exit == nil || exit.Code != 7 {
+		t.Fatalf("exit=%+v, want exit 7", exit)
+	}
+	for _, c := range calls {
+		if c.Argv[0] == "kill" || c.Argv[0] == "rm" {
+			t.Fatalf("unexpected cleanup call: %v", c.Argv)
+		}
+	}
+	if !strings.Contains(out.String(), `"status": "blocked_at_startup"`) {
+		t.Fatalf("stdout missing blocked_at_startup: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Login screen\n") {
+		t.Fatalf("stdout missing screen text: %q", out.String())
+	}
+	data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "worker\tt7") {
+		t.Fatalf("roster missing worker/t7: %q", string(data))
+	}
+}
+
+func TestSpawnHcBlockedStartReadFailurePreservesDiagnostic(t *testing.T) {
+	// When hc read fails, the original startup diagnostic is preserved in the output.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
+	rules := append(hcFixtureRules(),
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"blocked","msg":"Sign in required"}}`},
+		fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Code: 1, Stderr: `{"error":{"kind":"internal","message":"read failed"}}`},
+	)
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
+	exit, out, _, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	if exit == nil || exit.Code != 7 {
+		t.Fatalf("exit=%+v, want exit 7", exit)
+	}
+	for _, c := range calls {
+		if c.Argv[0] == "kill" || c.Argv[0] == "rm" {
+			t.Fatalf("unexpected cleanup call: %v", c.Argv)
+		}
+	}
+	outStr := out.String()
+	if !strings.Contains(outStr, `"status": "blocked_at_startup"`) {
+		t.Fatalf("stdout missing blocked_at_startup: %q", outStr)
+	}
+	wantDiag := "agent worker is blocked during startup: Sign in required"
+	if !strings.Contains(outStr, wantDiag) {
+		t.Fatalf("stdout %q does not contain preserved startup diagnostic %q", outStr, wantDiag)
+	}
+	data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "worker\tt7") {
+		t.Fatalf("roster missing worker/t7: %q", string(data))
+	}
+}
+
+func TestSpawnHcBlockedStartMissingAddressFailsSafely(t *testing.T) {
+	// A blocked failure with empty address must fail safely with exit 4,
+	// no fabricated identity or roster row, and zero cleanup/input/retries.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
+	rules := hcFixtureRules()
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	oldOut, oldErr := platform.Stdout, platform.Stderr
+	out, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	platform.Stdout, platform.Stderr = out, stderr
+	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
+
+	var exit *platform.ExitError
+	func() {
+		defer func() {
+			if value := recover(); value != nil {
+				if e, ok := value.(*platform.ExitError); ok {
+					exit = e
+				} else {
+					panic(value)
+				}
+			}
+		}()
+		cmdSpawnWithHcStarter([]string{"worker", "--kind", "pi"}, ctx, env, cwd, func(c *core.Config, o *spawnOptions, k string, e platform.Env, a []string) {
+			svc := backend.New(e)
+			fakeTerm := &missingAddrBlockedTerminal{Runtime: svc.Terminal}
+			svc.Terminal = fakeTerm
+			startHcAgentUsingServices(c, o, k, e, a, svc)
+		})
+	}()
+	if exit == nil || exit.Code != 4 || exit.Msg != "agent worker is blocked during startup" {
+		t.Fatalf("exit=%+v, want exit 4 with diagnostic", exit)
+	}
+	if data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv")); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if line != "" && !strings.HasPrefix(line, "#") {
+				t.Fatalf("unexpected roster row on missing address: %q", line)
+			}
+		}
+	}
+}
+
+type missingAddrBlockedTerminal struct {
+	transport.Runtime
+}
+
+func (m *missingAddrBlockedTerminal) Start(ctx context.Context, start transport.Start, call transport.Call) transport.Reply[string] {
+	return transport.Reply[string]{
+		Value: "",
+		Err: &transport.Failure{
+			Kind:    transport.FailureBlocked,
+			Message: "agent " + start.Name + " is blocked during startup",
+		},
+	}
+}
+
+func TestSpawnHcBlockedStartPreservesNameConflictSuffix(t *testing.T) {
+	// When initial name conflicts with an existing terminal (name_taken),
+	// the suffixed candidate (worker-2) is preserved under blocked startup.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "pi")
+	rules := append(hcFixtureRules(),
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"blocked","msg":"Sign in required"}}`},
+		fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Stdout: `{"text":"Sign in on screen\n"}`},
+	)
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	conn := newFakeSpawnRPCConn(
+		rpcHelloSuccess+"\n"+rpcNameTakenFor("worker")+"\n",
+		rpcHelloSuccess+"\n"+rpcRunSuccess+"\n",
+	)
+	exit, out, stderr, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	if exit == nil || exit.Code != 7 {
+		t.Fatalf("exit=%+v, want exit 7", exit)
+	}
+	for _, c := range calls {
+		if c.Argv[0] == "kill" || c.Argv[0] == "rm" {
+			t.Fatalf("unexpected cleanup call: %v", c.Argv)
+		}
+	}
+	wantWarn := "soho: warning: agent 'worker-2' is blocked during startup (update prompt, login, trust dialog…). Screen follows; ask the user before answering it, then: hc read t7\n"
+	if !strings.Contains(stderr.String(), wantWarn) {
+		t.Fatalf("stderr = %q, want warning %q", stderr.String(), wantWarn)
+	}
+	outStr := out.String()
+	if !strings.Contains(outStr, `"name": "worker-2"`) {
+		t.Fatalf("stdout JSON missing name worker-2: %q", outStr)
+	}
+	if !strings.Contains(outStr, `"pane_id": "t7"`) {
+		t.Fatalf("stdout JSON missing pane_id t7: %q", outStr)
+	}
+	if !strings.Contains(outStr, `"status": "blocked_at_startup"`) {
+		t.Fatalf("stdout JSON missing status blocked_at_startup: %q", outStr)
+	}
+	data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "worker-2\tt7") {
+		t.Fatalf("roster missing worker-2/t7: %q", string(data))
+	}
+}
+
+func TestSpawnHcOrdinaryFailureClosesTerminal(t *testing.T) {
+	// Genuinely cleanup-eligible failure (exited during startup) kills and rms
+	// the terminal, dies with exit 4 and writes no roster row.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
+	rules := append(hcFixtureRules(),
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"finished","exit_code":1,"reason":"exited"}`},
 		fakecli.Rule{Argv: []string{"kill", "t7", "--json"}, Stdout: `{"address":"t7","state":"live"}`},
 		fakecli.Rule{Argv: []string{"rm", "t7", "--json"}, Stdout: `{"removed":"t7"}`},
 	)
@@ -578,8 +830,8 @@ func TestSpawnHcBlockedStartClosesTheTerminal(t *testing.T) {
 	}
 	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
 	exit, _, _, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
-	if exit == nil || exit.Code != 4 || exit.Msg != "agent worker is blocked during startup: permission: write to file" {
-		t.Fatalf("exit=%+v, want exit 4 with the Start failure's message", exit)
+	if exit == nil || exit.Code != 4 || exit.Msg != "agent worker exited during startup (exit 1, exited)" {
+		t.Fatalf("exit=%+v, want exit 4 with exited message", exit)
 	}
 	var kill, rm int
 	for _, c := range calls {
@@ -593,23 +845,21 @@ func TestSpawnHcBlockedStartClosesTheTerminal(t *testing.T) {
 	if kill != 1 || rm != 1 {
 		t.Fatalf("kill=%d rm=%d, want the address closed once each", kill, rm)
 	}
-	// The roster file may exist (the stale-row read materializes its
-	// header); a row is the failure.
 	if data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv")); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			if line != "" && !strings.HasPrefix(line, "#") {
-				t.Fatalf("a roster row was written on the blocked start: %q", line)
+				t.Fatalf("a roster row was written on ordinary failure: %q", line)
 			}
 		}
 	}
 }
 
 func TestSpawnHcFailedCloseWarnsWithTheAddress(t *testing.T) {
-	// A blocked start whose close fails still dies with the Start failure,
+	// A genuinely cleanup-eligible failure whose close fails still dies with exit 4,
 	// and warns first that the terminal may still hold the name.
 	cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "")
 	rules := append(hcFixtureRules(),
-		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"blocked","msg":"permission: write to file"}}`},
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"finished","exit_code":1,"reason":"exited"}`},
 		fakecli.Rule{Argv: []string{"kill", "t7", "--json"}, Stdout: `{"address":"t7","state":"live"}`},
 		fakecli.Rule{Argv: []string{"rm", "t7", "--json"}, Code: 1, Stderr: `{"error":{"kind":"internal","message":"rm failed"}}`},
 	)
@@ -618,8 +868,8 @@ func TestSpawnHcFailedCloseWarnsWithTheAddress(t *testing.T) {
 	}
 	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
 	exit, _, stderr, _ := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
-	if exit == nil || exit.Code != 4 || exit.Msg != "agent worker is blocked during startup: permission: write to file" {
-		t.Fatalf("exit=%+v, want exit 4 with the Start failure's message", exit)
+	if exit == nil || exit.Code != 4 || exit.Msg != "agent worker exited during startup (exit 1, exited)" {
+		t.Fatalf("exit=%+v, want exit 4 with exited message", exit)
 	}
 	want := "spawn: could not close hc terminal t7 after the failed start; it may still hold the name 'worker'"
 	if !strings.Contains(stderr.String(), want) {

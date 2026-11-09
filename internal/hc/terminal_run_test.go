@@ -159,6 +159,7 @@ func validTerminalRunInput() TerminalRun {
 	return TerminalRun{
 		Name:    "worker-1",
 		Kind:    "echo",
+		Program: "/bin/echo",
 		Cwd:     "/tmp",
 		Caller:  "t0",
 		Session: "sess-abc",
@@ -186,6 +187,9 @@ func TestRunTerminal_Validation(t *testing.T) {
 		{"empty kind", func(r *TerminalRun) { r.Kind = "" }, "kind is required"},
 		{"whitespace kind", func(r *TerminalRun) { r.Kind = "\t" }, "kind is required"},
 		{"invalid utf8 kind", func(r *TerminalRun) { r.Kind = string([]byte{0x80, 0x81}) }, "kind contains invalid UTF-8"},
+		{"empty program", func(r *TerminalRun) { r.Program = "" }, "program is required"},
+		{"whitespace program", func(r *TerminalRun) { r.Program = "   " }, "program is required"},
+		{"invalid utf8 program", func(r *TerminalRun) { r.Program = string([]byte{0x80, 0x81}) }, "program contains invalid UTF-8"},
 		{"empty cwd", func(r *TerminalRun) { r.Cwd = "" }, "cwd is required"},
 		{"whitespace cwd", func(r *TerminalRun) { r.Cwd = "  " }, "cwd is required"},
 		{"invalid utf8 cwd", func(r *TerminalRun) { r.Cwd = string([]byte{0xf0, 0x28, 0x8c, 0x28}) }, "cwd contains invalid UTF-8"},
@@ -213,6 +217,49 @@ func TestRunTerminal_Validation(t *testing.T) {
 			}
 			if connectCalled {
 				t.Fatalf("connect should not be called when input validation fails")
+			}
+		})
+	}
+}
+
+func TestRunTerminal_MissingOrInvalidProgramNoConnect(t *testing.T) {
+	connectCalled := false
+	c := &Client{
+		Connect: func(ctx context.Context, env platform.Env) (io.WriteCloser, io.Reader, func() error, error) {
+			connectCalled = true
+			return nil, nil, nil, errors.New("unexpected connect invocation")
+		},
+	}
+
+	for _, invalidProgram := range []struct {
+		desc    string
+		program string
+		wantErr string
+	}{
+		{"omitted/empty", "", "program is required"},
+		{"whitespace", "   \t  ", "program is required"},
+		{"invalid utf8", string([]byte{0xff, 0xfe}), "program contains invalid UTF-8"},
+	} {
+		t.Run(invalidProgram.desc, func(t *testing.T) {
+			connectCalled = false
+			input := validTerminalRunInput()
+			input.Program = invalidProgram.program
+
+			addr, err := c.RunTerminal(context.Background(), input)
+			if addr != "" {
+				t.Fatalf("expected empty address, got %q", addr)
+			}
+			if err == nil {
+				t.Fatalf("expected error for program %q, got nil", invalidProgram.desc)
+			}
+			if !strings.Contains(err.Error(), invalidProgram.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", invalidProgram.wantErr, err.Error())
+			}
+			if connectCalled {
+				t.Fatalf("Connect seam was called despite invalid program")
+			}
+			if errors.Is(err, ErrRunOutcomeUnknown) {
+				t.Fatalf("preflight validation failure must not wrap ErrRunOutcomeUnknown")
 			}
 		})
 	}
@@ -367,6 +414,7 @@ func TestRunTerminal_ExactParamsAndBytePreserving(t *testing.T) {
 	input := TerminalRun{
 		Name:    "worker-special",
 		Kind:    "custom-agent",
+		Program: "/opt/bin/custom-agent",
 		Cwd:     "/path/to/project",
 		Caller:  "t10",
 		Session: "sess-xyz-99",
@@ -464,12 +512,12 @@ func TestRunTerminal_ExactParamsAndBytePreserving(t *testing.T) {
 		t.Fatalf("parent must not be set, got %v", params["parent"])
 	}
 
-	// Verify argv: [Kind] + Args
+	// Verify argv: [Program] + Args
 	argvRaw, ok := params["argv"].([]any)
 	if !ok {
 		t.Fatalf("argv is not a slice: %v", params["argv"])
 	}
-	expectedArgv := []string{"custom-agent", "<input.txt", "a&b", "café", "日本語"}
+	expectedArgv := []string{"/opt/bin/custom-agent", "<input.txt", "a&b", "café", "日本語"}
 	if len(argvRaw) != len(expectedArgv) {
 		t.Fatalf("expected argv len %d, got %d", len(expectedArgv), len(argvRaw))
 	}

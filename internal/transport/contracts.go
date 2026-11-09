@@ -84,7 +84,8 @@ const (
 	// a terminal name the hc core already has live (its name_taken error).
 	FailureConflict FailureKind = "conflict"
 	// FailureBlocked: the target sits on a prompt only a person can answer
-	// (hc send's exit 9); the send was not made.
+	// (such as hc send's exit 9 or an observed blocked startup); the operation
+	// was not completed and the target awaits manual action.
 	FailureBlocked FailureKind = "blocked"
 	// FailureBusy: the idle guard found the target not idle (hc send's exit
 	// 10); the send was not made.

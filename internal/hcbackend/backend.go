@@ -22,11 +22,13 @@ import (
 	"math"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/djalmajr/soho/internal/agentexec"
 	"github.com/djalmajr/soho/internal/hc"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
@@ -76,6 +78,15 @@ type backend struct {
 	sessionDone  bool
 	sessionValue string
 	sessionErr   error
+
+	abs func(string) (string, error)
+}
+
+func (b *backend) absPath(path string) (string, error) {
+	if b.abs != nil {
+		return b.abs(path)
+	}
+	return filepath.Abs(path)
 }
 
 // Session.
@@ -1180,6 +1191,23 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 		cwd = wd
 	}
 
+	exe := agentexec.Executable(start.Kind)
+	program := exe
+	if resolved, ok := platform.FindExecutable(exe, b.env, platform.Current()); ok {
+		abs, err := b.absPath(resolved)
+		if err != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: cerr.Error(), Cause: cerr}}
+			}
+			return transport.Reply[string]{Err: &transport.Failure{
+				Kind:    transport.FailureUnavailable,
+				Message: "abs: " + err.Error(),
+				Cause:   err,
+			}}
+		}
+		program = abs
+	}
+
 	budget := hcTimeoutDefault
 	if call.Timeout > 0 {
 		budget = call.Timeout
@@ -1188,6 +1216,7 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 	address, err := b.client.RunTerminal(runCtx, hc.TerminalRun{
 		Name:    start.Name,
 		Kind:    start.Kind,
+		Program: program,
 		Cwd:     cwd,
 		Caller:  b.env.Get("HC_TERMINAL_ID"),
 		Session: session,
@@ -1331,7 +1360,7 @@ func readinessReply(name, address, out string) (*transport.Reply[string], *trans
 				message += ": " + s
 			}
 		}
-		return &transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCommand, Message: message}}, nil
+		return &transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureBlocked, Message: message}}, nil
 	case "idle", "done":
 		reported := false
 		if v, ok := obj.Get("reported"); ok {

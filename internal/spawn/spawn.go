@@ -911,6 +911,8 @@ type spawnOptions struct {
 	kindSet                                                                                                bool
 	force                                                                                                  bool
 	native                                                                                                 []string
+	blockedAtStartup                                                                                       bool
+	startupDiag                                                                                            string
 }
 
 func parseArgs(argv []string, cwd string) spawnOptions {
@@ -1594,9 +1596,12 @@ func cmdSpawnWithHcStarter(argv []string, ctx *core.Config, env platform.Env, cw
 	blocked := false
 	if env.Get("SOHO_TRANSPORT") == "hc" {
 		// DJA-604 2b-2b: Runtime.Start opens the new terminal and waits for
-		// the worker's first reported status, so there is no start window to
-		// check; a failed start dies here and closes the terminal it left.
+		// the worker's first reported status. Confirmed blocked starts stay
+		// managed; ordinary failures close the terminal before exiting.
 		startHC(ctx, &o, kind, env, agentArgs)
+		if o.blockedAtStartup {
+			blocked = true
+		}
 	} else {
 		blocked = startAgent(o, kind, env, created, agentArgs)
 	}
@@ -1606,7 +1611,7 @@ func cmdSpawnWithHcStarter(argv []string, ctx *core.Config, env platform.Env, cw
 	if !blocked && env.Get("SOHO_TRANSPORT") != "hc" {
 		lastState, lastScreen, blocked = checkStartWindow(o, kind, env, created, agentArgs, ctx)
 	}
-	if kind == "codex" {
+	if kind == "codex" && !o.blockedAtStartup {
 		if blocked {
 			lastScreen = agentReadText(svc.Runtime, o.name, "visible", intPtr(40))
 		}
@@ -1798,7 +1803,9 @@ func cmdSpawnWithHcStarter(argv []string, ctx *core.Config, env platform.Env, cw
 		} else if !cursorGate {
 			// The gate already printed the precise warning when it refused
 			// the start; the generic line names the other startup dialogs.
-			if hint := startup.TrustHint(o.name, kind, lastScreen); hint != "" {
+			if env.Get("SOHO_TRANSPORT") == "hc" {
+				Warn(fmt.Sprintf("agent '%s' is blocked during startup (update prompt, login, trust dialog…). Screen follows; ask the user before answering it, then: hc read %s", o.name, o.pane), ctx, env, "spawn")
+			} else if hint := startup.TrustHint(o.name, kind, lastScreen); hint != "" {
 				Warn(fmt.Sprintf("agent '%s' is blocked during startup (update prompt, login, trust dialog…). Screen follows; %s", o.name, hint), ctx, env, "spawn")
 			} else {
 				Warn(fmt.Sprintf("agent '%s' is blocked during startup (update prompt, login, trust dialog…). Screen follows; ask the user before answering it, then: herdr agent send-keys %s <keys>; herdr agent wait %s --timeout 60000", o.name, o.name, o.name), ctx, env, "spawn")
@@ -1808,7 +1815,21 @@ func cmdSpawnWithHcStarter(argv []string, ctx *core.Config, env platform.Env, cw
 		if kind == "cursor" {
 			lines = nil
 		}
-		_, _ = fmt.Fprint(platform.Stdout, agentReadText(svc.Runtime, o.name, "visible", lines))
+		var screen string
+		if env.Get("SOHO_TRANSPORT") == "hc" {
+			reply := svc.Runtime.Read(context.Background(), transport.Target{ID: o.pane}, transport.Read{Source: "visible", Lines: lines}, transport.Call{})
+			if reply.Err != nil || !reply.Valid {
+				screen = o.startupDiag
+				if screen != "" && !strings.HasSuffix(screen, "\n") {
+					screen += "\n"
+				}
+			} else {
+				screen = reply.Value
+			}
+		} else {
+			screen = agentReadText(svc.Runtime, o.name, "visible", lines)
+		}
+		_, _ = fmt.Fprint(platform.Stdout, screen)
 		platform.Die("", 7)
 	}
 }
@@ -2060,14 +2081,13 @@ func startAgent(o spawnOptions, kind string, env platform.Env, created bool, arg
 
 // startHcAgent runs the worker through hc (DJA-604 2b-2b). Runtime.Start
 // opens the new terminal of the session with the worker's exact argv and
-// waits for its first reported status, so on success o.pane holds the new
-// terminal's address (the roster's pane field under hc) and nothing else
-// happens. name_taken moves to the next free suffix under the UniqueName
-// rule, each retry printing the "is taken" warning, up to 10 tries; any
-// other start failure closes the terminal the start left (when the start
-// named one) and dies like the herdr failed-start path: exit 4, the Start
-// failure's message, no roster row. It takes o by pointer: the retries
-// rename o, and the roster row and the JSON use the final name.
+// waits for its first reported status. Ready and confirmed blocked starts
+// set o.pane to the returned address; blocked starts return to managed
+// finalization without cleanup. name_taken moves to the next free suffix
+// under the UniqueName rule, up to 10 tries. Other known failures close the
+// created terminal and exit 4 without a roster row; uncertain creation
+// outcomes are preserved for inspection. Retries update o.name so the row
+// and JSON use the final selected name.
 func startHcAgent(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string) {
 	startHcAgentUsingServices(ctx, o, kind, env, args, backend.New(env))
 }
@@ -2099,6 +2119,15 @@ func startHcAgentUsingServices(ctx *core.Config, o *spawnOptions, kind string, e
 			o.name = next
 			Warn(fmt.Sprintf("agent name '%s' is taken by another pane or workspace; using '%s'", taken, o.name), ctx, env, "spawn")
 			continue
+		}
+		if rep.Err.Kind == transport.FailureBlocked {
+			if rep.Value == "" {
+				core.DieFriction(rep.Err.Error(), 4, "", "spawn")
+			}
+			o.pane = rep.Value
+			o.blockedAtStartup = true
+			o.startupDiag = rep.Err.Message
+			return
 		}
 		if rep.Value != "" {
 			// The readiness failure left a terminal behind; close it before
