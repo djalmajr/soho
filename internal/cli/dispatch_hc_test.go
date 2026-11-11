@@ -26,6 +26,21 @@ const (
 	hcDispatchSessionLS = `{"terminals":[{"address":"t7","name":"worker","state":"live","turn":5,"reported":true,"status":{"state":"idle"}}]}`
 )
 
+// The guard probe fixtures are the read-only capability probes of one
+// ordinary (non-queue) guarded send — `hc send --help` (the local parser) and
+// `hc schema --json` (the serving core's OpenRPC document) — answered with
+// the retained primary's (de97ea5, v0.1.20) OLD idle/working capability and
+// the planned ready capability: the help's --if possible-values section and
+// the terminal.send if param's IdleOrWorking enum, both regenerated from the
+// primary's generated docs/commands.md and schema/hc.openrpc.json.
+const (
+	guardHelpOld         = "Paste text into a terminal and press Enter (waits for a person's unfinished draft)\n\nUsage: hc send [OPTIONS] <TERMINAL> <TEXT>\n\nArguments:\n  <TERMINAL>  The terminal: `t7`, a name, or `machine/t7`\n  <TEXT>      Pasted, then submitted with Enter\n\nOptions:\n      --force              Type even if the program is blocked (it may answer its dialog)\n      --json               JSON output even in a terminal\n      --if <STATUS>        Only type if the status is exactly this [possible values: idle, working]\n      --wait               Then wait for the turn this send started\n      --timeout <TIMEOUT>  With wait: seconds before it checks in (default: config, else 180)\n  -h, --help               Print help\n"
+	guardHelpReady       = "Paste text into a terminal and press Enter (waits for a person's unfinished draft)\n\nUsage: hc send [OPTIONS] <TERMINAL> <TEXT>\n\nArguments:\n  <TERMINAL>  The terminal: `t7`, a name, or `machine/t7`\n  <TEXT>      Pasted, then submitted with Enter\n\nOptions:\n      --force              Type even if the program is blocked (it may answer its dialog)\n      --json               JSON output even in a terminal\n      --if <STATUS>        Only type if the status is exactly this [possible values: idle, working, ready]\n      --wait               Then wait for the turn this send started\n      --timeout <TIMEOUT>  With wait: seconds before it checks in (default: config, else 180)\n  -h, --help               Print help\n"
+	guardHelpWorkingOnly = "Paste text into a terminal and press Enter (waits for a person's unfinished draft)\n\nUsage: hc send [OPTIONS] <TERMINAL> <TEXT>\n\nArguments:\n  <TERMINAL>  The terminal: `t7`, a name, or `machine/t7`\n  <TEXT>      Pasted, then submitted with Enter\n\nOptions:\n      --force              Type even if the program is blocked (it may answer its dialog)\n      --json               JSON output even in a terminal\n      --if <STATUS>        Only type if the status is exactly this [possible values: working]\n      --wait               Then wait for the turn this send started\n      --timeout <TIMEOUT>  With wait: seconds before it checks in (default: config, else 180)\n  -h, --help               Print help\n"
+	guardSchemaOld       = "{\"openrpc\":\"1.3.2\",\"info\":{\"title\":\"herdr-core\",\"version\":\"0.1.20\"},\"components\":{\"schemas\":{\"IdleOrWorking\":{\"enum\":[\"idle\",\"working\"],\"type\":\"string\"}}},\"methods\":[{\"description\":\"Paste text and press Enter after a person sends or clears their draft (at most 60 s since their last key), otherwise after ~3 s of quiet. Keys pressed during delivery are held, then delivered. Refuses a blocked program unless `force`.\",\"errors\":[{\"code\":-32000,\"data\":{\"kind\":\"not_found\"},\"message\":\"not_found\"},{\"code\":-32000,\"data\":{\"kind\":\"machine_unknown\"},\"message\":\"machine_unknown\"},{\"code\":-32000,\"data\":{\"kind\":\"finished\"},\"message\":\"finished\"},{\"code\":-32000,\"data\":{\"kind\":\"unavailable\"},\"message\":\"unavailable\"},{\"code\":-32000,\"data\":{\"kind\":\"blocked\"},\"message\":\"blocked\"},{\"code\":-32000,\"data\":{\"kind\":\"status_mismatch\"},\"message\":\"status_mismatch\"},{\"code\":-32602,\"data\":{\"kind\":\"invalid_params\"},\"message\":\"invalid_params\"},{\"code\":-32000,\"data\":{\"kind\":\"config\"},\"message\":\"config\"},{\"code\":-32000,\"data\":{\"kind\":\"cancelled\"},\"message\":\"cancelled\"}],\"name\":\"terminal.send\",\"paramStructure\":\"by-name\",\"params\":[{\"description\":\"Who is sending (`HC_TERMINAL_ID`, else the calling process's parent), so a\\nbare wait from the same caller waits for this send's turn.\",\"name\":\"caller\",\"required\":false,\"schema\":{\"description\":\"Who is sending (`HC_TERMINAL_ID`, else the calling process's parent), so a\\nbare wait from the same caller waits for this send's turn.\",\"type\":[\"string\",\"null\"]}},{\"description\":\"Type even if the program is blocked (it may answer its dialog).\",\"name\":\"force\",\"required\":false,\"schema\":{\"default\":false,\"description\":\"Type even if the program is blocked (it may answer its dialog).\",\"type\":\"boolean\"}},{\"description\":\"Only type if the status is exactly this.\",\"name\":\"if\",\"required\":false,\"schema\":{\"anyOf\":[{\"$ref\":\"#/components/schemas/IdleOrWorking\"},{\"type\":\"null\"}],\"description\":\"Only type if the status is exactly this.\"}},{\"description\":\"The terminal: `t7`, a name, or `machine/t7`.\",\"name\":\"terminal\",\"required\":true,\"schema\":{\"description\":\"The terminal: `t7`, a name, or `machine/t7`.\",\"type\":\"string\"}},{\"description\":\"Pasted, then submitted with Enter.\",\"name\":\"text\",\"required\":true,\"schema\":{\"description\":\"Pasted, then submitted with Enter.\",\"type\":\"string\"}},{\"description\":\"With wait: seconds before it checks in (default: config, else 180).\",\"name\":\"timeout\",\"required\":false,\"schema\":{\"description\":\"With wait: seconds before it checks in (default: config, else 180).\",\"format\":\"double\",\"type\":[\"number\",\"null\"]}},{\"description\":\"Then wait for the turn this send started.\",\"name\":\"wait\",\"required\":false,\"schema\":{\"default\":false,\"description\":\"Then wait for the turn this send started.\",\"type\":\"boolean\"}}],\"result\":{\"name\":\"result\",\"schema\":{\"$ref\":\"#/components/schemas/SendResult\"}}}]}"
+	guardSchemaReady     = "{\"openrpc\":\"1.3.2\",\"info\":{\"title\":\"herdr-core\",\"version\":\"0.1.20\"},\"components\":{\"schemas\":{\"IdleOrWorking\":{\"enum\":[\"idle\",\"working\",\"ready\"],\"type\":\"string\"}}},\"methods\":[{\"description\":\"Paste text and press Enter after a person sends or clears their draft (at most 60 s since their last key), otherwise after ~3 s of quiet. Keys pressed during delivery are held, then delivered. Refuses a blocked program unless `force`.\",\"errors\":[{\"code\":-32000,\"data\":{\"kind\":\"not_found\"},\"message\":\"not_found\"},{\"code\":-32000,\"data\":{\"kind\":\"machine_unknown\"},\"message\":\"machine_unknown\"},{\"code\":-32000,\"data\":{\"kind\":\"finished\"},\"message\":\"finished\"},{\"code\":-32000,\"data\":{\"kind\":\"unavailable\"},\"message\":\"unavailable\"},{\"code\":-32000,\"data\":{\"kind\":\"blocked\"},\"message\":\"blocked\"},{\"code\":-32000,\"data\":{\"kind\":\"status_mismatch\"},\"message\":\"status_mismatch\"},{\"code\":-32602,\"data\":{\"kind\":\"invalid_params\"},\"message\":\"invalid_params\"},{\"code\":-32000,\"data\":{\"kind\":\"config\"},\"message\":\"config\"},{\"code\":-32000,\"data\":{\"kind\":\"cancelled\"},\"message\":\"cancelled\"}],\"name\":\"terminal.send\",\"paramStructure\":\"by-name\",\"params\":[{\"description\":\"Who is sending (`HC_TERMINAL_ID`, else the calling process's parent), so a\\nbare wait from the same caller waits for this send's turn.\",\"name\":\"caller\",\"required\":false,\"schema\":{\"description\":\"Who is sending (`HC_TERMINAL_ID`, else the calling process's parent), so a\\nbare wait from the same caller waits for this send's turn.\",\"type\":[\"string\",\"null\"]}},{\"description\":\"Type even if the program is blocked (it may answer its dialog).\",\"name\":\"force\",\"required\":false,\"schema\":{\"default\":false,\"description\":\"Type even if the program is blocked (it may answer its dialog).\",\"type\":\"boolean\"}},{\"description\":\"Only type if the status is exactly this.\",\"name\":\"if\",\"required\":false,\"schema\":{\"anyOf\":[{\"$ref\":\"#/components/schemas/IdleOrWorking\"},{\"type\":\"null\"}],\"description\":\"Only type if the status is exactly this.\"}},{\"description\":\"The terminal: `t7`, a name, or `machine/t7`.\",\"name\":\"terminal\",\"required\":true,\"schema\":{\"description\":\"The terminal: `t7`, a name, or `machine/t7`.\",\"type\":\"string\"}},{\"description\":\"Pasted, then submitted with Enter.\",\"name\":\"text\",\"required\":true,\"schema\":{\"description\":\"Pasted, then submitted with Enter.\",\"type\":\"string\"}},{\"description\":\"With wait: seconds before it checks in (default: config, else 180).\",\"name\":\"timeout\",\"required\":false,\"schema\":{\"description\":\"With wait: seconds before it checks in (default: config, else 180).\",\"format\":\"double\",\"type\":[\"number\",\"null\"]}},{\"description\":\"Then wait for the turn this send started.\",\"name\":\"wait\",\"required\":false,\"schema\":{\"default\":false,\"description\":\"Then wait for the turn this send started.\",\"type\":\"boolean\"}}],\"result\":{\"name\":\"result\",\"schema\":{\"$ref\":\"#/components/schemas/SendResult\"}}}]}"
+)
+
 type dispatchHcFixture struct {
 	root  string
 	state string
@@ -130,15 +145,55 @@ func (f *dispatchHcFixture) assertHcNeverTouchedHerdr(t *testing.T) {
 	}
 }
 
-// hcSends returns the recorded send calls, in order.
+// guardProbeRules are the read-only capability probes of one ordinary
+// (non-queue) guarded send, answered with the primary's OLD idle/working
+// capability: both sides prove idle, so the guard selects it.
+func guardProbeRules() []fakecli.Rule {
+	return []fakecli.Rule{
+		{Argv: []string{"send", "--help"}, Stdout: guardHelpOld},
+		{Argv: []string{"schema", "--json"}, Stdout: guardSchemaOld},
+	}
+}
+
+// guardProbeRulesReady answer the same probes with the ready capability:
+// both sides prove ready, so the guard selects it.
+func guardProbeRulesReady() []fakecli.Rule {
+	return []fakecli.Rule{
+		{Argv: []string{"send", "--help"}, Stdout: guardHelpReady},
+		{Argv: []string{"schema", "--json"}, Stdout: guardSchemaReady},
+	}
+}
+
+// isRealSend is one terminal input send: a send that is not the read-only
+// send --help capability probe.
+func isRealSend(argv []string) bool {
+	return len(argv) > 0 && argv[0] == "send" && !(len(argv) == 2 && argv[1] == "--help")
+}
+
+// hcSends returns the recorded real send calls (the read-only send --help
+// capability probe is not terminal input and is excluded), in order.
 func hcSends(calls []fakecli.Call) []fakecli.Call {
 	var out []fakecli.Call
 	for _, c := range calls {
-		if len(c.Argv) > 0 && c.Argv[0] == "send" {
+		if isRealSend(c.Argv) {
 			out = append(out, c)
 		}
 	}
 	return out
+}
+
+// guardProbeCalls counts the read-only capability probes the guarded send
+// issued: the send --help parse probe and the schema --json serving probe.
+func guardProbeCalls(calls []fakecli.Call) (help, schema int) {
+	for _, c := range calls {
+		switch {
+		case len(c.Argv) == 2 && c.Argv[0] == "send" && c.Argv[1] == "--help":
+			help++
+		case len(c.Argv) == 2 && c.Argv[0] == "schema" && c.Argv[1] == "--json":
+			schema++
+		}
+	}
+	return help, schema
 }
 
 func dispatchHcOutputStatus(t *testing.T, out string) string {
@@ -155,12 +210,12 @@ func dispatchHcOutputStatus(t *testing.T, out string) string {
 // exact send argv, started true, the accepted sidecar, no screen read and no
 // key around the send, and no herdr call.
 func TestDispatchHcIdleWorkerAccepted(t *testing.T) {
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, Call: 1, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":true}`},
 		{Argv: []string{"read", "worker"}, ArgvPrefix: true},
-	})
+	}...))
 	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
 	if code != 0 {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
@@ -171,6 +226,9 @@ func TestDispatchHcIdleWorkerAccepted(t *testing.T) {
 	sends := hcSends(f.hcCalls(t))
 	if len(sends) != 1 {
 		t.Fatalf("sends=%d, want exactly one: %#v", len(sends), sends)
+	}
+	if help, schema := guardProbeCalls(f.hcCalls(t)); help != 1 || schema != 1 {
+		t.Fatalf("capability probes help=%d schema=%d, want the one read-only pair", help, schema)
 	}
 	argv := sends[0].Argv
 	want := []string{"send", "--if", "idle", "--json", "--", "worker"}
@@ -211,7 +269,7 @@ func assertNoReadsOrKeysAroundTheSend(t *testing.T, calls []fakecli.Call) {
 	t.Helper()
 	sendIndex := -1
 	for i, c := range calls {
-		if len(c.Argv) > 0 && c.Argv[0] == "send" {
+		if isRealSend(c.Argv) {
 			sendIndex = i
 			break
 		}
@@ -235,12 +293,12 @@ func assertNoReadsOrKeysAroundTheSend(t *testing.T, calls []fakecli.Call) {
 // TestDispatchHcTurnRiseArrives is acceptance (b): started false, then a get
 // with a greater turn is arrival proof inside the check window.
 func TestDispatchHcTurnRiseArrives(t *testing.T) {
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, Call: 1, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(8, "idle")},
 		{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":false}`},
 		{Argv: []string{"read", "worker"}, ArgvPrefix: true},
-	})
+	}...))
 	// The window is generous so the acceptance does not depend on the fake
 	// process's start time under host load; the test ends as soon as the
 	// turn rise is observed.
@@ -254,6 +312,9 @@ func TestDispatchHcTurnRiseArrives(t *testing.T) {
 	}
 	if len(hcSends(f.hcCalls(t))) != 1 {
 		t.Fatalf("sends: %#v, want exactly one", hcSends(f.hcCalls(t)))
+	}
+	if help, schema := guardProbeCalls(f.hcCalls(t)); help != 1 || schema != 1 {
+		t.Fatalf("capability probes help=%d schema=%d, want the one read-only pair", help, schema)
 	}
 	// The arrival probe is the second get (the first is the pre-send idle
 	// check); it saw turn 8 > the send's turn 7.
@@ -273,10 +334,10 @@ func TestDispatchHcTurnRiseArrives(t *testing.T) {
 // the turn never moves, so the not-received path with the reason, and exactly
 // one send (no resend under hc).
 func TestDispatchHcNoTurnRiseIsNotReceived(t *testing.T) {
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":false}`},
-	})
+	}...))
 	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
 	if code != 15 {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
@@ -294,6 +355,9 @@ func TestDispatchHcNoTurnRiseIsNotReceived(t *testing.T) {
 	if len(hcSends(f.hcCalls(t))) != 1 {
 		t.Fatalf("sends: %#v, want exactly one (no resend under hc)", hcSends(f.hcCalls(t)))
 	}
+	if help, schema := guardProbeCalls(f.hcCalls(t)); help != 1 || schema != 1 {
+		t.Fatalf("capability probes help=%d schema=%d, want the one read-only pair", help, schema)
+	}
 	f.assertHcNeverTouchedHerdr(t)
 }
 
@@ -301,10 +365,10 @@ func TestDispatchHcNoTurnRiseIsNotReceived(t *testing.T) {
 // exits 9 takes the blocked result with cause hc-blocked, and the task
 // pointer is restored like the codex-hooks-review block.
 func TestDispatchHcBlockedRestoresThePointer(t *testing.T) {
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Code: 9, Stderr: `{"error":{"kind":"blocked","message":"worker is blocked"}}`},
-	})
+	}...))
 	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
 	if code != 7 {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
@@ -328,6 +392,9 @@ func TestDispatchHcBlockedRestoresThePointer(t *testing.T) {
 	if _, err := os.ReadFile(filepath.Join(f.sd, "last-report-worker")); err == nil {
 		t.Fatal("last-report pointer was not restored (still present)")
 	}
+	if help, schema := guardProbeCalls(f.hcCalls(t)); help != 1 || schema != 1 {
+		t.Fatalf("capability probes help=%d schema=%d, want the one read-only pair", help, schema)
+	}
 	f.assertHcNeverTouchedHerdr(t)
 }
 
@@ -335,14 +402,14 @@ func TestDispatchHcBlockedRestoresThePointer(t *testing.T) {
 // 10 (the worker went working), then a get that settles to idle, then a
 // second send that succeeds: two sends, accepted.
 func TestDispatchHcBusyRetriesOnceWhenIdle(t *testing.T) {
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, Call: 1, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"get", "worker", "--json"}, Call: 2, Stdout: hcWorkerGet(7, "working")},
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(8, "idle")},
 		{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Call: 1, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"the terminal is working"}}`},
 		{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Call: 2, Stdout: `{"turn":8,"started":true}`},
 		{Argv: []string{"read", "worker"}, ArgvPrefix: true},
-	})
+	}...))
 	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
 	if code != 0 {
 		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
@@ -353,6 +420,11 @@ func TestDispatchHcBusyRetriesOnceWhenIdle(t *testing.T) {
 	sends := hcSends(f.hcCalls(t))
 	if len(sends) != 2 {
 		t.Fatalf("sends=%d, want exactly two (the busy retry): %#v", len(sends), sends)
+	}
+	// The retry re-runs the guarded send, so the read-only capability probes
+	// run twice: once per guarded send attempt.
+	if help, schema := guardProbeCalls(f.hcCalls(t)); help != 2 || schema != 2 {
+		t.Fatalf("capability probes help=%d schema=%d, want the two read-only pairs", help, schema)
 	}
 	sidecar, err := os.ReadFile(filepath.Join(f.sd, "briefs", "worker-"+composedStampOf(f, t)+".dispatch.json"))
 	if err != nil {
@@ -410,6 +482,80 @@ func TestDispatchHcCompactRefusedBeforeSend(t *testing.T) {
 	}
 	if sends := hcSends(f.hcCalls(t)); len(sends) != 0 {
 		t.Fatalf("sends before the refusal: %#v", sends)
+	}
+	f.assertHcNeverTouchedHerdr(t)
+}
+
+// TestDispatchHcReadyWorkerAccepted is acceptance (h): the local parser and
+// the serving enum both prove ready, so the guarded send goes out as
+// --if ready — the ready word is proven per call, never assumed.
+func TestDispatchHcReadyWorkerAccepted(t *testing.T) {
+	f := newDispatchHcFixture(t, append(guardProbeRulesReady(), []fakecli.Rule{
+		{Argv: []string{"get", "worker", "--json"}, Call: 1, Stdout: hcWorkerGet(7, "idle")},
+		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
+		{Argv: []string{"send", "--if", "ready", "--json", "--", "worker"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":true}`},
+		{Argv: []string{"read", "worker"}, ArgvPrefix: true},
+	}...))
+	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
+	if code != 0 {
+		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
+	}
+	if status := dispatchHcOutputStatus(t, out); status != "submitted" {
+		t.Fatalf("status=%q, want submitted (out=%s)", status, out)
+	}
+	sends := hcSends(f.hcCalls(t))
+	if len(sends) != 1 {
+		t.Fatalf("sends=%d, want exactly one: %#v", len(sends), sends)
+	}
+	argv := sends[0].Argv
+	if len(argv) < 3 || argv[1] != "--if" || argv[2] != "ready" {
+		t.Fatalf("argv=%#v, want the guarded send to carry --if ready", argv)
+	}
+	if help, schema := guardProbeCalls(f.hcCalls(t)); help != 1 || schema != 1 {
+		t.Fatalf("capability probes help=%d schema=%d, want the one read-only pair", help, schema)
+	}
+	assertNoReadsOrKeysAroundTheSend(t, f.hcCalls(t))
+	f.assertHcNeverTouchedHerdr(t)
+	sidecar, err := os.ReadFile(filepath.Join(f.sd, "briefs", "worker-"+composedStampOf(f, t)+".dispatch.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sidecar), `"submission":"accepted"`) {
+		t.Fatalf("sidecar = %s, want submission accepted", sidecar)
+	}
+}
+
+// TestDispatchHcUnknownCapabilityZeroSend is acceptance (i): the parser
+// proves only working and the serving enum proves idle and working — no
+// guard is proven on both sides — so the dispatch refuses with the
+// submission failure, the capability refusal in the raw result, and exactly
+// the two read-only probes: no send at all, never an idle fallback.
+func TestDispatchHcUnknownCapabilityZeroSend(t *testing.T) {
+	f := newDispatchHcFixture(t, []fakecli.Rule{
+		{Argv: []string{"send", "--help"}, Stdout: guardHelpWorkingOnly},
+		{Argv: []string{"schema", "--json"}, Stdout: guardSchemaOld},
+		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
+	})
+	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
+	if code != 4 {
+		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
+	}
+	if status := dispatchHcOutputStatus(t, out); status != "error" {
+		t.Fatalf("status=%q, want error (out=%s)", status, out)
+	}
+	wantRaw := "cannot prove the --if guard for worker worker: no --if guard is proven on both sides"
+	if !strings.Contains(out, wantRaw) {
+		t.Fatalf("out=%s, want the capability refusal %q", out, wantRaw)
+	}
+	wantWarn := "soho: warning: prompt submission failed; inspect with: hc get worker && hc read worker. Do not resend blindly."
+	if !strings.Contains(errText, wantWarn) {
+		t.Fatalf("stderr=%q, want the inspection warning %q", errText, wantWarn)
+	}
+	if sends := hcSends(f.hcCalls(t)); len(sends) != 0 {
+		t.Fatalf("sends=%d, want exactly zero (no idle fallback): %#v", len(sends), sends)
+	}
+	if help, schema := guardProbeCalls(f.hcCalls(t)); help != 1 || schema != 1 {
+		t.Fatalf("capability probes help=%d schema=%d, want the one read-only pair", help, schema)
 	}
 	f.assertHcNeverTouchedHerdr(t)
 }

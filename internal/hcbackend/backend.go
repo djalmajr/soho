@@ -680,23 +680,86 @@ func (b *backend) Get(ctx context.Context, target transport.Target, call transpo
 	}
 }
 
-// Send pastes the prompt into the terminal and presses Enter: `hc send --if
-// idle -- <target> <text>` (the -- ends the options, so a text that starts
-// with a dash is a value), without --force, which is never passed. Queue
-// lifts the --if idle guard (a blocked worker still refuses it). The
-// reply's Value is the raw SendResult record: its started flag is the
-// immediate arrival proof and its turn the turn the send started. A worker
-// that sits on a person's prompt is FailureBlocked, a worker that is not
-// idle when the guard checks it is FailureBusy, and a finished or removed
-// terminal is FailureNotFound; anything else takes the backend's usual
-// mapping.
+// Send pastes the prompt into the terminal and presses Enter: `hc send
+// --if <guard> -- <target> <text>` (the -- ends the options, so a text that
+// starts with a dash is a value), without --force, which is never passed.
+// Queue lifts the guard (a blocked worker still refuses it) and runs with
+// no capability probes, exactly today's `hc send -- <target> <text>`. The
+// ordinary (non-queue) send selects its --if guard through the client's
+// SendIfGuard under one deadline shared by every probe and the send: ready
+// only when the local parser and the serving enum prove it, idle only when
+// both prove idle, and a refusal is the capability failure with zero input
+// — never a guardless, downgraded or resent send. The reply's Value is the
+// raw SendResult record: its started flag is the immediate arrival proof
+// and its turn the turn the send started. A worker that sits on a person's
+// prompt is FailureBlocked, a worker whose status mismatches the guard that
+// was actually used is FailureBusy, and a finished or removed terminal is
+// FailureNotFound; anything else takes the backend's usual mapping.
 func (b *backend) Send(ctx context.Context, target transport.Target, send transport.Send, call transport.Call) transport.Reply[string] {
-	args := []string{"send"}
-	if !send.Queue {
-		args = append(args, "--if", "idle")
+	if send.Queue {
+		args := []string{"send", "--", addr(target), send.Text}
+		out, err := b.run(ctx, call, args...)
+		return b.sendReply(target, out, err, "")
 	}
-	args = append(args, "--", addr(target), send.Text)
-	out, err := b.run(ctx, call, args...)
+	return b.sendGuarded(ctx, target, send, call)
+}
+
+// sendGuarded is the ordinary (non-queue) send with the proven --if guard:
+// one deadline (the call's timeout, else the 30s default) clamps every
+// probe and the send together, so the probes never extend the call's
+// budget or outrun its cancellation; a guard refusal is the capability
+// failure with zero input — the send is never issued.
+func (b *backend) sendGuarded(ctx context.Context, target transport.Target, send transport.Send, call transport.Call) transport.Reply[string] {
+	timeout := hcTimeoutDefault
+	if call.Timeout > 0 {
+		timeout = call.Timeout
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	shared, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	guard, err := b.client.SendIfGuard(shared, machineOf(addr(target)))
+	if err != nil {
+		return transport.Reply[string]{Err: guardRefusal(addr(target), err)}
+	}
+	args := []string{"send", "--if", guard, "--", addr(target), send.Text}
+	out, err := b.client.Run(shared, args...)
+	return b.sendReply(target, out, err, guard)
+}
+
+// machineOf names the machine one effective hc address is on: the segment
+// before the first slash of a machine/id address, "" when the address is a
+// local terminal id. An embedded machine/id in the target's id is a remote
+// address too, never a local one.
+func machineOf(address string) string {
+	i := strings.Index(address, "/")
+	if i <= 0 {
+		return ""
+	}
+	return address[:i]
+}
+
+// guardRefusal renders one guard refusal (the probes proved no --if guard)
+// as the send that never happened: a probe launch failure keeps the
+// backend's usual unavailable mapping, metadata that parsed but proved no
+// common guard is a protocol failure — neither is busy or blocked, so no
+// consumer settles, downgrades or resends.
+func guardRefusal(name string, err error) *transport.Failure {
+	kind := transport.FailureProtocol
+	var hcErr *hc.Error
+	if errors.As(err, &hcErr) || errors.Is(err, hc.ErrNotInstalled) {
+		kind = transport.FailureUnavailable
+	}
+	return &transport.Failure{Kind: kind, Message: "cannot prove the --if guard for worker " + name + ": " + err.Error(), Cause: err}
+}
+
+// sendReply maps one hc send launch onto the send reply: exit 9 is the
+// blocked worker, exit 10 the status mismatch against the guard that was
+// actually used (idle stays "not idle", ready is "not ready"), exit 11 the
+// finished or removed terminal; every other failure takes the backend's
+// usual mapping. The queue path passes no guard, keeping today's message.
+func (b *backend) sendReply(target transport.Target, out string, err error, guard string) transport.Reply[string] {
 	if err != nil {
 		var hcErr *hc.Error
 		if errors.As(err, &hcErr) {
@@ -705,7 +768,11 @@ func (b *backend) Send(ctx context.Context, target transport.Target, send transp
 			case hc.ExitBlocked:
 				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureBlocked, Message: fmt.Sprintf("worker %s is blocked: a person must answer its prompt", name)}}
 			case hc.ExitStatusMismatch:
-				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureBusy, Message: "worker " + name + " is not idle"}}
+				want := "idle"
+				if guard == hc.GuardReady {
+					want = "ready"
+				}
+				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureBusy, Message: "worker " + name + " is not " + want}}
 			case hc.ExitFinished:
 				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureNotFound, Message: hcErr.Error(), Cause: err}}
 			}

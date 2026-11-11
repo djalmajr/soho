@@ -60,6 +60,11 @@ func TestDispatchHcNoPreSendScreenWork(t *testing.T) {
 			if path == "busy" {
 				rules = append(rules, fakecli.Rule{Argv: prefix, ArgvPrefix: true, Call: 2, Stdout: `{"turn":7,"started":true}`})
 			}
+			if path != "queue" {
+				// The ordinary guarded send's read-only capability probes,
+				// before the broad send rule (first match wins).
+				rules = append(guardProbeRules(), rules...)
+			}
 			f := newDispatchHcFixture(t, rules)
 			roster := filepath.Join(f.sd, "agents.tsv")
 			raw, err := os.ReadFile(roster)
@@ -88,7 +93,9 @@ func TestDispatchHcNoPreSendScreenWork(t *testing.T) {
 				}
 				switch c.Argv[0] {
 				case "send":
-					sends++
+					if isRealSend(c.Argv) {
+						sends++
+					}
 				case "read":
 					if sends == 0 {
 						pre++
@@ -170,7 +177,7 @@ func assertWorkerGetSendOrder(t *testing.T, f *dispatchHcFixture) {
 		if len(c.Argv) == 0 {
 			continue
 		}
-		if c.Argv[0] == "send" {
+		if isRealSend(c.Argv) {
 			ops = append(ops, "send")
 		}
 		if c.Argv[0] == "get" && len(c.Argv) > 1 && c.Argv[1] == "worker" {
@@ -193,14 +200,14 @@ func assertWorkerGetSendOrder(t *testing.T, f *dispatchHcFixture) {
 // the late result does not authorize the retry.
 func TestDispatchHcBusyRetryRefusedAfterDeadline(t *testing.T) {
 	prefix := []string{"send", "--if", "idle", "--json", "--", "worker"}
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, Call: 1, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"get", "worker", "--json"}, Call: 2, Delay: 250, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: prefix, ArgvPrefix: true, Call: 1, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`},
 		{Argv: prefix, ArgvPrefix: true, Call: 2, Stdout: `{"turn":8,"started":true}`},
 		{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
-	})
+	}...))
 	f.env["SOHO_PROMPT_SETTLE_SECONDS"] = "0"
 	start := time.Now()
 	code, _, _ := f.run(t, "worker", f.brief, "--no-wait", "--timeout", "20ms")
@@ -219,13 +226,15 @@ func TestDispatchHcBusyRetryRefusedAfterDeadline(t *testing.T) {
 // outside the window proves nothing, and no poll starts at or after
 // expiry.
 func TestDispatchHcArrivalProofRefusedAfterWindow(t *testing.T) {
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	// The probe rules precede the broad send rule: first match wins, so a
+	// send --help after it would take the send's answer instead of the help.
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, Call: 1, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"get", "worker", "--json"}, Call: 2, Delay: 1300, Stdout: hcWorkerGet(8, "idle")},
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(8, "idle")},
 		{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":false}`},
 		{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
-	})
+	}...))
 	f.env["SOHO_PROMPT_SETTLE_SECONDS"] = "0"
 	start := time.Now()
 	code, _, _ := f.run(t, "worker", f.brief, "--no-wait")
@@ -242,11 +251,11 @@ func TestDispatchHcArrivalProofRefusedAfterWindow(t *testing.T) {
 // signed ceiling) followed by one above it is arrival proof, without
 // narrowing or a sentinel.
 func TestDispatchHcUint64TurnRiseArrives(t *testing.T) {
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: `{"address":"t7","name":"worker","state":"live","turn":9223372036854775809,"reported":true,"status":{"state":"idle"}}`},
 		{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"turn":9223372036854775808,"started":false}`},
 		{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
-	})
+	}...))
 	// The window is generous so the acceptance does not depend on the fake
 	// process's start time under host load; the test ends as soon as the
 	// turn rise is observed.
@@ -265,10 +274,13 @@ func TestDispatchHcUint64TurnRiseArrives(t *testing.T) {
 func TestDispatchHcBlockedPreservesPriorPointers(t *testing.T) {
 	for _, queue := range []bool{false, true} {
 		t.Run(fmt.Sprintf("queue=%v", queue), func(t *testing.T) {
-			f := newDispatchHcFixture(t, []fakecli.Rule{
+			// The guarded subtest proves the capability through the read-only
+			// probes; the queue subtest never sends a guarded send, so the
+			// probe rules simply stay unanswered.
+			f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 				{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
 				{Argv: []string{"send"}, ArgvPrefix: true, Code: 9, Stderr: `{"error":{"kind":"blocked","message":"blocked"}}`},
-			})
+			}...))
 			oldReport := filepath.Join(f.sd, "reports", "previous.md")
 			pointer := []byte(fmt.Sprintf(`{"version":1,"task_report":%q,"current":%q,"history":[],"role":"implementer","pane":"t7"}`, oldReport, oldReport) + "\n")
 			pointerPath := taskreport.TaskReportPointerPath(f.sd, "worker")
@@ -321,11 +333,11 @@ func TestDispatchHcBlockedPreservesPriorPointers(t *testing.T) {
 // is unreadable — it proves nothing and is not resended: exactly one send,
 // not-received.
 func TestDispatchHcMalformedSendProvesNothing(t *testing.T) {
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":"true"}`},
 		{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
-	})
+	}...))
 	code, _, _ := f.run(t, "worker", f.brief, "--no-wait")
 	sends := len(hcSends(f.hcCalls(t)))
 	t.Logf("malformed started string; idle unchanged; sends=%d exit=%d", sends, code)
@@ -339,10 +351,10 @@ func TestDispatchHcMalformedSendProvesNothing(t *testing.T) {
 // submission failure with the hc inspection hint — the retry was not
 // unbounded and the deadline is not the defect.
 func TestDispatchHcBusyRetryIsFinal(t *testing.T) {
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"send"}, ArgvPrefix: true, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`},
-	})
+	}...))
 	// 30s is generous: the retry happens within the budget right away; the
 	// point is the ceiling, not the deadline (the deadline variant is
 	// TestDispatchHcBusyRetryRefusedAfterDeadline).
