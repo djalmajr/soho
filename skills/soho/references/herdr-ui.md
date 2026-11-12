@@ -2,6 +2,8 @@
 
 This reference defines the supported window, space, tab, and pane organization routines when running Soho on native Herdr Core (`SOHO_TRANSPORT=hc`). It complements `SKILL.md` and uses the current command surface from installed `herdr-app --skill`, `herdr-app commands`, and `hc --skill`.
 
+For portable Core readiness (native identity/cwd/PID ancestry checks, Codex `--no-daemon`, selective shell policy, transport preference, and test-layer spellings), see [core-readiness.md](core-readiness.md).
+
 ## Layer separation and authority
 
 `hc` (Herdr Core) executes programs in persistent terminals and tracks agent lifecycle; it does not arrange windows, spaces, or tabs.

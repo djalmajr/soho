@@ -2,6 +2,7 @@ package hcbackend
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -182,6 +183,15 @@ func TestBackendGet(t *testing.T) {
 		if !reflect.DeepEqual(rep.Value.ProgramHints, []string{"codex"}) {
 			t.Fatalf("hints %#v want [codex]", rep.Value.ProgramHints)
 		}
+		if rep.Value.LaunchProfile != "" {
+			t.Fatalf("launch profile %q want empty (the fixture carries no launch profile label)", rep.Value.LaunchProfile)
+		}
+		if rep.Value.Reported {
+			t.Fatal("reported true without a top-level reported flag in the fixture")
+		}
+		if rep.Value.ReporterApp != "codex" {
+			t.Fatalf("reporter app %q want codex (the fixture's status.app)", rep.Value.ReporterApp)
+		}
 	})
 
 	t.Run("string status maps to state word directly", func(t *testing.T) {
@@ -324,6 +334,349 @@ func TestBackendGet(t *testing.T) {
 		if rep.Valid {
 			t.Fatal("valid on a protocol failure")
 		}
+	})
+}
+
+// wantTerminalFields asserts the strict per-field projection of one Get
+// reply, so a drift in any state, identity or metadata field fails with the
+// field named.
+func wantTerminalFields(t *testing.T, got, want transport.Terminal) {
+	t.Helper()
+	if got.Target != want.Target {
+		t.Fatalf("target %+v want %+v", got.Target, want.Target)
+	}
+	if got.Name != want.Name {
+		t.Fatalf("name %q want %q", got.Name, want.Name)
+	}
+	if got.PaneID != want.PaneID {
+		t.Fatalf("pane %q want %q", got.PaneID, want.PaneID)
+	}
+	if got.State != want.State {
+		t.Fatalf("state %q want %q", got.State, want.State)
+	}
+	if got.NativeState != want.NativeState {
+		t.Fatalf("native state %q want %q", got.NativeState, want.NativeState)
+	}
+	if string(got.Sequence) != string(want.Sequence) {
+		t.Fatalf("sequence %q want %q", got.Sequence, want.Sequence)
+	}
+	if got.Msg != want.Msg {
+		t.Fatalf("msg %q want %q", got.Msg, want.Msg)
+	}
+	if got.Cwd != want.Cwd {
+		t.Fatalf("cwd %q want %q", got.Cwd, want.Cwd)
+	}
+	if got.WorkspaceID != want.WorkspaceID {
+		t.Fatalf("workspace %q want %q", got.WorkspaceID, want.WorkspaceID)
+	}
+	if !reflect.DeepEqual(got.ProgramHints, want.ProgramHints) {
+		t.Fatalf("hints %#v want %#v", got.ProgramHints, want.ProgramHints)
+	}
+	if got.LaunchProfile != want.LaunchProfile {
+		t.Fatalf("launch profile %q want %q", got.LaunchProfile, want.LaunchProfile)
+	}
+	if got.Reported != want.Reported {
+		t.Fatalf("reported %v want %v", got.Reported, want.Reported)
+	}
+	if got.ReporterApp != want.ReporterApp {
+		t.Fatalf("reporter app %q want %q", got.ReporterApp, want.ReporterApp)
+	}
+}
+
+// TestGetLaunchProfileMetadata: Get projects the source metadata strictly
+// from the hc get record — an actual string at the exact soho.launch_profile
+// label key, the actual bool true at the top-level reported flag, an actual
+// string at status.app — and leaves each at its zero value when the key is
+// missing, null or of another type, never coercing; the state and identity
+// projection is unchanged, live and finished alike. The expectations are
+// hand-written from the fixtures, not built from the implementation.
+func TestGetLaunchProfileMetadata(t *testing.T) {
+	target := transport.Target{ID: "t7"}
+	cases := []struct {
+		name string
+		json string
+		want transport.Terminal
+	}{
+		{
+			name: "known profile, reported true, app opencode, live working",
+			json: `{"address":"t7","name":"w7","state":"live","turn":5,"reported":true,"labels":{"soho.session":"s7","soho.launch_profile":"opencode"},"status":{"state":"working","app":"opencode","msg":"in progress"},"cwd":"/proj"}`,
+			want: transport.Terminal{
+				Target:        transport.Target{ID: "t7"},
+				Name:          "w7",
+				PaneID:        "t7",
+				State:         "working",
+				NativeState:   "live",
+				Sequence:      json.RawMessage(`5`),
+				Msg:           "in progress",
+				Cwd:           "/proj",
+				WorkspaceID:   "s7",
+				ProgramHints:  []string{"opencode"},
+				LaunchProfile: "opencode",
+				Reported:      true,
+				ReporterApp:   "opencode",
+			},
+		},
+		{
+			name: "no labels, no reported flag, no status app: zero metadata, address session",
+			json: `{"address":"t7","name":"w7","state":"live","status":{"state":"idle"},"turn":1}`,
+			want: transport.Terminal{
+				Target:      transport.Target{ID: "t7"},
+				Name:        "w7",
+				PaneID:      "t7",
+				State:       "idle",
+				NativeState: "live",
+				Sequence:    json.RawMessage(`1`),
+				WorkspaceID: "hc-t7",
+			},
+		},
+		{
+			name: "null labels: profile zero, session falls back to the address",
+			json: `{"address":"t7","state":"live","labels":null,"status":{"state":"idle"}}`,
+			want: transport.Terminal{
+				Target:      transport.Target{ID: "t7"},
+				PaneID:      "t7",
+				State:       "idle",
+				NativeState: "live",
+				WorkspaceID: "hc-t7",
+			},
+		},
+		{
+			name: "non-map labels: profile zero, session falls back to the address",
+			json: `{"address":"t7","state":"live","labels":"s7","status":{"state":"idle"}}`,
+			want: transport.Terminal{
+				Target:      transport.Target{ID: "t7"},
+				PaneID:      "t7",
+				State:       "idle",
+				NativeState: "live",
+				WorkspaceID: "hc-t7",
+			},
+		},
+		{
+			name: "label absent from the labels: profile zero, session kept",
+			json: `{"address":"t7","state":"live","labels":{"soho.session":"s7"},"status":{"state":"idle"}}`,
+			want: transport.Terminal{
+				Target:        transport.Target{ID: "t7"},
+				PaneID:        "t7",
+				State:         "idle",
+				NativeState:   "live",
+				WorkspaceID:   "s7",
+				LaunchProfile: "",
+			},
+		},
+		{
+			name: "null label: profile zero, session kept",
+			json: `{"address":"t7","state":"live","labels":{"soho.session":"s7","soho.launch_profile":null},"status":{"state":"idle"}}`,
+			want: transport.Terminal{
+				Target:        transport.Target{ID: "t7"},
+				PaneID:        "t7",
+				State:         "idle",
+				NativeState:   "live",
+				WorkspaceID:   "s7",
+				LaunchProfile: "",
+			},
+		},
+		{
+			name: "numeric label: profile zero, never coerced to a string",
+			json: `{"address":"t7","state":"live","labels":{"soho.launch_profile":7},"status":{"state":"idle"}}`,
+			want: transport.Terminal{
+				Target:        transport.Target{ID: "t7"},
+				PaneID:        "t7",
+				State:         "idle",
+				NativeState:   "live",
+				WorkspaceID:   "hc-t7",
+				LaunchProfile: "",
+			},
+		},
+		{
+			name: "reported false with profile and app present: reported stays false",
+			json: `{"address":"t7","state":"live","reported":false,"labels":{"soho.launch_profile":"codex"},"status":{"state":"idle","app":"codex"}}`,
+			want: transport.Terminal{
+				Target:        transport.Target{ID: "t7"},
+				PaneID:        "t7",
+				State:         "idle",
+				NativeState:   "live",
+				WorkspaceID:   "hc-t7",
+				ProgramHints:  []string{"codex"},
+				LaunchProfile: "codex",
+				Reported:      false,
+				ReporterApp:   "codex",
+			},
+		},
+		{
+			name: "reported absent with profile and app present: reported stays false",
+			json: `{"address":"t7","state":"live","labels":{"soho.launch_profile":"codex"},"status":{"state":"idle","app":"codex"}}`,
+			want: transport.Terminal{
+				Target:        transport.Target{ID: "t7"},
+				PaneID:        "t7",
+				State:         "idle",
+				NativeState:   "live",
+				WorkspaceID:   "hc-t7",
+				ProgramHints:  []string{"codex"},
+				LaunchProfile: "codex",
+				Reported:      false,
+				ReporterApp:   "codex",
+			},
+		},
+		{
+			name: "reported null: reported stays false",
+			json: `{"address":"t7","state":"live","reported":null,"labels":{"soho.launch_profile":"codex"},"status":{"state":"idle","app":"codex"}}`,
+			want: transport.Terminal{
+				Target:        transport.Target{ID: "t7"},
+				PaneID:        "t7",
+				State:         "idle",
+				NativeState:   "live",
+				WorkspaceID:   "hc-t7",
+				ProgramHints:  []string{"codex"},
+				LaunchProfile: "codex",
+				Reported:      false,
+				ReporterApp:   "codex",
+			},
+		},
+		{
+			name: "reported string true: never coerced to a bool",
+			json: `{"address":"t7","state":"live","reported":"true","labels":{"soho.launch_profile":"codex"},"status":{"state":"idle","app":"codex"}}`,
+			want: transport.Terminal{
+				Target:        transport.Target{ID: "t7"},
+				PaneID:        "t7",
+				State:         "idle",
+				NativeState:   "live",
+				WorkspaceID:   "hc-t7",
+				ProgramHints:  []string{"codex"},
+				LaunchProfile: "codex",
+				Reported:      false,
+				ReporterApp:   "codex",
+			},
+		},
+		{
+			name: "reported number one: never coerced to a bool",
+			json: `{"address":"t7","state":"live","reported":1,"labels":{"soho.launch_profile":"codex"},"status":{"state":"idle","app":"codex"}}`,
+			want: transport.Terminal{
+				Target:        transport.Target{ID: "t7"},
+				PaneID:        "t7",
+				State:         "idle",
+				NativeState:   "live",
+				WorkspaceID:   "hc-t7",
+				ProgramHints:  []string{"codex"},
+				LaunchProfile: "codex",
+				Reported:      false,
+				ReporterApp:   "codex",
+			},
+		},
+		{
+			name: "status absent: app zero, live terminal is unknown",
+			json: `{"address":"t7","state":"live","reported":true,"labels":{"soho.launch_profile":"codex"}}`,
+			want: transport.Terminal{
+				Target:        transport.Target{ID: "t7"},
+				PaneID:        "t7",
+				State:         "unknown",
+				NativeState:   "live",
+				WorkspaceID:   "hc-t7",
+				LaunchProfile: "codex",
+				Reported:      true,
+				ReporterApp:   "",
+			},
+		},
+		{
+			name: "null status: app zero, live terminal is unknown",
+			json: `{"address":"t7","state":"live","reported":true,"status":null}`,
+			want: transport.Terminal{
+				Target:      transport.Target{ID: "t7"},
+				PaneID:      "t7",
+				State:       "unknown",
+				NativeState: "live",
+				WorkspaceID: "hc-t7",
+				Reported:    true,
+				ReporterApp: "",
+			},
+		},
+		{
+			name: "string status: app zero, state maps to the word",
+			json: `{"address":"t7","state":"live","reported":true,"status":"working"}`,
+			want: transport.Terminal{
+				Target:      transport.Target{ID: "t7"},
+				PaneID:      "t7",
+				State:       "working",
+				NativeState: "live",
+				WorkspaceID: "hc-t7",
+				Reported:    true,
+				ReporterApp: "",
+			},
+		},
+		{
+			name: "app absent from the status: app zero",
+			json: `{"address":"t7","state":"live","status":{"state":"working"}}`,
+			want: transport.Terminal{
+				Target:      transport.Target{ID: "t7"},
+				PaneID:      "t7",
+				State:       "working",
+				NativeState: "live",
+				WorkspaceID: "hc-t7",
+				ReporterApp: "",
+			},
+		},
+		{
+			name: "null app: app zero",
+			json: `{"address":"t7","state":"live","status":{"state":"working","app":null}}`,
+			want: transport.Terminal{
+				Target:      transport.Target{ID: "t7"},
+				PaneID:      "t7",
+				State:       "working",
+				NativeState: "live",
+				WorkspaceID: "hc-t7",
+				ReporterApp: "",
+			},
+		},
+		{
+			name: "numeric app: never coerced to a string",
+			json: `{"address":"t7","state":"live","status":{"state":"working","app":3}}`,
+			want: transport.Terminal{
+				Target:      transport.Target{ID: "t7"},
+				PaneID:      "t7",
+				State:       "working",
+				NativeState: "live",
+				WorkspaceID: "hc-t7",
+				ReporterApp: "",
+			},
+		},
+		{
+			name: "finished terminal: metadata independent of the gone state",
+			json: `{"address":"t7","name":"w7","state":"finished","turn":9,"reported":true,"labels":{"soho.session":"s7","soho.launch_profile":"codex"},"status":{"state":"done","app":"codex"}}`,
+			want: transport.Terminal{
+				Target:        transport.Target{ID: "t7"},
+				Name:          "w7",
+				PaneID:        "t7",
+				State:         "gone",
+				NativeState:   "finished",
+				Sequence:      json.RawMessage(`9`),
+				WorkspaceID:   "s7",
+				ProgramHints:  []string{"codex"},
+				LaunchProfile: "codex",
+				Reported:      true,
+				ReporterApp:   "codex",
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			env, _ := fakeHc(t, []fakecli.Rule{{Argv: []string{"get", "t7", "--json"}, Stdout: tc.json}})
+			b := &backend{env: env, client: hc.New(env)}
+			rep := b.Get(context.Background(), target, transport.Call{})
+			if rep.Err != nil || !rep.Valid {
+				t.Fatalf("get failed: err=%v valid=%v", rep.Err, rep.Valid)
+			}
+			wantTerminalFields(t, rep.Value, tc.want)
+		})
+	}
+
+	t.Run("exit 3 is gone with zero metadata", func(t *testing.T) {
+		env, _ := fakeHc(t, []fakecli.Rule{{Argv: []string{"get", "t7", "--json"}, Code: 3, Stderr: `{"error":{"kind":"not_found","message":"no such terminal"}}`}})
+		b := &backend{env: env, client: hc.New(env)}
+		rep := b.Get(context.Background(), target, transport.Call{})
+		if rep.Err != nil || !rep.Valid {
+			t.Fatalf("get failed: err=%v valid=%v", rep.Err, rep.Valid)
+		}
+		wantTerminalFields(t, rep.Value, transport.Terminal{Target: target, State: "gone"})
 	})
 }
 

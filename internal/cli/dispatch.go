@@ -22,6 +22,7 @@ import (
 	"github.com/djalmajr/soho/internal/gittree"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
+	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/provider"
 	"github.com/djalmajr/soho/internal/spawn"
@@ -220,7 +221,23 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// border, the cursor marker cleanup) are herdr-only: none of them runs
 	// for the five kinds hc accepts.
 	hcMode := env.Get("SOHO_TRANSPORT") == "hc"
-	if hcMode && kind != "claude" && kind != "codex" && kind != "pi" && kind != "grok" && kind != "agy" {
+	// SOH-201: opencode under hc is admitted only while its roster terminal
+	// actually reports the live primary launch profile. The check reads the
+	// terminal through Get on the roster's own terminal id (never a display
+	// name) before any input, report pointer or sidecar is written and
+	// before any screen or provider read; the known profile then feeds the
+	// shared native policy, which keeps the five kinds on the empty
+	// profile and leaves cursor and the rest unsupported.
+	var hcProfile string
+	if hcMode && kind == "opencode" {
+		target := transport.Target{ID: at(1)}
+		got := svc.Runtime.Get(context.Background(), target, transport.Call{Timeout: herdr.Timeout})
+		if !got.Valid || got.Err != nil || got.Value.Target != target || !kinds.OpenCodePrimaryObserved(got.Value) {
+			core.DieFriction("dispatch: opencode requires a live reported primary launch profile under transport=hc", 2, frictionLogPath, "dispatch")
+		}
+		hcProfile = got.Value.LaunchProfile
+	}
+	if hcMode && !kinds.NativeStatusSupported(kind, hcProfile) {
 		core.DieFriction(fmt.Sprintf("dispatch: kind %s does not report status under transport=hc; use transport=herdr", kind), 2, frictionLogPath, "dispatch")
 	}
 	if kind == "codex" && !dispatchNativeArg(at(13), "--no-daemon") && !dispatchNativeArg(at(13), "--remote") && dispatchCodexSupportsNoDaemon(env, cwd) {

@@ -134,6 +134,12 @@ type Reply[T any] struct {
 	Err     *Failure
 }
 
+// LaunchProfileLabel is the terminal label key the hc core's terminal.run
+// request already accepts for the caller's resolved launch profile; the
+// label value is a portable profile identifier, never a kind, model or
+// config payload.
+const LaunchProfileLabel = "soho.launch_profile"
+
 // Terminal is one registered agent (a terminal) as a backend reports it.
 // Fields the backend does not report are zero. State is the reported
 // agent_status (empty when absent); Sequence is the state_change_seq.
@@ -169,6 +175,25 @@ type Terminal struct {
 	// present and different. Hints only; canonical kind matching stays in
 	// the kinds catalog.
 	ProgramHints []string
+	// LaunchProfile is the optional launch profile the terminal record
+	// reports under the soho.launch_profile label; the zero value means
+	// unknown or unreported. The hc backend's Get populates it from the
+	// record's labels (an actual string at the exact label key); the herdr
+	// backend leaves it zero. Internal source metadata for a future live
+	// guard; never a public field.
+	LaunchProfile string
+	// Reported is the terminal record's top-level reported flag, true only
+	// when the record reports the actual bool true (for hc, the worker has
+	// reported a status); absent, null, false or another type stay the zero
+	// value, never coerced. Source metadata for local verification, never a
+	// public field.
+	Reported bool
+	// ReporterApp is the app the terminal record's status names (the hc
+	// record's status.app, "" when the record reports none or the value is
+	// not a string), kept distinct from ProgramHints so a consumer can read
+	// the reported app without parsing the hint order. Source metadata for
+	// local verification, never a public field.
+	ReporterApp string
 }
 
 // Scope selects which terminals a listing covers. All lists every live
@@ -219,6 +244,19 @@ type Start struct {
 	// (its pane already has a cwd); the hc backend passes it as --cwd when
 	// it is non-empty.
 	Cwd string
+
+	// LaunchProfile names the launch profile the caller resolved for this
+	// start ("" for the pass-through profile). Phase A carries it inertly:
+	// no backend threads it into its start request yet and per-kind
+	// profile admission remains future work, so zero-value callers are
+	// unchanged.
+	LaunchProfile string
+
+	// EnvOverrides are the explicit per-child environment entries the
+	// backend merges into the child's environment alongside its mandatory
+	// transport marker; nil or empty leaves the child's environment
+	// unchanged. Never the caller's whole environment.
+	EnvOverrides map[string]string
 }
 
 // CallerCheck is the outcome of the caller-pane check: whether this process

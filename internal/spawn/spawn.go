@@ -733,6 +733,12 @@ func EmitReuse(name, role, kind string, ctx *core.Config, env platform.Env, cwd 
 	// model, effort and agent_args are the roster columns the spawn recorded
 	// (8, 14, 13); a missing value comes out as "".
 	out := jsonjs.O("name", name, "pane_id", fieldAt(f, 1), "kind", kind, "role", role, "family", fieldAt(f, 4), "reused", true, "previous_role", prev, "effort", fieldAt(f, 14), "model", fieldAt(f, 8), "agent_args", fieldAt(f, 13), "status", "ready")
+	if kind == "opencode" && env.Get("SOHO_TRANSPORT") == "hc" {
+		// SOH-201 phase B: the reuse gate proved this worker reports the
+		// primary profile; disclose the known profile name only, never its
+		// environment.
+		out.Set("launch_profile", kinds.OpenCodePrimaryProfile)
+	}
 	if port := core.RosterE2EPort(f); port != "" {
 		out.Set("e2e_port", port)
 	}
@@ -785,6 +791,26 @@ func warnStartupBlocked(name, kind, state string, ev startup.Evaluation, ctx *co
 // name without a roster row is left to the fresh path (emitReuse says the
 // same and returns false).
 func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config, env platform.Env, cwd string) {
+	// SOH-201 phase B: a reusable native opencode worker is qualified by its
+	// own terminal record, never by its display name. One Get on the
+	// roster's terminal id; the record's identity must match the queried
+	// target and report the primary profile, a reported status from the
+	// opencode app, the live lifecycle and idle-or-done activity. Anything
+	// else refuses the reuse with the fixed exit-4 line, before any role
+	// change, ready emission, input or close.
+	if kind == "opencode" && env.Get("SOHO_TRANSPORT") == "hc" {
+		line := core.RosterLine(core.StateDirPath(ctx, env, cwd), name)
+		queried := transport.Target{ID: fieldAt(strings.Split(line, "\t"), 1)}
+		ready := queried.ID != ""
+		if ready {
+			reply := svc.Runtime.Get(context.Background(), queried, transport.Call{})
+			ready = reply.Valid && reply.Err == nil && reply.Value.Target == queried && kinds.OpenCodePrimaryReady(reply.Value)
+		}
+		if !ready {
+			core.DieFriction("spawn: reusable opencode worker is not a reported primary-profile worker ready for input", 4, "", "spawn")
+		}
+		return
+	}
 	if !startup.Enabled(kind) {
 		return
 	}
@@ -913,6 +939,8 @@ type spawnOptions struct {
 	native                                                                                                 []string
 	blockedAtStartup                                                                                       bool
 	startupDiag                                                                                            string
+	launchProfile                                                                                          kinds.LaunchProfile
+	nativeArgsSnapshot                                                                                     string
 }
 
 func parseArgs(argv []string, cwd string) spawnOptions {
@@ -1145,6 +1173,34 @@ func cmdSpawnWithHcStarter(argv []string, ctx *core.Config, env platform.Env, cw
 			o.effort = mc
 		}
 	}
+	// SOH-201 phase B: the native hc+opencode primary profile is prepared
+	// here, before any reuse decision or terminal creation, with the
+	// explicitly resolved requested model and the caller's inline
+	// configuration and configuration directory: empty or malformed data
+	// refuses, and no other model is ever defaulted in. The configured
+	// native args string is snapshotted with it, and the complete final
+	// argv (the base args, the profile's extra args, the configured and
+	// the user args) is validated through the shared native validator
+	// before any creation or reuse emission. The launch builder runs with
+	// its warnings suppressed here: the fresh path below is the single
+	// source of the canonical context and effort warnings, as for every
+	// other kind.
+	if kind == "opencode" && env.Get("SOHO_TRANSPORT") == "hc" {
+		profile, err := kinds.ResolveLaunchProfileWithConfigDir(kind, o.model, o.effort, "hc", env.Get("OPENCODE_CONFIG_CONTENT"), env.Get("OPENCODE_CONFIG_DIR"), func(msg string) {})
+		if err != nil {
+			core.DieFriction(err.Error(), 2, "", "spawn")
+		}
+		o.launchProfile = profile
+		o.nativeArgsSnapshot = ConfigNativeArgs(kind, lane, o.role, ctx, env, cwd, nil)
+		args := launchArgs(kind, o.approvals, o.model, o.effort, ctx, env, profile, func(msg string) {})
+		if o.nativeArgsSnapshot != "" {
+			args = append(args, strings.Fields(o.nativeArgsSnapshot)...)
+		}
+		args = append(args, o.native...)
+		if err := kinds.ValidateNativeLaunchProfile(kind, profile.Name, args, profile.EnvOverrides); err != nil {
+			core.DieFriction(err.Error(), 2, "", "spawn")
+		}
+	}
 	if o.reuse == "" {
 		o.reuse = core.Cfg(ctx, "reuse_workers", "on", env)
 	}
@@ -1375,12 +1431,20 @@ func cmdSpawnWithHcStarter(argv []string, ctx *core.Config, env platform.Env, cw
 		}
 	}
 	warnLaneRoleEffort(o.name, o.role, lane, kind, o.model, o.effort, strings.HasPrefix(res.EffortFrom, "lane "), ctx, env, cwd)
-	native := ConfigNativeArgs(kind, lane, o.role, ctx, env, cwd, func(key, own string) {
-		if own == "" {
-			own = "?"
-		}
-		Warn(fmt.Sprintf("%s not passed: those args belong to kind %s and this spawn runs %s", key, own, kind), ctx, env, "spawn")
-	})
+	var native string
+	if kind == "opencode" && env.Get("SOHO_TRANSPORT") == "hc" {
+		// SOH-201 phase B: the configured native args were snapshotted with
+		// the early primary-profile validation; the fresh path reuses the
+		// snapshot instead of re-reading the configuration.
+		native = o.nativeArgsSnapshot
+	} else {
+		native = ConfigNativeArgs(kind, lane, o.role, ctx, env, cwd, func(key, own string) {
+			if own == "" {
+				own = "?"
+			}
+			Warn(fmt.Sprintf("%s not passed: those args belong to kind %s and this spawn runs %s", key, own, kind), ctx, env, "spawn")
+		})
+	}
 	approvalsForArgs := o.approvals
 	if kind == "codex" {
 		nativeArgs := append(strings.Fields(native), o.native...)
@@ -1389,7 +1453,7 @@ func cmdSpawnWithHcStarter(argv []string, ctx *core.Config, env platform.Env, cw
 			Warn(fmt.Sprintf("spawn: codex args already set the sandbox or approvals (%s); approvals=%s adds nothing for '%s'", flag, o.approvals, o.name), ctx, env, "spawn")
 		}
 	}
-	args := buildArgs(kind, approvalsForArgs, o.model, o.effort, ctx, env)
+	args := launchArgs(kind, approvalsForArgs, o.model, o.effort, ctx, env, o.launchProfile, func(msg string) { Warn(msg, ctx, env, "spawn") })
 	// DJA-392/DJA-693: the mcp choice translates right after the effort args
 	// (buildArgs ends with them) and before the config and user args; a kind
 	// without a per-process flag warns once and the agent keeps the user's
@@ -1781,6 +1845,11 @@ func cmdSpawnWithHcStarter(argv []string, ctx *core.Config, env platform.Env, cw
 		}
 		return "ready"
 	}())
+	if o.launchProfile.Name == kinds.OpenCodePrimaryProfile {
+		// SOH-201 phase B: disclose the known launch profile name only; the
+		// profile's environment never reaches the JSON or the roster.
+		out.Set("launch_profile", o.launchProfile.Name)
+	}
 	if e2ePort != "" {
 		out.Set("e2e_port", e2ePort)
 	}
@@ -1930,16 +1999,36 @@ func boolText(v bool) string {
 	}
 	return ""
 }
-func buildArgs(kind, approvals, model, effort string, ctx *core.Config, env platform.Env) []string {
+
+// launchArgs is the shared launch argv builder: the kind's base args
+// (context, approvals, model, effort through the shared kind policy, with
+// the caller's warnings) plus the resolved launch profile's extra args. A
+// named profile contributes its own model args; the native primary profile
+// contributes none, because it pins the exact requested model through its
+// environment instead of a generated -m/--model flag. The zero profile
+// keeps the legacy buildArgs output byte for byte, for every kind.
+func launchArgs(kind, approvals, model, effort string, ctx *core.Config, env platform.Env, profile kinds.LaunchProfile, warn func(string)) []string {
 	out := kinds.KindContextArgs(kind, core.Cfg(ctx, "worker_context", "full", env))
-	a, err := kinds.KindApprovalArgs(kind, approvals, func(msg string) { Warn(msg, ctx, env, "spawn") })
+	a, err := kinds.KindApprovalArgs(kind, approvals, warn)
 	if err != nil {
 		core.DieFriction(err.Error(), 2, "", "")
 	}
 	out = append(out, a...)
-	out = append(out, kinds.KindModelArgs(kind, model, effort, func(msg string) { Warn(msg, ctx, env, "spawn") })...)
-	out = append(out, kinds.KindEffortArgs(kind, effort, model, env, func(msg string) { Warn(msg, ctx, env, "spawn") })...)
+	if profile.Name == "" {
+		out = append(out, kinds.KindModelArgs(kind, model, effort, warn)...)
+	} else {
+		out = append(out, profile.ModelArgs...)
+	}
+	out = append(out, kinds.KindEffortArgs(kind, effort, model, env, warn)...)
+	out = append(out, profile.ExtraArgs...)
 	return out
+}
+
+// buildArgs is the legacy launch argv for a spawn without a resolved launch
+// profile (every kind but the native hc+opencode primary), kept for its
+// existing callers byte for byte.
+func buildArgs(kind, approvals, model, effort string, ctx *core.Config, env platform.Env) []string {
+	return launchArgs(kind, approvals, model, effort, ctx, env, kinds.LaunchProfile{}, func(msg string) { Warn(msg, ctx, env, "spawn") })
 }
 
 // ResolveMcp applies the per-role MCP server precedence (DJA-392): flag >
@@ -2096,7 +2185,11 @@ func startHcAgentUsingServices(ctx *core.Config, o *spawnOptions, kind string, e
 	rt := svc.Terminal
 	base := o.name
 	for tries := 0; ; tries++ {
-		rep := rt.Start(context.Background(), transport.Start{Name: o.name, Kind: kind, Cwd: o.cwd, Timeout: o.timeout, Args: args}, transport.Call{Timeout: time.Duration(startWrapperTimeoutMs(o.timeout)) * time.Millisecond})
+		// SOH-201 phase B: forward the resolved launch profile's name and its
+		// explicit per-child env overrides; the zero profile and nil
+		// overrides leave the child unchanged, and the caller's whole
+		// environment never travels here.
+		rep := rt.Start(context.Background(), transport.Start{Name: o.name, Kind: kind, Cwd: o.cwd, Timeout: o.timeout, Args: args, LaunchProfile: o.launchProfile.Name, EnvOverrides: o.launchProfile.EnvOverrides}, transport.Call{Timeout: time.Duration(startWrapperTimeoutMs(o.timeout)) * time.Millisecond})
 		if rep.Err == nil {
 			o.pane = rep.Value
 			return

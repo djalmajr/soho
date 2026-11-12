@@ -115,53 +115,121 @@ func TestDispatchHcNoPreSendScreenWork(t *testing.T) {
 
 // TestDispatchHcKindRefusedBeforeAnyReadOrSend is the ported
 // CursorScreenStillRefusesHc probe under the decided behavior: a kind whose
-// status hc does not report (cursor, opencode) is refused by kind before
-// anything is read or sent — exit 2, the exact line, zero reads and zero
-// sends, even when the hc state says idle.
+// status hc does not report (cursor) is refused by kind before anything is
+// read or sent — exit 2, the exact generic line, zero gets, zero reads and
+// zero sends, even when the hc state says idle. The native primary's kind
+// (opencode) takes the specific refusal instead: a live idle roster record
+// that reports app opencode but carries no primary launch profile is
+// refused before anything is read or sent, after exactly one Get on the
+// roster's own terminal id, with the fixed line and zero screen, input,
+// key or pointer side effect.
 func TestDispatchHcKindRefusedBeforeAnyReadOrSend(t *testing.T) {
-	for _, kind := range []string{"cursor", "opencode"} {
-		t.Run(kind, func(t *testing.T) {
-			f := newDispatchHcFixture(t, []fakecli.Rule{
-				{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
-				{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
-				{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":true}`},
-			})
-			roster := filepath.Join(f.sd, "agents.tsv")
-			raw, err := os.ReadFile(roster)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(roster, []byte(strings.Replace(string(raw), "\tcodex\t", "\t"+kind+"\t", 1)), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
-			if want := fmt.Sprintf("soho: dispatch: kind %s does not report status under transport=hc; use transport=herdr\n", kind); stderr != want {
-				t.Fatalf("exit=%d stderr=%q, want exactly %q", code, stderr, want)
-			}
-			if code != 2 {
-				t.Fatalf("exit=%d want 2 out=%q stderr=%q", code, out, stderr)
-			}
-			reads, sends, keys := 0, 0, 0
-			for _, c := range f.hcCalls(t) {
-				if len(c.Argv) == 0 {
-					continue
-				}
-				switch c.Argv[0] {
-				case "read":
-					reads++
-				case "send":
-					sends++
-				case "keys":
-					keys++
-				}
-			}
-			t.Logf("authoritative hc idle; kind=%s; reads=%d sends=%d keys=%d exit=%d", kind, reads, sends, keys, code)
-			if reads != 0 || sends != 0 || keys != 0 {
-				t.Error("the kind refusal read or sent something")
-			}
-			f.assertHcNeverTouchedHerdr(t)
+	t.Run("cursor", func(t *testing.T) {
+		f := newDispatchHcFixture(t, []fakecli.Rule{
+			{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
+			{Argv: []string{"get", "t7", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
+			{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
+			{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":true}`},
 		})
-	}
+		roster := filepath.Join(f.sd, "agents.tsv")
+		raw, err := os.ReadFile(roster)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(roster, []byte(strings.Replace(string(raw), "\tcodex\t", "\tcursor\t", 1)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		const want = "soho: dispatch: kind cursor does not report status under transport=hc; use transport=herdr\n"
+		code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
+		if stderr != want {
+			t.Fatalf("exit=%d stderr=%q, want exactly %q", code, stderr, want)
+		}
+		if code != 2 {
+			t.Fatalf("exit=%d want 2 out=%q stderr=%q", code, out, stderr)
+		}
+		if out != "" {
+			t.Fatalf("stdout=%q, want nothing", out)
+		}
+		gets, reads, sends, keys := 0, 0, 0, 0
+		for _, c := range f.hcCalls(t) {
+			if len(c.Argv) == 0 {
+				continue
+			}
+			switch c.Argv[0] {
+			case "get":
+				if len(c.Argv) > 1 && (c.Argv[1] == "worker" || c.Argv[1] == "t7") {
+					gets++
+				}
+			case "read":
+				reads++
+			case "send":
+				sends++
+			case "keys":
+				keys++
+			}
+		}
+		t.Logf("authoritative hc idle; kind=cursor; gets=%d reads=%d sends=%d keys=%d exit=%d", gets, reads, sends, keys, code)
+		if gets != 0 || reads != 0 || sends != 0 || keys != 0 {
+			t.Error("the cursor refusal got, read or sent something")
+		}
+		f.assertHcNeverTouchedHerdr(t)
+	})
+	t.Run("opencode", func(t *testing.T) {
+		// The real observation the gate refuses: live, idle, reported, app
+		// opencode and no launch profile label.
+		rec := hcOpencodeRecord{address: "t7", nativeState: "live", state: "idle", reported: true, app: "opencode"}
+		f := newDispatchHcOpencodeFixture(t, []fakecli.Rule{
+			{Argv: []string{"get", "t7", "--json"}, ArgvPrefix: true, Stdout: hcOpencodeGet(rec)},
+			{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcOpencodeGet(rec)},
+			{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
+			{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":true}`},
+		})
+		const want = "soho: dispatch: opencode requires a live reported primary launch profile under transport=hc\n"
+		code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
+		if stderr != want {
+			t.Fatalf("exit=%d stderr=%q, want exactly %q", code, stderr, want)
+		}
+		if code != 2 {
+			t.Fatalf("exit=%d want 2 out=%q stderr=%q", code, out, stderr)
+		}
+		if out != "" {
+			t.Fatalf("stdout=%q, want nothing", out)
+		}
+		gets, reads, sends, keys := 0, 0, 0, 0
+		for _, c := range f.hcCalls(t) {
+			if len(c.Argv) == 0 {
+				continue
+			}
+			switch {
+			case c.Argv[0] == "get" && len(c.Argv) > 1 && c.Argv[1] == "t7":
+				gets++
+			case c.Argv[0] == "get":
+				if len(c.Argv) > 1 && c.Argv[1] == "worker" {
+					t.Fatalf("a pre-send state get before the refusal: %#v", c)
+				}
+			case c.Argv[0] == "read":
+				reads++
+			case c.Argv[0] == "send":
+				sends++
+			case c.Argv[0] == "keys":
+				keys++
+			}
+		}
+		t.Logf("authoritative hc live idle without the primary profile; gets=%d reads=%d sends=%d keys=%d exit=%d", gets, reads, sends, keys, code)
+		if gets != 1 {
+			t.Fatalf("roster-address gets=%d, want exactly one: %#v", gets, f.hcCalls(t))
+		}
+		if reads != 0 || sends != 0 || keys != 0 {
+			t.Error("the opencode refusal read, sent or keyed something")
+		}
+		if _, err := os.Stat(taskreport.TaskReportPointerPath(f.sd, "worker")); err == nil {
+			t.Fatal("the task report pointer was written before the refusal")
+		}
+		if _, err := os.Stat(filepath.Join(f.sd, "last-report-worker")); err == nil {
+			t.Fatal("the report pointer was written before the refusal")
+		}
+		f.assertHcNeverTouchedHerdr(t)
+	})
 }
 
 // assertWorkerGetSendOrder pins the probe's operation order when the

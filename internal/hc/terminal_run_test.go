@@ -546,6 +546,633 @@ func TestRunTerminal_ExactParamsAndBytePreserving(t *testing.T) {
 	}
 }
 
+func TestRunTerminal_EnvOverridesMergedIntoCapturedRPC(t *testing.T) {
+	cases := []struct {
+		name      string
+		overrides map[string]string
+		wantEnv   map[string]any
+	}{
+		{
+			name: "valid overrides merge into the captured env",
+			overrides: map[string]string{
+				"OPENCODE_DISABLE_AUTOUPDATE": "1",
+				"OPENCODE_CONFIG_CONTENT":     `{"model":"synthetic/provider-a/model-1"}`,
+			},
+			wantEnv: map[string]any{
+				"SOHO_TRANSPORT":              "hc",
+				"OPENCODE_DISABLE_AUTOUPDATE": "1",
+				"OPENCODE_CONFIG_CONTENT":     `{"model":"synthetic/provider-a/model-1"}`,
+			},
+		},
+		{
+			name:      "nil overrides preserve the exact zero-override request",
+			overrides: nil,
+			wantEnv:   map[string]any{"SOHO_TRANSPORT": "hc"},
+		},
+		{
+			name:      "empty non-nil overrides preserve the exact zero-override request",
+			overrides: map[string]string{},
+			wantEnv:   map[string]any{"SOHO_TRANSPORT": "hc"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := newFakeScriptConn()
+			c := &Client{Connect: fc.Connect}
+
+			input := validTerminalRunInput()
+			input.EnvOverrides = tc.overrides
+
+			var capturedRun []byte
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				r := bufio.NewReader(fc.clientInR)
+				_, _ = r.ReadString('\n')
+				_, _ = fc.clientOutW.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"generation":1}}` + "\n"))
+				runBytes, err := r.ReadBytes('\n')
+				if err == nil {
+					capturedRun = runBytes
+					_, _ = fc.clientOutW.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"address":"t_env"}}` + "\n"))
+				}
+			}()
+
+			addr, err := c.RunTerminal(context.Background(), input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if addr != "t_env" {
+				t.Fatalf("expected address t_env, got %q", addr)
+			}
+			<-done
+
+			var parsed map[string]any
+			if err := json.Unmarshal(capturedRun, &parsed); err != nil {
+				t.Fatalf("failed to unmarshal captured terminal.run payload: %v", err)
+			}
+			params, ok := parsed["params"].(map[string]any)
+			if !ok {
+				t.Fatalf("params is not an object: %v", parsed["params"])
+			}
+			envObj, ok := params["env"].(map[string]any)
+			if !ok {
+				t.Fatalf("env is not an object: %v", params["env"])
+			}
+			if len(envObj) != len(tc.wantEnv) {
+				t.Fatalf("captured env must be exactly %v, got %v", tc.wantEnv, envObj)
+			}
+			for name, value := range tc.wantEnv {
+				if envObj[name] != value {
+					t.Fatalf("captured env[%q]: expected %v, got %v", name, value, envObj[name])
+				}
+			}
+		})
+	}
+}
+
+func TestRunTerminal_EnvOverridesPreConnectRefusals(t *testing.T) {
+	connectCalled := false
+	c := &Client{
+		Connect: func(ctx context.Context, env platform.Env) (io.WriteCloser, io.Reader, func() error, error) {
+			connectCalled = true
+			return nil, nil, nil, errors.New("should not be called")
+		},
+	}
+
+	cases := []struct {
+		name      string
+		overrides map[string]string
+		wantErr   error
+	}{
+		{"reserved SOHO_ prefix", map[string]string{"SOHO_SESSION_ID": "x"}, errEnvNameReserved},
+		{"reserved lowercase soho_ prefix", map[string]string{"soho_transport": "x"}, errEnvNameReserved},
+		{"reserved lowercase hc_ prefix", map[string]string{"hc_pane_id": "x"}, errEnvNameReserved},
+		{"reserved mixed-case Herdr_ prefix", map[string]string{"Herdr_Env": "x"}, errEnvNameReserved},
+		{"invalid empty name", map[string]string{"": "x"}, errEnvNameInvalid},
+		{"invalid digit-first name", map[string]string{"9NAME": "x"}, errEnvNameInvalid},
+		{"invalid dash name", map[string]string{"A-B": "x"}, errEnvNameInvalid},
+		{"invalid dot name", map[string]string{"A.B": "x"}, errEnvNameInvalid},
+		{"NUL in value", map[string]string{"GOOD_NAME": "a\x00b"}, errEnvValueNUL},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			connectCalled = false
+			input := validTerminalRunInput()
+			input.EnvOverrides = tc.overrides
+
+			_, err := c.RunTerminal(context.Background(), input)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("expected %v, got %v", tc.wantErr, err)
+			}
+			// The fixed value-free message: exact equality proves no
+			// supplied name or value reached the error channel.
+			if err.Error() != tc.wantErr.Error() {
+				t.Fatalf("expected the fixed message %q, got %q", tc.wantErr.Error(), err.Error())
+			}
+			if connectCalled {
+				t.Fatalf("Connect must not be called for a refused override")
+			}
+			if errors.Is(err, ErrRunOutcomeUnknown) {
+				t.Fatalf("preflight refusal must not wrap ErrRunOutcomeUnknown")
+			}
+		})
+	}
+}
+
+// Mutation captured: re-reading input.EnvOverrides after Connect would
+// serialize whatever a synchronous Connect seam injected into the caller's
+// map; the per-call snapshot keeps the captured request exact.
+func TestRunTerminal_EnvOverridesSynchronousConnectMutationNotInRequest(t *testing.T) {
+	fc := newFakeScriptConn()
+	input := validTerminalRunInput()
+	input.EnvOverrides = map[string]string{"OPENCODE_DISABLE_AUTOUPDATE": "1"}
+
+	c := &Client{
+		Connect: func(ctx context.Context, env platform.Env) (io.WriteCloser, io.Reader, func() error, error) {
+			// Synchronous seam mutation of the original map while
+			// Connect is in flight: reserved routing/identity names
+			// injected and the valid entry rewritten.
+			input.EnvOverrides["HC_IDENTITY"] = "injected"
+			input.EnvOverrides["SOHO_TRANSPORT"] = "forged"
+			input.EnvOverrides["OPENCODE_DISABLE_AUTOUPDATE"] = "0"
+			return fc.Connect(ctx, env)
+		},
+	}
+
+	var capturedRun []byte
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r := bufio.NewReader(fc.clientInR)
+		_, _ = r.ReadString('\n')
+		_, _ = fc.clientOutW.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"generation":1}}` + "\n"))
+		runBytes, err := r.ReadBytes('\n')
+		if err == nil {
+			capturedRun = runBytes
+			_, _ = fc.clientOutW.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"address":"t_snap"}}` + "\n"))
+		}
+	}()
+
+	addr, err := c.RunTerminal(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if addr != "t_snap" {
+		t.Fatalf("expected address t_snap, got %q", addr)
+	}
+	<-done
+
+	// The seam did mutate the caller's map...
+	if input.EnvOverrides["HC_IDENTITY"] != "injected" || input.EnvOverrides["OPENCODE_DISABLE_AUTOUPDATE"] != "0" {
+		t.Fatalf("precondition: the Connect seam did not mutate the caller map: %v", input.EnvOverrides)
+	}
+
+	// ...and the serialized request carries only the pre-Connect snapshot.
+	var parsed map[string]any
+	if err := json.Unmarshal(capturedRun, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal captured terminal.run payload: %v", err)
+	}
+	params, ok := parsed["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("params is not an object: %v", parsed["params"])
+	}
+	envObj, ok := params["env"].(map[string]any)
+	if !ok {
+		t.Fatalf("env is not an object: %v", params["env"])
+	}
+	if len(envObj) != 2 {
+		t.Fatalf("captured env must be exactly the snapshot plus the transport marker, got %v", envObj)
+	}
+	if envObj["SOHO_TRANSPORT"] != "hc" {
+		t.Fatalf("captured SOHO_TRANSPORT must stay hc, got %v", envObj["SOHO_TRANSPORT"])
+	}
+	if envObj["OPENCODE_DISABLE_AUTOUPDATE"] != "1" {
+		t.Fatalf("captured override must keep the validated snapshot value, got %v", envObj["OPENCODE_DISABLE_AUTOUPDATE"])
+	}
+	if _, has := envObj["HC_IDENTITY"]; has {
+		t.Fatalf("injected reserved name must not reach the captured request: %v", envObj)
+	}
+}
+
+func TestRunTerminal_EnvOverridesCallerMapNotMutated(t *testing.T) {
+	fc := newFakeScriptConn()
+	c := &Client{Connect: fc.Connect}
+
+	// A separate pre-call expected map that does not alias the caller
+	// map: an in-place value edit cannot hide from the comparison.
+	expected := map[string]string{
+		"OPENCODE_DISABLE_AUTOUPDATE": "1",
+		"OPENCODE_CONFIG_CONTENT":     `{"model":"prov/model"}`,
+	}
+	original := map[string]string{
+		"OPENCODE_DISABLE_AUTOUPDATE": "1",
+		"OPENCODE_CONFIG_CONTENT":     `{"model":"prov/model"}`,
+	}
+	input := validTerminalRunInput()
+	input.EnvOverrides = original
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r := bufio.NewReader(fc.clientInR)
+		_, _ = r.ReadString('\n')
+		_, _ = fc.clientOutW.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"generation":1}}` + "\n"))
+		_, _ = r.ReadString('\n')
+		_, _ = fc.clientOutW.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"address":"t_mut"}}` + "\n"))
+	}()
+
+	if _, err := c.RunTerminal(context.Background(), input); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	<-done
+
+	if len(input.EnvOverrides) != len(expected) {
+		t.Fatalf("caller map must not gain or lose entries: %v", input.EnvOverrides)
+	}
+	for name, value := range expected {
+		got, ok := input.EnvOverrides[name]
+		if !ok {
+			t.Fatalf("caller map lost entry %q: %v", name, input.EnvOverrides)
+		}
+		if got != value {
+			t.Fatalf("caller map entry changed: %q %q -> %q", name, value, got)
+		}
+	}
+}
+
+// The launch profile label at the actual captured RPC: a validated
+// nonempty portable profile adds exactly the soho.launch_profile label to
+// the existing session label in the serialized terminal.run request, an
+// empty profile keeps the exact old session-only request, and every other
+// value is refused before Connect with the fixed value-free error (no run
+// request, no unknown-create classification). Domain identifiers are
+// intentionally ASCII; Unicode environment values keep their established
+// behavior untouched.
+func TestRunTerminal_LaunchProfile(t *testing.T) {
+	valid := []struct {
+		name    string
+		profile string
+	}{
+		{"synthetic portable profile", "opencode-primary-1"},
+		{"64-byte boundary profile", "p" + strings.Repeat("a", 63)},
+	}
+	for _, tc := range valid {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := newFakeScriptConn()
+			c := &Client{Connect: fc.Connect}
+
+			input := validTerminalRunInput()
+			input.LaunchProfile = tc.profile
+
+			var capturedRun []byte
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				r := bufio.NewReader(fc.clientInR)
+				_, _ = r.ReadString('\n')
+				_, _ = fc.clientOutW.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"generation":1}}` + "\n"))
+				runBytes, err := r.ReadBytes('\n')
+				if err == nil {
+					capturedRun = runBytes
+					_, _ = fc.clientOutW.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"address":"t_profile"}}` + "\n"))
+				}
+			}()
+
+			addr, err := c.RunTerminal(context.Background(), input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if addr != "t_profile" {
+				t.Fatalf("expected address t_profile, got %q", addr)
+			}
+			<-done
+
+			// The external serialized request carries the exact label pair.
+			if !bytes.Contains(capturedRun, []byte(`"soho.session":"sess-abc"`)) {
+				t.Fatalf("captured payload must carry the exact session label: %s", capturedRun)
+			}
+			if !bytes.Contains(capturedRun, []byte(`"soho.launch_profile":"`+tc.profile+`"`)) {
+				t.Fatalf("captured payload must carry the exact profile label: %s", capturedRun)
+			}
+
+			var parsed map[string]any
+			if err := json.Unmarshal(capturedRun, &parsed); err != nil {
+				t.Fatalf("failed to unmarshal captured terminal.run payload: %v", err)
+			}
+			if parsed["jsonrpc"] != "2.0" || parsed["id"] != float64(2) || parsed["method"] != "terminal.run" {
+				t.Fatalf("captured envelope changed: jsonrpc=%v id=%v method=%v", parsed["jsonrpc"], parsed["id"], parsed["method"])
+			}
+			params, ok := parsed["params"].(map[string]any)
+			if !ok {
+				t.Fatalf("params is not an object: %v", parsed["params"])
+			}
+			labels, ok := params["labels"].(map[string]any)
+			if !ok {
+				t.Fatalf("labels is not an object: %v", params["labels"])
+			}
+			if len(labels) != 2 || labels["soho.session"] != "sess-abc" || labels["soho.launch_profile"] != tc.profile {
+				t.Fatalf("captured labels must be exactly {soho.session:sess-abc soho.launch_profile:%s}, got %v", tc.profile, labels)
+			}
+			// Every other serialized field stays unchanged by the profile.
+			if params["name"] != "worker-1" || params["caller"] != "t0" || params["cwd"] != "/tmp" {
+				t.Fatalf("captured identity fields changed: %v", params)
+			}
+			argv, ok := params["argv"].([]any)
+			if !ok || len(argv) != 3 || argv[0] != "/bin/echo" || argv[1] != "hello" || argv[2] != "world" {
+				t.Fatalf("captured argv changed: %v", params["argv"])
+			}
+			envObj, ok := params["env"].(map[string]any)
+			if !ok || len(envObj) != 1 || envObj["SOHO_TRANSPORT"] != "hc" {
+				t.Fatalf("captured env must stay exactly {SOHO_TRANSPORT:hc}: %v", envObj)
+			}
+			if params["wait"] != false || params["no_notify"] != true || params["outlive_parent"] != true {
+				t.Fatalf("captured flags changed: %v", params)
+			}
+		})
+	}
+
+	t.Run("empty profile keeps the exact session-only label and the old zero request", func(t *testing.T) {
+		fc := newFakeScriptConn()
+		c := &Client{Connect: fc.Connect}
+
+		input := validTerminalRunInput()
+
+		var capturedRun []byte
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			r := bufio.NewReader(fc.clientInR)
+			_, _ = r.ReadString('\n')
+			_, _ = fc.clientOutW.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"generation":1}}` + "\n"))
+			runBytes, err := r.ReadBytes('\n')
+			if err == nil {
+				capturedRun = runBytes
+				_, _ = fc.clientOutW.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"address":"t_profile0"}}` + "\n"))
+			}
+		}()
+
+		addr, err := c.RunTerminal(context.Background(), input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if addr != "t_profile0" {
+			t.Fatalf("expected address t_profile0, got %q", addr)
+		}
+		<-done
+
+		// The label set is exactly the old session-only map: no profile
+		// label key appears anywhere in the serialized request.
+		if bytes.Contains(capturedRun, []byte("soho.launch_profile")) {
+			t.Fatalf("empty profile must not emit the profile label: %s", capturedRun)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(capturedRun, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal captured terminal.run payload: %v", err)
+		}
+		params, ok := parsed["params"].(map[string]any)
+		if !ok {
+			t.Fatalf("params is not an object: %v", parsed["params"])
+		}
+		labels, ok := params["labels"].(map[string]any)
+		if !ok {
+			t.Fatalf("labels is not an object: %v", params["labels"])
+		}
+		if len(labels) != 1 || labels["soho.session"] != "sess-abc" {
+			t.Fatalf("captured labels must be exactly {soho.session:sess-abc}, got %v", labels)
+		}
+		if params["name"] != "worker-1" || params["caller"] != "t0" || params["cwd"] != "/tmp" ||
+			params["wait"] != false || params["no_notify"] != true || params["outlive_parent"] != true {
+			t.Fatalf("captured zero-request fields changed: %v", params)
+		}
+		argv, ok := params["argv"].([]any)
+		if !ok || len(argv) != 3 || argv[0] != "/bin/echo" || argv[1] != "hello" || argv[2] != "world" {
+			t.Fatalf("captured argv changed: %v", params["argv"])
+		}
+		envObj, ok := params["env"].(map[string]any)
+		if !ok || len(envObj) != 1 || envObj["SOHO_TRANSPORT"] != "hc" {
+			t.Fatalf("captured env must stay exactly {SOHO_TRANSPORT:hc}: %v", envObj)
+		}
+	})
+
+	t.Run("invalid profile names are refused before Connect with the fixed value-free error", func(t *testing.T) {
+		connectCalled := false
+		c := &Client{
+			Connect: func(ctx context.Context, env platform.Env) (io.WriteCloser, io.Reader, func() error, error) {
+				connectCalled = true
+				return nil, nil, nil, errors.New("should not be called")
+			},
+		}
+
+		cases := []struct {
+			name  string
+			value string
+		}{
+			{"NUL", "a\x00b"},
+			{"control tab", "a\tb"},
+			{"unicode", "caf\u00e9"},
+			{"raw invalid UTF-8", string([]byte{0xff, 0xfe})},
+			{"uppercase", "Opencode"},
+			{"leading digit", "9profile"},
+			{"leading underscore", "_profile"},
+			{"period", "a.b"},
+			{"65 bytes over the 64 bound", strings.Repeat("a", 65)},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				connectCalled = false
+				input := validTerminalRunInput()
+				input.LaunchProfile = tc.value
+
+				_, err := c.RunTerminal(context.Background(), input)
+				if !errors.Is(err, errLaunchProfileInvalid) {
+					t.Fatalf("expected the fixed launch profile refusal, got %v", err)
+				}
+				// Exact fixed message: no supplied name can reach the error.
+				if err.Error() != errLaunchProfileInvalid.Error() {
+					t.Fatalf("expected the fixed message %q, got %q", errLaunchProfileInvalid.Error(), err.Error())
+				}
+				if connectCalled {
+					t.Fatalf("Connect must not be called for a refused profile name")
+				}
+				if errors.Is(err, ErrRunOutcomeUnknown) {
+					t.Fatalf("preflight refusal must not wrap ErrRunOutcomeUnknown")
+				}
+			})
+		}
+	})
+}
+
+// The encoding boundary at the actual captured RPC: malformed UTF-8 values
+// are refused on the owned snapshot before Connect with a fixed value-free
+// error that never echoes the input, while valid Unicode and a literal
+// U+FFFD value reach the serialized terminal.run env byte-exactly.
+func TestRunTerminal_EnvOverridesEncodingBoundary(t *testing.T) {
+	t.Run("malformed value refused before Connect without echoing the input", func(t *testing.T) {
+		connectCalled := false
+		c := &Client{
+			Connect: func(ctx context.Context, env platform.Env) (io.WriteCloser, io.Reader, func() error, error) {
+				connectCalled = true
+				return nil, nil, nil, errors.New("should not be called")
+			},
+		}
+
+		for _, malformed := range []string{
+			"enc-boundary-marker\xff",
+			"\x80lone-continuation-byte",
+		} {
+			connectCalled = false
+			input := validTerminalRunInput()
+			input.EnvOverrides = map[string]string{"ENC_BOUNDARY_VALUE": malformed}
+
+			_, err := c.RunTerminal(context.Background(), input)
+			if err == nil {
+				t.Fatalf("expected refusal for malformed value, got nil")
+			}
+			if !errors.Is(err, errEnvValueInvalidUTF8) {
+				t.Fatalf("expected the fixed invalid-UTF-8 refusal, got %v", err)
+			}
+			// Exact fixed message: no supplied value can reach the error.
+			if err.Error() != errEnvValueInvalidUTF8.Error() {
+				t.Fatalf("expected the fixed message %q, got %q", errEnvValueInvalidUTF8.Error(), err.Error())
+			}
+			// Synthetic non-echo marker: the marker text must never appear.
+			if strings.Contains(err.Error(), "enc-boundary-marker") {
+				t.Fatalf("error must not echo the supplied value: %q", err.Error())
+			}
+			if connectCalled {
+				t.Fatalf("Connect must not be called for a malformed value")
+			}
+			if errors.Is(err, ErrRunOutcomeUnknown) {
+				t.Fatalf("preflight refusal must not wrap ErrRunOutcomeUnknown")
+			}
+		}
+	})
+
+	t.Run("valid unicode reaches the captured env byte-exactly", func(t *testing.T) {
+		fc := newFakeScriptConn()
+		c := &Client{Connect: fc.Connect}
+
+		utf8Value := "café ☕ 日本語"
+		input := validTerminalRunInput()
+		input.EnvOverrides = map[string]string{"ENC_UNICODE_VALUE": utf8Value}
+
+		var capturedRun []byte
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			r := bufio.NewReader(fc.clientInR)
+			_, _ = r.ReadString('\n')
+			_, _ = fc.clientOutW.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"generation":1}}` + "\n"))
+			runBytes, err := r.ReadBytes('\n')
+			if err == nil {
+				capturedRun = runBytes
+				_, _ = fc.clientOutW.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"address":"t_utf8"}}` + "\n"))
+			}
+		}()
+
+		addr, err := c.RunTerminal(context.Background(), input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if addr != "t_utf8" {
+			t.Fatalf("expected address t_utf8, got %q", addr)
+		}
+		<-done
+
+		// The raw serialized payload must carry the exact UTF-8 bytes of
+		// the value, not an escaped or rewritten form.
+		if !bytes.Contains(capturedRun, []byte(utf8Value)) {
+			t.Fatalf("captured payload did not carry the exact UTF-8 bytes of the value: %s", capturedRun)
+		}
+
+		var parsed map[string]any
+		if err := json.Unmarshal(capturedRun, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal captured terminal.run payload: %v", err)
+		}
+		params, ok := parsed["params"].(map[string]any)
+		if !ok {
+			t.Fatalf("params is not an object: %v", parsed["params"])
+		}
+		envObj, ok := params["env"].(map[string]any)
+		if !ok {
+			t.Fatalf("env is not an object: %v", params["env"])
+		}
+		if envObj["SOHO_TRANSPORT"] != "hc" {
+			t.Fatalf("captured SOHO_TRANSPORT must be hc, got %v", envObj["SOHO_TRANSPORT"])
+		}
+		if envObj["ENC_UNICODE_VALUE"] != utf8Value {
+			t.Fatalf("captured value must be byte-exact: %v", envObj["ENC_UNICODE_VALUE"])
+		}
+		if len(envObj) != 2 {
+			t.Fatalf("captured env must be exactly the marker plus the override, got %v", envObj)
+		}
+	})
+
+	t.Run("literal U+FFFD reaches the captured env byte-exactly", func(t *testing.T) {
+		fc := newFakeScriptConn()
+		c := &Client{Connect: fc.Connect}
+
+		// A literal replacement rune is valid UTF-8 and must survive the
+		// boundary unchanged; the raw payload must contain its exact
+		// EF BF BD bytes.
+		fffdValue := "pre\uFFFDpost"
+		input := validTerminalRunInput()
+		input.EnvOverrides = map[string]string{"ENC_FFFD_VALUE": fffdValue}
+
+		var capturedRun []byte
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			r := bufio.NewReader(fc.clientInR)
+			_, _ = r.ReadString('\n')
+			_, _ = fc.clientOutW.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"generation":1}}` + "\n"))
+			runBytes, err := r.ReadBytes('\n')
+			if err == nil {
+				capturedRun = runBytes
+				_, _ = fc.clientOutW.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"address":"t_fffd"}}` + "\n"))
+			}
+		}()
+
+		addr, err := c.RunTerminal(context.Background(), input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if addr != "t_fffd" {
+			t.Fatalf("expected address t_fffd, got %q", addr)
+		}
+		<-done
+
+		if !bytes.Contains(capturedRun, []byte(fffdValue)) {
+			t.Fatalf("captured payload did not carry the literal U+FFFD bytes: %s", capturedRun)
+		}
+
+		var parsed map[string]any
+		if err := json.Unmarshal(capturedRun, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal captured terminal.run payload: %v", err)
+		}
+		params, ok := parsed["params"].(map[string]any)
+		if !ok {
+			t.Fatalf("params is not an object: %v", parsed["params"])
+		}
+		envObj, ok := params["env"].(map[string]any)
+		if !ok {
+			t.Fatalf("env is not an object: %v", params["env"])
+		}
+		if envObj["SOHO_TRANSPORT"] != "hc" {
+			t.Fatalf("captured SOHO_TRANSPORT must be hc, got %v", envObj["SOHO_TRANSPORT"])
+		}
+		if envObj["ENC_FFFD_VALUE"] != fffdValue {
+			t.Fatalf("literal U+FFFD must be preserved byte-exactly, got %v", envObj["ENC_FFFD_VALUE"])
+		}
+		if len(envObj) != 2 {
+			t.Fatalf("captured env must be exactly the marker plus the override, got %v", envObj)
+		}
+	})
+}
+
 func TestRunTerminal_ExplicitRunError(t *testing.T) {
 	fc := newFakeScriptConn()
 	c := &Client{Connect: fc.Connect}

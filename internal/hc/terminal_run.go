@@ -20,6 +20,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 // maxLineBytes bounds incoming JSON-RPC response lines to at most 1 MiB.
@@ -34,6 +35,17 @@ const reapTimeout = 2 * time.Second
 // force cleanup blindly because a live terminal may exist.
 var ErrRunOutcomeUnknown = errors.New("terminal run outcome unknown")
 
+// The value-free preflight refusals for explicit environment overrides. None
+// of them carries a supplied name or value, so a bad override cannot be
+// echoed back through the error channel.
+var (
+	errEnvNameReserved      = errors.New("terminal run: reserved environment override name")
+	errEnvNameInvalid       = errors.New("terminal run: invalid environment override name")
+	errEnvValueNUL          = errors.New("terminal run: environment override value contains NUL")
+	errEnvValueInvalidUTF8  = errors.New("terminal run: environment override value contains invalid UTF-8")
+	errLaunchProfileInvalid = errors.New("terminal run: invalid launch profile name")
+)
+
 // TerminalRun specifies the parameters required to start a terminal via
 // the native terminal.run RPC client.
 type TerminalRun struct {
@@ -44,6 +56,27 @@ type TerminalRun struct {
 	Caller  string
 	Session string
 	Args    []string
+
+	// EnvOverrides are the explicit per-child environment entries merged
+	// into the terminal.run request's env alongside the mandatory
+	// SOHO_TRANSPORT=hc. Reserved identity/routing names (SOHO_, HC_ and
+	// HERDR_ prefixes, case-insensitive), names that are not portable
+	// identifiers (letters, digits and underscore, non-digit first), and
+	// values containing NUL or invalid UTF-8 are refused before Connect
+	// with value-free errors; valid Unicode and literal U+FFFD values
+	// are preserved unchanged. A nil or empty map changes nothing: the
+	// existing exact request is preserved.
+	EnvOverrides map[string]string
+
+	// LaunchProfile is the optional resolved launch profile emitted as
+	// the soho.launch_profile label alongside the existing soho.session
+	// label ("" for the old session-only request). The client validates
+	// only the portable identifier shape — 1..64 ASCII bytes, first a-z,
+	// the rest a-z0-9_- — never kind or model support, and refuses every
+	// other value before Connect with the fixed value-free
+	// errLaunchProfileInvalid. Native per-kind policy stays the shared
+	// kinds layer's later responsibility.
+	LaunchProfile string
 }
 
 // runParams is the by-name parameter struct sent to the Core's terminal.run RPC.
@@ -157,6 +190,15 @@ func (c *Client) RunTerminal(ctx context.Context, input TerminalRun) (string, er
 	if err := validateTerminalRun(input); err != nil {
 		return "", err
 	}
+	// One exact per-call snapshot of the caller's explicit overrides, taken
+	// and validated before Connect. The serialized request is built only
+	// from this clone, so a synchronous Connect seam that mutates the
+	// caller's map cannot inject reserved routing/identity names or change
+	// the captured environment.
+	snapshot := cloneEnvOverrides(input.EnvOverrides)
+	if err := validateEnvOverrides(snapshot); err != nil {
+		return "", err
+	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -208,6 +250,21 @@ func (c *Client) RunTerminal(ctx context.Context, input TerminalRun) (string, er
 	argv = append(argv, input.Program)
 	argv = append(argv, input.Args...)
 
+	// The child env is the mandatory transport marker plus only the
+	// validated per-call snapshot, never the caller's environment.
+	env := map[string]string{"SOHO_TRANSPORT": "hc"}
+	for name, value := range snapshot {
+		env[name] = value
+	}
+
+	// The labels are exactly the existing session label plus, only when a
+	// validated nonempty profile was supplied, the launch profile label;
+	// an empty profile keeps the old session-only request.
+	labels := map[string]string{"soho.session": input.Session}
+	if input.LaunchProfile != "" {
+		labels[transport.LaunchProfileLabel] = input.LaunchProfile
+	}
+
 	req := runRequest{
 		JSONRPC: "2.0",
 		ID:      2,
@@ -216,8 +273,8 @@ func (c *Client) RunTerminal(ctx context.Context, input TerminalRun) (string, er
 			Argv:          argv,
 			Caller:        input.Caller,
 			Cwd:           input.Cwd,
-			Env:           map[string]string{"SOHO_TRANSPORT": "hc"},
-			Labels:        map[string]string{"soho.session": input.Session},
+			Env:           env,
+			Labels:        labels,
 			Name:          input.Name,
 			NoNotify:      true,
 			OutliveParent: true,
@@ -314,7 +371,98 @@ func validateTerminalRun(input TerminalRun) error {
 			return fmt.Errorf("terminal run: args[%d] contains invalid UTF-8", i)
 		}
 	}
+	if !isValidLaunchProfile(input.LaunchProfile) {
+		return errLaunchProfileInvalid
+	}
 	return nil
+}
+
+// cloneEnvOverrides copies one per-call override map into a snapshot the
+// caller can no longer reach, so the serialized request is stable for the
+// whole call even if the Connect seam mutates the original.
+func cloneEnvOverrides(overrides map[string]string) map[string]string {
+	clone := make(map[string]string, len(overrides))
+	for name, value := range overrides {
+		clone[name] = value
+	}
+	return clone
+}
+
+// validateEnvOverrides checks the per-call override snapshot before Connect:
+// reserved identity/routing names are refused so the caller cannot rebind
+// routing or identity, names must be portable identifiers, and values must
+// not contain NUL or invalid UTF-8 bytes. Actual UTF-8 validity, not a
+// replacement-rune ban, is the invariant: valid Unicode and a literal U+FFFD
+// value pass unchanged. Errors are value-free: they name the failure class
+// only, never the supplied name or value.
+func validateEnvOverrides(overrides map[string]string) error {
+	for name, value := range overrides {
+		if isReservedEnvName(name) {
+			return errEnvNameReserved
+		}
+		if !isValidEnvName(name) {
+			return errEnvNameInvalid
+		}
+		if strings.ContainsRune(value, 0) {
+			return errEnvValueNUL
+		}
+		if !utf8.ValidString(value) {
+			return errEnvValueInvalidUTF8
+		}
+	}
+	return nil
+}
+
+// isReservedEnvName reports whether the name carries a SOHO_, HC_ or HERDR_
+// prefix, case-insensitively: the identity and routing environment the core
+// owns, which an explicit override must never rebind.
+func isReservedEnvName(name string) bool {
+	upper := strings.ToUpper(name)
+	return strings.HasPrefix(upper, "SOHO_") || strings.HasPrefix(upper, "HC_") || strings.HasPrefix(upper, "HERDR_")
+}
+
+// isValidEnvName reports whether the name is a portable environment
+// identifier: letters, digits and underscore with a non-digit first
+// character, so it is safe on every platform the core runs on.
+func isValidEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isValidLaunchProfile reports whether the value is a portable launch
+// profile identifier: 1..64 ASCII bytes, the first a lowercase letter and
+// the rest lowercase letters, digits, underscore or dash. Empty is valid
+// (the unknown profile, which keeps the session-only request). Kind and
+// model support is never judged here: that stays the shared kinds layer's
+// later responsibility.
+func isValidLaunchProfile(profile string) bool {
+	if profile == "" {
+		return true
+	}
+	if len(profile) > 64 {
+		return false
+	}
+	for i := 0; i < len(profile); i++ {
+		c := profile[i]
+		if i == 0 {
+			if c < 'a' || c > 'z' {
+				return false
+			}
+		} else if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // containsWhitespaceOrControl reports whether s contains any whitespace or control character.

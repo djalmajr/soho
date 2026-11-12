@@ -1133,3 +1133,460 @@ func TestSpawnHcNilConnectFailsLocally(t *testing.T) {
 	}
 	assertHcOnlyReads(t, bin, calls)
 }
+
+// SOH-201 phase B: the native hc+opencode primary profile at the spawn
+// boundary. The profile is prepared with the explicit resolved model and
+// the caller's inline configuration and directory (an empty or malformed
+// value refuses before any terminal creation or successful reuse, and no
+// other model is defaulted in), the start receives the profile name and
+// its explicit env overrides (never the caller's environment), the argv
+// carries --standalone and, for full or auto approvals, --auto, with no
+// generated -m/--model, the reuse is qualified by the roster terminal's
+// own reported record, and the fresh and reused JSON disclose only the
+// known profile name.
+
+const opencodePrimaryModel = "testprovider/testmodel"
+
+// captureStartRuntime records the transport.Start the spawn submits and
+// answers it with a ready address; it swaps out only svc.Terminal, so the
+// rest of the spawn (caller and roster reads, the roster write, the result
+// JSON) runs through the real backend services.
+type captureStartRuntime struct {
+	transport.Runtime
+	start transport.Start
+	got   bool
+}
+
+func (c *captureStartRuntime) Start(ctx context.Context, start transport.Start, call transport.Call) transport.Reply[string] {
+	c.start = start
+	c.got = true
+	return transport.Reply[string]{Value: "t7", Valid: true}
+}
+
+// gateGetTransport answers Transport.Get with one fixed terminal record and
+// no screen, so the reuse gate's qualification reads are pinned at the
+// consumer boundary.
+type gateGetTransport struct {
+	transport.Transport
+	term transport.Terminal
+}
+
+func (g *gateGetTransport) Get(ctx context.Context, _ transport.Target, _ transport.Call) transport.Reply[transport.Terminal] {
+	return transport.Reply[transport.Terminal]{Value: g.term, Valid: true}
+}
+
+func (g *gateGetTransport) Read(ctx context.Context, _ transport.Target, _ transport.Read, _ transport.Call) transport.Reply[string] {
+	return transport.Reply[string]{}
+}
+
+// opencodePrimaryReadyTerminal is the exact terminal observation the reuse
+// gate must accept for a reusable native opencode worker.
+func opencodePrimaryReadyTerminal(targetID string) transport.Terminal {
+	return transport.Terminal{
+		Target:        transport.Target{ID: targetID},
+		LaunchProfile: kinds.OpenCodePrimaryProfile,
+		Reported:      true,
+		ReporterApp:   "opencode",
+		NativeState:   "live",
+		State:         "idle",
+	}
+}
+
+// opencodePrimaryRecord is the fake hc record the strict Get metadata
+// projects into opencodePrimaryReadyTerminal for the address it reports.
+func opencodePrimaryRecord(address string) string {
+	return fmt.Sprintf(`{"address":%q,"state":"live","reported":true,"status":{"state":"idle","app":"opencode"},"labels":{"soho.session":"sX","soho.launch_profile":%q}}`, address, kinds.OpenCodePrimaryProfile)
+}
+
+// captureSpawn runs one spawn through the real services with only
+// svc.Terminal replaced by a captureStartRuntime, and returns the submitted
+// start and the spawn's stdout.
+func captureSpawn(t *testing.T, bin string, env platform.Env, ctx *core.Config, cwd string, argv []string) (transport.Start, *bytes.Buffer) {
+	t.Helper()
+	cap := &captureStartRuntime{}
+	oldOut, oldErr := platform.Stdout, platform.Stderr
+	out, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	platform.Stdout, platform.Stderr = out, stderr
+	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
+	var exit *platform.ExitError
+	func() {
+		defer func() {
+			if value := recover(); value != nil {
+				if e, ok := value.(*platform.ExitError); ok {
+					exit = e
+				} else {
+					panic(value)
+				}
+			}
+		}()
+		client := hc.New(env)
+		cmdSpawnWithHcStarter(argv, ctx, env, cwd, func(c *core.Config, o *spawnOptions, k string, e platform.Env, a []string) {
+			svc := backend.NewWithClient(e, client)
+			svc.Terminal = cap
+			startHcAgentUsingServices(c, o, k, e, a, svc)
+		})
+	}()
+	if exit != nil {
+		t.Fatalf("unexpected exit: %+v\nstderr: %s", exit, stderr.String())
+	}
+	return cap.start, out
+}
+
+func TestSpawnOpenCodePrimary(t *testing.T) {
+	gateMsg := "spawn: reusable opencode worker is not a reported primary-profile worker ready for input"
+
+	t.Run("fresh spawn submits the primary profile and standalone argv", func(t *testing.T) {
+		cwd, bin, state, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		env["OPENCODE_CONFIG_CONTENT"] = `{"marker":"no-leak-canary"}`
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: opencodePrimaryRecord("t7")},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
+		out, _, calls := spawnHcWithConn(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd, conn)
+		assertHcOnlyReads(t, bin, calls)
+
+		_, params := parseTerminalRunReq(t, conn.getWritten())
+		if params["name"] != "writer" || params["cwd"] != cwd {
+			t.Fatalf("name=%v cwd=%v, want writer in %s", params["name"], params["cwd"], cwd)
+		}
+		exe := filepath.Join(bin, "opencode")
+		if runtime.GOOS == "windows" {
+			exe += ".exe"
+		}
+		wantArgv := []string{exe, "--auto", "--standalone"}
+		gotArgv, ok := params["argv"].([]any)
+		if !ok {
+			t.Fatalf("argv not a slice: %v", params["argv"])
+		}
+		var strArgv []string
+		for _, a := range gotArgv {
+			strArgv = append(strArgv, fmt.Sprint(a))
+		}
+		if strings.Join(strArgv, "\x00") != strings.Join(wantArgv, "\x00") {
+			t.Fatalf("argv=%q, want %q (no generated model flag)", strArgv, wantArgv)
+		}
+		if !strings.Contains(out.String(), `"launch_profile": "`+kinds.OpenCodePrimaryProfile+`"`) ||
+			!strings.Contains(out.String(), `"status": "ready"`) ||
+			!strings.Contains(out.String(), `"placement": "hc"`) ||
+			!strings.Contains(out.String(), `"model": "testprovider/testmodel"`) {
+			t.Fatalf("unexpected spawn result: %s", out.String())
+		}
+		if strings.Contains(out.String(), "OPENCODE") || strings.Contains(out.String(), "no-leak-canary") {
+			t.Fatalf("the fresh JSON leaks profile environment: %s", out.String())
+		}
+		f := rosterRow(t, state, "sX")
+		if len(f) != 16 || f[0] != "writer" || f[1] != "t7" || f[2] != "opencode" || f[8] != opencodePrimaryModel {
+			t.Fatalf("roster row %v, want the 16-column writer/t7/opencode row", f)
+		}
+		if data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv")); err == nil && strings.Contains(string(data), "OPENCODE") {
+			t.Fatalf("the roster row leaks profile environment: %q", data)
+		}
+	})
+
+	t.Run("start fields carry the profile and the explicit env only", func(t *testing.T) {
+		cwd, bin, _, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		env["OPENCODE_CONFIG_CONTENT"] = `{"marker":"no-leak-canary"}`
+		env["OPENCODE_CONFIG_DIR"] = "/cfg-dir-explicit"
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		start, out := captureSpawn(t, bin, env, ctx, cwd, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"})
+		if start.Kind != "opencode" || start.Cwd != cwd || start.Name != "writer" || start.Timeout != "60000" {
+			t.Fatalf("start fields = %+v, want the opencode start in %s", start, cwd)
+		}
+		if start.LaunchProfile != kinds.OpenCodePrimaryProfile {
+			t.Fatalf("start.LaunchProfile=%q, want %q", start.LaunchProfile, kinds.OpenCodePrimaryProfile)
+		}
+		if strings.Join(start.Args, "\x00") != strings.Join([]string{"--auto", "--standalone"}, "\x00") {
+			t.Fatalf("start.Args=%q, want the standalone plan without a generated model flag", start.Args)
+		}
+		if len(start.EnvOverrides) != 3 {
+			t.Fatalf("start.EnvOverrides=%v, want exactly the three profile keys", start.EnvOverrides)
+		}
+		if start.EnvOverrides["OPENCODE_DISABLE_AUTOUPDATE"] != "1" || start.EnvOverrides["OPENCODE_CONFIG_DIR"] != "/cfg-dir-explicit" {
+			t.Fatalf("start.EnvOverrides=%v, want the explicit profile overrides", start.EnvOverrides)
+		}
+		var cfg map[string]any
+		if err := json.Unmarshal([]byte(start.EnvOverrides["OPENCODE_CONFIG_CONTENT"]), &cfg); err != nil {
+			t.Fatalf("OPENCODE_CONFIG_CONTENT is not an object: %v", err)
+		}
+		if cfg["model"] != opencodePrimaryModel || cfg["default_agent"] != "build" {
+			t.Fatalf("the configuration does not pin the requested model: %v", cfg)
+		}
+		build, _ := cfg["agents"].(map[string]any)["build"].(map[string]any)
+		if build["model"] != opencodePrimaryModel {
+			t.Fatalf("agents.build.model=%v, want %s", build["model"], opencodePrimaryModel)
+		}
+		if !strings.Contains(out.String(), `"launch_profile": "`+kinds.OpenCodePrimaryProfile+`"`) {
+			t.Fatalf("the fresh JSON does not disclose the known launch profile: %s", out.String())
+		}
+	})
+
+	t.Run("no ambient env reaches the profile", func(t *testing.T) {
+		t.Setenv("OPENCODE_CONFIG_DIR", "/ambient-canary")
+		cwd, bin, _, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		env["OPENCODE_CONFIG_CONTENT"] = `{"marker":"no-leak-canary"}`
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		start, _ := captureSpawn(t, bin, env, ctx, cwd, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"})
+		if len(start.EnvOverrides) != 2 {
+			t.Fatalf("start.EnvOverrides=%v, want exactly the two profile keys (no ambient config dir)", start.EnvOverrides)
+		}
+		if _, ok := start.EnvOverrides["OPENCODE_CONFIG_DIR"]; ok {
+			t.Fatalf("the ambient OPENCODE_CONFIG_DIR leaked into the profile: %v", start.EnvOverrides)
+		}
+	})
+
+	t.Run("empty or malformed data refuses before start and reuse", func(t *testing.T) {
+		cwd, bin, state, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		// The fresh setup's readiness read of the just-created worker
+		// must see the primary record, or the real Start refuses with
+		// the readiness metadata mismatch before the reuse checks below
+		// run.
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: opencodePrimaryRecord("t7")},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		// An empty resolved model refuses: the profile never defaults to
+		// another model.
+		conn := newFakeSpawnRPCConn()
+		exit, out, _, _ := spawnHcExitWithConn(t, bin, []string{"writer", "--approvals", "full"}, ctx, env, cwd, conn)
+		if exit == nil || exit.Code != 2 || exit.Msg != "launch profile: model reference is malformed" {
+			t.Fatalf("exit=%+v, want the empty-model refusal", exit)
+		}
+		if conn.getConnectCount() != 0 || strings.Contains(out.String(), `"status"`) {
+			t.Fatalf("connect=%d out=%q, want no terminal creation or spawn result", conn.getConnectCount(), out.String())
+		}
+		// Malformed inline configuration refuses the same way.
+		env["OPENCODE_CONFIG_CONTENT"] = `{"marker": oops`
+		conn = newFakeSpawnRPCConn()
+		exit, out, _, _ = spawnHcExitWithConn(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd, conn)
+		if exit == nil || exit.Code != 2 || exit.Msg != "launch profile: inline configuration is not a single non-null JSON object" {
+			t.Fatalf("exit=%+v, want the malformed-configuration refusal", exit)
+		}
+		if conn.getConnectCount() != 0 {
+			t.Fatalf("connect count = %d, want 0 on the refusal", conn.getConnectCount())
+		}
+		// A fresh primary worker exists and is idle; an incompatible user
+		// arg still refuses before the successful reuse it would take.
+		env["OPENCODE_CONFIG_CONTENT"] = `{"marker":"no-leak-canary"}`
+		fresh, _, _ := spawnHc(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd)
+		if !strings.Contains(fresh.String(), `"status": "ready"`) {
+			t.Fatalf("the fresh primary worker did not start ready: %s", fresh.String())
+		}
+		rosterBefore, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn = newFakeSpawnRPCConn()
+		exit, out, _, _ = spawnHcExitWithConn(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full", "--", "--remote"}, ctx, env, cwd, conn)
+		if exit == nil || exit.Code != 2 || exit.Msg != "native launch profile is invalid" {
+			t.Fatalf("exit=%+v, want the incompatible-arg refusal", exit)
+		}
+		if conn.getConnectCount() != 0 {
+			t.Fatalf("connect count = %d, want 0 on the refusal", conn.getConnectCount())
+		}
+		if strings.Contains(out.String(), `"reused": true`) {
+			t.Fatalf("the reuse was emitted before the refusal: %s", out.String())
+		}
+		rosterAfter, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(rosterBefore) != string(rosterAfter) {
+			t.Fatalf("the roster changed on the refusal: %q -> %q", rosterBefore, rosterAfter)
+		}
+	})
+
+	t.Run("qualified reuse emits ready with the profile", func(t *testing.T) {
+		cwd, bin, state, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		// One rule set for both phases: the fresh start's readiness read and
+		// the reuse gate's qualification read are the same address, and the
+		// primary record satisfies both.
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "writer", "--json"}, Stdout: `{"address":"t7","state":"live","status":{"state":"idle"}}`},
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: opencodePrimaryRecord("t7")},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		fresh, _, _ := spawnHc(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd)
+		if !strings.Contains(fresh.String(), `"status": "ready"`) {
+			t.Fatalf("the fresh primary worker did not start ready: %s", fresh.String())
+		}
+		rosterBefore, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn := newFakeSpawnRPCConn()
+		out, stderr, calls := spawnHcWithConn(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd, conn)
+		assertHcOnlyReads(t, bin, calls)
+		if conn.getConnectCount() != 0 {
+			t.Fatalf("connect count = %d, want 0 on the reuse", conn.getConnectCount())
+		}
+		if !strings.Contains(out.String(), `"reused": true`) || !strings.Contains(out.String(), `"status": "ready"`) ||
+			!strings.Contains(out.String(), `"launch_profile": "`+kinds.OpenCodePrimaryProfile+`"`) {
+			t.Fatalf("the qualified reuse did not emit ready with the profile: %s", out.String())
+		}
+		if !strings.Contains(stderr.String(), "reusing idle worker 'writer'") {
+			t.Fatalf("stderr=%q, want the reuse warning", stderr.String())
+		}
+		rosterAfter, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(rosterBefore) != string(rosterAfter) {
+			t.Fatalf("the roster changed on the reuse: %q -> %q", rosterBefore, rosterAfter)
+		}
+	})
+
+	t.Run("unqualified reuse refuses before emit", func(t *testing.T) {
+		cwd, bin, state, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		// Per-call scripting on the exact get t7 argv (call numbers are
+		// one-based per argv, not a global call number): the fresh
+		// setup's readiness read is call one and must see the primary
+		// record, or the real Start refuses before the reuse is
+		// exercised; the reuse gate's qualification read is call two;
+		// the same idle worker, but its record reports no launch
+		// profile: the legacy form the gate must refuse.
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "writer", "--json"}, Stdout: `{"address":"t7","state":"live","status":{"state":"idle"}}`},
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: opencodePrimaryRecord("t7")},
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Call: 2, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"idle","app":"opencode"}}`},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		fresh, _, _ := spawnHc(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd)
+		if !strings.Contains(fresh.String(), `"status": "ready"`) {
+			t.Fatalf("the fresh primary worker did not start ready: %s", fresh.String())
+		}
+		// The recorded call log proves the fresh setup consumed exactly
+		// one get t7 (call one, the primary record); a test that failed
+		// the setup alone would never reach the qualification read.
+		getT7 := func(calls []fakecli.Call) int {
+			n := 0
+			for _, c := range calls {
+				if len(c.Argv) == 3 && c.Argv[0] == "get" && c.Argv[1] == "t7" && c.Argv[2] == "--json" {
+					n++
+				}
+			}
+			return n
+		}
+		if n := getT7(hcCallLog(t, bin)); n != 1 {
+			t.Fatalf("fresh setup get t7 calls = %d, want exactly the one readiness read", n)
+		}
+		rosterBefore, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn := newFakeSpawnRPCConn()
+		exit, out, _, calls := spawnHcExitWithConn(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd, conn)
+		assertHcOnlyReads(t, bin, calls)
+		if exit == nil || exit.Code != 4 || exit.Msg != gateMsg {
+			t.Fatalf("exit=%+v, want the fixed reuse refusal", exit)
+		}
+		if conn.getConnectCount() != 0 {
+			t.Fatalf("connect count = %d, want 0 on the refusal", conn.getConnectCount())
+		}
+		// The log now carries the second get t7 as well: the refused
+		// qualification really read the distinct unqualified record,
+		// not the fresh setup's primary one.
+		if n := getT7(calls); n != 2 {
+			t.Fatalf("get t7 calls after the refusal = %d, want the readiness read plus the qualification read", n)
+		}
+		for _, c := range calls {
+			if c.Argv[0] == "send" || c.Argv[0] == "keys" || c.Argv[0] == "kill" || c.Argv[0] == "rm" || c.Argv[0] == "run" || c.Argv[0] == "connect" {
+				t.Fatalf("input or close on the refused reuse: %v", c.Argv)
+			}
+		}
+		if strings.Contains(out.String(), `"reused": true`) || strings.Contains(out.String(), `"status": "ready"`) {
+			t.Fatalf("the ready JSON was emitted on the refusal: %s", out.String())
+		}
+		rosterAfter, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(rosterBefore) != string(rosterAfter) {
+			t.Fatalf("the roster role or history changed on the refusal: %q -> %q", rosterBefore, rosterAfter)
+		}
+	})
+
+	t.Run("the gate requires the queried target identity", func(t *testing.T) {
+		cwd, bin, _, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		// The fresh setup's readiness read must see the primary record
+		// so the real fresh start succeeds and the direct gate checks
+		// below actually run.
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: opencodePrimaryRecord("t7")},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		fresh, _, _ := spawnHc(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd)
+		if !strings.Contains(fresh.String(), `"status": "ready"`) {
+			t.Fatalf("the fresh primary worker did not start ready: %s", fresh.String())
+		}
+		oldOut, oldErr := platform.Stdout, platform.Stderr
+		out, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		platform.Stdout, platform.Stderr = out, stderr
+		t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
+		// Every primary field is set, but the record names another terminal:
+		// the identity must not be inferred from the display name.
+		var exit *platform.ExitError
+		func() {
+			defer func() {
+				if value := recover(); value != nil {
+					if e, ok := value.(*platform.ExitError); ok {
+						exit = e
+					} else {
+						panic(value)
+					}
+				}
+			}()
+			gateReuse(transport.Services{Runtime: &gateGetTransport{term: opencodePrimaryReadyTerminal("t9")}}, "writer", "writer", "opencode", ctx, env, cwd)
+		}()
+		if exit == nil || exit.Code != 4 || exit.Msg != gateMsg {
+			t.Fatalf("exit=%+v, want the fixed refusal for the mismatched identity", exit)
+		}
+		// The matching identity is accepted by the gate.
+		gateReuse(transport.Services{Runtime: &gateGetTransport{term: opencodePrimaryReadyTerminal("t7")}}, "writer", "writer", "opencode", ctx, env, cwd)
+	})
+
+	t.Run("legacy kinds keep the pass-through start", func(t *testing.T) {
+		cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "pi")
+		res := core.ResolveRoleSettings("worker", ctx, env, cwd, core.RoleFlags{})
+		wantArgs := hcAgentArgs(t, "worker", res, ctx, env, cwd)
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		start, out := captureSpawn(t, bin, env, ctx, cwd, []string{"worker"})
+		if start.LaunchProfile != "" || start.EnvOverrides != nil {
+			t.Fatalf("start.LaunchProfile=%q EnvOverrides=%v, want the pass-through zero values", start.LaunchProfile, start.EnvOverrides)
+		}
+		if strings.Join(start.Args, "\x00") != strings.Join(wantArgs, "\x00") {
+			t.Fatalf("start.Args=%q, want the legacy argv %q", start.Args, wantArgs)
+		}
+		if strings.Contains(out.String(), `"launch_profile"`) {
+			t.Fatalf("the legacy JSON discloses a launch profile: %s", out.String())
+		}
+		if f := rosterRow(t, state, "sX"); len(f) != 16 {
+			t.Fatalf("roster row %v, want the legacy 16-column row", f)
+		}
+	})
+}

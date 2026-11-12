@@ -31,6 +31,7 @@ import (
 	"github.com/djalmajr/soho/internal/agentexec"
 	"github.com/djalmajr/soho/internal/hc"
 	"github.com/djalmajr/soho/internal/jsonjs"
+	"github.com/djalmajr/soho/internal/launchprofile"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/transport"
 )
@@ -457,6 +458,54 @@ func executableBase(exe string) string {
 	return path.Base(strings.ReplaceAll(exe, "\\", "/"))
 }
 
+// launchProfileOf reads the record's soho.launch_profile label: an actual
+// string at the exact label key ("" when the labels are absent, not a map,
+// or the label is missing, null or not a string).
+func launchProfileOf(obj *jsonjs.Object) string {
+	if labels, ok := obj.Get("labels"); ok {
+		if labelsObj, ok := labels.(*jsonjs.Object); ok {
+			if v, ok := labelsObj.Get(transport.LaunchProfileLabel); ok {
+				if profile, isString := v.(string); isString {
+					return profile
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// reportedOf reads the record's top-level reported flag: true only when it
+// is the actual bool true (absent, null, false or another type stay false,
+// never coerced).
+func reportedOf(obj *jsonjs.Object) bool {
+	if v, ok := obj.Get("reported"); ok {
+		if reported, isBool := v.(bool); isBool && reported {
+			return true
+		}
+	}
+	return false
+}
+
+// reporterAppOf reads the record's status.app: an actual string ("" when the
+// status is absent, null or not a map, or the app is missing, null or not a
+// string).
+func reporterAppOf(obj *jsonjs.Object) string {
+	raw, ok := obj.Get("status")
+	if !ok || raw == nil {
+		return ""
+	}
+	status, ok := raw.(*jsonjs.Object)
+	if !ok {
+		return ""
+	}
+	if v, ok := status.Get("app"); ok {
+		if app, isString := v.(string); isString {
+			return app
+		}
+	}
+	return ""
+}
+
 // processRecord keeps one successful hc read's raw record on the reply's
 // Process (the exit zero and the record's stdout), so a later slice can read
 // how, complete and why out of it.
@@ -649,7 +698,8 @@ func (b *backend) listAllLocal(ctx context.Context, call transport.Call) transpo
 // Get reads one terminal's state. Exit 3 (not found) and a finished terminal
 // are the gone state with no error, like the Herdr backend; any other
 // failure is unavailable with the cause; a live terminal with no status is
-// unknown.
+// unknown. The reply's Value also carries the record's source metadata: the
+// soho.launch_profile label, the top-level reported flag and the status app.
 func (b *backend) Get(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[transport.Terminal] {
 	out, err := b.run(ctx, call, "get", addr(target))
 	if err != nil {
@@ -665,16 +715,19 @@ func (b *backend) Get(ctx context.Context, target transport.Target, call transpo
 	address := addressOf(obj)
 	return transport.Reply[transport.Terminal]{
 		Value: transport.Terminal{
-			Target:       transport.Target{ID: address, Machine: target.Machine},
-			Name:         nameOf(obj),
-			PaneID:       address,
-			State:        stateOf(obj),
-			NativeState:  nativeStateOf(obj),
-			Sequence:     turnRaw(json.RawMessage(out)),
-			Msg:          statusMsgOf(obj),
-			Cwd:          cwdOf(obj),
-			WorkspaceID:  sessionOfRecord(obj),
-			ProgramHints: programHints(obj),
+			Target:        transport.Target{ID: address, Machine: target.Machine},
+			Name:          nameOf(obj),
+			PaneID:        address,
+			State:         stateOf(obj),
+			NativeState:   nativeStateOf(obj),
+			Sequence:      turnRaw(json.RawMessage(out)),
+			Msg:           statusMsgOf(obj),
+			Cwd:           cwdOf(obj),
+			WorkspaceID:   sessionOfRecord(obj),
+			ProgramHints:  programHints(obj),
+			LaunchProfile: launchProfileOf(obj),
+			Reported:      reportedOf(obj),
+			ReporterApp:   reporterAppOf(obj),
 		},
 		Valid: true,
 	}
@@ -1170,17 +1223,6 @@ const startPollInterval = 200 * time.Millisecond
 // empty, zero or invalid: the herdr default the spawn side passes.
 const startTimeoutDefaultMs = 60000
 
-// hcStartKinds are the kinds whose executable reports a 7501 status hc can
-// observe; the executable is the kind name itself, the single piece herdr
-// fixed on its side.
-var hcStartKinds = map[string]bool{
-	"claude": true,
-	"codex":  true,
-	"pi":     true,
-	"grok":   true,
-	"agy":    true,
-}
-
 // validHcName reports whether name is a valid hc terminal name: 1-32
 // characters of a-z 0-9 - _.
 func validHcName(name string) bool {
@@ -1216,19 +1258,37 @@ func startDeadlineSeconds(deadline time.Duration) string {
 // Start starts the worker in a new hc terminal of this session and waits
 // for its first reported status. The run is dispatched through the native
 // terminal.run JSON-RPC client on the per-instance hc client.
-// Value carries the new terminal's address on
-// success. An unsupported kind and an invalid name refuse before any
-// launch; a run that fails with hc's name_taken error is a FailureConflict
-// (spawn picks the next suffix; this slice does not retry); readiness is
-// one hc get per startPollInterval until the deadline.
+// Value carries the new terminal's address on success. Admission is the
+// shared launchprofile native status policy: the five kinds carry the empty
+// profile and opencode carries exactly its primary profile; an
+// unadmitted combination and an invalid name refuse before any launch.
+// The five kinds keep the request's own argv and environment aliases,
+// with no snapshot and no native validation; the admitted opencode plan
+// is cloned and validated before the session read, and a plan the shared
+// native validator refuses is a command failure before it. An admitted
+// opencode never launches a bare executable name: a missing lookup or a
+// failed or non-absolute normalization is the fixed value-free
+// unavailable refusal before the terminal exists. After the ordinary
+// readiness success, the admitted primary profile is qualified on the same
+// get record against the shared ready policy (no second observation). A
+// run that fails with hc's name_taken error is a FailureConflict (spawn
+// picks the next suffix; this slice does not retry); readiness is one hc
+// get per startPollInterval until the deadline.
 func (b *backend) Start(ctx context.Context, start transport.Start, call transport.Call) transport.Reply[string] {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if !hcStartKinds[start.Kind] {
+	if !launchprofile.NativeStatusSupported(start.Kind, start.LaunchProfile) {
+		message := fmt.Sprintf("kind %s does not report status under transport=hc; use transport=herdr", start.Kind)
+		switch {
+		case start.Kind == "opencode":
+			message = "opencode requires launch profile " + launchprofile.OpenCodePrimaryProfile + " under transport=hc"
+		case start.LaunchProfile != "":
+			message = "native launch profile is unsupported under transport=hc"
+		}
 		return transport.Reply[string]{Err: &transport.Failure{
 			Kind:    transport.FailureUnsupported,
-			Message: fmt.Sprintf("kind %s does not report status under transport=hc; use transport=herdr", start.Kind),
+			Message: message,
 		}}
 	}
 	if !validHcName(start.Name) {
@@ -1236,6 +1296,35 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 			Kind:    transport.FailureCommand,
 			Message: fmt.Sprintf("worker name '%s' is not a valid hc terminal name (1-32 of a-z 0-9 - _)", start.Name),
 		}}
+	}
+	// The five empty-profile kinds keep the request's own argv and
+	// environment aliases, exactly as the original start does: no clone
+	// and no native validation, so a synchronous callback that mutates
+	// the caller's values before the launch still reaches the serialized
+	// request.
+	args := start.Args
+	envOverrides := start.EnvOverrides
+	if start.Kind == "opencode" {
+		// The admitted opencode plan is owned per-call snapshots of the
+		// request's argv and environment, taken before the validation and
+		// every session, lookup or launch callback: the start uses only
+		// these values from here on, so a synchronous callback that
+		// mutates the caller's slice or map cannot change the admitted
+		// plan or the serialized launch.
+		args = append([]string(nil), start.Args...)
+		envOverrides = make(map[string]string, len(start.EnvOverrides))
+		for name, value := range start.EnvOverrides {
+			envOverrides[name] = value
+		}
+		if err := launchprofile.ValidateNativeLaunchProfile(start.Kind, start.LaunchProfile, args, envOverrides); err != nil {
+			// The shared validator's one fixed value-free error: no
+			// supplied argument, configuration or environment text
+			// reaches the caller.
+			return transport.Reply[string]{Err: &transport.Failure{
+				Kind:    transport.FailureCommand,
+				Message: "native launch profile is invalid",
+			}}
+		}
 	}
 	session, err := b.session(ctx, call)
 	if err != nil {
@@ -1260,17 +1349,33 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 
 	exe := agentexec.Executable(start.Kind)
 	program := exe
-	if resolved, ok := platform.FindExecutable(exe, b.env, platform.Current()); ok {
+	resolved, found := platform.FindExecutable(exe, b.env, platform.Current())
+	switch {
+	case start.Kind == "opencode" && !found:
+		// The primary profile never launches a bare executable name: a
+		// missing lookup is the fixed value-free refusal before any
+		// terminal exists.
+		if cerr := ctx.Err(); cerr != nil {
+			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: cerr.Error(), Cause: cerr}}
+		}
+		return opencodeExecutableUnavailable()
+	case found:
 		abs, err := b.absPath(resolved)
 		if err != nil {
 			if cerr := ctx.Err(); cerr != nil {
 				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: cerr.Error(), Cause: cerr}}
+			}
+			if start.Kind == "opencode" {
+				return opencodeExecutableUnavailable()
 			}
 			return transport.Reply[string]{Err: &transport.Failure{
 				Kind:    transport.FailureUnavailable,
 				Message: "abs: " + err.Error(),
 				Cause:   err,
 			}}
+		}
+		if start.Kind == "opencode" && !filepath.IsAbs(abs) {
+			return opencodeExecutableUnavailable()
 		}
 		program = abs
 	}
@@ -1281,13 +1386,15 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 	}
 	runCtx, runCancel := context.WithTimeout(ctx, budget)
 	address, err := b.client.RunTerminal(runCtx, hc.TerminalRun{
-		Name:    start.Name,
-		Kind:    start.Kind,
-		Program: program,
-		Cwd:     cwd,
-		Caller:  b.env.Get("HC_TERMINAL_ID"),
-		Session: session,
-		Args:    start.Args,
+		Name:          start.Name,
+		Kind:          start.Kind,
+		Program:       program,
+		Cwd:           cwd,
+		Caller:        b.env.Get("HC_TERMINAL_ID"),
+		Session:       session,
+		Args:          args,
+		EnvOverrides:  envOverrides,
+		LaunchProfile: start.LaunchProfile,
 	})
 	runCancel()
 
@@ -1314,7 +1421,18 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 		return startRunFailure(start.Name, err)
 	}
 
-	return b.waitReady(ctx, call, start.Name, address, startTimeout(start.Timeout))
+	return b.waitReady(ctx, call, start.Name, address, start.LaunchProfile, startTimeout(start.Timeout))
+}
+
+// opencodeExecutableUnavailable is the primary profile's fixed value-free
+// refusal for its executable requirement: the lookup found no opencode
+// executable, or its absolute normalization failed or returned a path that
+// is not absolute. No private path or error text crosses the boundary.
+func opencodeExecutableUnavailable() transport.Reply[string] {
+	return transport.Reply[string]{Err: &transport.Failure{
+		Kind:    transport.FailureUnavailable,
+		Message: "opencode executable is unavailable for primary launch profile",
+	}}
 }
 
 // startRunFailure maps one failed hc run onto the transport failure it is:
@@ -1339,8 +1457,14 @@ func startRunFailure(name string, err error) transport.Reply[string] {
 // failure, and the deadline is the timeout failure carrying the last get
 // error it holds. A cancelled ctx stops the poll as a cancellation. Every
 // failure reply carries the address in Value, so the caller can close the
-// terminal the start left.
-func (b *backend) waitReady(ctx context.Context, call transport.Call, name, address string, deadline time.Duration) transport.Reply[string] {
+// terminal the start left. For the admitted primary launch profile the
+// ordinary success is further qualified on the very same get record: the
+// strict record metadata must name the created address and satisfy the
+// shared ready policy, or the reply is the fixed protocol mismatch. No
+// second observation is made, and blocked, exited, cancelled and timeout
+// keep their original priority (the qualification runs only after an
+// ordinary success).
+func (b *backend) waitReady(ctx context.Context, call transport.Call, name, address, expectedProfile string, deadline time.Duration) transport.Reply[string] {
 	deadlineAt := time.Now().Add(deadline)
 	var lastErr *transport.Failure
 	for {
@@ -1370,6 +1494,16 @@ func (b *backend) waitReady(ctx context.Context, call transport.Call, name, addr
 		} else {
 			rep, perr := readinessReply(name, address, out)
 			if rep != nil {
+				// Only an ordinary success is qualified, and on the same
+				// get record: a record that the strict metadata does not
+				// qualify for the admitted profile is a protocol failure
+				// with the known address, never a second observation.
+				if rep.Err == nil && expectedProfile != "" && !primaryProfileReady(out, address) {
+					return transport.Reply[string]{Value: address, Err: &transport.Failure{
+						Kind:    transport.FailureProtocol,
+						Message: "native primary profile readiness metadata mismatch",
+					}}
+				}
 				return *rep
 			}
 			lastErr = perr
@@ -1438,6 +1572,27 @@ func readinessReply(name, address, out string) (*transport.Reply[string], *trans
 		}
 	}
 	return nil, nil
+}
+
+// primaryProfileReady reports whether the get record that the ordinary
+// readiness parse decided success is exactly the native primary
+// observation: the record's strict fields — the launch profile label, the
+// top-level reported flag, the status app, the raw native lifecycle and
+// the mapped state word — qualify under launchprofile.OpenCodePrimaryReady, and
+// the record's address is the created address. A malformed record, a
+// foreign address or any missing or foreign field refuses the success.
+func primaryProfileReady(out, address string) bool {
+	obj, ok := terminalObject(out)
+	if !ok || addressOf(obj) != address {
+		return false
+	}
+	return launchprofile.OpenCodePrimaryReady(
+		launchProfileOf(obj),
+		reportedOf(obj),
+		reporterAppOf(obj),
+		nativeStateOf(obj),
+		stateOf(obj),
+	)
 }
 
 // exitedFailure renders the startup exit, `agent <name> exited during

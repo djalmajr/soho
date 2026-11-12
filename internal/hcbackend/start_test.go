@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/hc"
+	"github.com/djalmajr/soho/internal/launchprofile"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 	"github.com/djalmajr/soho/internal/transport"
@@ -245,6 +246,138 @@ func TestStartArgvPerKind(t *testing.T) {
 	}
 }
 
+// TestStartEnvOverrides: an explicit synthetic override (valid Unicode and a
+// literal U+FFFD value) reaches the exact terminal.run request's env
+// alongside the mandatory SOHO_TRANSPORT=hc marker, with no unrelated
+// parent entries; nil and empty maps leave the exact marker-only request;
+// and an identity-routing override is refused by the existing client before
+// any RPC connect, after the session lookup already happened.
+func TestStartEnvOverrides(t *testing.T) {
+	t.Run("explicit synthetic override reaches the exact terminal.run env", func(t *testing.T) {
+		env, conn, calls := startEnv(t, []fakecli.Rule{
+			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: startReadyIdle},
+		})
+		env["PARENT_CANARY"] = "caller-only"
+		b := newBackend(env, conn)
+		overrides := map[string]string{
+			"ENC_UNICODE_VALUE": "café ☕ ü",
+			"ENC_FFFD_VALUE":    "\uFFFD",
+		}
+		rep := b.Start(context.Background(), transport.Start{Name: "w7", Kind: "claude", Timeout: "3000", EnvOverrides: overrides}, transport.Call{})
+		if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+			t.Fatalf("rep: %+v want Valid with Value t7", rep)
+		}
+		wantArgv(t, calls(), [][]string{
+			{"get", "t1", "--json"},
+			{"get", "t7", "--json"},
+		})
+		_, params := parseTerminalRunReq(t, conn.getWritten())
+		want := map[string]any{
+			"SOHO_TRANSPORT":    "hc",
+			"ENC_UNICODE_VALUE": "café ☕ ü",
+			"ENC_FFFD_VALUE":    "\uFFFD",
+		}
+		if !reflect.DeepEqual(params["env"], want) {
+			t.Fatalf("env: %#v want %#v: the marker plus the exact overrides, no unrelated parent canary", params["env"], want)
+		}
+		if conn.getConnectCount() != 1 {
+			t.Fatalf("connectCount=%d want 1", conn.getConnectCount())
+		}
+	})
+
+	t.Run("nil and empty maps keep the exact marker-only env", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			overrides map[string]string
+		}{
+			{name: "nil", overrides: nil},
+			{name: "empty", overrides: map[string]string{}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				env, conn, calls := startEnv(t, []fakecli.Rule{
+					{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: startReadyIdle},
+				})
+				b := newBackend(env, conn)
+				rep := b.Start(context.Background(), transport.Start{Name: "w7", Kind: "claude", Timeout: "3000", EnvOverrides: tc.overrides}, transport.Call{})
+				if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+					t.Fatalf("rep: %+v want Valid with Value t7", rep)
+				}
+				wantArgv(t, calls(), [][]string{
+					{"get", "t1", "--json"},
+					{"get", "t7", "--json"},
+				})
+				_, params := parseTerminalRunReq(t, conn.getWritten())
+				if !reflect.DeepEqual(params["env"], map[string]any{"SOHO_TRANSPORT": "hc"}) {
+					t.Fatalf("env: %#v want the exact marker-only map", params["env"])
+				}
+			})
+		}
+	})
+
+	t.Run("identity routing override is refused before the RPC connect", func(t *testing.T) {
+		env, conn, calls := startEnv(t, nil)
+		b := newBackend(env, conn)
+		rep := b.Start(context.Background(), transport.Start{Name: "w7", Kind: "claude", Timeout: "3000", EnvOverrides: map[string]string{"HC_IDENTITY": "injected"}}, transport.Call{})
+		if rep.Err == nil || rep.Err.Kind != transport.FailureUnavailable {
+			t.Fatalf("rep: %+v want FailureUnavailable", rep)
+		}
+		want := "terminal run: reserved environment override name"
+		if rep.Err.Message != want {
+			t.Fatalf("message %q want %q", rep.Err.Message, want)
+		}
+		if rep.Value != "" || rep.Valid {
+			t.Fatalf("rep: %+v want no address and no valid reply on refusal", rep)
+		}
+		if conn.getConnectCount() != 0 {
+			t.Fatalf("connectCount=%d want 0: the client refuses before the RPC connect", conn.getConnectCount())
+		}
+		if strings.Contains(string(conn.getWritten()), "terminal.run") {
+			t.Fatal("a terminal.run request was written despite the pre-connect refusal")
+		}
+		wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}})
+	})
+}
+
+// TestStartLegacySessionReadEnvTiming: for each of the five empty-profile
+// kinds, a synchronous session-read callback that mutates the caller's
+// original TEST_MARKER override before the client snapshot reaches the
+// serialized terminal.run env with its after value: the legacy kinds keep
+// the request's own environment alias, with no snapshot, as the old
+// contract did.
+func TestStartLegacySessionReadEnvTiming(t *testing.T) {
+	for _, kind := range []string{"claude", "codex", "pi", "grok", "agy"} {
+		t.Run(kind, func(t *testing.T) {
+			env, conn, calls := startEnv(t, []fakecli.Rule{
+				{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: startReadyIdle},
+			})
+			start := transport.Start{Name: "w7", Kind: kind, Timeout: "3000", EnvOverrides: map[string]string{"TEST_MARKER": "before"}}
+			b := newBackend(env, conn)
+			origLaunch := b.client.Launch
+			b.client.Launch = func(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
+				// The synchronous session-read callback mutates the
+				// caller's original override map before the client
+				// snapshots it.
+				if len(args) > 1 && args[0] == "get" && args[1] == "t1" {
+					start.EnvOverrides["TEST_MARKER"] = "after"
+				}
+				return origLaunch(ctx, env, args...)
+			}
+			rep := b.Start(context.Background(), start, transport.Call{})
+			if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+				t.Fatalf("rep: %+v want ready with Value t7", rep)
+			}
+			wantArgv(t, calls(), [][]string{
+				{"get", "t1", "--json"},
+				{"get", "t7", "--json"},
+			})
+			_, params := parseTerminalRunReq(t, conn.getWritten())
+			if !reflect.DeepEqual(params["env"], map[string]any{"SOHO_TRANSPORT": "hc", "TEST_MARKER": "after"}) {
+				t.Fatalf("env: %#v want the after value of the session-read mutation: the legacy kinds keep the original environment alias", params["env"])
+			}
+		})
+	}
+}
+
 // TestStartArgvTokensByteForByte: the claude full-mode settings blob and the
 // codex trust override go out as single argv elements, byte for byte, with
 // no quoting added.
@@ -370,6 +503,9 @@ func TestStartCwd(t *testing.T) {
 // TestStartRefusalsBeforeLaunch: an unsupported kind and every invalid
 // name refuse before any hc launch or connect.
 func TestStartRefusalsBeforeLaunch(t *testing.T) {
+	// opencode without its primary profile is refused with the fixed
+	// value-free message that names the required profile, not the old
+	// kind-not-supported text.
 	t.Run("unsupported kind", func(t *testing.T) {
 		env, conn, calls := startEnv(t, nil)
 		b := newBackend(env, conn)
@@ -377,7 +513,7 @@ func TestStartRefusalsBeforeLaunch(t *testing.T) {
 		if rep.Err == nil || rep.Err.Kind != transport.FailureUnsupported {
 			t.Fatalf("rep: %+v want FailureUnsupported", rep)
 		}
-		want := "kind opencode does not report status under transport=hc; use transport=herdr"
+		want := "opencode requires launch profile opencode-primary-v2 under transport=hc"
 		if rep.Err.Message != want {
 			t.Fatalf("message %q want %q", rep.Err.Message, want)
 		}
@@ -1658,4 +1794,537 @@ func TestStart_CallerLookupFindsNothingDelegatesToCore(t *testing.T) {
 	if !reflect.DeepEqual(argvRaw[1:], []any{"--arg1", "val1"}) {
 		t.Fatalf("argv[1:]=%v, want unchanged args", argvRaw[1:])
 	}
+}
+
+// opencodeTestModel is the portable synthetic provider/model reference the
+// test builds its plans from; no actual OpenCode, configuration,
+// authentication or provider is invoked or read.
+const opencodeTestModel = "synthetic/prov-a/model-1"
+
+// opencodeAltModel is a second synthetic provider/model reference the
+// session-read fixture plans from: its canonical plan is a different
+// OPENCODE_CONFIG_CONTENT value, so the callback's swap-in is a real
+// root-model mutation, not a no-update change.
+const opencodeAltModel = "synthetic/prov-b/model-2"
+
+// opencodeReadyIdle and opencodeReadyDone are readiness gets the ordinary
+// parse decides ready and the strict primary qualification accepts: the
+// exact primary profile label, the actual bool reported, the opencode
+// status app, the live native lifecycle, the idle (or done) state and the
+// created address.
+const (
+	opencodeReadyIdle = `{"address":"t7","state":"live","reported":true,"labels":{"soho.session":"sX","soho.launch_profile":"opencode-primary-v2"},"status":{"state":"idle","app":"opencode"}}`
+	opencodeReadyDone = `{"address":"t7","state":"live","reported":true,"labels":{"soho.session":"sX","soho.launch_profile":"opencode-primary-v2"},"status":{"state":"done","app":"opencode"}}`
+)
+
+// buildOpenCodePlan resolves the shared launch profile for the native
+// primary combination with the explicit inputs and renders the transport
+// start the resolver's own output drives: the profile name, the profile's
+// extra args plus the optional --auto, and the resolver's exact
+// environment overrides.
+func buildOpenCodePlan(t *testing.T, inline, configDir string, auto bool) transport.Start {
+	t.Helper()
+	profile, err := launchprofile.ResolveOpenCode(opencodeTestModel, inline, configDir)
+	if err != nil {
+		t.Fatalf("the shared resolver refused the explicit inputs: %v", err)
+	}
+	if profile.Name != launchprofile.OpenCodePrimaryProfile {
+		t.Fatalf("resolver profile %q want %q", profile.Name, launchprofile.OpenCodePrimaryProfile)
+	}
+	args := append([]string(nil), profile.ExtraArgs...)
+	if auto {
+		args = append(args, "--auto")
+	}
+	return transport.Start{
+		Name:          "w7",
+		Kind:          "opencode",
+		Timeout:       "3000",
+		LaunchProfile: profile.Name,
+		Args:          args,
+		EnvOverrides:  profile.EnvOverrides,
+	}
+}
+
+// startOpenCodeEnv builds the opencode Start fixture: the caller read, the
+// given readiness rules for the new terminal, the fake opencode executable
+// on the caller PATH and the native terminal.run RPC seam.
+func startOpenCodeEnv(t *testing.T, readyRules []fakecli.Rule) (platform.Env, *fakeRPCConn, func() []fakecli.Call, string) {
+	t.Helper()
+	env, conn, calls := startEnv(t, readyRules)
+	binDir := filepath.Join(t.TempDir(), "oc bin")
+	exePath := installFakeAgentExecutable(t, binDir, "opencode")
+	env["PATH"] = binDir + string(filepath.ListSeparator) + env["PATH"]
+	if runtime.GOOS == "windows" {
+		env["PATHEXT"] = ".exe"
+	}
+	return env, conn, calls, exePath
+}
+
+// TestStartOpenCodePrimary: the guarded start for the admitted opencode
+// primary profile — the shared resolver builds the plan, the backend
+// snapshots and validates it before the session read, launches it with the
+// exact labels, argv and environment, and qualifies the ordinary readiness
+// success on the same get record against the shared ready policy. The
+// assertions read the captured RPC and side effects directly; nothing is
+// generated from the start or client implementation.
+func TestStartOpenCodePrimary(t *testing.T) {
+	const inlinePrimary = `{"agents":{"build":{"hidden":false,"disabled":false,"mode":"primary"}}}`
+	const inlineAll = `{"agents":{"build":{"hidden":false,"disabled":false,"mode":"all"}}}`
+
+	t.Run("canonical plan with the explicit config dir and no --auto", func(t *testing.T) {
+		configDir := filepath.Join(t.TempDir(), "oc-config")
+		start := buildOpenCodePlan(t, inlinePrimary, configDir, false)
+		env, conn, calls, exePath := startOpenCodeEnv(t, []fakecli.Rule{
+			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: opencodeReadyIdle},
+		})
+		b := newBackend(env, conn)
+		rep := b.Start(context.Background(), start, transport.Call{})
+		if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+			t.Fatalf("rep: %+v want ready with Value t7", rep)
+		}
+		wantArgv(t, calls(), [][]string{
+			{"get", "t1", "--json"},
+			{"get", "t7", "--json"},
+		})
+		_, params := parseTerminalRunReq(t, conn.getWritten())
+		wantLabels := map[string]any{"soho.session": "sX", "soho.launch_profile": launchprofile.OpenCodePrimaryProfile}
+		if !reflect.DeepEqual(params["labels"], wantLabels) {
+			t.Fatalf("labels: %v want %v", params["labels"], wantLabels)
+		}
+		wantEnv := map[string]any{"SOHO_TRANSPORT": "hc"}
+		for name, value := range start.EnvOverrides {
+			wantEnv[name] = value
+		}
+		if wantEnv["OPENCODE_CONFIG_DIR"] != configDir {
+			t.Fatalf("the plan must carry the explicit config dir: %v", wantEnv)
+		}
+		if !reflect.DeepEqual(params["env"], wantEnv) {
+			t.Fatalf("env: %#v want %#v: the marker plus the resolver's exact overrides", params["env"], wantEnv)
+		}
+		argvRaw, ok := params["argv"].([]any)
+		if !ok || len(argvRaw) != 2 {
+			t.Fatalf("argv: %v want the executable and --standalone", params["argv"])
+		}
+		if argvRaw[0] != exePath || argvRaw[1] != "--standalone" {
+			t.Fatalf("argv: %v want [%s --standalone]", argvRaw, exePath)
+		}
+		if conn.getConnectCount() != 1 {
+			t.Fatalf("connectCount=%d want 1", conn.getConnectCount())
+		}
+	})
+
+	t.Run("canonical plan without the config dir and with --auto", func(t *testing.T) {
+		start := buildOpenCodePlan(t, inlinePrimary, "", true)
+		env, conn, calls, exePath := startOpenCodeEnv(t, []fakecli.Rule{
+			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: opencodeReadyIdle},
+		})
+		b := newBackend(env, conn)
+		rep := b.Start(context.Background(), start, transport.Call{})
+		if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+			t.Fatalf("rep: %+v want ready with Value t7", rep)
+		}
+		wantArgv(t, calls(), [][]string{
+			{"get", "t1", "--json"},
+			{"get", "t7", "--json"},
+		})
+		_, params := parseTerminalRunReq(t, conn.getWritten())
+		if _, present := params["env"].(map[string]any)["OPENCODE_CONFIG_DIR"]; present {
+			t.Fatalf("the empty config dir adds no override: %v", params["env"])
+		}
+		argvRaw, ok := params["argv"].([]any)
+		if !ok || len(argvRaw) != 3 {
+			t.Fatalf("argv: %v want the executable, --standalone and --auto", params["argv"])
+		}
+		if argvRaw[0] != exePath || argvRaw[1] != "--standalone" || argvRaw[2] != "--auto" {
+			t.Fatalf("argv: %v want [%s --standalone --auto]", argvRaw, exePath)
+		}
+	})
+
+	t.Run("inline build with mode all is admitted", func(t *testing.T) {
+		start := buildOpenCodePlan(t, inlineAll, "", false)
+		env, conn, calls, _ := startOpenCodeEnv(t, []fakecli.Rule{
+			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: opencodeReadyIdle},
+		})
+		b := newBackend(env, conn)
+		rep := b.Start(context.Background(), start, transport.Call{})
+		if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+			t.Fatalf("rep: %+v want ready with Value t7", rep)
+		}
+		wantArgv(t, calls(), [][]string{
+			{"get", "t1", "--json"},
+			{"get", "t7", "--json"},
+		})
+	})
+
+	t.Run("done record qualifies as ready", func(t *testing.T) {
+		start := buildOpenCodePlan(t, inlinePrimary, "", false)
+		env, conn, calls, _ := startOpenCodeEnv(t, []fakecli.Rule{
+			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: opencodeReadyDone},
+		})
+		b := newBackend(env, conn)
+		rep := b.Start(context.Background(), start, transport.Call{})
+		if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+			t.Fatalf("rep: %+v want ready with Value t7", rep)
+		}
+		wantArgv(t, calls(), [][]string{
+			{"get", "t1", "--json"},
+			{"get", "t7", "--json"},
+		})
+	})
+
+	t.Run("refusals before any hc lookup or connect", func(t *testing.T) {
+		refuse := func(t *testing.T, start transport.Start, wantKind transport.FailureKind, wantMsg string) {
+			t.Helper()
+			env, conn, calls := startEnv(t, nil)
+			b := newBackend(env, conn)
+			rep := b.Start(context.Background(), start, transport.Call{})
+			if rep.Err == nil || rep.Err.Kind != wantKind {
+				t.Fatalf("rep: %+v want %s", rep, wantKind)
+			}
+			if rep.Err.Message != wantMsg {
+				t.Fatalf("message %q want %q", rep.Err.Message, wantMsg)
+			}
+			if rep.Value != "" || rep.Valid {
+				t.Fatalf("rep: %+v want no address and no valid reply", rep)
+			}
+			if got := len(calls()); got != 0 {
+				t.Fatalf("launches=%d want 0: no session read or other hc launch: %#v", got, calls())
+			}
+			if conn.getConnectCount() != 0 {
+				t.Fatalf("connectCount=%d want 0", conn.getConnectCount())
+			}
+			if strings.Contains(string(conn.getWritten()), "terminal.run") {
+				t.Fatal("a terminal.run request was written despite the refusal")
+			}
+		}
+
+		const wantInvalid = "native launch profile is invalid"
+		const wantProfile = "opencode requires launch profile opencode-primary-v2 under transport=hc"
+		const wantUnsupportedProfile = "native launch profile is unsupported under transport=hc"
+
+		t.Run("opencode with the wrong profile", func(t *testing.T) {
+			start := buildOpenCodePlan(t, inlinePrimary, "", false)
+			start.LaunchProfile = "opencode-primary-v3"
+			refuse(t, start, transport.FailureUnsupported, wantProfile)
+		})
+		t.Run("old kind with a nonempty profile", func(t *testing.T) {
+			refuse(t, transport.Start{Name: "w7", Kind: "claude", Timeout: "3000", LaunchProfile: launchprofile.OpenCodePrimaryProfile}, transport.FailureUnsupported, wantUnsupportedProfile)
+		})
+		t.Run("invalid args token", func(t *testing.T) {
+			start := buildOpenCodePlan(t, inlinePrimary, "", false)
+			start.Args = []string{"--standalone", "--bogus"}
+			refuse(t, start, transport.FailureCommand, wantInvalid)
+		})
+		t.Run("duplicate standalone", func(t *testing.T) {
+			start := buildOpenCodePlan(t, inlinePrimary, "", false)
+			start.Args = []string{"--standalone", "--standalone"}
+			refuse(t, start, transport.FailureCommand, wantInvalid)
+		})
+		t.Run("forged configuration", func(t *testing.T) {
+			start := buildOpenCodePlan(t, inlinePrimary, "", false)
+			start.EnvOverrides["OPENCODE_CONFIG_CONTENT"] = `{"model":"synthetic/prov-a/model-1"}`
+			refuse(t, start, transport.FailureCommand, wantInvalid)
+		})
+		t.Run("hidden build agent", func(t *testing.T) {
+			start := buildOpenCodePlan(t, inlinePrimary, "", false)
+			start.EnvOverrides["OPENCODE_CONFIG_CONTENT"] = `{"agents":{"build":{"hidden":true,"model":"synthetic/prov-a/model-1"}},"default_agent":"build","model":"synthetic/prov-a/model-1"}`
+			refuse(t, start, transport.FailureCommand, wantInvalid)
+		})
+		t.Run("unknown environment override", func(t *testing.T) {
+			start := buildOpenCodePlan(t, inlinePrimary, "", false)
+			start.EnvOverrides["OC_EXTRA_FLAG"] = "1"
+			refuse(t, start, transport.FailureCommand, wantInvalid)
+		})
+	})
+
+	t.Run("missing executable refuses before terminal creation", func(t *testing.T) {
+		start := buildOpenCodePlan(t, inlinePrimary, "", false)
+		env, conn, calls := startEnv(t, nil)
+		b := newBackend(env, conn)
+		rep := b.Start(context.Background(), start, transport.Call{})
+		if rep.Err == nil || rep.Err.Kind != transport.FailureUnavailable {
+			t.Fatalf("rep: %+v want FailureUnavailable", rep)
+		}
+		if rep.Err.Message != "opencode executable is unavailable for primary launch profile" {
+			t.Fatalf("message %q want the fixed value-free refusal", rep.Err.Message)
+		}
+		if rep.Value != "" || rep.Valid {
+			t.Fatalf("rep: %+v want no terminal created", rep)
+		}
+		if conn.getConnectCount() != 0 {
+			t.Fatalf("connectCount=%d want 0", conn.getConnectCount())
+		}
+		if strings.Contains(string(conn.getWritten()), "terminal.run") {
+			t.Fatal("a terminal.run request was written despite the missing executable")
+		}
+		wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}})
+	})
+
+	t.Run("failed absolute normalization refuses before terminal creation", func(t *testing.T) {
+		start := buildOpenCodePlan(t, inlinePrimary, "", false)
+		env, conn, calls, _ := startOpenCodeEnv(t, nil)
+		b := newBackend(env, conn)
+		b.abs = func(string) (string, error) {
+			return "", errors.New("simulated normalization failure")
+		}
+		rep := b.Start(context.Background(), start, transport.Call{})
+		if rep.Err == nil || rep.Err.Kind != transport.FailureUnavailable {
+			t.Fatalf("rep: %+v want FailureUnavailable", rep)
+		}
+		if rep.Err.Message != "opencode executable is unavailable for primary launch profile" {
+			t.Fatalf("message %q want the fixed value-free refusal", rep.Err.Message)
+		}
+		if rep.Value != "" || rep.Valid {
+			t.Fatalf("rep: %+v want no terminal created", rep)
+		}
+		if conn.getConnectCount() != 0 {
+			t.Fatalf("connectCount=%d want 0", conn.getConnectCount())
+		}
+		if strings.Contains(string(conn.getWritten()), "terminal.run") {
+			t.Fatal("a terminal.run request was written despite the normalization failure")
+		}
+		wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}})
+	})
+
+	t.Run("non-absolute normalization refuses before terminal creation", func(t *testing.T) {
+		start := buildOpenCodePlan(t, inlinePrimary, "", false)
+		env, conn, calls, _ := startOpenCodeEnv(t, nil)
+		b := newBackend(env, conn)
+		b.abs = func(string) (string, error) {
+			return "opencode", nil
+		}
+		rep := b.Start(context.Background(), start, transport.Call{})
+		if rep.Err == nil || rep.Err.Kind != transport.FailureUnavailable {
+			t.Fatalf("rep: %+v want FailureUnavailable", rep)
+		}
+		if rep.Err.Message != "opencode executable is unavailable for primary launch profile" {
+			t.Fatalf("message %q want the fixed value-free refusal", rep.Err.Message)
+		}
+		if rep.Value != "" || rep.Valid {
+			t.Fatalf("rep: %+v want no terminal created", rep)
+		}
+		if conn.getConnectCount() != 0 {
+			t.Fatalf("connectCount=%d want 0", conn.getConnectCount())
+		}
+		wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}})
+	})
+
+	t.Run("session-read mutation of the original env keeps the captured run env", func(t *testing.T) {
+		start := buildOpenCodePlan(t, inlinePrimary, "", false)
+		originalContent := start.EnvOverrides["OPENCODE_CONFIG_CONTENT"]
+		// The callback's replacement is the valid canonical plan of a
+		// different synthetic root/build model, built by the shared
+		// resolver: a real root-model mutation, not a no-update change.
+		altProfile, err := launchprofile.ResolveOpenCode(opencodeAltModel, inlinePrimary, "")
+		if err != nil {
+			t.Fatalf("the shared resolver refused the alternate model: %v", err)
+		}
+		altContent := altProfile.EnvOverrides["OPENCODE_CONFIG_CONTENT"]
+		if altContent == originalContent {
+			t.Fatal("the alternate model plan must pin a different model")
+		}
+		env, conn, calls, _ := startOpenCodeEnv(t, []fakecli.Rule{
+			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: opencodeReadyIdle},
+		})
+		b := newBackend(env, conn)
+		origLaunch := b.client.Launch
+		b.client.Launch = func(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
+			// The synchronous session-read callback rewrites the
+			// caller's original override map: the root-model binding
+			// becomes the alternate plan's content, the no-update flag
+			// flips, and HOME is injected.
+			if len(args) > 1 && args[0] == "get" && args[1] == "t1" {
+				start.EnvOverrides["OPENCODE_DISABLE_AUTOUPDATE"] = "0"
+				start.EnvOverrides["OPENCODE_CONFIG_CONTENT"] = altContent
+				start.EnvOverrides["HOME"] = "/injected"
+			}
+			return origLaunch(ctx, env, args...)
+		}
+		rep := b.Start(context.Background(), start, transport.Call{})
+		if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+			t.Fatalf("rep: %+v want ready with Value t7", rep)
+		}
+		wantArgv(t, calls(), [][]string{
+			{"get", "t1", "--json"},
+			{"get", "t7", "--json"},
+		})
+		_, params := parseTerminalRunReq(t, conn.getWritten())
+		wantEnv := map[string]any{"SOHO_TRANSPORT": "hc", "OPENCODE_DISABLE_AUTOUPDATE": "1", "OPENCODE_CONFIG_CONTENT": originalContent}
+		if !reflect.DeepEqual(params["env"], wantEnv) {
+			t.Fatalf("env: %#v want %#v: the pre-callback snapshot with the original content and no HOME", params["env"], wantEnv)
+		}
+	})
+
+	t.Run("connect mutation of the original args keeps the captured argv", func(t *testing.T) {
+		start := buildOpenCodePlan(t, inlinePrimary, "", true)
+		env, conn, calls, exePath := startOpenCodeEnv(t, []fakecli.Rule{
+			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: opencodeReadyIdle},
+		})
+		conn.onConnect = func(context.Context) {
+			// The synchronous connect callback mutates the caller's
+			// original backing element in place: a start that kept the
+			// request's own argv slice would serialize the mutated
+			// token.
+			start.Args[0] = "--continue"
+		}
+		b := newBackend(env, conn)
+		rep := b.Start(context.Background(), start, transport.Call{})
+		if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+			t.Fatalf("rep: %+v want ready with Value t7", rep)
+		}
+		wantArgv(t, calls(), [][]string{
+			{"get", "t1", "--json"},
+			{"get", "t7", "--json"},
+		})
+		_, params := parseTerminalRunReq(t, conn.getWritten())
+		argvRaw, ok := params["argv"].([]any)
+		if !ok || len(argvRaw) != 3 {
+			t.Fatalf("argv: %v want the pre-callback argv", params["argv"])
+		}
+		if argvRaw[0] != exePath || argvRaw[1] != "--standalone" || argvRaw[2] != "--auto" {
+			t.Fatalf("argv: %v want [%s --standalone --auto]", argvRaw, exePath)
+		}
+	})
+
+	t.Run("strict readiness qualification", func(t *testing.T) {
+		mismatch := func(t *testing.T, readyJSON string) {
+			t.Helper()
+			start := buildOpenCodePlan(t, inlinePrimary, "", false)
+			env, _, calls, _ := startOpenCodeEnv(t, []fakecli.Rule{
+				{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: readyJSON},
+			})
+			b := newBackend(env, newFakeRPCConn(rpcHelloSuccess+"\n"+rpcRunSuccess+"\n"))
+			rep := b.Start(context.Background(), start, transport.Call{})
+			if rep.Err == nil || rep.Err.Kind != transport.FailureProtocol {
+				t.Fatalf("rep: %+v want the protocol mismatch", rep)
+			}
+			if rep.Err.Message != "native primary profile readiness metadata mismatch" {
+				t.Fatalf("message %q", rep.Err.Message)
+			}
+			if rep.Value != "t7" || rep.Valid {
+				t.Fatalf("rep: %+v want the known address t7 and no valid reply", rep)
+			}
+			// One session read and one readiness get: no second
+			// observation of the new terminal.
+			wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}, {"get", "t7", "--json"}})
+		}
+
+		labels := `"labels":{"soho.session":"sX","soho.launch_profile":"opencode-primary-v2"}`
+		t.Run("wrong profile label", func(t *testing.T) {
+			mismatch(t, `{"address":"t7","state":"live","reported":true,"labels":{"soho.session":"sX","soho.launch_profile":"opencode-primary-v3"},"status":{"state":"idle","app":"opencode"}}`)
+		})
+		t.Run("missing profile label", func(t *testing.T) {
+			mismatch(t, `{"address":"t7","state":"live","reported":true,"labels":{"soho.session":"sX"},"status":{"state":"idle","app":"opencode"}}`)
+		})
+		t.Run("wrong reporter app", func(t *testing.T) {
+			mismatch(t, `{"address":"t7","state":"live","reported":true,`+labels+`,"status":{"state":"idle","app":"codex"}}`)
+		})
+		t.Run("missing reporter app", func(t *testing.T) {
+			mismatch(t, `{"address":"t7","state":"live","reported":true,`+labels+`,"status":{"state":"idle"}}`)
+		})
+		t.Run("raw lifecycle not live", func(t *testing.T) {
+			mismatch(t, `{"address":"t7","state":"booting","reported":true,`+labels+`,"status":{"state":"idle","app":"opencode"}}`)
+		})
+		t.Run("foreign address", func(t *testing.T) {
+			mismatch(t, `{"address":"t9","state":"live","reported":true,`+labels+`,"status":{"state":"idle","app":"opencode"}}`)
+		})
+	})
+
+	t.Run("malformed reported truthy stays pending until the startup deadline", func(t *testing.T) {
+		start := buildOpenCodePlan(t, inlinePrimary, "", false)
+		start.Timeout = "300"
+		env, _, _, _ := startOpenCodeEnv(t, []fakecli.Rule{
+			{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":"true","labels":{"soho.session":"sX","soho.launch_profile":"opencode-primary-v2"},"status":{"state":"idle","app":"opencode"}}`},
+		})
+		b := newBackend(env, newFakeRPCConn(rpcHelloSuccess+"\n"+rpcRunSuccess+"\n"))
+		begin := time.Now()
+		rep := b.Start(context.Background(), start, transport.Call{})
+		elapsed := time.Since(begin)
+		if rep.Err == nil || rep.Err.Kind != transport.FailureCommand {
+			t.Fatalf("rep: %+v want the startup timeout", rep)
+		}
+		if rep.Err.Message != "agent w7 still not ready after 0.3s" {
+			t.Fatalf("message %q", rep.Err.Message)
+		}
+		if rep.Value != "t7" {
+			t.Fatalf("rep: %+v want the known address t7", rep)
+		}
+		if elapsed < 300*time.Millisecond {
+			t.Fatalf("elapsed %v: the poll gave up before the 300 ms deadline", elapsed)
+		}
+	})
+
+	t.Run("blocked during startup keeps the blocked failure with the known address", func(t *testing.T) {
+		start := buildOpenCodePlan(t, inlinePrimary, "", false)
+		env, _, calls, _ := startOpenCodeEnv(t, []fakecli.Rule{
+			// The record qualifies as the ready observation were its
+			// state word idle: the blocked decision keeps its original
+			// priority over the strict qualification.
+			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: `{"address":"t7","state":"live","reported":true,"labels":{"soho.session":"sX","soho.launch_profile":"opencode-primary-v2"},"status":{"state":"blocked","msg":"permission: write to file","app":"opencode"}}`},
+		})
+		b := newBackend(env, newFakeRPCConn(rpcHelloSuccess+"\n"+rpcRunSuccess+"\n"))
+		rep := b.Start(context.Background(), start, transport.Call{})
+		if rep.Err == nil || rep.Err.Kind != transport.FailureBlocked {
+			t.Fatalf("rep: %+v want FailureBlocked", rep)
+		}
+		want := "agent w7 is blocked during startup: permission: write to file"
+		if rep.Err.Message != want {
+			t.Fatalf("message %q want %q", rep.Err.Message, want)
+		}
+		if rep.Value != "t7" || rep.Valid {
+			t.Fatalf("rep: %+v want the known address t7 and no valid reply", rep)
+		}
+		// One session read and one readiness get: the blocked decision
+		// stops the poll, with no second observation.
+		wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}, {"get", "t7", "--json"}})
+	})
+
+	t.Run("finished during startup keeps the exited failure with the known address", func(t *testing.T) {
+		start := buildOpenCodePlan(t, inlinePrimary, "", false)
+		env, _, calls, _ := startOpenCodeEnv(t, []fakecli.Rule{
+			{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: `{"address":"t7","state":"finished","exit_code":1,"reason":"exited","labels":{"soho.session":"sX","soho.launch_profile":"opencode-primary-v2"}}`},
+		})
+		b := newBackend(env, newFakeRPCConn(rpcHelloSuccess+"\n"+rpcRunSuccess+"\n"))
+		rep := b.Start(context.Background(), start, transport.Call{})
+		if rep.Err == nil || rep.Err.Kind != transport.FailureCommand {
+			t.Fatalf("rep: %+v want FailureCommand", rep)
+		}
+		want := "agent w7 exited during startup (exit 1, exited)"
+		if rep.Err.Message != want {
+			t.Fatalf("message %q want %q", rep.Err.Message, want)
+		}
+		if rep.Value != "t7" || rep.Valid {
+			t.Fatalf("rep: %+v want the known address t7 and no valid reply", rep)
+		}
+		// One session read and one readiness get: the exited decision
+		// stops the poll, with no second observation.
+		wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}, {"get", "t7", "--json"}})
+	})
+
+	t.Run("EOF after submit classifies as unknown with one submission and no address", func(t *testing.T) {
+		start := buildOpenCodePlan(t, inlinePrimary, "", false)
+		env, _, calls, _ := startOpenCodeEnv(t, nil)
+		conn := newFakeRPCConn(rpcHelloSuccess + "\n") // no run response line
+		b := newBackend(env, conn)
+		rep := b.Start(context.Background(), start, transport.Call{})
+		if rep.Err == nil || rep.Err.Kind != transport.FailureRunOutcomeUnknown {
+			t.Fatalf("rep: %+v want FailureRunOutcomeUnknown", rep)
+		}
+		want := "terminal run outcome unknown: EOF waiting for terminal.run response"
+		if rep.Err.Message != want {
+			t.Fatalf("message %q want %q", rep.Err.Message, want)
+		}
+		if !errors.Is(rep.Err.Cause, hc.ErrRunOutcomeUnknown) {
+			t.Fatalf("cause %v want ErrRunOutcomeUnknown", rep.Err.Cause)
+		}
+		if rep.Value != "" || rep.Valid {
+			t.Fatalf("rep: %+v want no invented address: the unknown-outcome fixture provides none", rep)
+		}
+		if got := strings.Count(string(conn.getWritten()), "terminal.run"); got != 1 {
+			t.Fatalf("terminal.run occurrences = %d, want exactly one submission", got)
+		}
+		// No readiness get: the unknown outcome stops the start before
+		// the poll.
+		wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}})
+	})
 }
