@@ -228,7 +228,7 @@ type Send struct {
 	Queue bool
 }
 
-// Start names an agent-start request. The Herdr backend encodes it as
+// Start names an agent-start request. With no profile or overrides the Herdr backend encodes it as
 // `agent start <name> --kind <kind> --pane <pane> --timeout <timeout>`, with
 // Args after a "--" when there are any. Timeout is the agent timeout in
 // milliseconds, passed through unchanged; the wrapper timeout the caller may
@@ -246,10 +246,8 @@ type Start struct {
 	Cwd string
 
 	// LaunchProfile names the launch profile the caller resolved for this
-	// start ("" for the pass-through profile). Phase A carries it inertly:
-	// no backend threads it into its start request yet and per-kind
-	// profile admission remains future work, so zero-value callers are
-	// unchanged.
+	// start ("" for the pass-through profile). Herdr admits explicit profiles
+	// only through its capability-gated private configured-start protocol.
 	LaunchProfile string
 
 	// EnvOverrides are the explicit per-child environment entries the
@@ -257,6 +255,29 @@ type Start struct {
 	// transport marker; nil or empty leaves the child's environment
 	// unchanged. Never the caller's whole environment.
 	EnvOverrides map[string]string
+}
+
+// ConfiguredLaunchPreflight is optional and leaves existing method sets intact.
+// Callers must invoke it before placement, adoption, shell clearing, report
+// retirement or reopen release. Success reserves no authority: Start repeats
+// validation and the capability probe. Empty profile and overrides are inert.
+// Name and PaneID may be empty before allocation; provided identifiers and all
+// other known inputs are validated without inventing replacements. Start still
+// requires actual nonempty identifiers and validates the complete bound frame;
+// preflight cannot guarantee future identifiers, metadata size or native state.
+// Configured replies require Valid and Err checks even when native status is 0.
+type ConfiguredLaunchPreflight interface {
+	PreflightConfiguredStart(context.Context, Start, Call) Reply[bool]
+}
+
+// ConfiguredLaunchReuse optionally observes an existing worker's native profile
+// before rename, role/report changes or ready emission. Start must describe the
+// complete expected request, including the actual current Name and PaneID.
+// Success requires Valid, nil Err and true Value; native exit 0 alone is not
+// qualification. Observation reserves no identity and applies no new overrides
+// to the running process; ordinary reuse compatibility checks still apply.
+type ConfiguredLaunchReuse interface {
+	PreflightConfiguredReuse(context.Context, Start, Call) Reply[bool]
 }
 
 // CallerCheck is the outcome of the caller-pane check: whether this process
@@ -646,6 +667,9 @@ type Runtime interface {
 	// returns the new terminal's address (t7) on success, and also carries
 	// it on the readiness failures (blocked, exited, timeout) once the
 	// terminal exists, so the caller can close the terminal the start left.
+	// Explicit Herdr profiles/overrides instead use private configured stdin
+	// and return only a fixed success marker. Callers must check Valid and Err,
+	// including native exit 0 with a malformed or unready configured result.
 	Start(ctx context.Context, start Start, call Call) Reply[string]
 	// CallerAgentName returns the agent that hosts the caller's claimed
 	// pane, read with one agent get on that pane; a pane without a readable

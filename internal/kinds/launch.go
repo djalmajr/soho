@@ -34,7 +34,42 @@ var (
 	errInvalidAgentsBuild   = launchprofile.ErrInvalidAgentsBuild
 	errInvalidConfigDir     = launchprofile.ErrInvalidConfigDir
 	errInvalidNativeProfile = launchprofile.ErrInvalidNativeProfile
+	errInvalidTUIProfile    = launchprofile.ErrInvalidTUIProfile
 )
+
+// LaunchRequest contains only explicit, inert launch-policy inputs.
+// TUIProfile selects legacy or v2 for non-HC OpenCode; empty means legacy.
+// This selection alone does not establish backend launch support.
+type LaunchRequest struct {
+	Kind, Model, Effort, Transport, TUIProfile, InlineConfig, ConfigDir string
+}
+
+// ResolveLaunch selects a pure launch profile without reading configuration,
+// process environment or runtime capabilities. Other kinds retain their
+// existing model arguments and warnings. HC OpenCode always uses its shared
+// primary resolver, ignoring TUIProfile. Non-HC OpenCode uses that resolver
+// only for explicit v2 on canonical empty or herdr transport; empty or legacy
+// selectors preserve historical passthrough, including unknown transports.
+func ResolveLaunch(req LaunchRequest, warn WarnFunc) (LaunchProfile, error) {
+	if req.Kind == "opencode" {
+		if req.Transport == "hc" {
+			return launchprofile.ResolveOpenCode(req.Model, req.InlineConfig, req.ConfigDir)
+		}
+		selector, err := launchprofile.ResolveTUIProfile(req.TUIProfile)
+		if err != nil {
+			return LaunchProfile{}, err
+		}
+		switch selector {
+		case "legacy":
+		case "v2":
+			if req.Transport != "" && req.Transport != "herdr" {
+				return LaunchProfile{}, errInvalidTUIProfile
+			}
+			return launchprofile.ResolveOpenCode(req.Model, req.InlineConfig, req.ConfigDir)
+		}
+	}
+	return LaunchProfile{ModelArgs: KindModelArgs(req.Kind, req.Model, req.Effort, warn)}, nil
+}
 
 // ResolveLaunchProfile resolves the shared launch profile for one kind,
 // model, effort, transport and optional inline configuration. For the native
@@ -57,10 +92,7 @@ var (
 // The resolver is pure: it reads no files, process environment, config,
 // auth or provider endpoints, and it mutates no caller input.
 func ResolveLaunchProfile(kind, model, effort, transportName, inlineConfig string, warn WarnFunc) (LaunchProfile, error) {
-	if kind == "opencode" && transportName == "hc" {
-		return launchprofile.ResolveOpenCode(model, inlineConfig, "")
-	}
-	return LaunchProfile{ModelArgs: KindModelArgs(kind, model, effort, warn)}, nil
+	return ResolveLaunch(LaunchRequest{Kind: kind, Model: model, Effort: effort, Transport: transportName, InlineConfig: inlineConfig}, warn)
 }
 
 // ResolveLaunchProfileWithConfigDir resolves the shared launch profile
@@ -80,10 +112,7 @@ func ResolveLaunchProfile(kind, model, effort, transportName, inlineConfig strin
 // environment, config, auth or provider endpoints, and it mutates no
 // caller input.
 func ResolveLaunchProfileWithConfigDir(kind, model, effort, transportName, inlineConfig, configDir string, warn WarnFunc) (LaunchProfile, error) {
-	if kind == "opencode" && transportName == "hc" {
-		return launchprofile.ResolveOpenCode(model, inlineConfig, configDir)
-	}
-	return LaunchProfile{ModelArgs: KindModelArgs(kind, model, effort, warn)}, nil
+	return ResolveLaunch(LaunchRequest{Kind: kind, Model: model, Effort: effort, Transport: transportName, InlineConfig: inlineConfig, ConfigDir: configDir}, warn)
 }
 
 // NativeStatusSupported reports whether a launch profile is supported for

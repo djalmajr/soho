@@ -91,3 +91,63 @@ func TestCleanEnvDropsInheritedNativeContext(t *testing.T) {
 		})
 	}
 }
+
+// pollutedSessionEnv sets one obviously wrong value for each variable a live
+// orchestrator or agent session exports, covering every family CleanEnv scrubs.
+func pollutedSessionEnv(t *testing.T) []string {
+	t.Helper()
+	keys := []string{
+		"SOHO_TRANSPORT", "SOHO_DIR", "SOHO_STATE_DIR", "SOHO_REGISTRY_DIR", "SOHO_MAX_WORKERS", "SOHO_LANES",
+		"HC_SCOPE", "HC_TERMINAL_ID", "HC_TERMINAL_SOCKET",
+		"HERDR_ENV", "HERDR_PANE_ID", "HERDR_WORKSPACE_ID",
+		"CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CODEX_HOME", "PI_CODING_AGENT_DIR",
+		"OPENCODE_CONFIG_DIR", "GROK_API_KEY", "GEMINI_API_KEY", "CURSOR_TRACE_ID",
+		// Lowercase and mixed case: Windows environment names are case-insensitive.
+		"soho_lanes", "Claude_Code_Session_Id",
+	}
+	for _, key := range keys {
+		t.Setenv(key, "polluted-"+strings.ToLower(key))
+	}
+	return keys
+}
+
+// Mutation captured: removing the session-family scrub from CleanEnv lets the
+// variables of a live orchestrator or agent reach every fixture built from it
+// (SOHO_LANES, SOHO_MAX_WORKERS, CLAUDE_CODE_SESSION_ID changed test results).
+func TestCleanEnvScrubsEverySessionFamily(t *testing.T) {
+	polluted := pollutedSessionEnv(t)
+	t.Setenv("TEST_CLEAN_ENV_KEEP", "keep-val")
+
+	env := CleanEnv(t)
+	// CleanEnv itself sets these three; they are the only family members a
+	// fixture may carry without the test setting them.
+	explicit := []string{"HERDR_SOCKET_PATH", "SOHO_PRESSURE_DISK_FREE_PERCENT", "SOHO_PRESSURE_SWAP_PERCENT"}
+	if leaked := SessionVars(env, explicit...); len(leaked) != 0 {
+		t.Fatalf("session variables reached the fixture environment: %v", leaked)
+	}
+	for _, key := range polluted {
+		for _, item := range env {
+			if name, value, _ := strings.Cut(item, "="); strings.EqualFold(name, key) && strings.HasPrefix(value, "polluted-") {
+				t.Fatalf("polluted %s reached the fixture environment", name)
+			}
+		}
+	}
+	if !strings.Contains(strings.Join(env, "\n"), "TEST_CLEAN_ENV_KEEP=keep-val") {
+		t.Fatal("unrelated environment variable was dropped")
+	}
+}
+
+// Negative case for the guard: a fixture environment that carries a session
+// variable the test did not set is reported by name, and one the test set
+// explicitly is not; unrelated variables never count.
+func TestSessionVarsReportsOnlyUnsetFamilyMembers(t *testing.T) {
+	env := []string{"PATH=/bin", "SOHO_LANES=off", "claude_code_session_id=x", "CLAUDECODE=1", "HC_SCOPE=zz", "PIPE_FD=3", "HERDR_ENV=", "NOEQUALS"}
+	got := SessionVars(env, "soho_lanes", "HERDR_ENV")
+	want := []string{"claude_code_session_id", "CLAUDECODE", "HC_SCOPE"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("SessionVars = %v, want %v", got, want)
+	}
+	if got := SessionVars([]string{"PATH=/bin", "HOME=/h", "GOCACHE=/c", "CLAUDEISH=1", "PIPE_FD=3"}); len(got) != 0 {
+		t.Fatalf("unrelated variables reported as session variables: %v", got)
+	}
+}

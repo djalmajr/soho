@@ -326,3 +326,78 @@ func head(body string) string {
 	}
 	return body
 }
+
+// hcClaudeCodeTerminal is hcTerminal with the foreground executable and argv[0]
+// a native Claude Code terminal reports next to its reporter app.
+func hcClaudeCodeTerminal(address, name, app, cwd, session string) string {
+	body, _ := json.Marshal(map[string]any{
+		"address": address, "name": name, "state": "running", "cwd": cwd,
+		"status":     map[string]string{"state": "idle", "app": app},
+		"foreground": map[string]any{"name": "2.1.325"},
+		"argv":       []string{"/usr/bin/env", "FOO=1", "claude"},
+		"labels":     map[string]string{"soho.session": session},
+	})
+	return string(body)
+}
+
+// TestInventoryCollectHCClaudeCodeReporterApp: a terminal whose reporter app
+// is claude-code (with a version-named foreground executable and argv[0]
+// env) is bound as a claude worker; a lookalike app (claude-code-x) or a
+// terminal reporting only the version-named executable is not bound.
+func TestInventoryCollectHCClaudeCodeReporterApp(t *testing.T) {
+	cases := []struct {
+		name     string
+		app      string
+		want     int
+		wantKind string
+	}{
+		{"claude-code", "claude-code", 1, "claude"},
+		{"claude-code-x", "claude-code-x", 0, ""},
+		{"claude-codex", "claude-codex", 0, ""},
+		{"no app", "", 0, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, fixture, home := inventoryFixture(t)
+			repo := filepath.Join(fixture, "repo")
+			gitRepo(t, home, repo, "")
+			canon := canonical(t, repo)
+			writeFile(t, filepath.Join(repo, ".agents", "soho.conf"), "inventory=show\n")
+			writeState(t, canon, "ws1",
+				rosterRow("build", "t2", "claude", "implementer", startedStamp(), "", "")+"\n",
+				map[string]any{
+					"schema": 1, "project_root": canon, "session_id": "ws1",
+					"terminal": "t1", "name": "orchestrator", "kind": "claude",
+					"started_ms": int64(1793372400000), "task": "own the work",
+				},
+				map[string]string{"build": "implementer: Fix the checkout\n"},
+				nil,
+			)
+			rules := []fakecli.Rule{
+				hcListRule(hcClaudeCodeTerminal("t2", "build", tc.app, canon, "ws1")),
+				{Argv: []string{"get", "build", "--json"}, Stdout: `{"address":"t2","name":"build","state":"running","status":{"state":"idle"}}`},
+			}
+			fakeEnv, _ := withFakeHc(t, env, rules)
+			fakeEnv["SOHO_TRANSPORT"] = "hc"
+			doc, err := collect(t, fakeEnv, 1793376000000)
+			if err != nil {
+				t.Fatalf("Collect (hc): %v", err)
+			}
+			var agents []Agent
+			for _, p := range doc.Projects {
+				for _, s := range p.Sessions {
+					agents = append(agents, s.Agents...)
+				}
+			}
+			if len(agents) != tc.want {
+				t.Fatalf("agents = %+v, want %d bound terminal(s)", agents, tc.want)
+			}
+			if tc.want == 1 {
+				a := agents[0]
+				if a.Terminal != "t2" || a.Name != "build" || a.Kind != tc.wantKind || a.State != StateIdle {
+					t.Fatalf("worker = %+v, want the idle claude terminal t2 named build", a)
+				}
+			}
+		})
+	}
+}

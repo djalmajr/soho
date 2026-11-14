@@ -41,10 +41,11 @@ func New(env platform.Env) transport.Services {
 
 // Compile-time proof that the backend implements the contracts.
 var (
-	_ transport.Transport       = (*backend)(nil)
-	_ transport.Window          = (*backend)(nil)
-	_ transport.LegacyTransport = (*backend)(nil)
-	_ transport.Runtime         = (*backend)(nil)
+	_ transport.Transport                 = (*backend)(nil)
+	_ transport.Window                    = (*backend)(nil)
+	_ transport.LegacyTransport           = (*backend)(nil)
+	_ transport.Runtime                   = (*backend)(nil)
+	_ transport.ConfiguredLaunchPreflight = (*backend)(nil)
 )
 
 // timeoutFor returns call.Timeout when it is positive, else the adapter's
@@ -890,7 +891,12 @@ func rawReply(r platform.RunResult) transport.Reply[string] {
 // wrapper timeout. The merged output comes back on Value so the caller can
 // read the backend's start markers from it. The request's Cwd is ignored:
 // the pane's own working directory stands.
+// Explicit launch profiles or overrides instead use the private configured
+// protocol, independently validating input and probing local capability.
 func (b *backend) Start(ctx context.Context, start transport.Start, call transport.Call) transport.Reply[string] {
+	if configuredStart(start) {
+		return b.startConfigured(ctx, start, call)
+	}
 	args := []string{"agent", "start", start.Name, "--kind", start.Kind, "--pane", start.PaneID, "--timeout", start.Timeout}
 	if len(start.Args) > 0 {
 		args = append(args, "--")

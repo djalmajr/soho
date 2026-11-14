@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/backend"
+	"github.com/djalmajr/soho/internal/launchprofile"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/transport"
 )
@@ -103,7 +104,19 @@ func refuseSessionStateInSkill(ctx *Config, env platform.Env, cwd, command strin
 }
 
 func CmdSessionSet(argv []string, ctx *Config, env platform.Env, cwd string) {
-	refuseSessionStateInSkill(ctx, env, cwd, "session set")
+	// Only the new selector defers state lookup until after validation.
+	// Other keys preserve their existing state-refusal diagnostic order.
+	tuiSelector := false
+	for _, arg := range argv {
+		if arg == "--" {
+			continue
+		}
+		tuiSelector = arg == "opencode_tui_profile" || strings.HasPrefix(arg, "opencode_tui_profile=")
+		break
+	}
+	if !tuiSelector {
+		refuseSessionStateInSkill(ctx, env, cwd, "session set")
+	}
 	key, value, sawValue := parseSessionPair(argv, "session set")
 	key, value, sawValue = SplitPairArg(key, value, sawValue, "session set")
 	if key == "" || !sawValue {
@@ -116,7 +129,13 @@ func CmdSessionSet(argv []string, ctx *Config, env platform.Env, cwd string) {
 		platform.Die("session set: unknown key '"+key+"'", 2)
 	}
 	if !ConfigValueOk(key, value, env, cwd) {
+		if key == "opencode_tui_profile" {
+			platform.Die("session set: "+launchprofile.ErrInvalidTUIProfile.Error(), 2)
+		}
 		platform.Die("session set: invalid value '"+value+"' for "+key, 2)
+	}
+	if tuiSelector {
+		refuseSessionStateInSkill(ctx, env, cwd, "session set")
 	}
 	sessionFile := SessionConfPath(ctx, env, cwd)
 	if sessionFile == "" {

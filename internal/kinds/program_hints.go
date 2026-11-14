@@ -15,10 +15,15 @@ const backslash = "\u005C"
 // hint takes the executable basename after normalizing both path
 // separators, folds case, removes at most one .exe, .cmd or .bat suffix,
 // and matches the catalog's kind and executable names exactly
-// (KnownKinds/KindExe). Unknown or empty hints return the empty kind; the
-// helper never parses a shell command, inspects later argv, infers a
-// model, name or role, or keeps a copied alias table. Canonicalizing a
-// program name does not establish process identity.
+// (KnownKinds/KindExe). When that fails, the same normalized name is
+// looked up exactly in one small table of reporter-app names
+// (reporterAppKinds), for a program whose self-reported app name is not
+// its kind. Unknown or empty hints return the empty kind; the helper
+// never parses a shell command, inspects later argv, infers a model, name
+// or role, or matches by prefix, substring, glob or pattern.
+// Canonicalizing a name, including through that table, does not establish
+// process identity: a reporter app is self-reported by the terminal's
+// program.
 func KindFromProgramHints(hints []string) string {
 	for _, hint := range hints {
 		if kind := kindFromProgramHint(hint); kind != "" {
@@ -26,6 +31,16 @@ func KindFromProgramHints(hints []string) string {
 		}
 	}
 	return ""
+}
+
+// reporterAppKinds maps an exact normalized reporter-app name to its
+// catalog kind. Claude Code reports the app name claude-code while its
+// executable is a version-named file, so neither equals the kind. Every
+// value must be a member of KnownKinds; the table is read-only package
+// state and nothing mutates it. Add an entry only for an app name that a
+// terminal server was observed to report.
+var reporterAppKinds = map[string]string{
+	"claude-code": "claude",
 }
 
 func kindFromProgramHint(hint string) string {
@@ -42,5 +57,5 @@ func kindFromProgramHint(hint string) string {
 			return kind
 		}
 	}
-	return ""
+	return reporterAppKinds[name]
 }

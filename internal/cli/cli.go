@@ -188,6 +188,11 @@ func Run(args []string, env platform.Env) (code int) {
 		userSel = sel
 	}
 	var commandConfig *core.Config
+	modelOpenCode := command == "model" && len(args) > 2 && args[1] == "opencode" && args[2] != ""
+	if modelOpenCode {
+		ctx := core.LoadMetadataConfigFor(decisionEnv, commandCwd, userSel)
+		commandConfig = &ctx
+	}
 	readOnlyRejectedDoctor := command == "doctor" && decisionEnv.Get("SOHO_NOWRITE") == "1" && len(args) > 1
 	if !readOnlyRejectedDoctor && (command == "review-snapshot" || command == "config" || command == "session" || command == "roles" || command == "role" || command == "explain" || command == "layout-plan" || command == "regrid" || command == "promote" || command == "tab-label" || command == "stats" || command == "metrics" || command == "collect" || command == "setup" || command == "release" || command == "doctor" || command == "init" || command == "spawn" || command == "dispatch" || command == "resume" || command == "run" || command == "lint" || command == "wait" || command == "status" || command == "validate") {
 		ctx := core.LoadConfigFor(decisionEnv, commandCwd, userSel)
@@ -210,6 +215,13 @@ func Run(args []string, env platform.Env) (code int) {
 		effectiveCfg = configCtx
 	}
 	transportMode := transportModeFor(effectiveCfg, env, decisionEnv, commandCwd)
+	if modelOpenCode && transportMode != "hc" {
+		selector, err := core.OpenCodeTUIProfile(effectiveCfg, decisionEnv)
+		if err != nil {
+			platform.Die(err.Error(), 2)
+		}
+		decisionEnv["SOHO_OPENCODE_TUI_PROFILE"] = selector
+	}
 	// The hc entry guard: under transport=hc only the read side and the
 	// explicitly allowed commands run; every other command dies here, before
 	// any read or write of its own, with the one fixed line. An unknown
@@ -484,8 +496,11 @@ func transportModeFor(ctx *core.Config, env, decisionEnv platform.Env, cwd strin
 // role, lint, install, env — env reports the herdr version through a
 // one-shot external binary call, never the transport). Every other command
 // is refused at the entry with the guard's line.
+// mutation-copy uses the central guarded copier and native resource registration.
 func hcCommandAllowed(command string) bool {
 	switch command {
+	case "mutation-copy":
+		return true
 	case "", "help", "-h", "--help":
 		return true
 	case "status", "wait", "spawn", "dispatch", "release", "collaborate", "doctor", "config", "explain", "capabilities":

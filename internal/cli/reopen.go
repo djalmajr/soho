@@ -74,6 +74,24 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	// it was opened with. A row without the field (predating it) passes no
 	// --mcp and the normal resolution decides, as in a fresh open.
 	mcp := field(15)
+	// Prepare the exact replacement before release can retire the old worker.
+	// The same argv is revalidated by CmdSpawn after release; this observation
+	// does not reserve configuration or backend capability across that window.
+	spawnArgs := []string{role, "--fresh", "--kind", wkind, "--name", agent, "--cwd", wdir, "--force"}
+	if model != "" {
+		spawnArgs = append(spawnArgs, "--model", model)
+	}
+	if effort != "" {
+		spawnArgs = append(spawnArgs, "--effort", effort)
+	}
+	if mcp != "" {
+		spawnArgs = append(spawnArgs, "--mcp", mcp)
+	}
+	if native != "" {
+		spawnArgs = append(spawnArgs, "--")
+		spawnArgs = append(spawnArgs, strings.Fields(native)...)
+	}
+	spawn.PreflightFreshSpawn(spawnArgs, ctx, env, cwd)
 
 	releaseArgs := []string{agent, "--close"}
 	if force {
@@ -93,20 +111,6 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	// The pressure admission ran once, above, before the release: the spawn
 	// half never measures again, so a pressure rise after the release cannot
 	// refuse the new pane once the old worker is gone.
-	spawnArgs := []string{role, "--fresh", "--kind", wkind, "--name", agent, "--cwd", wdir, "--force"}
-	if model != "" {
-		spawnArgs = append(spawnArgs, "--model", model)
-	}
-	if effort != "" {
-		spawnArgs = append(spawnArgs, "--effort", effort)
-	}
-	if mcp != "" {
-		spawnArgs = append(spawnArgs, "--mcp", mcp)
-	}
-	if native != "" {
-		spawnArgs = append(spawnArgs, "--")
-		spawnArgs = append(spawnArgs, strings.Fields(native)...)
-	}
 	spawn.CmdSpawn(spawnArgs, ctx, env, cwd)
 	return 0
 }

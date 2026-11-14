@@ -999,3 +999,125 @@ func TestInitHcNativeShape_NamedCaller_NegativeFreshLookupFailed(t *testing.T) {
 	}
 	assertNoStateWrite(t, env, repoRoot, "hc-t2c")
 }
+
+// claudeCodeCallerJSON formats the list summary and the detail of a Claude
+// Code caller as the native terminal server reports it: the reporter app
+// claude-code, a version-named foreground executable and argv[0] env. The
+// name is empty (null) for the unnamed caller.
+func claudeCodeCallerJSON(cwd, name string) (list, get string) {
+	nameJSON := "null"
+	if name != "" {
+		nameJSON = fmt.Sprintf("%q", name)
+	}
+	list = fmt.Sprintf(`{"terminals":[{
+  "address": "t2c",
+  "name": %s,
+  "state": "live",
+  "status": {"app": "claude-code", "state": "working"},
+  "cwd": %q,
+  "argv": ["/usr/bin/env", "FOO=1", "claude"],
+  "foreground": {"name": "2.1.325", "pid": 54449, "cwd": %q}
+}]}`, nameJSON, cwd, cwd)
+	get = fmt.Sprintf(`{
+  "address": "t2c",
+  "name": %s,
+  "state": "live",
+  "pid": 54449,
+  "cwd": %q,
+  "argv": ["/usr/bin/env", "FOO=1", "claude"],
+  "status": {"app": "claude-code", "state": "working"},
+  "foreground": {"name": "2.1.325", "pid": 54449, "cwd": %q}
+}`, nameJSON, cwd, cwd)
+	return list, get
+}
+
+// TestInitHcNativeShape_ClaudeCodeCaller_Success verifies that a caller whose
+// record has status.app "claude-code", foreground.name "2.1.325" and argv[0]
+// env resolves kind claude and registers the orchestrator record, for a named
+// caller (the explicit name is kept) and an unnamed one (address fallback).
+func TestInitHcNativeShape_ClaudeCodeCaller_Success(t *testing.T) {
+	for _, tc := range []struct{ label, name, want string }{
+		{"named", "my-orch", "my-orch"},
+		{"unnamed", "", "t2c"},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			env, repoRoot := initHcTestFixture(t, func(root string) []fakecli.Rule {
+				list, get := claudeCodeCallerJSON(root, tc.name)
+				return []fakecli.Rule{
+					{Argv: []string{"get", "t2c", "--json"}, Stdout: get},
+					{Argv: []string{"ls", "--json"}, Stdout: list},
+				}
+			})
+
+			stdout, stderr, recovered := runCmdInitCapture(t, env, repoRoot)
+			if recovered != nil {
+				if exitErr, ok := recovered.(*platform.ExitError); ok {
+					t.Fatalf("CmdInit died unexpectedly: code=%d msg=%q\nstderr=%s", exitErr.Code, exitErr.Msg, stderr)
+				}
+				t.Fatalf("CmdInit panicked: %#v", recovered)
+			}
+
+			v, err := jsonjs.Parse([]byte(stdout))
+			if err != nil {
+				t.Fatalf("stdout is not valid JSON: %v\nstdout=%s", err, stdout)
+			}
+			obj, ok := v.(*jsonjs.Object)
+			if !ok {
+				t.Fatalf("stdout JSON is not an object: %s", stdout)
+			}
+			if orch, ok := obj.Get("orchestrator"); !ok || orch != tc.want {
+				t.Fatalf("orchestrator=%v want %s", orch, tc.want)
+			}
+			if pane, ok := obj.Get("pane_id"); !ok || pane != "t2c" {
+				t.Fatalf("pane_id=%v want t2c", pane)
+			}
+			if ws, ok := obj.Get("workspace_id"); !ok || ws != "hc-t2c" {
+				t.Fatalf("workspace_id=%v want hc-t2c", ws)
+			}
+
+			stateBase := core.StateRootPathForProject(&core.Config{Entries: map[string]core.ConfigEntry{}}, env, repoRoot)
+			store := sessionmeta.Store{StateBase: stateBase, SessionID: "hc-t2c"}
+			rec, ok, err := store.Read()
+			if err != nil {
+				t.Fatalf("store.Read error: %v", err)
+			}
+			if !ok {
+				t.Fatal("store.Read returned ok=false; no record registered")
+			}
+			if rec.Kind != "claude" {
+				t.Fatalf("registered kind=%q want claude", rec.Kind)
+			}
+			if rec.Name != tc.want {
+				t.Fatalf("registered name=%q want %s", rec.Name, tc.want)
+			}
+			if rec.Terminal != "t2c" {
+				t.Fatalf("registered terminal=%q want t2c", rec.Terminal)
+			}
+		})
+	}
+}
+
+// TestInitHcNativeShape_ClaudeCodeLookalike_NegativeUnknownKind keeps the
+// refusal for a reporter app that only resembles the alias (claude-code-x):
+// exit 2 with the unknown-kind message and no state written.
+func TestInitHcNativeShape_ClaudeCodeLookalike_NegativeUnknownKind(t *testing.T) {
+	env, repoRoot := initHcTestFixture(t, func(root string) []fakecli.Rule {
+		list, get := claudeCodeCallerJSON(root, "")
+		list = strings.ReplaceAll(list, `"claude-code"`, `"claude-code-x"`)
+		get = strings.ReplaceAll(get, `"claude-code"`, `"claude-code-x"`)
+		return []fakecli.Rule{
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: get},
+			{Argv: []string{"ls", "--json"}, Stdout: list},
+		}
+	})
+
+	_, _, recovered := runCmdInitCapture(t, env, repoRoot)
+	exitErr, ok := recovered.(*platform.ExitError)
+	if !ok {
+		t.Fatalf("CmdInit recovered %#v, want an ExitError", recovered)
+	}
+	if exitErr.Code != 2 || !strings.Contains(exitErr.Msg, "the caller terminal names no known kind") {
+		t.Fatalf("exit=%d msg=%q, want 2 and the unknown-kind refusal", exitErr.Code, exitErr.Msg)
+	}
+	assertNoStateWrite(t, env, repoRoot, "hc-t2c")
+}

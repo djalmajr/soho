@@ -461,7 +461,7 @@ func TestMutationGuardHcGuardRefusals(t *testing.T) {
 		env := f.env.Clone()
 		env["SOHO_TRANSPORT"] = "hc"
 
-		for _, cmd := range []string{"clean", "mutation-copy"} {
+		for _, cmd := range []string{"clean"} {
 			code, out, errOut := runMutationGuardHc(t, []string{cmd}, env)
 			if code != 2 {
 				t.Fatalf("exit = %d, want 2 (stdout=%q stderr=%q)", code, out, errOut)

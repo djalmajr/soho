@@ -41,7 +41,7 @@ var hcRefusedCommands = []string{
 	"session", "find", "run", "resume", "collect",
 	"send", "stats", "clean", "setup",
 	"regrid", "roster", "friction", "feedback", "tab-label",
-	"layout-plan", "mutation-copy", "review-snapshot",
+	"layout-plan", "review-snapshot",
 	"reopen", "compact", "metrics", "copies", "gc", "procs", "promote",
 	"job", "plugin",
 }
@@ -113,7 +113,8 @@ func TestHcGuardRefusesEveryOtherCommand(t *testing.T) {
 		"status": true, "wait": true, "spawn": true, "dispatch": true, "release": true, "collaborate": true,
 		"doctor": true, "config": true, "explain": true, "capabilities": true,
 		"init": true, "title": true, "inventory": true,
-		"kinds": true, "models": true, "model": true, "roles": true, "role": true,
+		"mutation-copy": true,
+		"kinds":         true, "models": true, "model": true, "roles": true, "role": true,
 		"lint": true, "install": true, "env": true, "hook": true,
 	}
 	for _, command := range hcRefusedCommands {

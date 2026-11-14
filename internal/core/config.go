@@ -10,6 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/djalmajr/soho/internal/launchprofile"
 	"github.com/djalmajr/soho/internal/platform"
 	textutil "github.com/djalmajr/soho/internal/text"
 )
@@ -322,6 +323,16 @@ func Cfg(ctx *Config, key, fallback string, env platform.Env) string {
 	return fallback
 }
 
+// OpenCodeTUIProfile reads the explicit selector with the existing config
+// precedence, defaulting absent or empty values to legacy. It is nil-safe
+// and performs no file, runtime or process environment access or mutation.
+func OpenCodeTUIProfile(ctx *Config, env platform.Env) (string, error) {
+	if ctx == nil {
+		ctx = &Config{}
+	}
+	return launchprofile.ResolveTUIProfile(Cfg(ctx, "opencode_tui_profile", "", env))
+}
+
 // HooksReviewModeOk reports whether a hooks_review value is one of the two
 // the key accepts (trust, block).
 func HooksReviewModeOk(value string) bool {
@@ -389,15 +400,23 @@ func TransportMode(ctx *Config, env platform.Env) string {
 // skill otherwise, and capabilities --json must neither fail nor write. The
 // user, project and session layers load as LoadConfig loads them.
 func TransportModeAt(env platform.Env, cwd string) string {
-	ctx := Config{Entries: make(map[string]ConfigEntry), Order: make([]string, 0)}
-	loadConfigFile(EffectiveUserConfigFile(platform.Current(), env, UserSelection{}), "user", &ctx)
+	ctx := LoadMetadataConfigFor(env, cwd, UserSelection{})
+	return TransportMode(&ctx, env)
+}
+
+// LoadMetadataConfigFor reads the existing transport metadata layers without
+// materializing defaults or state. The same snapshot can resolve both transport
+// and the explicit TUI selector, preserving session discovery and layer order.
+func LoadMetadataConfigFor(env platform.Env, cwd string, sel UserSelection) Config {
+	ctx := Config{Entries: make(map[string]ConfigEntry), Order: make([]string, 0), User: sel}
+	loadConfigFile(EffectiveUserConfigFile(platform.Current(), env, sel), "user", &ctx)
 	if file := ProjectConfigFileUsed(env, cwd); file != "" {
 		loadConfigFile(file, "project", &ctx)
 	}
 	if file := SessionConfPath(&ctx, env, cwd); file != "" {
 		loadConfigFile(file, "session", &ctx)
 	}
-	return TransportMode(&ctx, env)
+	return ctx
 }
 
 // CompactTimeoutDefaultMS is the compact phase's timeout when the
@@ -429,7 +448,7 @@ func CfgSource(ctx *Config, key string, env platform.Env) string {
 
 func ConfigKeyOk(key string) bool {
 	// Keep the frozen config listing order while accepting the copy policy.
-	if key == "mutation_copy_exclude" {
+	if key == "mutation_copy_exclude" || key == "opencode_tui_profile" {
 		return true
 	}
 	for _, scalar := range ConfigScalarKeys {
@@ -474,6 +493,10 @@ func ConfigRolesOk(raw string, env platform.Env, cwd string) bool {
 }
 
 func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
+	if key == "opencode_tui_profile" {
+		_, err := launchprofile.ResolveTUIProfile(value)
+		return err == nil
+	}
 	if strings.ContainsAny(value, "\n\t#") {
 		return false
 	}
@@ -1185,6 +1208,9 @@ func CmdConfigSet(argv []string, ctx *Config, env platform.Env, cwd string) {
 		platform.Die("config set: unknown key '"+key+"'", 2)
 	}
 	if !ConfigValueOk(key, value, env, cwd) {
+		if key == "opencode_tui_profile" {
+			platform.Die("config set: "+launchprofile.ErrInvalidTUIProfile.Error(), 2)
+		}
 		platform.Die("config set: invalid value '"+value+"' for "+key, 2)
 	}
 	dest := ConfigFileFor(where, env, cwd)

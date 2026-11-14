@@ -60,10 +60,15 @@ func cmdModel(argv []string, env platform.Env) int {
 	// from the command's environment (no ambient process read and no
 	// default). A profile or configuration refusal prints the resolver's
 	// fixed value-free error with the normal soho prefix and returns 2:
-	// no panic and no raw configuration echo. Every non-native
-	// combination ignores both inputs and resolves to the existing
-	// KindModelArgs output with no profile name, so its JSON stays exact.
-	profile, err := kinds.ResolveLaunchProfileWithConfigDir(kind, model, effort, env.Get("SOHO_TRANSPORT"), env.Get("OPENCODE_CONFIG_CONTENT"), env.Get("OPENCODE_CONFIG_DIR"), func(string) {})
+	// no panic and no raw configuration echo. HC OpenCode and explicit
+	// non-HC v2 use the neutral primary profile; legacy and other kinds
+	// keep the existing model arguments and public fields. This metadata
+	// plan does not establish installed-runtime support or admission.
+	profile, err := kinds.ResolveLaunch(kinds.LaunchRequest{
+		Kind: kind, Model: model, Effort: effort,
+		Transport: env.Get("SOHO_TRANSPORT"), TUIProfile: env.Get("SOHO_OPENCODE_TUI_PROFILE"),
+		InlineConfig: env.Get("OPENCODE_CONFIG_CONTENT"), ConfigDir: env.Get("OPENCODE_CONFIG_DIR"),
+	}, func(string) {})
 	if err != nil {
 		_, _ = fmt.Fprintln(platform.Stderr, "soho: "+err.Error())
 		return 2
