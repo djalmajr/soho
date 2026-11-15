@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/testutil"
@@ -49,7 +50,11 @@ func observeGit(t *testing.T, home, dir string, args ...string) string {
 // newObserveFixture is a settled worker: its report sits in the private
 // scratch (so a settling wait mirrors it into the state dir), it has a task
 // file, a recorded git tree whose HEAD has moved by a local commit, and
-// metrics=on. The fake hc answers every probe with an idle worker.
+// metrics=on. It is also an eligible diff audit: the sidecar records an edit
+// role, the composed brief (aged an hour, so it is the dispatch cutoff) owns
+// only owned.txt, and the tree holds an owned and an outside untracked file
+// written after that cutoff and before the report. The fake hc answers every probe with an idle
+// worker.
 func newObserveFixture(t *testing.T) *observeFixture {
 	t.Helper()
 	gitPath, err := exec.LookPath("git")
@@ -80,15 +85,28 @@ func newObserveFixture(t *testing.T) *observeFixture {
 	observeGit(t, home, o.repo, "commit", "-q", "--allow-empty", "-m", "base")
 	old := observeGit(t, home, o.repo, "rev-parse", "HEAD")
 	observeGit(t, home, o.repo, "commit", "-q", "--allow-empty", "-m", "worker commit")
+	// The changes precede the report, or the wait would hold the done report
+	// back as "changed after writing its report".
+	for _, name := range []string{"owned.txt", "outside.txt"} {
+		if err := os.WriteFile(filepath.Join(o.repo, name), []byte(name+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	brief := filepath.Join(filepath.Dir(o.sidecar), o.stem+".md")
 	for path, body := range map[string]string{
 		o.report:  observeReportBody,
 		o.task:    "the task\n",
-		o.sidecar: `{"git_head":"` + old + `","git_branch":"main","git_tree":"` + o.repo + `"}` + "\n",
+		o.sidecar: `{"git_head":"` + old + `","git_branch":"main","git_tree":"` + o.repo + `","role":"implementer"}` + "\n",
+		brief:     "# Role\nrole text\n# Brief\nDo it.\n# Owned files\n- `owned.txt`\n# Report contract\nDone.\n",
 		filepath.Join(f.sd, "last-report-worker"): o.report + "\n",
 	} {
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	cutoff := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(brief, cutoff, cutoff); err != nil {
+		t.Fatal(err)
 	}
 	return o
 }
@@ -135,8 +153,17 @@ func TestObserveLeavesTheReportUnsettled(t *testing.T) {
 			t.Fatalf("round %d: code=%d msg=%q stderr=%q", round, code, msg, stderr)
 		}
 		want := map[string]any{"agent": "worker", "status": "done", "report": o.report, "observe": true}
-		if got := wakeJSON(t, out); !reflect.DeepEqual(got, want) {
+		got := wakeJSON(t, out)
+		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("round %d: observe line %v, want %v", round, got, want)
+		}
+		for _, key := range []string{"diff_stat", "outside_owned", "cited_unchanged"} {
+			if _, has := got[key]; has {
+				t.Fatalf("round %d: observe line carries the diff audit field %s: %v", round, key, got)
+			}
+		}
+		if o.exists(o.sidecar + ".diff-checked") {
+			t.Fatalf("round %d: the observe path consumed the diff audit", round)
 		}
 		if strings.Contains(stderr, "partial") || strings.Contains(stderr, "left a local commit") {
 			t.Fatalf("round %d: stderr %q carries a settling warning", round, stderr)
@@ -182,6 +209,22 @@ func TestObserveLeavesTheReportUnsettled(t *testing.T) {
 	if !o.exists(o.sidecar + ".git-checked") {
 		t.Fatal("ordinary wait did not run the git audit")
 	}
+	stat, ok := got["diff_stat"].(string)
+	if !ok || stat == "" || !o.exists(stat) {
+		t.Fatalf("ordinary wait line %v, want a diff_stat artifact", got)
+	}
+	if body := o.read(t, stat); !strings.Contains(body, "owned.txt") || !strings.Contains(body, "outside.txt") {
+		t.Fatalf("diff_stat artifact %q lacks the changed files: %q", stat, body)
+	}
+	if outside, _ := got["outside_owned"].([]any); !reflect.DeepEqual(outside, []any{"outside.txt"}) {
+		t.Fatalf("ordinary wait line %v, want outside_owned [outside.txt]", got)
+	}
+	if !strings.Contains(stderr, "outside its Owned files: outside.txt") {
+		t.Fatalf("ordinary wait stderr %q, want the outside-owned warning", stderr)
+	}
+	if !o.exists(o.sidecar + ".diff-checked") {
+		t.Fatal("ordinary wait did not run the diff audit")
+	}
 	if !strings.Contains(o.read(t, filepath.Join(o.sd, "metrics.jsonl")), `"agent":"worker"`) {
 		t.Fatal("ordinary wait recorded no metrics line")
 	}
@@ -194,8 +237,8 @@ func TestObserveLeavesTheReportUnsettled(t *testing.T) {
 
 	// Settling happens once: a third wait still says done, without the audit.
 	_, _, out, _ = o.cmd(t, "worker", "--timeout", "5000")
-	if again := wakeJSON(t, out); again["status"] != "done" || again["head_moved"] != nil {
-		t.Fatalf("second ordinary wait line %v, want done without head_moved", again)
+	if again := wakeJSON(t, out); again["status"] != "done" || again["head_moved"] != nil || again["diff_stat"] != nil {
+		t.Fatalf("second ordinary wait line %v, want done without head_moved or diff_stat", again)
 	}
 }
 
