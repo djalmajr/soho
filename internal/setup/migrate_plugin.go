@@ -61,6 +61,10 @@ type herdrPluginRef struct {
 // djalmajr.soho. It returns one line per step ("migrate: plugin: ...")
 // and runs nothing that writes when dry is true.
 func migratePlugin(env platform.Env, version string, dry bool) []string {
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		_, _ = fmt.Fprintln(platform.Stderr, "the Herdr TUI plugin step is skipped on the native transport")
+		return nil
+	}
 	// One backend for this invocation: every herdr plugin step of the
 	// migration runs through it (DJA-596).
 	svc := backend.New(env)

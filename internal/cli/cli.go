@@ -526,7 +526,7 @@ func transportModeFor(ctx *core.Config, env, decisionEnv platform.Env, cwd strin
 // role, lint, install, env — env reports the herdr version through a
 // one-shot external binary call, never the transport). Every other command
 // is refused at the entry with the guard's line.
-// mutation-copy uses the central guarded copier and native resource registration.
+// setup skips TUI plugin migration; mutation-copy uses the guarded copier.
 func hcCommandAllowed(command string) bool {
 	switch command {
 	case "mutation-copy":
@@ -535,7 +535,7 @@ func hcCommandAllowed(command string) bool {
 		return true
 	case "status", "wait", "spawn", "dispatch", "release", "collaborate", "doctor", "config", "explain", "capabilities":
 		return true
-	case "kinds", "models", "model", "roles", "role", "lint", "install", "env", "validate":
+	case "kinds", "models", "model", "roles", "role", "lint", "install", "env", "validate", "setup":
 		// validate never touches the worker transport: it reads the project's
 		// VALIDATION.md and runs its declared test layers through sh, like env
 		// runs the herdr binary version probe, never the transport.

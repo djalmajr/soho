@@ -12,6 +12,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/setuptext"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -39,7 +40,7 @@ func treePaths(t *testing.T, root string) []string {
 // hcRefusedCommands is every known command the hc entry guard refuses.
 var hcRefusedCommands = []string{
 	"session", "find", "run", "resume", "collect",
-	"send", "stats", "clean", "setup",
+	"send", "stats", "clean",
 	"regrid", "roster", "friction", "feedback", "tab-label",
 	"layout-plan", "review-snapshot",
 	"reopen", "compact", "metrics", "copies", "gc", "procs", "promote",
@@ -115,7 +116,7 @@ func TestHcGuardRefusesEveryOtherCommand(t *testing.T) {
 		"init": true, "title": true, "inventory": true,
 		"mutation-copy": true,
 		"kinds":         true, "models": true, "model": true, "roles": true, "role": true,
-		"lint": true, "install": true, "env": true, "hook": true,
+		"lint": true, "install": true, "env": true, "hook": true, "setup": true,
 	}
 	for _, command := range hcRefusedCommands {
 		command := command
@@ -348,4 +349,106 @@ func isWorkerRead(argv []string) bool {
 		}
 	}
 	return true
+}
+
+// Setup may read the caller's session while loading configuration, but must
+// never send a legacy plugin operation or copy Core metadata into the project.
+func TestSetupOnHc(t *testing.T) {
+	for _, mode := range []string{"", "--dry-run", "--local", "--plan", "--detect", "--probe"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newHcGuardFixture(t)
+			bin := f.env.Get("PATH")
+			f.env["XDG_CONFIG_HOME"] = filepath.Join(f.root, "config")
+			f.env["HC_TERMINAL_ID"] = "t1"
+			f.env["SOHO_FAKECLI_CONFIG"] = bin
+			const poison = "CORE_METADATA_MUST_NOT_BE_WRITTEN"
+			if _, err := fakecli.Install(t, bin, "hc", []fakecli.Rule{{
+				Argv:   []string{"get", "t1", "--json"},
+				Stdout: `{"address":"t1","state":"live","labels":{"soho.session":"sX","untrusted":"` + poison + `"},"name":"` + poison + `"}`,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := fakecli.Install(t, bin, "herdr", []fakecli.Rule{{AnyArgs: true, Code: 99}}); err != nil {
+				t.Fatal(err)
+			}
+			// Warm only the bundled skill cache, before measuring command effects.
+			f.run(t, "config")
+			pathsBefore := treePaths(t, f.root)
+			before := map[string]string{}
+			for _, rel := range treePaths(t, f.root) {
+				if data, err := os.ReadFile(filepath.Join(f.root, rel)); err == nil {
+					before[rel] = string(data)
+				}
+			}
+			args := []string{"setup"}
+			if mode != "" {
+				args = append(args, mode)
+			}
+			code, out, errOut := f.run(t, args...)
+			if code != 0 {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, errOut)
+			}
+			wantSkip := 1
+			if mode == "--detect" || mode == "--probe" {
+				wantSkip = 0 // These paths never enter plugin migration.
+			}
+			if got := strings.Count(errOut, "the Herdr TUI plugin step is skipped on the native transport\n"); got != wantSkip {
+				t.Fatalf("skip lines=%d want=%d stderr=%q", got, wantSkip, errOut)
+			}
+			calls, err := fakecli.ReadCalls(filepath.Join(bin, "hc.calls.jsonl"))
+			if err != nil || len(calls) == 0 {
+				t.Fatalf("Core session calls=%v err=%v", calls, err)
+			}
+			for _, call := range calls {
+				if !reflect.DeepEqual(call.Argv, []string{"get", "t1", "--json"}) {
+					t.Fatalf("unexpected Core call: %q", call.Argv)
+				}
+			}
+			legacyCalls, err := fakecli.ReadCalls(filepath.Join(bin, "herdr.calls.jsonl"))
+			if err != nil && !os.IsNotExist(err) || len(legacyCalls) != 0 {
+				t.Fatalf("legacy calls=%v err=%v", legacyCalls, err)
+			}
+			readOnly := mode != "" && mode != "--local"
+			if readOnly && !reflect.DeepEqual(pathsBefore, treePaths(t, f.root)) {
+				t.Fatal("read-only setup changed the fixture's paths")
+			}
+			for _, rel := range treePaths(t, f.root) {
+				data, err := os.ReadFile(filepath.Join(f.root, rel))
+				if err != nil || strings.HasPrefix(rel, "bin"+string(filepath.Separator)) {
+					continue
+				}
+				if strings.Contains(string(data), poison) {
+					t.Fatalf("Core metadata written into %s", rel)
+				}
+				if readOnly && before[rel] != string(data) {
+					t.Fatalf("read-only setup changed %s", rel)
+				}
+				delete(before, rel)
+			}
+			if readOnly {
+				for rel := range before {
+					if !strings.HasPrefix(rel, "bin"+string(filepath.Separator)) {
+						t.Fatalf("read-only setup removed %s", rel)
+					}
+				}
+			} else if mode == "--local" {
+				for rel, want := range map[string]string{
+					"CLAUDE.local.md":                setuptext.SetupBlock(),
+					".claude/settings.local.json":    "UserPromptSubmit",
+					".codex/hooks.json":              "SessionStart",
+					".pi/extensions/soho-inbound.ts": "",
+				} {
+					data, err := os.ReadFile(filepath.Join(f.root, rel))
+					if err != nil || !strings.Contains(string(data), want) {
+						t.Fatalf("%s missing content %q: err=%v", rel, want, err)
+					}
+				}
+			} else {
+				data, err := os.ReadFile(filepath.Join(f.root, "AGENTS.md"))
+				if err != nil || string(data) != setuptext.SetupBlock() {
+					t.Fatalf("canonical block: err=%v content=%q", err, data)
+				}
+			}
+		})
+	}
 }
