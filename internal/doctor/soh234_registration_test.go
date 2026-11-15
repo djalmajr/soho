@@ -42,7 +42,7 @@ func soh234DoctorAgent(name, pane, agent, session, cwd string) string {
 // the project's opt-in conf, a fake herdr answering the doctor's probes and
 // the agent list, and the state base. agentListBody is built from the
 // resolved root so the qualifying terminal's cwd is the canonical project.
-func soh234DoctorFixture(t *testing.T, conf string, agentListBody func(root string) string, agentGetStatus string) (platform.Env, string) {
+func soh234DoctorFixture(t *testing.T, conf string, agentListBody func(root string) string, agentGetStatus string, extraRules ...fakecli.Rule) (platform.Env, string) {
 	t.Helper()
 	root := t.TempDir()
 	root, err := filepath.EvalSymlinks(root)
@@ -74,6 +74,7 @@ func soh234DoctorFixture(t *testing.T, conf string, agentListBody func(root stri
 		{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[` + body + `]}}`},
 		{Argv: []string{"agent", "get", "orchestrator"}, Stdout: `{"result":{"agent":{"agent_status":"` + agentGetStatus + `","state_change_seq":1}}}`},
 	}
+	rules = append(extraRules, rules...)
 	if _, err := fakecli.Install(t, bin, "herdr", rules); err != nil {
 		t.Fatal(err)
 	}
@@ -490,4 +491,27 @@ func TestSoh234DoctorCurrentProjectIsolation(t *testing.T) {
 	if got := soh234DoctorOutput(t, env, root); strings.Contains(got, soh234Advisory) {
 		t.Fatalf("another opted-in project caused current-project advice:\n%s", got)
 	}
+}
+
+func TestInitLegacyParentComponentDirectory(t *testing.T) {
+	env, root := soh234DoctorFixture(t, "", func(root string) string {
+		if err := os.Mkdir(filepath.Join(root, "sub"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		return soh234DoctorAgent("orchestrator", "p234", "claude", "ws234", root+string(filepath.Separator)+"sub"+string(filepath.Separator)+"..")
+	}, "working", fakecli.Rule{Argv: []string{"agent", "get", "p234"}, Stdout: `{"result":{"agent":{"name":"orchestrator"}}}`})
+	delete(env, "SOHO_NOWRITE")
+	out, stderr, recovered := runCmdInitCapture(t, env, root)
+	if recovered != nil || strings.Contains(stderr, "soho: warning: init:") {
+		t.Fatalf("recovered=%#v stderr=%q stdout=%q", recovered, stderr, out)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(out), &obj); err != nil || obj["pane_id"] != "p234" {
+		t.Fatalf("JSON=%q err=%v", out, err)
+	}
+	rec, ok, err := (sessionmeta.Store{StateBase: core.StateRootPathForProject(&core.Config{}, env, root), SessionID: "ws234"}).Read()
+	if err != nil || !ok || rec.ProjectRoot != root || rec.Terminal != "p234" || rec.Name != "orchestrator" || rec.Kind != "claude" {
+		t.Fatalf("record=%+v ok=%v err=%v", rec, ok, err)
+	}
+	t.Log("OUTCOME code=0 message=\"\" json=true PERSISTED true")
 }

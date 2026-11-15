@@ -203,7 +203,7 @@ func TestInitHcNativeShape_NegativeAddressMismatch(t *testing.T) {
 		mismatchGet := fmt.Sprintf(`{"address":"t99","name":null,"state":"live","cwd":%q,"status":{"app":"codex","state":"working"},"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: mismatchGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: mismatchGet},
 			{Argv: []string{"ls", "--json"}, Stdout: nativeCallerListJSON(root)},
 		}
 	})
@@ -226,7 +226,7 @@ func TestInitHcNativeShape_NegativeSessionMismatch(t *testing.T) {
 		sessionMismatchGet := fmt.Sprintf(`{"address":"t2c","name":null,"state":"live","labels":{"soho.session":"other-session"},"cwd":%q,"status":{"app":"codex","state":"working"},"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: sessionMismatchGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: sessionMismatchGet},
 			{Argv: []string{"ls", "--json"}, Stdout: nativeCallerListJSON(root)},
 		}
 	})
@@ -267,7 +267,7 @@ func TestInitHcNativeShape_NegativeRootMismatch(t *testing.T) {
 		rootMismatchGet := fmt.Sprintf(`{"address":"t2c","name":null,"state":"live","cwd":%q,"status":{"app":"codex","state":"working"},"foreground":{"name":"codex","cwd":%q}}`, otherDir, otherDir)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: rootMismatchGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: rootMismatchGet},
 			{Argv: []string{"ls", "--json"}, Stdout: nativeCallerListJSON(root)},
 		}
 	})
@@ -280,8 +280,8 @@ func TestInitHcNativeShape_NegativeRootMismatch(t *testing.T) {
 	if exitErr.Code != 2 {
 		t.Fatalf("exit code=%d want 2", exitErr.Code)
 	}
-	if !strings.Contains(exitErr.Msg, "detailed caller root does not match") {
-		t.Fatalf("msg=%q want to contain 'detailed caller root does not match'", exitErr.Msg)
+	if !strings.Contains(exitErr.Msg, "caller terminal's root does not match") {
+		t.Fatalf("msg=%q want to contain 'caller terminal's root does not match'", exitErr.Msg)
 	}
 	assertNoStateWrite(t, env, repoRoot, "hc-t2c")
 }
@@ -293,7 +293,7 @@ func TestInitHcNativeShape_NegativeUnknownKind(t *testing.T) {
 		unknownKindGet := fmt.Sprintf(`{"address":"t2c","name":null,"state":"live","cwd":%q,"status":{"app":"custom-shell","state":"working"},"foreground":{"name":"custom-shell","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: unknownKindGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: unknownKindGet},
 			{Argv: []string{"ls", "--json"}, Stdout: nativeCallerListJSON(root)},
 		}
 	})
@@ -319,7 +319,7 @@ func TestInitHcNativeShape_NegativeNumericLifecycle(t *testing.T) {
 		numericStateGet := fmt.Sprintf(`{"address":"t2c","state":123,"cwd":%q,"status":{"app":"codex","state":"working"},"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: numericStateGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: numericStateGet},
 			{Argv: []string{"ls", "--json"}, Stdout: nativeCallerListJSON(root)},
 		}
 	})
@@ -345,7 +345,7 @@ func TestInitHcNativeShape_NegativeMissingState(t *testing.T) {
 		missingStateGet := fmt.Sprintf(`{"address":"t2c","cwd":%q,"status":{"app":"codex","state":"working"},"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: missingStateGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: missingStateGet},
 			{Argv: []string{"ls", "--json"}, Stdout: nativeCallerListJSON(root)},
 		}
 	})
@@ -371,7 +371,7 @@ func TestInitHcNativeShape_NegativeNullLifecycle(t *testing.T) {
 		nullStateGet := fmt.Sprintf(`{"address":"t2c","state":null,"cwd":%q,"status":{"app":"codex","state":"working"},"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: nullStateGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: nullStateGet},
 			{Argv: []string{"ls", "--json"}, Stdout: nativeCallerListJSON(root)},
 		}
 	})
@@ -397,7 +397,7 @@ func TestInitHcNativeShape_NegativeUnknownLifecycle(t *testing.T) {
 		unknownStateGet := fmt.Sprintf(`{"address":"t2c","state":"paused","cwd":%q,"status":{"app":"codex","state":"working"},"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: unknownStateGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: unknownStateGet},
 			{Argv: []string{"ls", "--json"}, Stdout: nativeCallerListJSON(root)},
 		}
 	})
@@ -423,7 +423,7 @@ func TestInitHcNativeShape_NegativeLiveMissingActivity(t *testing.T) {
 		missingActivityGet := fmt.Sprintf(`{"address":"t2c","state":"live","cwd":%q,"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: missingActivityGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: missingActivityGet},
 			{Argv: []string{"ls", "--json"}, Stdout: nativeCallerListJSON(root)},
 		}
 	})
@@ -449,7 +449,7 @@ func TestInitHcNativeShape_NegativeLiveUnknownActivity(t *testing.T) {
 		unknownActivityGet := fmt.Sprintf(`{"address":"t2c","state":"live","cwd":%q,"status":{"app":"codex","state":"starting"},"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: unknownActivityGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: unknownActivityGet},
 			{Argv: []string{"ls", "--json"}, Stdout: nativeCallerListJSON(root)},
 		}
 	})
@@ -474,7 +474,7 @@ func TestInitHcNativeShape_NegativeAddressOnlyDetail(t *testing.T) {
 	env, repoRoot := initHcTestFixture(t, func(root string) []fakecli.Rule {
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: `{"address":"t2c"}`},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: `{"address":"t2c"}`},
 			{Argv: []string{"ls", "--json"}, Stdout: nativeCallerListJSON(root)},
 		}
 	})
@@ -496,7 +496,7 @@ func TestInitHcNativeShape_NegativeGone(t *testing.T) {
 	env, repoRoot := initHcTestFixture(t, func(root string) []fakecli.Rule {
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: fmt.Sprintf(`{"address":"t2c","state":"finished","cwd":%q}`, root)},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: fmt.Sprintf(`{"address":"t2c","state":"finished","cwd":%q}`, root)},
 			{Argv: []string{"ls", "--json"}, Stdout: nativeCallerListJSON(root)},
 		}
 	})
@@ -518,7 +518,7 @@ func TestInitHcNativeShape_NegativeDetailMalformed(t *testing.T) {
 	env, repoRoot := initHcTestFixture(t, func(root string) []fakecli.Rule {
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: "bad-json"},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: "bad-json"},
 			{Argv: []string{"ls", "--json"}, Stdout: nativeCallerListJSON(root)},
 		}
 	})
@@ -586,7 +586,7 @@ func TestInitHcNativeShape_KnownKindUnnamed_NegativeSessionMismatch(t *testing.T
 		sessionMismatchGet := fmt.Sprintf(`{"address":"t2c","name":null,"state":"live","labels":{"soho.session":"other-session"},"cwd":%q,"status":{"app":"codex","state":"working"},"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: sessionMismatchGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: sessionMismatchGet},
 			{Argv: []string{"ls", "--json"}, Stdout: knownKindUnnamedCallerListJSON(root)},
 		}
 	})
@@ -626,7 +626,7 @@ func TestInitHcNativeShape_KnownKindUnnamed_NegativeAddressMismatch(t *testing.T
 		mismatchGet := fmt.Sprintf(`{"address":"t99","name":null,"state":"live","cwd":%q,"status":{"app":"codex","state":"working"},"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: mismatchGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: mismatchGet},
 			{Argv: []string{"ls", "--json"}, Stdout: knownKindUnnamedCallerListJSON(root)},
 		}
 	})
@@ -653,7 +653,7 @@ func TestInitHcNativeShape_KnownKindUnnamed_NegativeRootMismatch(t *testing.T) {
 		rootMismatchGet := fmt.Sprintf(`{"address":"t2c","name":null,"state":"live","cwd":%q,"status":{"app":"codex","state":"working"},"foreground":{"name":"codex","cwd":%q}}`, otherDir, otherDir)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: rootMismatchGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: rootMismatchGet},
 			{Argv: []string{"ls", "--json"}, Stdout: knownKindUnnamedCallerListJSON(root)},
 		}
 	})
@@ -666,8 +666,8 @@ func TestInitHcNativeShape_KnownKindUnnamed_NegativeRootMismatch(t *testing.T) {
 	if exitErr.Code != 2 {
 		t.Fatalf("exit code=%d want 2", exitErr.Code)
 	}
-	if !strings.Contains(exitErr.Msg, "detailed caller root does not match") {
-		t.Fatalf("msg=%q want to contain 'detailed caller root does not match'", exitErr.Msg)
+	if !strings.Contains(exitErr.Msg, "caller terminal's root does not match") {
+		t.Fatalf("msg=%q want to contain 'caller terminal's root does not match'", exitErr.Msg)
 	}
 	assertNoStateWrite(t, env, repoRoot, "hc-t2c")
 }
@@ -679,7 +679,7 @@ func TestInitHcNativeShape_KnownKindUnnamed_NegativeUnknownKind(t *testing.T) {
 		unknownKindGet := fmt.Sprintf(`{"address":"t2c","name":null,"state":"live","cwd":%q,"status":{"app":"custom-shell","state":"working"},"foreground":{"name":"custom-shell","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: unknownKindGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: unknownKindGet},
 			{Argv: []string{"ls", "--json"}, Stdout: knownKindUnnamedCallerListJSON(root)},
 		}
 	})
@@ -704,7 +704,7 @@ func TestInitHcNativeShape_KnownKindUnnamed_NegativeDetailMalformed(t *testing.T
 	env, repoRoot := initHcTestFixture(t, func(root string) []fakecli.Rule {
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: "bad-json"},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: "bad-json"},
 			{Argv: []string{"ls", "--json"}, Stdout: knownKindUnnamedCallerListJSON(root)},
 		}
 	})
@@ -727,7 +727,7 @@ func TestInitHcNativeShape_KnownKindUnnamed_NegativeNumericLifecycle(t *testing.
 		numericStateGet := fmt.Sprintf(`{"address":"t2c","state":123,"cwd":%q,"status":{"app":"codex","state":"working"},"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: numericStateGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: numericStateGet},
 			{Argv: []string{"ls", "--json"}, Stdout: knownKindUnnamedCallerListJSON(root)},
 		}
 	})
@@ -753,7 +753,7 @@ func TestInitHcNativeShape_KnownKindUnnamed_NegativeMissingState(t *testing.T) {
 		missingStateGet := fmt.Sprintf(`{"address":"t2c","cwd":%q,"status":{"app":"codex","state":"working"},"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: missingStateGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: missingStateGet},
 			{Argv: []string{"ls", "--json"}, Stdout: knownKindUnnamedCallerListJSON(root)},
 		}
 	})
@@ -779,7 +779,7 @@ func TestInitHcNativeShape_KnownKindUnnamed_NegativeNullLifecycle(t *testing.T) 
 		nullStateGet := fmt.Sprintf(`{"address":"t2c","state":null,"cwd":%q,"status":{"app":"codex","state":"working"},"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: nullStateGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: nullStateGet},
 			{Argv: []string{"ls", "--json"}, Stdout: knownKindUnnamedCallerListJSON(root)},
 		}
 	})
@@ -805,7 +805,7 @@ func TestInitHcNativeShape_KnownKindUnnamed_NegativeUnknownLifecycle(t *testing.
 		unknownStateGet := fmt.Sprintf(`{"address":"t2c","state":"paused","cwd":%q,"status":{"app":"codex","state":"working"},"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: unknownStateGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: unknownStateGet},
 			{Argv: []string{"ls", "--json"}, Stdout: knownKindUnnamedCallerListJSON(root)},
 		}
 	})
@@ -831,7 +831,7 @@ func TestInitHcNativeShape_KnownKindUnnamed_NegativeLiveMissingActivity(t *testi
 		missingActivityGet := fmt.Sprintf(`{"address":"t2c","state":"live","cwd":%q,"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: missingActivityGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: missingActivityGet},
 			{Argv: []string{"ls", "--json"}, Stdout: knownKindUnnamedCallerListJSON(root)},
 		}
 	})
@@ -857,7 +857,7 @@ func TestInitHcNativeShape_KnownKindUnnamed_NegativeLiveUnknownActivity(t *testi
 		unknownActivityGet := fmt.Sprintf(`{"address":"t2c","state":"live","cwd":%q,"status":{"app":"codex","state":"starting"},"foreground":{"name":"codex","cwd":%q}}`, root, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: unknownActivityGet},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: unknownActivityGet},
 			{Argv: []string{"ls", "--json"}, Stdout: knownKindUnnamedCallerListJSON(root)},
 		}
 	})
@@ -882,7 +882,7 @@ func TestInitHcNativeShape_KnownKindUnnamed_NegativeAddressOnlyDetail(t *testing
 	env, repoRoot := initHcTestFixture(t, func(root string) []fakecli.Rule {
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: nativeCallerGetJSON(root)},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Stdout: `{"address":"t2c"}`},
+			{Argv: []string{"get", "t2c", "--json"}, Stdout: `{"address":"t2c"}`},
 			{Argv: []string{"ls", "--json"}, Stdout: knownKindUnnamedCallerListJSON(root)},
 		}
 	})
@@ -981,7 +981,7 @@ func TestInitHcNativeShape_NamedCaller_NegativeFreshLookupFailed(t *testing.T) {
 }]}`, root)
 		return []fakecli.Rule{
 			{Argv: []string{"get", "t2c", "--json"}, Call: 1, Stdout: namedGet},
-			{Argv: []string{"get", "t2c", "--json"}, Call: 2, Code: 1, Stderr: "terminal closed"},
+			{Argv: []string{"get", "t2c", "--json"}, Code: 1, Stderr: "terminal closed"},
 			{Argv: []string{"ls", "--json"}, Stdout: namedList},
 		}
 	})
