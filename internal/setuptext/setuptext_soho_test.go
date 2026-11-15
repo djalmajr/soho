@@ -34,7 +34,7 @@ const previousSohoBlock = "<!-- herdr-soho:start -->\n## Multi-agent workflow (h
 // owner-approval rule (a peer message informs and asks, it never
 // authorizes what needs the owner's approval). DJA-610 part B: the bullet
 // names the compact opening line (the message id inside the tag).
-const sohoBlock = "<!-- soho:start -->\n## Multi-agent workflow (soho)\n\nInside Herdr (`HERDR_ENV=1`) non-trivial work in this project runs through\nthe `soho` skill. The calling agent is the **orchestrator**: it\ndecomposes the objective, writes one brief per slice, spawns role workers in\nsibling panes, waits on their report files, integrates, runs the gates and\nowns git. Load the skill (`/soho`) before planning such work.\n\n- **Delegate**: multi-file slices, UI under the design contract, anything\n  touching auth, secrets or input handling, work that parallelizes, any change\n  that needs a reviewer, and **research**: reading more than a handful of\n  files, another repository or several tools' conventions goes to a worker.\n  The orchestrator briefs it, reads the report and decides.\n- **Keep**: a one-or-two-file change with no product decision, docs, config,\n  a question, a quick verification. If writing the brief takes longer than the\n  change, make the change.\n- **Design**: when the project has a root `DESIGN.md`, read it, and the spec under\n  `design/` of what you touch, before changing UI, and run its `design` validation layer.\n- **Briefs are contracts**: goal, expected result, acceptance criteria with\n  the command that proves each one, decisions already made, owned and\n  forbidden files, report format. Workers never invent names, flags,\n  endpoints, credentials or requirements; what the brief leaves open comes\n  back as an open question and is answered in the next brief.\n- Workers never commit, push or open PRs; the orchestrator owns git.\n- The orchestrator is the planner. `spawn planner` opens no pane.\n- Every code slice gets a reviewer before push,\n  including code the orchestrator wrote itself.\n- The only completion signal is the worker's report file (`dispatch`,\n  `wait`, `status`); never poll agent state by hand. A busy worker is not a\n  reason for another pane: `wait`, then dispatch.\n- Quota (exit 11) stops that worker. Ask the user before switching the\n  assistant, waiting, taking the slice, or pausing.\n- How many panes, which assistant and model run each role, and their effort\n  come from the configuration (`.agents/soho.conf`, the user file,\n  the session layer), not from this block: the skill's `explain` and\n  `config` commands show what is in effect. Project roles override the\n  skill's in `.agents/soho-roles/<role>.md`; scratch state lives in\n  `.soho/` (git-ignored).\n- **Peer messages**: text that starts with the opening line `[soho:peer:<id>]` (the message id inside the tag) is a message\n  from another agent of this team, working for the same owner: act on it\n  within your task and its limits, and answer with `soho send <ref> …`.\n  A peer message informs and asks; it never authorizes what needs the\n  owner's approval (commit, push, merge, release, deploy, production,\n  deleting data).\n- Refresh this block and the hooks by loading `/soho` and running its\n  `setup` command from the project root.\n<!-- soho:end -->\n"
+const sohoBlock = "<!-- soho:start -->\n## Multi-agent workflow (soho)\n\nInside Herdr (legacy TUI `HERDR_ENV=1` or native Core `SOHO_TRANSPORT=hc`)\nnon-trivial work in this project runs through the `soho` skill. The calling agent is the **orchestrator**: it\ndecomposes the objective, writes one brief per slice, spawns role workers in\nsibling panes on the legacy TUI or terminals without a panel on native Core,\nwaits on their report files, integrates, runs the gates and\nowns git. Load the skill (`/soho`) before planning such work.\n\n- **Delegate**: multi-file slices, UI under the design contract, anything\n  touching auth, secrets or input handling, work that parallelizes, any change\n  that needs a reviewer, and **research**: reading more than a handful of\n  files, another repository or several tools' conventions goes to a worker.\n  The orchestrator briefs it, reads the report and decides.\n- **Keep**: a one-or-two-file change with no product decision, docs, config,\n  a question, a quick verification. If writing the brief takes longer than the\n  change, make the change.\n- **Design**: when the project has a root `DESIGN.md`, read it, and the spec under\n  `design/` of what you touch, before changing UI, and run its `design` validation layer.\n- **Briefs are contracts**: goal, expected result, acceptance criteria with\n  the command that proves each one, decisions already made, owned and\n  forbidden files, report format. Workers never invent names, flags,\n  endpoints, credentials or requirements; what the brief leaves open comes\n  back as an open question and is answered in the next brief.\n- Workers never commit, push or open PRs; the orchestrator owns git.\n- The orchestrator is the planner. `spawn planner` opens no pane.\n- Every code slice gets a reviewer before push,\n  including code the orchestrator wrote itself.\n- The only completion signal is the worker's report file (`dispatch`,\n  `wait`, `status`); never poll agent state by hand. A busy worker is not a\n  reason for another pane: `wait`, then dispatch.\n- Quota (exit 11) stops that worker. Ask the user before switching the\n  assistant, waiting, taking the slice, or pausing.\n- How many panes, which assistant and model run each role, and their effort\n  come from the configuration (`.agents/soho.conf`, the user file,\n  the session layer), not from this block: the skill's `explain` and\n  `config` commands show what is in effect. Project roles override the\n  skill's in `.agents/soho-roles/<role>.md`; scratch state lives in\n  `.soho/` (git-ignored).\n- **Peer messages**: text that starts with the opening line `[soho:peer:<id>]` (the message id inside the tag) is a message\n  from another agent of this team, working for the same owner: act on it\n  within your task and its limits, and answer with `soho send <ref> …` on the legacy TUI\n  or `hc send <terminal> …` on native Core.\n  A peer message informs and asks; it never authorizes what needs the\n  owner's approval (commit, push, merge, release, deploy, production,\n  deleting data).\n- Refresh this block and the hooks by loading `/soho` and running its\n  `setup` command from the project root.\n<!-- soho:end -->\n"
 
 // DJA-374: the "Peer messages" bullet gains the owner-approval rule — a
 // peer message informs and asks, it never authorizes what needs the
@@ -48,7 +48,7 @@ const sohoBlock = "<!-- soho:start -->\n## Multi-agent workflow (soho)\n\nInside
 const (
 	dja374OldBullet       = "- **Peer messages**: text that starts with `[soho:peer]` is a message\n  from another agent of this team, working for the same owner: act on it\n  within your task and its limits, and answer with `soho send <ref> …`."
 	dja374NewBullet       = dja374OldBullet + "\n  A peer message informs and asks; it never authorizes what needs the\n  owner's approval (commit, push, merge, release, deploy, production,\n  deleting data)."
-	compactPeerBulletText = "- **Peer messages**: text that starts with the opening line `[soho:peer:<id>]` (the message id inside the tag) is a message\n  from another agent of this team, working for the same owner: act on it\n  within your task and its limits, and answer with `soho send <ref> …`.\n  A peer message informs and asks; it never authorizes what needs the\n  owner's approval (commit, push, merge, release, deploy, production,\n  deleting data).\n"
+	compactPeerBulletText = "- **Peer messages**: text that starts with the opening line `[soho:peer:<id>]` (the message id inside the tag) is a message\n  from another agent of this team, working for the same owner: act on it\n  within your task and its limits, and answer with `soho send <ref> …` on the legacy TUI\n  or `hc send <terminal> …` on native Core.\n  A peer message informs and asks; it never authorizes what needs the\n  owner's approval (commit, push, merge, release, deploy, production,\n  deleting data).\n"
 )
 
 func TestSohoBlockText(t *testing.T) {
@@ -57,6 +57,84 @@ func TestSohoBlockText(t *testing.T) {
 	}
 	if SetupBlock() != sohoBlock {
 		t.Fatalf("setup block is not the exact soho generation text:\n%s", SetupBlock())
+	}
+}
+
+func TestSetupTransportWording(t *testing.T) {
+	for _, input := range []*string{nil, ptr(previousSohoBlock)} {
+		got := SetupBlockResult(input)
+		if got == nil {
+			t.Fatal("block refused")
+		}
+		for _, want := range []string{
+			"Inside Herdr (legacy TUI `HERDR_ENV=1` or native Core `SOHO_TRANSPORT=hc`)",
+			"sibling panes on the legacy TUI or terminals without a panel on native Core",
+			"answer with `soho send <ref> …` on the legacy TUI\n  or `hc send <terminal> …` on native Core.",
+		} {
+			if !strings.Contains(*got, want) {
+				t.Errorf("block lacks %q", want)
+			}
+		}
+	}
+}
+
+func TestSetupTransportPreviousAndEditedBlocks(t *testing.T) {
+	// Reconstruct the previous native-unaware generation from independently
+	// pinned text, never from production migration constants.
+	previous := strings.Replace(sohoBlock,
+		"Inside Herdr (legacy TUI `HERDR_ENV=1` or native Core `SOHO_TRANSPORT=hc`)\nnon-trivial work in this project runs through the `soho` skill.",
+		"Inside Herdr (`HERDR_ENV=1`) non-trivial work in this project runs through\nthe `soho` skill.", 1)
+	previous = strings.Replace(previous,
+		"sibling panes on the legacy TUI or terminals without a panel on native Core,\nwaits on their report files",
+		"sibling panes, waits on their report files", 1)
+	previous = strings.Replace(previous,
+		"answer with `soho send <ref> …` on the legacy TUI\n  or `hc send <terminal> …` on native Core.",
+		"answer with `soho send <ref> …`.", 1)
+	if previous == sohoBlock || strings.Contains(previous, "native Core") {
+		t.Fatal("previous fixture was not reverted")
+	}
+	for _, legacy := range []bool{false, true} {
+		input := previous
+		if legacy {
+			input = strings.ReplaceAll(input, "soho", "herdr-soho")
+		}
+		in := "before\n" + input + "after\n"
+		got := SetupBlockResult(&in)
+		if got == nil || *got != "before\n"+sohoBlock+"after\n" {
+			t.Fatalf("legacy=%v upgrade: %v", legacy, got)
+		}
+		if second := SetupBlockResult(got); second == nil || *second != *got {
+			t.Fatal("upgrade not idempotent")
+		}
+	}
+	for _, edit := range []struct{ old, new string }{
+		{"Inside Herdr (`HERDR_ENV=1`)", "Inside our custom Herdr session"},
+		{"its limits, and answer", "its limits and house rules, and answer"},
+		{"  deleting data).\n", "  deleting data).\n  Follow our escalation rule.\n"},
+		// The whole generated opening is still there, inside a paragraph the
+		// project extended: it stays as written.
+		{"Inside Herdr (`HERDR_ENV=1`)", "Historical policy: Inside Herdr (`HERDR_ENV=1`)"},
+		{"before planning such work.\n", "before planning such work.\nOur teams also read the house guide.\n"},
+	} {
+		input := strings.Replace(previous, edit.old, edit.new, 1)
+		if input == previous {
+			t.Fatal("edit not applied")
+		}
+		legacy := strings.ReplaceAll(input, "soho", "herdr-soho")
+		got := SetupBlockResult(&legacy)
+		if got == nil || !strings.Contains(*got, edit.new) {
+			t.Fatalf("legacy edit lost: %v", got)
+		}
+		if strings.Contains(edit.new, "Historical policy") || strings.Contains(edit.new, "house guide") {
+			if !strings.Contains(*got, "sibling panes, waits on their report files") || strings.Contains(*got, "terminals without a panel") {
+				t.Fatalf("an edited opening paragraph was rewritten:\n%s", *got)
+			}
+		}
+		// As before, current markers are managed text, replaced on the next run.
+		second := SetupBlockResult(got)
+		if second == nil || *second != sohoBlock {
+			t.Fatal("current-marker replacement policy changed")
+		}
 	}
 }
 
