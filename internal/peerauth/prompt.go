@@ -112,9 +112,18 @@ func FindHeaders(prompt string) []Header {
 			if len(after) > 0 {
 				end := after[0]
 				h.Closed = true
-				h.Text = strings.Join(lines[i:end+1], "\n")
 				next := sort.SearchInts(hcOpenings, i+1)
 				h.Ambiguous = next < len(hcOpenings) && hcOpenings[next] <= end
+				// An ambiguous native header keeps only its own lines, up to the
+				// next opening: overlapping spans would copy the same tail once
+				// per opening (quadratic in a prompt of many openings and one
+				// closer), while these spans are disjoint and their total is
+				// bounded by the prompt.
+				last := end
+				if h.Ambiguous {
+					last = hcOpenings[next] - 1
+				}
+				h.Text = strings.Join(lines[i:last+1], "\n")
 			} else {
 				h.Ambiguous = sort.SearchInts(hcOpenings, i+1) < len(hcOpenings)
 			}

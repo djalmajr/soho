@@ -46,8 +46,13 @@ func TestNativePeerHeaders(t *testing.T) {
 			if h[0].ID != "" || h[0].Closed != tc.closed || h[0].Ambiguous != tc.ambiguous || h[0].Remote != tc.remote {
 				t.Fatalf("header = %+v", h[0])
 			}
-			if tc.closed && (h[0].Text == "" || !strings.HasSuffix(strings.TrimRight(h[0].Text, " \r"), "</hc>")) {
+			// A closed header ends at its closer; an ambiguous one keeps only its
+			// own lines, up to the next opening.
+			if tc.closed && !tc.ambiguous && (h[0].Text == "" || !strings.HasSuffix(strings.TrimRight(h[0].Text, " \r"), "</hc>")) {
 				t.Fatalf("text = %q", h[0].Text)
+			}
+			if tc.closed && tc.ambiguous && (h[0].Text == "" || strings.Contains(h[0].Text, "\n<hc from=")) {
+				t.Fatalf("ambiguous text = %q, want only its own lines", h[0].Text)
 			}
 		})
 	}
@@ -77,5 +82,30 @@ func TestNativePeerPolicy(t *testing.T) {
 		} else if v.Result != peerauth.Accepted {
 			t.Fatalf("accepted=%+v", v)
 		}
+	}
+}
+
+// Many native openings and one closer: each header keeps only its own lines,
+// so the text the parser materializes stays bounded by the prompt instead of
+// growing with the square of the number of openings.
+func TestNativePeerHeadersManyOpeningsStayLinear(t *testing.T) {
+	const n = 20000
+	prompt := strings.Repeat("<hc from=\"t3\">\n", n) + "</hc>\n"
+	headers := peerauth.FindHeaders(prompt)
+	if len(headers) != n {
+		t.Fatalf("headers=%d, want %d", len(headers), n)
+	}
+	total := 0
+	for i, h := range headers {
+		if !h.Closed {
+			t.Fatalf("header %d not closed", i)
+		}
+		if i < n-1 && !h.Ambiguous {
+			t.Fatalf("header %d not ambiguous", i)
+		}
+		total += len(h.Text)
+	}
+	if total > 2*len(prompt) {
+		t.Fatalf("materialized %d bytes for a %d-byte prompt", total, len(prompt))
 	}
 }
