@@ -72,6 +72,10 @@ type document struct {
 	// non-empty value) and its remote mark (a `Sender:` line whose reference
 	// is remote). A header reads the first of each inside its span.
 	sentLines, remoteSenderLines []int
+	// sentValues[k] is the trimmed value of line sentLines[k], computed once
+	// while indexing: many overlapping headers can share one long padded
+	// `Sent:` line, and trimming it per header would be quadratic.
+	sentValues []string
 }
 
 // Chars is the number of characters of the message text: the runes of the
@@ -116,8 +120,9 @@ func FindHeaders(prompt string) []Header {
 	for i, line := range lines {
 		d.runes[i+1] = d.runes[i] + utf8.RuneCountInString(line)
 		if rest := strings.TrimLeft(line, " \t"); strings.HasPrefix(rest, sentLinePrefix) {
-			if strings.TrimSpace(rest[len(sentLinePrefix):]) != "" {
+			if value := strings.TrimSpace(rest[len(sentLinePrefix):]); value != "" {
 				d.sentLines = append(d.sentLines, i)
+				d.sentValues = append(d.sentValues, value)
 			}
 		} else if strings.HasPrefix(rest, senderLinePrefix) && senderRefRemote(rest[len(senderLinePrefix):]) {
 			d.remoteSenderLines = append(d.remoteSenderLines, i)
@@ -320,8 +325,7 @@ func openingShape(line string) (remote bool, sent string) {
 // of its span. An unclosed header holds no lines: not remote, no time.
 func (d *document) spanShape(first, last int) (remote bool, sent string) {
 	if at := sort.SearchInts(d.sentLines, first); at < len(d.sentLines) && d.sentLines[at] <= last {
-		rest := strings.TrimLeft(d.lines[d.sentLines[at]], " \t")
-		sent = strings.TrimSpace(rest[len(sentLinePrefix):])
+		sent = d.sentValues[at]
 	}
 	at := sort.SearchInts(d.remoteSenderLines, first)
 	return at < len(d.remoteSenderLines) && d.remoteSenderLines[at] <= last, sent
