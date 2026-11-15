@@ -228,6 +228,19 @@ func Run(args []string, env platform.Env) (code int) {
 	if effectiveCfg == nil {
 		effectiveCfg = configCtx
 	}
+	// Preserve whether the selector was absent before transportModeFor
+	// records the resolved default in both environments. A native id is
+	// diagnostic evidence only; it never selects a transport or caller.
+	nativeTransportUnselected := false
+	if decisionEnv.Get("SOHO_TRANSPORT") == "" && decisionEnv.Get("HERDR_ENV") != "1" && decisionEnv.Get("HC_TERMINAL_ID") != "" {
+		selectorCfg := effectiveCfg
+		if selectorCfg == nil {
+			ctx := core.LoadMetadataConfigFor(decisionEnv, commandCwd, userSel)
+			selectorCfg = &ctx
+		}
+		entry, exists := selectorCfg.Entries["transport"]
+		nativeTransportUnselected = !exists || entry.Source == "defaults"
+	}
 	transportMode := transportModeFor(effectiveCfg, env, decisionEnv, commandCwd)
 	if modelOpenCode && transportMode != "hc" {
 		selector, err := core.OpenCodeTUIProfile(effectiveCfg, decisionEnv)
@@ -296,6 +309,9 @@ func Run(args []string, env platform.Env) (code int) {
 		// hc there is no HERDR_ENV to require and no herdr binary to demand
 		// (DJA-604 stage 2b); the read side runs on the hc backend.
 		if transportMode != "hc" {
+			if nativeTransportUnselected {
+				platform.Die("not running inside Herdr (HERDR_ENV != 1); HC_TERMINAL_ID is present; select the native transport with SOHO_TRANSPORT=hc or soho config set transport hc", 2)
+			}
 			herdr.RequireEnv(decisionEnv, platform.Current(), os.Getpid(), nil)
 		}
 		frictionLogPath = ""
