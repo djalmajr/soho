@@ -39,7 +39,12 @@ const designBulletAnchor = "- **Briefs are contracts**: goal, expected result, a
 // orchestrator is woken. It is the single source of the bullet text, spliced
 // into the block before the Quota item and installed in place by the legacy
 // migration when the block predates it.
-const nativeBullet = "- **Native Core** (`SOHO_TRANSPORT=hc`): workers and long runs are child\n  terminals of the orchestrator, never background tasks of the assistant's\n  harness. Builds, tests and scripts run as the child's own program\n  (`hc run --bg --outlive-parent --name <project>-<role> -- sh -c '<cmd>'`):\n  its exit note wakes the orchestrator. A soho worker stays alive after its\n  report and sends no note, so the orchestrator keeps its turn open and\n  waits (`soho wait`) while it depends on one.\n"
+const nativeBullet = "- **Native Core** (`SOHO_TRANSPORT=hc`): workers and long runs are child\n  terminals of the orchestrator, never background tasks of the assistant's\n  harness. Builds, tests and scripts run as the child's own program\n  (`hc run --bg --outlive-parent --name <project>-<role> -- sh -c '<cmd>'`):\n  its exit note wakes the orchestrator. A soho worker stays alive after its\n  report and sends no note, so the orchestrator keeps its turn open and\n  waits (`soho wait`) while it depends on one, or arms\n  `soho wait <agent> --wake` and ends its turn: the note wakes it, and it\n  runs `soho wait <agent>` once.\n"
+
+// previousNativeBullet is the exact native Core line of the generation before
+// the wake arming (`soho wait <agent> --wake`): the in-place migration
+// replaces it with nativeBullet, and an edited bullet is left as it is.
+const previousNativeBullet = "- **Native Core** (`SOHO_TRANSPORT=hc`): workers and long runs are child\n  terminals of the orchestrator, never background tasks of the assistant's\n  harness. Builds, tests and scripts run as the child's own program\n  (`hc run --bg --outlive-parent --name <project>-<role> -- sh -c '<cmd>'`):\n  its exit note wakes the orchestrator. A soho worker stays alive after its\n  report and sends no note, so the orchestrator keeps its turn open and\n  waits (`soho wait`) while it depends on one.\n"
 
 // nativeBulletAnchor is the exact opening line of the generated Quota item,
 // the line the native bullet precedes.
@@ -246,6 +251,7 @@ func renameLegacyBlock(content string) *string {
 		result = result[:start] + block + result[end:]
 	}
 	result = upgradeTransportBlock(result)
+	result = upgradeNativeBullet(result)
 	result = installDesignBullet(result)
 	result = installNativeBullet(result)
 	return &result
@@ -335,9 +341,33 @@ func installDesignBullet(content string) string {
 	return content[:start] + block + content[end:]
 }
 
+// upgradeNativeBullet replaces the exact previous native Core bullet with the
+// current one, in place, in a migrated legacy block. The whole item must be
+// the previous text: a bullet the project edited (a changed or extra line)
+// does not match and stays as written.
+func upgradeNativeBullet(content string) string {
+	start, end := strings.Index(content, SetupStart), strings.Index(content, SetupEnd)
+	if start < 0 || end < start {
+		return content
+	}
+	block := content[start:end]
+	at := strings.Index(block, "\n"+previousNativeBullet)
+	if at < 0 {
+		return content
+	}
+	at++
+	after := at + len(previousNativeBullet)
+	if strings.HasPrefix(block[after:], "  ") {
+		return content
+	}
+	block = block[:at] + nativeBullet + block[after:]
+	return content[:start] + block + content[end:]
+}
+
 // installNativeBullet adds the native Core bullet before the Quota item of a
 // migrated legacy block that predates it; a block that already holds it, or
-// has no exact Quota line, is left as it is.
+// an item of that name the project edited, or has no exact Quota line, is
+// left as it is.
 func installNativeBullet(content string) string {
 	if strings.Contains(content, nativeBullet) {
 		return content
@@ -347,6 +377,9 @@ func installNativeBullet(content string) string {
 		return content
 	}
 	block := content[start:end]
+	if strings.Contains(block, "\n- **Native Core**") {
+		return content
+	}
 	at := strings.Index(block, "\n"+nativeBulletAnchor)
 	if at < 0 {
 		return content

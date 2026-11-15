@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -44,6 +45,7 @@ var (
 	errEnvValueNUL          = errors.New("terminal run: environment override value contains NUL")
 	errEnvValueInvalidUTF8  = errors.New("terminal run: environment override value contains invalid UTF-8")
 	errLaunchProfileInvalid = errors.New("terminal run: invalid launch profile name")
+	errStateDirInvalid      = errors.New("terminal run: SOHO_STATE_DIR must be an absolute path without NUL, CR or LF")
 )
 
 // TerminalRun specifies the parameters required to start a terminal via
@@ -77,6 +79,25 @@ type TerminalRun struct {
 	// errLaunchProfileInvalid. Native per-kind policy stays the shared
 	// kinds layer's later responsibility.
 	LaunchProfile string
+
+	// NotifyCaller makes Core type a note into the caller's terminal when
+	// this terminal exits (no_notify:false on the wire). The zero value is
+	// the spawn request's: no_notify:true.
+	NotifyCaller bool
+
+	// EndWithCaller makes the terminal end with the caller's program
+	// (outlive_parent:false on the wire). The zero value is the spawn
+	// request's: outlive_parent:true.
+	EndWithCaller bool
+
+	// StateDir, when non-empty, is the caller's resolved state root sent as
+	// SOHO_STATE_DIR next to SOHO_TRANSPORT=hc, so a child run by an
+	// orchestrator whose root comes from that variable resolves the same root.
+	// It is a dedicated field, not an EnvOverrides entry: the reserved names
+	// stay refused there. It must be absolute and hold no NUL, CR or LF, and
+	// is refused before Connect otherwise. The empty value (the spawn request)
+	// adds nothing to the env.
+	StateDir string
 }
 
 // runParams is the by-name parameter struct sent to the Core's terminal.run RPC.
@@ -250,11 +271,15 @@ func (c *Client) RunTerminal(ctx context.Context, input TerminalRun) (string, er
 	argv = append(argv, input.Program)
 	argv = append(argv, input.Args...)
 
-	// The child env is the mandatory transport marker plus only the
-	// validated per-call snapshot, never the caller's environment.
+	// The child env is the mandatory transport marker, the validated
+	// per-call snapshot and, when the run names one, the caller's state
+	// root: never the caller's environment.
 	env := map[string]string{"SOHO_TRANSPORT": "hc"}
 	for name, value := range snapshot {
 		env[name] = value
+	}
+	if input.StateDir != "" {
+		env["SOHO_STATE_DIR"] = input.StateDir
 	}
 
 	// The labels are exactly the existing session label plus, only when a
@@ -276,8 +301,8 @@ func (c *Client) RunTerminal(ctx context.Context, input TerminalRun) (string, er
 			Env:           env,
 			Labels:        labels,
 			Name:          input.Name,
-			NoNotify:      true,
-			OutliveParent: true,
+			NoNotify:      !input.NotifyCaller,
+			OutliveParent: !input.EndWithCaller,
 			Wait:          false,
 		},
 	}
@@ -373,6 +398,11 @@ func validateTerminalRun(input TerminalRun) error {
 	}
 	if !isValidLaunchProfile(input.LaunchProfile) {
 		return errLaunchProfileInvalid
+	}
+	if input.StateDir != "" {
+		if !utf8.ValidString(input.StateDir) || strings.ContainsAny(input.StateDir, "\x00\r\n") || !filepath.IsAbs(input.StateDir) {
+			return errStateDirInvalid
+		}
 	}
 	return nil
 }

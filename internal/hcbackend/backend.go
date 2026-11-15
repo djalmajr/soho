@@ -1242,17 +1242,7 @@ const startTimeoutDefaultMs = 60000
 // validHcName reports whether name is a valid hc terminal name: 1-32
 // characters of a-z 0-9 - _.
 func validHcName(name string) bool {
-	if len(name) < 1 || len(name) > 32 {
-		return false
-	}
-	for _, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
-		default:
-			return false
-		}
-	}
-	return true
+	return transport.ValidTerminalName(name)
 }
 
 // startTimeout parses the readiness deadline: milliseconds as a decimal
@@ -1903,4 +1893,112 @@ func wakeReason(stdout string) (string, bool) {
 		return "", true
 	}
 	return reason, true
+}
+
+// childKind is the kind field the terminal.run client requires on every
+// request. A child terminal is not an agent: the field is checked for being
+// present and is not sent on the wire.
+const childKind = "child"
+
+// RunChild runs run.Program as a child terminal of the caller and returns at
+// once with the new terminal's address in Value: no readiness poll and no
+// probe of the child. The request carries the caller (HC_TERMINAL_ID), the
+// caller's soho.session label (so the child reads the same roster and
+// state), and the notify and outlive flags the run names, where the zero
+// values are the worker spawn's. A name that is not a valid hc terminal name
+// is refused before any launch. hc's name_taken error is a FailureConflict,
+// as in Start, and a run whose outcome is unknown carries that failure with
+// no address.
+func (b *backend) RunChild(ctx context.Context, run transport.ChildRun, call transport.Call) transport.Reply[string] {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !validHcName(run.Name) {
+		return transport.Reply[string]{Err: &transport.Failure{
+			Kind:    transport.FailureCommand,
+			Message: fmt.Sprintf("terminal name '%s' is not a valid hc terminal name (1-32 of a-z 0-9 - _)", run.Name),
+		}}
+	}
+	session, err := b.session(ctx, call)
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: cerr.Error(), Cause: cerr}}
+		}
+		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: err.Error(), Cause: err}}
+	}
+	cwd := run.Cwd
+	if cwd == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: "getwd: " + err.Error(), Cause: err}}
+		}
+		cwd = wd
+	}
+	budget := hcTimeoutDefault
+	if call.Timeout > 0 {
+		budget = call.Timeout
+	}
+	runCtx, runCancel := context.WithTimeout(ctx, budget)
+	address, err := b.client.RunTerminal(runCtx, hc.TerminalRun{
+		Name:          run.Name,
+		Kind:          childKind,
+		Program:       run.Program,
+		Cwd:           cwd,
+		Caller:        b.env.Get("HC_TERMINAL_ID"),
+		Session:       session,
+		Args:          run.Args,
+		NotifyCaller:  run.NotifyCaller,
+		EndWithCaller: !run.OutliveCaller,
+		StateDir:      run.StateDir,
+	})
+	runCancel()
+	if err != nil {
+		if errors.Is(err, hc.ErrRunOutcomeUnknown) {
+			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureRunOutcomeUnknown, Message: err.Error(), Cause: err}}
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: cerr.Error(), Cause: cerr}}
+		}
+		return startRunFailure(run.Name, err)
+	}
+	return transport.Reply[string]{Value: address, Valid: true}
+}
+
+// RemoveFinishedChild removes the record of the finished terminal that has
+// exactly this name and whose parent is the caller (HC_TERMINAL_ID): one
+// `hc get <name>`, then Close on its address when the record is finished and
+// its parent field is the caller's. No such terminal (exit 3), a live
+// terminal, a terminal of another parent and a record without a parent field
+// are all Value false with no error, and nothing is closed. A get that fails
+// for another reason, or a Close that fails, is the failure; the caller
+// decides whether it matters.
+func (b *backend) RemoveFinishedChild(ctx context.Context, name string, call transport.Call) transport.Reply[bool] {
+	caller := b.env.Get("HC_TERMINAL_ID")
+	if caller == "" {
+		return transport.Reply[bool]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: ErrNotInHcTerminal.Error(), Cause: ErrNotInHcTerminal}}
+	}
+	out, err := b.run(ctx, call, "get", name)
+	if err != nil {
+		if notFound(err) {
+			return transport.Reply[bool]{Value: false, Valid: true}
+		}
+		return transport.Reply[bool]{Err: failure(err)}
+	}
+	obj, ok := terminalObject(out)
+	if !ok {
+		return transport.Reply[bool]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc get returned no terminal record"}}
+	}
+	parent, _ := obj.Get("parent")
+	if nameOf(obj) != name || nativeStateOf(obj) != "finished" || parent != caller {
+		return transport.Reply[bool]{Value: false, Valid: true}
+	}
+	address := addressOf(obj)
+	if address == "" {
+		return transport.Reply[bool]{Value: false, Valid: true}
+	}
+	closed := b.Close(ctx, transport.Target{ID: address}, call)
+	if closed.Err != nil {
+		return transport.Reply[bool]{Err: closed.Err}
+	}
+	return transport.Reply[bool]{Value: true, Valid: true}
 }

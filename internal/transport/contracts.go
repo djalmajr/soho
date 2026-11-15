@@ -712,6 +712,68 @@ type Waker interface {
 	Wake(ctx context.Context, target Target, max time.Duration, call Call) Reply[string]
 }
 
+// ValidTerminalName reports whether name satisfies the native terminal name
+// rule: 1-32 characters of a-z 0-9 - _. The hc backend enforces it on every
+// start, and callers that derive a terminal name check it with this function,
+// so the rule has one definition.
+func ValidTerminalName(name string) bool {
+	if len(name) < 1 || len(name) > 32 {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// ChildRun is one program run as a child terminal of the caller: not an
+// agent, so it has no kind, no readiness poll and no roster row. The child
+// carries the caller's soho session label, so it reads the same roster and
+// state.
+type ChildRun struct {
+	// Name is the child's terminal name; it must satisfy ValidTerminalName.
+	Name string
+	// Program and Args are the child's argv.
+	Program string
+	Args    []string
+	// Cwd is the child's working directory.
+	Cwd string
+	// NotifyCaller makes the backend type a note into the caller's terminal
+	// when the child exits, which is what wakes an orchestrator whose turn
+	// has ended.
+	NotifyCaller bool
+	// OutliveCaller lets the child keep running after the caller's program
+	// ended; false ends it with the caller.
+	OutliveCaller bool
+	// StateDir, when non-empty, is the caller's resolved state root, handed
+	// to the child as SOHO_STATE_DIR: absolute, without NUL, CR or LF.
+	// Empty adds nothing, and the child resolves its own root.
+	StateDir string
+}
+
+// ChildRunner is the optional capability to run a program as a child
+// terminal of the caller and to clean up the finished record of such a
+// child. Only a backend with native terminals implements it; the herdr
+// backend does not. Callers type-assert their Runtime to it and refuse the
+// request when the assertion fails. It is kept apart from Runtime so the
+// consumers and test fakes pinned to that method set stay stable.
+type ChildRunner interface {
+	// RunChild starts the child and returns at once with its address in
+	// Value, without waiting for it or probing it. A name that is already
+	// taken is FailureConflict; a run whose outcome is unknown is
+	// FailureRunOutcomeUnknown.
+	RunChild(ctx context.Context, run ChildRun, call Call) Reply[string]
+	// RemoveFinishedChild removes the record of the finished terminal that
+	// has exactly this name and whose parent is the caller. Value is true
+	// when a record was removed, and false, without an error, when there is
+	// none: no such terminal, a live one, or one of another parent.
+	RemoveFinishedChild(ctx context.Context, name string, call Call) Reply[bool]
+}
+
 // Services is the set of capabilities a backend provides, built once per
 // invocation. Window, Legacy or Terminal may be nil when a backend lacks
 // them. There is no package singleton and no global active backend: a
