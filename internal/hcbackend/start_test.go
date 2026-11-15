@@ -687,6 +687,11 @@ func TestStartReadiness(t *testing.T) {
 			switch {
 			case args[1] == "t1":
 				return platform.RunResult{Status: &zero, Stdout: startCaller}
+			case args[0] == "read":
+				// The timeout failure reads the screen once; this fixture
+				// only hangs the get, so the read fails at once.
+				one := 1
+				return platform.RunResult{Status: &one, Stderr: `{"error":{"kind":"core_unreachable","message":"no screen"}}`}
 			}
 			if deadline, ok := ctx.Deadline(); ok {
 				remaining = time.Until(deadline)
@@ -892,6 +897,11 @@ func startReadinessRunner(t *testing.T, get func(context.Context) platform.RunRe
 			return platform.RunResult{Status: &zero, Stdout: startCaller}
 		case len(args) > 1 && args[0] == "get" && args[1] == "t7":
 			return get(ctx)
+		case len(args) > 1 && args[0] == "read" && args[1] == "t7":
+			// The timeout failure reads the screen once; these fixtures
+			// keep the message as it was, so the read fails.
+			one := 1
+			return platform.RunResult{Status: &one, Stderr: `{"error":{"kind":"core_unreachable","message":"no screen"}}`}
 		default:
 			t.Fatalf("unexpected hc argv: %#v", args)
 			return platform.RunResult{}
@@ -967,6 +977,8 @@ func TestStartReadinessDeadlineInterruptedGet(t *testing.T) {
 				if tc.earlier != nil {
 					wantCalls = append(wantCalls, []string{"get", "t7", "--json"})
 				}
+				// The timeout failure then reads the screen once.
+				wantCalls = append(wantCalls, []string{"read", "t7", "--lines", "0", "--json"})
 				wantArgv(t, calls(), wantCalls)
 				if rep.Err == nil || rep.Err.Kind != transport.FailureCommand || rep.Valid || rep.Value != "t7" {
 					t.Fatalf("rep: %+v want the startup timeout with address t7", rep)
@@ -1028,7 +1040,7 @@ func TestStartReadinessTimeoutBetweenPolls(t *testing.T) {
 				if gets != 1 || ctx.Err() != nil {
 					t.Fatalf("gets=%d caller error=%v, want exactly 1 completed get before deadline between polls", gets, ctx.Err())
 				}
-				wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}, {"get", "t7", "--json"}})
+				wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}, {"get", "t7", "--json"}, {"read", "t7", "--lines", "0", "--json"}})
 				if rep.Err == nil || rep.Err.Kind != transport.FailureCommand || rep.Valid || rep.Value != "t7" {
 					t.Fatalf("rep: %+v want startup timeout with address t7", rep)
 				}
