@@ -188,6 +188,11 @@ func ProjectIsFirstRun(ctx *core.Config, env platform.Env, cwd string) bool {
 			}
 		}
 	}
+	// A team chosen in the user's own file is in effect in every project that
+	// does not override it, the same reading setup applies to its notice.
+	if setupcmd.UserLayerChoosesTeam(ctx) {
+		return false
+	}
 	return !ProjectHasRoster(ctx, env, cwd)
 }
 
@@ -330,7 +335,12 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	}
 	_, herdrFound := platform.FindExecutable("herdr", env, platform.Current())
 	cliVersion := ""
-	if herdrFound {
+	if core.TransportMode(ctx, env) == "hc" {
+		// The native backend runs no legacy 'herdr --version' or 'status
+		// server' probe (both report unsupported), so the line this branch
+		// used to print had an empty version. The version line of a native
+		// session is the hc client's, printed by doctorHcTransport below.
+	} else if herdrFound {
 		v := svc.Legacy.VersionRaw(context.Background(), transport.Call{})
 		for _, line := range strings.Split(v.Value, "\n") {
 			f := strings.Fields(line)
@@ -470,7 +480,7 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	capDisplay := strconv.Itoa(cap)
 	if !decimal.MatchString(capRaw) {
 		s.Warning(fmt.Sprintf("config: split_max_panes='%s' is not a number (using 4)", capRaw))
-	} else if !paneColumnsSet && cap < 2 {
+	} else if !paneColumnsSet && cap < 2 && core.TransportMode(ctx, env) != "hc" {
 		s.Warning(fmt.Sprintf("config: split_max_panes=%d leaves no room next to the caller; every worker will overflow into herd tabs (set 2 or more)", cap))
 	} else if paneColumnsSet {
 		// The declared shape decides the cap: balance, last-column and new-column
@@ -847,7 +857,13 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 		s.Warning(fmt.Sprintf("config: lanes='%s' is not on|off", v))
 	}
 	entry := entryScript(env)
-	if p == "2" || p == "3" || p == "4" {
+	// Native Core workers have no panel: the pane-count advice (ask for 2, 3
+	// or 4 panes) and the split_max_panes alignment below are legacy-TUI
+	// layout advice and stay off with transport=hc.
+	native := core.TransportMode(ctx, env) == "hc"
+	if native {
+		// no pane-count line on native Core
+	} else if p == "2" || p == "3" || p == "4" {
 		if src == "defaults" || src == "builtin" {
 			s.Warning(fmt.Sprintf("config: panes is not set in the project or user file (default %s). Ask the user for 2, 3 or 4 panes, then run '%s doctor --fix --panes <n>' with their answer.", p, entry))
 		} else {
@@ -1002,7 +1018,7 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 	} else {
 		s.Ok(fmt.Sprintf("config: max_workers=%s matches the lanes (%s)", core.MaxWorkers(ctx, env), strings.Join(caps, " ")))
 	}
-	if core.ConfigExplicit(ctx, "split_max_panes", env) {
+	if !native && core.ConfigExplicit(ctx, "split_max_panes", env) {
 		sp := core.Cfg(ctx, "split_max_panes", "", env)
 		n, e := strconv.Atoi(sp)
 		mw, _ := strconv.Atoi(core.MaxWorkers(ctx, env))

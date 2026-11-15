@@ -355,6 +355,26 @@ func TestValidateProblemsBlockEverything(t *testing.T) {
 	}
 }
 
+// TestValidatePlanAcceptsThePTBRTitle: a VALIDATION.md whose section is
+// titled "## Camadas de teste" is planned like the English one, and a file
+// with neither title is BLOCKED with the missing-section problem.
+func TestValidatePlanAcceptsThePTBRTitle(t *testing.T) {
+	env, cwd := commandFixture(t)
+	writeValidationMD(t, cwd, strings.Replace(validateSentinelMD, "## Test layers", "## Camadas de teste", 1))
+	code, out, errOut := runIn(t, []string{"validate", "--plan"}, env, cwd)
+	if code != 0 || errOut != "" {
+		t.Fatalf("pt-BR title: code=%d err=%q out=%s", code, errOut, out)
+	}
+	if !hasLinePrefix(out, "unit: run touch sentinel") {
+		t.Fatalf("pt-BR title: the plan does not name the unit command in:\n%s", out)
+	}
+	writeValidationMD(t, cwd, strings.Replace(validateSentinelMD, "## Test layers", "## Camadas", 1))
+	code, out, _ = runIn(t, []string{"validate", "--plan"}, env, cwd)
+	if code != 5 || !strings.Contains(out, `VALIDATION.md has no "## Test layers" section`) {
+		t.Fatalf("neither title: code=%d out=%s", code, out)
+	}
+}
+
 // TestValidatePlanRunsNothingAndWritesNothing covers scenario 8: --plan
 // prints validation: plan with what each layer would do, runs nothing and
 // creates no evidence directory.
