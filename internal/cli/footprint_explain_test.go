@@ -12,6 +12,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -110,7 +111,7 @@ func TestExplainCommandFootprintLine(t *testing.T) {
 	env = withFakeCLI(env, bin)
 	// The tm6 PATH holds only the fake herdr; append the real one so the
 	// in-process ps reads (liveness, RSS) resolve exactly as in production.
-	if real := os.Getenv("PATH"); real != "" {
+	if real := testutil.HostPath(); real != "" {
 		env["PATH"] = bin + string(os.PathListSeparator) + real
 	}
 	sd := filepath.Join(env.Get("SOHO_DIR"), env.Get("HERDR_WORKSPACE_ID"))
@@ -128,7 +129,7 @@ func TestExplainCommandFootprintLine(t *testing.T) {
 		tm6Write(t, filepath.Join(sd, "copies.tsv"), copiesTsv)
 		tm6Write(t, filepath.Join(sd, "agents.tsv"), agentsTsvBuild)
 		cmd := exec.Command(os.Args[0], "-test.run=^TestExplainFootprintHelper$", "-test.count=1")
-		cmd.Env = append(os.Environ(), explainFootprintHelperRoleEnv+"=1")
+		cmd.Env = append(testutil.CleanEnv(t), explainFootprintHelperRoleEnv+"=1")
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}

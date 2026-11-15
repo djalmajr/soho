@@ -12,6 +12,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/plugin"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -26,7 +27,7 @@ func TestMain(m *testing.M) {
 
 func envWithFake(t *testing.T, dir string, values map[string]string) platform.Env {
 	t.Helper()
-	entries := fakecli.Env(os.Environ(), dir, fakecli.EnvOptions{IncludeBasePath: true})
+	entries := fakecli.Env(testutil.CleanEnv(t), dir, fakecli.EnvOptions{IncludeBasePath: true})
 	env := platform.Env{}
 	for _, entry := range entries {
 		key, value, ok := strings.Cut(entry, "=")

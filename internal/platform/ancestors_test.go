@@ -11,19 +11,13 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
+	testutil "github.com/djalmajr/soho/internal/testutil/testenv"
 )
 
 // realAncestorEnv returns the host environment (its PATH holds the real
 // ps) as an Env.
 func realAncestorEnv() Env {
-	env := Env{}
-	for _, item := range os.Environ() {
-		key, value, ok := strings.Cut(item, "=")
-		if ok {
-			env[key] = value
-		}
-	}
-	return env
+	return Env{"PATH": testutil.HostPath(), "SystemRoot": testutil.HostSystemRoot()}
 }
 
 // installFakePSTable installs a fake ps in dir that answers

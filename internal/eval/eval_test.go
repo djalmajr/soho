@@ -61,7 +61,13 @@ func TestMain(m *testing.M) {
 // hermeticEnv points the Go toolchain at an isolated stage (fresh build
 // cache, no toolchain downloads) so runs do not depend on shared caches.
 func hermeticEnv(stage string) []string {
-	env := os.Environ()
+	var env []string
+	for _, item := range os.Environ() {
+		key, _, _ := strings.Cut(item, "=")
+		if !testutil.IsSessionVar(key) {
+			env = append(env, item)
+		}
+	}
 	overrides := map[string]string{
 		"GOCACHE":     filepath.Join(stage, "gocache"),
 		"GOPATH":      filepath.Join(stage, "gopath"),

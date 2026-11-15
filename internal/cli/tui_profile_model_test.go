@@ -230,6 +230,7 @@ func TestOpenCodeTUIModelDiscovery(t *testing.T) {
 			root := filepath.Dir(cwd)
 			before := inventoryCLITree(t, root)
 			original := env.Clone()
+			t.Setenv("SOHO_OPENCODE_TUI_PROFILE", "process-selector-canary")
 			processSelector, hadProcessSelector := os.LookupEnv("SOHO_OPENCODE_TUI_PROFILE")
 			code, out, stderr := runIn(t, []string{"model", "opencode", "provider/model"}, env, cwd)
 			assertTUIModel(t, code, out, stderr, true)

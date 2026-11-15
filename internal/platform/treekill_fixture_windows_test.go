@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	testutil "github.com/djalmajr/soho/internal/testutil/testenv"
 )
 
 // The Windows tree-kill fixtures drive the real wrapper.cmd -> cmd.exe chain
@@ -148,7 +150,7 @@ func treeKillHelperExe(t *testing.T) string {
 	defer stop()
 	build := exec.CommandContext(ctx, "go", "build", "-o", exe, src)
 	build.WaitDelay = treeKillHelperBuildWaitDelay
-	build.Env = withoutGOFLAGS(os.Environ())
+	build.Env = withoutGOFLAGS(testutil.CleanEnv(t))
 	started := time.Now()
 	out, err := build.CombinedOutput()
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 func pendingCopy(path string) CopyRow {
@@ -236,7 +237,7 @@ func TestQueueWriteDuringAnIncorporationIsNotLost(t *testing.T) {
 }
 
 func TestMeasureFootprintCountsTheQueueReadOnly(t *testing.T) {
-	env := platform.Env{"TMPDIR": t.TempDir(), "PATH": os.Getenv("PATH")}
+	env := platform.Env{"TMPDIR": t.TempDir(), "PATH": testutil.HostPath()}
 	stateDir := t.TempDir()
 	copyDir := filepath.Join(t.TempDir(), "queued")
 	seedFile(t, filepath.Join(copyDir, "f.bin"), 2048)

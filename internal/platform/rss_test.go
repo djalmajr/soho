@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+
+	testutil "github.com/djalmajr/soho/internal/testutil/testenv"
 )
 
 // rssHelperRoleEnv is the role of the re-executed test binary that stands
@@ -26,9 +28,9 @@ func TestRSSHelper(t *testing.T) {
 }
 
 func TestReadProcessRSS(t *testing.T) {
-	env := Env{"PATH": os.Getenv("PATH")}
+	env := Env{"PATH": testutil.HostPath()}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestRSSHelper$", "-test.count=1")
-	cmd.Env = append(os.Environ(), rssHelperRoleEnv+"=1")
+	cmd.Env = append(testutil.CleanEnv(t), rssHelperRoleEnv+"=1")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

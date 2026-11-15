@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 func TestWorkerLifecycleCrashHelper(t *testing.T) {
@@ -92,7 +93,7 @@ func TestWorkerLifecycleLockLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(self, "-test.run=^TestWorkerLifecycleCrashHelper$", "-test.count=1")
-	cmd.Env = append(os.Environ(), "TEST_WORKER_LIFECYCLE_CRASH="+sd)
+	cmd.Env = append(testutil.CleanEnv(t), "TEST_WORKER_LIFECYCLE_CRASH="+sd)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("crash helper: %v %s", err, out)
 	}

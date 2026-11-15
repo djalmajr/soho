@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -67,7 +68,7 @@ func teamPanelFixture(t *testing.T) (platform.Env, string, string) {
 
 func teamEnv(t *testing.T, dir string, values map[string]string) platform.Env {
 	t.Helper()
-	entries := fakecli.Env(os.Environ(), dir, fakecli.EnvOptions{IncludeBasePath: true})
+	entries := fakecli.Env(testutil.CleanEnv(t), dir, fakecli.EnvOptions{IncludeBasePath: true})
 	env := platform.Env{}
 	for _, entry := range entries {
 		key, value, ok := strings.Cut(entry, "=")

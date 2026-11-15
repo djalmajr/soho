@@ -19,6 +19,7 @@ import (
 	"github.com/djalmajr/soho/internal/collaboration"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -135,7 +136,7 @@ func newHcDeliveryFixture(t *testing.T, spec *hcDeliverySpec) *hcDeliveryFixture
 		"TMPDIR": root, "SOHO_FAKECLI_CONFIG": bin,
 		"SOHO_DIR": state, "SOHO_TRANSPORT": "hc", "HC_TERMINAL_ID": "t7",
 		// Keep race detection without its per-child exit delay in the bounded delivery.
-		"GORACE": fakecli.RaceOptions([]string{"GORACE=" + os.Getenv("GORACE")}),
+		"GORACE": fakecli.RaceOptions([]string{"GORACE=" + testutil.HostRaceOptions()}),
 	}
 	projectRoot := platform.StateProjectRoot(env, root)
 	// The participants carry the session stand-in the hc participant

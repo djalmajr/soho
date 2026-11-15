@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
+	testutil "github.com/djalmajr/soho/internal/testutil/testenv"
 )
 
 // deniedPsEnv puts a fake ps on PATH that answers every query with the
@@ -97,12 +98,12 @@ func TestDeniedCauseOnlyForUnknown(t *testing.T) {
 // The running control: the real ps reads this test process as running,
 // with no cause.
 func TestReadProcFullCauseRunningControl(t *testing.T) {
-	_, name, live, cause := ReadProcFullCause(os.Getpid(), Env{"PATH": os.Getenv("PATH")})
+	_, name, live, cause := ReadProcFullCause(os.Getpid(), Env{"PATH": testutil.HostPath()})
 	if live != ProcRunning || cause != nil || name == "" {
 		t.Fatalf("live=%v name=%q cause=%v; want running without a cause", live, name, cause)
 	}
 	// The wrapper discards the cause and keeps the three-way result.
-	if started, name2, live2 := ReadProcFull(os.Getpid(), Env{"PATH": os.Getenv("PATH")}); live2 != ProcRunning || name2 != name {
+	if started, name2, live2 := ReadProcFull(os.Getpid(), Env{"PATH": testutil.HostPath()}); live2 != ProcRunning || name2 != name {
 		t.Fatalf("ReadProcFull: live=%v name=%q started=%q; want the same read", live2, name2, started)
 	}
 }

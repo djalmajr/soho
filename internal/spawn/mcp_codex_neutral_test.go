@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -21,7 +22,7 @@ func isolateCodexMcpTemp(t *testing.T) {
 	t.Setenv("GOTMPDIR", "")
 	t.Setenv("TMPDIR", "")
 	if runtime.GOOS == "windows" {
-		root := os.Getenv("SystemRoot")
+		root := testutil.HostSystemRoot()
 		if root == "" {
 			t.Fatal("SystemRoot is required to locate a system temporary directory outside the user profile")
 		}

@@ -289,7 +289,7 @@ func TestTM9ParentTitleSubtests(t *testing.T) {
 			cmd.Dir = packageDir
 			// The child re-runs the race-instrumented test binary and would
 			// otherwise pause for one second on exit; set only GORACE.
-			childEnv := os.Environ()
+			childEnv := testutil.CleanEnv(t)
 			replaced := false
 			for i, entry := range childEnv {
 				if strings.HasPrefix(entry, "GORACE=") {

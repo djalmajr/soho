@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
+	testutil "github.com/djalmajr/soho/internal/testutil/testenv"
 )
 
 func TestTM11POSIXRunCliTimeoutDoesNotUseTreeKill(t *testing.T) {
@@ -19,7 +20,7 @@ func TestTM11POSIXRunCliTimeoutDoesNotUseTreeKill(t *testing.T) {
 			t.Fatal(err)
 		}
 		env := Env{}
-		for _, item := range fakecli.Env(os.Environ(), bin) {
+		for _, item := range fakecli.Env(testutil.CleanEnv(t), bin) {
 			key, value, ok := strings.Cut(item, "=")
 			if ok {
 				env[key] = value
@@ -43,7 +44,7 @@ func TestTM11TreeKillHelperContractCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		env := Env{}
-		for _, item := range fakecli.Env(os.Environ(), bin) {
+		for _, item := range fakecli.Env(testutil.CleanEnv(t), bin) {
 			key, value, ok := strings.Cut(item, "=")
 			if ok {
 				env[key] = value

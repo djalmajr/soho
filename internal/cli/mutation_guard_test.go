@@ -123,7 +123,7 @@ func TestMutationGuard(t *testing.T) {
 		// The fixture isolates HOME, so the toolchain rustup installed has
 		// to be named explicitly: an inherited RUSTUP_HOME wins, else the
 		// host user's ~/.rustup.
-		rustupHome := os.Getenv("RUSTUP_HOME")
+		rustupHome := testutil.HostRustupHome()
 		if rustupHome == "" {
 			hostHome, _ := os.UserHomeDir()
 			rustupHome = filepath.Join(hostHome, ".rustup")
@@ -255,7 +255,7 @@ func TestMutationGuard(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		env := envFrom(fakecli.Env(os.Environ(), fakeBin))
+		env := envFrom(fakecli.Env(testutil.CleanEnv(t), fakeBin))
 		code, out, stderr := runMutationGuardFixture(t, s, []string{s.copy, "--source", s.source}, env)
 		if code != 1 || !strings.Contains(out, "fail cargo-config: cargo metadata failed; target-dir cannot be resolved safely") || stderr != "" {
 			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, stderr)
@@ -277,7 +277,7 @@ func TestMutationGuard(t *testing.T) {
 			if _, err := fakecli.Install(t, bin, "cargo", rules); err != nil {
 				t.Fatal(err)
 			}
-			return envFrom(fakecli.Env(os.Environ(), bin))
+			return envFrom(fakecli.Env(testutil.CleanEnv(t), bin))
 		}
 		metadata := func(target string) string { return fmt.Sprintf(`{"target_directory":%q}`, target) }
 		for _, tc := range []struct {

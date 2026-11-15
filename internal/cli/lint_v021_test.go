@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -44,7 +45,7 @@ func lintV021Fixture(t *testing.T, briefBody string) (root, brief string, env pl
 		t.Fatal(err)
 	}
 	return root, brief, platform.Env{
-		"PATH":            os.Getenv("PATH"),
+		"PATH":            testutil.HostPath(),
 		"HOME":            filepath.Join(root, "home"),
 		"XDG_CONFIG_HOME": filepath.Join(root, "config"),
 		"SOHO_DIR":        filepath.Join(root, "state"),

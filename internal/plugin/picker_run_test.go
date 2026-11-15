@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -41,7 +42,7 @@ func TestPickerRunExecutesAbsoluteCmdThroughPlatformInvocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries := fakecli.Env(os.Environ(), pathDir)
+	entries := fakecli.Env(testutil.CleanEnv(t), pathDir)
 	env := platform.Env{"COMSPEC": cmd}
 	for _, entry := range entries {
 		key, value, ok := strings.Cut(entry, "=")

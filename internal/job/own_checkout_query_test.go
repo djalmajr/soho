@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 // own_checkout_query_test.go: ownCheckoutGitQuery runs a real child
@@ -84,7 +85,7 @@ func ownQueryFakeGit(t *testing.T, mode string) platform.Env {
 	env := platform.Env{"PATH": bin, ownQueryModeVar: mode}
 	if runtime.GOOS == "windows" {
 		env["PATHEXT"] = ".EXE"
-		env["SystemRoot"] = os.Getenv("SystemRoot")
+		env["SystemRoot"] = testutil.HostSystemRoot()
 	}
 	return env
 }

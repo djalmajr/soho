@@ -379,6 +379,7 @@ func TestInventoryCLIOptedInAgentNullFields(t *testing.T) {
 }
 
 func TestInventoryCLIRegisteredTeamSample(t *testing.T) {
+	t.Setenv("SOHO_TEST_INVENTORY_SAMPLE", filepath.Join(t.TempDir(), "sample.txt"))
 	env, repo := commandFixture(t)
 	state := env["SOHO_DIR"]
 	sess := filepath.Join(state, "ws")

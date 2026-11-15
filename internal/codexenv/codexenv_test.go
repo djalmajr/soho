@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -445,7 +446,7 @@ func diagnosisEnvWithRules(t *testing.T, rules []fakecli.Rule) platform.Env {
 		t.Fatal(err)
 	}
 	env := platform.Env{}
-	for _, item := range fakecli.Env(os.Environ(), dir) {
+	for _, item := range fakecli.Env(testutil.CleanEnv(t), dir) {
 		key, value, ok := strings.Cut(item, "=")
 		if ok {
 			env[key] = value
@@ -542,7 +543,7 @@ func diagnosisEnvironment(t *testing.T, panes []string, infos map[string][]int) 
 	if _, err := fakecli.Install(t, dir, "herdr", rules); err != nil {
 		t.Fatal(err)
 	}
-	list := fakecli.Env(os.Environ(), dir)
+	list := fakecli.Env(testutil.CleanEnv(t), dir)
 	env := platform.Env{}
 	for _, v := range list {
 		k, value, ok := strings.Cut(v, "=")
@@ -569,7 +570,7 @@ func fakeEnvironment(t *testing.T, name string, rules []fakeRule) platform.Env {
 	if _, err := fakecli.Install(t, dir, name, converted); err != nil {
 		t.Fatal(err)
 	}
-	list := fakecli.Env(os.Environ(), dir)
+	list := fakecli.Env(testutil.CleanEnv(t), dir)
 	env := platform.Env{}
 	for _, entry := range list {
 		k, v, ok := strings.Cut(entry, "=")

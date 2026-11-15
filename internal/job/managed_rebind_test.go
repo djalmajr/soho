@@ -10,6 +10,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 // managed_rebind_test.go: BindLaunch taking over a confirmed launch
@@ -51,7 +52,7 @@ func liveProcess(t *testing.T) (int, string) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(self)
-	cmd.Env = append(os.Environ(), managedHelperVar+"=block")
+	cmd.Env = append(testutil.CleanEnv(t), managedHelperVar+"=block")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

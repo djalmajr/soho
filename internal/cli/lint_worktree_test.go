@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 // DJA-684: soho lint <brief> --role reviewer prints the no-Worktree advisory
@@ -45,7 +46,7 @@ func TestLintReviewWorktreeAdvisory(t *testing.T) {
 		return rc, stdout.String(), stderr.String()
 	}
 	base := platform.Env{
-		"PATH":            os.Getenv("PATH"),
+		"PATH":            testutil.HostPath(),
 		"HOME":            filepath.Join(root, "home"),
 		"XDG_CONFIG_HOME": filepath.Join(root, "config"),
 		"SOHO_DIR":        filepath.Join(root, "state"),

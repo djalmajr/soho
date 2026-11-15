@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 func TestTM10StateRemaining(t *testing.T) {
@@ -104,7 +105,7 @@ func TestTM10StateRemaining(t *testing.T) {
 		}
 	})
 	t.Run(`JS: "state root preserves the main checkout and non-git path behavior"`, func(t *testing.T) {
-		gitEnv := platform.Env{"PATH": os.Getenv("PATH")}
+		gitEnv := platform.Env{"PATH": testutil.HostPath()}
 		nonGit := t.TempDir()
 		if got := platform.StateProjectRoot(gitEnv, nonGit); got != nonGit {
 			t.Fatalf("non-git root=%q", got)
@@ -143,7 +144,7 @@ func TestTM10StateRemaining(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := platform.StateProjectRoot(platform.Env{"PATH": os.Getenv("PATH")}, linked); got != realLinked {
+		if got := platform.StateProjectRoot(platform.Env{"PATH": testutil.HostPath()}, linked); got != realLinked {
 			t.Fatalf("bare worktree root=%q want=%q", got, realLinked)
 		}
 	})
@@ -164,7 +165,7 @@ func TestTM10StateRemaining(t *testing.T) {
 		gitRun(t, super, "-c", "protocol.file.allow=always", "submodule", "add", subSource, "nested/sub")
 		gitRun(t, super, "commit", "-qam", "submodule")
 		sub := filepath.Join(super, "nested", "sub")
-		env := platform.Env{"PATH": os.Getenv("PATH")}
+		env := platform.Env{"PATH": testutil.HostPath()}
 		realSub, err := filepath.EvalSymlinks(sub)
 		if err != nil {
 			t.Fatal(err)
@@ -212,7 +213,7 @@ func TestTM10StateRemaining(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := platform.StateProjectRoot(platform.Env{"PATH": os.Getenv("PATH")}, worker); got != realWorker {
+		if got := platform.StateProjectRoot(platform.Env{"PATH": testutil.HostPath()}, worker); got != realWorker {
 			t.Fatalf("absolute metadata state root=%q want project root=%q", got, realWorker)
 		}
 	})

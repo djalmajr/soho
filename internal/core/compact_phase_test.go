@@ -26,6 +26,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -58,7 +59,7 @@ func compactPhaseLivenessChild(t *testing.T, sleepMS string) *exec.Cmd {
 	}
 	cmd := exec.Command(bin, "-test.run=^TestCompactPhaseLivenessChild$", "-test.timeout=60s")
 	childEnv := []string{}
-	for _, entry := range os.Environ() {
+	for _, entry := range testutil.CleanEnv(t) {
 		key, _, ok := strings.Cut(entry, "=")
 		if ok && strings.HasPrefix(key, "HERDR_") {
 			continue

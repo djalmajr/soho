@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 // guardProbeEnv marks the probe child of
@@ -42,7 +44,7 @@ func TestGuardSuiteRunRefusesAConfiglessFake(t *testing.T) {
 	cmd.Env = []string{
 		"HOME=" + dir,
 		"TMPDIR=" + dir,
-		"PATH=" + os.Getenv("PATH"),
+		"PATH=" + testutil.HostPath(),
 		guardProbeEnv + "=1",
 	}
 	var stdout, stderr bytes.Buffer

@@ -9,6 +9,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 // TestUseLaunchSelectionLineage: a bound supervisor hands the selection to
@@ -101,7 +102,7 @@ func TestWakeHookEnvironmentIsTheServers(t *testing.T) {
 	starterHome := starterRoot + "starter" + starterSep + "home"
 	server := platform.Env{
 		"XDG_CONFIG_HOME": "/server/xdg", "HOME": "/server/home", "USERPROFILE": "/server/home", "APPDATA": "/server/appdata",
-		"PATH": os.Getenv("PATH"), managedHelperVar: "envdump", "JOB_ENV_DUMP": dump,
+		"PATH": testutil.HostPath(), managedHelperVar: "envdump", "JOB_ENV_DUMP": dump,
 		launchConfigBaseVar: starterConfig, launchHomeVar: starterHome,
 	}
 	sel := ReadLaunchLocators(server).Selection

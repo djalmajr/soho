@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 func init() {
@@ -1689,10 +1690,10 @@ func setupTestHcBinary(t *testing.T, mode string) platform.Env {
 		"SOHO_TEST_HC_HELPER": "1",
 		"SOHO_HELPER_MODE":    mode,
 	}
-	if sysRoot := os.Getenv("SYSTEMROOT"); sysRoot != "" {
+	if sysRoot := testutil.HostSystemRoot(); sysRoot != "" {
 		envMap["SYSTEMROOT"] = sysRoot
 	}
-	if tmp := os.Getenv("TMPDIR"); tmp != "" {
+	if tmp := testutil.HostTempDir(); tmp != "" {
 		envMap["TMPDIR"] = tmp
 	}
 	return platform.Env(envMap)

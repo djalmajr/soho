@@ -11,6 +11,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/hc"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 	"github.com/djalmajr/soho/internal/transport"
 )
@@ -61,7 +62,7 @@ func fakeHc(t *testing.T, rules []fakecli.Rule) (platform.Env, func() []fakecli.
 	if _, err := fakecli.Install(t, dir, "hc", rules); err != nil {
 		t.Fatal(err)
 	}
-	list := fakecli.Env(os.Environ(), dir)
+	list := fakecli.Env(testutil.CleanEnv(t), dir)
 	env := platform.Env{}
 	for _, item := range list {
 		if k, v, ok := strings.Cut(item, "="); ok {

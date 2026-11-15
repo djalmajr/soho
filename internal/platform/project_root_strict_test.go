@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	testutil "github.com/djalmajr/soho/internal/testutil/testenv"
 )
 
 // strictRunRecorder pins the injected closure's argv and order: every call
@@ -439,9 +441,9 @@ func TestStateProjectRootWithGitFinalGuards(t *testing.T) {
 // cleanedGitEnv returns the process environment with every GIT_* variable
 // removed and the reference-lint cleaning applied: the caller's own routing,
 // never the inherited process Git state.
-func cleanedGitEnv() []string {
+func cleanedGitEnv(t *testing.T) []string {
 	var out []string
-	for _, kv := range os.Environ() {
+	for _, kv := range testutil.CleanEnv(t) {
 		key := kv[:strings.IndexByte(kv, '=')]
 		if strings.HasPrefix(strings.ToUpper(key), "GIT_") {
 			continue
@@ -461,7 +463,7 @@ func cleanedGitRun(t *testing.T, cwd string, args ...string) (string, int) {
 	}
 	cmd := exec.Command(resolved, args...)
 	cmd.Dir = cwd
-	cmd.Env = cleanedGitEnv()
+	cmd.Env = cleanedGitEnv(t)
 	out, err := cmd.Output()
 	if err == nil {
 		return string(out), 0

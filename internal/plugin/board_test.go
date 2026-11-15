@@ -790,7 +790,7 @@ func TestBridgeBoardOpensBoardPane(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := platform.Env{}
-	for _, entry := range fakecli.Env(os.Environ(), dir, fakecli.EnvOptions{IncludeBasePath: true}) {
+	for _, entry := range fakecli.Env(testutil.CleanEnv(t), dir, fakecli.EnvOptions{IncludeBasePath: true}) {
 		key, value, ok := strings.Cut(entry, "=")
 		if ok {
 			env[key] = value

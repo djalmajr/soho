@@ -9,6 +9,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 // policyFixture isolates the config stack: user under XDG_CONFIG_HOME,
@@ -32,7 +33,7 @@ func policyFixture(t *testing.T) (platform.Env, string) {
 	env := platform.Env{
 		"HOME": home, "XDG_CONFIG_HOME": conf, "SOHO_DIR": state,
 		"SOHO_SKILL_DIR": skill, "HERDR_WORKSPACE_ID": "ws",
-		"PATH": os.Getenv("PATH"),
+		"PATH": testutil.HostPath(),
 	}
 	return env, repo
 }

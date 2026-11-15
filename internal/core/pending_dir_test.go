@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 func skipLinksOnWindows(t *testing.T) {
@@ -266,7 +267,7 @@ func TestAQueueFileOfAnotherOwnerIsRefused(t *testing.T) {
 
 func TestTheFootprintIgnoresARefusedQueueSilently(t *testing.T) {
 	skipLinksOnWindows(t)
-	env := platform.Env{"TMPDIR": t.TempDir(), "PATH": os.Getenv("PATH")}
+	env := platform.Env{"TMPDIR": t.TempDir(), "PATH": testutil.HostPath()}
 	sd := t.TempDir()
 	copyDir := filepath.Join(t.TempDir(), "queued")
 	seedFile(t, filepath.Join(copyDir, "f.bin"), 1024)
@@ -292,7 +293,7 @@ func TestTheFootprintIgnoresARefusedQueueSilently(t *testing.T) {
 
 func TestAQueueFileOpenToOthersIsRefusedNotNarrowed(t *testing.T) {
 	skipOwnerOffUnix(t)
-	env := platform.Env{"TMPDIR": t.TempDir(), "PATH": os.Getenv("PATH")}
+	env := platform.Env{"TMPDIR": t.TempDir(), "PATH": testutil.HostPath()}
 	sd := t.TempDir()
 	copyDir := filepath.Join(t.TempDir(), "queued")
 	seedFile(t, filepath.Join(copyDir, "f.bin"), 512)

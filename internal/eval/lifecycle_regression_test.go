@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 // lifecycleFixtureSource is the fixture module: a green go test that re-execs
@@ -177,7 +179,13 @@ func lifecycleScratchEnv(scratch string) []string {
 		"GOTOOLCHAIN": "local",
 		"GOPROXY":     "off",
 	}
-	env := os.Environ()
+	var env []string
+	for _, item := range os.Environ() {
+		key, _, _ := strings.Cut(item, "=")
+		if !testutil.IsSessionVar(key) {
+			env = append(env, item)
+		}
+	}
 	for i, kv := range env {
 		eq := strings.IndexByte(kv, '=')
 		if eq < 0 {
@@ -312,7 +320,7 @@ func lifecycleTestArgs() []string {
 // per-scratch cache is removed with the scratch, and a driver-supplied
 // GOCACHE is owned by the driver.
 func lifecycleBuildEnv(scratch string) []string {
-	cache := os.Getenv("GOCACHE")
+	cache := testutil.HostGoCache()
 	if cache == "" {
 		return lifecycleScratchEnv(scratch)
 	}
@@ -353,4 +361,32 @@ func lifecycleCompiledFixtureBinary(t *testing.T, scratch string) string {
 		t.Fatalf("the persistent fixture binary is missing or empty: %v", statErr)
 	}
 	return binary
+}
+
+// These builders run before a testing.T exists or serve relocated toolchains,
+// so their explicitly allowlisted snapshots must still scrub session routing.
+func TestToolchainFixtureEnvironmentsDropSessionValues(t *testing.T) {
+	for _, key := range []string{"SOHO_BOUNDARY_CANARY", "HC_BOUNDARY_CANARY", "HERDR_BOUNDARY_CANARY", "CLAUDE_CODE_SESSION_ID", "CODEX_BOUNDARY_CANARY", "PI_BOUNDARY_CANARY"} {
+		t.Setenv(key, "synthetic-session-value")
+	}
+	t.Setenv("TEST_TOOLCHAIN_KEEP", "fixture-value")
+	root := t.TempDir()
+	for name, env := range map[string][]string{
+		"build":     hermeticEnv(root),
+		"lifecycle": lifecycleScratchEnv(root),
+		"relocated": childToolchainEnv("fixture-path", "fixture-goroot", root),
+	} {
+		if leaked := testutil.SessionVars(env); len(leaked) != 0 {
+			t.Errorf("%s leaked session keys: %v", name, leaked)
+		}
+		kept := false
+		for _, item := range env {
+			if item == "TEST_TOOLCHAIN_KEEP=fixture-value" {
+				kept = true
+			}
+		}
+		if !kept {
+			t.Errorf("%s dropped a non-session control", name)
+		}
+	}
 }

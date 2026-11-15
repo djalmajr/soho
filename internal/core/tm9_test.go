@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
-
 	"github.com/djalmajr/soho/internal/testutil"
+
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -373,7 +373,7 @@ func TestTM9ParentTitleSubtests(t *testing.T) {
 		tc := tc
 		t.Run(tc.title, func(t *testing.T) {
 			cmd := exec.Command(os.Args[0], "-test.run", "^"+tc.test+"$")
-			cmd.Env = os.Environ()
+			cmd.Env = testutil.CleanEnv(t)
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("existing Go mirror %s failed: %v\n%s", tc.test, err, output)
