@@ -45,6 +45,13 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 	hcMode := env.Get("SOHO_TRANSPORT") == "hc"
 
 	sd := core.StateDirPath(ctx, env, cwd)
+	if hcMode {
+		unlock, err := workerLifecycleLock(sd, agent)
+		if err != nil {
+			core.DieFriction("release: "+err.Error(), 4, frictionLogPath, "release")
+		}
+		defer unlock()
+	}
 	line := core.RosterLine(sd, agent)
 	if line == "" {
 		if closePane && releaseOrphan(agent, force, ctx, env, cwd, svc) {

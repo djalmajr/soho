@@ -39,6 +39,7 @@ var dispatchWaitFiles = []string{"size", "screen", "since", "blocked", "approval
 var dispatchWaitFor = waitpkg.WaitFor
 var writeDispatchSidecar = dispatch.WriteSidecar
 var dispatchCodexSupportsNoDaemon = spawn.CodexSupportsNoDaemon
+var workerLifecycleLock = core.LockWorkerLifecycle
 
 func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	return cmdDispatchWithOptions(argv, ctx, env, cwd, dispatchOptions{})
@@ -152,6 +153,15 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// collaboration cleanup or interaction with the worker.
 	platform.LauncherPath(env)
 	sd := core.StateDirPath(ctx, env, cwd)
+	unlockLifecycle := func() {}
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		unlock, err := workerLifecycleLock(sd, agent)
+		if err != nil {
+			core.DieFriction("dispatch: "+err.Error(), 4, frictionLogPath, "dispatch")
+		}
+		unlockLifecycle = unlock
+		defer unlock()
+	}
 	line := core.RosterLine(sd, agent)
 	if line == "" {
 		message := fmt.Sprintf("agent '%s' is not in this skill's roster (spawn it first, or pass a name you spawned)", agent)
@@ -451,6 +461,9 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	briefSHA := sha256Hex(rawBrief)
 	if !resend && (openDispatchRole(sd, agent) == "" || openDispatchRole(sd, agent) == role) {
 		if dup := findDispatchDuplicate(sd, agent, briefSHA, role, amend); dup != nil {
+			// This observes an existing task; it must not reserve the worker
+			// against release or amendments while waiting for its report.
+			unlockLifecycle()
 			return dispatchDuplicateResult(agent, role, kind, dup, noWait, timeoutRaw, sd, ctx, env, cwd)
 		}
 	}
@@ -1011,6 +1024,9 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	if noWait && checkOn && status != "queued" {
 		status, last = noWaitObservation(agent, role, kind, lane, model, report, env, svc, sd, ctx, priorAuth)
 	}
+	// Delivery and pointer restoration are complete. Waiting for a report
+	// must not reserve the worker against release or a later dispatch.
+	unlockLifecycle()
 	waitCode := 0
 	if !noWait {
 		old := platform.Stdout
