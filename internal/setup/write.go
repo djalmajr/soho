@@ -17,6 +17,7 @@ import (
 
 var inlineConfigComment = regexp.MustCompile(`[ \t]#.*$`)
 var setupPromptConfig = regexp.MustCompile(`^(multi_role=|role\.[A-Za-z0-9_-]+\.kind=|lane\.[A-Za-z0-9_-]+\.kind=)`)
+var userTeamKey = regexp.MustCompile(`^(multi_role|role_[A-Za-z0-9_]+_kind|lane_[A-Za-z0-9_]+_kind)$`)
 
 // readOrRefuse reads a project instruction or Claude settings file for the
 // setup writers: only a missing file counts as absent. Any other error (an
@@ -442,7 +443,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			_, _ = fmt.Fprintf(platform.Stdout, "state dir outside the repository: %s (no repository Git exclusion is needed)\n", stateShown)
 		}
 		_, _ = fmt.Fprintln(platform.Stdout, "note: Claude Code reads CLAUDE.local.md; Claude Code, Codex and pi run the peer checks. Codex, pi, Grok, Cursor and agy need a separate local instruction route.")
-		promptConfigNotice(conf, true)
+		promptConfigNotice(ctx, conf, true)
 		return
 	}
 	_, _ = fmt.Fprintf(platform.Stdout, "block %s: %s\n", setupWriteBlock(dest), dest)
@@ -461,7 +462,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	writeCanonicalStateIgnore(ctx, env, cwd)
 	_, _ = fmt.Fprintf(platform.Stdout, "state dir ignored: %s/\n", core.StateDirSetting(ctx, env, cwd))
 	_, _ = fmt.Fprintln(platform.Stdout, "note: Claude Code, Codex and pi run the peer checks; Grok, Cursor and agy only read the instruction file.")
-	promptConfigNotice(conf, false)
+	promptConfigNotice(ctx, conf, false)
 }
 
 func containsSetupArg(args []string, want string) bool {
@@ -560,9 +561,33 @@ func writeSetupLanes(conf string, lanes []core.LaneSpec, env platform.Env, cwd s
 	}
 }
 
-func promptConfigNotice(conf string, local bool) {
+// userLayerChoosesTeam reports whether the user's own configuration file
+// already holds a team choice (the same keys projectNeedsConfigPrompt looks
+// for in the project file). That choice is in effect in every project that
+// does not override it, so setup has nothing to ask.
+func userLayerChoosesTeam(ctx *core.Config) bool {
+	if ctx == nil {
+		return false
+	}
+	for _, layer := range ctx.Layers {
+		if layer.Source != "user" || layer.ReadError != nil {
+			continue
+		}
+		// Entries holds the keys as the loader normalized them, so every
+		// spelling the loader accepts (lane.build.kind, lane_build_kind,
+		// multi-role) counts, and a commented-out line does not.
+		for key := range layer.Entries {
+			if userTeamKey.MatchString(key) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func promptConfigNotice(ctx *core.Config, conf string, local bool) {
 	path := conf
-	if !projectNeedsConfigPrompt(path) {
+	if !projectNeedsConfigPrompt(path) || userLayerChoosesTeam(ctx) {
 		return
 	}
 	flag := ""
