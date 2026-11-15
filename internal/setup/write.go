@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/dispatch"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/setuptext"
 )
@@ -136,6 +137,7 @@ func writeHooksSection(root string, env platform.Env, local bool) []string {
 		migrateSharedHooks(root, env)
 	}
 	_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder, SessionStart doctor)\n", settings)
+	noteUntrackedHookFile(settings, env, local)
 	if writePiInboundExtension(root) {
 		ready = append(ready, piInboundRel)
 	}
@@ -157,6 +159,7 @@ func writeHooksSection(root string, env platform.Env, local bool) []string {
 			platform.DieFriction("could not merge hooks into "+codex, 4)
 		}
 		_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder + SessionStart doctor, codex)\n", codex)
+		noteUntrackedHookFile(codex, env, local)
 		ready = append(ready, codexHookRel)
 	}
 	// The generated hooks are the portable PATH commands 'soho hook
@@ -169,6 +172,23 @@ func writeHooksSection(root string, env platform.Env, local bool) []string {
 		core.Warn("SessionStart hook cannot resolve soho in PATH; add the native soho binary to PATH so the generated hooks ('soho hook reminder', 'soho hook doctor') can run", "", "setup")
 	}
 	return ready
+}
+
+// noteUntrackedHookFile tells a shared (non --local) setup that a hook file it
+// just wrote is not shared yet: it prints one line when Git, queried through
+// the shared reference runner (cleaned GIT_* environment, 5 s bound), lists the
+// file as untracked and not ignored. A file that is tracked, ignored or outside
+// a work tree, and any Git failure (missing git, timeout, non-zero status),
+// print nothing: the note is advisory and never fails setup.
+func noteUntrackedHookFile(file string, env platform.Env, local bool) {
+	if local {
+		return
+	}
+	res := dispatch.ReferenceGit(env, "-C", filepath.Dir(file), "ls-files", "--others", "--exclude-standard", "--", filepath.Base(file))
+	if res.NotFound || res.TimedOut || res.Error != "" || res.Status == nil || *res.Status != 0 || strings.TrimSpace(res.Stdout) == "" {
+		return
+	}
+	_, _ = fmt.Fprintf(platform.Stdout, "note: %s is untracked; commit it to share the hooks, or run 'setup --local' to keep them out of the repository\n", file)
 }
 
 func writePiInboundExtension(root string) bool {
