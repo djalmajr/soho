@@ -8,6 +8,8 @@ For portable Core readiness (native identity/cwd/PID ancestry checks, Codex `--n
 
 `hc` (Herdr Core) executes programs in persistent terminals and tracks agent lifecycle; it does not arrange windows, spaces, or tabs.
 
+Native peer replies use `hc send <terminal> …`, where `<terminal>` is the verified recipient's Core terminal address and the message is passed as one quoted argument (the backend's argv form is `hc send -- <terminal> <message>`). On the legacy TUI, use `soho send <ref> …`; that Soho command is refused on hc. A send does not place or focus a desktop pane.
+
 `herdr-app` controls the desktop window, spaces, tabs, layout, and visual placement; it does not manage agent orchestration logic.
 
 Your native terminal address is `$HC_TERMINAL_ID` (for example illustrative `t7`); this is an internal terminal address, not a window pane ID (for example illustrative `p12`). Illustrative example IDs are never targets to copy; every actual target comes strictly from discovery.

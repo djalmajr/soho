@@ -377,8 +377,9 @@ func Run(args []string, env platform.Env) (code int) {
 		return 0
 	}
 	if command == "setup" {
+		ctx := core.LoadConfigFor(decisionEnv, commandCwd, userSel)
 		setup.BuildVersion = version
-		setup.CmdSetup(args[1:], configCtx, decisionEnv, commandCwd)
+		setup.CmdSetup(args[1:], &ctx, decisionEnv, commandCwd)
 		return 0
 	}
 	if command == "doctor" {

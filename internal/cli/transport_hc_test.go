@@ -353,6 +353,70 @@ func isWorkerRead(argv []string) bool {
 
 // Setup may read the caller's session while loading configuration, but must
 // never send a legacy plugin operation or copy Core metadata into the project.
+func TestSetupUsesResolvedHcSessionConfig(t *testing.T) {
+	for _, mode := range []string{"file", "environment", "missing-caller", "failed-core"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newHcGuardFixture(t)
+			f.env["XDG_CONFIG_HOME"] = filepath.Join(f.root, "config")
+			f.env["HC_TERMINAL_ID"] = "t1"
+			f.env["SOHO_FAKECLI_CONFIG"] = f.env.Get("PATH")
+			if mode != "environment" {
+				delete(f.env, "SOHO_TRANSPORT")
+			}
+			if mode == "missing-caller" {
+				delete(f.env, "HC_TERMINAL_ID")
+			}
+			for rel, data := range map[string]string{
+				".agents/soho.conf":     "transport=hc\n",
+				"state/sX/session.conf": "setup_target=local\n",
+			} {
+				path := filepath.Join(f.root, rel)
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rule := fakecli.Rule{Argv: []string{"get", "t1", "--json"}, Stdout: `{"address":"t1","state":"live","labels":{"soho.session":"sX"}}`}
+			if mode == "failed-core" {
+				rule.Code = 3
+				rule.Stdout = ""
+			}
+			if _, err := fakecli.Install(t, f.env.Get("PATH"), "hc", []fakecli.Rule{rule}); err != nil {
+				t.Fatal(err)
+			}
+			code, out, errOut := f.run(t, "setup")
+			if code != 0 {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, errOut)
+			}
+			local := mode == "file" || mode == "environment"
+			want, absent := "AGENTS.md", "CLAUDE.local.md"
+			if local {
+				want, absent = absent, want
+			}
+			data, err := os.ReadFile(filepath.Join(f.root, want))
+			if err != nil || string(data) != setuptext.SetupBlock() {
+				t.Fatalf("%s: err=%v content=%q (mode=%s)", want, err, data, mode)
+			}
+			if _, err := os.Stat(filepath.Join(f.root, absent)); !os.IsNotExist(err) {
+				t.Fatalf("unexpected %s: %v", absent, err)
+			}
+			settings := ".claude/settings.json"
+			if local {
+				settings = ".claude/settings.local.json"
+			}
+			if _, err := os.Stat(filepath.Join(f.root, settings)); err != nil {
+				t.Fatalf("%s: %v", settings, err)
+			}
+			data, err = os.ReadFile(filepath.Join(f.root, "state/sX/session.conf"))
+			if err != nil || string(data) != "setup_target=local\n" {
+				t.Fatalf("session changed: %q %v", data, err)
+			}
+		})
+	}
+}
+
 func TestSetupOnHc(t *testing.T) {
 	for _, mode := range []string{"", "--dry-run", "--local", "--plan", "--detect", "--probe"} {
 		t.Run(mode, func(t *testing.T) {
