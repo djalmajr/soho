@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
@@ -20,8 +21,10 @@ func cmdLint(args []string, ctx *core.Config, env platform.Env, cwd string) int 
 		platform.DieFriction(lintUsage, 2)
 	}
 	role := "implementer"
+	explicitRole := false
 	if len(args) == 3 && args[1] == "--role" && args[2] != "" && !(len(args[2]) >= 2 && args[2][:2] == "--") {
 		role = args[2]
+		explicitRole = true
 	} else if len(args) != 1 {
 		platform.DieFriction(lintUsage, 2)
 	}
@@ -31,6 +34,16 @@ func cmdLint(args []string, ctx *core.Config, env platform.Env, cwd string) int 
 	}
 	if core.RoleFile(role, env, cwd) == "" {
 		platform.DieFriction(fmt.Sprintf("lint: unknown role '%s'", role)+core.UnknownRoleHint(role, env, cwd), 3)
+	}
+	// With --role, lint reports the conflict the dispatch would refuse: a
+	// read-only role and a brief that asks for edits. Without --role the
+	// default edit role would make the check fire on every edit brief.
+	if explicitRole && !core.RoleIsEdit(role, env, cwd) && roleDeclaredReadOnly(role, env, cwd) {
+		if body, err := os.ReadFile(brief); err == nil {
+			if signals, suggested, remedy := readOnlyEditSignals(string(body)); len(signals) > 0 {
+				platform.DieFriction(fmt.Sprintf("lint: brief %s asks for edits (%s) but '%s' is a read-only role; the dispatch would refuse it. Lint it with --role %s to check it as an edit role, %s", brief, strings.Join(signals, ", "), role, suggested, remedy), 2)
+			}
+		}
 	}
 	result := dispatch.BriefLintFindings(brief, ctx, env, dispatch.BriefLintOptions{ReadOnly: !core.RoleIsEdit(role, env, cwd)})
 	code := 0

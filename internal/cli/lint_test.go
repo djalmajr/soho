@@ -54,10 +54,10 @@ func TestLintCommandReadOnlyAndExitModes(t *testing.T) {
 		}
 		stdout.Reset()
 		stderr.Reset()
-		// The reviewer role gets the Worktree: advisory (measurement only):
-		// it prints, never refuses, and the clean brief stays exit 0.
-		if code := Run([]string{"lint", brief, "--role", "reviewer"}, env); code != 0 || stdout.String() != "brief "+brief+": ok\n" || !strings.Contains(stderr.String(), "has no Worktree: line: this review cannot be tied to its author") {
-			t.Fatalf("read-only role: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+		// SOH-287: --role with a read-only role reports the conflict the
+		// dispatch would refuse when the brief lists owned files.
+		if code := Run([]string{"lint", brief, "--role", "reviewer"}, env); code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "asks for edits (Owned files) but 'reviewer' is a read-only role") {
+			t.Fatalf("read-only role with owned files: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 		}
 
 		noOwned := strings.Replace(valid, "# Owned files\nsrc/a.go\n", "", 1)

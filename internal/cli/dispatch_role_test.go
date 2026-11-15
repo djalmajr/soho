@@ -69,6 +69,10 @@ func TestDispatchRoleEditSignals(t *testing.T) {
 		{name: "reviewer-arquivos-scope", body: "Type: review\n## Arquivos\n- app.go\n", explicit: "reviewer"},
 		{name: "reviewer-arquivos-empty", body: "Type: review\n## Arquivos\n\n## Outro\n- x\n", explicit: "reviewer"},
 		{name: "reviewer-both-titles", body: "## Arquivos\n- a.go\n\n## Owned files\n- b.go\n", explicit: "reviewer", signal: "Owned files", suggest: "implementer", word: "was given", refuse: true},
+		{name: "none-owned", body: "# Owned files\nNenhum. Só leitura.\n\n# Report\nDone\n"},
+		{name: "none-owned-explicit-reviewer", body: "# Owned files\n- None\n", explicit: "reviewer"},
+		{name: "none-and-path-owned", body: "# Owned files\nNone.\n- app.go\n", signal: "Owned files", suggest: "implementer", word: "runs", refuse: true},
+		{name: "listed-owned-after-none-prefix-name", body: "# Owned files\nnonexistent.go\n", signal: "Owned files", suggest: "implementer", word: "runs", refuse: true},
 		{name: "empty-owned", body: "# Owned files\n\n# Report\nDone\n"},
 		{name: "fenced-owned", body: "```md\nType: backend\n# Owned files\n- app.go\n```\nType: review\n"},
 	} {
