@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -141,5 +142,136 @@ func TestLintCommandTypeSectionWarningsExitModes(t *testing.T) {
 	code, out, errOut = run()
 	if code != 0 || out != "brief "+brief+": lint off (brief_lint=off)\n" || errOut != "" {
 		t.Fatalf("off lint: code=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+}
+
+// The lint command asks for the Mutations section of an edit role only: the
+// same brief linted for a read-only role (the notion that drops Owned files)
+// is clean, and for an edit role it still warns.
+func TestLintCommandMutationsFollowTheRoleMode(t *testing.T) {
+	root := t.TempDir()
+	skillDir, err := filepath.Abs(filepath.Join(packageDir, "..", "..", "skills", "soho"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldCwd) }()
+	if err := os.Mkdir(filepath.Join(root, "home"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	brief := filepath.Join(root, "brief.md")
+	// No Owned files and no Mutations: only the edit role is asked for them.
+	if err := os.WriteFile(brief, []byte("Type: security\n# Goal\nReview the slice.\n# Expected result\nDone.\n# Forbidden\nNo commit/push.\n# Report\nDone.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := platform.Env{
+		"PATH":            os.Getenv("PATH"),
+		"HOME":            filepath.Join(root, "home"),
+		"XDG_CONFIG_HOME": filepath.Join(root, "home"),
+		"SOHO_DIR":        filepath.Join(root, "state"),
+		"SOHO_SKILL_DIR":  skillDir,
+	}
+	oldOut, oldErr := platform.Stdout, platform.Stderr
+	var stdout, stderr bytes.Buffer
+	platform.Stdout, platform.Stderr = &stdout, &stderr
+	defer func() { platform.Stdout, platform.Stderr = oldOut, oldErr }()
+	run := func(role string) (int, string, string) {
+		stdout.Reset()
+		stderr.Reset()
+		code := Run([]string{"lint", brief, "--role", role}, env)
+		return code, stdout.String(), stderr.String()
+	}
+	for _, role := range []string{"reviewer", "security-reviewer", "scouter"} {
+		code, out, errOut := run(role)
+		if code != 0 || out != "brief "+brief+": ok\n" || strings.Contains(errOut, "'Mutations'") || strings.Contains(errOut, "'Input and response'") {
+			t.Fatalf("read-only role %s: code=%d stdout=%q stderr=%q (want clean)", role, code, out, errOut)
+		}
+	}
+	code, _, errOut := run("implementer")
+	want := "soho: warning: brief " + brief + " has Type: security and no 'Mutations' section: name the mutation and the case that must fail, for each rule"
+	if code != 1 || !strings.Contains(errOut, want) {
+		t.Fatalf("edit role: code=%d stderr=%q (want code 1 and %q)", code, errOut, want)
+	}
+}
+
+// The lint command reports an unfilled Mutations section as empty: a bare
+// n/a:, an HTML comment, a TBD or TODO and the template's unedited
+// instruction line; prose and a valid n/a: reason stay clean.
+func TestLintCommandUnfilledMutationsWarnEmpty(t *testing.T) {
+	root := t.TempDir()
+	skillDir, err := filepath.Abs(filepath.Join(packageDir, "..", "..", "skills", "soho"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := os.ReadFile(filepath.Join(skillDir, "templates", "brief.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	instruction := ""
+	for _, line := range strings.Split(string(template), "\n") {
+		if strings.HasPrefix(line, "One row per rule ") {
+			instruction = line
+		}
+	}
+	if instruction == "" {
+		t.Fatal("template has no Mutations instruction line")
+	}
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldCwd) }()
+	if err := os.Mkdir(filepath.Join(root, "home"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	env := platform.Env{
+		"PATH":            os.Getenv("PATH"),
+		"HOME":            filepath.Join(root, "home"),
+		"XDG_CONFIG_HOME": filepath.Join(root, "home"),
+		"SOHO_DIR":        filepath.Join(root, "state"),
+		"SOHO_SKILL_DIR":  skillDir,
+	}
+	oldOut, oldErr := platform.Stdout, platform.Stderr
+	var stdout, stderr bytes.Buffer
+	platform.Stdout, platform.Stderr = &stdout, &stderr
+	defer func() { platform.Stdout, platform.Stderr = oldOut, oldErr }()
+	const head = "# Goal\nDo the slice.\n# Expected result\nDone.\n# Owned files\nsrc/a.go\n# Forbidden\nNo commit/push.\n# Report\nDone.\nType: backend\n" +
+		"## Risk markers\n- [boundary] b\n- [lifetime] l\n- [shared] s\n- [identity] i\n- [hostile] h\n## Mutations\n"
+	empty := "soho: warning: brief %s 'Mutations' section is empty"
+	cases := []struct {
+		name string
+		body string
+		warn bool
+	}{
+		{"bare n/a", "n/a:\n", true},
+		{"punctuation-only n/a", "n/a: ...\n", true},
+		{"html comment", "<!-- Delete this section for every Type but backend and security. -->\n", true},
+		{"TBD", "TBD\n", true},
+		{"todo", "todo\n", true},
+		{"template instruction", instruction + "\n", true},
+		{"prose", "Revert the guard in place; the new test must fail.\n", false},
+		{"n/a with reason", "n/a: no rule worth mutating\n", false},
+	}
+	for i, tc := range cases {
+		brief := filepath.Join(root, "brief"+string(rune('a'+i))+".md")
+		if err := os.WriteFile(brief, []byte(head+tc.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stdout.Reset()
+		stderr.Reset()
+		code := Run([]string{"lint", brief, "--role", "implementer"}, env)
+		got := strings.Contains(stderr.String(), fmt.Sprintf(empty, brief))
+		if got != tc.warn || (code == 1) != tc.warn {
+			t.Errorf("%s: code=%d stdout=%q stderr=%q (want empty-section warning: %v)", tc.name, code, stdout.String(), stderr.String(), tc.warn)
+		}
 	}
 }

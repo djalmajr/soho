@@ -22,6 +22,7 @@ type typeSectionSpec struct {
 		reason string
 	}
 	content bool // require a table data row or list item (or whole-section n/a)
+	anyText bool // with content: any non-blank text counts, prose included
 }
 
 var typeSectionSpecs = map[string]typeSectionSpec{
@@ -59,6 +60,7 @@ var mutationSectionSpec = typeSectionSpec{
 	synonym: "Mutações",
 	reason:  "name the mutation and the case that must fail, for each rule",
 	content: true,
+	anyText: true,
 }
 
 // mutationTypes need the Mutations section in addition to their own.
@@ -89,7 +91,11 @@ func TypeSectionWarnings(briefPath, body string) []string {
 			return
 		}
 		if spec.content {
-			if !sectionHasTableOrListContent(lines, mask, start, end) {
+			has := sectionHasTableOrListContent(lines, mask, start, end)
+			if spec.anyText {
+				has = has || sectionHasText(lines, mask, start, end)
+			}
+			if !has {
 				out = append(out, fmt.Sprintf("brief %s '%s' section is empty", briefPath, spec.title))
 			}
 			return
@@ -237,6 +243,79 @@ func sectionHasTableOrListContent(lines []string, mask []bool, start, end int) b
 		}
 	}
 	return false
+}
+
+var bareListMarkerPattern = regexp.MustCompile(`^(?:[-*+]|\d{1,9}[.)])$`)
+
+// mutationsTemplateInstruction is the instruction line of the Mutations
+// section in skills/soho/templates/brief.md, word for word. Left unedited it
+// is boilerplate, not content; a test keeps it equal to the template's.
+const mutationsTemplateInstruction = "One row per rule the slice adds or changes: the mutation (what the rule stops doing) and the case that must fail when it does. Say `n/a: <reason>` on the first line when the slice adds no rule worth mutating."
+
+// stripHTMLComments removes the HTML comments from a line; inComment carries
+// an unclosed comment over to the next line.
+func stripHTMLComments(line string, inComment bool) (string, bool) {
+	var out strings.Builder
+	for line != "" {
+		if inComment {
+			_, rest, found := strings.Cut(line, "-->")
+			if !found {
+				return out.String(), true
+			}
+			line, inComment = rest, false
+			continue
+		}
+		before, rest, found := strings.Cut(line, "<!--")
+		out.WriteString(before)
+		if !found {
+			break
+		}
+		line, inComment = rest, true
+	}
+	return out.String(), inComment
+}
+
+// sectionHasText reports whether the section body (outside fenced blocks)
+// carries any non-blank text: prose or a list item. Blank lines, a heading
+// of the section's own sub-structure, a list marker without text, a table's
+// header and separator rows, an HTML comment, an `n/a:` without a valid
+// reason and the template's unedited instruction line do not count, and a
+// placeholder (TBD or TODO, any case) alone on the only text line counts as
+// nothing.
+func sectionHasText(lines []string, mask []bool, start, end int) bool {
+	var text []string
+	inComment := false
+	for i := start + 1; i < end; i++ {
+		if mask[i] {
+			continue
+		}
+		line, still := stripHTMLComments(lines[i], inComment)
+		inComment = still
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || bareListMarkerPattern.MatchString(trimmed) {
+			continue
+		}
+		if _, ok := lintHeadingPrefix(line); ok {
+			continue
+		}
+		if isTableSeparatorLine(line) {
+			continue
+		}
+		if strings.Contains(line, "|") && i+1 < len(lines) && !mask[i+1] && isTableSeparatorLine(lines[i+1]) {
+			continue // the header row directly above the separator
+		}
+		if strings.HasPrefix(trimmed, "n/a:") && !naReasonValid(strings.TrimPrefix(trimmed, "n/a:")) {
+			continue
+		}
+		if strings.Join(strings.Fields(trimmed), " ") == mutationsTemplateInstruction {
+			continue
+		}
+		text = append(text, trimmed)
+	}
+	if len(text) == 1 && (strings.EqualFold(text[0], "TBD") || strings.EqualFold(text[0], "TODO")) {
+		return false
+	}
+	return len(text) > 0
 }
 
 func isTableDataLine(lines []string, mask []bool, i int) bool {

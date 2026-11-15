@@ -66,6 +66,121 @@ func TestTypeSectionWarnings(t *testing.T) {
 			[]string{"brief " + path + " 'Mutations' section is empty"},
 		},
 		{
+			"backend-mutations-prose-only",
+			"Type: backend\n" + allMarkers + "## Mutations\nRevert the guard in place; the new test must fail, then restore the file by checksum.\n",
+			nil,
+		},
+		{
+			"backend-mutations-heading-only",
+			"Type: backend\n" + allMarkers + "## Mutations\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-blank-lines-only",
+			"Type: backend\n" + allMarkers + "## Mutations\n\n   \n\t\n## Report\nDone.\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-subheading-only",
+			"Type: backend\n" + allMarkers + "## Mutations\n### Later\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-bare-list-marker-only",
+			"Type: backend\n" + allMarkers + "## Mutations\n-\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-prose-only-inside-fence-is-empty",
+			"Type: backend\n" + allMarkers + "## Mutations\n```\nprose in a fence\n```\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-bare-na-only",
+			"Type: backend\n" + allMarkers + "## Mutations\nn/a:\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-punctuation-na-only",
+			"Type: backend\n" + allMarkers + "## Mutations\nn/a: ...\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-na-after-comment-without-reason",
+			"Type: backend\n" + allMarkers + "## Mutations\n<!-- note -->\nn/a: --\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-comment-only",
+			"Type: backend\n" + allMarkers + "## Mutations\n<!-- Delete this section for every Type but backend and security. -->\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-multiline-comment-only",
+			"Type: backend\n" + allMarkers + "## Mutations\n<!--\nRevert the guard\nthe case that must fail\n-->\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-placeholder-tbd",
+			"Type: backend\n" + allMarkers + "## Mutations\nTBD\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-placeholder-todo-lowercase",
+			"Type: backend\n" + allMarkers + "## Mutations\ntodo\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-placeholder-after-comment",
+			"Type: backend\n" + allMarkers + "## Mutations\n<!-- later -->\nTODO\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-template-instruction-only",
+			"Type: backend\n" + allMarkers + "## Mutations\n<!-- Delete this section for every Type but backend and security. -->\n" + mutationsTemplateInstruction + "\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-template-instruction-only-list-marker",
+			"Type: backend\n" + allMarkers + "## Mutations\n" + mutationsTemplateInstruction + "\n-\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-prose-after-comment",
+			"Type: backend\n" + allMarkers + "## Mutations\n<!-- note -->\nRevert the guard; the new test must fail.\n",
+			nil,
+		},
+		{
+			"backend-mutations-prose-beside-comment",
+			"Type: backend\n" + allMarkers + "## Mutations\n<!-- note --> Revert the guard; the new test must fail.\n",
+			nil,
+		},
+		{
+			"backend-mutations-placeholder-word-inside-prose",
+			"Type: backend\n" + allMarkers + "## Mutations\nTBD: revert the guard, the new test must fail\n",
+			nil,
+		},
+		{
+			"backend-mutations-placeholder-with-other-text",
+			"Type: backend\n" + allMarkers + "## Mutations\nTBD\nRevert the guard; the new test must fail.\n",
+			nil,
+		},
+		{
+			"backend-mutations-na-with-reason-after-comment",
+			"Type: backend\n" + allMarkers + "## Mutations\n<!-- note -->\nn/a: no rule worth mutating\n",
+			nil,
+		},
+		{
+			"backend-mutations-edited-template-instruction",
+			"Type: backend\n" + allMarkers + "## Mutations\nOne row per rule the slice adds: revert the guard; the new test must fail.\n",
+			nil,
+		},
+		{
+			"security-mutations-prose-only-input-still-needs-list",
+			"Type: security\n## Input and response\nprose only\n## Mutations\nprose is enough here\n",
+			[]string{"brief " + path + " 'Input and response' section is empty"},
+		},
+		{
 			"backend-risk-markers-whole-na",
 			"Type: backend\n## Risk markers\nn/a: nothing at risk in this slice\n" + mutationsRow,
 			nil,
@@ -344,6 +459,40 @@ func TestBriefLintFindingsTypeSectionGating(t *testing.T) {
 	})
 }
 
+// The Mutations section is asked of an edit role only: a read-only role
+// (the notion that also drops the Owned files requirement) gets no warning
+// for any Type, and an edit role still does.
+func TestBriefLintFindingsMutationsFollowTheRoleMode(t *testing.T) {
+	for _, typ := range []string{"security", "backend"} {
+		body := "Type: " + typ + "\n# Goal\nDo it.\n# Expected result\nDone.\n# Forbidden\nNo commit/push.\n# Report\nWrite it.\n"
+		run := func(t *testing.T, options BriefLintOptions) BriefLintResult {
+			t.Helper()
+			file := filepath.Join(t.TempDir(), "brief.md")
+			if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return BriefLintFindings(file, &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{}, options)
+		}
+		t.Run(typ+" read-only role: no Mutations or type-section warning", func(t *testing.T) {
+			got := run(t, BriefLintOptions{ReadOnly: true})
+			if len(got.Warnings) != 0 || got.MissingMessage != "" {
+				t.Fatalf("read-only findings = %#v", got)
+			}
+		})
+		t.Run(typ+" edit role: Mutations still warned", func(t *testing.T) {
+			got := run(t, BriefLintOptions{})
+			want := "has Type: " + typ + " and no 'Mutations' section: name the mutation and the case that must fail, for each rule"
+			found := false
+			for _, warning := range got.Warnings {
+				found = found || strings.Contains(warning, want)
+			}
+			if !found {
+				t.Fatalf("edit role lost the Mutations warning: %q", got.Warnings)
+			}
+		})
+	}
+}
+
 func equalStringSlices(got, want []string) bool {
 	if len(got) != len(want) {
 		return false
@@ -370,5 +519,17 @@ func TestTypeSectionsFilledTemplateBriefWarnsNothing(t *testing.T) {
 		if warnings := TypeSectionWarnings("brief.md", filled); len(warnings) != 0 {
 			t.Fatalf("filled %s template brief warns: %v", typ, warnings)
 		}
+	}
+}
+
+// The Mutations template instruction the lint ignores is the template's own
+// line, word for word.
+func TestMutationsTemplateInstructionMatchesTheTemplate(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "skills", "soho", "templates", "brief.md"))
+	if err != nil {
+		t.Fatalf("shipped template unreadable from the test directory: %v", err)
+	}
+	if got := strings.Count(string(data), "\n"+mutationsTemplateInstruction+"\n"); got != 1 {
+		t.Fatalf("template carries the Mutations instruction line %d times, want 1: update mutationsTemplateInstruction", got)
 	}
 }

@@ -33,6 +33,8 @@ Never search (grep, rg, find, ls -R, fd) outside the worktree, the directories t
 Report an issue only when all hold: provable impact on a specific code path; actionable discrete fix; clearly unintentional; introduced by the patch (not pre-existing); no unstated assumptions; rigor proportionate to the codebase.
 </criteria>
 
+Stop criterion: report as a defect finding only what makes a correct product fail, an incorrect one pass, a user be told something false, a process or resource be left behind or wrongly used, or a published instruction contradict another. A `test-gap`, as the report contract below defines it (the code is right but a test does not prove it, or changed code has no test in a layer VALIDATION.md declares with a command), remains a finding whether or not the product fails. A tighter bound on a test that already discriminates the behavior is a note, not a finding, and does not change the verdict.
+
 If your brief names a snapshot, review that path. An existing file or link at either artifact name is refused with exit 2; the existing entry and any link target remain untouched.
 
 <critical>

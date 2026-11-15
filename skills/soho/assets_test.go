@@ -655,3 +655,31 @@ func TestJobOrchestratorLeavesThePushToTheSupervisor(t *testing.T) {
 		}
 	}
 }
+
+// SOH-272: the two review roles that judge a change carry the same stop
+// criterion, and it keeps the three cases that decide what is a finding. The
+// reviewer keeps its `test-gap` category as a finding; the security reviewer
+// reports a reachable vulnerability whether or not a test fails.
+func TestReviewRolesCarryTheStopCriterion(t *testing.T) {
+	const base = "Stop criterion: report as a defect finding only what makes a correct product fail, an incorrect one pass, a user be told something false, a process or resource be left behind or wrongly used, or a published instruction contradict another."
+	const tight = "A tighter bound on a test that already discriminates the behavior is a note, not a finding, and does not change the verdict."
+	extra := map[string]string{
+		"reviewer.md":          "A `test-gap`, as the report contract below defines it (the code is right but a test does not prove it, or changed code has no test in a layer VALIDATION.md declares with a command), remains a finding whether or not the product fails.",
+		"security-reviewer.md": "A reachable vulnerability or a violation of a security policy is a finding whether or not a test fails.",
+	}
+	for _, name := range []string{"reviewer.md", "security-reviewer.md"} {
+		body := roleBody(t, name)
+		want := base + " " + extra[name] + " " + tight
+		if got := strings.Count(body, want); got != 1 {
+			t.Fatalf("%s: stop criterion paragraph count = %d, want 1", name, got)
+		}
+		if got := strings.Count(body, "Stop criterion:"); got != 1 {
+			t.Fatalf("%s: stop criterion count = %d, want 1", name, got)
+		}
+	}
+	// The reviewer's own report contract still defines the test-gap kind the
+	// stop criterion keeps as a finding.
+	if body := roleBody(t, "reviewer.md"); !strings.Contains(body, "`test-gap` where the code is right but a test does not prove it") {
+		t.Fatal("reviewer.md lost the test-gap kind that the stop criterion points to")
+	}
+}
