@@ -1,6 +1,7 @@
 package peerauth
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -34,6 +35,8 @@ const (
 // Header is one peer message found in a prompt.
 type Header struct {
 	ID string
+	// NativeRef is the sender of a native Core message, which has no id.
+	NativeRef string
 	// Text is the message from its opening line to the first closing line
 	// after it, joined with LF; "" when Closed is false.
 	Text   string
@@ -42,10 +45,12 @@ type Header struct {
 	// ends: within its own format, another closing line for the same id
 	// after the one that closed it, or another opening line with the same
 	// id. The text past the first closing line is outside what the header
-	// names.
+	// names. For Core messages, another opening before the first close is
+	// ambiguous; subsequent independently closed messages are not.
 	Ambiguous bool
 	// Remote reports a remote opening (the previous format's ` on <host>,
-	// sent ` or the current format's `<pane> on <host>` reference).
+	// sent `, the current format's `<pane> on <host>` reference, or a native
+	// Core reference with a machine/ prefix).
 	Remote bool
 	// Sent is the header's send time as written ("" when there is none).
 	Sent string
@@ -56,7 +61,7 @@ func (h Header) Chars() int { return utf8.RuneCountInString(h.Text) }
 
 // FindHeaders returns every header in the prompt, in prompt order. Only the
 // lines matter, so the wrapper Claude Code puts around a paste is not
-// interpreted. Two formats are accepted, and an opening line is paired only
+// interpreted. Three formats are accepted, and an opening line is paired only
 // with a closing line of its own format: the current format is an opening
 // line `[soho:peer:<8 hex>]` (the id inside the tag) closed by the line
 // `[/soho:peer:<same id>]`; the previous format is an opening line
@@ -67,6 +72,9 @@ func (h Header) Chars() int { return utf8.RuneCountInString(h.Text) }
 // no closing line of its format is not Closed. A header whose id has a
 // second closing line of its format after the first, or a second opening
 // line of its format anywhere in the prompt, is Ambiguous.
+// Native Core openings use the grammar in nativeOpening and close at the
+// first unquoted line ending in </hc>, including their opening line. They
+// are Ambiguous when another native opening precedes that closing.
 func FindHeaders(prompt string) []Header {
 	lines := strings.Split(strings.ReplaceAll(prompt, "\r\n", "\n"), "\n")
 	var out []Header
@@ -76,7 +84,14 @@ func FindHeaders(prompt string) []Header {
 	// format's closing of the same id.
 	oldOpenings, newOpenings := map[string]int{}, map[string]int{}
 	oldClosers, newClosers := map[string][]int{}, map[string][]int{}
+	var hcOpenings, hcClosers []int
 	for i, line := range lines {
+		if nativeOpeningRef(line) != "" {
+			hcOpenings = append(hcOpenings, i)
+		}
+		if nativeClosing(line) {
+			hcClosers = append(hcClosers, i)
+		}
 		if id, ok := oldOpeningID(line); ok {
 			oldOpenings[id]++
 		}
@@ -91,6 +106,21 @@ func FindHeaders(prompt string) []Header {
 		}
 	}
 	for i, line := range lines {
+		if ref := nativeOpeningRef(line); ref != "" {
+			h := Header{NativeRef: ref, Remote: strings.Contains(ref, "/")}
+			after := hcClosers[sort.SearchInts(hcClosers, i):]
+			if len(after) > 0 {
+				end := after[0]
+				h.Closed = true
+				h.Text = strings.Join(lines[i:end+1], "\n")
+				next := sort.SearchInts(hcOpenings, i+1)
+				h.Ambiguous = next < len(hcOpenings) && hcOpenings[next] <= end
+			} else {
+				h.Ambiguous = sort.SearchInts(hcOpenings, i+1) < len(hcOpenings)
+			}
+			out = append(out, h)
+			continue
+		}
 		if id, ok := oldOpeningID(line); ok {
 			out = append(out, headerFor(id, i, oldOpenings[id], oldClosers[id], lines, line, oldShape))
 			continue
@@ -100,6 +130,21 @@ func FindHeaders(prompt string) []Header {
 		}
 	}
 	return out
+}
+
+// Core tags start at column zero. Attribute values cannot span lines; the
+// body after the opening tag is unrestricted. Notes without from are not peers.
+var nativeOpening = regexp.MustCompile(`^<hc from="(([a-z0-9_-]+/)?(t[0-9]+|[a-z0-9_-]{1,32}))( [a-z0-9_-]{1,32})?"( [a-z_]+="[^"\r\n]*")*>`)
+
+func nativeOpeningRef(line string) string {
+	if match := nativeOpening.FindStringSubmatch(line); match != nil {
+		return match[1]
+	}
+	return ""
+}
+
+func nativeClosing(line string) bool {
+	return !strings.HasPrefix(strings.TrimLeft(line, " \t"), ">") && strings.HasSuffix(strings.TrimRight(line, " \r"), "</hc>")
 }
 
 // headerFor builds the header for one opening line at index i, pairing it

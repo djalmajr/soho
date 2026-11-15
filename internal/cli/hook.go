@@ -185,7 +185,11 @@ func hookInbound(env platform.Env, cwd string, codex bool) bool {
 	}
 	outcome := peerauth.Check(*in.Prompt, src)
 	for _, v := range outcome.Refused() {
-		hookFriction(readEnv, target, fmt.Sprintf("hook inbound: refused peer message #%s (%s)", v.Header.ID, v.Result))
+		ref := "#" + v.Header.ID
+		if v.Header.NativeRef != "" {
+			ref = "hc " + v.Header.NativeRef
+		}
+		hookFriction(readEnv, target, fmt.Sprintf("hook inbound: refused peer message %s (%s)", ref, v.Result))
 	}
 	if outcome.Block {
 		writeHookBlock(outcome, codex)
