@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -283,7 +284,7 @@ func TestSkillAsGitCheckoutRefusesSessionSetWithoutGitignore(t *testing.T) {
 		t.Fatalf("git init: %s: %v", output, err)
 	}
 	env := f.env.Clone()
-	env["PATH"] = f.bin + string(os.PathListSeparator) + os.Getenv("PATH") // git for root resolution, fake herdr first
+	env["PATH"] = f.bin + string(os.PathListSeparator) + testutil.HostPath() // git for root resolution, fake herdr first
 	code, out, errOut := runIn(t, []string{"session", "set", "lane.build.kind", "grok"}, env, f.skill)
 	want := f.refusal(t, "session set", filepath.Join(f.skill, ".soho"))
 	if code != 2 || out != "" || errOut != want {

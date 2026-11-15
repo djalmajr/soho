@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	testutil "github.com/djalmajr/soho/internal/testutil/testenv"
 )
 
 // Flagged state tokens (P1): ps appends modifier flags after the state
@@ -133,7 +135,7 @@ func procFlagsFakePsBin(t *testing.T) string {
 	if err := os.WriteFile(src, []byte(procFlagsFakePsSource), 0o600); err != nil {
 		t.Fatalf("writing the fake ps source: %v", err)
 	}
-	items := os.Environ()
+	items := testutil.CleanEnv(t)
 	items = append(items, "GOTOOLCHAIN=local", "GOPROXY=off")
 	build := exec.Command(goExe, "build", "-o", filepath.Join(sandbox, "ps"), src)
 	build.Dir = cwd

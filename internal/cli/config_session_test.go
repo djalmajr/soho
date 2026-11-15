@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 func commandFixture(t *testing.T) (platform.Env, string) {
@@ -41,7 +42,7 @@ func commandFixture(t *testing.T) (platform.Env, string) {
 	t.Chdir(repo)
 	return platform.Env{
 		"HOME": home, "USERPROFILE": home, "XDG_CONFIG_HOME": conf, "SOHO_DIR": state, "TMPDIR": root,
-		"SOHO_SKILL_DIR": skillDir, "HERDR_WORKSPACE_ID": "ws", "PATH": os.Getenv("PATH"),
+		"SOHO_SKILL_DIR": skillDir, "HERDR_WORKSPACE_ID": "ws", "PATH": testutil.HostPath(),
 	}, repo
 }
 

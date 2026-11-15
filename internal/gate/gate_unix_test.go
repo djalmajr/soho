@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 func processGone(pid int) bool {
@@ -256,7 +258,7 @@ func TestInterruptFailureCleanup(t *testing.T) {
 func checkInterruptFailureCleanup(t *testing.T, kill string) {
 	path := filepath.Join(t.TempDir(), "grandchild.pid")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestInterruptingTheGateEndsTheChildGroup$")
-	cmd.Env = append(os.Environ(), "GATE_INTERRUPT_FAILURE="+path, "GATE_INTERRUPT_KILL="+kill)
+	cmd.Env = append(testutil.CleanEnv(t), "GATE_INTERRUPT_FAILURE="+path, "GATE_INTERRUPT_KILL="+kill)
 	output, err := cmd.CombinedOutput()
 	if err == nil || !bytes.Contains(output, []byte("forced interrupt-test failure after readiness")) {
 		t.Fatalf("failure fixture: err=%v output=%s", err, output)

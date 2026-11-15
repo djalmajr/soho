@@ -15,6 +15,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -508,7 +509,7 @@ func TestReleaseHcLifecycleCleanupOnFailure(t *testing.T) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, self, "-test.run=^TestReleaseHcLifecycleCleanupFailureHelper$", "-test.count=1")
 	cmd.Env = (platform.Env{"HOME": root, "USERPROFILE": root, "XDG_CONFIG_HOME": root, "TMPDIR": root, "PATH": root,
-		"TEST_HC_LIFECYCLE_CLEANUP_MARKER": marker, "GORACE": fakecli.RaceOptions(os.Environ())}).List()
+		"TEST_HC_LIFECYCLE_CLEANUP_MARKER": marker, "GORACE": fakecli.RaceOptions(testutil.CleanEnv(t))}).List()
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "intentional assertion failure with gated Core child") {
 		t.Fatalf("expected assertion failure: %v\n%s", err, output)

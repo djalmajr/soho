@@ -11,13 +11,14 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
 func trustGit(t *testing.T, cwd string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", cwd}, args...)...)
-	for _, entry := range os.Environ() {
+	for _, entry := range testutil.CleanEnv(t) {
 		key, value, _ := strings.Cut(entry, "=")
 		if strings.HasPrefix(key, "GIT_") && value == "" {
 			continue

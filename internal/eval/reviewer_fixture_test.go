@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 // verifiedReviewerFileHashes are the durable verified byte hashes of the
@@ -208,9 +209,12 @@ var overriddenToolchainKey = map[string]bool{
 // modules, and the toolchain stays local and offline with a cleared
 // GOFLAGS.
 func childToolchainEnv(restricted, goRoot, cache string) []string {
-	env := make([]string, 0, len(os.Environ())+9)
+	var env []string
 	for _, kv := range os.Environ() {
 		eq := strings.IndexByte(kv, '=')
+		if eq > 0 && testutil.IsSessionVar(kv[:eq]) {
+			continue
+		}
 		if eq < 0 || !overriddenToolchainKey[strings.ToLower(kv[:eq])] {
 			env = append(env, kv)
 		}

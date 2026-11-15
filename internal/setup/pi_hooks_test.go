@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/setuptext"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -281,7 +282,7 @@ func TestSetupPiExtensionRuntime(t *testing.T) {
 			command.Dir = root
 			command.Env = []string{"HOME=" + env["HOME"], "USERPROFILE=" + env["HOME"], "XDG_CONFIG_HOME=" + env["XDG_CONFIG_HOME"], "TMPDIR=" + env["TMPDIR"], "PATH=" + bin, "SOHO_FAKECLI_CONFIG=" + bin}
 			if runtime.GOOS == "windows" {
-				command.Env = append(command.Env, "SystemRoot="+os.Getenv("SystemRoot"))
+				command.Env = append(command.Env, "SystemRoot="+testutil.HostSystemRoot())
 			}
 			var stderr bytes.Buffer
 			command.Stderr = &stderr
@@ -476,7 +477,7 @@ func TestSetupPiSessionDelivery(t *testing.T) {
 			command.Dir = root
 			command.Env = []string{"HOME=" + env["HOME"], "USERPROFILE=" + env["HOME"], "XDG_CONFIG_HOME=" + env["XDG_CONFIG_HOME"], "TMPDIR=" + env["TMPDIR"], "PATH=" + bin, "SOHO_FAKECLI_CONFIG=" + bin}
 			if runtime.GOOS == "windows" {
-				command.Env = append(command.Env, "SystemRoot="+os.Getenv("SystemRoot"))
+				command.Env = append(command.Env, "SystemRoot="+testutil.HostSystemRoot())
 			}
 			var stderr bytes.Buffer
 			command.Stderr = &stderr

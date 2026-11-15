@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
+	testutil "github.com/djalmajr/soho/internal/testutil/testenv"
 )
 
 // runCliFixtureRoleEnv marks the re-executed fixture program: the RunCli
@@ -278,7 +279,7 @@ func readFixtureOwnedRecord(t *testing.T, path string) fixtureOwnedRecord {
 // identity reads use: the harness's ambient PATH, nothing else (the
 // fixture children's isolated PATH would not find ps).
 func fixturePsEnv() Env {
-	return Env{"PATH": os.Getenv("PATH")}
+	return Env{"PATH": testutil.HostPath()}
 }
 
 // stopOwnedFixture stops the grandchild one owned record describes, with
@@ -985,7 +986,7 @@ func TestRunCli(t *testing.T) {
 	// stream/exit/cwd/tmpdir subtests run on every platform.
 	bin := t.TempDir()
 	runCliFixtureProgram(t, bin, runCliFixtureName())
-	env := Env{"PATH": bin, "TMPDIR": t.TempDir(), runCliFixtureRoleEnv: "out-err-5", runCliFixturePsPathEnv: os.Getenv("PATH")}
+	env := Env{"PATH": bin, "TMPDIR": t.TempDir(), runCliFixtureRoleEnv: "out-err-5", runCliFixturePsPathEnv: testutil.HostPath()}
 	for _, tc := range []struct {
 		name string
 		mode RunOptions
@@ -1254,7 +1255,7 @@ func TestRunCliWaitDelay(t *testing.T) {
 	runCliFixtureProgram(t, bin, runCliFixtureName())
 	pidFile := filepath.Join(t.TempDir(), "grandchild.json")
 	const grandchildDelay = 12 * time.Second
-	env := Env{"PATH": bin, "PID_FILE": pidFile, runCliFixtureRoleEnv: "pidfile-parent", runCliFixturePsPathEnv: os.Getenv("PATH")}
+	env := Env{"PATH": bin, "PID_FILE": pidFile, runCliFixtureRoleEnv: "pidfile-parent", runCliFixturePsPathEnv: testutil.HostPath()}
 	start := time.Now()
 	r := RunCli("fixture", nil, RunOptions{Env: env})
 	elapsed := time.Since(start)
@@ -1454,7 +1455,7 @@ func TestRunCliMatchesJSFixtures(t *testing.T) {
 			bin, tmp := t.TempDir(), t.TempDir()
 			// The native stand-in is this test binary, so a race build must
 			// retain detection without the detector's artificial exit delay.
-			env := Env{"PATH": bin, "TMPDIR": tmp, "GORACE": "atexit_sleep_ms=0", runCliFixturePsPathEnv: os.Getenv("PATH")}
+			env := Env{"PATH": bin, "TMPDIR": tmp, "GORACE": "atexit_sleep_ms=0", runCliFixturePsPathEnv: testutil.HostPath()}
 			if tc.Mode != "missing" {
 				if role := runCliFixtureRoleForCase(tc.Name); role != "" {
 					// The native stand-in for the row's script (or node

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 func TestLintCommandReadOnlyAndExitModes(t *testing.T) {
@@ -36,7 +37,7 @@ func TestLintCommandReadOnlyAndExitModes(t *testing.T) {
 			t.Fatal(err)
 		}
 		env := platform.Env{
-			"PATH":            os.Getenv("PATH"),
+			"PATH":            testutil.HostPath(),
 			"HOME":            filepath.Join(root, "home"),
 			"XDG_CONFIG_HOME": filepath.Join(root, "config"),
 			"SOHO_DIR":        filepath.Join(root, "state"),
@@ -120,7 +121,7 @@ func TestLintCommandUsageAndErrors(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		env := platform.Env{"PATH": os.Getenv("PATH"), "HOME": filepath.Join(root, "home"), "XDG_CONFIG_HOME": filepath.Join(root, "config"), "SOHO_DIR": filepath.Join(root, "state"), "SOHO_SKILL_DIR": skillDir}
+		env := platform.Env{"PATH": testutil.HostPath(), "HOME": filepath.Join(root, "home"), "XDG_CONFIG_HOME": filepath.Join(root, "config"), "SOHO_DIR": filepath.Join(root, "state"), "SOHO_SKILL_DIR": skillDir}
 		oldOut, oldErr := platform.Stdout, platform.Stderr
 		var stdout, stderr bytes.Buffer
 		platform.Stdout, platform.Stderr = &stdout, &stderr

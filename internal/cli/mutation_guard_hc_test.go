@@ -67,7 +67,7 @@ func newMutationGuardHcFixture(t *testing.T) mutationGuardHcFixture {
 	env["SOHO_DIR"] = state
 	env["XDG_CONFIG_HOME"] = config
 	env["TMPDIR"] = tmp
-	env["PATH"] = bin + string(os.PathListSeparator) + os.Getenv("PATH")
+	env["PATH"] = bin + string(os.PathListSeparator) + testutil.HostPath()
 	env["SOHO_FAKECLI_CONFIG"] = bin
 	env["GIT_CONFIG_GLOBAL"] = os.DevNull
 	env["GIT_CONFIG_SYSTEM"] = os.DevNull

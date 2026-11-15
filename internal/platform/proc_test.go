@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	testutil "github.com/djalmajr/soho/internal/testutil/testenv"
 )
 
 // procTestEnv is the test process's own environment with the PATH
@@ -24,7 +26,7 @@ import (
 func procTestEnv(t *testing.T) Env {
 	t.Helper()
 	env := Env{}
-	for _, item := range os.Environ() {
+	for _, item := range testutil.CleanEnv(t) {
 		key, value, ok := strings.Cut(item, "=")
 		if ok {
 			env[key] = value

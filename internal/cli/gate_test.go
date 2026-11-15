@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 // TestGateHelperExit is the program the gate tests run: the test binary
@@ -43,9 +44,9 @@ func listNames(t *testing.T, dir string) []string {
 
 func TestGateRunsOutsideHerdrAndUnderEveryTransport(t *testing.T) {
 	envs := map[string]platform.Env{
-		"no herdr context": {"PATH": os.Getenv("PATH")},
-		"transport hc":     {"PATH": os.Getenv("PATH"), "SOHO_TRANSPORT": "hc", "HC_TERMINAL_ID": "not-a-real-terminal"},
-		"transport herdr":  {"PATH": os.Getenv("PATH"), "SOHO_TRANSPORT": "herdr", "HERDR_ENV": "1", "HERDR_PANE_ID": "p_1"},
+		"no herdr context": {"PATH": testutil.HostPath()},
+		"transport hc":     {"PATH": testutil.HostPath(), "SOHO_TRANSPORT": "hc", "HC_TERMINAL_ID": "not-a-real-terminal"},
+		"transport herdr":  {"PATH": testutil.HostPath(), "SOHO_TRANSPORT": "herdr", "HERDR_ENV": "1", "HERDR_PANE_ID": "p_1"},
 	}
 	for name, env := range envs {
 		t.Run(name, func(t *testing.T) {
@@ -83,7 +84,7 @@ func TestGateRunsOutsideHerdrAndUnderEveryTransport(t *testing.T) {
 }
 
 func TestGateExitZeroAndMissingProgramThroughRun(t *testing.T) {
-	env := platform.Env{"PATH": os.Getenv("PATH")}
+	env := platform.Env{"PATH": testutil.HostPath()}
 	dir := t.TempDir()
 	t.Setenv("SOHO_GATE_CLI_TEST_EXIT", "0")
 	code, out, _ := runIn(t, append([]string{"gate", filepath.Join(dir, "ok"), "1m", "--"}, gateProgram()...), env, dir)
@@ -97,7 +98,7 @@ func TestGateExitZeroAndMissingProgramThroughRun(t *testing.T) {
 }
 
 func TestGateUsageErrorsExit2AndWriteNothing(t *testing.T) {
-	env := platform.Env{"PATH": os.Getenv("PATH")}
+	env := platform.Env{"PATH": testutil.HostPath()}
 	dir := t.TempDir()
 	prefix := filepath.Join(dir, "run")
 	for name, args := range map[string][]string{
@@ -124,7 +125,7 @@ func TestGateUsageErrorsExit2AndWriteNothing(t *testing.T) {
 func TestGateIsRefusedUnderNowriteBeforeAnythingStarts(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "marker")
-	env := platform.Env{"PATH": os.Getenv("PATH"), "SOHO_NOWRITE": "1"}
+	env := platform.Env{"PATH": testutil.HostPath(), "SOHO_NOWRITE": "1"}
 	code, out, errOut := runIn(t, []string{"gate", filepath.Join(dir, "run"), "5s", "--", "touch", marker}, env, dir)
 	if code != 2 || out != "" || !strings.Contains(errOut, "SOHO_NOWRITE=1 is read-only") || !strings.Contains(errOut, "rejected: gate (5 extra arguments not allowed)") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errOut)
@@ -139,7 +140,7 @@ func TestGateHelpPrintsItsOwnBlock(t *testing.T) {
 		"                                             # run one program directly (no shell) under a bound of 1s to 1h and record <prefix>.command.json (argv, cwd, bound, started; never the environment), <prefix>.stdout, <prefix>.stderr and <prefix>.result.json (pid, native_exit, signal, context_expired, wait_joined, wait_error, start_error), all mode 0600; an existing artifact or a missing parent directory refuses (exit 2) before anything starts; on expiry it terminates the started process and its process group, waits 5 seconds, then kills (Windows: the direct child only); needs no Herdr context; prints pid=<pid> native_exit=<n> context_expired=<bool> wait_joined=<bool>; exits with the program's code, 124 when the bound expired, 125 when it could not start or was killed by a signal, 2 on usage\n"
 	dir := t.TempDir()
 	for _, flag := range []string{"--help", "-h"} {
-		code, out, errOut := runIn(t, []string{"gate", flag}, platform.Env{"PATH": os.Getenv("PATH")}, dir)
+		code, out, errOut := runIn(t, []string{"gate", flag}, platform.Env{"PATH": testutil.HostPath()}, dir)
 		if code != 0 || out != want || errOut != "" {
 			t.Fatalf("gate %s: code=%d out=%q err=%q", flag, code, out, errOut)
 		}

@@ -21,6 +21,7 @@ import (
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -90,7 +91,7 @@ func newStatusViewFixtureFull(t *testing.T, rosterRows func(cwd string) string, 
 		// These manually constructed fake-child environments do not pass
 		// through fakecli.Env. Remove only the child's race exit pause,
 		// preserving detector options and the parent process environment.
-		"GORACE": fakecli.RaceOptions(os.Environ()),
+		"GORACE": fakecli.RaceOptions(testutil.CleanEnv(t)),
 	}
 	// The platform's by-pid process read shells out to ps: the fake bin
 	// comes first so the fake herdr wins, and the host ps dir is appended
@@ -115,6 +116,7 @@ func newStatusViewFixture(t *testing.T, rosterRows string, rules []fakecli.Rule)
 }
 
 func TestStatusViewFakeChildRaceOptions(t *testing.T) {
+	t.Setenv("GORACE", "history_size=2 atexit_sleep_ms=7")
 	parent, set := os.LookupEnv("GORACE")
 	f := newStatusViewFixture(t, "worker\tp1\tclaude\timplementer\tanthropic\t\t\t\tmodel-x\t\t\t\n", []fakecli.Rule{
 		{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"agent_status":"idle"}}}`},

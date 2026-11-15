@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 // DJA-685: the per-`Type:` section warnings are warnings only. Under
@@ -106,7 +107,7 @@ func TestLintCommandTypeSectionWarningsExitModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := platform.Env{
-		"PATH":            os.Getenv("PATH"),
+		"PATH":            testutil.HostPath(),
 		"HOME":            filepath.Join(root, "home"),
 		"XDG_CONFIG_HOME": filepath.Join(root, "home"),
 		"SOHO_DIR":        filepath.Join(root, "state"),
@@ -171,7 +172,7 @@ func TestLintCommandMutationsFollowTheRoleMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := platform.Env{
-		"PATH":            os.Getenv("PATH"),
+		"PATH":            testutil.HostPath(),
 		"HOME":            filepath.Join(root, "home"),
 		"XDG_CONFIG_HOME": filepath.Join(root, "home"),
 		"SOHO_DIR":        filepath.Join(root, "state"),
@@ -234,7 +235,7 @@ func TestLintCommandUnfilledMutationsWarnEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := platform.Env{
-		"PATH":            os.Getenv("PATH"),
+		"PATH":            testutil.HostPath(),
 		"HOME":            filepath.Join(root, "home"),
 		"XDG_CONFIG_HOME": filepath.Join(root, "home"),
 		"SOHO_DIR":        filepath.Join(root, "state"),

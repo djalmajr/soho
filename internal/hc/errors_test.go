@@ -3,13 +3,13 @@ package hc
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -20,7 +20,7 @@ func TestMain(m *testing.M) { fakecli.RunTests(m) }
 func hcEnvFromDir(t *testing.T, dir string) platform.Env {
 	t.Helper()
 	env := platform.Env{}
-	for _, item := range fakecli.Env(os.Environ(), dir) {
+	for _, item := range fakecli.Env(testutil.CleanEnv(t), dir) {
 		k, v, ok := strings.Cut(item, "=")
 		if ok {
 			env[k] = v

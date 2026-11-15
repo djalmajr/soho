@@ -3,7 +3,6 @@ package herdr
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -15,6 +14,7 @@ import (
 	"github.com/djalmajr/soho/internal/codexenv"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -509,7 +509,7 @@ func newFake(t *testing.T, name string, rules []fakecli.Rule) platform.Env {
 	if _, err := fakecli.Install(t, dir, name, rules); err != nil {
 		t.Fatal(err)
 	}
-	list := fakecli.Env(os.Environ(), dir)
+	list := fakecli.Env(testutil.CleanEnv(t), dir)
 	env := platform.Env{}
 	for _, item := range list {
 		k, v, ok := strings.Cut(item, "=")

@@ -20,6 +20,7 @@ import (
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/taskreport"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -107,7 +108,7 @@ func newDispatchHcFixture(t *testing.T, rules []fakecli.Rule) *dispatchHcFixture
 		"SOHO_DIR": state, "SOHO_TRANSPORT": "hc", "HC_TERMINAL_ID": "t1",
 		"SOHO_LANES": "off", "SOHO_BRIEF_LINT": "off",
 		"SOHO_PROMPT_CHECK_SECONDS": "1", "SOHO_WAIT_POLL_MS": "50",
-		"GORACE": fakecli.RaceOptions(os.Environ()),
+		"GORACE": fakecli.RaceOptions(testutil.CleanEnv(t)),
 	}
 	return &dispatchHcFixture{root: root, state: state, sd: sd, bin: bin, brief: brief, env: env, ctx: &core.Config{Entries: map[string]core.ConfigEntry{}}}
 }
@@ -157,7 +158,7 @@ func newDispatchHcOpencodeFixture(t *testing.T, rules []fakecli.Rule) *dispatchH
 		"SOHO_DIR": state, "SOHO_TRANSPORT": "hc", "HC_TERMINAL_ID": "t1",
 		"SOHO_LANES": "off", "SOHO_BRIEF_LINT": "off",
 		"SOHO_PROMPT_CHECK_SECONDS": "1", "SOHO_WAIT_POLL_MS": "50",
-		"GORACE": fakecli.RaceOptions(os.Environ()),
+		"GORACE": fakecli.RaceOptions(testutil.CleanEnv(t)),
 	}
 	return &dispatchHcFixture{root: root, state: state, sd: sd, bin: bin, brief: brief, env: env, ctx: &core.Config{Entries: map[string]core.ConfigEntry{}}}
 }

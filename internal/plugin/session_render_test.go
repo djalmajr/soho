@@ -1397,6 +1397,7 @@ func TestSessionRenderHostileGroupAndLabelFields(t *testing.T) {
 // TestSessionRenderFrames writes the representative plain-text frames
 // (100x30 and 60x16, table and tree) to the run evidence directory.
 func TestSessionRenderFrames(t *testing.T) {
+	t.Setenv("HERDR_SOHO_RENDER_EVIDENCE_DIR", t.TempDir())
 	dir := os.Getenv("HERDR_SOHO_RENDER_EVIDENCE_DIR")
 	if dir == "" {
 		dir = t.TempDir()

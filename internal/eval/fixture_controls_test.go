@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 // moduleRootForTest resolves the repository root relative to this package.
@@ -192,7 +194,7 @@ func TestFixtureControlsPrune(t *testing.T) {
 	// GOWORK) to the probe and control children through the test process
 	// environment; the caller's normal PATH may contain node, bun and bash.
 	restricted := restrictedGoPathForTest(t, goBin)
-	goRoot := os.Getenv("GOROOT")
+	goRoot := testutil.HostGoRoot()
 	if goRoot == "" {
 		t.Fatal("the restricted toolchain GOROOT is not installed in the test environment")
 	}

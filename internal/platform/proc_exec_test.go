@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	testutil "github.com/djalmajr/soho/internal/testutil/testenv"
 )
 
 // procExecReady is the line TestProcExecHelper writes to stdout once it is
@@ -36,7 +38,7 @@ func TestProcExec(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(self, "-test.run=^TestProcExecHelper$", "--", "job", "supervise", "--id", "job 1")
-	cmd.Env = append(os.Environ(), "PROC_EXEC_HELPER=1")
+	cmd.Env = append(testutil.CleanEnv(t), "PROC_EXEC_HELPER=1")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

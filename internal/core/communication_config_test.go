@@ -12,6 +12,7 @@ import (
 	"github.com/djalmajr/soho/internal/communication"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -44,7 +45,7 @@ func policyFixture(t *testing.T) (platform.Env, string) {
 	env := platform.Env{
 		"HOME": home, "XDG_CONFIG_HOME": conf, "SOHO_DIR": state,
 		"SOHO_SKILL_DIR": skill, "HERDR_WORKSPACE_ID": "ws",
-		"PATH": os.Getenv("PATH"),
+		"PATH": testutil.HostPath(),
 	}
 	return env, repo
 }
@@ -392,7 +393,7 @@ func TestWorkerMessagesBrokenPreferredWorktreeConfig(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = main
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull)
+		cmd.Env = append(testutil.CleanEnv(t), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("fixture git %v: %v %s", args, err, out)
 		}

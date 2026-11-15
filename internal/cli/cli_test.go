@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -52,7 +53,7 @@ func hostileRuntimeEnv(t *testing.T, override string) (platform.Env, []string) {
 		"USERPROFILE":         t.TempDir(),
 	}
 	if runtime.GOOS == "windows" {
-		env["SystemRoot"] = os.Getenv("SystemRoot")
+		env["SystemRoot"] = testutil.HostSystemRoot()
 	}
 	switch override {
 	case "native":

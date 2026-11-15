@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 // footprintHelperRoleEnv is the role of the re-executed test binary that
@@ -46,7 +47,7 @@ func TestFootprintHelper(t *testing.T) {
 func startFootprintHelper(t *testing.T, role string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestFootprintHelper$", "-test.count=1")
-	cmd.Env = append(os.Environ(), footprintHelperRoleEnv+"="+role)
+	cmd.Env = append(testutil.CleanEnv(t), footprintHelperRoleEnv+"="+role)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,7 @@ func seedFile(t *testing.T, path string, n int) {
 func TestMeasureFootprintCopies(t *testing.T) {
 	t.Run("the existing copies count, the vanished one does not, the inside copy counts once", func(t *testing.T) {
 		tmp := t.TempDir()
-		env := platform.Env{"TMPDIR": tmp, "PATH": os.Getenv("PATH")}
+		env := platform.Env{"TMPDIR": tmp, "PATH": testutil.HostPath()}
 		stateDir := filepath.Join(tmp, "state")
 		if err := os.MkdirAll(stateDir, 0o700); err != nil {
 			t.Fatal(err)
@@ -141,7 +142,7 @@ func TestMeasureFootprintCopies(t *testing.T) {
 }
 
 func TestMeasureFootprintProcesses(t *testing.T) {
-	env := platform.Env{"TMPDIR": t.TempDir(), "PATH": os.Getenv("PATH")}
+	env := platform.Env{"TMPDIR": t.TempDir(), "PATH": testutil.HostPath()}
 	stateDir := t.TempDir()
 
 	cmd := startFootprintHelper(t, "sleeper")
@@ -189,7 +190,7 @@ func TestMeasureFootprintUnreadableRSS(t *testing.T) {
 	readRSS = func(pid int, env platform.Env) (int64, bool) { return 0, false }
 	defer func() { readRSS = old }()
 
-	env := platform.Env{"TMPDIR": t.TempDir(), "PATH": os.Getenv("PATH")}
+	env := platform.Env{"TMPDIR": t.TempDir(), "PATH": testutil.HostPath()}
 	stateDir := t.TempDir()
 	cmd := startFootprintHelper(t, "sleeper")
 	pid := cmd.Process.Pid

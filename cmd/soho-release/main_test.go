@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 )
 
 // TestMain doubles as the re-executed fake `go`: the release CLI runs
@@ -60,13 +61,7 @@ func runSlowGoHelper() int {
 // lookup (ps on unix, kernel32 on windows) runs with the real toolchain
 // environment, never the child's reduced one.
 func procTrustedEnv() platform.Env {
-	env := platform.Env{}
-	for _, item := range os.Environ() {
-		if key, value, ok := strings.Cut(item, "="); ok {
-			env[key] = value
-		}
-	}
-	return env
+	return platform.Env{"PATH": testutil.HostPath(), "SystemRoot": testutil.HostSystemRoot()}
 }
 
 // signalCase shares the state of one signal case between the normal path

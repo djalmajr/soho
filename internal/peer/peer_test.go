@@ -227,7 +227,7 @@ func newFixtureAt(t *testing.T, dir string, rules []fakecli.Rule) *fixture {
 		t.Fatal(err)
 	}
 	base := []string{
-		"PATH=" + os.Getenv("PATH"), "HOME=" + filepath.Join(dir, "home"), "XDG_CONFIG_HOME=" + filepath.Join(dir, "config"),
+		"PATH=" + testutil.HostPath(), "HOME=" + filepath.Join(dir, "home"), "XDG_CONFIG_HOME=" + filepath.Join(dir, "config"),
 		"TMPDIR=" + filepath.Join(dir, "tmp"), "SOHO_DIR=" + filepath.Join(dir, "state"), "HERDR_WORKSPACE_ID=ws-test",
 		// With -race the fake re-executes the instrumented test binary and
 		// the race runtime sleeps ~1s at exit (GORACE atexit_sleep_ms).
@@ -320,7 +320,7 @@ func TestSend(t *testing.T) {
 			t.Skip("Herdr CLI is not available on the host PATH")
 		}
 		f := newFixture(t, nil)
-		f.env["PATH"] = os.Getenv("PATH")
+		f.env["PATH"] = testutil.HostPath()
 		socketRoot, err := os.MkdirTemp("/tmp", "hs-socket-")
 		if err != nil {
 			t.Fatal(err)
