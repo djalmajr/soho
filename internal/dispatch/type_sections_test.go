@@ -156,6 +156,41 @@ func TestTypeSectionWarnings(t *testing.T) {
 			nil,
 		},
 		{
+			"backend-mutations-opener-in-inline-code-heading-then-prose",
+			"Type: backend\n" + allMarkers + "## Mutations\n### Parser token `<!--`\nDisable rejection of an unterminated comment; TestRejectUnterminatedComment must fail.\n",
+			nil,
+		},
+		{
+			"backend-mutations-escaped-backtick-then-real-comment",
+			"Type: backend\n" + allMarkers + "## Mutations\n### Parser token \\`<!--`\nRevert the guard; the case must fail.\n-->\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-even-backslashes-before-code",
+			"Type: backend\n" + allMarkers + "## Mutations\n### Parser token \\\\`<!--`\nRevert the guard; the case must fail.\n",
+			nil,
+		},
+		{
+			"backend-mutations-backslash-inside-code-is-literal",
+			"Type: backend\n" + allMarkers + "## Mutations\n### Parser token `a\\`<!--`\nRevert the guard; the case must fail.\n-->\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-opener-in-double-backtick-code-then-prose",
+			"Type: backend\n" + allMarkers + "## Mutations\n### Parser token ``a `<!--` b``\nRevert the guard; the new test must fail.\n",
+			nil,
+		},
+		{
+			"backend-mutations-opener-in-code-then-real-unterminated-comment",
+			"Type: backend\n" + allMarkers + "## Mutations\n### Parser token `<!--`\n<!-- never closed\nRevert the guard; the new test must fail.\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
+			"backend-mutations-unclosed-backtick-then-real-comment",
+			"Type: backend\n" + allMarkers + "## Mutations\n### A stray ` tick <!-- note\n-->\n",
+			[]string{"brief " + path + " 'Mutations' section is empty"},
+		},
+		{
 			"backend-mutations-placeholder-word-inside-prose",
 			"Type: backend\n" + allMarkers + "## Mutations\nTBD: revert the guard, the new test must fail\n",
 			nil,

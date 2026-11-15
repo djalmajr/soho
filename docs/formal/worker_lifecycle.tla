@@ -8,7 +8,7 @@ EXTENDS Naturals, FiniteSets, TLC
 \* The "reopen" mode (the Reopen* paths of Read, Admit, Submit, Retire) models
 \* the internal helper cmdReopen (internal/cli/reopen.go:18). On the native
 \* transport the CLI entry guard refuses `reopen` before that helper runs
-\* (internal/cli/cli.go:229-231; the allowed list at cli.go:500-527 omits it),
+\* (internal/cli/cli.go:256-258; the allowed list at cli.go:530-556 omits it),
 \* so no native command reaches this scenario today. It is a model of that
 \* helper, not a description of supported native behavior; see README.md.
 \*

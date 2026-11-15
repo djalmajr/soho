@@ -252,8 +252,59 @@ var bareListMarkerPattern = regexp.MustCompile(`^(?:[-*+]|\d{1,9}[.)])$`)
 // is boilerplate, not content; a test keeps it equal to the template's.
 const mutationsTemplateInstruction = "One row per rule the slice adds or changes: the mutation (what the rule stops doing) and the case that must fail when it does. Say `n/a: <reason>` on the first line when the slice adds no rule worth mutating."
 
+// indexOutsideCode returns the index of the first delimiter in line that is
+// not inside an inline code span (a backtick run closed by a run of the same
+// length on the same line; an unclosed run is literal), or -1.
+func indexOutsideCode(line, delim string) int {
+	for i := 0; i < len(line); {
+		if line[i] == '`' {
+			slashes := 0
+			for j := i - 1; j >= 0 && line[j] == '\\'; j-- {
+				slashes++
+			}
+			if slashes%2 == 1 {
+				i++
+				continue
+			}
+			n := 1
+			for i+n < len(line) && line[i+n] == '`' {
+				n++
+			}
+			ticks := line[i : i+n]
+			end := -1
+			for j := i + n; j < len(line); {
+				if line[j] != '`' {
+					j++
+					continue
+				}
+				m := 1
+				for j+m < len(line) && line[j+m] == '`' {
+					m++
+				}
+				if m == n {
+					end = j
+					break
+				}
+				j += m
+			}
+			if end >= 0 {
+				i = end + len(ticks)
+			} else {
+				i += n
+			}
+			continue
+		}
+		if strings.HasPrefix(line[i:], delim) {
+			return i
+		}
+		i++
+	}
+	return -1
+}
+
 // stripHTMLComments removes the HTML comments from a line; inComment carries
-// an unclosed comment over to the next line.
+// an unclosed comment over to the next line. A `<!--` inside an inline code
+// span is literal text, not a comment opener.
 func stripHTMLComments(line string, inComment bool) (string, bool) {
 	var out strings.Builder
 	for line != "" {
@@ -265,12 +316,13 @@ func stripHTMLComments(line string, inComment bool) (string, bool) {
 			line, inComment = rest, false
 			continue
 		}
-		before, rest, found := strings.Cut(line, "<!--")
-		out.WriteString(before)
-		if !found {
+		idx := indexOutsideCode(line, "<!--")
+		if idx < 0 {
+			out.WriteString(line)
 			break
 		}
-		line, inComment = rest, true
+		out.WriteString(line[:idx])
+		line, inComment = line[idx+len("<!--"):], true
 	}
 	return out.String(), inComment
 }
