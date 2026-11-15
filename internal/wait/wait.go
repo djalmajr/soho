@@ -1029,6 +1029,15 @@ func jsonLine(value *jsonjs.Object) {
 }
 
 func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, timeoutMs float64, anyDone bool, cwd string) int {
+	return waitFor(agents, sd, ctx, env, timeoutMs, anyDone, false, cwd)
+}
+
+// waitFor is the wait loop. With observe (the child that `wait --wake` runs)
+// the probe loop, the exit codes and every per-agent status are those of a
+// foreground wait, except that a done report is left unsettled: only the
+// observe line is printed, and no settling side effect runs, so the
+// orchestrator's own wait after the wake settles it with every field.
+func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, timeoutMs float64, anyDone, observe bool, cwd string) int {
 	svc := backend.New(env)
 	for _, agent := range agents {
 		removeWaitFile(sd, agent, "size")
@@ -1143,6 +1152,16 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			}
 			switch tag {
 			case "done":
+				if observe {
+					// The report stays unsettled: no MarkTaskDone, metrics line,
+					// warning marker, mirror, git-tree audit, task-report sync,
+					// review check or desktop notification.
+					jsonLine(jsonjs.O("agent", agent, "status", "done", "report", report, "observe", true))
+					if anyDone {
+						return 0
+					}
+					break
+				}
 				text, _ := platform.ReadTextFile(report)
 				partial := reportscan.PartialCount(text)
 				envCount := reportscan.EnvCount(text)
@@ -1693,6 +1712,8 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	agents := []string{}
 	timeout := float64(math.NaN())
 	any := false
+	wake := false
+	observe := false
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
 		switch arg {
@@ -1713,6 +1734,10 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			i++
 		case "--any":
 			any = true
+		case "--wake":
+			wake = true
+		case "--observe":
+			observe = true
 		default:
 			if strings.HasPrefix(arg, "--") {
 				core.DieFriction("wait: unknown option "+arg, 2, "", "wait")
@@ -1722,6 +1747,9 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	}
 	if len(agents) == 0 {
 		core.DieFriction("wait: give at least one agent name", 2, "", "wait")
+	}
+	if wake && observe {
+		core.DieFriction("wait: --wake and --observe do not combine: --observe is the probe the --wake child runs", 2, "", "wait")
 	}
 	sd := core.StateDir(ctx, env, cwd)
 	for _, agent := range agents {
@@ -1755,7 +1783,10 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		}
 		panic(value)
 	}()
-	return WaitFor(agents, sd, ctx, env, timeout, any, cwd)
+	if wake {
+		return cmdWake(agents, timeout, any, ctx, env, cwd)
+	}
+	return waitFor(agents, sd, ctx, env, timeout, any, observe, cwd)
 }
 
 // WorkerCwdStat is the filesystem boundary for cwd checks, injectable in tests.

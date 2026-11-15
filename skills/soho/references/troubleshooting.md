@@ -121,6 +121,13 @@ A short Windows Cursor viewport can clip the trust question while retaining its 
 - **Cause:** a hand-written loop watching `agent get` for a specific state (`blocked`) instead of the report file. The file is the contract.
 - **Now:** `dispatch` (default wait), `wait <agents…>`, `status <agents…>`. Never poll state by hand.
 
+## `wait --wake` armed, but the orchestrator was not woken, or woke with no report
+
+- **Symptom:** after `soho wait <agent> --wake` and the end of the turn nothing arrived; or the note arrived and `soho wait <agent>` shows a status other than `done`.
+- **Cause:** the armed child runs the wait's probe (`wait … --observe`) and exits with its code — 0 when every agent settled `done`, 9 at its timeout with no report, 6, 7, 11, 14 or 15 for a worker that ended, blocked, ran out of quota or failed — and that exit note is the only wake. The child is started with `outlive_parent: false`, so it is meant to end with the orchestrator's program (Core's behavior, not checked in this repository); an armed wake does not survive the orchestrator's terminal. A live child of the same name answers `already-armed` and starts nothing. The child gets the orchestrator's state root only through `SOHO_STATE_DIR`: when the orchestrator's environment sets `SOHO_STATE_DIR` or `SOHO_DIR`, the child receives the orchestrator's resolved root as an absolute path (a relative value is resolved first), so it reads the same roster; when it does not, the child resolves the project's `state_dir` or the default from the orchestrator's working directory. No other `SOHO_*` variable is forwarded (for example `SOHO_WAIT_POLL_MS` or `SOHO_DIR` alone): the child polls at its defaults. A state root that is not absolute or holds a CR or LF makes `--wake` exit 2 before it starts anything.
+- **Now:** `--wake` prints one JSON line, `armed` with the child's terminal and name or `already-armed`; on the legacy TUI it exits 2 and starts nothing. A finished child of the same name that belongs to the orchestrator is removed before the next arming, best effort.
+- **Do:** run `soho wait <agent>` once: it shows the real status and settles a done report. After exit 9, arm again with a longer `--timeout`. On `already-armed` the earlier child is still running (`hc get wake-<agent>`) and its note will come. On the legacy TUI wait in the foreground.
+
 ## `approvals: ask` did not block
 
 - **Cause:** `ask` is the CLI's own default. On a machine where Claude Code runs with `defaultMode: auto`, nothing prompts. Forcing a prompt requires the native flag (`-- --permission-mode manual`).
