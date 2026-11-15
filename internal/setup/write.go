@@ -570,7 +570,7 @@ func promptConfigNotice(conf string, local bool) {
 		flag = "--local "
 	}
 	subject := "project config " + path
-	if _, err := os.Stat(path); err != nil {
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		subject = "this project has no config file (" + path + " does not exist), so it"
 	}
 	core.Warn(fmt.Sprintf("%s sets neither multi_role, any lane.<name>.kind, nor any role.<role>.kind. max_workers alone is not that choice. Orchestrator: run 'setup --detect', ask the user in their language how many agents at once (4 recommended, 3, or 2) and which detected assistant should implement, review, and research — do not say lane, kind, or panes to them — then run 'setup %s--panes 2|3|4 [--lane name=kind:model:effort]'. If doctor reports a missing or legacy config, finish with 'doctor --fix --panes 2|3|4'.", subject, flag), "", "setup")
