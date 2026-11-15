@@ -1791,9 +1791,26 @@ func appendMissingKeyHint(cause, message string) string {
 	if !envVarNameRE.MatchString(name) {
 		return cause
 	}
+	// The hint keeps the cause within its 200-unit limit: the provider's text
+	// is shortened to make room, and a hint that cannot fit is left out. It
+	// never suggests --env-from: that hand-off is for non-secret metadata,
+	// because Core retains the values.
+	hint := "no " + name + " in the worker: native workers skip your shell profile; set login_shell=on"
+	if len(hint) > maxCauseUnits-len(". ") {
+		return cause
+	}
+	room := maxCauseUnits - len(hint) - len(". ")
+	if len(cause) > room {
+		cause = strings.TrimRight(cause[:room], " ")
+	}
 	sep := " "
 	if !strings.HasSuffix(cause, ".") && !strings.HasSuffix(cause, "!") && !strings.HasSuffix(cause, "?") {
 		sep = ". "
 	}
-	return cause + sep + "the worker's environment has no " + name + "; spawn it again with --env-from " + name + " (kind pi)"
+	return cause + sep + hint
 }
+
+// maxCauseUnits is the provider cause's limit, the same 200 units
+// text.SanitizeCause enforces; the cause and the hint are printable ASCII
+// here, so bytes and UTF-16 units agree.
+const maxCauseUnits = 200

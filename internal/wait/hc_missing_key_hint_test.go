@@ -24,7 +24,8 @@ func hcWakeErrorMsg(msg string) string {
 
 func TestWaitHcProviderErrorMissingKeyHint(t *testing.T) {
 	const piMsg = "Failed to resolve API key for opencode from shell command: printenv OPENCODE_API_KEY"
-	const hint = "the worker's environment has no OPENCODE_API_KEY; spawn it again with --env-from OPENCODE_API_KEY (kind pi)"
+	const hint = "no OPENCODE_API_KEY in the worker: native workers skip your shell profile; set login_shell=on"
+	long := "Failed to resolve API key: " + strings.Repeat("x", 150) + " printenv OPENCODE_API_KEY"
 	cases := []struct {
 		name, msg, want string
 	}{
@@ -39,6 +40,7 @@ func TestWaitHcProviderErrorMissingKeyHint(t *testing.T) {
 		{"name with a substitution", "Failed to resolve API key: printenv $(KEY)", "Failed to resolve API key: printenv $(KEY)"},
 		{"printenv inside a longer word", "Failed to resolve API key: myprintenv OPENCODE_API_KEY", "Failed to resolve API key: myprintenv OPENCODE_API_KEY"},
 		{"printenv without a name", "Failed to resolve API key: printenv", "Failed to resolve API key: printenv"},
+		{"long cause shortened to fit the hint", long, long[:200-len(hint)-2] + ". " + hint},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -52,11 +54,14 @@ func TestWaitHcProviderErrorMissingKeyHint(t *testing.T) {
 			if !ok || cause != tc.want {
 				t.Fatalf("provider-cause=%q ok=%v, want %q", cause, ok, tc.want)
 			}
-			hinted := strings.Contains(tc.want, "--env-from")
+			hinted := strings.Contains(tc.want, "login_shell")
 			if !strings.Contains(out, `"cause":`+fmt.Sprintf("%q", tc.want)) {
 				t.Fatalf("out=%q, want the JSON cause %q", out, tc.want)
 			}
-			if got := strings.Contains(stderr, "--env-from"); got != hinted {
+			if len(cause) > 200 || strings.Contains(cause, "--env-from") {
+				t.Fatalf("provider-cause=%q (%d units), want at most 200 units and no --env-from advice", cause, len(cause))
+			}
+			if got := strings.Contains(stderr, "login_shell"); got != hinted {
 				t.Fatalf("stderr=%q, hint in warning=%v, want %v", stderr, got, hinted)
 			}
 			f.assertNoHerdr(t)
@@ -64,8 +69,9 @@ func TestWaitHcProviderErrorMissingKeyHint(t *testing.T) {
 	}
 }
 
-// The hint reads the name from the whole message: a name that the 200-unit
-// cause limit would cut never produces a hint for a shorter, wrong name.
+// The hint reads the name from the whole message and never makes the cause
+// longer than its 200-unit limit: a name too long to fit adds no hint, rather
+// than a hint for a shorter, wrong name.
 func TestWaitHcProviderErrorMissingKeyHintUsesTheWholeName(t *testing.T) {
 	name := "PROVIDER_" + strings.Repeat("K", 230)
 	msg := "Failed to resolve API key from shell command: printenv " + name
@@ -76,8 +82,9 @@ func TestWaitHcProviderErrorMissingKeyHintUsesTheWholeName(t *testing.T) {
 		t.Fatalf("code=%d stderr=%q, want exit 14", code, stderr)
 	}
 	cause, _ := readWaitFile(f.sd, "worker", "provider-cause")
-	if !strings.HasSuffix(cause, "--env-from "+name+" (kind pi)") {
-		t.Fatalf("provider-cause=%q, want the hint to carry the whole name", cause)
+	cause = strings.TrimSuffix(cause, "\n")
+	if strings.Contains(cause, "login_shell") || len(cause) > 200 {
+		t.Fatalf("provider-cause=%q (%d units), want no hint and at most 200 units", cause, len(cause))
 	}
 }
 
@@ -106,7 +113,7 @@ func TestWaitLegacyTransportAddsNoMissingKeyHint(t *testing.T) {
 	if got == "provider-error" {
 		t.Fatalf("ProbeAgent=%q, want no assistant-error mapping on the legacy transport", got)
 	}
-	if cause, ok := readWaitFile(state, "worker", "provider-cause"); ok && strings.Contains(cause, "--env-from") {
+	if cause, ok := readWaitFile(state, "worker", "provider-cause"); ok && strings.Contains(cause, "login_shell") {
 		t.Fatalf("provider-cause=%q, want no hint on the legacy transport", cause)
 	}
 }
