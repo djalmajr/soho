@@ -1488,7 +1488,7 @@ func (b *backend) waitReady(ctx context.Context, call transport.Call, name, addr
 			return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCancelled, Message: err.Error(), Cause: err}}
 		}
 		if time.Until(deadlineAt) <= 0 {
-			return timeoutReply(name, address, deadline, lastErr)
+			return b.timeoutReply(ctx, call, name, address, deadline, lastErr)
 		}
 		getCtx, cancel := context.WithTimeout(ctx, time.Until(deadlineAt))
 		out, err := b.run(getCtx, call, "get", address)
@@ -1500,7 +1500,7 @@ func (b *backend) waitReady(ctx context.Context, call transport.Call, name, addr
 		// A startup deadline interruption is not a completed get result.
 		// A shorter per-call timeout leaves getCtx live and stays diagnostic.
 		if getCtxErr == context.DeadlineExceeded {
-			return timeoutReply(name, address, deadline, lastErr)
+			return b.timeoutReply(ctx, call, name, address, deadline, lastErr)
 		}
 		if err != nil {
 			if notFound(err) {
@@ -1529,7 +1529,7 @@ func (b *backend) waitReady(ctx context.Context, call transport.Call, name, addr
 			wait = remaining
 		}
 		if wait <= 0 {
-			return timeoutReply(name, address, deadline, lastErr)
+			return b.timeoutReply(ctx, call, name, address, deadline, lastErr)
 		}
 		select {
 		case <-ctx.Done():
@@ -1654,13 +1654,132 @@ func exitCodeOf(obj *jsonjs.Object) (int, bool) {
 }
 
 // timeoutReply renders the readiness deadline: `agent <name> still not
-// ready after <seconds>s`, with the last get error when the poll holds one.
-func timeoutReply(name, address string, deadline time.Duration, lastErr *transport.Failure) transport.Reply[string] {
+// ready after <seconds>s`, with the last get error when the poll holds one,
+// then the last non-empty visible line of the terminal's screen. The screen
+// is read once here, before the reply returns: the caller removes the
+// terminal only after it has the reply. A failed read or a blank screen
+// adds nothing. The read never sends input.
+func (b *backend) timeoutReply(ctx context.Context, call transport.Call, name, address string, deadline time.Duration, lastErr *transport.Failure) transport.Reply[string] {
 	message := fmt.Sprintf("agent %s still not ready after %ss", name, startDeadlineSeconds(deadline))
 	if lastErr != nil {
 		message += ": " + lastErr.Error()
 	}
+	if ctx.Err() == nil {
+		readCall := call
+		if readCall.Timeout <= 0 || readCall.Timeout > timeoutScreenReadCap {
+			readCall.Timeout = timeoutScreenReadCap
+		}
+		screen := b.Read(ctx, transport.Target{ID: address}, transport.Read{Source: "visible"}, readCall)
+		if screen.Err == nil && screen.Valid {
+			if line := lastVisibleLine(screen.Value); line != "" {
+				message += fmt.Sprintf("; last visible line: %q", line)
+			}
+		}
+	}
 	return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCommand, Message: message, Cause: lastErr}}
+}
+
+// timeoutScreenReadCap bounds the one screen read of a failing start, so a
+// Core that hangs on read cannot stretch the failure far past the deadline.
+const timeoutScreenReadCap = 5 * time.Second
+
+// maxVisibleLineRunes bounds the screen line a readiness timeout quotes.
+const maxVisibleLineRunes = 200
+
+// lastVisibleLine returns the last line of a terminal screen that is not
+// blank once cleaned, or "". The screen is untrusted: escape sequences and
+// control characters are removed, a tab becomes a space, the line is trimmed
+// and cut to maxVisibleLineRunes runes with an ellipsis when cut.
+func lastVisibleLine(screen string) string {
+	lines := strings.Split(screen, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(stripTerminalControls(lines[i]))
+		if line == "" {
+			continue
+		}
+		if r := []rune(line); len(r) > maxVisibleLineRunes {
+			line = string(r[:maxVisibleLineRunes]) + "…"
+		}
+		return line
+	}
+	return ""
+}
+
+// stripTerminalControls drops ANSI escape sequences (CSI, OSC and DCS/SOS/PM/
+// APC strings, two-character escapes with their intermediates) and every
+// other control character, including the C1 range; a tab becomes a space.
+// A string sequence that never terminates is dropped to its end.
+func stripTerminalControls(s string) string {
+	rs := []rune(s)
+	var out strings.Builder
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
+		switch {
+		case r == '\t':
+			out.WriteByte(' ')
+		case r == 0x1b || r == 0x9b || r == 0x9d || r == 0x90 || r == 0x98 || r == 0x9e || r == 0x9f:
+			i = skipEscape(rs, i)
+		case r < 0x20 || (r >= 0x7f && r <= 0x9f):
+		default:
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
+}
+
+// skipEscape returns the index of the last rune of the escape sequence that
+// starts at rs[i].
+func skipEscape(rs []rune, i int) int {
+	intro := rs[i]
+	if intro == 0x1b {
+		if i+1 >= len(rs) {
+			return i
+		}
+		switch rs[i+1] {
+		case '[':
+			intro = 0x9b
+			i++
+		case ']':
+			intro = 0x9d
+			i++
+		case 'P', 'X', '^', '_':
+			intro = 0x90
+			i++
+		default:
+			// Intermediates (0x20-0x2f) then one final character.
+			j := i + 1
+			for j < len(rs) && rs[j] >= 0x20 && rs[j] <= 0x2f {
+				j++
+			}
+			if j < len(rs) {
+				return j
+			}
+			return len(rs) - 1
+		}
+	}
+	switch intro {
+	case 0x9b:
+		// Parameters and intermediates, ended by a final byte 0x40-0x7e.
+		j := i + 1
+		for j < len(rs) && rs[j] >= 0x20 && rs[j] <= 0x3f {
+			j++
+		}
+		if j < len(rs) && rs[j] >= 0x40 && rs[j] <= 0x7e {
+			return j
+		}
+		return j - 1
+	default:
+		// A string sequence ends at BEL, ST (ESC \\ or U+009C) or the end.
+		for j := i + 1; j < len(rs); j++ {
+			if rs[j] == 0x07 || rs[j] == 0x9c {
+				return j
+			}
+			if rs[j] == 0x1b && j+1 < len(rs) && rs[j+1] == '\\' {
+				return j + 1
+			}
+		}
+		return len(rs) - 1
+	}
 }
 
 // CallerAgentName returns the name of the terminal the caller runs in: one
