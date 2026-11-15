@@ -89,7 +89,7 @@ var ConfigScalarKeys = []string{
 	"setup_target", "inbound", "caller_check", "worker_messages", "metrics",
 	"pressure_disk_free_percent", "pressure_swap_percent",
 	"pressure_refuse_disk_free_percent", "pressure_refuse_swap_percent",
-	"footprint_warn_gb",
+	"footprint_warn_gb", "login_shell",
 }
 
 // jobMachineKeys are known to ConfigKeyOk. They stay out of ConfigScalarKeys
@@ -518,7 +518,7 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return value == "ask" || value == "edits" || value == "auto" || value == "full" || value == "unsandboxed"
 	case key == "max_workers" || key == "provider_retries" || key == "provider_retry_delay" || key == "prompt_check_seconds" || key == "prompt_settle_seconds" || key == "stuck_warn_minutes" || key == "pressure_disk_free_percent" || key == "pressure_swap_percent" || key == "pressure_refuse_disk_free_percent" || key == "pressure_refuse_swap_percent" || key == "footprint_warn_gb":
 		return decimalRE.MatchString(value)
-	case key == "multi_role" || key == "reuse_workers" || key == "lanes" || key == "trust_cwd":
+	case key == "multi_role" || key == "reuse_workers" || key == "lanes" || key == "trust_cwd" || key == "login_shell":
 		return value == "on" || value == "off"
 	case key == "setup_target":
 		return value == "canonical" || value == "local"

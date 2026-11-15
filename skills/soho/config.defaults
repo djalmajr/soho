@@ -294,6 +294,9 @@ pressure_refuse_swap_percent=95
 # Total team footprint (registered copies on disk + state dir + workspace scratch) at which `doctor` warns. 1 GB = 1024^3 bytes; 0 = off.
 footprint_warn_gb=5
 
+# Native transport (transport=hc) only: on = `spawn` starts the worker through the caller's login shell (SHELL: an absolute path to zsh, bash, ksh or sh; not on Windows; not for opencode) so the shell profile runs first, then the agent replaces the shell. Use it when the profile provides the worker's PATH or provider keys. off = the worker starts from Core's own environment. Ignored on the legacy transport.
+login_shell=off
+
 # State root: briefs, reports, roster. Relative paths are under the repo root.
 # Must be writable by every worker sandbox (Codex denies .agents/ and .codex/).
 state_dir=.soho

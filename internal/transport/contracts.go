@@ -258,6 +258,16 @@ type Start struct {
 	// transport marker; nil or empty leaves the child's environment
 	// unchanged. Never the caller's whole environment.
 	EnvOverrides map[string]string
+
+	// LoginShell is the absolute path of the user's login shell that the
+	// hc backend starts the worker through ("" for off, the worker started
+	// directly). With it set the backend runs
+	// `<LoginShell> -l -c 'exec "$0" "$@"' <agent executable> <Args…>`, so the
+	// profile runs first and the agent then replaces the shell; no argument
+	// is ever interpolated into a command string. The caller validates the
+	// shell before any terminal exists; the backend only refuses a value that
+	// is not absolute. The herdr backend ignores it.
+	LoginShell string
 }
 
 // ConfiguredLaunchPreflight is optional and leaves existing method sets intact.

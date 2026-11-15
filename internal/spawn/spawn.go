@@ -970,6 +970,7 @@ type spawnOptions struct {
 	startupDiag                                                                                            string
 	launchProfile                                                                                          kinds.LaunchProfile
 	nativeArgsSnapshot                                                                                     string
+	loginShell                                                                                             string
 }
 
 // spawnValueOption is the authoritative option/value grammar for parsing and
@@ -1252,6 +1253,10 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	if kind == "" {
 		core.DieFriction(fmt.Sprintf("role %s has no default kind; pass --kind", o.role), 3, "", "")
 	}
+	// R316: login_shell=on starts a native worker through the caller's login
+	// shell. Refused here, before any warning, reuse or terminal; the roster
+	// and the JSON keep the agent's own argv.
+	o.loginShell = resolveLoginShell(ctx, env, kind)
 	kindLayer := core.SpawnKindLayer(ctx, o.role, lane, o.kindSet, env)
 	if _, ok := platform.FindExecutable(kinds.KindExe(kind), env, platform.Current()); !ok {
 		msg := "executable '" + kinds.KindExe(kind) + "' not found in PATH; herdr agent start may fail"
@@ -2279,7 +2284,7 @@ func startHcAgentUsingServices(ctx *core.Config, o *spawnOptions, kind string, e
 				overrides[name] = value
 			}
 		}
-		rep := rt.Start(context.Background(), transport.Start{Name: o.name, Kind: kind, Cwd: o.cwd, Timeout: o.timeout, Args: args, LaunchProfile: o.launchProfile.Name, EnvOverrides: overrides}, transport.Call{Timeout: time.Duration(startWrapperTimeoutMs(o.timeout)) * time.Millisecond})
+		rep := rt.Start(context.Background(), transport.Start{Name: o.name, Kind: kind, Cwd: o.cwd, Timeout: o.timeout, Args: args, LaunchProfile: o.launchProfile.Name, EnvOverrides: overrides, LoginShell: o.loginShell}, transport.Call{Timeout: time.Duration(startWrapperTimeoutMs(o.timeout)) * time.Millisecond})
 		if rep.Err == nil {
 			o.pane = rep.Value
 			return

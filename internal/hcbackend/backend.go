@@ -1342,6 +1342,9 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 			}}
 		}
 	}
+	if start.LoginShell != "" && !filepath.IsAbs(start.LoginShell) {
+		return loginShellNotAbsolute()
+	}
 	session, err := b.session(ctx, call)
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
@@ -1396,6 +1399,10 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 		program = abs
 	}
 
+	if start.LoginShell != "" {
+		program, args = loginShellLaunch(start.LoginShell, program, args)
+	}
+
 	budget := hcTimeoutDefault
 	if call.Timeout > 0 {
 		budget = call.Timeout
@@ -1438,6 +1445,27 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 	}
 
 	return b.waitReady(ctx, call, start.Name, address, start.LaunchProfile, startTimeout(start.Timeout))
+}
+
+// loginShellLaunch wraps the agent launch in the user's login shell: the
+// shell runs its profile (-l) and then replaces itself with the agent
+// (exec "$0" "$@"). The agent's executable and arguments travel as the
+// shell's positional parameters, never inside the command string, so no
+// argument is parsed, expanded or split by the shell.
+func loginShellLaunch(shell, program string, args []string) (string, []string) {
+	wrapped := make([]string, 0, 4+len(args))
+	wrapped = append(wrapped, "-l", "-c", `exec "$0" "$@"`, program)
+	wrapped = append(wrapped, args...)
+	return shell, wrapped
+}
+
+// loginShellNotAbsolute is the backend's one check of the login shell: the
+// caller validated the shell, the backend only refuses a relative value.
+func loginShellNotAbsolute() transport.Reply[string] {
+	return transport.Reply[string]{Err: &transport.Failure{
+		Kind:    transport.FailureCommand,
+		Message: "login shell must be an absolute path",
+	}}
 }
 
 // opencodeExecutableUnavailable is the primary profile's fixed value-free
