@@ -89,3 +89,46 @@ func TestFirstRunFalseWithTeamChosenInUserFile(t *testing.T) {
 		})
 	}
 }
+
+// TestNativeDoctorSkipsLegacyOnlyChecks: through the doctor command, native
+// Core prints no outside-Herdr line (no legacy TUI to diagnose) while the
+// legacy transport does, for the same project. Both still say the official
+// herdr skill is not installed (this project has none, so no comparison with
+// 'herdr --skill' runs on either; internal/doctor pins that comparison).
+func TestNativeDoctorSkipsLegacyOnlyChecks(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		native bool
+	}{
+		{"legacy transport keeps the outside-Herdr line", false},
+		{"native transport prints no outside-Herdr line", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, repo := commandFixture(t)
+			if tc.native {
+				env, _ = hcFixture(t, env, repo, "t1")
+			} else {
+				env["PATH"] = t.TempDir()
+			}
+			// Outside any terminal: the caller is not inside, which is the
+			// only way to reach the outside-Herdr branch.
+			delete(env, "HERDR_ENV")
+			delete(env, "HERDR_PANE_ID")
+			delete(env, "HC_TERMINAL_ID")
+			code, out, stderr := runIn(t, []string{"doctor"}, env, repo)
+			if code != 0 {
+				t.Fatalf("doctor: code=%d stderr=%q out=%s", code, stderr, out)
+			}
+			// The control: the doctor ran to its first_run line.
+			if !strings.Contains(out, "first_run: ") {
+				t.Fatalf("doctor did not run to completion:\n%s", out)
+			}
+			if has := strings.Contains(out, "HERDR_ENV != 1"); has == tc.native {
+				t.Fatalf("%q present=%v on native=%v:\n%s", "HERDR_ENV != 1", has, tc.native, out)
+			}
+			if !strings.Contains(out, "official herdr skill not installed") {
+				t.Fatalf("doctor lacks the not-installed hint on native=%v:\n%s", tc.native, out)
+			}
+		})
+	}
+}

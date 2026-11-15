@@ -317,7 +317,11 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 				}
 			}
 		}
-	} else {
+	} else if core.TransportMode(ctx, env) != "hc" {
+		// The native backend reports the api snapshot unsupported and
+		// there is no legacy TUI to diagnose, so this branch prints nothing
+		// on hc.
+		//
 		// The codexenv diagnose's two raw herdr operations run through the
 		// invocation's backend (DJA-596): the api snapshot and one pane
 		// process-info per candidate pane, both with the diagnose's 10 s
@@ -375,6 +379,10 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	}
 	if skill == "" {
 		s.Warning("official herdr skill not installed: bunx skills add herdrdev/herdr --skill herdr -g -y")
+	} else if core.TransportMode(ctx, env) == "hc" {
+		// The comparison with 'herdr --skill' goes through SkillRaw, which
+		// the native backend reports unsupported: it would print a false
+		// "differs" line, so only the presence check runs on hc.
 	} else {
 		same := false
 		if herdrFound {

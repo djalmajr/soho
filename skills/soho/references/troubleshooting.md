@@ -282,7 +282,7 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 
 - **Symptom:** `doctor --fix` exits 2 and the config file is unchanged.
 - **Cause:** the file has no `panes=` and `--panes` was not passed. The script does not choose a team size.
-- **Do:** ask the user, then `doctor --fix --panes 3` or `--panes 4`. That writes the preset lanes, sets `max_workers` to the lane count and `split_max_panes` to `panes`, and turns `reuse_workers` on. For each lane it resolves every role's kind and model (the value in that file, otherwise the role frontmatter). When they all agree, it writes `lane.<name>.kind` / `.model` and then removes those `role.<role>.kind` / `.model` keys. When they disagree, it leaves the keys, lists `role=kind`, and tells you to ask and run `setup --lane <name>=<kind>[:<model>[:<effort>]]`. `role.planner.*` is always removed. Full-line comments stay. `max_workers` written here does not count as the user having chosen a lane kind. `setup --panes 4 --lane build=grok:grok-4.7:high` writes the same keys plus the lane's kind, model and effort.
+- **Do:** on the legacy transport (`transport=herdr`), ask the user, then `doctor --fix --panes 3` or `--panes 4` (native Core workers have no panel, so `doctor` gives no pane-count advice there). That writes the preset lanes, sets `max_workers` to the lane count and `split_max_panes` to `panes`, and turns `reuse_workers` on. For each lane it resolves every role's kind and model (the value in that file, otherwise the role frontmatter). When they all agree, it writes `lane.<name>.kind` / `.model` and then removes those `role.<role>.kind` / `.model` keys. When they disagree, it leaves the keys, lists `role=kind`, and tells you to ask and run `setup --lane <name>=<kind>[:<model>[:<effort>]]`. `role.planner.*` is always removed. Full-line comments stay. `max_workers` written here does not count as the user having chosen a lane kind. `setup --panes 4 --lane build=grok:grok-4.7:high` writes the same keys plus the lane's kind, model and effort.
 
 ## Lane kind mismatch (exit 13)
 
@@ -292,7 +292,7 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 
 ## First run and `explain` (2026-09-23)
 
-- `doctor` prints `first_run: true` or `first_run: false` on its own line. `init` puts the same boolean in its JSON. True means the project file sets none of `multi_role`, `role.<role>.kind`, or `lane.<name>.kind`, and the state root has no roster data row. A header-only `agents.tsv` is still a first run. `max_workers` alone is not a team choice.
+- `doctor` prints `first_run: true` or `first_run: false` on its own line. `init` puts the same boolean in its JSON. True means neither the project file nor the user file sets any of `multi_role`, `role.<role>.kind`, or `lane.<name>.kind`, and the state root has no roster data row. A team choice in either file makes it false. A header-only `agents.tsv` is still a first run. `max_workers` alone is not a team choice.
 - Before any spawn on a first run, the orchestrator says what the panels are (in the user's language) and waits for a yes. `setup --detect` adds an English `summary` on every kind so that question can name only the assistants that are installed.
 - `explain` is plain text for a person, not JSON. With roster rows it names each panel's lane, current role, assistant, model, and one of: working, idle, waiting for report, out of quota. With no rows it prints one paragraph on what the team is and how to start. It does not open or close panels.
 

@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -137,4 +138,116 @@ func TestDoctorHerdrLine(t *testing.T) {
 			t.Fatalf("native doctor warned about the herdr CLI:\n%s", out.String())
 		}
 	})
+}
+
+// TestDoctorOfficialSkillCheckIsLegacyOnly: the legacy transport compares
+// the installed official herdr skill with 'herdr --skill'; native Core, whose
+// backend reports that probe unsupported, prints no comparison line (a false
+// "differs" line included) and never runs 'herdr --skill', but still says
+// when the skill is not installed.
+func TestDoctorOfficialSkillCheckIsLegacyOnly(t *testing.T) {
+	run := func(t *testing.T, transport string, installed bool) (string, string) {
+		t.Helper()
+		bin := t.TempDir()
+		if _, err := fakecli.Install(t, bin, "herdr", []fakecli.Rule{
+			{Argv: []string{"--version"}, Stdout: "herdr 0.9.1\n"},
+			{Argv: []string{"status", "server"}, Stdout: "server 0.9.1\n"},
+			{Argv: []string{"--skill"}, Stdout: "the binary's skill\n"},
+			{AnyArgs: true},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fakecli.Install(t, bin, "hc", []fakecli.Rule{
+			{Argv: []string{"--version", "--json"}, Stdout: "hc 0.1.14\n"},
+			{Argv: []string{"server", "status", "--json"}, Stdout: doctorHcStatusJSON + "\n"},
+			{Argv: []string{"connect", "--json"}, Stdout: doctorHcHelloOK + "\n"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		env, root := doctorHcEnv(t, bin)
+		env["SOHO_TRANSPORT"] = transport
+		env["SOHO_SKILL_DIR"] = filepath.Join(root, "skill")
+		if installed {
+			skillDir := filepath.Join(root, ".agents", "skills", "herdr")
+			if err := os.MkdirAll(skillDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("a stale installed skill\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var out strings.Builder
+		DoctorCheck(doctorHcCtx(transport), env, root, &out)
+		return out.String(), bin
+	}
+	skillCalls := func(t *testing.T, bin string) int {
+		t.Helper()
+		calls, err := fakecli.ReadCalls(filepath.Join(bin, "herdr.calls.jsonl"))
+		if err != nil {
+			return 0
+		}
+		n := 0
+		for _, call := range calls {
+			if len(call.Argv) > 0 && call.Argv[0] == "--skill" {
+				n++
+			}
+		}
+		return n
+	}
+	t.Run("legacy compares with herdr --skill", func(t *testing.T) {
+		out, bin := run(t, "herdr", true)
+		if !strings.Contains(out, "official herdr skill at ") || !strings.Contains(out, "differs from 'herdr --skill'") {
+			t.Fatalf("legacy doctor lacks the skill difference line:\n%s", out)
+		}
+		if skillCalls(t, bin) == 0 {
+			t.Fatal("legacy doctor never ran 'herdr --skill'")
+		}
+	})
+	t.Run("native prints no official-skill line", func(t *testing.T) {
+		out, bin := run(t, "hc", true)
+		if strings.Contains(out, "official herdr skill") || strings.Contains(out, "herdr --skill") {
+			t.Fatalf("native doctor printed an official-skill line:\n%s", out)
+		}
+		if n := skillCalls(t, bin); n != 0 {
+			t.Fatalf("native doctor ran 'herdr --skill' %d times", n)
+		}
+		// The control: the rest of the doctor ran.
+		if !strings.Contains(out, "ok     hc 0.1.14, core run2biz running, protocol generation 1\n") {
+			t.Fatalf("native doctor lost its hc line:\n%s", out)
+		}
+	})
+	t.Run("native still says when the skill is not installed", func(t *testing.T) {
+		out, bin := run(t, "hc", false)
+		if !strings.Contains(out, "official herdr skill not installed") {
+			t.Fatalf("native doctor lacks the not-installed hint:\n%s", out)
+		}
+		if n := skillCalls(t, bin); n != 0 {
+			t.Fatalf("native doctor ran 'herdr --skill' %d times", n)
+		}
+	})
+}
+
+// TestDoctorOutsideHerdrBranchIsLegacyOnly: with HERDR_ENV unset the legacy
+// doctor says the process is not inside a Herdr pane; native Core has no
+// legacy TUI to diagnose, so it prints nothing about it. The codexenv
+// diagnose is the branch's only reader of the api snapshot (unsupported on
+// the native backend), so skipping the branch is what skips the snapshot call.
+func TestDoctorOutsideHerdrBranchIsLegacyOnly(t *testing.T) {
+	const marker = "HERDR_ENV != 1"
+	for _, transport := range []string{"herdr", "hc"} {
+		out, _ := nativeDoctorOutput(t, transport, nil)
+		has := strings.Contains(out, marker)
+		if transport == "herdr" && !has {
+			t.Fatalf("legacy doctor outside Herdr lacks %q:\n%s", marker, out)
+		}
+		if transport == "hc" {
+			if has || strings.Contains(out, "not inside a Herdr pane") {
+				t.Fatalf("native doctor printed the outside-Herdr line:\n%s", out)
+			}
+			// The control: the doctor still ran past that branch.
+			if !strings.Contains(out, "ok     hc 0.1.14, core run2biz running, protocol generation 1\n") {
+				t.Fatalf("native doctor lost its hc line:\n%s", out)
+			}
+		}
+	}
 }
