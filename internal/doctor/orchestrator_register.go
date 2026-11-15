@@ -210,7 +210,7 @@ func SetTaskAfterTitle(cfg *core.Config, env platform.Env, cwd, pane, objective 
 // is valid, live, matches the caller's address, session, and project root,
 // and identifies a known program kind. It returns the recognized kind and
 // the display name (the terminal's explicit name, or pane ID fallback).
-func verifyCallerDetail(env platform.Env, svc transport.Services, pane, session, root string) (string, string) {
+func verifyCallerDetail(env platform.Env, svc transport.Services, pane, session, root string, currentRoot bool) (string, string) {
 	detailRep := svc.Runtime.Get(context.Background(), transport.Target{ID: pane}, transport.Call{})
 	if detailRep.Err != nil {
 		platform.Die("init: the caller terminal detail could not be read: "+detailRep.Err.Error(), 2)
@@ -233,6 +233,11 @@ func verifyCallerDetail(env platform.Env, svc transport.Services, pane, session,
 	if detail.WorkspaceID == "" || detail.WorkspaceID != session {
 		platform.Die("init: the detailed caller session does not match the session", 2)
 	}
+	if currentRoot {
+		// The native-only preflight already validated the detail's current
+		// directory. Preserve every other check of the unnamed branch.
+		detail.Cwd = root
+	}
 	if detail.Cwd == "" {
 		platform.Die("init: the detailed caller reports no cwd", 2)
 	}
@@ -249,6 +254,45 @@ func verifyCallerDetail(env platform.Env, svc transport.Services, pane, session,
 		name = detail.PaneID
 	}
 	return kind, name
+}
+
+// initCallerCurrentRoot adds a directory-only override to native init. It
+// neither changes the shared matcher nor trusts summary current metadata.
+// Failed or ineligible detail reads leave the original start checks intact.
+func initCallerCurrentRoot(env platform.Env, svc transport.Services, rep transport.Reply[[]transport.Terminal], pane, session, root string) bool {
+	if rep.Err != nil || !rep.Valid {
+		return false
+	}
+	for i := range rep.Value {
+		if rep.Value[i].PaneID != pane || rep.Value[i].WorkspaceID != session {
+			continue
+		}
+		detail := svc.Runtime.Get(context.Background(), transport.Target{ID: pane}, transport.Call{})
+		if detail.Err != nil || !detail.Valid || detail.Value.PaneID != pane || detail.Value.WorkspaceID != session || detail.Value.NativeState != "live" || detail.Value.CurrentCwd == "" {
+			return false
+		}
+		cwd := detail.Value.CurrentCwd
+		if !filepath.IsAbs(cwd) {
+			platform.Die("init: the caller terminal's root does not match the project root", 2)
+		}
+		for _, component := range strings.FieldsFunc(cwd, func(r rune) bool { return r == '/' || r == filepath.Separator }) {
+			if component == ".." {
+				platform.Die("init: the caller terminal's root does not match the project root", 2)
+			}
+		}
+		canonical, err := filepath.EvalSymlinks(cwd)
+		if err != nil {
+			platform.Die("init: the caller terminal's root does not match the project root", 2)
+		}
+		currentProject, err := StrictProjectRoot(env, canonical)
+		if err != nil || currentProject != root {
+			platform.Die("init: the caller terminal's root does not match the project root", 2)
+		}
+		// This local reply is used only by native init's original matcher.
+		rep.Value[i].Cwd = root
+		return true
+	}
+	return false
 }
 
 // cmdInitHc is the explicit HC branch of an explicit init (DJA-611 D4): it
@@ -284,6 +328,7 @@ func cmdInitHc(ctx *core.Config, env platform.Env, cwd string) {
 		platform.Die("init: this terminal holds a worker row of the session roster; a roster worker does not register the orchestrator record", 2)
 	}
 	rep := svc.Runtime.List(context.Background(), transport.Scope{All: true}, transport.Call{})
+	currentRoot := initCallerCurrentRoot(env, svc, rep, caller.PaneID, session, root)
 	matched, reason := matchedCallerTerminal(rep, env, caller.PaneID, session, root)
 	if matched == nil {
 		platform.Die("init: "+reason, 2)
@@ -297,7 +342,7 @@ func cmdInitHc(ctx *core.Config, env platform.Env, cwd string) {
 		}
 		name = nameReply.Value
 	} else {
-		kind, name = verifyCallerDetail(env, svc, caller.PaneID, session, root)
+		kind, name = verifyCallerDetail(env, svc, caller.PaneID, session, root, currentRoot)
 	}
 	record := sessionmeta.Record{
 		Schema:      sessionmeta.Schema,

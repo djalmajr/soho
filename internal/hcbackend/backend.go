@@ -404,6 +404,20 @@ func cwdOf(obj *jsonjs.Object) string {
 	return ""
 }
 
+// currentCwdOf preserves the provenance of a reported foreground directory.
+func currentCwdOf(obj *jsonjs.Object) string {
+	if raw, ok := obj.Get("foreground"); ok {
+		if foreground, ok := raw.(*jsonjs.Object); ok {
+			if raw, ok := foreground.Get("cwd"); ok {
+				if cwd, ok := raw.(string); ok {
+					return cwd
+				}
+			}
+		}
+	}
+	return ""
+}
+
 // programHints renders one terminal record's program hints: the nonempty
 // status app first, then foreground.name when present and different, then the
 // basename of argv[0] when present and different (both slash styles normalized
@@ -688,6 +702,7 @@ func (b *backend) listAllLocal(ctx context.Context, call transport.Call) transpo
 			Sequence:     listTurn(records, i),
 			Msg:          statusMsgOf(rec),
 			Cwd:          cwdOf(rec),
+			CurrentCwd:   currentCwdOf(rec),
 			WorkspaceID:  sessionOfRecord(rec),
 			ProgramHints: programHints(rec),
 		})
@@ -723,6 +738,7 @@ func (b *backend) Get(ctx context.Context, target transport.Target, call transpo
 			Sequence:      turnRaw(json.RawMessage(out)),
 			Msg:           statusMsgOf(obj),
 			Cwd:           cwdOf(obj),
+			CurrentCwd:    currentCwdOf(obj),
 			WorkspaceID:   sessionOfRecord(obj),
 			ProgramHints:  programHints(obj),
 			LaunchProfile: launchProfileOf(obj),

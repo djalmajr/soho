@@ -163,6 +163,9 @@ type Terminal struct {
 	// the backend does not report one), so a consumer that trusts the
 	// terminal record can compare it with the registration.
 	Cwd string
+	// CurrentCwd is the nonempty foreground cwd reported by hc, independent
+	// of Cwd's existing launch-directory projection. Native init alone uses it.
+	CurrentCwd string
 	// WorkspaceID is the workspace or session the terminal record itself
 	// names ("" when it does not): the herdr record's workspace_id or the
 	// hc record's soho.session label (with the hc-<address> fallback the

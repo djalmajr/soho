@@ -17,6 +17,42 @@ import (
 
 func TestMain(m *testing.M) { fakecli.RunTests(m) }
 
+func TestCurrentCwdProjectionPreservesCwd(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, cwd, current string
+	}{
+		{"both", `"cwd":"/start","foreground":{"cwd":"/current"}`, "/start", "/current"},
+		{"foreground-only", `"foreground":{"cwd":"/current"}`, "/current", "/current"},
+		{"absent", `"cwd":"/start"`, "/start", ""},
+		{"empty", `"cwd":"/start","foreground":{"cwd":""}`, "/start", ""},
+		{"null", `"cwd":"/start","foreground":{"cwd":null}`, "/start", ""},
+		{"number", `"cwd":"/start","foreground":{"cwd":42}`, "/start", ""},
+		{"object", `"cwd":"/start","foreground":{"cwd":{}}`, "/start", ""},
+		{"foreground-null", `"cwd":"/start","foreground":null`, "/start", ""},
+		{"foreground-number", `"cwd":"/start","foreground":42`, "/start", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := `{"address":"t7","state":"live",` + tc.body + `}`
+			env, calls := fakeHc(t, []fakecli.Rule{
+				{Argv: []string{"get", "t7", "--json"}, Stdout: record},
+				{Argv: []string{"ls", "--json"}, Stdout: `{"terminals":[` + record + `]}`},
+			})
+			b := &backend{env: env, client: hc.New(env)}
+			get := b.Get(context.Background(), transport.Target{ID: "t7"}, transport.Call{})
+			list := b.List(context.Background(), transport.Scope{All: true}, transport.Call{})
+			if get.Err != nil || !get.Valid || list.Err != nil || !list.Valid || len(list.Value) != 1 {
+				t.Fatalf("get=%+v list=%+v", get, list)
+			}
+			for _, terminal := range []transport.Terminal{get.Value, list.Value[0]} {
+				if terminal.Cwd != tc.cwd || terminal.CurrentCwd != tc.current {
+					t.Errorf("Cwd=%q CurrentCwd=%q want %q, %q", terminal.Cwd, terminal.CurrentCwd, tc.cwd, tc.current)
+				}
+			}
+			wantArgv(t, calls(), [][]string{{"get", "t7", "--json"}, {"ls", "--json"}})
+		})
+	}
+}
+
 // fakeHc installs a fake hc binary with the given rules and returns the
 // environment (HC_TERMINAL_ID set to t1) and the recorded-calls reader.
 func fakeHc(t *testing.T, rules []fakecli.Rule) (platform.Env, func() []fakecli.Call) {
