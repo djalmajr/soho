@@ -13,6 +13,7 @@ import (
 	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/doctor"
+	"github.com/djalmajr/soho/internal/gate"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/job"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -38,7 +39,7 @@ var knownCommands = map[string]bool{
 	"send": true, "stats": true, "release": true, "clean": true, "setup": true,
 	"doctor": true, "explain": true, "init": true, "title": true, "regrid": true,
 	"roster": true, "friction": true, "feedback": true, "tab-label": true,
-	"layout-plan": true, "env": true, "mutation-guard": true, "mutation-copy": true, "review-snapshot": true,
+	"layout-plan": true, "env": true, "mutation-guard": true, "mutation-copy": true, "gate": true, "review-snapshot": true,
 	"reopen": true, "compact": true, "metrics": true, "copies": true, "gc": true,
 	"procs": true, "install": true, "promote": true, "validate": true,
 	"collaborate": true, "capabilities": true, "hook": true, "job": true, "inventory": true,
@@ -169,6 +170,19 @@ func Run(args []string, env platform.Env) (code int) {
 		}
 		return runMutationGuard(args[1:], decisionEnv)
 	}
+	// gate needs no Herdr context and no configuration: like mutation-guard
+	// it runs before the project is read and before the transport guard. It
+	// writes its four artifacts, so SOHO_NOWRITE=1 refuses it.
+	if command == "gate" {
+		if decisionEnv.Get("SOHO_NOWRITE") == "1" {
+			dieNowriteGenericRefusal(command, args)
+		}
+		if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
+			_, _ = io.WriteString(platform.Stdout, commandHelp(command))
+			return 0
+		}
+		return gate.Run(args[1:], platform.Stdout, platform.Stderr)
+	}
 	var configCtx *core.Config
 	commandCwd, _ := os.Getwd()
 	// A team command the bound job supervisor runs reads its user
@@ -213,6 +227,19 @@ func Run(args []string, env platform.Env) (code int) {
 	effectiveCfg := commandConfig
 	if effectiveCfg == nil {
 		effectiveCfg = configCtx
+	}
+	// Preserve whether the selector was absent before transportModeFor
+	// records the resolved default in both environments. A native id is
+	// diagnostic evidence only; it never selects a transport or caller.
+	nativeTransportUnselected := false
+	if decisionEnv.Get("SOHO_TRANSPORT") == "" && decisionEnv.Get("HERDR_ENV") != "1" && decisionEnv.Get("HC_TERMINAL_ID") != "" {
+		selectorCfg := effectiveCfg
+		if selectorCfg == nil {
+			ctx := core.LoadMetadataConfigFor(decisionEnv, commandCwd, userSel)
+			selectorCfg = &ctx
+		}
+		entry, exists := selectorCfg.Entries["transport"]
+		nativeTransportUnselected = !exists || entry.Source == "defaults"
 	}
 	transportMode := transportModeFor(effectiveCfg, env, decisionEnv, commandCwd)
 	if modelOpenCode && transportMode != "hc" {
@@ -282,6 +309,9 @@ func Run(args []string, env platform.Env) (code int) {
 		// hc there is no HERDR_ENV to require and no herdr binary to demand
 		// (DJA-604 stage 2b); the read side runs on the hc backend.
 		if transportMode != "hc" {
+			if nativeTransportUnselected {
+				platform.Die("not running inside Herdr (HERDR_ENV != 1); HC_TERMINAL_ID is present; select the native transport with SOHO_TRANSPORT=hc or soho config set transport hc", 2)
+			}
 			herdr.RequireEnv(decisionEnv, platform.Current(), os.Getpid(), nil)
 		}
 		frictionLogPath = ""

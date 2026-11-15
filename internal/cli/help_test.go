@@ -60,6 +60,14 @@ func TestCommandHelpFirstPositionOnly(t *testing.T) {
 		}
 	})
 
+	t.Run("gate --help prints its usage line and paragraph and stops before Durations", func(t *testing.T) {
+		code, out, errOut := runIn(t, []string{"gate", "--help"}, env, cwd)
+		lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+		if code != 0 || errOut != "" || len(lines) != 2 || lines[0] != "  soho gate <prefix> <duration> -- <program> [args…]" || !strings.Contains(lines[1], "exits with the program's code, 124 when the bound expired, 125 when it could not start or was killed by a signal, 2 on usage") {
+			t.Fatalf("code=%d out=%q err=%q; want the gate usage line and its paragraph", code, out, errOut)
+		}
+	})
+
 	t.Run("friction --help stops at the next soho line", func(t *testing.T) {
 		const want = "  soho friction [--since D] [--level L] [--command C] [--agent A] [--summary | --patterns [--json]]  # errors/warnings of this workspace; options AND together; --patterns groups the lines by their masked message template (count, after, key, last_seen, fixed_by, pattern) and --json returns the same as JSON\n"
 		code, out, errOut := runIn(t, []string{"friction", "--help"}, env, cwd)
