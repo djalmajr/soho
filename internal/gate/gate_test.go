@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -380,6 +381,19 @@ func TestHostilePrefixIsNotExpanded(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	prefix := "we ird $HOME *"
+	if runtime.GOOS == "windows" {
+		// '*' cannot be part of a Windows file name: there the gate refuses
+		// the prefix without creating anything, and the expansion check uses
+		// characters cmd.exe would interpret instead.
+		refused := runGate(t, prefix, "30s", helperArgs("echo")...)
+		if refused.code != 2 {
+			t.Fatalf("invalid file name: code=%d stderr=%q", refused.code, refused.errOut)
+		}
+		if names := listDir(t, dir); len(names) != 0 {
+			t.Fatalf("refusal created %v", names)
+		}
+		prefix = "we ird $HOME %PATH% ^&"
+	}
 	got := runGate(t, prefix, "30s", helperArgs("echo")...)
 	if got.code != 0 {
 		t.Fatalf("code=%d stderr=%q", got.code, got.errOut)
