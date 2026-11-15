@@ -866,6 +866,13 @@ func TestFindExecutable(t *testing.T) {
 }
 
 func TestCmdInvocation(t *testing.T) {
+	t.Run("command path equals delimiter is escaped", func(t *testing.T) {
+		inv := CmdInvocation(`C:\strict=true\wrapper.cmd`, []string{"x& echo INJECTED", "a=b"}, Env{})
+		want := `"C:\strict^=true\wrapper.cmd ^"x^&^ echo^ INJECTED^" ^"a=b^""`
+		if inv.Args[3] != want {
+			t.Fatalf("command line=%q, want %q", inv.Args[3], want)
+		}
+	})
 	// Mutation captured: omitting the second escaping pass breaks npm .cmd shims.
 	t.Run("models.test.mjs: win32 cmdInvocation escapes batch arguments", func(t *testing.T) { // JS: "runCli: a win32 .cmd/.bat target runs through cmd.exe with every argument escaped; notFound and timeout"
 		inv := CmdInvocation(`C:\tools\grok.CMD`, []string{"models", "has space", "x& echo INJECTED", "50%", `a"b`}, Env{"COMSPEC": `C:\Windows\system32\cmd.exe`})

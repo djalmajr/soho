@@ -706,6 +706,9 @@ type CmdInvocationResult struct {
 func CmdInvocation(resolved string, args []string, env Env) CmdInvocationResult {
 	twice := regexp.MustCompile(`(?i)node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$`).MatchString(resolved)
 	command := escapeCmdMeta(windowsNormalize(resolved))
+	// Unlike an argument, the command token treats '=' as a delimiter even
+	// inside a path (for example a directory named strict=true).
+	command = strings.ReplaceAll(command, "=", "^=")
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, command)
 	for _, arg := range args {

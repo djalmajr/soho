@@ -96,6 +96,29 @@ func strictWindowsFixture(t *testing.T, root, tmp, extension string, rules []fak
 	return env, wrapper
 }
 
+func TestStrictOutputUTF8WindowsCommandPathDelimiters(t *testing.T) {
+	for _, extension := range []string{".cmd", ".bat"} {
+		t.Run(extension, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "path=with space&meta")
+			tmp := t.TempDir()
+			args := []string{"output", "a=b", "space here", "x& echo INJECTED", "x| echo INJECTED", "x>injected", "50%", `quote"inside`}
+			env, wrapper := strictWindowsFixture(t, root, tmp, extension, []fakecli.Rule{{Argv: args, Stdout: "exact output", Code: 7}})
+			got := RunCli("wrapper", args, RunOptions{Platform: "win32", Env: env, Cwd: root, TimeoutMs: 15000, StrictOutputUTF8: true})
+			if got.Status == nil || *got.Status != 7 || got.Stdout != "exact output" || got.Stderr != "" || got.Error != "" || got.Signal != "" || got.NotFound || got.TimedOut || !strings.EqualFold(got.Resolved, wrapper) {
+				t.Fatalf("command path or hostile argv failed: status=%s error=%q signal=%q missing=%v timeout=%v output lengths=%d/%d", treeKillStatus(got), got.Error, got.Signal, got.NotFound, got.TimedOut, len(got.Stdout), len(got.Stderr))
+			}
+			calls, err := fakecli.ReadCalls(filepath.Join(root, "fixture.calls.jsonl"))
+			if err != nil || len(calls) != 1 || strings.Join(calls[0].Argv, "\x00") != strings.Join(args, "\x00") {
+				t.Fatalf("command-file argv changed: calls=%v error=%v", calls, err)
+			}
+			if _, err := os.Stat(filepath.Join(root, "injected")); !os.IsNotExist(err) {
+				t.Fatalf("argument caused a redirection: %v", err)
+			}
+			strictWindowsCaptureClean(t, tmp)
+		})
+	}
+}
+
 func strictWindowsCaptureClean(t *testing.T, tmp string) {
 	t.Helper()
 	if entries, err := os.ReadDir(tmp); err != nil || len(entries) != 0 {

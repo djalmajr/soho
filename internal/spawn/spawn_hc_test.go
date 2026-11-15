@@ -1237,6 +1237,9 @@ func TestSpawnOpenCodePrimary(t *testing.T) {
 
 	t.Run("fresh spawn submits the primary profile and standalone argv", func(t *testing.T) {
 		cwd, bin, state, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		if runtime.GOOS == "windows" {
+			env["PATHEXT"] = ".exe"
+		}
 		env["OPENCODE_CONFIG_CONTENT"] = `{"marker":"no-leak-canary"}`
 		rules := append(hcFixtureRules(),
 			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: opencodePrimaryRecord("t7")},
