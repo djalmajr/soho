@@ -442,7 +442,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			_, _ = fmt.Fprintf(platform.Stdout, "state dir outside the repository: %s (no repository Git exclusion is needed)\n", stateShown)
 		}
 		_, _ = fmt.Fprintln(platform.Stdout, "note: Claude Code reads CLAUDE.local.md; Claude Code, Codex and pi run the peer checks. Codex, pi, Grok, Cursor and agy need a separate local instruction route.")
-		promptConfigNotice(conf, true)
+		promptConfigNotice(ctx, conf, true)
 		return
 	}
 	_, _ = fmt.Fprintf(platform.Stdout, "block %s: %s\n", setupWriteBlock(dest), dest)
@@ -461,7 +461,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	writeCanonicalStateIgnore(ctx, env, cwd)
 	_, _ = fmt.Fprintf(platform.Stdout, "state dir ignored: %s/\n", core.StateDirSetting(ctx, env, cwd))
 	_, _ = fmt.Fprintln(platform.Stdout, "note: Claude Code, Codex and pi run the peer checks; Grok, Cursor and agy only read the instruction file.")
-	promptConfigNotice(conf, false)
+	promptConfigNotice(ctx, conf, false)
 }
 
 func containsSetupArg(args []string, want string) bool {
@@ -560,9 +560,30 @@ func writeSetupLanes(conf string, lanes []core.LaneSpec, env platform.Env, cwd s
 	}
 }
 
-func promptConfigNotice(conf string, local bool) {
+// userLayerChoosesTeam reports whether the user's own configuration file
+// already holds a team choice (the same keys projectNeedsConfigPrompt looks
+// for in the project file). That choice is in effect in every project that
+// does not override it, so setup has nothing to ask.
+func userLayerChoosesTeam(ctx *core.Config) bool {
+	if ctx == nil {
+		return false
+	}
+	for _, layer := range ctx.Layers {
+		if layer.Source != "user" || layer.ReadError != nil {
+			continue
+		}
+		for _, key := range layer.OriginalKeys {
+			if setupPromptConfig.MatchString(key + "=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func promptConfigNotice(ctx *core.Config, conf string, local bool) {
 	path := conf
-	if !projectNeedsConfigPrompt(path) {
+	if !projectNeedsConfigPrompt(path) || userLayerChoosesTeam(ctx) {
 		return
 	}
 	flag := ""
