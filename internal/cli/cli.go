@@ -158,6 +158,17 @@ func Run(args []string, env platform.Env) (code int) {
 		command = args[0]
 	}
 	core.SetFrictionCommand(command)
+
+	if command == "mutation-guard" {
+		if decisionEnv.Get("SOHO_NOWRITE") == "1" {
+			dieNowriteGenericRefusal(command, args)
+		}
+		if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
+			_, _ = io.WriteString(platform.Stdout, commandHelp(command))
+			return 0
+		}
+		return runMutationGuard(args[1:], decisionEnv)
+	}
 	var configCtx *core.Config
 	commandCwd, _ := os.Getwd()
 	// A team command the bound job supervisor runs reads its user
@@ -177,6 +188,11 @@ func Run(args []string, env platform.Env) (code int) {
 		userSel = sel
 	}
 	var commandConfig *core.Config
+	modelOpenCode := command == "model" && len(args) > 2 && args[1] == "opencode" && args[2] != ""
+	if modelOpenCode {
+		ctx := core.LoadMetadataConfigFor(decisionEnv, commandCwd, userSel)
+		commandConfig = &ctx
+	}
 	readOnlyRejectedDoctor := command == "doctor" && decisionEnv.Get("SOHO_NOWRITE") == "1" && len(args) > 1
 	if !readOnlyRejectedDoctor && (command == "review-snapshot" || command == "config" || command == "session" || command == "roles" || command == "role" || command == "explain" || command == "layout-plan" || command == "regrid" || command == "promote" || command == "tab-label" || command == "stats" || command == "metrics" || command == "collect" || command == "setup" || command == "release" || command == "doctor" || command == "init" || command == "spawn" || command == "dispatch" || command == "resume" || command == "run" || command == "lint" || command == "wait" || command == "status" || command == "validate") {
 		ctx := core.LoadConfigFor(decisionEnv, commandCwd, userSel)
@@ -199,6 +215,13 @@ func Run(args []string, env platform.Env) (code int) {
 		effectiveCfg = configCtx
 	}
 	transportMode := transportModeFor(effectiveCfg, env, decisionEnv, commandCwd)
+	if modelOpenCode && transportMode != "hc" {
+		selector, err := core.OpenCodeTUIProfile(effectiveCfg, decisionEnv)
+		if err != nil {
+			platform.Die(err.Error(), 2)
+		}
+		decisionEnv["SOHO_OPENCODE_TUI_PROFILE"] = selector
+	}
 	// The hc entry guard: under transport=hc only the read side and the
 	// explicitly allowed commands run; every other command dies here, before
 	// any read or write of its own, with the one fixed line. An unknown
@@ -213,18 +236,7 @@ func Run(args []string, env platform.Env) (code int) {
 		platform.Die("SOHO_NOWRITE=1 is read-only: job "+args[1]+" writes; only job status, wait, events, collect and list run", 2)
 	}
 	if decisionEnv.Get("SOHO_NOWRITE") == "1" && !nowriteReadInvocation(args) {
-		shown, extra := command, ""
-		if command == "" {
-			shown = "(none)"
-		} else if len(args) > 1 {
-			count := len(args) - 1
-			noun := "argument"
-			if count > 1 {
-				noun = "arguments"
-			}
-			extra = fmt.Sprintf(" (%d extra %s not allowed)", count, noun)
-		}
-		platform.Die("soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, --patterns, --json, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json'; rejected: "+shown+extra+" — unset SOHO_NOWRITE to write", 2)
+		dieNowriteGenericRefusal(command, args)
 	}
 	if command == "help" || command == "-h" || command == "--help" || command == "" {
 		_, _ = io.WriteString(platform.Stdout, usage)
@@ -316,9 +328,6 @@ func Run(args []string, env platform.Env) (code int) {
 	}
 	if command == "review-snapshot" {
 		return cmdReviewSnapshot(args[1:], configCtx, decisionEnv, commandCwd)
-	}
-	if command == "mutation-guard" {
-		return runMutationGuard(args[1:], decisionEnv)
 	}
 	if command == "mutation-copy" {
 		return runMutationCopy(args[1:], decisionEnv)
@@ -487,8 +496,11 @@ func transportModeFor(ctx *core.Config, env, decisionEnv platform.Env, cwd strin
 // role, lint, install, env — env reports the herdr version through a
 // one-shot external binary call, never the transport). Every other command
 // is refused at the entry with the guard's line.
+// mutation-copy uses the central guarded copier and native resource registration.
 func hcCommandAllowed(command string) bool {
 	switch command {
+	case "mutation-copy":
+		return true
 	case "", "help", "-h", "--help":
 		return true
 	case "status", "wait", "spawn", "dispatch", "release", "collaborate", "doctor", "config", "explain", "capabilities":
@@ -511,6 +523,21 @@ func hcCommandAllowed(command string) bool {
 		return true
 	}
 	return false
+}
+
+func dieNowriteGenericRefusal(command string, args []string) {
+	shown, extra := command, ""
+	if command == "" {
+		shown = "(none)"
+	} else if len(args) > 1 {
+		count := len(args) - 1
+		noun := "argument"
+		if count > 1 {
+			noun = "arguments"
+		}
+		extra = fmt.Sprintf(" (%d extra %s not allowed)", count, noun)
+	}
+	platform.Die("soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, --patterns, --json, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json'; rejected: "+shown+extra+" — unset SOHO_NOWRITE to write", 2)
 }
 
 // nowriteReadInvocation decides, from the shape of the invocation alone, what

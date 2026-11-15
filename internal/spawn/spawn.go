@@ -518,12 +518,12 @@ func LaneRoleEffortConflict(role, kind, model, effective string, ctx *core.Confi
 	return requested, source
 }
 
-func warnLaneRoleEffort(name, role, lane, kind, model, effective string, fromLane bool, ctx *core.Config, env platform.Env, cwd string) {
+func warnLaneRoleEffort(name, role, lane, kind, model, effective string, fromLane bool, ctx *core.Config, env platform.Env, cwd string, output ...spawnOptions) {
 	if !fromLane || lane == "" {
 		return
 	}
 	if requested, source := LaneRoleEffortConflict(role, kind, model, effective, ctx, env, cwd); requested != "" {
-		Warn(fmt.Sprintf("spawn: '%s' runs %s at the lane's effort %s; the role asks for %s (%s) — pass --effort %s or set lane.%s.effort", name, role, effective, requested, source, requested, lane), ctx, env, "spawn")
+		warnSpawnOutput(output, fmt.Sprintf("spawn: '%s' runs %s at the lane's effort %s; the role asks for %s (%s) — pass --effort %s or set lane.%s.effort", name, role, effective, requested, source, requested, lane), ctx, env)
 	}
 }
 
@@ -718,6 +718,10 @@ func laneReusePick(sd, lane, role, kind, model, effort, approvals, mcp, workerCw
 }
 
 func EmitReuse(name, role, kind string, ctx *core.Config, env platform.Env, cwd string) bool {
+	return emitReuse(name, role, kind, "", ctx, env, cwd)
+}
+
+func emitReuse(name, role, kind, qualifiedProfile string, ctx *core.Config, env platform.Env, cwd string) bool {
 	sd := core.StateDirPath(ctx, env, cwd)
 	line := core.RosterLine(sd, name)
 	if line == "" {
@@ -733,6 +737,15 @@ func EmitReuse(name, role, kind string, ctx *core.Config, env platform.Env, cwd 
 	// model, effort and agent_args are the roster columns the spawn recorded
 	// (8, 14, 13); a missing value comes out as "".
 	out := jsonjs.O("name", name, "pane_id", fieldAt(f, 1), "kind", kind, "role", role, "family", fieldAt(f, 4), "reused", true, "previous_role", prev, "effort", fieldAt(f, 14), "model", fieldAt(f, 8), "agent_args", fieldAt(f, 13), "status", "ready")
+	if kind == "opencode" && env.Get("SOHO_TRANSPORT") == "hc" {
+		// SOH-201 phase B: the reuse gate proved this worker reports the
+		// primary profile; disclose the known profile name only, never its
+		// environment.
+		out.Set("launch_profile", kinds.OpenCodePrimaryProfile)
+	}
+	if qualifiedProfile != "" {
+		out.Set("launch_profile", qualifiedProfile)
+	}
 	if port := core.RosterE2EPort(f); port != "" {
 		out.Set("e2e_port", port)
 	}
@@ -785,6 +798,26 @@ func warnStartupBlocked(name, kind, state string, ev startup.Evaluation, ctx *co
 // name without a roster row is left to the fresh path (emitReuse says the
 // same and returns false).
 func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config, env platform.Env, cwd string) {
+	// SOH-201 phase B: a reusable native opencode worker is qualified by its
+	// own terminal record, never by its display name. One Get on the
+	// roster's terminal id; the record's identity must match the queried
+	// target and report the primary profile, a reported status from the
+	// opencode app, the live lifecycle and idle-or-done activity. Anything
+	// else refuses the reuse with the fixed exit-4 line, before any role
+	// change, ready emission, input or close.
+	if kind == "opencode" && env.Get("SOHO_TRANSPORT") == "hc" {
+		line := core.RosterLine(core.StateDirPath(ctx, env, cwd), name)
+		queried := transport.Target{ID: fieldAt(strings.Split(line, "\t"), 1)}
+		ready := queried.ID != ""
+		if ready {
+			reply := svc.Runtime.Get(context.Background(), queried, transport.Call{})
+			ready = reply.Valid && reply.Err == nil && reply.Value.Target == queried && kinds.OpenCodePrimaryReady(reply.Value)
+		}
+		if !ready {
+			core.DieFriction("spawn: reusable opencode worker is not a reported primary-profile worker ready for input", 4, "", "spawn")
+		}
+		return
+	}
 	if !startup.Enabled(kind) {
 		return
 	}
@@ -810,6 +843,26 @@ func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config
 	warnStartupBlocked(name, kind, state, ev, ctx, env)
 	_, _ = fmt.Fprint(platform.Stdout, agentReadText(svc.Runtime, name, "visible", nil))
 	platform.Die("", 7)
+}
+
+// Qualify the selected worker before any rename or report/role mutation. Reuse
+// keeps its current process/configuration; this observation applies no overrides
+// and does not make the subsequent operations an atomic identity reservation.
+func gateConfiguredReuse(rt transport.Runtime, line string, o spawnOptions, kind string, args []string, env platform.Env) string {
+	if o.launchProfile.Name == "" || env.Get("SOHO_TRANSPORT") == "hc" {
+		return ""
+	}
+	f := strings.Split(line, "\t")
+	s := configuredSpawnRequest(o, kind, args)
+	s.Name, s.PaneID = fieldAt(f, 0), fieldAt(f, 1)
+	if preflight, ok := rt.(transport.ConfiguredLaunchReuse); ok {
+		r := preflight.PreflightConfiguredReuse(context.Background(), s, configuredSpawnCall(o))
+		if r.Valid && r.Err == nil && r.Value {
+			return s.LaunchProfile
+		}
+	}
+	core.DieFriction("spawn: reusable configured worker profile is unverified", 4, "", "")
+	return ""
 }
 
 // renameLaneWorker renames the reused worker's agent to newName with the same
@@ -911,6 +964,38 @@ type spawnOptions struct {
 	kindSet                                                                                                bool
 	force                                                                                                  bool
 	native                                                                                                 []string
+	envFrom                                                                                                []string
+	envSnapshot                                                                                            map[string]string
+	blockedAtStartup                                                                                       bool
+	startupDiag                                                                                            string
+	launchProfile                                                                                          kinds.LaunchProfile
+	nativeArgsSnapshot                                                                                     string
+}
+
+// spawnValueOption is the authoritative option/value grammar for parsing and
+// early explicit-environment detection. Values may themselves look like flags.
+func spawnValueOption(arg string) bool {
+	switch arg {
+	case "--env-from", "--tab-label", "--effort", "--model", "--approvals", "--name", "--kind", "--direction", "--ratio", "--cwd", "--pane", "--timeout", "--mcp":
+		return true
+	}
+	return false
+}
+
+func hasSpawnEnvOption(argv []string) bool {
+	for i := 1; i < len(argv); i++ {
+		arg := argv[i]
+		if arg == "--" {
+			break
+		}
+		if arg == "--env-from" {
+			return true
+		}
+		if spawnValueOption(arg) {
+			i++
+		}
+	}
+	return false
 }
 
 func parseArgs(argv []string, cwd string) spawnOptions {
@@ -936,16 +1021,22 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 			// line still goes out); never skips any other refusal.
 			o.force = true
 			continue
-		case "--tab-label", "--effort", "--model", "--approvals", "--name", "--kind", "--direction", "--ratio", "--cwd", "--pane", "--timeout", "--mcp":
 		default:
-			core.DieFriction("spawn: unknown option "+a, 2, "", "")
+			if !spawnValueOption(a) {
+				core.DieFriction("spawn: unknown option "+a, 2, "", "")
+			}
 		}
 		if i+1 >= len(argv) {
+			if a == "--env-from" {
+				refuseSpawnEnv()
+			}
 			core.DieFriction("spawn: "+a+" expects a value", 2, "", "")
 		}
 		v := argv[i+1]
 		i++
 		switch a {
+		case "--env-from":
+			o.envFrom = append(o.envFrom, v)
 		case "--tab-label":
 			o.tabLabel = v
 		case "--mcp":
@@ -993,11 +1084,77 @@ func effortOk(value string) bool {
 }
 
 func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
+	cmdSpawnWithHcStarter(argv, ctx, env, cwd, startHcAgent)
+}
+
+func cmdSpawnWithHcStarter(argv []string, ctx *core.Config, env platform.Env, cwd string, startHC func(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string)) {
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHC, false)
+}
+
+// PreflightFreshSpawn observes the same preparation as a real spawn, without
+// allocating or retiring worker state. Admission is not a reservation: the
+// actual spawn must prepare and validate again after release.
+func PreflightFreshSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true)
+}
+
+func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd string, startHC func(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string), admissionOnly bool) {
+	callerGatePhase := false
+	if admissionOnly {
+		defer func() {
+			value := recover()
+			if value == nil {
+				return
+			}
+			if exit, ok := value.(*platform.ExitError); ok && exit != nil && !callerGatePhase {
+				// Preparation refusals must not trigger Run's deferred state
+				// write. Keep caller audit metadata and shared errors intact.
+				refusal := *exit
+				refusal.Friction = false
+				panic(&refusal)
+			}
+			panic(value)
+		}()
+	}
+	var o spawnOptions
+	// Explicit handoff admission and snapshot precede even warning writes,
+	// caller checks, naming and reuse. The snapshot map itself stays private.
+	explicitEnv := hasSpawnEnvOption(argv)
+	if explicitEnv {
+		o = parseArgs(argv, cwd)
+		prepareSpawnEnv(&o, ctx, env, cwd)
+	}
+	// Classify and clean up first; only the text handed to the outer CLI
+	// recovery/friction sink changes. No snapshot escapes this invocation.
+	defer func() {
+		if value := recover(); value != nil {
+			if exit, ok := value.(*platform.ExitError); ok && exit != nil {
+				if message := o.outputText(exit.Msg); message != exit.Msg {
+					public := *exit
+					public.Msg = message
+					panic(&public)
+				}
+			}
+			panic(value)
+		}
+	}()
+	Warn := func(message string, ctx *core.Config, env platform.Env, command string) {
+		Warn(o.outputText(message), ctx, env, command)
+	}
 	svc := backend.New(env)
 	// Machine under pressure: warn before opening more work (stderr only;
 	// the spawn proceeds as usual).
-	core.PressureWarn(ctx, env, cwd)
-	o := parseArgs(argv, cwd)
+	if !admissionOnly {
+		core.PressureWarn(ctx, env, cwd)
+	}
+	if !explicitEnv {
+		o = parseArgs(argv, cwd)
+	}
+	warn := func(message string, ctx *core.Config, env platform.Env, command string) {
+		if !admissionOnly {
+			Warn(message, ctx, env, command)
+		}
+	}
 	if o.name != "" && !agentNameRE.MatchString(o.name) {
 		core.DieFriction(fmt.Sprintf("invalid agent name '%s' (must match [a-z][a-z0-9_-]{0,31})", o.name), 2, "", "")
 	}
@@ -1025,7 +1182,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	// anything can act on them; the worker is a new hc terminal of the
 	// session, opened by Runtime.Start below.
 	if env.Get("SOHO_TRANSPORT") == "hc" && (o.pane != "" || o.tabLabel != "") {
-		Warn("spawn: transport=hc has no panes; --pane and --tab-label are ignored", ctx, env, "spawn")
+		warn("spawn: transport=hc has no panes; --pane and --tab-label are ignored", ctx, env, "spawn")
 		o.pane = ""
 		o.tabLabel = ""
 	}
@@ -1038,7 +1195,9 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	// panes in the name of the pane its environment claims. It also
 	// covers the run path and, for reopen, the second look of the same
 	// memo (the reopen checks before it releases the worker).
+	callerGatePhase = true
 	core.CallerGate("spawn", ctx, env, cwd)
+	callerGatePhase = false
 	// An unknown role is a usage error (exit 3) before the lane kind check
 	// below can read it as a lane member; resolving the role file only reads.
 	core.ResolveRole(o.role, env, cwd)
@@ -1051,17 +1210,38 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	// lane decision and the refusal with it.
 	if o.pane == "" && o.kindSet && o.kind != "" {
 		if lane, laneKind, conflict := LaneKindConflict(o.role, o.kind, ctx, env); conflict {
-			RefuseLaneKind(o.role, lane, laneKind, o.kind, fmt.Sprintf("spawn: role '%s' runs in lane '%s', whose kind is %s; --kind %s would put a %s worker in it and block the lane's next spawns. Spawn with --kind %s, change lane.%s.kind, or set SOHO_LANES=off for this spawn to open it outside the lanes.", o.role, lane, laneKind, o.kind, o.kind, laneKind, lane), "spawn", ctx, env, cwd)
+			refuseLaneKind(o.role, lane, laneKind, o.kind, fmt.Sprintf("spawn: role '%s' runs in lane '%s', whose kind is %s; --kind %s would put a %s worker in it and block the lane's next spawns. Spawn with --kind %s, change lane.%s.kind, or set SOHO_LANES=off for this spawn to open it outside the lanes.", o.role, lane, laneKind, o.kind, o.kind, laneKind, lane), "spawn", ctx, env, cwd, !admissionOnly, o)
 		}
 	}
 	if env.Get("SOHO_TRANSPORT") == "hc" {
 		// DJA-604 2b-2b: hc has no rename; the orchestrator keeps its
 		// terminal name and nothing else happens.
-		Warn("spawn: transport=hc has no rename; the orchestrator keeps its terminal name", ctx, env, "spawn")
-	} else {
-		EnsureOrchestratorName(ctx, env, cwd, "spawn")
+		warn("spawn: transport=hc has no rename; the orchestrator keeps its terminal name", ctx, env, "spawn")
 	}
 	res := core.ResolveRoleSettings(o.role, ctx, env, cwd, core.RoleFlags{Kind: o.kind, Model: o.model, Effort: o.effort, Approvals: o.approvals})
+	deferRename := false
+	if res.Kind == "opencode" && env.Get("SOHO_TRANSPORT") != "hc" {
+		selector, err := core.OpenCodeTUIProfile(ctx, env)
+		if err != nil {
+			core.DieFriction(err.Error(), 2, "", "")
+		}
+		deferRename = selector == "v2"
+	}
+	if !admissionOnly && env.Get("SOHO_TRANSPORT") != "hc" && !deferRename {
+		EnsureOrchestratorName(ctx, env, cwd, "spawn")
+	}
+	// Explicit TUI admission precedes even warning-log writes. Legacy paths
+	// still emit warnings at their original points.
+	var admittedWarnings []func()
+	warnBeforeAdmission := func(emit func()) {
+		if admissionOnly {
+			return
+		} else if deferRename {
+			admittedWarnings = append(admittedWarnings, emit)
+		} else {
+			emit()
+		}
+	}
 	lane, kind := res.Lane, res.Kind
 	if lane == "" && core.LanesEnabled(ctx, env) {
 		if core.PanesValue(ctx, env) == "2" && core.IsReviewRole(o.role) && !core.CustomLanesPresent(ctx, env) {
@@ -1078,10 +1258,10 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		if lane != "" {
 			msg += "; choose another with 'soho setup --lane " + lane + "=<kind>'"
 		}
-		Warn(msg, ctx, env, "spawn")
+		warnBeforeAdmission(func() { Warn(msg, ctx, env, "spawn") })
 	}
 	if o.role == "sub-orchestrator" && kind == "codex" && !strings.Contains(core.Cfg(ctx, "args_codex", "", env), "danger-full-access") {
-		Warn("sub-orchestrator on codex: its sandbox blocks the Herdr socket (every 'herdr' call fails with Operation not permitted). Use --kind claude, or set args.codex=-s danger-full-access if you accept that.", ctx, env, "spawn")
+		warn("sub-orchestrator on codex: its sandbox blocks the Herdr socket (every 'herdr' call fails with Operation not permitted). Use --kind claude, or set args.codex=-s danger-full-access if you accept that.", ctx, env, "spawn")
 	}
 	o.effort, o.model, o.approvals = res.Effort, res.ModelSpec, res.Approvals
 	modelSpec := o.model
@@ -1107,7 +1287,9 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		// milliseconds: a unit is converted here, so herdr never sees one.
 		// A unit names the intent, so only a unitless integer warns.
 		if core.IsPlainTimeoutMS(o.timeout) {
-			core.WarnShortTimeout("spawn", filepath.Join(core.StateDirPath(ctx, env, cwd), "friction.log"), ms)
+			warnBeforeAdmission(func() {
+				core.WarnShortTimeout("spawn", filepath.Join(core.StateDirPath(ctx, env, cwd), "friction.log"), ms)
+			})
 		}
 		o.timeout = strconv.FormatInt(ms, 10)
 	}
@@ -1117,27 +1299,75 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 		clamped := clampSpawnEffort(o.effort, kind, core.Cfg(ctx, "max_effort", "max", env))
 		if clamped != o.effort {
-			Warn(fmt.Sprintf("effort '%s' clamped to '%s' (kind ceiling %s, max_effort %s)", o.effort, clamped, kinds.KindEffortCeiling(kind), core.Cfg(ctx, "max_effort", "max", env)), ctx, env, "spawn")
+			message := fmt.Sprintf("effort '%s' clamped to '%s' (kind ceiling %s, max_effort %s)", o.effort, clamped, kinds.KindEffortCeiling(kind), core.Cfg(ctx, "max_effort", "max", env))
+			warnBeforeAdmission(func() { Warn(message, ctx, env, "spawn") })
 			o.effort = clamped
 		}
 	}
 	if modelSpec != "" {
-		o.model, _ = kinds.ResolveModel(kind, modelSpec, o.effort, env, func(msg string) { Warn(msg, ctx, env, "spawn") })
+		o.model, _ = kinds.ResolveModel(kind, modelSpec, o.effort, env, func(msg string) { warnBeforeAdmission(func() { Warn(msg, ctx, env, "spawn") }) })
 	}
 	if kind == "codex" && o.effort != "" {
 		mc := kinds.CodexEffortCeiling(o.model, env)
 		if kinds.EffortRank(o.effort) > kinds.EffortRank(mc) {
 			if kinds.CodexModelCeiling(o.model, env) != "" {
-				Warn(fmt.Sprintf("codex model %s supports up to '%s'; effort '%s' clamped", o.model, mc, o.effort), ctx, env, "spawn")
+				warn(fmt.Sprintf("codex model %s supports up to '%s'; effort '%s' clamped", o.model, mc, o.effort), ctx, env, "spawn")
 			} else {
 				label := o.model
 				if label == "" {
 					label = "(CLI default)"
 				}
-				Warn(fmt.Sprintf("codex model %s is not in ~/.codex/models_cache.json; effort '%s' clamped to '%s'", label, o.effort, mc), ctx, env, "spawn")
+				warn(fmt.Sprintf("codex model %s is not in ~/.codex/models_cache.json; effort '%s' clamped to '%s'", label, o.effort, mc), ctx, env, "spawn")
 			}
 			o.effort = mc
 		}
+	}
+	// SOH-201 phase B: the native hc+opencode primary profile is prepared
+	// here, before any reuse decision or terminal creation, with the
+	// explicitly resolved requested model and the caller's inline
+	// configuration and configuration directory: empty or malformed data
+	// refuses, and no other model is ever defaulted in. The configured
+	// native args string is snapshotted with it, and the complete final
+	// argv (the base args, the profile's extra args, the configured and
+	// the user args) is validated through the shared native validator
+	// before any creation or reuse emission. The launch builder runs with
+	// its warnings suppressed here: the fresh path below is the single
+	// source of the canonical context and effort warnings, as for every
+	// other kind.
+	profile, profileErr := resolveSpawnLaunchProfile(kind, o.model, o.effort, ctx, env)
+	if profileErr != nil {
+		core.DieFriction(profileErr.Error(), 2, "", "spawn")
+	}
+	var configuredArgs []string
+	if profile.Name != "" {
+		o.launchProfile = profile
+		o.nativeArgsSnapshot = ConfigNativeArgs(kind, lane, o.role, ctx, env, cwd, nil)
+		args := launchArgs(kind, o.approvals, o.model, o.effort, ctx, env, profile, func(msg string) {})
+		if o.nativeArgsSnapshot != "" {
+			args = append(args, strings.Fields(o.nativeArgsSnapshot)...)
+		}
+		args = append(args, o.native...)
+		configuredArgs = args
+		if err := kinds.ValidateNativeLaunchProfile(kind, profile.Name, args, profile.EnvOverrides); err != nil {
+			core.DieFriction(err.Error(), 2, "", "spawn")
+		}
+		if env.Get("SOHO_TRANSPORT") != "hc" {
+			preflightConfiguredSpawn(svc.Terminal, o, kind, args)
+		}
+	}
+	if admissionOnly {
+		if profile.Name == "" {
+			// Legacy requests share their final argv preparation too, including
+			// the existing refusal of accidental resume arguments.
+			freshSpawnArgs(o, lane, kind, ctx, env, cwd, true)
+		}
+		return
+	}
+	if deferRename {
+		EnsureOrchestratorName(ctx, env, cwd, "spawn")
+	}
+	for _, emit := range admittedWarnings {
+		emit()
 	}
 	if o.reuse == "" {
 		o.reuse = core.Cfg(ctx, "reuse_workers", "on", env)
@@ -1252,6 +1482,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 					break // A new explicit name requests a new worker when both caps allow it.
 				}
 			}
+			qualifiedProfile := gateConfiguredReuse(svc.Terminal, line, o, actual, configuredArgs, env)
 			name := selected
 			renamedTo := ""
 			if o.name != "" && o.name != selected {
@@ -1272,7 +1503,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			}
 			gateReuse(svc, name, o.role, actual, ctx, env, cwd)
 			warnLaneRoleEffort(name, o.role, lane, actual, fieldAt(f, 8), fieldAt(f, 14), strings.HasPrefix(res.EffortFrom, "lane "), ctx, env, cwd)
-			EmitReuse(name, o.role, actual, ctx, env, cwd)
+			emitReuse(name, o.role, actual, qualifiedProfile, ctx, env, cwd)
 			sameTreeEditors(name, o.role, fieldAt(f, 6), sd, env, cwd, ctx)
 			warnMsg := fmt.Sprintf("reusing idle lane '%s' worker '%s' as %s; existing session context is retained", lane, selected, o.role)
 			if renamedTo != "" {
@@ -1292,16 +1523,16 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 				break
 			}
 			if d.Candidate != "" && o.reuse != "on" {
-				busyLane(lane, d.Candidate, fmt.Sprintf("lane '%s' already has idle worker '%s'. Release it before --fresh, or dispatch on it. Run 'wait %s', then dispatch.", lane, d.Candidate, d.Candidate), o.role, ctx, env, cwd)
+				busyLane(lane, d.Candidate, fmt.Sprintf("lane '%s' already has idle worker '%s'. Release it before --fresh, or dispatch on it. Run 'wait %s', then dispatch.", lane, d.Candidate, d.Candidate), o.role, ctx, env, cwd, o)
 			}
 			if d.Capacity == 0 {
-				busyLane(lane, d.Name, "", o.role, ctx, env, cwd)
+				busyLane(lane, d.Name, "", o.role, ctx, env, cwd, o)
 			}
-			busyLane(lane, d.Name, fmt.Sprintf("lane '%s' is full (%d of %d: %s). Run 'wait %s', then dispatch.", lane, d.N, d.Capacity, strings.Join(d.Occupants, " "), d.Name), o.role, ctx, env, cwd)
+			busyLane(lane, d.Name, fmt.Sprintf("lane '%s' is full (%d of %d: %s). Run 'wait %s', then dispatch.", lane, d.N, d.Capacity, strings.Join(d.Occupants, " "), d.Name), o.role, ctx, env, cwd, o)
 		case "open":
 		case "absent":
 			if d.Capacity == 0 && !burst {
-				busyLane(lane, d.Name, "", o.role, ctx, env, cwd)
+				busyLane(lane, d.Name, "", o.role, ctx, env, cwd, o)
 			}
 		case "unavailable":
 			core.DieFriction(fmt.Sprintf("lane '%s' worker '%s' matches but herdr agent get failed (%s). Not spawning a replacement; it may still be live.", lane, d.Name, d.Cause), 4, "", "")
@@ -1314,9 +1545,10 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	if lane == "" && o.reuse == "on" && o.pane == "" {
 		reused, unavailable, _ := FindReusableMcp(o.role, kind, o.cwd, o.name, o.model, o.approvals, o.mcp, o.effort, ctx, env, cwd)
 		if reused != "" {
+			qualifiedProfile := gateConfiguredReuse(svc.Terminal, core.RosterLine(sd, reused), o, kind, configuredArgs, env)
 			previous := fieldAt(strings.Split(core.RosterLine(sd, reused), "\t"), 3)
 			gateReuse(svc, reused, o.role, kind, ctx, env, cwd)
-			EmitReuse(reused, o.role, kind, ctx, env, cwd)
+			emitReuse(reused, o.role, kind, qualifiedProfile, ctx, env, cwd)
 			sameTreeEditors(reused, o.role, o.cwd, sd, env, cwd, ctx)
 			if previous == o.role {
 				Warn(fmt.Sprintf("reusing idle worker '%s' (%s, %s; dispatch to '%s'); existing session context is retained", reused, kind, o.role, reused), ctx, env, "spawn")
@@ -1365,117 +1597,11 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			core.DieFriction(fmt.Sprintf("agent name '%s' is already live", o.name), 3, "", "")
 		}
 		if o.name != base {
-			_, _ = fmt.Fprintf(platform.Stderr, "soho: spawn: the new worker is '%s' ('%s' is already live); dispatch to '%s'\n", o.name, base, o.name)
+			_, _ = fmt.Fprint(platform.Stderr, o.outputText(fmt.Sprintf("soho: spawn: the new worker is '%s' ('%s' is already live); dispatch to '%s'\n", o.name, base, o.name)))
 		}
 	}
-	warnLaneRoleEffort(o.name, o.role, lane, kind, o.model, o.effort, strings.HasPrefix(res.EffortFrom, "lane "), ctx, env, cwd)
-	native := ConfigNativeArgs(kind, lane, o.role, ctx, env, cwd, func(key, own string) {
-		if own == "" {
-			own = "?"
-		}
-		Warn(fmt.Sprintf("%s not passed: those args belong to kind %s and this spawn runs %s", key, own, kind), ctx, env, "spawn")
-	})
-	approvalsForArgs := o.approvals
-	if kind == "codex" {
-		nativeArgs := append(strings.Fields(native), o.native...)
-		if flag := kinds.CodexApprovalOverrideFlag(nativeArgs); flag != "" {
-			approvalsForArgs = "ask"
-			Warn(fmt.Sprintf("spawn: codex args already set the sandbox or approvals (%s); approvals=%s adds nothing for '%s'", flag, o.approvals, o.name), ctx, env, "spawn")
-		}
-	}
-	args := buildArgs(kind, approvalsForArgs, o.model, o.effort, ctx, env)
-	// DJA-392/DJA-693: the mcp choice translates right after the effort args
-	// (buildArgs ends with them) and before the config and user args; a kind
-	// without a per-process flag warns once and the agent keeps the user's
-	// MCP servers. inherit and an absent choice change no argv, byte for
-	// byte. Codex builds its off args per server from its live listing (R2):
-	// -c mcp_servers=<name>.enabled=false for every enabled server not kept,
-	// in list order; a failed listing warns once and the agent keeps the
-	// user's MCP servers. A list keeps the named servers (DJA-693): codex
-	// turns the others off with the same technique (a name the listing does
-	// not report warns and the spawn continues), pi reads `pi mcp list
-	// --json` (--no-mcp when none of the names is present, the cannot-limit
-	// warning when at least one is, the listing-failure warning when the
-	// read fails), claude needs the server definition in JSON (not proved) so
-	// it keeps the servers with the cannot-limit warning, and every other
-	// kind keeps the servers with the mcp=none no-flag warning.
-	switch {
-	case o.mcp == "inherit":
-		// inherit changes nothing.
-	case kind == "codex" && (o.mcp == "none" || len(core.McpNames(o.mcp)) > 0):
-		keep := core.McpNames(o.mcp) // nil for mcp=none
-		// SOH-253: Apps/connector tools are a source of worker context apart
-		// from mcp_servers.*; a restricted launch turns them off per process,
-		// before the per-server args and whatever the listing returns.
-		args = append(args, "-c", "features.apps=false")
-		mcpArgs, ok, reason, stayOn, projectOnly, missing := codexMcpTranslate(env, o.cwd, keep)
-		stayOnTail := "they stay on, the others are off"
-		if len(keep) > 0 {
-			stayOnTail = "they stay on; the others outside the list are off"
-		}
-		if !ok {
-			Warn(fmt.Sprintf("spawn: codex could not list its MCP servers (%s); '%s' keeps the user's MCP servers", reason, o.name), ctx, env, "spawn")
-		} else {
-			args = append(args, mcpArgs...)
-			if len(projectOnly) > 0 {
-				Warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are defined only in the project's .codex/config.toml); %s", strings.Join(projectOnly, ", "), o.name, stayOnTail), ctx, env, "spawn")
-			}
-			if len(stayOn) > 0 {
-				Warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are not defined in its config.toml); %s", strings.Join(stayOn, ", "), o.name, stayOnTail), ctx, env, "spawn")
-			}
-			for _, name := range missing {
-				Warn(fmt.Sprintf("spawn: %s has no MCP server named %s for '%s'", kind, name, o.name), ctx, env, "spawn")
-			}
-		}
-	case len(core.McpNames(o.mcp)) > 0:
-		// DJA-693: a list on a kind without codex's per-server overrides.
-		switch kind {
-		case "pi":
-			present, reason := mcpPiListNames(env, o.cwd)
-			if reason != "" {
-				Warn(fmt.Sprintf("spawn: pi could not list its MCP servers (%s); '%s' keeps the user's MCP servers", reason, o.name), ctx, env, "spawn")
-			} else if !mcpNamePresent(core.McpNames(o.mcp), present) {
-				args = append(args, "--no-mcp")
-			} else {
-				Warn(fmt.Sprintf("spawn: pi cannot limit its MCP servers to the requested list per process; '%s' keeps the user's MCP servers", o.name), ctx, env, "spawn")
-			}
-		case "claude":
-			Warn(fmt.Sprintf("spawn: claude cannot limit its MCP servers to the requested list per process; '%s' keeps the user's MCP servers", o.name), ctx, env, "spawn")
-		default:
-			Warn(fmt.Sprintf("spawn: %s cannot turn MCP servers off per process; '%s' keeps the user's MCP servers", kind, o.name), ctx, env, "spawn")
-		}
-	default:
-		// mcp=none on a kind with a static flag (claude, pi), or without any
-		// (the kind keeps the user's servers with the one-line warning).
-		if mcpArgs, ok := kinds.KindMcpArgs(kind, o.mcp); !ok {
-			Warn(fmt.Sprintf("spawn: %s cannot turn MCP servers off per process; '%s' keeps the user's MCP servers", kind, o.name), ctx, env, "spawn")
-		} else {
-			args = append(args, mcpArgs...)
-		}
-	}
-	if kind == "codex" && core.TrustCwdMode(ctx, env) == "on" {
-		root, reason := trustRootEnv(o.cwd, env, trustOwned)
-		if reason == "" {
-			args = append(args, "-c", trustCwdArgument(root))
-		} else {
-			_, _ = fmt.Fprintf(platform.Stderr, "spawn: trust_cwd: %s; '%s' starts without a trust override (codex may ask to trust the folder)\n", reason, o.name)
-		}
-	}
-	if native != "" {
-		tokens := strings.Fields(native)
-		// Trailing native args win: a --remote there cannot run with
-		// --no-daemon, and a --no-daemon there needs no second one. Only
-		// the options go; a configured prompt after "--" stays as written.
-		if kind == "codex" && (hasNativeToken(o.native, "--remote") || hasNativeToken(o.native, "--no-daemon")) {
-			end := optionsEnd(tokens)
-			tokens = append(slices.DeleteFunc(slices.Clone(tokens[:end]), func(token string) bool { return token == "--no-daemon" }), tokens[end:]...)
-		}
-		args = append(args, tokens...)
-	}
-	agentArgs := append(args, o.native...)
-	if resume := ResumeArg(kind, agentArgs); resume != "" {
-		core.DieFriction(fmt.Sprintf("spawn: '%s' would make %s resume an earlier session instead of starting a new one (for claude, -c is --continue: it resumes the orchestrator's conversation in this cwd). Remove it from the native args; codex-only flags belong in args.codex", resume, kind), 2, "", "")
-	}
+	warnLaneRoleEffort(o.name, o.role, lane, kind, o.model, o.effort, strings.HasPrefix(res.EffortFrom, "lane "), ctx, env, cwd, o)
+	native, agentArgs := freshSpawnArgs(o, lane, kind, ctx, env, cwd, false)
 	e2ePort := ""
 	var unlockE2E func()
 	defer func() {
@@ -1484,6 +1610,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 	}()
 	created, placement, autoRegrid := false, "given", false
+	configuredOwned := false
 	layoutMode := core.Cfg(ctx, "layout", "split", env)
 	focusBefore := ""
 	if env.Get("SOHO_TRANSPORT") != "hc" {
@@ -1548,7 +1675,10 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			if layoutMode != "tab" && o.tabLabel == "" {
 				Warn(fmt.Sprintf("caller tab has no room for another pane (%s); placing '%s' in a herd tab", autoDir, o.name), ctx, env, "spawn")
 			}
-			t := layout.HerdTabPane(ctx, o.cwd, o.tabLabel, o.role, paneEnv, cwd, reserveForNewShell)
+			t := layout.HerdTabPane(ctx, o.cwd, o.tabLabel, o.role, paneEnv, cwd, func() {
+				configuredOwned = true
+				reserveForNewShell()
+			})
 			o.pane = t.Pane
 			created = true
 			o.direction = ""
@@ -1575,6 +1705,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			o.pane = s.Value.PaneID
 			created = true
 			placement = "split"
+			configuredOwned = true
 		}
 		// Herd placement can adopt an existing empty root without creating a
 		// shell. Only an actual create/split exported this new reservation.
@@ -1590,19 +1721,24 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	blocked := false
 	if env.Get("SOHO_TRANSPORT") == "hc" {
 		// DJA-604 2b-2b: Runtime.Start opens the new terminal and waits for
-		// the worker's first reported status, so there is no start window to
-		// check; a failed start dies here and closes the terminal it left.
-		startHcAgent(ctx, &o, kind, env, agentArgs)
+		// the worker's first reported status. Confirmed blocked starts stay
+		// managed; ordinary failures close the terminal before exiting.
+		startHC(ctx, &o, kind, env, agentArgs)
+		if o.blockedAtStartup {
+			blocked = true
+		}
+	} else if o.launchProfile.Name != "" {
+		blocked = startConfiguredSpawn(svc, o, kind, configuredOwned, agentArgs)
 	} else {
 		blocked = startAgent(o, kind, env, created, agentArgs)
 	}
 	layout.RestoreFocusIfStolen(focusBefore, o.pane, o.direction, env)
 	family := kinds.AgentFamily(kind, o.model)
 	lastState, lastScreen := "", ""
-	if !blocked && env.Get("SOHO_TRANSPORT") != "hc" {
+	if !blocked && env.Get("SOHO_TRANSPORT") != "hc" && o.launchProfile.Name == "" {
 		lastState, lastScreen, blocked = checkStartWindow(o, kind, env, created, agentArgs, ctx)
 	}
-	if kind == "codex" {
+	if kind == "codex" && !o.blockedAtStartup {
 		if blocked {
 			lastScreen = agentReadText(svc.Runtime, o.name, "visible", intPtr(40))
 		}
@@ -1640,7 +1776,7 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	if placement == "given" {
 		core.ReleasedPanesForget(ctx, env, cwd, o.pane)
 	}
-	sameTreeEditors(o.name, o.role, o.cwd, sd, env, cwd, ctx)
+	sameTreeEditors(o.name, o.role, o.cwd, sd, env, cwd, ctx, o)
 	if placement == "herd" {
 		func() {
 			defer func() {
@@ -1772,6 +1908,11 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 		return "ready"
 	}())
+	if o.launchProfile.Name == kinds.OpenCodePrimaryProfile {
+		// SOH-201 phase B: disclose the known launch profile name only; the
+		// profile's environment never reaches the JSON or the roster.
+		out.Set("launch_profile", o.launchProfile.Name)
+	}
 	if e2ePort != "" {
 		out.Set("e2e_port", e2ePort)
 	}
@@ -1784,17 +1925,22 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	if cursorGate {
 		out.Set("startup_evidence", jsonjs.O(startup.FieldState, lastState, startup.FieldReason, cursorGateEv.Reason, startup.FieldSource, cursorGateEv.Source))
 	}
-	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.StringifyIndent(out, 2))
+	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.StringifyIndent(o.outputObject(out), 2))
 	if autoRegrid && core.Cfg(ctx, "regrid", "on", env) == "on" {
 		layout.AutoRegrid(ctx, env, cwd, "regrid after spawn failed; panes left as inserted (see friction)")
 	}
 	if blocked {
+		if o.launchProfile.Name != "" && env.Get("SOHO_TRANSPORT") != "hc" {
+			core.DieFriction("spawn: configured launch not ready; target remains managed", 7, "", "")
+		}
 		if hooksBlocked != "" {
 			Warn(hooksBlocked, ctx, env, "spawn")
 		} else if !cursorGate {
 			// The gate already printed the precise warning when it refused
 			// the start; the generic line names the other startup dialogs.
-			if hint := startup.TrustHint(o.name, kind, lastScreen); hint != "" {
+			if env.Get("SOHO_TRANSPORT") == "hc" {
+				Warn(fmt.Sprintf("agent '%s' is blocked during startup (update prompt, login, trust dialog…). Screen follows; ask the user before answering it, then: hc read %s", o.name, o.pane), ctx, env, "spawn")
+			} else if hint := startup.TrustHint(o.name, kind, lastScreen); hint != "" {
 				Warn(fmt.Sprintf("agent '%s' is blocked during startup (update prompt, login, trust dialog…). Screen follows; %s", o.name, hint), ctx, env, "spawn")
 			} else {
 				Warn(fmt.Sprintf("agent '%s' is blocked during startup (update prompt, login, trust dialog…). Screen follows; ask the user before answering it, then: herdr agent send-keys %s <keys>; herdr agent wait %s --timeout 60000", o.name, o.name, o.name), ctx, env, "spawn")
@@ -1804,7 +1950,21 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 		if kind == "cursor" {
 			lines = nil
 		}
-		_, _ = fmt.Fprint(platform.Stdout, agentReadText(svc.Runtime, o.name, "visible", lines))
+		var screen string
+		if env.Get("SOHO_TRANSPORT") == "hc" {
+			reply := svc.Runtime.Read(context.Background(), transport.Target{ID: o.pane}, transport.Read{Source: "visible", Lines: lines}, transport.Call{})
+			if reply.Err != nil || !reply.Valid {
+				screen = o.outputText(o.startupDiag)
+				if screen != "" && !strings.HasSuffix(screen, "\n") {
+					screen += "\n"
+				}
+			} else {
+				screen = o.outputText(reply.Value)
+			}
+		} else {
+			screen = agentReadText(svc.Runtime, o.name, "visible", lines)
+		}
+		_, _ = fmt.Fprint(platform.Stdout, screen)
 		platform.Die("", 7)
 	}
 }
@@ -1905,16 +2065,36 @@ func boolText(v bool) string {
 	}
 	return ""
 }
-func buildArgs(kind, approvals, model, effort string, ctx *core.Config, env platform.Env) []string {
+
+// launchArgs is the shared launch argv builder: the kind's base args
+// (context, approvals, model, effort through the shared kind policy, with
+// the caller's warnings) plus the resolved launch profile's extra args. A
+// named profile contributes its own model args; the native primary profile
+// contributes none, because it pins the exact requested model through its
+// environment instead of a generated -m/--model flag. The zero profile
+// keeps the legacy buildArgs output byte for byte, for every kind.
+func launchArgs(kind, approvals, model, effort string, ctx *core.Config, env platform.Env, profile kinds.LaunchProfile, warn func(string)) []string {
 	out := kinds.KindContextArgs(kind, core.Cfg(ctx, "worker_context", "full", env))
-	a, err := kinds.KindApprovalArgs(kind, approvals, func(msg string) { Warn(msg, ctx, env, "spawn") })
+	a, err := kinds.KindApprovalArgs(kind, approvals, warn)
 	if err != nil {
 		core.DieFriction(err.Error(), 2, "", "")
 	}
 	out = append(out, a...)
-	out = append(out, kinds.KindModelArgs(kind, model, effort, func(msg string) { Warn(msg, ctx, env, "spawn") })...)
-	out = append(out, kinds.KindEffortArgs(kind, effort, model, env, func(msg string) { Warn(msg, ctx, env, "spawn") })...)
+	if profile.Name == "" {
+		out = append(out, kinds.KindModelArgs(kind, model, effort, warn)...)
+	} else {
+		out = append(out, profile.ModelArgs...)
+	}
+	out = append(out, kinds.KindEffortArgs(kind, effort, model, env, warn)...)
+	out = append(out, profile.ExtraArgs...)
 	return out
+}
+
+// buildArgs is the legacy launch argv for a spawn without a resolved launch
+// profile (every kind but the native hc+opencode primary), kept for its
+// existing callers byte for byte.
+func buildArgs(kind, approvals, model, effort string, ctx *core.Config, env platform.Env) []string {
+	return launchArgs(kind, approvals, model, effort, ctx, env, kinds.LaunchProfile{}, func(msg string) { Warn(msg, ctx, env, "spawn") })
 }
 
 // ResolveMcp applies the per-role MCP server precedence (DJA-392): flag >
@@ -1941,8 +2121,12 @@ func ResolveMcp(flag, lane, role string, ctx *core.Config, env platform.Env, cwd
 	return "inherit"
 }
 
-func busyLane(lane, name, hint, role string, ctx *core.Config, env platform.Env, cwd string) {
-	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O("status", "busy", "lane", lane, "name", name)))
+func busyLane(lane, name, hint, role string, ctx *core.Config, env platform.Env, cwd string, output ...spawnOptions) {
+	var public spawnOptions
+	if len(output) != 0 {
+		public = output[0]
+	}
+	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(public.outputObject(jsonjs.O("status", "busy", "lane", lane, "name", name))))
 	if hint == "" {
 		roles := core.Cfg(ctx, "flex_roles", "reviewer,documenter", env)
 		if !has(core.SplitRoles(roles), role) {
@@ -1965,7 +2149,7 @@ func busyLane(lane, name, hint, role string, ctx *core.Config, env platform.Env,
 			hint = fmt.Sprintf("lane '%s' is full", lane)
 		}
 	}
-	core.Warn(hint, filepath.Join(core.StateDirPath(ctx, env, cwd), "friction.log"), "spawn")
+	core.Warn(public.outputText(hint), filepath.Join(core.StateDirPath(ctx, env, cwd), "friction.log"), "spawn")
 	platform.Die("", 10)
 }
 func mismatchLane(name, lane, actual, want, sessionModel, requestedModel, sessionEffort, requestedEffort string, ctx *core.Config, env platform.Env, cwd string) {
@@ -1995,9 +2179,19 @@ func LaneKindConflict(role, kind string, ctx *core.Config, env platform.Env) (la
 // logs the message to the friction log and exits 13. It runs before anything
 // opens, closes or changes.
 func RefuseLaneKind(role, lane, laneKind, requested, message, command string, ctx *core.Config, env platform.Env, cwd string) {
+	refuseLaneKind(role, lane, laneKind, requested, message, command, ctx, env, cwd, true)
+}
+
+func refuseLaneKind(role, lane, laneKind, requested, message, command string, ctx *core.Config, env platform.Env, cwd string, log bool, output ...spawnOptions) {
+	var public spawnOptions
+	if len(output) != 0 {
+		public = output[0]
+	}
 	obj := jsonjs.O("status", "kind-mismatch", "lane", lane, "role", role, "lane_kind", laneKind, "requested_kind", requested)
-	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(obj))
-	core.Warn(message, filepath.Join(core.StateDirPath(ctx, env, cwd), "friction.log"), command)
+	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(public.outputObject(obj)))
+	if log {
+		core.Warn(public.outputText(message), filepath.Join(core.StateDirPath(ctx, env, cwd), "friction.log"), command)
+	}
 	platform.Die("", 13)
 }
 func mismatchSimple(name, lane, actual, want string, ctx *core.Config, env platform.Env, cwd string) {
@@ -2009,6 +2203,9 @@ func mismatchSimple(name, lane, actual, want string, ctx *core.Config, env platf
 
 func startAgent(o spawnOptions, kind string, env platform.Env, created bool, args []string) bool {
 	svc := backend.New(env)
+	if o.launchProfile.Name != "" {
+		return startConfiguredSpawn(svc, o, kind, created, args)
+	}
 	rt := svc.Terminal
 	for tries := 0; ; tries++ {
 		if startup.CurrentPlatform() != "win32" && (!created || tries > 0) {
@@ -2056,23 +2253,42 @@ func startAgent(o spawnOptions, kind string, env platform.Env, created bool, arg
 
 // startHcAgent runs the worker through hc (DJA-604 2b-2b). Runtime.Start
 // opens the new terminal of the session with the worker's exact argv and
-// waits for its first reported status, so on success o.pane holds the new
-// terminal's address (the roster's pane field under hc) and nothing else
-// happens. name_taken moves to the next free suffix under the UniqueName
-// rule, each retry printing the "is taken" warning, up to 10 tries; any
-// other start failure closes the terminal the start left (when the start
-// named one) and dies like the herdr failed-start path: exit 4, the Start
-// failure's message, no roster row. It takes o by pointer: the retries
-// rename o, and the roster row and the JSON use the final name.
+// waits for its first reported status. Ready and confirmed blocked starts
+// set o.pane to the returned address; blocked starts return to managed
+// finalization without cleanup. name_taken moves to the next free suffix
+// under the UniqueName rule, up to 10 tries. Other known failures close the
+// created terminal and exit 4 without a roster row; uncertain creation
+// outcomes are preserved for inspection. Retries update o.name so the row
+// and JSON use the final selected name.
 func startHcAgent(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string) {
-	svc := backend.New(env)
+	startHcAgentUsingServices(ctx, o, kind, env, args, backend.New(env))
+}
+
+func startHcAgentUsingServices(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string, svc transport.Services) {
 	rt := svc.Terminal
 	base := o.name
 	for tries := 0; ; tries++ {
-		rep := rt.Start(context.Background(), transport.Start{Name: o.name, Kind: kind, Cwd: o.cwd, Timeout: o.timeout, Args: args}, transport.Call{Timeout: time.Duration(startWrapperTimeoutMs(o.timeout)) * time.Millisecond})
+		// SOH-201 phase B: forward the resolved launch profile's name and its
+		// explicit per-child env overrides; the zero profile and nil
+		// overrides leave the child unchanged, and the caller's whole
+		// environment never travels here.
+		overrides := o.launchProfile.EnvOverrides
+		if o.envSnapshot != nil {
+			overrides = make(map[string]string, len(o.envSnapshot))
+			for name, value := range o.envSnapshot {
+				overrides[name] = value
+			}
+		}
+		rep := rt.Start(context.Background(), transport.Start{Name: o.name, Kind: kind, Cwd: o.cwd, Timeout: o.timeout, Args: args, LaunchProfile: o.launchProfile.Name, EnvOverrides: overrides}, transport.Call{Timeout: time.Duration(startWrapperTimeoutMs(o.timeout)) * time.Millisecond})
 		if rep.Err == nil {
 			o.pane = rep.Value
 			return
+		}
+		if rep.Err.Kind == transport.FailureRunOutcomeUnknown {
+			if rep.Value != "" {
+				core.DieFriction(fmt.Sprintf("spawn: terminal creation outcome is uncertain; terminal %s preserved for manual inspection", rep.Value), 4, "", "spawn")
+			}
+			core.DieFriction(fmt.Sprintf("spawn: terminal creation outcome is uncertain; requested terminal '%s' preserved for manual inspection", o.name), 4, "", "spawn")
 		}
 		if rep.Err.Kind == transport.FailureConflict {
 			if tries+1 >= 10 {
@@ -2084,8 +2300,17 @@ func startHcAgent(ctx *core.Config, o *spawnOptions, kind string, env platform.E
 				core.DieFriction(fmt.Sprintf("spawn: no free hc terminal name for '%s' among the next %d suffixes", base, hcNameCandidates), 4, "", "spawn")
 			}
 			o.name = next
-			Warn(fmt.Sprintf("agent name '%s' is taken by another pane or workspace; using '%s'", taken, o.name), ctx, env, "spawn")
+			Warn(o.outputText(fmt.Sprintf("agent name '%s' is taken by another pane or workspace; using '%s'", taken, o.name)), ctx, env, "spawn")
 			continue
+		}
+		if rep.Err.Kind == transport.FailureBlocked {
+			if rep.Value == "" {
+				core.DieFriction(rep.Err.Error(), 4, "", "spawn")
+			}
+			o.pane = rep.Value
+			o.blockedAtStartup = true
+			o.startupDiag = rep.Err.Message
+			return
 		}
 		if rep.Value != "" {
 			// The readiness failure left a terminal behind; close it before
@@ -2093,7 +2318,7 @@ func startHcAgent(ctx *core.Config, o *spawnOptions, kind string, env platform.E
 			// terminal that survives holds the name, so say which one.
 			closed := svc.Runtime.Close(context.Background(), transport.Target{ID: rep.Value}, transport.Call{})
 			if closed.Err != nil || !closed.Value {
-				Warn(fmt.Sprintf("spawn: could not close hc terminal %s after the failed start; it may still hold the name '%s'", rep.Value, o.name), ctx, env, "spawn")
+				Warn(o.outputText(fmt.Sprintf("spawn: could not close hc terminal %s after the failed start; it may still hold the name '%s'", rep.Value, o.name)), ctx, env, "spawn")
 			}
 		}
 		core.DieFriction(rep.Err.Error(), 4, "", "spawn")
@@ -2319,7 +2544,7 @@ func staleRosterLines(sd, name, pane string) [][2]string {
 	return out
 }
 
-func sameTreeEditors(thisName, role, workerCwd, sd string, env platform.Env, cwd string, ctx *core.Config) {
+func sameTreeEditors(thisName, role, workerCwd, sd string, env platform.Env, cwd string, ctx *core.Config, output ...spawnOptions) {
 	if workerCwd == "" || !core.RoleIsEdit(role, env, cwd) {
 		return
 	}
@@ -2346,10 +2571,10 @@ func sameTreeEditors(thisName, role, workerCwd, sd string, env platform.Env, cwd
 			if agent.Name != cand.name || cand.pane != "" && agent.PaneID != cand.pane {
 				continue
 			}
-			if !sharedTreeWarnDue(sd, thisName, cand.name, workerCwd, ctx, env) {
+			if !sharedTreeWarnDue(sd, thisName, cand.name, workerCwd, ctx, env, output...) {
 				break
 			}
-			Warn(fmt.Sprintf("'%s' and '%s' both edit %s: builds and test runs see each other's changes in progress; give each a git worktree (spawn --cwd <worktree>) to isolate them", thisName, cand.name, workerCwd), ctx, env, "spawn")
+			warnSpawnOutput(output, fmt.Sprintf("'%s' and '%s' both edit %s: builds and test runs see each other's changes in progress; give each a git worktree (spawn --cwd <worktree>) to isolate them", thisName, cand.name, workerCwd), ctx, env)
 			break
 		}
 	}
@@ -2362,12 +2587,15 @@ func sameTreeEditors(thisName, role, workerCwd, sd string, env platform.Env, cwd
 // The marker lives in the workspace's wait dir; the state dir only reached
 // spawn through core.StateDir, whose inside-the-skill refusal dies before any
 // write, so a marker is never created inside the skill.
-func sharedTreeWarnDue(sd, a, b, workerCwd string, ctx *core.Config, env platform.Env) bool {
+func sharedTreeWarnDue(sd, a, b, workerCwd string, ctx *core.Config, env platform.Env, output ...spawnOptions) bool {
 	first, second := a, b
 	if second < first {
 		first, second = second, first
 	}
 	stored := first + "\x00" + second + "\x00" + workerCwd
+	if len(output) != 0 {
+		stored = output[0].outputText(stored)
+	}
 	sum := fnv.New64a()
 	_, _ = sum.Write([]byte(stored))
 	marker := filepath.Join(sd, "wait", "shared-tree-"+fmt.Sprintf("%016x", sum.Sum64())+".warned")
@@ -2375,11 +2603,11 @@ func sharedTreeWarnDue(sd, a, b, workerCwd string, ctx *core.Config, env platfor
 		return false
 	}
 	if err := os.MkdirAll(filepath.Join(sd, "wait"), 0o777); err != nil {
-		Warn(fmt.Sprintf("spawn: could not record the shared-tree warning marker: %s", text.SanitizeCause(err.Error())), ctx, env, "spawn")
+		warnSpawnOutput(output, fmt.Sprintf("spawn: could not record the shared-tree warning marker: %s", text.SanitizeCause(err.Error())), ctx, env)
 		return true
 	}
 	if err := os.WriteFile(marker, []byte(stored+"\n"), 0o666); err != nil {
-		Warn(fmt.Sprintf("spawn: could not record the shared-tree warning marker: %s", text.SanitizeCause(err.Error())), ctx, env, "spawn")
+		warnSpawnOutput(output, fmt.Sprintf("spawn: could not record the shared-tree warning marker: %s", text.SanitizeCause(err.Error())), ctx, env)
 		return true
 	}
 	return true
@@ -2463,4 +2691,131 @@ func reserveE2EPort(svc transport.Services, sd string, ctx *core.Config, env pla
 	}
 	core.DieFriction("spawn: no free E2E port in the 200-port range from e2e_port_base="+raw, 4, "", "spawn")
 	return ""
+}
+
+// freshSpawnArgs is the shared final legacy/native argv preparation.
+func freshSpawnArgs(o spawnOptions, lane, kind string, ctx *core.Config, env platform.Env, cwd string, admissionOnly bool) (string, []string) {
+	warn := func(message string, ctx *core.Config, env platform.Env, command string) {
+		if !admissionOnly {
+			Warn(o.outputText(message), ctx, env, command)
+		}
+	}
+	var native string
+	if o.launchProfile.Name != "" {
+		// SOH-201 phase B: the configured native args were snapshotted with
+		// the early primary-profile validation; the fresh path reuses the
+		// snapshot instead of re-reading the configuration.
+		native = o.nativeArgsSnapshot
+	} else {
+		native = ConfigNativeArgs(kind, lane, o.role, ctx, env, cwd, func(key, own string) {
+			if own == "" {
+				own = "?"
+			}
+			warn(fmt.Sprintf("%s not passed: those args belong to kind %s and this spawn runs %s", key, own, kind), ctx, env, "spawn")
+		})
+	}
+	approvalsForArgs := o.approvals
+	if kind == "codex" {
+		nativeArgs := append(strings.Fields(native), o.native...)
+		if flag := kinds.CodexApprovalOverrideFlag(nativeArgs); flag != "" {
+			approvalsForArgs = "ask"
+			warn(fmt.Sprintf("spawn: codex args already set the sandbox or approvals (%s); approvals=%s adds nothing for '%s'", flag, o.approvals, o.name), ctx, env, "spawn")
+		}
+	}
+	args := launchArgs(kind, approvalsForArgs, o.model, o.effort, ctx, env, o.launchProfile, func(msg string) { warn(msg, ctx, env, "spawn") })
+	// DJA-392/DJA-693: the mcp choice translates right after the effort args
+	// (buildArgs ends with them) and before the config and user args; a kind
+	// without a per-process flag warns once and the agent keeps the user's
+	// MCP servers. inherit and an absent choice change no argv, byte for
+	// byte. Codex builds its off args per server from its live listing (R2):
+	// -c mcp_servers=<name>.enabled=false for every enabled server not kept,
+	// in list order; a failed listing warns once and the agent keeps the
+	// user's MCP servers. A list keeps the named servers (DJA-693): codex
+	// turns the others off with the same technique (a name the listing does
+	// not report warns and the spawn continues), pi reads `pi mcp list
+	// --json` (--no-mcp when none of the names is present, the cannot-limit
+	// warning when at least one is, the listing-failure warning when the
+	// read fails), claude needs the server definition in JSON (not proved) so
+	// it keeps the servers with the cannot-limit warning, and every other
+	// kind keeps the servers with the mcp=none no-flag warning.
+	switch {
+	case o.mcp == "inherit":
+		// inherit changes nothing.
+	case kind == "codex" && (o.mcp == "none" || len(core.McpNames(o.mcp)) > 0):
+		keep := core.McpNames(o.mcp) // nil for mcp=none
+		// SOH-253: Apps/connector tools are a source of worker context apart
+		// from mcp_servers.*; a restricted launch turns them off per process,
+		// before the per-server args and whatever the listing returns.
+		args = append(args, "-c", "features.apps=false")
+		mcpArgs, ok, reason, stayOn, projectOnly, missing := codexMcpTranslate(env, o.cwd, keep)
+		stayOnTail := "they stay on, the others are off"
+		if len(keep) > 0 {
+			stayOnTail = "they stay on; the others outside the list are off"
+		}
+		if !ok {
+			warn(fmt.Sprintf("spawn: codex could not list its MCP servers (%s); '%s' keeps the user's MCP servers", reason, o.name), ctx, env, "spawn")
+		} else {
+			args = append(args, mcpArgs...)
+			if len(projectOnly) > 0 {
+				warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are defined only in the project's .codex/config.toml); %s", strings.Join(projectOnly, ", "), o.name, stayOnTail), ctx, env, "spawn")
+			}
+			if len(stayOn) > 0 {
+				warn(fmt.Sprintf("spawn: codex cannot turn off MCP server(s) %s for '%s' (they are not defined in its config.toml); %s", strings.Join(stayOn, ", "), o.name, stayOnTail), ctx, env, "spawn")
+			}
+			for _, name := range missing {
+				warn(fmt.Sprintf("spawn: %s has no MCP server named %s for '%s'", kind, name, o.name), ctx, env, "spawn")
+			}
+		}
+	case len(core.McpNames(o.mcp)) > 0:
+		// DJA-693: a list on a kind without codex's per-server overrides.
+		switch kind {
+		case "pi":
+			present, reason := mcpPiListNames(env, o.cwd)
+			if reason != "" {
+				warn(fmt.Sprintf("spawn: pi could not list its MCP servers (%s); '%s' keeps the user's MCP servers", reason, o.name), ctx, env, "spawn")
+			} else if !mcpNamePresent(core.McpNames(o.mcp), present) {
+				args = append(args, "--no-mcp")
+			} else {
+				warn(fmt.Sprintf("spawn: pi cannot limit its MCP servers to the requested list per process; '%s' keeps the user's MCP servers", o.name), ctx, env, "spawn")
+			}
+		case "claude":
+			warn(fmt.Sprintf("spawn: claude cannot limit its MCP servers to the requested list per process; '%s' keeps the user's MCP servers", o.name), ctx, env, "spawn")
+		default:
+			warn(fmt.Sprintf("spawn: %s cannot turn MCP servers off per process; '%s' keeps the user's MCP servers", kind, o.name), ctx, env, "spawn")
+		}
+	default:
+		// mcp=none on a kind with a static flag (claude, pi), or without any
+		// (the kind keeps the user's servers with the one-line warning).
+		if mcpArgs, ok := kinds.KindMcpArgs(kind, o.mcp); !ok {
+			warn(fmt.Sprintf("spawn: %s cannot turn MCP servers off per process; '%s' keeps the user's MCP servers", kind, o.name), ctx, env, "spawn")
+		} else {
+			args = append(args, mcpArgs...)
+		}
+	}
+	if kind == "codex" && core.TrustCwdMode(ctx, env) == "on" {
+		root, reason := trustRootEnv(o.cwd, env, trustOwned)
+		if reason == "" {
+			args = append(args, "-c", trustCwdArgument(root))
+		} else {
+			if !admissionOnly {
+				_, _ = fmt.Fprintf(platform.Stderr, "spawn: trust_cwd: %s; '%s' starts without a trust override (codex may ask to trust the folder)\n", reason, o.name)
+			}
+		}
+	}
+	if native != "" {
+		tokens := strings.Fields(native)
+		// Trailing native args win: a --remote there cannot run with
+		// --no-daemon, and a --no-daemon there needs no second one. Only
+		// the options go; a configured prompt after "--" stays as written.
+		if kind == "codex" && (hasNativeToken(o.native, "--remote") || hasNativeToken(o.native, "--no-daemon")) {
+			end := optionsEnd(tokens)
+			tokens = append(slices.DeleteFunc(slices.Clone(tokens[:end]), func(token string) bool { return token == "--no-daemon" }), tokens[end:]...)
+		}
+		args = append(args, tokens...)
+	}
+	agentArgs := append(args, o.native...)
+	if resume := ResumeArg(kind, agentArgs); resume != "" {
+		core.DieFriction(fmt.Sprintf("spawn: '%s' would make %s resume an earlier session instead of starting a new one (for claude, -c is --continue: it resumes the orchestrator's conversation in this cwd). Remove it from the native args; codex-only flags belong in args.codex", resume, kind), 2, "", "")
+	}
+	return native, agentArgs
 }

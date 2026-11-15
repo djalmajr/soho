@@ -88,3 +88,70 @@ func TestKindFromProgramHintsPriority(t *testing.T) {
 		t.Fatalf("model id got %q, want the empty kind", got)
 	}
 }
+
+// TestKindFromProgramHintsReporterApp pins the one reporter-app alias:
+// claude-code resolves to claude through the same normalization as the
+// catalog names, and through the live hint order a Claude Code terminal
+// reports (status app, version-named foreground executable, argv[0]).
+func TestKindFromProgramHintsReporterApp(t *testing.T) {
+	cases := []struct {
+		name  string
+		hints []string
+	}{
+		{"bare", []string{"claude-code"}},
+		{"upper case", []string{"Claude-Code"}},
+		{"unix path", []string{"/opt/x/claude-code"}},
+		{"exe suffix", []string{"claude-code.exe"}},
+		{"windows backslash path", []string{"C:\\x\\claude-code.exe"}},
+		{"live hint order", []string{"claude-code", "2.1.325", "env"}},
+		{"after unknown", []string{"node", "claude-code"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := KindFromProgramHints(tc.hints); got != "claude" {
+				t.Fatalf("KindFromProgramHints(%q) = %q, want claude", tc.hints, got)
+			}
+		})
+	}
+}
+
+// TestKindFromProgramHintsReporterAppExactOnly proves the alias is an exact
+// match on the normalized name: no prefix, suffix, substring, separator
+// rewriting or version-named executable resolves.
+func TestKindFromProgramHintsReporterAppExactOnly(t *testing.T) {
+	for _, hint := range []string{
+		"claude-code-x", "claude-codex", "xclaude-code", "claude_code",
+		"claude code", "code", "2.1.325", "env", "claude-code/evil",
+		"claude-code.sh", "claude-code.exe.exe", "claude-code ",
+		" claude-code", "claude-code\n",
+	} {
+		t.Run(hint, func(t *testing.T) {
+			if got := KindFromProgramHints([]string{hint}); got != "" {
+				t.Fatalf("KindFromProgramHints(%q) = %q, want the empty kind", hint, got)
+			}
+		})
+	}
+	if got := KindFromProgramHints([]string{"2.1.325", "env"}); got != "" {
+		t.Fatalf("version-named executable and env resolved to %q, want the empty kind", got)
+	}
+}
+
+// TestReporterAppAliasTargetsAreKnownKinds fails when an alias value is not
+// a catalog kind, and pins the table to its single evidenced entry.
+func TestReporterAppAliasTargetsAreKnownKinds(t *testing.T) {
+	if len(reporterAppKinds) != 1 || reporterAppKinds["claude-code"] != "claude" {
+		t.Fatalf("reporterAppKinds = %v, want exactly claude-code -> claude", reporterAppKinds)
+	}
+	for app, kind := range reporterAppKinds {
+		if app != strings.ToLower(app) {
+			t.Errorf("alias key %q is not lower case", app)
+		}
+		known := false
+		for _, k := range KnownKinds {
+			known = known || k == kind
+		}
+		if !known {
+			t.Errorf("alias %q -> %q: target is not in KnownKinds", app, kind)
+		}
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -59,6 +60,11 @@ func TestDispatchHcNoPreSendScreenWork(t *testing.T) {
 			if path == "busy" {
 				rules = append(rules, fakecli.Rule{Argv: prefix, ArgvPrefix: true, Call: 2, Stdout: `{"turn":7,"started":true}`})
 			}
+			if path != "queue" {
+				// The ordinary guarded send's read-only capability probes,
+				// before the broad send rule (first match wins).
+				rules = append(guardProbeRules(), rules...)
+			}
 			f := newDispatchHcFixture(t, rules)
 			roster := filepath.Join(f.sd, "agents.tsv")
 			raw, err := os.ReadFile(roster)
@@ -87,7 +93,9 @@ func TestDispatchHcNoPreSendScreenWork(t *testing.T) {
 				}
 				switch c.Argv[0] {
 				case "send":
-					sends++
+					if isRealSend(c.Argv) {
+						sends++
+					}
 				case "read":
 					if sends == 0 {
 						pre++
@@ -107,53 +115,121 @@ func TestDispatchHcNoPreSendScreenWork(t *testing.T) {
 
 // TestDispatchHcKindRefusedBeforeAnyReadOrSend is the ported
 // CursorScreenStillRefusesHc probe under the decided behavior: a kind whose
-// status hc does not report (cursor, opencode) is refused by kind before
-// anything is read or sent — exit 2, the exact line, zero reads and zero
-// sends, even when the hc state says idle.
+// status hc does not report (cursor) is refused by kind before anything is
+// read or sent — exit 2, the exact generic line, zero gets, zero reads and
+// zero sends, even when the hc state says idle. The native primary's kind
+// (opencode) takes the specific refusal instead: a live idle roster record
+// that reports app opencode but carries no primary launch profile is
+// refused before anything is read or sent, after exactly one Get on the
+// roster's own terminal id, with the fixed line and zero screen, input,
+// key or pointer side effect.
 func TestDispatchHcKindRefusedBeforeAnyReadOrSend(t *testing.T) {
-	for _, kind := range []string{"cursor", "opencode"} {
-		t.Run(kind, func(t *testing.T) {
-			f := newDispatchHcFixture(t, []fakecli.Rule{
-				{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
-				{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
-				{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":true}`},
-			})
-			roster := filepath.Join(f.sd, "agents.tsv")
-			raw, err := os.ReadFile(roster)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(roster, []byte(strings.Replace(string(raw), "\tcodex\t", "\t"+kind+"\t", 1)), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
-			if want := fmt.Sprintf("soho: dispatch: kind %s does not report status under transport=hc; use transport=herdr\n", kind); stderr != want {
-				t.Fatalf("exit=%d stderr=%q, want exactly %q", code, stderr, want)
-			}
-			if code != 2 {
-				t.Fatalf("exit=%d want 2 out=%q stderr=%q", code, out, stderr)
-			}
-			reads, sends, keys := 0, 0, 0
-			for _, c := range f.hcCalls(t) {
-				if len(c.Argv) == 0 {
-					continue
-				}
-				switch c.Argv[0] {
-				case "read":
-					reads++
-				case "send":
-					sends++
-				case "keys":
-					keys++
-				}
-			}
-			t.Logf("authoritative hc idle; kind=%s; reads=%d sends=%d keys=%d exit=%d", kind, reads, sends, keys, code)
-			if reads != 0 || sends != 0 || keys != 0 {
-				t.Error("the kind refusal read or sent something")
-			}
-			f.assertHcNeverTouchedHerdr(t)
+	t.Run("cursor", func(t *testing.T) {
+		f := newDispatchHcFixture(t, []fakecli.Rule{
+			{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
+			{Argv: []string{"get", "t7", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
+			{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
+			{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":true}`},
 		})
-	}
+		roster := filepath.Join(f.sd, "agents.tsv")
+		raw, err := os.ReadFile(roster)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(roster, []byte(strings.Replace(string(raw), "\tcodex\t", "\tcursor\t", 1)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		const want = "soho: dispatch: kind cursor does not report status under transport=hc; use transport=herdr\n"
+		code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
+		if stderr != want {
+			t.Fatalf("exit=%d stderr=%q, want exactly %q", code, stderr, want)
+		}
+		if code != 2 {
+			t.Fatalf("exit=%d want 2 out=%q stderr=%q", code, out, stderr)
+		}
+		if out != "" {
+			t.Fatalf("stdout=%q, want nothing", out)
+		}
+		gets, reads, sends, keys := 0, 0, 0, 0
+		for _, c := range f.hcCalls(t) {
+			if len(c.Argv) == 0 {
+				continue
+			}
+			switch c.Argv[0] {
+			case "get":
+				if len(c.Argv) > 1 && (c.Argv[1] == "worker" || c.Argv[1] == "t7") {
+					gets++
+				}
+			case "read":
+				reads++
+			case "send":
+				sends++
+			case "keys":
+				keys++
+			}
+		}
+		t.Logf("authoritative hc idle; kind=cursor; gets=%d reads=%d sends=%d keys=%d exit=%d", gets, reads, sends, keys, code)
+		if gets != 0 || reads != 0 || sends != 0 || keys != 0 {
+			t.Error("the cursor refusal got, read or sent something")
+		}
+		f.assertHcNeverTouchedHerdr(t)
+	})
+	t.Run("opencode", func(t *testing.T) {
+		// The real observation the gate refuses: live, idle, reported, app
+		// opencode and no launch profile label.
+		rec := hcOpencodeRecord{address: "t7", nativeState: "live", state: "idle", reported: true, app: "opencode"}
+		f := newDispatchHcOpencodeFixture(t, []fakecli.Rule{
+			{Argv: []string{"get", "t7", "--json"}, ArgvPrefix: true, Stdout: hcOpencodeGet(rec)},
+			{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcOpencodeGet(rec)},
+			{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
+			{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":true}`},
+		})
+		const want = "soho: dispatch: opencode requires a live reported primary launch profile under transport=hc\n"
+		code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
+		if stderr != want {
+			t.Fatalf("exit=%d stderr=%q, want exactly %q", code, stderr, want)
+		}
+		if code != 2 {
+			t.Fatalf("exit=%d want 2 out=%q stderr=%q", code, out, stderr)
+		}
+		if out != "" {
+			t.Fatalf("stdout=%q, want nothing", out)
+		}
+		gets, reads, sends, keys := 0, 0, 0, 0
+		for _, c := range f.hcCalls(t) {
+			if len(c.Argv) == 0 {
+				continue
+			}
+			switch {
+			case c.Argv[0] == "get" && len(c.Argv) > 1 && c.Argv[1] == "t7":
+				gets++
+			case c.Argv[0] == "get":
+				if len(c.Argv) > 1 && c.Argv[1] == "worker" {
+					t.Fatalf("a pre-send state get before the refusal: %#v", c)
+				}
+			case c.Argv[0] == "read":
+				reads++
+			case c.Argv[0] == "send":
+				sends++
+			case c.Argv[0] == "keys":
+				keys++
+			}
+		}
+		t.Logf("authoritative hc live idle without the primary profile; gets=%d reads=%d sends=%d keys=%d exit=%d", gets, reads, sends, keys, code)
+		if gets != 1 {
+			t.Fatalf("roster-address gets=%d, want exactly one: %#v", gets, f.hcCalls(t))
+		}
+		if reads != 0 || sends != 0 || keys != 0 {
+			t.Error("the opencode refusal read, sent or keyed something")
+		}
+		if _, err := os.Stat(taskreport.TaskReportPointerPath(f.sd, "worker")); err == nil {
+			t.Fatal("the task report pointer was written before the refusal")
+		}
+		if _, err := os.Stat(filepath.Join(f.sd, "last-report-worker")); err == nil {
+			t.Fatal("the report pointer was written before the refusal")
+		}
+		f.assertHcNeverTouchedHerdr(t)
+	})
 }
 
 // assertWorkerGetSendOrder pins the probe's operation order when the
@@ -169,7 +245,7 @@ func assertWorkerGetSendOrder(t *testing.T, f *dispatchHcFixture) {
 		if len(c.Argv) == 0 {
 			continue
 		}
-		if c.Argv[0] == "send" {
+		if isRealSend(c.Argv) {
 			ops = append(ops, "send")
 		}
 		if c.Argv[0] == "get" && len(c.Argv) > 1 && c.Argv[1] == "worker" {
@@ -192,14 +268,14 @@ func assertWorkerGetSendOrder(t *testing.T, f *dispatchHcFixture) {
 // the late result does not authorize the retry.
 func TestDispatchHcBusyRetryRefusedAfterDeadline(t *testing.T) {
 	prefix := []string{"send", "--if", "idle", "--json", "--", "worker"}
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, Call: 1, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"get", "worker", "--json"}, Call: 2, Delay: 250, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: prefix, ArgvPrefix: true, Call: 1, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`},
 		{Argv: prefix, ArgvPrefix: true, Call: 2, Stdout: `{"turn":8,"started":true}`},
 		{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
-	})
+	}...))
 	f.env["SOHO_PROMPT_SETTLE_SECONDS"] = "0"
 	start := time.Now()
 	code, _, _ := f.run(t, "worker", f.brief, "--no-wait", "--timeout", "20ms")
@@ -218,13 +294,15 @@ func TestDispatchHcBusyRetryRefusedAfterDeadline(t *testing.T) {
 // outside the window proves nothing, and no poll starts at or after
 // expiry.
 func TestDispatchHcArrivalProofRefusedAfterWindow(t *testing.T) {
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	// The probe rules precede the broad send rule: first match wins, so a
+	// send --help after it would take the send's answer instead of the help.
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, Call: 1, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"get", "worker", "--json"}, Call: 2, Delay: 1300, Stdout: hcWorkerGet(8, "idle")},
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(8, "idle")},
 		{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":false}`},
 		{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
-	})
+	}...))
 	f.env["SOHO_PROMPT_SETTLE_SECONDS"] = "0"
 	start := time.Now()
 	code, _, _ := f.run(t, "worker", f.brief, "--no-wait")
@@ -241,11 +319,11 @@ func TestDispatchHcArrivalProofRefusedAfterWindow(t *testing.T) {
 // signed ceiling) followed by one above it is arrival proof, without
 // narrowing or a sentinel.
 func TestDispatchHcUint64TurnRiseArrives(t *testing.T) {
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: `{"address":"t7","name":"worker","state":"live","turn":9223372036854775809,"reported":true,"status":{"state":"idle"}}`},
 		{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"turn":9223372036854775808,"started":false}`},
 		{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
-	})
+	}...))
 	// The window is generous so the acceptance does not depend on the fake
 	// process's start time under host load; the test ends as soon as the
 	// turn rise is observed.
@@ -264,10 +342,13 @@ func TestDispatchHcUint64TurnRiseArrives(t *testing.T) {
 func TestDispatchHcBlockedPreservesPriorPointers(t *testing.T) {
 	for _, queue := range []bool{false, true} {
 		t.Run(fmt.Sprintf("queue=%v", queue), func(t *testing.T) {
-			f := newDispatchHcFixture(t, []fakecli.Rule{
+			// The guarded subtest proves the capability through the read-only
+			// probes; the queue subtest never sends a guarded send, so the
+			// probe rules simply stay unanswered.
+			f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 				{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
 				{Argv: []string{"send"}, ArgvPrefix: true, Code: 9, Stderr: `{"error":{"kind":"blocked","message":"blocked"}}`},
-			})
+			}...))
 			oldReport := filepath.Join(f.sd, "reports", "previous.md")
 			pointer := []byte(fmt.Sprintf(`{"version":1,"task_report":%q,"current":%q,"history":[],"role":"implementer","pane":"t7"}`, oldReport, oldReport) + "\n")
 			pointerPath := taskreport.TaskReportPointerPath(f.sd, "worker")
@@ -320,11 +401,11 @@ func TestDispatchHcBlockedPreservesPriorPointers(t *testing.T) {
 // is unreadable — it proves nothing and is not resended: exactly one send,
 // not-received.
 func TestDispatchHcMalformedSendProvesNothing(t *testing.T) {
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":"true"}`},
 		{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
-	})
+	}...))
 	code, _, _ := f.run(t, "worker", f.brief, "--no-wait")
 	sends := len(hcSends(f.hcCalls(t)))
 	t.Logf("malformed started string; idle unchanged; sends=%d exit=%d", sends, code)
@@ -338,10 +419,10 @@ func TestDispatchHcMalformedSendProvesNothing(t *testing.T) {
 // submission failure with the hc inspection hint — the retry was not
 // unbounded and the deadline is not the defect.
 func TestDispatchHcBusyRetryIsFinal(t *testing.T) {
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"send"}, ArgvPrefix: true, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`},
-	})
+	}...))
 	// 30s is generous: the retry happens within the budget right away; the
 	// point is the ceiling, not the deadline (the deadline variant is
 	// TestDispatchHcBusyRetryRefusedAfterDeadline).
@@ -352,4 +433,43 @@ func TestDispatchHcBusyRetryIsFinal(t *testing.T) {
 		t.Errorf("retry not final or hint wrong: %q", stderr)
 	}
 	f.assertHcNeverTouchedHerdr(t)
+}
+
+// TestDispatchHcFixtureAppliesChildRaceOptions verifies that newDispatchHcFixture
+// propagates inherited race detector options to fixture children with
+// atexit_sleep_ms=0.
+func TestDispatchHcFixtureAppliesChildRaceOptions(t *testing.T) {
+	t.Setenv("GORACE", "halt_on_error=1 atexit_sleep_ms=700")
+	f := newDispatchHcFixture(t, nil)
+	target, err := fakecli.InstallWithOptions(t, f.bin, "race-env-probe", []fakecli.Rule{{AnyArgs: true}}, fakecli.InstallOptions{
+		CaptureEnv: []string{"GORACE"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(target, "probe")
+	cmd.Env = f.env.List()
+	out, err := cmd.CombinedOutput()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			t.Fatalf("exec probe child: %v: %s", err, out)
+		}
+	}
+	if exitCode != 0 {
+		t.Fatalf("probe exit code = %d, want 0 (output=%s)", exitCode, out)
+	}
+	calls, err := fakecli.ReadCalls(filepath.Join(f.bin, "race-env-probe.calls.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("observed probe calls = %d, want 1: %#v", len(calls), calls)
+	}
+	wantOption := "halt_on_error=1 atexit_sleep_ms=0"
+	if got := calls[0].Env["GORACE"]; got != wantOption {
+		t.Fatalf("received GORACE = %q, want %q", got, wantOption)
+	}
 }

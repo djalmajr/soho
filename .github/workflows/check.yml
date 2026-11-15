@@ -24,7 +24,7 @@ jobs:
         # Windows runner.
         suite: [native, race]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 75
+    timeout-minutes: 120
     env:
       GOTOOLCHAIN: auto
       GOMAXPROCS: 2
@@ -106,8 +106,11 @@ jobs:
       - name: Race detector
         if: matrix.suite == 'race'
         shell: pwsh
+        # The documented local gate keeps the 30-minute package watchdog. The
+        # hosted Windows runner needs more: internal/cli alone reached it
+        # there, so the watchdog is 60 minutes on every hosted runner.
         run: |
-          if ($IsWindows) { go test -race -v -timeout=30m ./... } else { go test -race -timeout=30m ./... }
+          if ($IsWindows) { go test -race -v -timeout=60m ./... } else { go test -race -timeout=60m ./... }
           if ($LASTEXITCODE -ne 0) { throw "go test -race failed" }
       - name: Free disk after the tests
         if: always() && runner.os == 'Windows'

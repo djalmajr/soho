@@ -85,6 +85,11 @@ func gitRepoAll(t *testing.T, fixture mutationCopyFixture, dir string, files ...
 		}
 	}
 	fixtureGit(t, fixture, dir, "init")
+	// commit can launch detached automatic maintenance even in a tiny repo.
+	// Set repository-local policy before the first commit, so snapshots include
+	// every Git path without racing a background maintenance.lock writer.
+	fixtureGit(t, fixture, dir, "config", "--local", "maintenance.auto", "false")
+	fixtureGit(t, fixture, dir, "config", "--local", "gc.auto", "0")
 	fixtureGit(t, fixture, dir, "add", "-A")
 	fixtureGit(t, fixture, dir, "commit", "-m", "fixture")
 }
@@ -99,6 +104,41 @@ func fixtureGit(t *testing.T, fixture mutationCopyFixture, dir string, args ...s
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
 	return string(output)
+}
+
+func TestMutationCopyFixtureMaintenanceDisabled(t *testing.T) {
+	f := newMutationCopyFixture(t)
+	for _, key := range []string{"maintenance.auto", "gc.auto"} {
+		want := "false"
+		if key == "gc.auto" {
+			want = "0"
+		}
+		if got := strings.TrimSpace(fixtureGit(t, f, f.source, "config", "--local", "--get", key)); got != want {
+			t.Fatalf("fixture %s=%q, want %q before any commit", key, got, want)
+		}
+	}
+	// Observe the actual commit child invocation, not the timing of its lock.
+	// The control toggles only maintenance.auto back on in this disposable
+	// fixture; synchronous maintenance avoids leaving a detached process.
+	for _, enabled := range []bool{false, true} {
+		args := []string{"-c", "gc.autoDetach=false"}
+		if enabled {
+			args = append(args, "-c", "maintenance.auto=true")
+		}
+		args = append(args, "commit", "--allow-empty", "-m", "maintenance probe")
+		cmd := exec.Command("git", args...)
+		cmd.Dir = f.source
+		cmd.Env = append(f.env.List(), "GIT_TRACE=1")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("commit probe: %v\n%s", err, output)
+		}
+		launched := strings.Contains(string(output), "maintenance run --auto")
+		t.Logf("maintenance.auto override=%v: automatic maintenance launched=%v", enabled, launched)
+		if launched != enabled {
+			t.Fatalf("automatic maintenance launched=%v, want %v\n%s", launched, enabled, output)
+		}
+	}
 }
 
 func runMutationCopyCmd(t *testing.T, fixture mutationCopyFixture, workDir string, overrides platform.Env, args ...string) (int, string, string) {

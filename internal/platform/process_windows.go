@@ -280,7 +280,7 @@ func runWindowsCmdTreeKill(resolved string, invocation CmdInvocationResult, opts
 		_ = syscall.TerminateProcess(process.Process, 1)
 		_, _ = syscall.WaitForSingleObject(process.Process, syscall.INFINITE)
 		result.Error = windowsErrorCode(resumeErr)
-		captureWindowsOutput(&result, fileOutput, opts.MergeOutput, outputTemp, errorTemp, &stdout, &stderr, stdoutDone, stderrDone)
+		captureWindowsOutput(&result, fileOutput, opts.MergeOutput, opts.StrictOutputUTF8, outputTemp, errorTemp, &stdout, &stderr, stdoutDone, stderrDone)
 		return result, true
 	}
 	if jobCreated && !jobReady {
@@ -350,7 +350,7 @@ func runWindowsCmdTreeKill(resolved string, invocation CmdInvocationResult, opts
 		result.Signal = "SIGTERM"
 	}
 	_ = stdinFile.Close()
-	captureWindowsOutput(&result, fileOutput, opts.MergeOutput, outputTemp, errorTemp, &stdout, &stderr, stdoutDone, stderrDone)
+	captureWindowsOutput(&result, fileOutput, opts.MergeOutput, opts.StrictOutputUTF8, outputTemp, errorTemp, &stdout, &stderr, stdoutDone, stderrDone)
 	return result, true
 }
 
@@ -469,31 +469,32 @@ func resetWindowsFileInheritance(fileOutput, mergeOutput bool, stdout, stderr *o
 	}
 }
 
-func captureWindowsOutput(result *RunResult, fileOutput, mergeOutput bool, stdoutFile, stderrFile *os.File, stdout, stderr *bytes.Buffer, stdoutDone, stderrDone <-chan struct{}) {
+func captureWindowsOutput(result *RunResult, fileOutput, mergeOutput, strictOutputUTF8 bool, stdoutFile, stderrFile *os.File, stdout, stderr *bytes.Buffer, stdoutDone, stderrDone <-chan struct{}) {
+	var out, errOut []byte
 	if fileOutput {
-		read := func(file *os.File) string {
+		read := func(file *os.File) []byte {
 			if file == nil {
-				return ""
+				return nil
 			}
 			_ = file.Sync()
 			if _, err := file.Seek(0, io.SeekStart); err != nil {
-				return ""
+				return nil
 			}
 			data, err := io.ReadAll(file)
 			if err != nil {
-				return ""
+				return nil
 			}
-			return decodeWHATWGUTF8(data)
+			return data
 		}
-		result.Stdout = read(stdoutFile)
+		out = read(stdoutFile)
 		if !mergeOutput {
-			result.Stderr = read(stderrFile)
+			errOut = read(stderrFile)
 		}
-		return
+	} else {
+		_ = waitWindowsOutput(stdoutDone, stderrDone)
+		out, errOut = stdout.Bytes(), stderr.Bytes()
 	}
-	_ = waitWindowsOutput(stdoutDone, stderrDone)
-	result.Stdout = decodeWHATWGUTF8(stdout.Bytes())
-	result.Stderr = decodeWHATWGUTF8(stderr.Bytes())
+	setRunOutput(result, out, errOut, strictOutputUTF8)
 }
 
 func pointerToUTF16(value []uint16) *uint16 {

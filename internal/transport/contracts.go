@@ -84,11 +84,16 @@ const (
 	// a terminal name the hc core already has live (its name_taken error).
 	FailureConflict FailureKind = "conflict"
 	// FailureBlocked: the target sits on a prompt only a person can answer
-	// (hc send's exit 9); the send was not made.
+	// (such as hc send's exit 9 or an observed blocked startup); the operation
+	// was not completed and the target awaits manual action.
 	FailureBlocked FailureKind = "blocked"
 	// FailureBusy: the idle guard found the target not idle (hc send's exit
 	// 10); the send was not made.
 	FailureBusy FailureKind = "busy"
+	// FailureRunOutcomeUnknown: the run operation was dispatched but the outcome
+	// is uncertain (e.g. response missing or dropped after mutation); the terminal
+	// may have been created. Automatic retry or cleanup must be refused.
+	FailureRunOutcomeUnknown FailureKind = "run-outcome-unknown"
 )
 
 // Failure is a structured transport error. Code carries an observed wire code
@@ -129,6 +134,12 @@ type Reply[T any] struct {
 	Err     *Failure
 }
 
+// LaunchProfileLabel is the terminal label key the hc core's terminal.run
+// request already accepts for the caller's resolved launch profile; the
+// label value is a portable profile identifier, never a kind, model or
+// config payload.
+const LaunchProfileLabel = "soho.launch_profile"
+
 // Terminal is one registered agent (a terminal) as a backend reports it.
 // Fields the backend does not report are zero. State is the reported
 // agent_status (empty when absent); Sequence is the state_change_seq.
@@ -138,6 +149,11 @@ type Terminal struct {
 	PaneID   string
 	State    string
 	Sequence json.RawMessage
+	// NativeState is the terminal record's actual string lifecycle as
+	// reported by the backend (e.g. hc record's actual "live" or "finished";
+	// missing/non-string stays empty), independent of mapped agent activity
+	// in State. Source metadata for local verification, never a public field.
+	NativeState string
 	// Msg carries the message the terminal record reports next to its
 	// state word (the hc status message, "" when the backend reports
 	// none), so a consumer that maps the state word can also carry the
@@ -159,6 +175,25 @@ type Terminal struct {
 	// present and different. Hints only; canonical kind matching stays in
 	// the kinds catalog.
 	ProgramHints []string
+	// LaunchProfile is the optional launch profile the terminal record
+	// reports under the soho.launch_profile label; the zero value means
+	// unknown or unreported. The hc backend's Get populates it from the
+	// record's labels (an actual string at the exact label key); the herdr
+	// backend leaves it zero. Internal source metadata for a future live
+	// guard; never a public field.
+	LaunchProfile string
+	// Reported is the terminal record's top-level reported flag, true only
+	// when the record reports the actual bool true (for hc, the worker has
+	// reported a status); absent, null, false or another type stay the zero
+	// value, never coerced. Source metadata for local verification, never a
+	// public field.
+	Reported bool
+	// ReporterApp is the app the terminal record's status names (the hc
+	// record's status.app, "" when the record reports none or the value is
+	// not a string), kept distinct from ProgramHints so a consumer can read
+	// the reported app without parsing the hint order. Source metadata for
+	// local verification, never a public field.
+	ReporterApp string
 }
 
 // Scope selects which terminals a listing covers. All lists every live
@@ -193,7 +228,7 @@ type Send struct {
 	Queue bool
 }
 
-// Start names an agent-start request. The Herdr backend encodes it as
+// Start names an agent-start request. With no profile or overrides the Herdr backend encodes it as
 // `agent start <name> --kind <kind> --pane <pane> --timeout <timeout>`, with
 // Args after a "--" when there are any. Timeout is the agent timeout in
 // milliseconds, passed through unchanged; the wrapper timeout the caller may
@@ -209,6 +244,40 @@ type Start struct {
 	// (its pane already has a cwd); the hc backend passes it as --cwd when
 	// it is non-empty.
 	Cwd string
+
+	// LaunchProfile names the launch profile the caller resolved for this
+	// start ("" for the pass-through profile). Herdr admits explicit profiles
+	// only through its capability-gated private configured-start protocol.
+	LaunchProfile string
+
+	// EnvOverrides are the explicit per-child environment entries the
+	// backend merges into the child's environment alongside its mandatory
+	// transport marker; nil or empty leaves the child's environment
+	// unchanged. Never the caller's whole environment.
+	EnvOverrides map[string]string
+}
+
+// ConfiguredLaunchPreflight is optional and leaves existing method sets intact.
+// Callers must invoke it before placement, adoption, shell clearing, report
+// retirement or reopen release. Success reserves no authority: Start repeats
+// validation and the capability probe. Empty profile and overrides are inert.
+// Name and PaneID may be empty before allocation; provided identifiers and all
+// other known inputs are validated without inventing replacements. Start still
+// requires actual nonempty identifiers and validates the complete bound frame;
+// preflight cannot guarantee future identifiers, metadata size or native state.
+// Configured replies require Valid and Err checks even when native status is 0.
+type ConfiguredLaunchPreflight interface {
+	PreflightConfiguredStart(context.Context, Start, Call) Reply[bool]
+}
+
+// ConfiguredLaunchReuse optionally observes an existing worker's native profile
+// before rename, role/report changes or ready emission. Start must describe the
+// complete expected request, including the actual current Name and PaneID.
+// Success requires Valid, nil Err and true Value; native exit 0 alone is not
+// qualification. Observation reserves no identity and applies no new overrides
+// to the running process; ordinary reuse compatibility checks still apply.
+type ConfiguredLaunchReuse interface {
+	PreflightConfiguredReuse(context.Context, Start, Call) Reply[bool]
 }
 
 // CallerCheck is the outcome of the caller-pane check: whether this process
@@ -598,6 +667,9 @@ type Runtime interface {
 	// returns the new terminal's address (t7) on success, and also carries
 	// it on the readiness failures (blocked, exited, timeout) once the
 	// terminal exists, so the caller can close the terminal the start left.
+	// Explicit Herdr profiles/overrides instead use private configured stdin
+	// and return only a fixed success marker. Callers must check Valid and Err,
+	// including native exit 0 with a malformed or unready configured result.
 	Start(ctx context.Context, start Start, call Call) Reply[string]
 	// CallerAgentName returns the agent that hosts the caller's claimed
 	// pane, read with one agent get on that pane; a pane without a readable

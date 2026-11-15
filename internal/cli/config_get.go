@@ -43,6 +43,12 @@ func cmdConfigGet(argv []string, configCtx *core.Config, env platform.Env, cwd s
 	key := core.NormalizeKey(raw)
 	var value string
 	switch {
+	case key == "opencode_tui_profile":
+		var err error
+		value, err = core.OpenCodeTUIProfile(configCtx, env)
+		if err != nil {
+			platform.Die("config get: "+err.Error(), 2)
+		}
 	case key == "machine_label" || key == "job_orgs" || key == "job_repos_root" || key == "job_timeout" || key == "job_blocked_timeout" || key == "job_finishing_timeout" || key == "job_wake_cmd":
 		values, err := job.MachineValues(platform.Current(), env, core.UserSelection{})
 		if err != nil {

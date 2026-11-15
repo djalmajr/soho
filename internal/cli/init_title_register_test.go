@@ -345,6 +345,7 @@ func hcRecord(address, name, cwd, app, session string) string {
 	rec := map[string]any{
 		"address": address,
 		"name":    name,
+		"state":   "live",
 		"cwd":     cwd,
 		"status":  map[string]any{"state": "working", "app": app},
 		"labels":  map[string]any{"soho.session": session},
@@ -715,14 +716,35 @@ func TestHcInitValidatesRecordBeforeCreatingState(t *testing.T) {
 			env = withHostGit(t, withFakeCLI(env, fakeDir), fakeDir)
 			env["SOHO_TRANSPORT"], env["HC_TERMINAL_ID"] = "hc", "t1"
 			code, out, stderr := runInitCaptured(t, env)
-			if name == "owner α" {
+			switch name {
+			case "owner α":
 				if code != 0 {
 					t.Fatalf("valid-name control exit=%d stderr=%s", code, stderr)
 				}
 				if got := readRecordJSON(t, env["SOHO_DIR"], "ws"); got.Name != name {
 					t.Fatalf("actual HC name=%q want=%q", got.Name, name)
 				}
-			} else {
+			case "":
+				if code != 0 {
+					t.Fatalf("unnamed-caller control exit=%d stderr=%s", code, stderr)
+				}
+				got := readRecordJSON(t, env["SOHO_DIR"], "ws")
+				if got.Terminal != "t1" {
+					t.Fatalf("actual HC terminal=%q want=t1", got.Terminal)
+				}
+				if got.Name != "t1" {
+					t.Fatalf("actual HC private name=%q want=t1", got.Name)
+				}
+				if got.SessionID != "ws" {
+					t.Fatalf("actual HC session=%q want=ws", got.SessionID)
+				}
+				if got.ProjectRoot != repo {
+					t.Fatalf("actual HC project root=%q want=%q", got.ProjectRoot, repo)
+				}
+				if got.Kind != "claude" {
+					t.Fatalf("actual HC kind=%q want=claude", got.Kind)
+				}
+			default:
 				if code != 2 || out != "" {
 					t.Fatalf("invalid-name refusal exit=%d stdout=%s stderr=%s", code, out, stderr)
 				}

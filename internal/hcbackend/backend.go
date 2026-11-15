@@ -20,14 +20,18 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/djalmajr/soho/internal/agentexec"
 	"github.com/djalmajr/soho/internal/hc"
 	"github.com/djalmajr/soho/internal/jsonjs"
+	"github.com/djalmajr/soho/internal/launchprofile"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/transport"
 )
@@ -54,7 +58,12 @@ var ErrNotInHcTerminal = errors.New("not inside an hc terminal: HC_TERMINAL_ID i
 // given. It never runs hc itself: the first launch happens on the first
 // method that needs one (the session read among them).
 func New(env platform.Env) transport.Services {
-	b := &backend{env: env, client: hc.New(env)}
+	return NewWithClient(env, hc.New(env))
+}
+
+// NewWithClient builds the hc backend's Services using the provided hc client.
+func NewWithClient(env platform.Env, client *hc.Client) transport.Services {
+	b := &backend{env: env, client: client}
 	return transport.Services{Runtime: b, Window: b, Legacy: b, Terminal: b}
 }
 
@@ -70,6 +79,15 @@ type backend struct {
 	sessionDone  bool
 	sessionValue string
 	sessionErr   error
+
+	abs func(string) (string, error)
+}
+
+func (b *backend) absPath(path string) (string, error) {
+	if b.abs != nil {
+		return b.abs(path)
+	}
+	return filepath.Abs(path)
 }
 
 // Session.
@@ -256,6 +274,9 @@ func stateOf(obj *jsonjs.Object) string {
 	if !ok || raw == nil {
 		return "unknown"
 	}
+	if word, isString := raw.(string); isString && word != "" {
+		return word
+	}
 	status, ok := raw.(*jsonjs.Object)
 	if !ok {
 		return "unknown"
@@ -266,6 +287,20 @@ func stateOf(obj *jsonjs.Object) string {
 		}
 	}
 	return "unknown"
+}
+
+// nativeStateOf extracts the terminal record's raw string lifecycle
+// ("live", "finished", etc.). Missing or non-string values return "".
+func nativeStateOf(obj *jsonjs.Object) string {
+	if obj == nil {
+		return ""
+	}
+	if v, ok := obj.Get("state"); ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 // statusMsgOf returns the terminal record's status message (the hc
@@ -353,18 +388,27 @@ func addressOf(obj *jsonjs.Object) string {
 // cwdOf reads the record's cwd ("" when the terminal reports none).
 func cwdOf(obj *jsonjs.Object) string {
 	if v, ok := obj.Get("cwd"); ok {
-		if cwd, isString := v.(string); isString {
+		if cwd, isString := v.(string); isString && cwd != "" {
 			return cwd
+		}
+	}
+	if raw, ok := obj.Get("foreground"); ok && raw != nil {
+		if fg, ok := raw.(*jsonjs.Object); ok {
+			if v, ok := fg.Get("cwd"); ok {
+				if cwd, isString := v.(string); isString && cwd != "" {
+					return cwd
+				}
+			}
 		}
 	}
 	return ""
 }
 
 // programHints renders one terminal record's program hints: the nonempty
-// status app first, then the basename of argv[0] when present and different
-// (both slash styles normalized for the basename; no shell parsing and no
-// other argv element is inspected). Hints only: canonical kind matching
-// stays in the kinds catalog.
+// status app first, then foreground.name when present and different, then the
+// basename of argv[0] when present and different (both slash styles normalized
+// for the basename; no shell parsing and no other argv element is inspected).
+// Hints only: canonical kind matching stays in the kinds catalog.
 func programHints(obj *jsonjs.Object) []string {
 	var hints []string
 	if raw, ok := obj.Get("status"); ok && raw != nil {
@@ -376,11 +420,31 @@ func programHints(obj *jsonjs.Object) []string {
 			}
 		}
 	}
+	if raw, ok := obj.Get("foreground"); ok && raw != nil {
+		if fg, ok := raw.(*jsonjs.Object); ok {
+			if v, ok := fg.Get("name"); ok {
+				if name, isString := v.(string); isString && name != "" {
+					if len(hints) == 0 || hints[0] != name {
+						hints = append(hints, name)
+					}
+				}
+			}
+		}
+	}
 	if raw, ok := obj.Get("argv"); ok {
 		if args, ok := raw.([]any); ok && len(args) > 0 {
 			if exe, ok := args[0].(string); ok && exe != "" {
-				if base := executableBase(exe); base != "" && (len(hints) == 0 || hints[0] != base) {
-					hints = append(hints, base)
+				if base := executableBase(exe); base != "" {
+					dup := false
+					for _, h := range hints {
+						if h == base {
+							dup = true
+							break
+						}
+					}
+					if !dup {
+						hints = append(hints, base)
+					}
 				}
 			}
 		}
@@ -392,6 +456,54 @@ func programHints(obj *jsonjs.Object) []string {
 // styles normalized (a bare name is its own basename).
 func executableBase(exe string) string {
 	return path.Base(strings.ReplaceAll(exe, "\\", "/"))
+}
+
+// launchProfileOf reads the record's soho.launch_profile label: an actual
+// string at the exact label key ("" when the labels are absent, not a map,
+// or the label is missing, null or not a string).
+func launchProfileOf(obj *jsonjs.Object) string {
+	if labels, ok := obj.Get("labels"); ok {
+		if labelsObj, ok := labels.(*jsonjs.Object); ok {
+			if v, ok := labelsObj.Get(transport.LaunchProfileLabel); ok {
+				if profile, isString := v.(string); isString {
+					return profile
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// reportedOf reads the record's top-level reported flag: true only when it
+// is the actual bool true (absent, null, false or another type stay false,
+// never coerced).
+func reportedOf(obj *jsonjs.Object) bool {
+	if v, ok := obj.Get("reported"); ok {
+		if reported, isBool := v.(bool); isBool && reported {
+			return true
+		}
+	}
+	return false
+}
+
+// reporterAppOf reads the record's status.app: an actual string ("" when the
+// status is absent, null or not a map, or the app is missing, null or not a
+// string).
+func reporterAppOf(obj *jsonjs.Object) string {
+	raw, ok := obj.Get("status")
+	if !ok || raw == nil {
+		return ""
+	}
+	status, ok := raw.(*jsonjs.Object)
+	if !ok {
+		return ""
+	}
+	if v, ok := status.Get("app"); ok {
+		if app, isString := v.(string); isString {
+			return app
+		}
+	}
+	return ""
 }
 
 // processRecord keeps one successful hc read's raw record on the reply's
@@ -512,11 +624,12 @@ func (b *backend) List(ctx context.Context, scope transport.Scope, call transpor
 			return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned a non-object terminal"}}
 		}
 		terms = append(terms, transport.Terminal{
-			Target:   transport.Target{ID: addressOf(rec)},
-			Name:     nameOf(rec),
-			PaneID:   addressOf(rec),
-			State:    stateOf(rec),
-			Sequence: listTurn(records, i),
+			Target:      transport.Target{ID: addressOf(rec)},
+			Name:        nameOf(rec),
+			PaneID:      addressOf(rec),
+			State:       stateOf(rec),
+			NativeState: nativeStateOf(rec),
+			Sequence:    listTurn(records, i),
 		})
 	}
 	return transport.Reply[[]transport.Terminal]{Value: terms, Valid: true}
@@ -571,6 +684,7 @@ func (b *backend) listAllLocal(ctx context.Context, call transport.Call) transpo
 			Name:         nameOf(rec),
 			PaneID:       address,
 			State:        stateOf(rec),
+			NativeState:  nativeStateOf(rec),
 			Sequence:     listTurn(records, i),
 			Msg:          statusMsgOf(rec),
 			Cwd:          cwdOf(rec),
@@ -584,7 +698,8 @@ func (b *backend) listAllLocal(ctx context.Context, call transport.Call) transpo
 // Get reads one terminal's state. Exit 3 (not found) and a finished terminal
 // are the gone state with no error, like the Herdr backend; any other
 // failure is unavailable with the cause; a live terminal with no status is
-// unknown.
+// unknown. The reply's Value also carries the record's source metadata: the
+// soho.launch_profile label, the top-level reported flag and the status app.
 func (b *backend) Get(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[transport.Terminal] {
 	out, err := b.run(ctx, call, "get", addr(target))
 	if err != nil {
@@ -597,37 +712,107 @@ func (b *backend) Get(ctx context.Context, target transport.Target, call transpo
 	if !ok {
 		return transport.Reply[transport.Terminal]{Value: transport.Terminal{Target: target, State: "unknown"}, Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc get returned no terminal record"}}
 	}
+	address := addressOf(obj)
 	return transport.Reply[transport.Terminal]{
 		Value: transport.Terminal{
-			Target:   target,
-			Name:     nameOf(obj),
-			PaneID:   addressOf(obj),
-			State:    stateOf(obj),
-			Sequence: turnRaw(json.RawMessage(out)),
-			Msg:      statusMsgOf(obj),
-			Cwd:      cwdOf(obj),
+			Target:        transport.Target{ID: address, Machine: target.Machine},
+			Name:          nameOf(obj),
+			PaneID:        address,
+			State:         stateOf(obj),
+			NativeState:   nativeStateOf(obj),
+			Sequence:      turnRaw(json.RawMessage(out)),
+			Msg:           statusMsgOf(obj),
+			Cwd:           cwdOf(obj),
+			WorkspaceID:   sessionOfRecord(obj),
+			ProgramHints:  programHints(obj),
+			LaunchProfile: launchProfileOf(obj),
+			Reported:      reportedOf(obj),
+			ReporterApp:   reporterAppOf(obj),
 		},
 		Valid: true,
 	}
 }
 
-// Send pastes the prompt into the terminal and presses Enter: `hc send --if
-// idle -- <target> <text>` (the -- ends the options, so a text that starts
-// with a dash is a value), without --force, which is never passed. Queue
-// lifts the --if idle guard (a blocked worker still refuses it). The
-// reply's Value is the raw SendResult record: its started flag is the
-// immediate arrival proof and its turn the turn the send started. A worker
-// that sits on a person's prompt is FailureBlocked, a worker that is not
-// idle when the guard checks it is FailureBusy, and a finished or removed
-// terminal is FailureNotFound; anything else takes the backend's usual
-// mapping.
+// Send pastes the prompt into the terminal and presses Enter: `hc send
+// --if <guard> -- <target> <text>` (the -- ends the options, so a text that
+// starts with a dash is a value), without --force, which is never passed.
+// Queue lifts the guard (a blocked worker still refuses it) and runs with
+// no capability probes, exactly today's `hc send -- <target> <text>`. The
+// ordinary (non-queue) send selects its --if guard through the client's
+// SendIfGuard under one deadline shared by every probe and the send: ready
+// only when the local parser and the serving enum prove it, idle only when
+// both prove idle, and a refusal is the capability failure with zero input
+// — never a guardless, downgraded or resent send. The reply's Value is the
+// raw SendResult record: its started flag is the immediate arrival proof
+// and its turn the turn the send started. A worker that sits on a person's
+// prompt is FailureBlocked, a worker whose status mismatches the guard that
+// was actually used is FailureBusy, and a finished or removed terminal is
+// FailureNotFound; anything else takes the backend's usual mapping.
 func (b *backend) Send(ctx context.Context, target transport.Target, send transport.Send, call transport.Call) transport.Reply[string] {
-	args := []string{"send"}
-	if !send.Queue {
-		args = append(args, "--if", "idle")
+	if send.Queue {
+		args := []string{"send", "--", addr(target), send.Text}
+		out, err := b.run(ctx, call, args...)
+		return b.sendReply(target, out, err, "")
 	}
-	args = append(args, "--", addr(target), send.Text)
-	out, err := b.run(ctx, call, args...)
+	return b.sendGuarded(ctx, target, send, call)
+}
+
+// sendGuarded is the ordinary (non-queue) send with the proven --if guard:
+// one deadline (the call's timeout, else the 30s default) clamps every
+// probe and the send together, so the probes never extend the call's
+// budget or outrun its cancellation; a guard refusal is the capability
+// failure with zero input — the send is never issued.
+func (b *backend) sendGuarded(ctx context.Context, target transport.Target, send transport.Send, call transport.Call) transport.Reply[string] {
+	timeout := hcTimeoutDefault
+	if call.Timeout > 0 {
+		timeout = call.Timeout
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	shared, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	guard, err := b.client.SendIfGuard(shared, machineOf(addr(target)))
+	if err != nil {
+		return transport.Reply[string]{Err: guardRefusal(addr(target), err)}
+	}
+	args := []string{"send", "--if", guard, "--", addr(target), send.Text}
+	out, err := b.client.Run(shared, args...)
+	return b.sendReply(target, out, err, guard)
+}
+
+// machineOf names the machine one effective hc address is on: the segment
+// before the first slash of a machine/id address, "" when the address is a
+// local terminal id. An embedded machine/id in the target's id is a remote
+// address too, never a local one.
+func machineOf(address string) string {
+	i := strings.Index(address, "/")
+	if i <= 0 {
+		return ""
+	}
+	return address[:i]
+}
+
+// guardRefusal renders one guard refusal (the probes proved no --if guard)
+// as the send that never happened: a probe launch failure keeps the
+// backend's usual unavailable mapping, metadata that parsed but proved no
+// common guard is a protocol failure — neither is busy or blocked, so no
+// consumer settles, downgrades or resends.
+func guardRefusal(name string, err error) *transport.Failure {
+	kind := transport.FailureProtocol
+	var hcErr *hc.Error
+	if errors.As(err, &hcErr) || errors.Is(err, hc.ErrNotInstalled) {
+		kind = transport.FailureUnavailable
+	}
+	return &transport.Failure{Kind: kind, Message: "cannot prove the --if guard for worker " + name + ": " + err.Error(), Cause: err}
+}
+
+// sendReply maps one hc send launch onto the send reply: exit 9 is the
+// blocked worker, exit 10 the status mismatch against the guard that was
+// actually used (idle stays "not idle", ready is "not ready"), exit 11 the
+// finished or removed terminal; every other failure takes the backend's
+// usual mapping. The queue path passes no guard, keeping today's message.
+func (b *backend) sendReply(target transport.Target, out string, err error, guard string) transport.Reply[string] {
 	if err != nil {
 		var hcErr *hc.Error
 		if errors.As(err, &hcErr) {
@@ -636,7 +821,11 @@ func (b *backend) Send(ctx context.Context, target transport.Target, send transp
 			case hc.ExitBlocked:
 				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureBlocked, Message: fmt.Sprintf("worker %s is blocked: a person must answer its prompt", name)}}
 			case hc.ExitStatusMismatch:
-				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureBusy, Message: "worker " + name + " is not idle"}}
+				want := "idle"
+				if guard == hc.GuardReady {
+					want = "ready"
+				}
+				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureBusy, Message: "worker " + name + " is not " + want}}
 			case hc.ExitFinished:
 				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureNotFound, Message: hcErr.Error(), Cause: err}}
 			}
@@ -1034,17 +1223,6 @@ const startPollInterval = 200 * time.Millisecond
 // empty, zero or invalid: the herdr default the spawn side passes.
 const startTimeoutDefaultMs = 60000
 
-// hcStartKinds are the kinds whose executable reports a 7501 status hc can
-// observe; the executable is the kind name itself, the single piece herdr
-// fixed on its side.
-var hcStartKinds = map[string]bool{
-	"claude": true,
-	"codex":  true,
-	"pi":     true,
-	"grok":   true,
-	"agy":    true,
-}
-
 // validHcName reports whether name is a valid hc terminal name: 1-32
 // characters of a-z 0-9 - _.
 func validHcName(name string) bool {
@@ -1078,23 +1256,39 @@ func startDeadlineSeconds(deadline time.Duration) string {
 }
 
 // Start starts the worker in a new hc terminal of this session and waits
-// for its first reported status (DJA-604 slice 2b-2a). The command is
-// `hc run --bg --json --name <name> [--cwd <cwd>] --label
-// soho.session=<session> --no-notify --outlive-parent -- <exe> <args…>`,
-// where <exe> is the kind's name; the request's args go out byte for byte,
-// with no quoting added. Value carries the new terminal's address on
-// success. An unsupported kind and an invalid name refuse before any
-// launch; a run that fails with hc's name_taken error is a FailureConflict
-// (spawn picks the next suffix; this slice does not retry); readiness is
-// one hc get per startPollInterval until the deadline.
+// for its first reported status. The run is dispatched through the native
+// terminal.run JSON-RPC client on the per-instance hc client.
+// Value carries the new terminal's address on success. Admission is the
+// shared launchprofile native status policy: the five kinds carry the empty
+// profile and opencode carries exactly its primary profile; an
+// unadmitted combination and an invalid name refuse before any launch.
+// The five kinds keep the request's own argv and environment aliases,
+// with no snapshot and no native validation; the admitted opencode plan
+// is cloned and validated before the session read, and a plan the shared
+// native validator refuses is a command failure before it. An admitted
+// opencode never launches a bare executable name: a missing lookup or a
+// failed or non-absolute normalization is the fixed value-free
+// unavailable refusal before the terminal exists. After the ordinary
+// readiness success, the admitted primary profile is qualified on the same
+// get record against the shared ready policy (no second observation). A
+// run that fails with hc's name_taken error is a FailureConflict (spawn
+// picks the next suffix; this slice does not retry); readiness is one hc
+// get per startPollInterval until the deadline.
 func (b *backend) Start(ctx context.Context, start transport.Start, call transport.Call) transport.Reply[string] {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if !hcStartKinds[start.Kind] {
+	if !launchprofile.NativeStatusSupported(start.Kind, start.LaunchProfile) {
+		message := fmt.Sprintf("kind %s does not report status under transport=hc; use transport=herdr", start.Kind)
+		switch {
+		case start.Kind == "opencode":
+			message = "opencode requires launch profile " + launchprofile.OpenCodePrimaryProfile + " under transport=hc"
+		case start.LaunchProfile != "":
+			message = "native launch profile is unsupported under transport=hc"
+		}
 		return transport.Reply[string]{Err: &transport.Failure{
 			Kind:    transport.FailureUnsupported,
-			Message: fmt.Sprintf("kind %s does not report status under transport=hc; use transport=herdr", start.Kind),
+			Message: message,
 		}}
 	}
 	if !validHcName(start.Name) {
@@ -1103,6 +1297,35 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 			Message: fmt.Sprintf("worker name '%s' is not a valid hc terminal name (1-32 of a-z 0-9 - _)", start.Name),
 		}}
 	}
+	// The five empty-profile kinds keep the request's own argv and
+	// environment aliases, exactly as the original start does: no clone
+	// and no native validation, so a synchronous callback that mutates
+	// the caller's values before the launch still reaches the serialized
+	// request.
+	args := start.Args
+	envOverrides := start.EnvOverrides
+	if start.Kind == "opencode" {
+		// The admitted opencode plan is owned per-call snapshots of the
+		// request's argv and environment, taken before the validation and
+		// every session, lookup or launch callback: the start uses only
+		// these values from here on, so a synchronous callback that
+		// mutates the caller's slice or map cannot change the admitted
+		// plan or the serialized launch.
+		args = append([]string(nil), start.Args...)
+		envOverrides = make(map[string]string, len(start.EnvOverrides))
+		for name, value := range start.EnvOverrides {
+			envOverrides[name] = value
+		}
+		if err := launchprofile.ValidateNativeLaunchProfile(start.Kind, start.LaunchProfile, args, envOverrides); err != nil {
+			// The shared validator's one fixed value-free error: no
+			// supplied argument, configuration or environment text
+			// reaches the caller.
+			return transport.Reply[string]{Err: &transport.Failure{
+				Kind:    transport.FailureCommand,
+				Message: "native launch profile is invalid",
+			}}
+		}
+	}
 	session, err := b.session(ctx, call)
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
@@ -1110,30 +1333,106 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 		}
 		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: err.Error(), Cause: err}}
 	}
-	args := []string{"run", "--bg", "--json", "--name", start.Name}
-	if start.Cwd != "" {
-		args = append(args, "--cwd", start.Cwd)
+
+	cwd := start.Cwd
+	if cwd == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return transport.Reply[string]{Err: &transport.Failure{
+				Kind:    transport.FailureUnavailable,
+				Message: "getwd: " + err.Error(),
+				Cause:   err,
+			}}
+		}
+		cwd = wd
 	}
-	args = append(args, "--label", SessionLabel+"="+session, "--no-notify", "--outlive-parent", "--", start.Kind)
-	args = append(args, start.Args...)
-	out, err := b.run(ctx, call, args...)
-	if err != nil {
-		// A run the request's cancellation interrupted is a cancellation,
-		// not a failed command.
+
+	exe := agentexec.Executable(start.Kind)
+	program := exe
+	resolved, found := platform.FindExecutable(exe, b.env, platform.Current())
+	switch {
+	case start.Kind == "opencode" && !found:
+		// The primary profile never launches a bare executable name: a
+		// missing lookup is the fixed value-free refusal before any
+		// terminal exists.
 		if cerr := ctx.Err(); cerr != nil {
 			return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: cerr.Error(), Cause: cerr}}
 		}
+		return opencodeExecutableUnavailable()
+	case found:
+		abs, err := b.absPath(resolved)
+		if err != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureCancelled, Message: cerr.Error(), Cause: cerr}}
+			}
+			if start.Kind == "opencode" {
+				return opencodeExecutableUnavailable()
+			}
+			return transport.Reply[string]{Err: &transport.Failure{
+				Kind:    transport.FailureUnavailable,
+				Message: "abs: " + err.Error(),
+				Cause:   err,
+			}}
+		}
+		if start.Kind == "opencode" && !filepath.IsAbs(abs) {
+			return opencodeExecutableUnavailable()
+		}
+		program = abs
+	}
+
+	budget := hcTimeoutDefault
+	if call.Timeout > 0 {
+		budget = call.Timeout
+	}
+	runCtx, runCancel := context.WithTimeout(ctx, budget)
+	address, err := b.client.RunTerminal(runCtx, hc.TerminalRun{
+		Name:          start.Name,
+		Kind:          start.Kind,
+		Program:       program,
+		Cwd:           cwd,
+		Caller:        b.env.Get("HC_TERMINAL_ID"),
+		Session:       session,
+		Args:          args,
+		EnvOverrides:  envOverrides,
+		LaunchProfile: start.LaunchProfile,
+	})
+	runCancel()
+
+	if err != nil {
+		if errors.Is(err, hc.ErrRunOutcomeUnknown) {
+			return transport.Reply[string]{
+				Value: address,
+				Err: &transport.Failure{
+					Kind:    transport.FailureRunOutcomeUnknown,
+					Message: err.Error(),
+					Cause:   err,
+				},
+			}
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return transport.Reply[string]{
+				Err: &transport.Failure{
+					Kind:    transport.FailureCancelled,
+					Message: cerr.Error(),
+					Cause:   cerr,
+				},
+			}
+		}
 		return startRunFailure(start.Name, err)
 	}
-	obj, ok := terminalObject(out)
-	if !ok {
-		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc run returned no terminal record"}}
-	}
-	address := addressOf(obj)
-	if address == "" {
-		return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc run returned no terminal address"}}
-	}
-	return b.waitReady(ctx, call, start.Name, address, startTimeout(start.Timeout))
+
+	return b.waitReady(ctx, call, start.Name, address, start.LaunchProfile, startTimeout(start.Timeout))
+}
+
+// opencodeExecutableUnavailable is the primary profile's fixed value-free
+// refusal for its executable requirement: the lookup found no opencode
+// executable, or its absolute normalization failed or returned a path that
+// is not absolute. No private path or error text crosses the boundary.
+func opencodeExecutableUnavailable() transport.Reply[string] {
+	return transport.Reply[string]{Err: &transport.Failure{
+		Kind:    transport.FailureUnavailable,
+		Message: "opencode executable is unavailable for primary launch profile",
+	}}
 }
 
 // startRunFailure maps one failed hc run onto the transport failure it is:
@@ -1158,8 +1457,14 @@ func startRunFailure(name string, err error) transport.Reply[string] {
 // failure, and the deadline is the timeout failure carrying the last get
 // error it holds. A cancelled ctx stops the poll as a cancellation. Every
 // failure reply carries the address in Value, so the caller can close the
-// terminal the start left.
-func (b *backend) waitReady(ctx context.Context, call transport.Call, name, address string, deadline time.Duration) transport.Reply[string] {
+// terminal the start left. For the admitted primary launch profile the
+// ordinary success is further qualified on the very same get record: the
+// strict record metadata must name the created address and satisfy the
+// shared ready policy, or the reply is the fixed protocol mismatch. No
+// second observation is made, and blocked, exited, cancelled and timeout
+// keep their original priority (the qualification runs only after an
+// ordinary success).
+func (b *backend) waitReady(ctx context.Context, call transport.Call, name, address, expectedProfile string, deadline time.Duration) transport.Reply[string] {
 	deadlineAt := time.Now().Add(deadline)
 	var lastErr *transport.Failure
 	for {
@@ -1189,6 +1494,16 @@ func (b *backend) waitReady(ctx context.Context, call transport.Call, name, addr
 		} else {
 			rep, perr := readinessReply(name, address, out)
 			if rep != nil {
+				// Only an ordinary success is qualified, and on the same
+				// get record: a record that the strict metadata does not
+				// qualify for the admitted profile is a protocol failure
+				// with the known address, never a second observation.
+				if rep.Err == nil && expectedProfile != "" && !primaryProfileReady(out, address) {
+					return transport.Reply[string]{Value: address, Err: &transport.Failure{
+						Kind:    transport.FailureProtocol,
+						Message: "native primary profile readiness metadata mismatch",
+					}}
+				}
 				return *rep
 			}
 			lastErr = perr
@@ -1246,7 +1561,7 @@ func readinessReply(name, address, out string) (*transport.Reply[string], *trans
 				message += ": " + s
 			}
 		}
-		return &transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCommand, Message: message}}, nil
+		return &transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureBlocked, Message: message}}, nil
 	case "idle", "done":
 		reported := false
 		if v, ok := obj.Get("reported"); ok {
@@ -1257,6 +1572,27 @@ func readinessReply(name, address, out string) (*transport.Reply[string], *trans
 		}
 	}
 	return nil, nil
+}
+
+// primaryProfileReady reports whether the get record that the ordinary
+// readiness parse decided success is exactly the native primary
+// observation: the record's strict fields — the launch profile label, the
+// top-level reported flag, the status app, the raw native lifecycle and
+// the mapped state word — qualify under launchprofile.OpenCodePrimaryReady, and
+// the record's address is the created address. A malformed record, a
+// foreign address or any missing or foreign field refuses the success.
+func primaryProfileReady(out, address string) bool {
+	obj, ok := terminalObject(out)
+	if !ok || addressOf(obj) != address {
+		return false
+	}
+	return launchprofile.OpenCodePrimaryReady(
+		launchProfileOf(obj),
+		reportedOf(obj),
+		reporterAppOf(obj),
+		nativeStateOf(obj),
+		stateOf(obj),
+	)
 }
 
 // exitedFailure renders the startup exit, `agent <name> exited during

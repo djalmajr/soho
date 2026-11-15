@@ -1,36 +1,168 @@
 package spawn
 
 // DJA-604 2b-2b: spawn through hc. The worker is a new hc terminal of the
-// session: one hc run with the herdr path's agent argv, no pane work, the
-// roster row holds the returned address, name_taken retries the existing
-// suffix rule, and a failed start dies like the herdr failed-start path
-// (exit 4, the Start failure's message) after closing the terminal. The
-// fake-hc technique is the one the spawn tests already use for a fake
-// herdr (internal/spawn/spawn_test.go: fakecli.Install on PATH plus
-// SOHO_FAKECLI_CONFIG): the fake records every call in a JSONL log and
-// answers with scripted JSON.
+// session: one terminal.run JSON-RPC call with the herdr path's agent argv,
+// no pane work, the roster row holds the returned address, name_taken
+// retries the existing suffix rule. Confirmed blocked starts preserve the
+// terminal and managed row with exit 7; ordinary failed starts close it and
+// exit 4. The native JSON-RPC transport uses hc.Client.Connect while existing
+// scripted get/ls/cleanup calls go through Launch.
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"strconv"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/hc"
+	backend "github.com/djalmajr/soho/internal/hcbackend"
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 const (
 	hcCallerTerminal = `{"address":"t1","state":"live","labels":{"soho.session":"sX"}}`
-	hcRunResult      = `{"address":"t7","name":"worker","state":"live"}`
 	hcReadyWorker    = `{"address":"t7","state":"live","reported":true,"status":{"state":"idle"}}`
-	hcNameTaken      = `{"error":{"kind":"name_taken","message":"name_taken"}}`
+	rpcHelloSuccess  = `{"jsonrpc":"2.0","id":1,"result":{"generation":1}}`
+	rpcRunSuccess    = `{"jsonrpc":"2.0","id":2,"result":{"address":"t7"}}`
 )
+
+func rpcNameTakenFor(name string) string {
+	return fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"terminal name %s is already in use","data":{"kind":"name_taken"}}}`, name)
+}
+
+type fakeSpawnRPCConn struct {
+	mu           sync.Mutex
+	written      bytes.Buffer
+	closed       bool
+	reapCount    int
+	connectCount int
+	responses    []string
+	connectErr   error
+	beforeRead   func(req []byte)
+}
+
+func newFakeSpawnRPCConn(responses ...string) *fakeSpawnRPCConn {
+	if len(responses) == 0 {
+		responses = []string{rpcHelloSuccess + "\n" + rpcRunSuccess + "\n"}
+	}
+	return &fakeSpawnRPCConn{responses: responses}
+}
+
+func (fc *fakeSpawnRPCConn) Connect(ctx context.Context, _ platform.Env) (io.WriteCloser, io.Reader, func() error, error) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.connectCount++
+	if fc.connectErr != nil {
+		return nil, nil, nil, fc.connectErr
+	}
+	idx := fc.connectCount - 1
+	resp := ""
+	if idx < len(fc.responses) {
+		resp = fc.responses[idx]
+	} else if len(fc.responses) > 0 {
+		resp = fc.responses[len(fc.responses)-1]
+	}
+	in := &fakeSpawnRPCIn{fc: fc}
+	out := strings.NewReader(resp)
+	reap := func() error {
+		fc.mu.Lock()
+		fc.reapCount++
+		fc.mu.Unlock()
+		return nil
+	}
+	return in, out, reap, nil
+}
+
+type fakeSpawnRPCIn struct {
+	fc *fakeSpawnRPCConn
+}
+
+func (in *fakeSpawnRPCIn) Write(p []byte) (int, error) {
+	in.fc.mu.Lock()
+	defer in.fc.mu.Unlock()
+	n, err := in.fc.written.Write(p)
+	if in.fc.beforeRead != nil {
+		in.fc.beforeRead(p)
+	}
+	return n, err
+}
+
+func (in *fakeSpawnRPCIn) Close() error {
+	in.fc.mu.Lock()
+	in.fc.closed = true
+	in.fc.mu.Unlock()
+	return nil
+}
+
+func (fc *fakeSpawnRPCConn) getWritten() []byte {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	cp := make([]byte, fc.written.Len())
+	copy(cp, fc.written.Bytes())
+	return cp
+}
+
+func (fc *fakeSpawnRPCConn) getConnectCount() int {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	return fc.connectCount
+}
+
+func parseTerminalRunReq(t *testing.T, written []byte) (map[string]any, map[string]any) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(string(written)), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least 2 JSON-RPC lines, got %d: %q", len(lines), string(written))
+	}
+	var helloObj map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &helloObj); err != nil {
+		t.Fatalf("unmarshal hello: %v", err)
+	}
+	if helloObj["method"] != "hello" || helloObj["jsonrpc"] != "2.0" {
+		t.Fatalf("invalid hello request: %v", helloObj)
+	}
+	var runObj map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &runObj); err != nil {
+		t.Fatalf("unmarshal run: %v", err)
+	}
+	params, ok := runObj["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected params object in terminal.run request: %v", runObj)
+	}
+	return runObj, params
+}
+
+func parseAllTerminalRunReqs(t *testing.T, written []byte) []map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(string(written)), "\n")
+	var runs []map[string]any
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Fatalf("unmarshal json line: %v: %q", err, line)
+		}
+		if obj["method"] == "terminal.run" {
+			runs = append(runs, obj)
+		}
+	}
+	return runs
+}
 
 // hcSpawnFixture sets up a spawn for transport=hc in root: the fake agent
 // binary (when kind is non-empty) and the fake herdr on PATH (herdr must
@@ -94,11 +226,6 @@ func hcAgentArgs(t *testing.T, role string, res core.RoleSettings, ctx *core.Con
 	return args
 }
 
-func hcRunArgv(cwd, name, kind string, agent []string) []string {
-	argv := []string{"run", "--bg", "--json", "--name", name, "--cwd", cwd, "--label", "soho.session=sX", "--no-notify", "--outlive-parent", "--", kind}
-	return append(argv, agent...)
-}
-
 // hcFixtureRules is the fake hc rule set every spawn test needs before
 // the worker's run: the session's caller get and the session's roster ls.
 func hcFixtureRules() []fakecli.Rule {
@@ -121,25 +248,21 @@ func hcCallLog(t *testing.T, bin string) []fakecli.Call {
 	return calls
 }
 
-// assertHcOnlyReadsAndRun pins acceptance (c) of the slice: under
-// transport=hc the spawn may only issue the session gets, the roster ls
-// and the one worker run — no hc tab, window, focus, keys or pane verb,
+// assertHcOnlyReads pins acceptance of the slice: under transport=hc the spawn
+// may only issue the session gets, the roster ls and cleanup (kill/rm) — no
+// hc run or connect CLI creation, no hc tab, window, focus, keys or pane verb,
 // and no herdr call.
-func assertHcOnlyReadsAndRun(t *testing.T, bin string, calls []fakecli.Call) {
+func assertHcOnlyReads(t *testing.T, bin string, calls []fakecli.Call) {
 	t.Helper()
-	runs := 0
 	for _, c := range calls {
 		switch c.Argv[0] {
-		case "get", "ls", "run":
+		case "get", "ls", "kill", "rm", "read":
 		default:
-			t.Fatalf("hc call outside reads and the run: %q", c.Argv)
+			t.Fatalf("hc call outside reads and cleanup: %q", c.Argv)
 		}
-		if c.Argv[0] == "run" {
-			runs++
+		if c.Argv[0] == "run" || c.Argv[0] == "connect" {
+			t.Fatalf("unexpected hc CLI %s call: %v", c.Argv[0], c.Argv)
 		}
-	}
-	if runs != 1 {
-		t.Fatalf("hc run calls = %d, want exactly 1: %v", runs, calls)
 	}
 	if herdr, err := fakecli.ReadCalls(filepath.Join(bin, "herdr.calls.jsonl")); err == nil {
 		if len(herdr) != 0 {
@@ -150,19 +273,67 @@ func assertHcOnlyReadsAndRun(t *testing.T, bin string, calls []fakecli.Call) {
 	}
 }
 
+func assertHcOnlyReadsAndRun(t *testing.T, bin string, calls []fakecli.Call) {
+	assertHcOnlyReads(t, bin, calls)
+}
+
 // spawnHc runs one spawn with the fixture's stdout/stderr captured and
 // returns the call log after asserting the fake never fell through.
 func spawnHc(t *testing.T, bin string, argv []string, ctx *core.Config, env platform.Env, cwd string) (out, stderr *bytes.Buffer, calls []fakecli.Call) {
+	t.Helper()
+	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
+	return spawnHcWithConn(t, bin, argv, ctx, env, cwd, conn)
+}
+
+func spawnHcWithConn(t *testing.T, bin string, argv []string, ctx *core.Config, env platform.Env, cwd string, conn *fakeSpawnRPCConn) (out, stderr *bytes.Buffer, calls []fakecli.Call) {
+	t.Helper()
+	exit, out, stderr, calls := spawnHcExitWithConn(t, bin, argv, ctx, env, cwd, conn)
+	if exit != nil {
+		t.Fatalf("unexpected exit: %+v\nstderr: %s", exit, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "fakecli: no rule") {
+		t.Fatalf("fake hc/herdr call failed: %s", stderr.String())
+	}
+	return out, stderr, calls
+}
+
+func spawnHcExitWithConn(t *testing.T, bin string, argv []string, ctx *core.Config, env platform.Env, cwd string, conn *fakeSpawnRPCConn) (exit *platform.ExitError, out, stderr *bytes.Buffer, calls []fakecli.Call) {
 	t.Helper()
 	oldOut, oldErr := platform.Stdout, platform.Stderr
 	out, stderr = &bytes.Buffer{}, &bytes.Buffer{}
 	platform.Stdout, platform.Stderr = out, stderr
 	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
-	CmdSpawn(argv, ctx, env, cwd)
-	if strings.Contains(stderr.String(), "fakecli: no rule") {
-		t.Fatalf("fake hc/herdr call failed: %s", stderr.String())
+
+	client := hc.New(env)
+	if conn != nil {
+		client.Connect = conn.Connect
+	} else {
+		client.Connect = nil
 	}
-	return out, stderr, hcCallLog(t, bin)
+	origLaunch := client.Launch
+	client.Launch = func(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
+		if len(args) > 0 && (args[0] == "run" || args[0] == "connect") {
+			t.Fatalf("unexpected CLI %s call: %v", args[0], args)
+		}
+		return origLaunch(ctx, env, args...)
+	}
+
+	func() {
+		defer func() {
+			if value := recover(); value != nil {
+				if e, ok := value.(*platform.ExitError); ok {
+					exit = e
+				} else {
+					panic(value)
+				}
+			}
+		}()
+		cmdSpawnWithHcStarter(argv, ctx, env, cwd, func(c *core.Config, o *spawnOptions, k string, e platform.Env, a []string) {
+			svc := backend.NewWithClient(e, client)
+			startHcAgentUsingServices(c, o, k, e, a, svc)
+		})
+	}()
+	return exit, out, stderr, hcCallLog(t, bin)
 }
 
 // rosterRow returns the roster's last row: the file carries a comment
@@ -187,9 +358,9 @@ func rosterRow(t *testing.T, state, session string) []string {
 
 func TestSpawnHcWorkersRunWithTheHerdrArgv(t *testing.T) {
 	// DJA-604 2b-2b acceptance (a): the pi implementer and the codex
-	// reviewer each issue exactly one hc run with the worker's exact argv
-	// (the herdr path's agent args), no pane work, no herdr call, and the
-	// roster row holds the returned address.
+	// reviewer each issue exactly one native terminal.run JSON-RPC call
+	// with the worker's exact argv (the herdr path's agent args), no pane work,
+	// no herdr call, no legacy CLI run, and the roster row holds the returned address.
 	for _, tc := range []struct{ role, kind string }{
 		{role: "implementer", kind: "pi"},
 		{role: "reviewer", kind: "codex"},
@@ -197,27 +368,62 @@ func TestSpawnHcWorkersRunWithTheHerdrArgv(t *testing.T) {
 		tc := tc
 		t.Run(tc.kind+" "+tc.role, func(t *testing.T) {
 			cwd, bin, state, env, ctx := hcSpawnFixture(t, tc.role, tc.kind)
+			if runtime.GOOS == "windows" {
+				env["PATHEXT"] = ".exe"
+			}
 			res := core.ResolveRoleSettings(tc.role, ctx, env, cwd, core.RoleFlags{})
 			agent := hcAgentArgs(t, tc.role, res, ctx, env, cwd)
-			wantRun := hcRunArgv(cwd, tc.role, tc.kind, agent)
 			rules := append(hcFixtureRules(),
-				fakecli.Rule{Argv: wantRun, Stdout: `{"address":"t7","name":"` + tc.role + `","state":"live"}`},
 				fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
 			)
 			if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
 				t.Fatal(err)
 			}
-			out, _, calls := spawnHc(t, bin, []string{tc.role}, ctx, env, cwd)
-			assertHcOnlyReadsAndRun(t, bin, calls)
-			var run []string
-			for _, c := range calls {
-				if c.Argv[0] == "run" {
-					run = c.Argv
-				}
+			conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
+			out, _, calls := spawnHcWithConn(t, bin, []string{tc.role}, ctx, env, cwd, conn)
+			assertHcOnlyReads(t, bin, calls)
+
+			req, params := parseTerminalRunReq(t, conn.getWritten())
+			if req["jsonrpc"] != "2.0" || req["method"] != "terminal.run" || req["id"] != float64(2) {
+				t.Fatalf("unexpected envelope: %v", req)
 			}
-			if strings.Join(run, "\x00") != strings.Join(wantRun, "\x00") {
-				t.Fatalf("hc run argv=%q, want %q", run, wantRun)
+			if params["name"] != tc.role {
+				t.Fatalf("name=%v, want %s", params["name"], tc.role)
 			}
+			if params["caller"] != "t1" {
+				t.Fatalf("caller=%v, want t1", params["caller"])
+			}
+			if params["cwd"] != cwd {
+				t.Fatalf("cwd=%v, want %s", params["cwd"], cwd)
+			}
+			labels, _ := params["labels"].(map[string]any)
+			if labels["soho.session"] != "sX" {
+				t.Fatalf("labels.soho.session=%v, want sX", labels["soho.session"])
+			}
+			childEnv, _ := params["env"].(map[string]any)
+			if childEnv["SOHO_TRANSPORT"] != "hc" || len(childEnv) != 1 {
+				t.Fatalf("env=%v, want exactly SOHO_TRANSPORT=hc", childEnv)
+			}
+			exe := filepath.Join(bin, tc.kind)
+			if runtime.GOOS == "windows" {
+				exe += ".exe"
+			}
+			wantArgv := append([]string{exe}, agent...)
+			gotArgv, ok := params["argv"].([]any)
+			if !ok {
+				t.Fatalf("argv not a slice: %v", params["argv"])
+			}
+			var strArgv []string
+			for _, a := range gotArgv {
+				strArgv = append(strArgv, fmt.Sprint(a))
+			}
+			if strings.Join(strArgv, "\x00") != strings.Join(wantArgv, "\x00") {
+				t.Fatalf("argv=%q, want %q", strArgv, wantArgv)
+			}
+			if params["no_notify"] != true || params["outlive_parent"] != true || params["wait"] != false {
+				t.Fatalf("unexpected flags in params: %v", params)
+			}
+
 			if !strings.Contains(out.String(), `"placement": "hc"`) || !strings.Contains(out.String(), `"pane_id": "t7"`) || !strings.Contains(out.String(), `"status": "ready"`) {
 				t.Fatalf("unexpected spawn result: %s", out.String())
 			}
@@ -232,23 +438,19 @@ func TestSpawnHcWorkersRunWithTheHerdrArgv(t *testing.T) {
 func TestSpawnHcPaneFlagIsIgnored(t *testing.T) {
 	// DJA-604 2b-2b acceptance (b): --pane and --tab-label have no meaning
 	// to hc; each degrades to the warning and the spawn still opens a new
-	// terminal, with no pane call anywhere.
+	// terminal via RPC, with no pane call anywhere.
 	for _, flag := range [][]string{{"--pane", "p9"}, {"--tab-label", "herd-x"}} {
 		flag := flag
 		t.Run(flag[0], func(t *testing.T) {
 			cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "")
-			res := core.ResolveRoleSettings("worker", ctx, env, cwd, core.RoleFlags{Kind: "pi"})
-			agent := hcAgentArgs(t, "worker", res, ctx, env, cwd)
-			wantRun := hcRunArgv(cwd, "worker", "pi", agent)
 			rules := append(hcFixtureRules(),
-				fakecli.Rule{Argv: wantRun, Stdout: hcRunResult},
 				fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
 			)
 			if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
 				t.Fatal(err)
 			}
 			_, stderr, calls := spawnHc(t, bin, append([]string{"worker", "--kind", "pi"}, flag...), ctx, env, cwd)
-			assertHcOnlyReadsAndRun(t, bin, calls)
+			assertHcOnlyReads(t, bin, calls)
 			warn := "soho: warning: spawn: transport=hc has no panes; --pane and --tab-label are ignored"
 			if !strings.Contains(stderr.String(), warn) {
 				t.Fatalf("stderr=%q, want the pane warning %q", stderr.String(), warn)
@@ -262,26 +464,30 @@ func TestSpawnHcNameTakenMovesToTheNextFreeSuffix(t *testing.T) {
 	// third candidate's name is in the roster, with two "is taken"
 	// warnings, one per retry.
 	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
-	res := core.ResolveRoleSettings("worker", ctx, env, cwd, core.RoleFlags{Kind: "pi"})
-	agent := hcAgentArgs(t, "worker", res, ctx, env, cwd)
 	rules := append(hcFixtureRules(),
-		fakecli.Rule{Argv: hcRunArgv(cwd, "worker", "pi", agent), Code: 1, Stderr: hcNameTaken},
-		fakecli.Rule{Argv: hcRunArgv(cwd, "worker-2", "pi", agent), Code: 1, Stderr: hcNameTaken},
-		fakecli.Rule{Argv: hcRunArgv(cwd, "worker-3", "pi", agent), Stdout: `{"address":"t7","name":"worker-3","state":"live"}`},
 		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
 	)
 	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
 		t.Fatal(err)
 	}
-	_, stderr, calls := spawnHc(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd)
-	names := []string{}
-	for _, c := range calls {
-		if c.Argv[0] == "run" {
-			names = append(names, c.Argv[4])
-		}
+	conn := newFakeSpawnRPCConn(
+		rpcHelloSuccess+"\n"+rpcNameTakenFor("worker")+"\n",
+		rpcHelloSuccess+"\n"+rpcNameTakenFor("worker-2")+"\n",
+		rpcHelloSuccess+"\n"+rpcRunSuccess+"\n",
+	)
+	_, stderr, calls := spawnHcWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	assertHcOnlyReads(t, bin, calls)
+	runs := parseAllTerminalRunReqs(t, conn.getWritten())
+	if len(runs) != 3 {
+		t.Fatalf("run calls = %d, want 3", len(runs))
+	}
+	var names []string
+	for _, r := range runs {
+		p := r["params"].(map[string]any)
+		names = append(names, fmt.Sprint(p["name"]))
 	}
 	if strings.Join(names, ",") != "worker,worker-2,worker-3" {
-		t.Fatalf("run names %v, want worker, worker-2, worker-3", names)
+		t.Fatalf("run names %v, want worker,worker-2,worker-3", names)
 	}
 	if n := strings.Count(stderr.String(), "is taken by another pane or workspace; using"); n != 2 {
 		t.Fatalf("stderr=%q, want two is-taken warnings", stderr.String())
@@ -305,44 +511,26 @@ func TestSpawnHcNameTakenDiesAfterTenTries(t *testing.T) {
 	// exact line and exit 4, no roster row, and each of the nine retries
 	// spent its "is taken" warning.
 	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
-	res := core.ResolveRoleSettings("worker", ctx, env, cwd, core.RoleFlags{Kind: "pi"})
-	agent := hcAgentArgs(t, "worker", res, ctx, env, cwd)
-	names := []string{"worker"}
-	for i := 2; i <= 10; i++ {
-		names = append(names, "worker-"+strconv.Itoa(i))
+	var responses []string
+	for i := 1; i <= 10; i++ {
+		name := "worker"
+		if i > 1 {
+			name = fmt.Sprintf("worker-%d", i)
+		}
+		responses = append(responses, rpcHelloSuccess+"\n"+rpcNameTakenFor(name)+"\n")
 	}
+	conn := newFakeSpawnRPCConn(responses...)
 	rules := hcFixtureRules()
-	for _, name := range names {
-		rules = append(rules, fakecli.Rule{Argv: hcRunArgv(cwd, name, "pi", agent), Code: 1, Stderr: hcNameTaken})
-	}
 	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
 		t.Fatal(err)
 	}
-	oldOut, oldErr := platform.Stdout, platform.Stderr
-	platform.Stdout, platform.Stderr = &bytes.Buffer{}, &bytes.Buffer{}
-	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
-	var exit *platform.ExitError
-	func() {
-		defer func() {
-			if value := recover(); value != nil {
-				if e, ok := value.(*platform.ExitError); ok {
-					exit = e
-				}
-			}
-		}()
-		CmdSpawn([]string{"worker", "--kind", "pi"}, ctx, env, cwd)
-	}()
+	exit, _, _, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	assertHcOnlyReads(t, bin, calls)
 	if exit == nil || exit.Code != 4 || exit.Msg != "spawn: no free hc terminal name for 'worker' after 10 tries" {
 		t.Fatalf("exit=%+v, want exit 4 with the pinned message", exit)
 	}
-	runs := 0
-	for _, c := range hcCallLog(t, bin) {
-		if c.Argv[0] == "run" {
-			runs++
-		}
-	}
-	if runs != 10 {
-		t.Fatalf("hc run calls = %d, want 10", runs)
+	if conn.getConnectCount() != 10 {
+		t.Fatalf("connect count = %d, want 10", conn.getConnectCount())
 	}
 	// The roster file may exist (the stale-row read materializes its
 	// header); a row is the failure.
@@ -360,8 +548,6 @@ func TestSpawnHcSuffixSearchIsBounded(t *testing.T) {
 	// candidate; when every candidate is taken it gives up with exit 4
 	// instead of chasing the list.
 	cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "")
-	res := core.ResolveRoleSettings("worker", ctx, env, cwd, core.RoleFlags{Kind: "pi"})
-	agent := hcAgentArgs(t, "worker", res, ctx, env, cwd)
 	var live []string
 	for i := 2; i <= 2+hcNameCandidates; i++ {
 		live = append(live, fmt.Sprintf(`{"address":"t%d","name":"worker-%d","state":"live","labels":{"soho.session":"sX"}}`, 100+i, i))
@@ -369,77 +555,289 @@ func TestSpawnHcSuffixSearchIsBounded(t *testing.T) {
 	rules := []fakecli.Rule{
 		{Argv: []string{"get", "t1", "--json"}, Stdout: hcCallerTerminal},
 		{Argv: []string{"ls", "--label", "soho.session=sX", "--json"}, Stdout: `{"terminals":[` + strings.Join(live, ",") + `]}`},
-		{Argv: hcRunArgv(cwd, "worker", "pi", agent), Code: 1, Stderr: hcNameTaken},
 	}
 	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
 		t.Fatal(err)
 	}
+	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcNameTakenFor("worker") + "\n")
+	exit, _, _, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	assertHcOnlyReads(t, bin, calls)
+	want := fmt.Sprintf("spawn: no free hc terminal name for 'worker' among the next %d suffixes", hcNameCandidates)
+	if exit == nil || exit.Code != 4 || exit.Msg != want {
+		t.Fatalf("exit=%+v, want exit 4 with %q", exit, want)
+	}
+	if conn.getConnectCount() != 1 {
+		t.Fatalf("connect count = %d, want only the first", conn.getConnectCount())
+	}
+}
+
+func TestSpawnHcBlockedStartPreservesTerminalAndExitsSeven(t *testing.T) {
+	// A confirmed native blocked start with message preserves the terminal,
+	// performs exactly one RPC terminal creation, reads the screen via hc read
+	// on the exact address, writes the managed roster row, emits status
+	// blocked_at_startup with exit 7, and executes zero kill, rm, send or keys.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "pi")
+	rules := append(hcFixtureRules(),
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"blocked","msg":"permission: write to file"}}`},
+		fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Stdout: `{"text":"Permission prompt on screen\n"}`},
+	)
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
+	exit, out, stderr, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	if exit == nil || exit.Code != 7 {
+		t.Fatalf("exit=%+v, want exit 7", exit)
+	}
+	runs := parseAllTerminalRunReqs(t, conn.getWritten())
+	if len(runs) != 1 {
+		t.Fatalf("terminal.run count = %d, want exactly 1 creation", len(runs))
+	}
+	for _, c := range calls {
+		switch c.Argv[0] {
+		case "kill", "rm", "send", "keys":
+			t.Fatalf("unexpected %s call on blocked start: %v", c.Argv[0], c.Argv)
+		}
+	}
+	assertHcOnlyReads(t, bin, calls)
+	wantWarn := "soho: warning: agent 'worker' is blocked during startup (update prompt, login, trust dialog…). Screen follows; ask the user before answering it, then: hc read t7\n"
+	if !strings.Contains(stderr.String(), wantWarn) {
+		t.Fatalf("stderr = %q, want warning %q", stderr.String(), wantWarn)
+	}
+	if strings.Contains(wantWarn, "herdr") {
+		t.Fatalf("warning contains legacy herdr instruction: %q", wantWarn)
+	}
+	outStr := out.String()
+	if !strings.Contains(outStr, `"status": "blocked_at_startup"`) {
+		t.Fatalf("stdout JSON missing status blocked_at_startup: %q", outStr)
+	}
+	if !strings.Contains(outStr, `"pane_id": "t7"`) {
+		t.Fatalf("stdout JSON missing pane_id t7: %q", outStr)
+	}
+	if !strings.Contains(outStr, `"placement": "hc"`) {
+		t.Fatalf("stdout JSON missing placement hc: %q", outStr)
+	}
+	if !strings.Contains(outStr, `"created_pane": true`) {
+		t.Fatalf("stdout JSON missing created_pane true: %q", outStr)
+	}
+	if !strings.Contains(outStr, "Permission prompt on screen\n") {
+		t.Fatalf("stdout missing screen read output: %q", outStr)
+	}
+	// Exactly one screen read call on address t7
+	readCalls := 0
+	for _, c := range calls {
+		if c.Argv[0] == "read" {
+			readCalls++
+			if len(c.Argv) < 2 || c.Argv[1] != "t7" {
+				t.Fatalf("read call %v does not target address t7", c.Argv)
+			}
+		}
+	}
+	if readCalls != 1 {
+		t.Fatalf("read calls = %d, want exactly 1 screen read", readCalls)
+	}
+	// Verify managed roster row
+	f := rosterRow(t, state, "sX")
+	if f[0] != "worker" || f[1] != "t7" || f[2] != "pi" || f[5] != "1" {
+		t.Fatalf("roster row = %v, want worker, t7, pi, created_pane=1", f)
+	}
+}
+
+func TestSpawnHcBlockedStartWithoutMsg(t *testing.T) {
+	// A blocked startup without msg also preserves terminal and exits 7.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
+	rules := append(hcFixtureRules(),
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"blocked"}}`},
+		fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Stdout: `{"text":"Login screen\n"}`},
+	)
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
+	exit, out, _, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	if exit == nil || exit.Code != 7 {
+		t.Fatalf("exit=%+v, want exit 7", exit)
+	}
+	for _, c := range calls {
+		if c.Argv[0] == "kill" || c.Argv[0] == "rm" {
+			t.Fatalf("unexpected cleanup call: %v", c.Argv)
+		}
+	}
+	if !strings.Contains(out.String(), `"status": "blocked_at_startup"`) {
+		t.Fatalf("stdout missing blocked_at_startup: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Login screen\n") {
+		t.Fatalf("stdout missing screen text: %q", out.String())
+	}
+	data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "worker\tt7") {
+		t.Fatalf("roster missing worker/t7: %q", string(data))
+	}
+}
+
+func TestSpawnHcBlockedStartReadFailurePreservesDiagnostic(t *testing.T) {
+	// When hc read fails, the original startup diagnostic is preserved in the output.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
+	rules := append(hcFixtureRules(),
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"blocked","msg":"Sign in required"}}`},
+		fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Code: 1, Stderr: `{"error":{"kind":"internal","message":"read failed"}}`},
+	)
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
+	exit, out, _, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	if exit == nil || exit.Code != 7 {
+		t.Fatalf("exit=%+v, want exit 7", exit)
+	}
+	for _, c := range calls {
+		if c.Argv[0] == "kill" || c.Argv[0] == "rm" {
+			t.Fatalf("unexpected cleanup call: %v", c.Argv)
+		}
+	}
+	outStr := out.String()
+	if !strings.Contains(outStr, `"status": "blocked_at_startup"`) {
+		t.Fatalf("stdout missing blocked_at_startup: %q", outStr)
+	}
+	wantDiag := "agent worker is blocked during startup: Sign in required"
+	if !strings.Contains(outStr, wantDiag) {
+		t.Fatalf("stdout %q does not contain preserved startup diagnostic %q", outStr, wantDiag)
+	}
+	data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "worker\tt7") {
+		t.Fatalf("roster missing worker/t7: %q", string(data))
+	}
+}
+
+func TestSpawnHcBlockedStartMissingAddressFailsSafely(t *testing.T) {
+	// A blocked failure with empty address must fail safely with exit 4,
+	// no fabricated identity or roster row, and zero cleanup/input/retries.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
+	rules := hcFixtureRules()
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
 	oldOut, oldErr := platform.Stdout, platform.Stderr
-	platform.Stdout, platform.Stderr = &bytes.Buffer{}, &bytes.Buffer{}
+	out, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	platform.Stdout, platform.Stderr = out, stderr
 	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
+
 	var exit *platform.ExitError
 	func() {
 		defer func() {
 			if value := recover(); value != nil {
 				if e, ok := value.(*platform.ExitError); ok {
 					exit = e
+				} else {
+					panic(value)
 				}
 			}
 		}()
-		CmdSpawn([]string{"worker", "--kind", "pi"}, ctx, env, cwd)
+		cmdSpawnWithHcStarter([]string{"worker", "--kind", "pi"}, ctx, env, cwd, func(c *core.Config, o *spawnOptions, k string, e platform.Env, a []string) {
+			svc := backend.New(e)
+			fakeTerm := &missingAddrBlockedTerminal{Runtime: svc.Terminal}
+			svc.Terminal = fakeTerm
+			startHcAgentUsingServices(c, o, k, e, a, svc)
+		})
 	}()
-	want := fmt.Sprintf("spawn: no free hc terminal name for 'worker' among the next %d suffixes", hcNameCandidates)
-	if exit == nil || exit.Code != 4 || exit.Msg != want {
-		t.Fatalf("exit=%+v, want exit 4 with %q", exit, want)
+	if exit == nil || exit.Code != 4 || exit.Msg != "agent worker is blocked during startup" {
+		t.Fatalf("exit=%+v, want exit 4 with diagnostic", exit)
 	}
-	runs := 0
-	for _, c := range hcCallLog(t, bin) {
-		if c.Argv[0] == "run" {
-			runs++
+	if data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv")); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if line != "" && !strings.HasPrefix(line, "#") {
+				t.Fatalf("unexpected roster row on missing address: %q", line)
+			}
 		}
-	}
-	if runs != 1 {
-		t.Fatalf("hc run calls = %d, want only the first", runs)
 	}
 }
 
-func TestSpawnHcBlockedStartClosesTheTerminal(t *testing.T) {
-	// DJA-604 2b-2b acceptance (e): a readiness blocked kills and rms the
-	// address, dies with the herdr failed-start exit code and the Start
-	// failure's message, and writes no roster row.
-	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
-	res := core.ResolveRoleSettings("worker", ctx, env, cwd, core.RoleFlags{Kind: "pi"})
-	agent := hcAgentArgs(t, "worker", res, ctx, env, cwd)
+type missingAddrBlockedTerminal struct {
+	transport.Runtime
+}
+
+func (m *missingAddrBlockedTerminal) Start(ctx context.Context, start transport.Start, call transport.Call) transport.Reply[string] {
+	return transport.Reply[string]{
+		Value: "",
+		Err: &transport.Failure{
+			Kind:    transport.FailureBlocked,
+			Message: "agent " + start.Name + " is blocked during startup",
+		},
+	}
+}
+
+func TestSpawnHcBlockedStartPreservesNameConflictSuffix(t *testing.T) {
+	// When initial name conflicts with an existing terminal (name_taken),
+	// the suffixed candidate (worker-2) is preserved under blocked startup.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "pi")
 	rules := append(hcFixtureRules(),
-		fakecli.Rule{Argv: hcRunArgv(cwd, "worker", "pi", agent), Stdout: hcRunResult},
-		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"blocked","msg":"permission: write to file"}}`},
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"blocked","msg":"Sign in required"}}`},
+		fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Stdout: `{"text":"Sign in on screen\n"}`},
+	)
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	conn := newFakeSpawnRPCConn(
+		rpcHelloSuccess+"\n"+rpcNameTakenFor("worker")+"\n",
+		rpcHelloSuccess+"\n"+rpcRunSuccess+"\n",
+	)
+	exit, out, stderr, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	if exit == nil || exit.Code != 7 {
+		t.Fatalf("exit=%+v, want exit 7", exit)
+	}
+	for _, c := range calls {
+		if c.Argv[0] == "kill" || c.Argv[0] == "rm" {
+			t.Fatalf("unexpected cleanup call: %v", c.Argv)
+		}
+	}
+	wantWarn := "soho: warning: agent 'worker-2' is blocked during startup (update prompt, login, trust dialog…). Screen follows; ask the user before answering it, then: hc read t7\n"
+	if !strings.Contains(stderr.String(), wantWarn) {
+		t.Fatalf("stderr = %q, want warning %q", stderr.String(), wantWarn)
+	}
+	outStr := out.String()
+	if !strings.Contains(outStr, `"name": "worker-2"`) {
+		t.Fatalf("stdout JSON missing name worker-2: %q", outStr)
+	}
+	if !strings.Contains(outStr, `"pane_id": "t7"`) {
+		t.Fatalf("stdout JSON missing pane_id t7: %q", outStr)
+	}
+	if !strings.Contains(outStr, `"status": "blocked_at_startup"`) {
+		t.Fatalf("stdout JSON missing status blocked_at_startup: %q", outStr)
+	}
+	data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "worker-2\tt7") {
+		t.Fatalf("roster missing worker-2/t7: %q", string(data))
+	}
+}
+
+func TestSpawnHcOrdinaryFailureClosesTerminal(t *testing.T) {
+	// Genuinely cleanup-eligible failure (exited during startup) kills and rms
+	// the terminal, dies with exit 4 and writes no roster row.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
+	rules := append(hcFixtureRules(),
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"finished","exit_code":1,"reason":"exited"}`},
 		fakecli.Rule{Argv: []string{"kill", "t7", "--json"}, Stdout: `{"address":"t7","state":"live"}`},
 		fakecli.Rule{Argv: []string{"rm", "t7", "--json"}, Stdout: `{"removed":"t7"}`},
 	)
 	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
 		t.Fatal(err)
 	}
-	oldOut, oldErr := platform.Stdout, platform.Stderr
-	platform.Stdout, platform.Stderr = &bytes.Buffer{}, &bytes.Buffer{}
-	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
-	var exit *platform.ExitError
-	func() {
-		defer func() {
-			if value := recover(); value != nil {
-				if e, ok := value.(*platform.ExitError); ok {
-					exit = e
-				}
-			}
-		}()
-		CmdSpawn([]string{"worker", "--kind", "pi"}, ctx, env, cwd)
-	}()
-	// The herdr failed-start path dies with exit 4; the message is the
-	// Start failure's own message.
-	if exit == nil || exit.Code != 4 || exit.Msg != "agent worker is blocked during startup: permission: write to file" {
-		t.Fatalf("exit=%+v, want exit 4 with the Start failure's message", exit)
+	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
+	exit, _, _, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	if exit == nil || exit.Code != 4 || exit.Msg != "agent worker exited during startup (exit 1, exited)" {
+		t.Fatalf("exit=%+v, want exit 4 with exited message", exit)
 	}
 	var kill, rm int
-	for _, c := range hcCallLog(t, bin) {
+	for _, c := range calls {
 		switch c.Argv[0] {
 		case "kill":
 			kill++
@@ -450,53 +848,35 @@ func TestSpawnHcBlockedStartClosesTheTerminal(t *testing.T) {
 	if kill != 1 || rm != 1 {
 		t.Fatalf("kill=%d rm=%d, want the address closed once each", kill, rm)
 	}
-	// The roster file may exist (the stale-row read materializes its
-	// header); a row is the failure.
 	if data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv")); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			if line != "" && !strings.HasPrefix(line, "#") {
-				t.Fatalf("a roster row was written on the blocked start: %q", line)
+				t.Fatalf("a roster row was written on ordinary failure: %q", line)
 			}
 		}
 	}
 }
 
 func TestSpawnHcFailedCloseWarnsWithTheAddress(t *testing.T) {
-	// A blocked start whose close fails still dies with the Start failure,
+	// A genuinely cleanup-eligible failure whose close fails still dies with exit 4,
 	// and warns first that the terminal may still hold the name.
 	cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "")
-	res := core.ResolveRoleSettings("worker", ctx, env, cwd, core.RoleFlags{Kind: "pi"})
-	agent := hcAgentArgs(t, "worker", res, ctx, env, cwd)
 	rules := append(hcFixtureRules(),
-		fakecli.Rule{Argv: hcRunArgv(cwd, "worker", "pi", agent), Stdout: hcRunResult},
-		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"blocked","msg":"permission: write to file"}}`},
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"finished","exit_code":1,"reason":"exited"}`},
 		fakecli.Rule{Argv: []string{"kill", "t7", "--json"}, Stdout: `{"address":"t7","state":"live"}`},
 		fakecli.Rule{Argv: []string{"rm", "t7", "--json"}, Code: 1, Stderr: `{"error":{"kind":"internal","message":"rm failed"}}`},
 	)
 	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
 		t.Fatal(err)
 	}
-	oldOut, oldErr := platform.Stdout, platform.Stderr
-	var errOut bytes.Buffer
-	platform.Stdout, platform.Stderr = &bytes.Buffer{}, &errOut
-	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
-	var exit *platform.ExitError
-	func() {
-		defer func() {
-			if value := recover(); value != nil {
-				if e, ok := value.(*platform.ExitError); ok {
-					exit = e
-				}
-			}
-		}()
-		CmdSpawn([]string{"worker", "--kind", "pi"}, ctx, env, cwd)
-	}()
-	if exit == nil || exit.Code != 4 || exit.Msg != "agent worker is blocked during startup: permission: write to file" {
-		t.Fatalf("exit=%+v, want exit 4 with the Start failure's message", exit)
+	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
+	exit, _, stderr, _ := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	if exit == nil || exit.Code != 4 || exit.Msg != "agent worker exited during startup (exit 1, exited)" {
+		t.Fatalf("exit=%+v, want exit 4 with exited message", exit)
 	}
 	want := "spawn: could not close hc terminal t7 after the failed start; it may still hold the name 'worker'"
-	if !strings.Contains(errOut.String(), want) {
-		t.Fatalf("stderr = %q, want the warning %q", errOut.String(), want)
+	if !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr = %q, want the warning %q", stderr.String(), want)
 	}
 }
 
@@ -505,18 +885,15 @@ func TestSpawnHcGrokContextWindowIsNotTyped(t *testing.T) {
 	// not typed under hc — the spawn warns and nothing is sent or read
 	// beyond the session reads and the run.
 	cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "")
-	res := core.ResolveRoleSettings("worker", ctx, env, cwd, core.RoleFlags{Kind: "grok"})
-	agent := hcAgentArgs(t, "worker", res, ctx, env, cwd)
 	env["SOHO_CONTEXT_WINDOW_GROK"] = "128k"
 	rules := append(hcFixtureRules(),
-		fakecli.Rule{Argv: hcRunArgv(cwd, "worker", "grok", agent), Stdout: hcRunResult},
 		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
 	)
 	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
 		t.Fatal(err)
 	}
 	out, stderr, calls := spawnHc(t, bin, []string{"worker", "--kind", "grok"}, ctx, env, cwd)
-	assertHcOnlyReadsAndRun(t, bin, calls)
+	assertHcOnlyReads(t, bin, calls)
 	warn := "soho: warning: spawn: transport=hc cannot type /context-window into grok; the context window stays at grok's default"
 	if !strings.Contains(stderr.String(), warn) {
 		t.Fatalf("stderr=%q, want the context-window warning %q", stderr.String(), warn)
@@ -531,19 +908,688 @@ func TestSpawnHcOrchestratorRenameIsSkipped(t *testing.T) {
 	// hc with the warning; the spawn still succeeds and issues no rename
 	// of any kind (hc has none).
 	cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "")
-	res := core.ResolveRoleSettings("worker", ctx, env, cwd, core.RoleFlags{Kind: "pi"})
-	agent := hcAgentArgs(t, "worker", res, ctx, env, cwd)
 	rules := append(hcFixtureRules(),
-		fakecli.Rule{Argv: hcRunArgv(cwd, "worker", "pi", agent), Stdout: hcRunResult},
 		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
 	)
 	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
 		t.Fatal(err)
 	}
 	_, stderr, calls := spawnHc(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd)
-	assertHcOnlyReadsAndRun(t, bin, calls)
+	assertHcOnlyReads(t, bin, calls)
 	warn := "soho: warning: spawn: transport=hc has no rename; the orchestrator keeps its terminal name"
 	if !strings.Contains(stderr.String(), warn) {
 		t.Fatalf("stderr=%q, want the rename warning %q", stderr.String(), warn)
 	}
+}
+
+func TestSpawnHcUnknownOutcomeWithoutObservedAddress(t *testing.T) {
+	// When terminal.run submission encounters EOF waiting for response,
+	// the outcome is uncertain and no address was observed.
+	// Spawn must die with exit 4, naming the requested terminal name for manual inspection,
+	// with zero retries, zero close/kill calls, and zero roster row.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
+	rules := hcFixtureRules()
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	// EOF after hello
+	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n")
+	exit, _, _, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	assertHcOnlyReads(t, bin, calls)
+	if exit == nil || exit.Code != 4 {
+		t.Fatalf("exit=%+v, want exit 4", exit)
+	}
+	want := "spawn: terminal creation outcome is uncertain; requested terminal 'worker' preserved for manual inspection"
+	if exit.Msg != want {
+		t.Fatalf("exit.Msg=%q, want %q", exit.Msg, want)
+	}
+	if conn.getConnectCount() != 1 {
+		t.Fatalf("connect count = %d, want 1", conn.getConnectCount())
+	}
+	for _, c := range calls {
+		if c.Argv[0] == "kill" || c.Argv[0] == "rm" {
+			t.Fatalf("unexpected cleanup call %v on uncertain outcome", c.Argv)
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv")); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if line != "" && !strings.HasPrefix(line, "#") {
+				t.Fatalf("roster row written on uncertain outcome: %q", line)
+			}
+		}
+	}
+}
+
+func TestSpawnHcUnknownOutcomeMalformedJSON(t *testing.T) {
+	// Malformed JSON on terminal.run response is an uncertain outcome.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
+	rules := hcFixtureRules()
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + `{"jsonrpc":"2.0",BROKEN` + "\n")
+	exit, _, _, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, conn)
+	assertHcOnlyReads(t, bin, calls)
+	if exit == nil || exit.Code != 4 {
+		t.Fatalf("exit=%+v, want exit 4", exit)
+	}
+	want := "spawn: terminal creation outcome is uncertain; requested terminal 'worker' preserved for manual inspection"
+	if exit.Msg != want {
+		t.Fatalf("exit.Msg=%q, want %q", exit.Msg, want)
+	}
+	if conn.getConnectCount() != 1 {
+		t.Fatalf("connect count = %d, want 1", conn.getConnectCount())
+	}
+	for _, c := range calls {
+		if c.Argv[0] == "kill" || c.Argv[0] == "rm" {
+			t.Fatalf("unexpected cleanup call %v on uncertain outcome", c.Argv)
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv")); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if line != "" && !strings.HasPrefix(line, "#") {
+				t.Fatalf("roster row written on uncertain outcome: %q", line)
+			}
+		}
+	}
+}
+
+func TestSpawnHcUnknownOutcomeWithObservedAddress(t *testing.T) {
+	// Synthetic consumer guard evidence: verifies spawn-side guard behavior when backend
+	// Start reports an unknown outcome with an observed address (proves one Start submission,
+	// zero Close calls, no cleanup, no roster registration, and exit 4 manual inspection diagnostic).
+	// This is synthetic consumer guard evidence, not an address-bearing RPC reply or backend state transition.
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "")
+	rules := hcFixtureRules()
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+
+	client := hc.New(env)
+	termFake := &fakeObservedAddressRuntime{observedAddress: "t99"}
+	transFake := &fakeCloseCountingTransport{}
+
+	var exit *platform.ExitError
+	var calls []fakecli.Call
+	oldOut, oldErr := platform.Stdout, platform.Stderr
+	out, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	platform.Stdout, platform.Stderr = out, stderr
+	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
+
+	func() {
+		defer func() {
+			if value := recover(); value != nil {
+				if e, ok := value.(*platform.ExitError); ok {
+					exit = e
+				} else {
+					panic(value)
+				}
+			}
+		}()
+		cmdSpawnWithHcStarter([]string{"worker", "--kind", "pi"}, ctx, env, cwd, func(c *core.Config, o *spawnOptions, k string, e platform.Env, a []string) {
+			svc := backend.NewWithClient(e, client)
+			transFake.Transport = svc.Runtime
+			svc.Terminal = termFake
+			svc.Runtime = transFake
+			startHcAgentUsingServices(c, o, k, e, a, svc)
+		})
+	}()
+	calls = hcCallLog(t, bin)
+
+	if exit == nil || exit.Code != 4 {
+		t.Fatalf("exit=%+v, want exit 4", exit)
+	}
+	want := "spawn: terminal creation outcome is uncertain; terminal t99 preserved for manual inspection"
+	if exit.Msg != want {
+		t.Fatalf("exit.Msg=%q, want %q", exit.Msg, want)
+	}
+	if termFake.startCalls != 1 {
+		t.Fatalf("startCalls = %d, want exactly 1 submission", termFake.startCalls)
+	}
+	if transFake.closeCalls != 0 {
+		t.Fatalf("closeCalls = %d, want 0 close calls on uncertain outcome", transFake.closeCalls)
+	}
+	for _, c := range calls {
+		if c.Argv[0] == "kill" || c.Argv[0] == "rm" {
+			t.Fatalf("unexpected cleanup call %v on uncertain outcome", c.Argv)
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv")); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if line != "" && !strings.HasPrefix(line, "#") {
+				t.Fatalf("roster row written on uncertain outcome: %q", line)
+			}
+		}
+	}
+}
+
+type fakeObservedAddressRuntime struct {
+	observedAddress string
+	startCalls      int
+}
+
+func (f *fakeObservedAddressRuntime) Start(ctx context.Context, start transport.Start, call transport.Call) transport.Reply[string] {
+	f.startCalls++
+	return transport.Reply[string]{
+		Value: f.observedAddress,
+		Err: &transport.Failure{
+			Kind:    transport.FailureRunOutcomeUnknown,
+			Message: "unknown terminal run outcome",
+			Cause:   errors.New("connection reset"),
+		},
+	}
+}
+
+func (f *fakeObservedAddressRuntime) CallerAgentName(ctx context.Context, call transport.Call) transport.Reply[string] {
+	return transport.Reply[string]{}
+}
+
+func (f *fakeObservedAddressRuntime) SendText(ctx context.Context, target transport.Target, text string, call transport.Call) transport.Reply[bool] {
+	return transport.Reply[bool]{}
+}
+
+func (f *fakeObservedAddressRuntime) GetGone(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[bool] {
+	return transport.Reply[bool]{}
+}
+
+type fakeCloseCountingTransport struct {
+	transport.Transport
+	closeCalls int
+}
+
+func (f *fakeCloseCountingTransport) Close(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[bool] {
+	f.closeCalls++
+	return f.Transport.Close(ctx, target, call)
+}
+
+func TestSpawnHcZeroConnectOnValidationRefusal(t *testing.T) {
+	// When spawn options fail initial validation (e.g. non-existent cwd),
+	// zero RPC connections must be made.
+	cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "")
+	conn := newFakeSpawnRPCConn()
+	exit, _, _, _ := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi", "--cwd", filepath.Join(cwd, "nonexistent")}, ctx, env, cwd, conn)
+	if exit == nil || exit.Code != 2 {
+		t.Fatalf("exit=%+v, want exit 2 for invalid cwd", exit)
+	}
+	if conn.getConnectCount() != 0 {
+		t.Fatalf("connect count = %d, want 0 on validation refusal", conn.getConnectCount())
+	}
+}
+
+func TestSpawnHcNilConnectFailsLocally(t *testing.T) {
+	// A test client with nil Connect fails locally before any Core call or external creation.
+	cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "")
+	rules := hcFixtureRules()
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	exit, _, _, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi"}, ctx, env, cwd, nil)
+	if exit == nil || exit.Code != 4 {
+		t.Fatalf("exit=%+v, want exit 4", exit)
+	}
+	wantMsg := "terminal run: client connect seam is not configured"
+	if exit.Msg != wantMsg {
+		t.Fatalf("exit.Msg=%q, want %q", exit.Msg, wantMsg)
+	}
+	assertHcOnlyReads(t, bin, calls)
+}
+
+// SOH-201 phase B: the native hc+opencode primary profile at the spawn
+// boundary. The profile is prepared with the explicit resolved model and
+// the caller's inline configuration and directory (an empty or malformed
+// value refuses before any terminal creation or successful reuse, and no
+// other model is defaulted in), the start receives the profile name and
+// its explicit env overrides (never the caller's environment), the argv
+// carries --standalone and, for full or auto approvals, --auto, with no
+// generated -m/--model, the reuse is qualified by the roster terminal's
+// own reported record, and the fresh and reused JSON disclose only the
+// known profile name.
+
+const opencodePrimaryModel = "testprovider/testmodel"
+
+// captureStartRuntime records the transport.Start the spawn submits and
+// answers it with a ready address; it swaps out only svc.Terminal, so the
+// rest of the spawn (caller and roster reads, the roster write, the result
+// JSON) runs through the real backend services.
+type captureStartRuntime struct {
+	transport.Runtime
+	start transport.Start
+	got   bool
+}
+
+func (c *captureStartRuntime) Start(ctx context.Context, start transport.Start, call transport.Call) transport.Reply[string] {
+	c.start = start
+	c.got = true
+	return transport.Reply[string]{Value: "t7", Valid: true}
+}
+
+// gateGetTransport answers Transport.Get with one fixed terminal record and
+// no screen, so the reuse gate's qualification reads are pinned at the
+// consumer boundary.
+type gateGetTransport struct {
+	transport.Transport
+	term transport.Terminal
+}
+
+func (g *gateGetTransport) Get(ctx context.Context, _ transport.Target, _ transport.Call) transport.Reply[transport.Terminal] {
+	return transport.Reply[transport.Terminal]{Value: g.term, Valid: true}
+}
+
+func (g *gateGetTransport) Read(ctx context.Context, _ transport.Target, _ transport.Read, _ transport.Call) transport.Reply[string] {
+	return transport.Reply[string]{}
+}
+
+// opencodePrimaryReadyTerminal is the exact terminal observation the reuse
+// gate must accept for a reusable native opencode worker.
+func opencodePrimaryReadyTerminal(targetID string) transport.Terminal {
+	return transport.Terminal{
+		Target:        transport.Target{ID: targetID},
+		LaunchProfile: kinds.OpenCodePrimaryProfile,
+		Reported:      true,
+		ReporterApp:   "opencode",
+		NativeState:   "live",
+		State:         "idle",
+	}
+}
+
+// opencodePrimaryRecord is the fake hc record the strict Get metadata
+// projects into opencodePrimaryReadyTerminal for the address it reports.
+func opencodePrimaryRecord(address string) string {
+	return fmt.Sprintf(`{"address":%q,"state":"live","reported":true,"status":{"state":"idle","app":"opencode"},"labels":{"soho.session":"sX","soho.launch_profile":%q}}`, address, kinds.OpenCodePrimaryProfile)
+}
+
+// captureSpawn runs one spawn through the real services with only
+// svc.Terminal replaced by a captureStartRuntime, and returns the submitted
+// start and the spawn's stdout.
+func captureSpawn(t *testing.T, bin string, env platform.Env, ctx *core.Config, cwd string, argv []string) (transport.Start, *bytes.Buffer) {
+	t.Helper()
+	cap := &captureStartRuntime{}
+	oldOut, oldErr := platform.Stdout, platform.Stderr
+	out, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	platform.Stdout, platform.Stderr = out, stderr
+	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
+	var exit *platform.ExitError
+	func() {
+		defer func() {
+			if value := recover(); value != nil {
+				if e, ok := value.(*platform.ExitError); ok {
+					exit = e
+				} else {
+					panic(value)
+				}
+			}
+		}()
+		client := hc.New(env)
+		cmdSpawnWithHcStarter(argv, ctx, env, cwd, func(c *core.Config, o *spawnOptions, k string, e platform.Env, a []string) {
+			svc := backend.NewWithClient(e, client)
+			svc.Terminal = cap
+			startHcAgentUsingServices(c, o, k, e, a, svc)
+		})
+	}()
+	if exit != nil {
+		t.Fatalf("unexpected exit: %+v\nstderr: %s", exit, stderr.String())
+	}
+	return cap.start, out
+}
+
+func TestSpawnOpenCodePrimary(t *testing.T) {
+	gateMsg := "spawn: reusable opencode worker is not a reported primary-profile worker ready for input"
+
+	t.Run("fresh spawn submits the primary profile and standalone argv", func(t *testing.T) {
+		cwd, bin, state, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		if runtime.GOOS == "windows" {
+			env["PATHEXT"] = ".exe"
+		}
+		env["OPENCODE_CONFIG_CONTENT"] = `{"marker":"no-leak-canary"}`
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: opencodePrimaryRecord("t7")},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunSuccess + "\n")
+		out, _, calls := spawnHcWithConn(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd, conn)
+		assertHcOnlyReads(t, bin, calls)
+
+		_, params := parseTerminalRunReq(t, conn.getWritten())
+		if params["name"] != "writer" || params["cwd"] != cwd {
+			t.Fatalf("name=%v cwd=%v, want writer in %s", params["name"], params["cwd"], cwd)
+		}
+		exe := filepath.Join(bin, "opencode")
+		if runtime.GOOS == "windows" {
+			exe += ".exe"
+		}
+		wantArgv := []string{exe, "--auto", "--standalone"}
+		gotArgv, ok := params["argv"].([]any)
+		if !ok {
+			t.Fatalf("argv not a slice: %v", params["argv"])
+		}
+		var strArgv []string
+		for _, a := range gotArgv {
+			strArgv = append(strArgv, fmt.Sprint(a))
+		}
+		if strings.Join(strArgv, "\x00") != strings.Join(wantArgv, "\x00") {
+			t.Fatalf("argv=%q, want %q (no generated model flag)", strArgv, wantArgv)
+		}
+		if !strings.Contains(out.String(), `"launch_profile": "`+kinds.OpenCodePrimaryProfile+`"`) ||
+			!strings.Contains(out.String(), `"status": "ready"`) ||
+			!strings.Contains(out.String(), `"placement": "hc"`) ||
+			!strings.Contains(out.String(), `"model": "testprovider/testmodel"`) {
+			t.Fatalf("unexpected spawn result: %s", out.String())
+		}
+		if strings.Contains(out.String(), "OPENCODE") || strings.Contains(out.String(), "no-leak-canary") {
+			t.Fatalf("the fresh JSON leaks profile environment: %s", out.String())
+		}
+		f := rosterRow(t, state, "sX")
+		if len(f) != 16 || f[0] != "writer" || f[1] != "t7" || f[2] != "opencode" || f[8] != opencodePrimaryModel {
+			t.Fatalf("roster row %v, want the 16-column writer/t7/opencode row", f)
+		}
+		if data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv")); err == nil && strings.Contains(string(data), "OPENCODE") {
+			t.Fatalf("the roster row leaks profile environment: %q", data)
+		}
+	})
+
+	t.Run("start fields carry the profile and the explicit env only", func(t *testing.T) {
+		cwd, bin, _, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		env["OPENCODE_CONFIG_CONTENT"] = `{"marker":"no-leak-canary"}`
+		env["OPENCODE_CONFIG_DIR"] = "/cfg-dir-explicit"
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		start, out := captureSpawn(t, bin, env, ctx, cwd, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"})
+		if start.Kind != "opencode" || start.Cwd != cwd || start.Name != "writer" || start.Timeout != "60000" {
+			t.Fatalf("start fields = %+v, want the opencode start in %s", start, cwd)
+		}
+		if start.LaunchProfile != kinds.OpenCodePrimaryProfile {
+			t.Fatalf("start.LaunchProfile=%q, want %q", start.LaunchProfile, kinds.OpenCodePrimaryProfile)
+		}
+		if strings.Join(start.Args, "\x00") != strings.Join([]string{"--auto", "--standalone"}, "\x00") {
+			t.Fatalf("start.Args=%q, want the standalone plan without a generated model flag", start.Args)
+		}
+		if len(start.EnvOverrides) != 3 {
+			t.Fatalf("start.EnvOverrides=%v, want exactly the three profile keys", start.EnvOverrides)
+		}
+		if start.EnvOverrides["OPENCODE_DISABLE_AUTOUPDATE"] != "1" || start.EnvOverrides["OPENCODE_CONFIG_DIR"] != "/cfg-dir-explicit" {
+			t.Fatalf("start.EnvOverrides=%v, want the explicit profile overrides", start.EnvOverrides)
+		}
+		var cfg map[string]any
+		if err := json.Unmarshal([]byte(start.EnvOverrides["OPENCODE_CONFIG_CONTENT"]), &cfg); err != nil {
+			t.Fatalf("OPENCODE_CONFIG_CONTENT is not an object: %v", err)
+		}
+		if cfg["model"] != opencodePrimaryModel || cfg["default_agent"] != "build" {
+			t.Fatalf("the configuration does not pin the requested model: %v", cfg)
+		}
+		build, _ := cfg["agents"].(map[string]any)["build"].(map[string]any)
+		if build["model"] != opencodePrimaryModel {
+			t.Fatalf("agents.build.model=%v, want %s", build["model"], opencodePrimaryModel)
+		}
+		if !strings.Contains(out.String(), `"launch_profile": "`+kinds.OpenCodePrimaryProfile+`"`) {
+			t.Fatalf("the fresh JSON does not disclose the known launch profile: %s", out.String())
+		}
+	})
+
+	t.Run("no ambient env reaches the profile", func(t *testing.T) {
+		t.Setenv("OPENCODE_CONFIG_DIR", "/ambient-canary")
+		cwd, bin, _, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		env["OPENCODE_CONFIG_CONTENT"] = `{"marker":"no-leak-canary"}`
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		start, _ := captureSpawn(t, bin, env, ctx, cwd, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"})
+		if len(start.EnvOverrides) != 2 {
+			t.Fatalf("start.EnvOverrides=%v, want exactly the two profile keys (no ambient config dir)", start.EnvOverrides)
+		}
+		if _, ok := start.EnvOverrides["OPENCODE_CONFIG_DIR"]; ok {
+			t.Fatalf("the ambient OPENCODE_CONFIG_DIR leaked into the profile: %v", start.EnvOverrides)
+		}
+	})
+
+	t.Run("empty or malformed data refuses before start and reuse", func(t *testing.T) {
+		cwd, bin, state, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		// The fresh setup's readiness read of the just-created worker
+		// must see the primary record, or the real Start refuses with
+		// the readiness metadata mismatch before the reuse checks below
+		// run.
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: opencodePrimaryRecord("t7")},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		// An empty resolved model refuses: the profile never defaults to
+		// another model.
+		conn := newFakeSpawnRPCConn()
+		exit, out, _, _ := spawnHcExitWithConn(t, bin, []string{"writer", "--approvals", "full"}, ctx, env, cwd, conn)
+		if exit == nil || exit.Code != 2 || exit.Msg != "launch profile: model reference is malformed" {
+			t.Fatalf("exit=%+v, want the empty-model refusal", exit)
+		}
+		if conn.getConnectCount() != 0 || strings.Contains(out.String(), `"status"`) {
+			t.Fatalf("connect=%d out=%q, want no terminal creation or spawn result", conn.getConnectCount(), out.String())
+		}
+		// Malformed inline configuration refuses the same way.
+		env["OPENCODE_CONFIG_CONTENT"] = `{"marker": oops`
+		conn = newFakeSpawnRPCConn()
+		exit, out, _, _ = spawnHcExitWithConn(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd, conn)
+		if exit == nil || exit.Code != 2 || exit.Msg != "launch profile: inline configuration is not a single non-null JSON object" {
+			t.Fatalf("exit=%+v, want the malformed-configuration refusal", exit)
+		}
+		if conn.getConnectCount() != 0 {
+			t.Fatalf("connect count = %d, want 0 on the refusal", conn.getConnectCount())
+		}
+		// A fresh primary worker exists and is idle; an incompatible user
+		// arg still refuses before the successful reuse it would take.
+		env["OPENCODE_CONFIG_CONTENT"] = `{"marker":"no-leak-canary"}`
+		fresh, _, _ := spawnHc(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd)
+		if !strings.Contains(fresh.String(), `"status": "ready"`) {
+			t.Fatalf("the fresh primary worker did not start ready: %s", fresh.String())
+		}
+		rosterBefore, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn = newFakeSpawnRPCConn()
+		exit, out, _, _ = spawnHcExitWithConn(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full", "--", "--remote"}, ctx, env, cwd, conn)
+		if exit == nil || exit.Code != 2 || exit.Msg != "native launch profile is invalid" {
+			t.Fatalf("exit=%+v, want the incompatible-arg refusal", exit)
+		}
+		if conn.getConnectCount() != 0 {
+			t.Fatalf("connect count = %d, want 0 on the refusal", conn.getConnectCount())
+		}
+		if strings.Contains(out.String(), `"reused": true`) {
+			t.Fatalf("the reuse was emitted before the refusal: %s", out.String())
+		}
+		rosterAfter, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(rosterBefore) != string(rosterAfter) {
+			t.Fatalf("the roster changed on the refusal: %q -> %q", rosterBefore, rosterAfter)
+		}
+	})
+
+	t.Run("qualified reuse emits ready with the profile", func(t *testing.T) {
+		cwd, bin, state, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		// One rule set for both phases: the fresh start's readiness read and
+		// the reuse gate's qualification read are the same address, and the
+		// primary record satisfies both.
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "writer", "--json"}, Stdout: `{"address":"t7","state":"live","status":{"state":"idle"}}`},
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: opencodePrimaryRecord("t7")},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		fresh, _, _ := spawnHc(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd)
+		if !strings.Contains(fresh.String(), `"status": "ready"`) {
+			t.Fatalf("the fresh primary worker did not start ready: %s", fresh.String())
+		}
+		rosterBefore, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn := newFakeSpawnRPCConn()
+		out, stderr, calls := spawnHcWithConn(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd, conn)
+		assertHcOnlyReads(t, bin, calls)
+		if conn.getConnectCount() != 0 {
+			t.Fatalf("connect count = %d, want 0 on the reuse", conn.getConnectCount())
+		}
+		if !strings.Contains(out.String(), `"reused": true`) || !strings.Contains(out.String(), `"status": "ready"`) ||
+			!strings.Contains(out.String(), `"launch_profile": "`+kinds.OpenCodePrimaryProfile+`"`) {
+			t.Fatalf("the qualified reuse did not emit ready with the profile: %s", out.String())
+		}
+		if !strings.Contains(stderr.String(), "reusing idle worker 'writer'") {
+			t.Fatalf("stderr=%q, want the reuse warning", stderr.String())
+		}
+		rosterAfter, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(rosterBefore) != string(rosterAfter) {
+			t.Fatalf("the roster changed on the reuse: %q -> %q", rosterBefore, rosterAfter)
+		}
+	})
+
+	t.Run("unqualified reuse refuses before emit", func(t *testing.T) {
+		cwd, bin, state, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		// Per-call scripting on the exact get t7 argv (call numbers are
+		// one-based per argv, not a global call number): the fresh
+		// setup's readiness read is call one and must see the primary
+		// record, or the real Start refuses before the reuse is
+		// exercised; the reuse gate's qualification read is call two;
+		// the same idle worker, but its record reports no launch
+		// profile: the legacy form the gate must refuse.
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "writer", "--json"}, Stdout: `{"address":"t7","state":"live","status":{"state":"idle"}}`},
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Call: 1, Stdout: opencodePrimaryRecord("t7")},
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Call: 2, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"idle","app":"opencode"}}`},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		fresh, _, _ := spawnHc(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd)
+		if !strings.Contains(fresh.String(), `"status": "ready"`) {
+			t.Fatalf("the fresh primary worker did not start ready: %s", fresh.String())
+		}
+		// The recorded call log proves the fresh setup consumed exactly
+		// one get t7 (call one, the primary record); a test that failed
+		// the setup alone would never reach the qualification read.
+		getT7 := func(calls []fakecli.Call) int {
+			n := 0
+			for _, c := range calls {
+				if len(c.Argv) == 3 && c.Argv[0] == "get" && c.Argv[1] == "t7" && c.Argv[2] == "--json" {
+					n++
+				}
+			}
+			return n
+		}
+		if n := getT7(hcCallLog(t, bin)); n != 1 {
+			t.Fatalf("fresh setup get t7 calls = %d, want exactly the one readiness read", n)
+		}
+		rosterBefore, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn := newFakeSpawnRPCConn()
+		exit, out, _, calls := spawnHcExitWithConn(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd, conn)
+		assertHcOnlyReads(t, bin, calls)
+		if exit == nil || exit.Code != 4 || exit.Msg != gateMsg {
+			t.Fatalf("exit=%+v, want the fixed reuse refusal", exit)
+		}
+		if conn.getConnectCount() != 0 {
+			t.Fatalf("connect count = %d, want 0 on the refusal", conn.getConnectCount())
+		}
+		// The log now carries the second get t7 as well: the refused
+		// qualification really read the distinct unqualified record,
+		// not the fresh setup's primary one.
+		if n := getT7(calls); n != 2 {
+			t.Fatalf("get t7 calls after the refusal = %d, want the readiness read plus the qualification read", n)
+		}
+		for _, c := range calls {
+			if c.Argv[0] == "send" || c.Argv[0] == "keys" || c.Argv[0] == "kill" || c.Argv[0] == "rm" || c.Argv[0] == "run" || c.Argv[0] == "connect" {
+				t.Fatalf("input or close on the refused reuse: %v", c.Argv)
+			}
+		}
+		if strings.Contains(out.String(), `"reused": true`) || strings.Contains(out.String(), `"status": "ready"`) {
+			t.Fatalf("the ready JSON was emitted on the refusal: %s", out.String())
+		}
+		rosterAfter, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(rosterBefore) != string(rosterAfter) {
+			t.Fatalf("the roster role or history changed on the refusal: %q -> %q", rosterBefore, rosterAfter)
+		}
+	})
+
+	t.Run("the gate requires the queried target identity", func(t *testing.T) {
+		cwd, bin, _, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+		// The fresh setup's readiness read must see the primary record
+		// so the real fresh start succeeds and the direct gate checks
+		// below actually run.
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: opencodePrimaryRecord("t7")},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		fresh, _, _ := spawnHc(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd)
+		if !strings.Contains(fresh.String(), `"status": "ready"`) {
+			t.Fatalf("the fresh primary worker did not start ready: %s", fresh.String())
+		}
+		oldOut, oldErr := platform.Stdout, platform.Stderr
+		out, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		platform.Stdout, platform.Stderr = out, stderr
+		t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
+		// Every primary field is set, but the record names another terminal:
+		// the identity must not be inferred from the display name.
+		var exit *platform.ExitError
+		func() {
+			defer func() {
+				if value := recover(); value != nil {
+					if e, ok := value.(*platform.ExitError); ok {
+						exit = e
+					} else {
+						panic(value)
+					}
+				}
+			}()
+			gateReuse(transport.Services{Runtime: &gateGetTransport{term: opencodePrimaryReadyTerminal("t9")}}, "writer", "writer", "opencode", ctx, env, cwd)
+		}()
+		if exit == nil || exit.Code != 4 || exit.Msg != gateMsg {
+			t.Fatalf("exit=%+v, want the fixed refusal for the mismatched identity", exit)
+		}
+		// The matching identity is accepted by the gate.
+		gateReuse(transport.Services{Runtime: &gateGetTransport{term: opencodePrimaryReadyTerminal("t7")}}, "writer", "writer", "opencode", ctx, env, cwd)
+	})
+
+	t.Run("legacy kinds keep the pass-through start", func(t *testing.T) {
+		cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "pi")
+		res := core.ResolveRoleSettings("worker", ctx, env, cwd, core.RoleFlags{})
+		wantArgs := hcAgentArgs(t, "worker", res, ctx, env, cwd)
+		rules := append(hcFixtureRules(),
+			fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
+		)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		start, out := captureSpawn(t, bin, env, ctx, cwd, []string{"worker"})
+		if start.LaunchProfile != "" || start.EnvOverrides != nil {
+			t.Fatalf("start.LaunchProfile=%q EnvOverrides=%v, want the pass-through zero values", start.LaunchProfile, start.EnvOverrides)
+		}
+		if strings.Join(start.Args, "\x00") != strings.Join(wantArgs, "\x00") {
+			t.Fatalf("start.Args=%q, want the legacy argv %q", start.Args, wantArgs)
+		}
+		if strings.Contains(out.String(), `"launch_profile"`) {
+			t.Fatalf("the legacy JSON discloses a launch profile: %s", out.String())
+		}
+		if f := rosterRow(t, state, "sX"); len(f) != 16 {
+			t.Fatalf("roster row %v, want the legacy 16-column row", f)
+		}
+	})
 }

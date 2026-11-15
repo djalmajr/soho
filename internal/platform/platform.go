@@ -21,6 +21,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/djalmajr/soho/skills/soho"
 )
@@ -705,6 +706,9 @@ type CmdInvocationResult struct {
 func CmdInvocation(resolved string, args []string, env Env) CmdInvocationResult {
 	twice := regexp.MustCompile(`(?i)node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$`).MatchString(resolved)
 	command := escapeCmdMeta(windowsNormalize(resolved))
+	// Unlike an argument, the command token treats '=' as a delimiter even
+	// inside a path (for example a directory named strict=true).
+	command = strings.ReplaceAll(command, "=", "^=")
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, command)
 	for _, arg := range args {
@@ -838,6 +842,11 @@ type RunOptions struct {
 	TimeoutMs   int
 	MergeOutput bool
 	OutputFiles bool
+	// StrictOutputUTF8 rejects invalid original output bytes in either stream,
+	// clears both streams and reports EILSEQ unless an earlier error exists.
+	// Valid UTF-8 is returned byte-exact, including BOM and literal U+FFFD.
+	// The zero value retains WHATWG replacement decoding.
+	StrictOutputUTF8 bool
 }
 
 type RunResult struct {
@@ -955,24 +964,30 @@ func runResolved(resolved string, args []string, opts RunOptions) (result RunRes
 		if err != nil {
 			return tempFileError(result, errorCode(err))
 		}
+		errPath := ""
 		if opts.MergeOutput {
 			cmd.Stdout, cmd.Stderr = outFile, outFile
 		} else {
-			errFile, errPath, openErr := openTemp(".err")
+			errFile, path, openErr := openTemp(".err")
 			if openErr != nil {
 				return tempFileError(result, errorCode(openErr))
 			}
 			cmd.Stdout, cmd.Stderr = outFile, errFile
-			defer func() {
-				if data, readErr := os.ReadFile(errPath); readErr == nil {
-					result.Stderr = decodeWHATWGUTF8(data)
-				}
-			}()
+			errPath = path
 		}
 		defer func() {
-			if data, readErr := os.ReadFile(outPath); readErr == nil {
-				result.Stdout = decodeWHATWGUTF8(data)
+			out, readErr := os.ReadFile(outPath)
+			if readErr != nil {
+				out = nil
 			}
+			var errOut []byte
+			if errPath != "" {
+				errOut, readErr = os.ReadFile(errPath)
+				if readErr != nil {
+					errOut = nil
+				}
+			}
+			setRunOutput(&result, out, errOut, opts.StrictOutputUTF8)
 		}()
 	} else {
 		cmd.Stdout = &stdout
@@ -1008,9 +1023,26 @@ func runResolved(resolved string, args []string, opts RunOptions) (result RunRes
 		result.Status = &status
 	}
 	if !opts.MergeOutput && !opts.OutputFiles {
-		result.Stdout, result.Stderr = decodeWHATWGUTF8(stdout.Bytes()), decodeWHATWGUTF8(stderr.Bytes())
+		setRunOutput(&result, stdout.Bytes(), stderr.Bytes(), opts.StrictOutputUTF8)
 	}
 	return result
+}
+
+// Convert both streams together, after capture and native error classification.
+// File capture calls this once from its defer, before temporary-file cleanup.
+func setRunOutput(result *RunResult, stdout, stderr []byte, strict bool) {
+	if strict {
+		if !utf8.Valid(stdout) || !utf8.Valid(stderr) {
+			result.Stdout, result.Stderr = "", ""
+			if result.Error == "" {
+				result.Error = "EILSEQ"
+			}
+			return
+		}
+		result.Stdout, result.Stderr = string(stdout), string(stderr)
+		return
+	}
+	result.Stdout, result.Stderr = decodeWHATWGUTF8(stdout), decodeWHATWGUTF8(stderr)
 }
 
 func shouldUseWindowsCmdTreeKill(platform, resolved string, timeoutMs int) bool {

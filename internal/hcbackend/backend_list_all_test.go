@@ -182,3 +182,45 @@ func TestBackendListScopedRefusedWithoutCallerSession(t *testing.T) {
 		t.Fatalf("calls=%d want none (no caller to resolve)", n)
 	}
 }
+
+// TestBackendListAllNativeStringStatusAndForeground tests that All=true
+// handles native records with string status "working", foreground object,
+// and foreground cwd.
+func TestBackendListAllNativeStringStatusAndForeground(t *testing.T) {
+	const nativeFixture = `{"terminals":[
+{"address":"t2c","name":null,"state":"live","status":"working","foreground":{"name":"codex","pid":54449,"cwd":"/repo"}},
+{"address":"t2d","name":null,"state":"live","status":"working","foreground":{"name":null,"pid":null,"cwd":null}}
+]}`
+	env, _ := fakeHcNoCaller(t, []fakecli.Rule{{Argv: []string{"ls", "--json"}, Stdout: nativeFixture}})
+	b := &backend{env: env, client: hc.New(env)}
+	rep := b.List(context.Background(), transport.Scope{All: true}, transport.Call{})
+	if rep.Err != nil || !rep.Valid {
+		t.Fatalf("list failed: err=%v valid=%v", rep.Err, rep.Valid)
+	}
+	if len(rep.Value) != 2 {
+		t.Fatalf("len=%d want 2", len(rep.Value))
+	}
+	t2c := rep.Value[0]
+	if t2c.PaneID != "t2c" || t2c.Target.ID != "t2c" {
+		t.Fatalf("pane/target %q/%q want t2c", t2c.PaneID, t2c.Target.ID)
+	}
+	if t2c.State != "working" {
+		t.Fatalf("state %q want working", t2c.State)
+	}
+	if t2c.Cwd != "/repo" {
+		t.Fatalf("cwd %q want /repo", t2c.Cwd)
+	}
+	wantListHints(t, t2c, []string{"codex"})
+
+	t2d := rep.Value[1]
+	if t2d.PaneID != "t2d" || t2d.Target.ID != "t2d" {
+		t.Fatalf("pane/target %q/%q want t2d", t2d.PaneID, t2d.Target.ID)
+	}
+	if t2d.State != "working" {
+		t.Fatalf("state %q want working", t2d.State)
+	}
+	if t2d.Cwd != "" {
+		t.Fatalf("cwd %q want empty", t2d.Cwd)
+	}
+	wantListHints(t, t2d, nil)
+}
