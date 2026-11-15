@@ -7,15 +7,18 @@ package wait
 // every field.
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
@@ -64,6 +67,10 @@ func newObserveFixture(t *testing.T) *observeFixture {
 	f := newHcWakeFixture(t, "1", "none")
 	f.ctx.Entries["metrics"] = core.ConfigEntry{Value: "on"}
 	f.env["PATH"] = f.bin + string(os.PathListSeparator) + filepath.Dir(gitPath)
+	if runtime.GOOS == "windows" {
+		// Git for Windows needs SystemRoot, which this minimal env lacks.
+		f.env["SystemRoot"] = testutil.HostSystemRoot()
+	}
 	f.installHc(t, fakecli.Rule{Argv: []string{"get", "worker", "--json"}, Stdout: hcWakeIdle7})
 	dir, err := core.PrivateScratchReports(f.env, "sW", core.ScratchCreate)
 	if err != nil {
@@ -85,6 +92,11 @@ func newObserveFixture(t *testing.T) *observeFixture {
 	observeGit(t, home, o.repo, "commit", "-q", "--allow-empty", "-m", "base")
 	old := observeGit(t, home, o.repo, "rev-parse", "HEAD")
 	observeGit(t, home, o.repo, "commit", "-q", "--allow-empty", "-m", "worker commit")
+	// The git audit runs git with the fixture env; fail here, with git's own
+	// output, when that env cannot run it, instead of later as a missing field.
+	if r := platform.RunCli("git", []string{"-C", o.repo, "rev-parse", "HEAD"}, platform.RunOptions{Env: f.env, TimeoutMs: 10000}); r.Status == nil || *r.Status != 0 {
+		t.Fatalf("git cannot run with the fixture env: stdout=%q stderr=%q error=%q", r.Stdout, r.Stderr, r.Error)
+	}
 	// The changes precede the report, or the wait would hold the done report
 	// back as "changed after writing its report".
 	for _, name := range []string{"owned.txt", "outside.txt"} {
@@ -96,7 +108,7 @@ func newObserveFixture(t *testing.T) *observeFixture {
 	for path, body := range map[string]string{
 		o.report:  observeReportBody,
 		o.task:    "the task\n",
-		o.sidecar: `{"git_head":"` + old + `","git_branch":"main","git_tree":"` + o.repo + `","role":"implementer"}` + "\n",
+		o.sidecar: observeSidecar(t, old, o.repo),
 		brief:     "# Role\nrole text\n# Brief\nDo it.\n# Owned files\n- `owned.txt`\n# Report contract\nDone.\n",
 		filepath.Join(f.sd, "last-report-worker"): o.report + "\n",
 	} {
@@ -109,6 +121,17 @@ func newObserveFixture(t *testing.T) *observeFixture {
 		t.Fatal(err)
 	}
 	return o
+}
+
+// observeSidecar is the dispatch sidecar of the fixture, marshaled so a
+// Windows path (with backslashes) stays valid JSON.
+func observeSidecar(t *testing.T, head, repo string) string {
+	t.Helper()
+	data, err := json.Marshal(map[string]string{"git_head": head, "git_branch": "main", "git_tree": repo, "role": "implementer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data) + "\n"
 }
 
 func (o *observeFixture) read(t *testing.T, path string) string {
