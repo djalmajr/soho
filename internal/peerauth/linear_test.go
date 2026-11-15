@@ -72,7 +72,7 @@ func TestSohoHeadersManyOpeningsOfOneIDStayLinear(t *testing.T) {
 			lines = append(lines, f.closer(id))
 			prompt := strings.Join(lines, "\n")
 			bytes, headers := allocated(prompt)
-			if bytes > allocBudget*uint64(len(prompt)) {
+			if !raceDetector && bytes > allocBudget*uint64(len(prompt)) {
 				t.Fatalf("FindHeaders allocated %d bytes for a %d-byte prompt (budget %dx)", bytes, len(prompt), allocBudget)
 			}
 			t.Logf("allocated %d bytes for a %d-byte prompt: %.1fx", bytes, len(prompt), float64(bytes)/float64(len(prompt)))
@@ -108,7 +108,7 @@ func TestSohoHeadersNestedDistinctIDsStayLinear(t *testing.T) {
 			}
 			prompt := strings.Join(lines, "\n")
 			bytes, headers := allocated(prompt)
-			if bytes > allocBudget*uint64(len(prompt)) {
+			if !raceDetector && bytes > allocBudget*uint64(len(prompt)) {
 				t.Fatalf("FindHeaders allocated %d bytes for a %d-byte prompt (budget %dx)", bytes, len(prompt), allocBudget)
 			}
 			t.Logf("allocated %d bytes for a %d-byte prompt: %.1fx", bytes, len(prompt), float64(bytes)/float64(len(prompt)))
