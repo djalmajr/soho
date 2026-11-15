@@ -13,6 +13,7 @@ import (
 	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/doctor"
+	"github.com/djalmajr/soho/internal/gate"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/job"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -38,7 +39,7 @@ var knownCommands = map[string]bool{
 	"send": true, "stats": true, "release": true, "clean": true, "setup": true,
 	"doctor": true, "explain": true, "init": true, "title": true, "regrid": true,
 	"roster": true, "friction": true, "feedback": true, "tab-label": true,
-	"layout-plan": true, "env": true, "mutation-guard": true, "mutation-copy": true, "review-snapshot": true,
+	"layout-plan": true, "env": true, "mutation-guard": true, "mutation-copy": true, "gate": true, "review-snapshot": true,
 	"reopen": true, "compact": true, "metrics": true, "copies": true, "gc": true,
 	"procs": true, "install": true, "promote": true, "validate": true,
 	"collaborate": true, "capabilities": true, "hook": true, "job": true, "inventory": true,
@@ -168,6 +169,19 @@ func Run(args []string, env platform.Env) (code int) {
 			return 0
 		}
 		return runMutationGuard(args[1:], decisionEnv)
+	}
+	// gate needs no Herdr context and no configuration: like mutation-guard
+	// it runs before the project is read and before the transport guard. It
+	// writes its four artifacts, so SOHO_NOWRITE=1 refuses it.
+	if command == "gate" {
+		if decisionEnv.Get("SOHO_NOWRITE") == "1" {
+			dieNowriteGenericRefusal(command, args)
+		}
+		if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
+			_, _ = io.WriteString(platform.Stdout, commandHelp(command))
+			return 0
+		}
+		return gate.Run(args[1:], platform.Stdout, platform.Stderr)
 	}
 	var configCtx *core.Config
 	commandCwd, _ := os.Getwd()
