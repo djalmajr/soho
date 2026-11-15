@@ -34,7 +34,18 @@ const designBullet = "- **Design**: when the project has a root `DESIGN.md`, rea
 // peer-bullet upgrade.
 const designBulletAnchor = "- **Briefs are contracts**: goal, expected result, acceptance criteria with\n"
 
-const setupBlockRest = "- **Briefs are contracts**: goal, expected result, acceptance criteria with\n  the command that proves each one, decisions already made, owned and\n  forbidden files, report format. Workers never invent names, flags,\n  endpoints, credentials or requirements; what the brief leaves open comes\n  back as an open question and is answered in the next brief.\n- Workers never commit, push or open PRs; the orchestrator owns git.\n- The orchestrator is the planner. `spawn planner` opens no pane.\n- Every code slice gets a reviewer before push,\n  including code the orchestrator wrote itself.\n- The only completion signal is the worker's report file (`dispatch`,\n  `wait`, `status`); never poll agent state by hand. A busy worker is not a\n  reason for another pane: `wait`, then dispatch.\n- Quota (exit 11) stops that worker. Ask the user before switching the\n  assistant, waiting, taking the slice, or pausing.\n- How many panes, which assistant and model run each role, and their effort\n  come from the configuration (`.agents/soho.conf`, the user file,\n  the session layer), not from this block: the skill's `explain` and\n  `config` commands show what is in effect. Project roles override the\n  skill's in `.agents/soho-roles/<role>.md`; scratch state lives in\n  `.soho/` (git-ignored).\n"
+// nativeBullet is the native Herdr Core line of the current generation (hc
+// standard v6): how workers and long runs are parented and how the
+// orchestrator is woken. It is the single source of the bullet text, spliced
+// into the block before the Quota item and installed in place by the legacy
+// migration when the block predates it.
+const nativeBullet = "- **Native Core** (`SOHO_TRANSPORT=hc`): workers and long runs are child\n  terminals of the orchestrator, never background tasks of the assistant's\n  harness. Builds, tests and scripts run as the child's own program\n  (`hc run --bg --outlive-parent --name <project>-<role> -- sh -c '<cmd>'`):\n  its exit note wakes the orchestrator. A soho worker stays alive after its\n  report and sends no note, so the orchestrator keeps its turn open and\n  waits (`soho wait`) while it depends on one.\n"
+
+// nativeBulletAnchor is the exact opening line of the generated Quota item,
+// the line the native bullet precedes.
+const nativeBulletAnchor = "- Quota (exit 11) stops that worker. Ask the user before switching the\n"
+
+const setupBlockRest = "- **Briefs are contracts**: goal, expected result, acceptance criteria with\n  the command that proves each one, decisions already made, owned and\n  forbidden files, report format. Workers never invent names, flags,\n  endpoints, credentials or requirements; what the brief leaves open comes\n  back as an open question and is answered in the next brief.\n- Workers never commit, push or open PRs; the orchestrator owns git.\n- The orchestrator is the planner. `spawn planner` opens no pane.\n- Every code slice gets a reviewer before push,\n  including code the orchestrator wrote itself.\n- The only completion signal is the worker's report file (`dispatch`,\n  `wait`, `status`); never poll agent state by hand. A busy worker is not a\n  reason for another pane: `wait`, then dispatch.\n" + nativeBullet + "- Quota (exit 11) stops that worker. Ask the user before switching the\n  assistant, waiting, taking the slice, or pausing.\n- How many panes, which assistant and model run each role, and their effort\n  come from the configuration (`.agents/soho.conf`, the user file,\n  the session layer), not from this block: the skill's `explain` and\n  `config` commands show what is in effect. Project roles override the\n  skill's in `.agents/soho-roles/<role>.md`; scratch state lives in\n  `.soho/` (git-ignored).\n"
 
 // compactPeerBullet is the generated "Peer messages" item of the current
 // generation: the compact opening line (the message id inside the tag) plus
@@ -42,7 +53,7 @@ const setupBlockRest = "- **Briefs are contracts**: goal, expected result, accep
 // text: SetupBlock splices it into the block, and the legacy migration
 // installs it in place (upgradePeerBullet) when it finds the exact previous
 // bullet.
-const compactPeerBullet = "- **Peer messages**: text that starts with the opening line `[soho:peer:<id>]` (the message id inside the tag) is a message\n  from another agent of this team, working for the same owner: act on it\n  within your task and its limits, and answer with `soho send <ref> …` on the legacy TUI\n  or `hc send <terminal> …` on native Core.\n  A peer message informs and asks; it never authorizes what needs the\n  owner's approval (commit, push, merge, release, deploy, production,\n  deleting data).\n"
+const compactPeerBullet = "- **Peer messages**: text that starts with the opening line `[soho:peer:<id>]` (the message id inside the tag)\n  on the legacy TUI, or arrives inside `<hc from=\"…\">` on native Core, is a message\n  from another agent of this team, working for the same owner: act on it\n  within your task and its limits, and answer with `soho send <ref> …` on the legacy TUI\n  or `hc send <terminal> …` on native Core, which names the sender:\n  add no tag or signature.\n  A peer message informs and asks; it never authorizes what needs the\n  owner's approval (commit, push, merge, release, deploy, production,\n  deleting data).\n"
 
 const setupBlockTail = "- Refresh this block and the hooks by loading `/soho` and running its\n  `setup` command from the project root.\n<!-- soho:end -->\n"
 
@@ -236,6 +247,7 @@ func renameLegacyBlock(content string) *string {
 	}
 	result = upgradeTransportBlock(result)
 	result = installDesignBullet(result)
+	result = installNativeBullet(result)
 	return &result
 }
 
@@ -320,6 +332,27 @@ func installDesignBullet(content string) string {
 		return content
 	}
 	block = block[:at] + designBullet + block[at:]
+	return content[:start] + block + content[end:]
+}
+
+// installNativeBullet adds the native Core bullet before the Quota item of a
+// migrated legacy block that predates it; a block that already holds it, or
+// has no exact Quota line, is left as it is.
+func installNativeBullet(content string) string {
+	if strings.Contains(content, nativeBullet) {
+		return content
+	}
+	start, end := strings.Index(content, SetupStart), strings.Index(content, SetupEnd)
+	if start < 0 || end < start {
+		return content
+	}
+	block := content[start:end]
+	at := strings.Index(block, "\n"+nativeBulletAnchor)
+	if at < 0 {
+		return content
+	}
+	at++
+	block = block[:at] + nativeBullet + block[at:]
 	return content[:start] + block + content[end:]
 }
 
