@@ -93,9 +93,9 @@ export default function (pi) {
   pi.on("input", async (event, ctx) => {
     // The prefilter accepts the current format's opening tag
     // [soho:peer:<id>] and the previous format's marker [soho:peer]
-    // (accepted for one release); the exact check runs in the soho hook
+    // (accepted for one release), and Core's <hc from=" tags; the exact check runs in the soho hook
     // inbound --pi command.
-    if (typeof event.text !== "string" || !event.text.includes("[soho:peer")) {
+    if (typeof event.text !== "string" || (!event.text.includes("[soho:peer") && !event.text.includes('<hc from="'))) {
       return { action: "continue" };
     }
     const result = await checkPeer(event.text);

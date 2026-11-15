@@ -49,10 +49,10 @@ type Source struct {
 type Verdict struct {
 	Header Header
 	Result Result
-	// Format is "local" or "remote".
+	// Format is "local", "remote", or "hc" for native Core messages.
 	Format string
 	// Label is the logged label: `local` for a local header, "-" for a remote
-	// one (the check does not read the Sender line).
+	// one (the check does not read the Sender line), or the native Core ref.
 	Label string
 }
 
@@ -76,6 +76,14 @@ func RefusalLine(id string, result Result) string {
 	return "[soho:peer-refused:" + id + "] " + string(result)
 }
 
+// RefusalLine identifies native senders without inventing a message id.
+func (v Verdict) RefusalLine() string {
+	if v.Header.NativeRef != "" {
+		return "[soho:peer-refused:hc] " + v.Header.NativeRef + " " + string(v.Result)
+	}
+	return RefusalLine(v.Header.ID, v.Result)
+}
+
 // Reason is the text of a block decision: one line per header, in prompt
 // order, and the tail. It carries no body and no label.
 func (o Outcome) Reason() string {
@@ -84,7 +92,7 @@ func (o Outcome) Reason() string {
 	}
 	lines := make([]string, 0, len(o.Verdicts)+1)
 	for _, v := range o.Verdicts {
-		lines = append(lines, RefusalLine(v.Header.ID, v.Result))
+		lines = append(lines, v.RefusalLine())
 	}
 	return strings.Join(append(lines, ReasonTail), "\n")
 }
@@ -133,6 +141,9 @@ func Check(prompt string, src Source) Outcome {
 		v := Verdict{Header: h, Format: "local", Label: "local"}
 		if h.Remote {
 			v.Format, v.Label = "remote", "-"
+		}
+		if h.NativeRef != "" {
+			v.Format, v.Label = "hc", h.NativeRef
 		}
 		switch {
 		case projectErr != nil:
