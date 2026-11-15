@@ -293,7 +293,12 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	svc := backend.New(env)
 	doctorRestartNotices(ctx, env, cwd, platform.Stderr)
 	if svc.Runtime.Caller().Inside {
-		herdrContextCheck(svc, s)
+		// Under the native transport HERDR_PANE_ID holds a Core terminal
+		// address, not a legacy pane: the legacy pane-context probe has no
+		// meaning there and would warn about a healthy session.
+		if core.TransportMode(ctx, env) != "hc" {
+			herdrContextCheck(svc, s)
+		}
 		// After the context check: this process must actually run in the
 		// claimed pane (DJA-394). The warning appears for every
 		// caller_check value except off; the command itself keeps its own
