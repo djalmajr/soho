@@ -259,7 +259,13 @@ func upgradeTransportBlock(content string) string {
 		return content
 	}
 	block := content[start:end]
-	block = strings.Replace(block, previousTransportOpening, transportOpening, 1)
+	// The opening is replaced only as a whole paragraph: at the start of a
+	// line and followed by the blank line that ends it. Text a project put
+	// before or after it in the same paragraph keeps the paragraph as it is.
+	if open := strings.Index(block, "\n"+previousTransportOpening+"\n"); open >= 0 {
+		open++
+		block = block[:open] + transportOpening + block[open+len(previousTransportOpening):]
+	}
 	at := strings.Index(block, "\n"+previousCompactPeerBullet)
 	if at >= 0 {
 		at++

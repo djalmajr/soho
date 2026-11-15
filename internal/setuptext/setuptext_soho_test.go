@@ -111,6 +111,10 @@ func TestSetupTransportPreviousAndEditedBlocks(t *testing.T) {
 		{"Inside Herdr (`HERDR_ENV=1`)", "Inside our custom Herdr session"},
 		{"its limits, and answer", "its limits and house rules, and answer"},
 		{"  deleting data).\n", "  deleting data).\n  Follow our escalation rule.\n"},
+		// The whole generated opening is still there, inside a paragraph the
+		// project extended: it stays as written.
+		{"Inside Herdr (`HERDR_ENV=1`)", "Historical policy: Inside Herdr (`HERDR_ENV=1`)"},
+		{"before planning such work.\n", "before planning such work.\nOur teams also read the house guide.\n"},
 	} {
 		input := strings.Replace(previous, edit.old, edit.new, 1)
 		if input == previous {
@@ -120,6 +124,11 @@ func TestSetupTransportPreviousAndEditedBlocks(t *testing.T) {
 		got := SetupBlockResult(&legacy)
 		if got == nil || !strings.Contains(*got, edit.new) {
 			t.Fatalf("legacy edit lost: %v", got)
+		}
+		if strings.Contains(edit.new, "Historical policy") || strings.Contains(edit.new, "house guide") {
+			if !strings.Contains(*got, "sibling panes, waits on their report files") || strings.Contains(*got, "terminals without a panel") {
+				t.Fatalf("an edited opening paragraph was rewritten:\n%s", *got)
+			}
 		}
 		// As before, current markers are managed text, replaced on the next run.
 		second := SetupBlockResult(got)
