@@ -17,6 +17,7 @@ import (
 
 var inlineConfigComment = regexp.MustCompile(`[ \t]#.*$`)
 var setupPromptConfig = regexp.MustCompile(`^(multi_role=|role\.[A-Za-z0-9_-]+\.kind=|lane\.[A-Za-z0-9_-]+\.kind=)`)
+var userTeamKey = regexp.MustCompile(`^(multi_role|role_[A-Za-z0-9_]+_kind|lane_[A-Za-z0-9_]+_kind)$`)
 
 // readOrRefuse reads a project instruction or Claude settings file for the
 // setup writers: only a missing file counts as absent. Any other error (an
@@ -572,8 +573,11 @@ func userLayerChoosesTeam(ctx *core.Config) bool {
 		if layer.Source != "user" || layer.ReadError != nil {
 			continue
 		}
-		for _, key := range layer.OriginalKeys {
-			if setupPromptConfig.MatchString(key + "=") {
+		// Entries holds the keys as the loader normalized them, so every
+		// spelling the loader accepts (lane.build.kind, lane_build_kind,
+		// multi-role) counts, and a commented-out line does not.
+		for key := range layer.Entries {
+			if userTeamKey.MatchString(key) {
 				return true
 			}
 		}
