@@ -1480,6 +1480,17 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 				Warn(fmt.Sprintf("lane '%s' worker '%s' was started with other native args ('%s'); this spawn wants '%s'. Release the lane, then spawn again.", lane, selected, args, wanted), ctx, env, "spawn")
 				platform.Die("", 13)
 			}
+			// Native Core cannot rename a terminal: a different --name never
+			// reuses the idle worker, it opens a new one as --fresh would (and
+			// is refused like --fresh when the lane or max_workers is full).
+			if env.Get("SOHO_TRANSPORT") == "hc" && o.name != "" && o.name != selected {
+				renameCapacity := core.CurrentWorkerCapacity(ctx, env, cwd)
+				if d.N >= d.Capacity || renameCapacity.Full {
+					busyLane(lane, selected, fmt.Sprintf("spawn: idle worker '%s' was not reused as '%s' because native Core cannot rename it, and lane '%s' has no room for a new worker. Dispatch to '%s', or release it.", selected, o.name, lane, selected), o.role, ctx, env, cwd, o)
+				}
+				Warn(fmt.Sprintf("spawn: idle worker '%s' was not reused as '%s' because native Core cannot rename it; starting a new worker '%s'", selected, o.name, o.name), ctx, env, "spawn")
+				break
+			}
 			var renameCapacity core.WorkerCapacity
 			if o.name != "" && o.name != selected && core.RosterLine(sd, o.name) == "" {
 				renameCapacity = core.CurrentWorkerCapacity(ctx, env, cwd)
