@@ -14,6 +14,15 @@ import (
 // until the startup deadline.
 const neverReady = `{"address":"t7","state":"live","reported":false,"status":{"state":"working"}}`
 
+func TestCleanTimeoutScreenBounds(t *testing.T) {
+	if got := cleanTimeoutScreen(strings.Repeat("x\n", 250)); strings.Count(got, "\n") != 199 {
+		t.Fatalf("line count: %d", strings.Count(got, "\n"))
+	}
+	if got := cleanTimeoutScreen(strings.Repeat("é", 40000)); len(got) != 65536 {
+		t.Fatalf("byte count: %d", len(got))
+	}
+}
+
 // readRule answers the timeout failure's one screen read of t7.
 func readRule(text string) fakecli.Rule {
 	return fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Stdout: `{"text":` + quoteJSON(text) + `,"complete":true}`}

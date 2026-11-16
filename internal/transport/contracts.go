@@ -103,6 +103,8 @@ type Failure struct {
 	Code    string
 	Message string
 	Cause   error
+	// Screen is the bounded, cleaned visible screen captured on a start timeout.
+	Screen string
 }
 
 // Error renders the failure for an error chain.

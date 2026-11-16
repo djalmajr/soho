@@ -1772,6 +1772,7 @@ func exitCodeOf(obj *jsonjs.Object) (int, bool) {
 // adds nothing. The read never sends input.
 func (b *backend) timeoutReply(ctx context.Context, call transport.Call, name, address string, deadline time.Duration, lastErr *transport.Failure) transport.Reply[string] {
 	message := fmt.Sprintf("agent %s still not ready after %ss", name, startDeadlineSeconds(deadline))
+	var savedScreen string
 	if lastErr != nil {
 		message += ": " + lastErr.Error()
 	}
@@ -1782,12 +1783,36 @@ func (b *backend) timeoutReply(ctx context.Context, call transport.Call, name, a
 		}
 		screen := b.Read(ctx, transport.Target{ID: address}, transport.Read{Source: "visible"}, readCall)
 		if screen.Err == nil && screen.Valid {
+			savedScreen = cleanTimeoutScreen(screen.Value)
 			if line := lastVisibleLine(screen.Value); line != "" {
 				message += fmt.Sprintf("; last visible line: %q", line)
 			}
 		}
 	}
-	return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCommand, Message: message, Cause: lastErr}}
+	return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCommand, Message: message, Cause: lastErr, Screen: savedScreen}}
+}
+
+// cleanTimeoutScreen bounds the saved screen by both lines and UTF-8 bytes.
+func cleanTimeoutScreen(screen string) string {
+	var out strings.Builder
+	for i, line := range strings.Split(screen, "\n") {
+		if i >= 200 {
+			break
+		}
+		if i > 0 {
+			if out.Len() == 64*1024 {
+				break
+			}
+			out.WriteByte('\n')
+		}
+		for _, r := range stripTerminalControls(line) {
+			if out.Len()+len(string(r)) > 64*1024 {
+				return out.String()
+			}
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
 }
 
 // timeoutScreenReadCap bounds the one screen read of a failing start, so a

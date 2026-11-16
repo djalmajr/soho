@@ -2393,7 +2393,23 @@ func startHcAgentUsingServices(ctx *core.Config, o *spawnOptions, kind string, e
 				Warn(o.outputText(fmt.Sprintf("spawn: could not close hc terminal %s after the failed start; it may still hold the name '%s'", rep.Value, o.name)), ctx, env, "spawn")
 			}
 		}
-		core.DieFriction(rep.Err.Error(), 4, "", "spawn")
+		message := rep.Err.Error()
+		if rep.Err.Screen != "" && !core.Nowrite(env) {
+			dir := filepath.Join(core.StateDirPath(ctx, env, o.cwd), "spawn-screens")
+			if os.MkdirAll(dir, 0o700) == nil {
+				path := filepath.Join(dir, o.name+"-"+time.Now().UTC().Format("20060102T150405Z")+".txt")
+				if f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); err == nil {
+					_, writeErr := f.WriteString(rep.Err.Screen)
+					closeErr := f.Close()
+					if writeErr == nil && closeErr == nil {
+						message += "; screen saved to " + path
+					} else {
+						_ = os.Remove(path)
+					}
+				}
+			}
+		}
+		core.DieFriction(message, 4, "", "spawn")
 	}
 }
 
