@@ -55,7 +55,14 @@ func checkTestLayers(sd, agent, report, text string, line *jsonjs.Object, role s
 		warn("report of '%s' lists %d test layer(s) that did not pass (%s): read them before commit, push or release", agent, len(layers.NonPass), strings.Join(names, ", "))
 	}
 	if layers.Found && layers.Unmarked > 0 {
-		warn("report of '%s' has %d Test layers line(s) without a result", agent, layers.Unmarked)
+		// Name the exact form and the first line that missed it (SOH-319):
+		// "- Native: NOT RUN — reason" (a dash instead of ": ") is the
+		// usual miss.
+		first := []rune(layers.FirstUnmarked)
+		if len(first) > 80 {
+			first = append(first[:79], '…')
+		}
+		warn("report of '%s' has %d Test layers line(s) without a result; the form is '- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a', with ': <reason>' after FAIL, NOT RUN and BLOCKED (first: %q)", agent, layers.Unmarked, string(first))
 	}
 	if hasValidation && validation != "PASS" {
 		warn("validation of '%s' is %s: read it before commit, push or release", agent, validation)

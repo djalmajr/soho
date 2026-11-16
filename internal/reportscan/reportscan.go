@@ -134,7 +134,10 @@ type TestLayersResult struct {
 	Blocked  int
 	NA       int
 	Unmarked int
-	NonPass  []LayerResult
+	// FirstUnmarked is the first list line of the section that has no
+	// result in the exact form, as written (trimmed), for the warning.
+	FirstUnmarked string
+	NonPass       []LayerResult
 }
 
 // TestLayers parses the report's ## Test layers section, outside fenced code
@@ -174,6 +177,9 @@ func TestLayers(text string) TestLayersResult {
 			continue
 		}
 		if !parseLayerLine(trim, &out) {
+			if out.Unmarked == 0 {
+				out.FirstUnmarked = trim
+			}
 			out.Unmarked++
 		}
 	}
