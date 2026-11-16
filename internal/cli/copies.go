@@ -577,19 +577,14 @@ func gcOrphansWouldStop(orphans []projectOrphan, threshold time.Duration, now ti
 	return false
 }
 
-// gcPrintOrphanProcs is the unregistered processes' block without a stop:
-// "would stop <line>" for a stoppable one past --older-than, "listed only
-// <line>" for one in the scratch, the root or a worktree; a stoppable one
-// younger than --older-than is not listed (the orphan copies' rule). The
-// closing hint names the flag that stops them. Nothing to show prints nothing.
+// gcPrintOrphanProcs prints "would stop <line>" only for stoppable
+// processes past --older-than, followed by the flag that stops them.
+// Nothing to show prints nothing.
 func gcPrintOrphanProcs(orphans []projectOrphan, threshold time.Duration, now time.Time) {
 	lines := []string{}
 	for _, orphan := range orphans {
-		switch {
-		case gcOrphanWouldStop(orphan, threshold, now):
+		if gcOrphanWouldStop(orphan, threshold, now) {
 			lines = append(lines, "would stop "+orphan.line(now))
-		case !orphan.stoppable():
-			lines = append(lines, "listed only "+orphan.line(now))
 		}
 	}
 	if len(lines) == 0 {
@@ -599,31 +594,24 @@ func gcPrintOrphanProcs(orphans []projectOrphan, threshold time.Duration, now ti
 	for _, line := range lines {
 		_, _ = fmt.Fprintln(platform.Stdout, line)
 	}
-	if gcOrphansWouldStop(orphans, threshold, now) {
-		_, _ = fmt.Fprintln(platform.Stdout, "run 'soho gc --yes --include-unregistered-procs' to stop them")
-	}
+	_, _ = fmt.Fprintln(platform.Stdout, "run 'soho gc --yes --include-unregistered-procs' to stop them")
 }
 
 // gcStopOrphanProcs is --include-unregistered-procs --yes: each stoppable
 // orphan past --older-than is stopped through core.StopUnregisteredProc,
 // which re-reads the start identity and the cwd (orphanStill) before each
-// signal round and keeps a process that changed; the scratch, root and
-// worktree ones are only listed. It returns how many were stopped.
+// signal round and keeps a process that changed; scratch, root and
+// worktree processes are omitted. It returns how many were stopped.
 func gcStopOrphanProcs(orphans []projectOrphan, threshold time.Duration, now time.Time, env platform.Env) int {
 	header := false
 	stopped := 0
 	for _, orphan := range orphans {
-		listedOnly := !orphan.stoppable()
-		if !listedOnly && !gcOrphanWouldStop(orphan, threshold, now) {
+		if !gcOrphanWouldStop(orphan, threshold, now) {
 			continue
 		}
 		if !header {
 			_, _ = fmt.Fprintln(platform.Stdout, orphanHeader)
 			header = true
-		}
-		if listedOnly {
-			_, _ = fmt.Fprintln(platform.Stdout, "listed only "+orphan.line(now))
-			continue
 		}
 		res := core.StopUnregisteredProc(orphan.Pid, orphan.Name, orphanStill(orphan, env), env)
 		if res.Line != "" {

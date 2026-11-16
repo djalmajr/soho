@@ -128,6 +128,7 @@ func TestProcsListsProjectOrphansByScope(t *testing.T) {
 		"unregistered orphan processes in this project:\n" +
 		"4000001  node  3h  " + filepath.Join(o.copy, "web") + "  (copy)\n" +
 		"4000002  go  3h  " + o.state + "  (state)\n" +
+		"processes started from this project that soho did not register (daemons, editors, shells; never stopped):\n" +
 		"4000003  vite  30m  " + filepath.Join(o.scratch, "x") + "  (scratch)\n" +
 		"4000004  zsh  3h  " + o.worktree + "  (worktree)\n" +
 		"4000005  nvim  3h  " + filepath.Join(o.root, "src") + "  (root)\n"
@@ -148,6 +149,24 @@ func TestProcsOrphanBlockAbsentAndWindowsLine(t *testing.T) {
 			t.Fatalf("procs: code=%d err=%q out=%q; want only the empty registry line", code, errOut, out)
 		}
 	})
+	t.Run("only stoppable group", func(t *testing.T) {
+		stubOrphans(t, []platform.OrphanProc{fakeOrphan(4000001, "node", o.copy, 3*time.Hour)}, nil)
+		code, out, errOut := o.run(t, "procs")
+		want := "no registered processes\nunregistered orphan processes in this project:\n" +
+			"4000001  node  3h  " + o.copy + "  (copy)\n"
+		if code != 0 || errOut != "" || out != want {
+			t.Fatalf("procs: code=%d err=%q out=%q; want %q", code, errOut, out, want)
+		}
+	})
+	t.Run("only non-stoppable group", func(t *testing.T) {
+		stubOrphans(t, []platform.OrphanProc{fakeOrphan(4000005, "nvim", o.root, 3*time.Hour)}, nil)
+		code, out, errOut := o.run(t, "procs")
+		want := "no registered processes\nprocesses started from this project that soho did not register (daemons, editors, shells; never stopped):\n" +
+			"4000005  nvim  3h  " + o.root + "  (root)\n"
+		if code != 0 || errOut != "" || out != want {
+			t.Fatalf("procs: code=%d err=%q out=%q; want %q", code, errOut, out, want)
+		}
+	})
 	t.Run("Windows detects none and says so", func(t *testing.T) {
 		old := orphanProcesses
 		orphanProcesses = func() ([]platform.OrphanProc, error) { return nil, platform.ErrOrphansNotDetected }
@@ -164,11 +183,8 @@ func TestProcsOrphanBlockAbsentAndWindowsLine(t *testing.T) {
 	})
 }
 
-// TestGcOrphanDryRun pins the dry-run block: would stop for a copy or
-// state orphan past --older-than, listed only for the scratch, the root
-// and the worktree whatever their age, a young stoppable one left out, the
-// hint naming the new flag; --older-than 0 makes the young one a would
-// stop.
+// TestGcOrphanDryRun pins the dry-run block: only old enough copy and
+// state orphans appear, with a hint; --older-than 0 includes a young copy.
 func TestGcOrphanDryRun(t *testing.T) {
 	o := newOrphanScopeFixture(t)
 	stubOrphans(t, []platform.OrphanProc{
@@ -186,9 +202,6 @@ func TestGcOrphanDryRun(t *testing.T) {
 		want := pressure + "unregistered orphan processes in this project:\n" +
 			"would stop 4000001  node  3h  " + o.copy + "  (copy)\n" +
 			"would stop 4000002  go  3h  " + o.state + "  (state)\n" +
-			"listed only 4000003  vite  30m  " + o.scratch + "  (scratch)\n" +
-			"listed only 4000004  zsh  3h  " + o.worktree + "  (worktree)\n" +
-			"listed only 4000005  nvim  30m  " + o.root + "  (root)\n" +
 			"run 'soho gc --yes --include-unregistered-procs' to stop them\n"
 		if code != 0 || errOut != "" || out != want {
 			t.Fatalf("gc: code=%d err=%q\nout=%q\nwant=%q", code, errOut, out, want)
@@ -196,19 +209,29 @@ func TestGcOrphanDryRun(t *testing.T) {
 	})
 	t.Run("--older-than 0", func(t *testing.T) {
 		code, out, errOut := o.run(t, "gc", "--older-than", "0")
-		if code != 0 || errOut != "" || !strings.Contains(out, "would stop 4000008  tsc  30m  "+filepath.Join(o.copy, "young")+"  (copy)\n") || !strings.Contains(out, "listed only 4000003  vite  30m  "+o.scratch+"  (scratch)\n") {
-			t.Fatalf("gc --older-than 0: code=%d err=%q out=%q; want the young copy orphan as would stop and the scratch one still listed only", code, errOut, out)
+		if code != 0 || errOut != "" || !strings.Contains(out, "would stop 4000008  tsc  30m  "+filepath.Join(o.copy, "young")+"  (copy)\n") || strings.Contains(out, "listed only") {
+			t.Fatalf("gc --older-than 0: code=%d err=%q out=%q; want the young copy and no listed-only lines", code, errOut, out)
 		}
 	})
-	t.Run("only listed-only orphans: nothing to remove, then the block", func(t *testing.T) {
-		stubOrphans(t, []platform.OrphanProc{fakeOrphan(4000005, "nvim", o.root, 3*time.Hour)}, nil)
-		code, out, errOut := o.run(t, "gc")
-		want := pressure + "nothing to remove\nunregistered orphan processes in this project:\n" +
-			"listed only 4000005  nvim  3h  " + o.root + "  (root)\n"
-		if code != 0 || errOut != "" || out != want {
-			t.Fatalf("gc: code=%d err=%q\nout=%q\nwant=%q", code, errOut, out, want)
-		}
-	})
+	for _, tc := range []struct {
+		name string
+		list []platform.OrphanProc
+	}{
+		{"none", nil},
+		{"only non-stoppable", []platform.OrphanProc{fakeOrphan(4000003, "vite", o.scratch, 3*time.Hour), fakeOrphan(4000004, "zsh", o.worktree, 3*time.Hour), fakeOrphan(4000005, "nvim", o.root, 3*time.Hour)}},
+		{"only young stoppable", []platform.OrphanProc{fakeOrphan(4000008, "tsc", o.copy, 30*time.Minute), fakeOrphan(4000010, "go", o.state, 30*time.Minute)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubOrphans(t, tc.list, nil)
+			for _, argv := range [][]string{{"gc"}, {"gc", "--yes", "--include-unregistered-procs"}} {
+				code, out, errOut := o.run(t, argv...)
+				want := pressure + "nothing to remove\n"
+				if code != 0 || errOut != "" || out != want {
+					t.Fatalf("%v: code=%d err=%q\nout=%q\nwant=%q", argv, code, errOut, out, want)
+				}
+			}
+		})
+	}
 }
 
 // TestGcStopsOrphansOnlyWithTheFlag runs real processes: --yes alone and
@@ -257,12 +280,12 @@ func TestGcStopsOrphansOnlyWithTheFlag(t *testing.T) {
 			t.Fatalf("process %d (%s) was stopped; a young orphan, the scratch, the root and a worktree are never stopped", proc.Pid, proc.Cwd)
 		}
 	}
-	for _, want := range []string{"listed only " + strconv.Itoa(inScratch.Pid) + "  ", "listed only " + strconv.Itoa(inRoot.Pid) + "  ", "listed only " + strconv.Itoa(inTree.Pid) + "  "} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("output = %q; want %q", out, want)
+	for _, proc := range []platform.OrphanProc{inScratch, inRoot, inTree} {
+		if strings.Contains(out, strconv.Itoa(proc.Pid)) {
+			t.Fatalf("output = %q; non-stoppable process %d must not be printed", out, proc.Pid)
 		}
 	}
-	if strings.Contains(out, "nothing to remove") || strings.Contains(out, strconv.Itoa(young.Pid)) {
+	if strings.Contains(out, "listed only") || strings.Contains(out, "nothing to remove") || strings.Contains(out, strconv.Itoa(young.Pid)) {
 		t.Fatalf("output = %q; the young orphan is not listed and the stops are not nothing", out)
 	}
 }
@@ -363,6 +386,7 @@ func TestOrphanCopyLinesMustPassTheCopyCheck(t *testing.T) {
 	want := "no registered processes\n" +
 		"unregistered orphan processes in this project:\n" +
 		"4000001  node  3h  " + filepath.Join(o.copy, "x") + "  (copy)\n" +
+		"processes started from this project that soho did not register (daemons, editors, shells; never stopped):\n" +
 		"4000004  nvim  3h  " + filepath.Join(o.root, "src") + "  (root)\n" +
 		"4000006  zsh  3h  " + filepath.Join(o.worktree, "a") + "  (worktree)\n"
 	if code != 0 || errOut != "" || out != want {
@@ -370,7 +394,7 @@ func TestOrphanCopyLinesMustPassTheCopyCheck(t *testing.T) {
 	}
 	code, out, errOut = o.run(t, "gc")
 	if code != 0 || errOut != "" || !strings.Contains(out, "would stop 4000001  ") || strings.Count(out, "would stop ") != 1 ||
-		!strings.Contains(out, "listed only 4000004  ") || !strings.Contains(out, "listed only 4000006  ") {
+		strings.Contains(out, "4000004") || strings.Contains(out, "4000006") || strings.Contains(out, "listed only") {
 		t.Fatalf("gc: code=%d err=%q out=%q; only the valid copy's orphan is a would stop", code, errOut, out)
 	}
 }

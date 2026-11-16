@@ -181,9 +181,22 @@ func procsList(ctx *core.Config, env platform.Env, cwd string) int {
 	case err != nil:
 		_, _ = fmt.Fprintf(platform.Stderr, "procs: could not list the unregistered processes (%v)\n", err)
 	case len(orphans) > 0:
-		_, _ = fmt.Fprintln(platform.Stdout, orphanHeader)
-		for _, orphan := range orphans {
-			_, _ = fmt.Fprintln(platform.Stdout, orphan.line(now))
+		for _, stoppable := range []bool{true, false} {
+			header := false
+			for _, orphan := range orphans {
+				if orphan.stoppable() != stoppable {
+					continue
+				}
+				if !header {
+					if stoppable {
+						_, _ = fmt.Fprintln(platform.Stdout, orphanHeader)
+					} else {
+						_, _ = fmt.Fprintln(platform.Stdout, orphanListedHeader)
+					}
+					header = true
+				}
+				_, _ = fmt.Fprintln(platform.Stdout, orphan.line(now))
+			}
 		}
 	}
 	return 0
@@ -331,9 +344,10 @@ func procAge(row core.ProcRow, now time.Time) time.Duration {
 }
 
 const (
-	// orphanHeader opens the block of unregistered orphan processes whose
-	// cwd is in this project, in procs and in gc.
+	// orphanHeader opens the block of stoppable unregistered processes.
 	orphanHeader = "unregistered orphan processes in this project:"
+	// orphanListedHeader distinguishes processes gc never stops.
+	orphanListedHeader = "processes started from this project that soho did not register (daemons, editors, shells; never stopped):"
 	// orphanWindowsLine replaces the block where the cwd of another
 	// process cannot be read without its PEB (decision 2).
 	orphanWindowsLine = "unregistered processes: not detected on Windows (only registered processes are listed)"
