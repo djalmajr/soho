@@ -387,8 +387,18 @@ func cmdCopies(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 // does not show sizes.
 func copiesList(ctx *core.Config, env platform.Env, cwd string) int {
 	svc := backend.New(env)
-	sd := core.StateDir(ctx, env, cwd)
-	incorporatePendingCopies("copies", sd, env, cwd)
+	// A worker lists the registry its copies go to (SOH-311): without this,
+	// a native worker read its own state dir and said "no registered copies"
+	// right after mutation-copy registered one in the orchestrator's.
+	sd := registryDestination(env)
+	if sd == "" {
+		sd = core.StateDir(ctx, env, cwd)
+	}
+	// Incorporating the queue writes the registry: a read-only run lists
+	// what is registered and leaves the queue in place (R404 F1).
+	if !core.Nowrite(env) {
+		incorporatePendingCopies("copies", sd, env, cwd)
+	}
 	rows, err := core.ReadCopies(sd)
 	if err != nil {
 		core.DieFriction(fmt.Sprintf("copies: cannot read the copy registry (%v)", err), 4, frictionLogPath, "copies")
