@@ -70,27 +70,39 @@ func ownedItemDeclaresNoFiles(item string) bool {
 func briefHasOwnedItems(body string, matches func(title string) bool, skip ...func(item string) bool) bool {
 	lines := strings.Split(body, "\n")
 	mask := briefFenceMask(lines)
-	owned := false
-	for i, line := range lines {
+	for i := 0; i < len(lines); i++ {
 		if mask[i] {
 			continue
 		}
-		if title, ok := briefHeadingTitle(line); ok {
-			owned = matches(title)
+		heading := strings.TrimSuffix(lines[i], "\r")
+		title, ok := briefHeadingTitle(heading)
+		if !ok || !matches(title) {
 			continue
 		}
-		if owned {
-			item := strings.TrimSpace(line)
-			if item == "-" || item == "*" || item == "+" {
+		level, _ := lintHeadingPrefix(heading)
+		end := i + 1
+		for end < len(lines) {
+			if !mask[end] {
+				if next, ok := lintHeadingPrefix(strings.TrimSuffix(lines[end], "\r")); ok && next <= level {
+					break
+				}
+			}
+			end++
+		}
+		filtered, _ := OwnedSectionLines(lines[i+1 : end])
+		for _, line := range filtered {
+			if _, ok := lintHeadingPrefix(strings.TrimSuffix(line, "\r")); ok {
 				continue
 			}
-			if item != "" {
-				if len(skip) > 0 && skip[0](item) {
-					continue
-				}
+			item := strings.TrimSpace(line)
+			if item == "" || item == "-" || item == "*" || item == "+" {
+				continue
+			}
+			if len(skip) == 0 || !skip[0](item) {
 				return true
 			}
 		}
+		i = end - 1
 	}
 	return false
 }

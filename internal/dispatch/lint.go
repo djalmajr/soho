@@ -199,7 +199,7 @@ func BriefMissingSections(body string, readOnly bool, aliases map[string][]strin
 	}
 	var missing strings.Builder
 	for _, label := range checks {
-		if !hasBriefSectionHeading(body, label, aliases) {
+		if !hasBriefSectionHeading(body, label, aliases) && !(label == "Forbidden" && hasForbiddenLabel(body)) {
 			fmt.Fprintf(&missing, " [%s]", label)
 		}
 	}
