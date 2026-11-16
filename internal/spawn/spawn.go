@@ -997,6 +997,7 @@ type spawnOptions struct {
 	registryDir                                                                                            string
 	blockedAtStartup                                                                                       bool
 	startupDiag                                                                                            string
+	hooksBlocked                                                                                           string
 	launchProfile                                                                                          kinds.LaunchProfile
 	nativeArgsSnapshot                                                                                     string
 	loginShell                                                                                             string
@@ -1861,7 +1862,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	// re-reads the screen; an approval that did not take, or
 	// hooks_review=block, takes the blocked path (screen printed, exit 7)
 	// with its own warning.
-	hooksBlocked := ""
+	hooksBlocked := o.hooksBlocked
 	if !blocked && kind == "codex" && codexhooks.IsReview(lastScreen) {
 		mode := core.HooksReviewMode(ctx, env)
 		if mode == "trust" {
@@ -2330,7 +2331,42 @@ func startHcAgentUsingServices(ctx *core.Config, o *spawnOptions, kind string, e
 				overrides[name] = value
 			}
 		}
-		rep := rt.Start(context.Background(), transport.Start{Name: o.name, Kind: kind, Cwd: o.cwd, Timeout: o.timeout, Args: args, LaunchProfile: o.launchProfile.Name, EnvOverrides: overrides, LoginShell: o.loginShell, RegistryDir: o.registryDir, Agent: o.name}, transport.Call{Timeout: time.Duration(startWrapperTimeoutMs(o.timeout)) * time.Millisecond})
+		start := transport.Start{Name: o.name, Kind: kind, Cwd: o.cwd, Timeout: o.timeout, Args: args, LaunchProfile: o.launchProfile.Name, EnvOverrides: overrides, LoginShell: o.loginShell, RegistryDir: o.registryDir, Agent: o.name}
+		if kind == "codex" {
+			approved := false
+			start.StartupDialog = func(callCtx context.Context, address, screen string) transport.StartupDialogAction {
+				if !codexhooks.IsReview(screen) {
+					return transport.StartupDialogContinue
+				}
+				mode := core.HooksReviewMode(ctx, env)
+				if mode == "trust" && !approved {
+					approved = true
+					target := transport.Target{ID: address}
+					call := transport.Call{Timeout: 5 * time.Second}
+					io := codexhooks.IO{
+						SendKey: func(key string) bool {
+							r := svc.Runtime.Keys(callCtx, target, key, false, call)
+							return r.Err == nil && r.Valid && r.Value
+						},
+						Read: func() string {
+							r := svc.Runtime.Read(callCtx, target, transport.Read{Source: "visible"}, call)
+							if r.Err != nil || !r.Valid {
+								return screen
+							}
+							return r.Value
+						},
+						Pause: pollMillis(env),
+					}
+					if _, ok := codexhooks.Approve(screen, io); ok {
+						_, _ = fmt.Fprintf(platform.Stderr, "soho: %s\n", codexhooks.TrustedLine("spawn", o.name, codexhooks.Count(screen)))
+						return transport.StartupDialogHandled
+					}
+				}
+				o.hooksBlocked = codexhooks.BlockedLine("spawn", o.name, mode)
+				return transport.StartupDialogBlocked
+			}
+		}
+		rep := rt.Start(context.Background(), start, transport.Call{Timeout: time.Duration(startWrapperTimeoutMs(o.timeout)) * time.Millisecond})
 		if rep.Err == nil {
 			if kind == "pi" {
 				screen := svc.Runtime.Read(context.Background(), transport.Target{ID: rep.Value}, transport.Read{Source: "visible", Lines: intPtr(40)}, transport.Call{})
