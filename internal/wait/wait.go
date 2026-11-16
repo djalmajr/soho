@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +51,62 @@ func readWaitFile(sd, agent, name string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimRight(data, "\n"), true
+}
+
+// submitFailureState uses the confined metadata reader for both command and
+// inspection paths. A malformed or unsafe marker cannot authorize completion.
+func submitFailureState(sd, agent string, source *core.SessionSource) string {
+	if source == nil {
+		_, err := os.Lstat(filepath.Join(sd, "wait", agent+".submit-failed"))
+		if errors.Is(err, os.ErrNotExist) {
+			return ""
+		}
+		if err != nil {
+			return "unknown"
+		}
+		var openErr error
+		source, openErr = core.OpenSessionSource(filepath.Dir(sd), filepath.Base(sd), "")
+		if openErr != nil {
+			return "unknown"
+		}
+		defer source.Close()
+	}
+	raw, err := source.ReadMetadata("wait", agent+".submit-failed")
+	if errors.Is(err, os.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		return "unknown"
+	}
+	parts := strings.SplitN(strings.TrimSuffix(raw, "\n"), " ", 3)
+	if len(parts) != 3 || parts[2] == "" || strings.ContainsAny(parts[2], "\r\n") {
+		return "unknown"
+	}
+	if epoch, err := strconv.ParseInt(parts[0], 10, 64); err != nil || epoch <= 0 {
+		return "unknown"
+	}
+	if hash, err := hex.DecodeString(parts[1]); err != nil || len(hash) != sha256.Size {
+		return "unknown"
+	}
+	pointerRaw, err := source.ReadMetadata("task-report-" + agent + ".json")
+	current := "-"
+	if err == nil {
+		pointer := taskreport.ParseTaskReportPointer([]byte(pointerRaw))
+		if pointer == nil {
+			return "unknown"
+		}
+		value, _ := pointer.Get("task_report")
+		current, _ = value.(string)
+		if current == "" {
+			current = "-"
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "unknown"
+	}
+	if parts[2] == current {
+		return "not-received"
+	}
+	return ""
 }
 
 func writeWaitFile(sd, agent, name, value string) {
@@ -1117,6 +1174,25 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					}
 					last[agent] = "collaborating"
 					pending = append(pending, agent)
+				}
+				continue
+			}
+			if failure := submitFailureState(sd, agent, nil); failure != "" {
+				if failure == "unknown" {
+					jsonLine(jsonjs.O("agent", agent, "status", "unknown", "report", report))
+					if WaitRank(4) > WaitRank(rc) {
+						rc = 4
+					}
+				} else {
+					jsonLine(jsonjs.O("agent", agent, "status", "not-received", "report", report, "cause", "submission-failed"))
+					hint := fmt.Sprintf("read the pane (herdr agent read %s --source visible)", agent)
+					if env.Get("SOHO_TRANSPORT") == "hc" {
+						hint = fmt.Sprintf("read the terminal (hc read %s)", agent)
+					}
+					sendWarning(fmt.Sprintf("the last dispatch to '%s' failed and was not received; the report on disk belongs to the previous task — %s, then dispatch again", agent, hint))
+					if WaitRank(15) > WaitRank(rc) {
+						rc = 15
+					}
 				}
 				continue
 			}
