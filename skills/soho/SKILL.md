@@ -329,6 +329,8 @@ soho spawn scouter --kind cursor --model gpt-5.3-codex --effort high --approvals
 soho spawn implementer -- -s workspace-write -a never      # native agent args after --
 ```
 
+A native worker in `done` can receive the next dispatch after its previous turn ends.
+
 During `dispatch --compact`, `status` reports the pre-send phase even when the worker's previous report is complete. `compacting` means the dispatch process is still running; `compact-interrupted` (exit 9) means that process ended before sending the brief; `compact-unknown` (exit 4) means its identity could not be checked or the phase record is unreadable. The cause names the unsent brief when its record can be read. These states do not create a task report or send the brief later. They cover only the compaction phase of `dispatch`; `wait` still watches report files.
 
 The phase disappears before dispatch composes or sends the new brief, including on a handled compact error or timeout. An abruptly terminated dispatch leaves the phase for diagnosis. A later dispatch refuses an existing live or unknown owner (exit 10), and removes a phase only when its owner is confirmed gone or its recorded process or pane has changed. `status` does not remove it, including in NOWRITE mode. After an interruption, inspect the worker before retrying: ending the observer does not cancel the worker's compaction. The 300-second compact limit and `--no-wait` behavior are unchanged; `--timeout` still controls the report wait.

@@ -233,8 +233,8 @@ func TestDispatchHcKindRefusedBeforeAnyReadOrSend(t *testing.T) {
 }
 
 // assertWorkerGetSendOrder pins the probe's operation order when the
-// post-send get did run: the first worker get precedes the send and the
-// delayed get is the first post-send call, so the deadline under test is
+// post-send get did run: the preflight and immediate status get precede the
+// send and the delayed get is the first post-send call, so the deadline under test is
 // measured on the post-send work. Under host load the budget can expire
 // before the get even launches — that also proves the deadline property,
 // so the order is pinned only when the get happened.
@@ -252,14 +252,14 @@ func assertWorkerGetSendOrder(t *testing.T, f *dispatchHcFixture) {
 			ops = append(ops, "get")
 		}
 	}
-	if len(ops) < 3 {
+	if len(ops) < 4 {
 		t.Logf("worker get/send order=%v; the deadline passed before the post-send get launched", ops)
 		return
 	}
-	if ops[0] != "get" || ops[1] != "send" || ops[2] != "get" {
+	if ops[0] != "get" || ops[1] != "get" || ops[2] != "send" || ops[3] != "get" {
 		t.Fatalf("worker get/send order=%v; the first post-send get is not the delayed response", ops)
 	}
-	t.Logf("worker get/send order=%v; get #2 is the delayed response", ops)
+	t.Logf("worker get/send order=%v; get #3 is the delayed response", ops)
 }
 
 // TestDispatchHcBusyRetryRefusedAfterDeadline is the ported BusyDeadline
@@ -270,7 +270,8 @@ func TestDispatchHcBusyRetryRefusedAfterDeadline(t *testing.T) {
 	prefix := []string{"send", "--if", "idle", "--json", "--", "worker"}
 	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, Call: 1, Stdout: hcWorkerGet(7, "idle")},
-		{Argv: []string{"get", "worker", "--json"}, Call: 2, Delay: 250, Stdout: hcWorkerGet(7, "idle")},
+		{Argv: []string{"get", "worker", "--json"}, Call: 2, Stdout: hcWorkerGet(7, "idle")},
+		{Argv: []string{"get", "worker", "--json"}, Call: 3, Delay: 250, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: prefix, ArgvPrefix: true, Call: 1, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`},
 		{Argv: prefix, ArgvPrefix: true, Call: 2, Stdout: `{"turn":8,"started":true}`},
@@ -298,7 +299,8 @@ func TestDispatchHcArrivalProofRefusedAfterWindow(t *testing.T) {
 	// send --help after it would take the send's answer instead of the help.
 	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, Call: 1, Stdout: hcWorkerGet(7, "idle")},
-		{Argv: []string{"get", "worker", "--json"}, Call: 2, Delay: 1300, Stdout: hcWorkerGet(8, "idle")},
+		{Argv: []string{"get", "worker", "--json"}, Call: 2, Stdout: hcWorkerGet(7, "idle")},
+		{Argv: []string{"get", "worker", "--json"}, Call: 3, Delay: 1300, Stdout: hcWorkerGet(8, "idle")},
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(8, "idle")},
 		{Argv: []string{"send"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":false}`},
 		{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},

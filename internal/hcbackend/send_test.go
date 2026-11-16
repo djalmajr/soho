@@ -90,7 +90,7 @@ func TestBackendSend(t *testing.T) {
 		if rep.Err != nil || !rep.Valid || rep.Value != `{"turn":7,"started":true}` {
 			t.Fatalf("rep=%+v", rep)
 		}
-		wantArgv(t, calls(), append(idleProbesArgv(), [][]string{argv}...))
+		wantArgv(t, calls(), append(idleProbesArgv(), []string{"get", "worker", "--json"}, argv))
 	})
 	t.Run("a text that starts with a dash is a value, not a flag", func(t *testing.T) {
 		dash := []string{"send", "--if", "idle", "--json", "--", "worker", "-force"}
@@ -101,7 +101,7 @@ func TestBackendSend(t *testing.T) {
 		if rep.Err != nil || !rep.Valid {
 			t.Fatalf("rep=%+v", rep)
 		}
-		wantArgv(t, calls(), append(idleProbesArgv(), [][]string{dash}...))
+		wantArgv(t, calls(), append(idleProbesArgv(), []string{"get", "worker", "--json"}, dash))
 	})
 	t.Run("--queue drops the --if guard and runs no probes", func(t *testing.T) {
 		queueArgv := []string{"send", "--json", "--", "worker", sendPrompt}
@@ -214,7 +214,7 @@ func TestBackendSendGuardIdleCompat(t *testing.T) {
 	if rep.Err != nil || !rep.Valid {
 		t.Fatalf("rep=%+v", rep)
 	}
-	want := append(idleProbesArgv(), idleSendArgv("worker", sendPrompt))
+	want := append(idleProbesArgv(), []string{"get", "worker", "--json"}, idleSendArgv("worker", sendPrompt))
 	wantArgv(t, calls(), want)
 }
 
@@ -350,6 +350,7 @@ func TestBackendSendRemoteOldIdle(t *testing.T) {
 		{"schema", "--help"},
 		{"schema", "--json"},
 		{"schema", "--on", "m1", "--json"},
+		{"get", "m1/t7", "--json"},
 		idleSendArgv("m1/t7", sendPrompt),
 	}
 	wantArgv(t, calls(), want)
