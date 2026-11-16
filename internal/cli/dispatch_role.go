@@ -34,13 +34,12 @@ func openDispatchRole(sd, agent string) string {
 	return waitpkg.RecordedTaskRole(sd, agent)
 }
 
-func refuseReadOnlyEditBrief(body, brief, agent, role string, explicit bool, ctx *core.Config, env platform.Env, cwd string) {
-	if core.RoleIsEdit(role, env, cwd) || !roleDeclaredReadOnly(role, env, cwd) {
-		return
-	}
+// readOnlyEditSignals returns the signals that make a brief an edit request
+// (the Type line and the literal Owned files items), the edit role to suggest
+// and the remedy text. The dispatch refusal and `lint --role` share it.
+func readOnlyEditSignals(body string) (signals []string, suggested, remedy string) {
 	typeValue := dispatch.BriefType(body)
-	suggested := "implementer"
-	signals := []string{}
+	suggested = "implementer"
 	switch typeValue {
 	case "mechanical", "backend", "ui", "docs":
 		signals = append(signals, "Type: "+typeValue)
@@ -55,16 +54,27 @@ func refuseReadOnlyEditBrief(body, brief, agent, role string, explicit bool, ctx
 		signals = append(signals, "Owned files")
 	}
 	if len(signals) == 0 {
+		return nil, "", ""
+	}
+	// Renaming a title cannot lift a refusal the Type line caused.
+	remedy = "or rename the 'Owned files' title, or drop the edit sections from the brief"
+	if signals[0] != "Owned files" {
+		remedy = "or drop the '" + signals[0] + "' line and the edit sections from the brief"
+	}
+	return signals, suggested, remedy
+}
+
+func refuseReadOnlyEditBrief(body, brief, agent, role string, explicit bool, ctx *core.Config, env platform.Env, cwd string) {
+	if core.RoleIsEdit(role, env, cwd) || !roleDeclaredReadOnly(role, env, cwd) {
+		return
+	}
+	signals, suggested, remedy := readOnlyEditSignals(body)
+	if len(signals) == 0 {
 		return
 	}
 	wording := "runs"
 	if explicit {
 		wording = "was given"
-	}
-	// Renaming a title cannot lift a refusal the Type line caused.
-	remedy := "or rename the 'Owned files' title, or drop the edit sections from the brief"
-	if signals[0] != "Owned files" {
-		remedy = "or drop the '" + signals[0] + "' line and the edit sections from the brief"
 	}
 	core.DieFriction(fmt.Sprintf("dispatch: brief %s asks for edits (%s) but '%s' %s the read-only role '%s'; nothing was sent. Pass --role %s to give it an edit role, %s", brief, strings.Join(signals, ", "), agent, wording, role, suggested, remedy), 2, frictionLogPath, "dispatch")
 }

@@ -55,3 +55,29 @@ func TestBriefOwnedSignalReadOnlyLiteral(t *testing.T) {
 		t.Fatal("a heading the lint does not know as Owned files must not count for the literal signal")
 	}
 }
+
+// SOH-287: an Owned files section whose every item declares no files is not
+// an edit request for the read-only refusal; one other item still is, and the
+// edit-role signal (BriefHasOwnedItems) is unchanged.
+func TestBriefOwnedSignalReadOnlyNoneDeclaration(t *testing.T) {
+	for _, items := range []string{
+		"None.", "- None", "* none", "+ NONE", "Nenhum. Só leitura.", "Nenhuma.", "n/a", "N/A", "—", "- —", "nada", "NOTHING: read only", "None: read-only", "-\n- None\n",
+	} {
+		if BriefHasLiteralOwnedItems("## Owned files\n" + items + "\n") {
+			t.Fatalf("none declaration counted as an edit request: %q", items)
+		}
+		if !BriefHasOwnedItems("## Owned files\n"+items+"\n", nil) {
+			t.Fatalf("edit-role signal changed for %q", items)
+		}
+	}
+	for _, items := range []string{
+		"nonexistent.go", "`none.txt`", "- internal/x.go", "None\n- internal/x.go", "- internal/x.go\nNone", "nothingness.go", "Nenhumas.go", "- --", "Not applicable",
+	} {
+		if !BriefHasLiteralOwnedItems("## Owned files\n" + items + "\n") {
+			t.Fatalf("owned item ignored: %q", items)
+		}
+	}
+	if BriefHasLiteralOwnedItems("```md\n## Owned files\n- app.go\n```\n## Owned files\nNone.\n") {
+		t.Fatal("fenced example counted next to a none declaration")
+	}
+}
