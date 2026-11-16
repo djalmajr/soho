@@ -427,6 +427,8 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			if after != nil {
 				if warning := sharedHooksTrackingWarning(trackingStatus(root, ".claude/settings.json", env)); warning != "" {
 					_, _ = io.WriteString(platform.Stdout, "# "+warning+"\n")
+				} else if sharedHooksMigrationEmpties(after) {
+					_, _ = io.WriteString(platform.Stdout, "# would remove "+shared+" (it holds only soho-managed hooks)\n")
 				} else {
 					_, _ = io.WriteString(platform.Stdout, planFileDiff(shared, readOrEmpty(shared), *after))
 				}

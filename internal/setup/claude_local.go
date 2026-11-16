@@ -1,7 +1,9 @@
 package setup
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -90,9 +92,23 @@ func migrateSharedHooks(root string, env platform.Env) {
 		core.Warn(warning, "", "setup")
 		return
 	}
+	if sharedHooksMigrationEmpties(after) {
+		// Only soho hooks were in the untracked shared file: remove it rather
+		// than leave an empty {} behind (SOH-290).
+		if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+			platform.DieFriction("could not remove "+file, 4)
+		}
+		return
+	}
 	if err := platform.AtomicWrite(file, *after); err != nil {
 		platform.DieFriction("could not migrate hooks from "+file, 4)
 	}
+}
+
+// sharedHooksMigrationEmpties reports whether the migrated shared settings
+// hold nothing at all once the soho hooks are gone.
+func sharedHooksMigrationEmpties(after *string) bool {
+	return after != nil && strings.TrimSpace(*after) == "{}"
 }
 
 func sharedHooksTrackingWarning(status fileTracking) string {
