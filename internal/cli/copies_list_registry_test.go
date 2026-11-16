@@ -38,3 +38,28 @@ func TestCopiesListReadsTheRegistryDir(t *testing.T) {
 		t.Fatalf("without SOHO_REGISTRY_DIR the worker must not see the orchestrator's registry: code=%d out=%q", code, out)
 	}
 }
+
+// R404 F1: a read-only listing of the shared registry never incorporates the
+// queue (no registry write, the queue stays).
+func TestCopiesListNowriteLeavesTheQueue(t *testing.T) {
+	f := hcHkCopies(t)
+	sd := f.stateDir(t)
+	owned := filepath.Join(f.tmp, "queued-review-resource")
+	if err := os.MkdirAll(owned, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	queue, err := core.QueueCopy(f.env, filepath.Base(sd), sd, core.CopyRow{Path: owned, Owner: "-", Pane: "-", Created: "2026-01-01T00:00:00Z", Source: "-", Origin: "add"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := f.env.Clone()
+	other := t.TempDir()
+	worker["SOHO_DIR"], worker["SOHO_STATE_DIR"] = other, other
+	worker["SOHO_REGISTRY_DIR"], worker["SOHO_NOWRITE"] = sd, "1"
+	code, out, stderr := f.run(t, worker, "copies")
+	rows, readErr := core.ReadCopies(sd)
+	_, queueErr := os.Stat(queue)
+	if code != 0 || readErr != nil || len(rows) != 0 || queueErr != nil {
+		t.Fatalf("NOWRITE changed the shared registry or queue: code=%d rows=%d queue=%v read=%v out=%q err=%q", code, len(rows), queueErr, readErr, out, stderr)
+	}
+}
