@@ -266,8 +266,12 @@ func Run(args []string, env platform.Env) (code int) {
 		dieNowriteGenericRefusal(command, args)
 	}
 	if command == "help" && len(args) > 1 {
-		// help <command> prints what <command> --help prints (SOH-307).
-		if !knownCommands[args[1]] {
+		// help <command> prints what <command> --help prints (SOH-307);
+		// help help, help --help and help -h print help's own line.
+		if args[1] == "--help" || args[1] == "-h" {
+			args[1] = "help"
+		}
+		if args[1] != "help" && !knownCommands[args[1]] {
 			platform.Die("unknown command '"+args[1]+"'", 2)
 		}
 		_, _ = io.WriteString(platform.Stdout, commandHelp(args[1]))

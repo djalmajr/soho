@@ -21,7 +21,10 @@ func TestParseSinceFlagDurations(t *testing.T) {
 	if got, ok := ParseSinceFlag("2026-11-01", now); !ok || got.Year() != 2026 || got.Day() != 1 {
 		t.Fatalf("a date must still parse: %v ok=%v", got, ok)
 	}
-	for _, bad := range []string{"0d", "1m", "-1d", "1.5d", "d", "100000d", "1 d", "1D", ""} {
+	if got, ok := ParseSinceFlag("9999w", now); !ok || !got.Before(now) || got.Year() > 1836 {
+		t.Fatalf("9999w must be about 191 years back: %v ok=%v", got, ok)
+	}
+	for _, bad := range []string{"0d", "1m", "-1d", "1.5d", "d", "10000w", "16000w", "99999w", "1 d", "1D", ""} {
 		if _, ok := ParseSinceFlag(bad, now); ok {
 			t.Fatalf("%q must be refused", bad)
 		}
