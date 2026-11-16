@@ -37,7 +37,35 @@ func OwnProviderDoctorLines(ctx *core.Config, env platform.Env, cwd string) (boo
 			warnings = append(warnings, warning)
 		}
 	}
+	warnings = append(warnings, piBarePrintenvWarnings(ctx, env)...)
 	return len(models) > 0, warnings
+}
+
+var piBarePrintenvRE = regexp.MustCompile(`^![ \t]*printenv[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*$`)
+
+func piBarePrintenvWarnings(ctx *core.Config, env platform.Env) []string {
+	if ctx == nil {
+		ctx = &core.Config{}
+	}
+	if env.Get("SOHO_TRANSPORT") != "hc" || core.Cfg(ctx, "login_shell", "off", env) == "on" {
+		return nil
+	}
+	file := filepath.Join(platform.HomeDir(platform.Current(), env), ".pi", "agent", "models.json")
+	providers := ownObjectValue(parseOwnFile(file), "providers")
+	if providers == nil {
+		return nil
+	}
+	var warnings []string
+	for _, name := range providers.Keys() {
+		provider := ownObjectValue(providers, name)
+		match := piBarePrintenvRE.FindStringSubmatch(ownStringValue(provider, "apiKey"))
+		if match == nil {
+			continue
+		}
+		variable := match[1]
+		warnings = append(warnings, fmt.Sprintf("pi provider '%s': worker inherits only the Core environment; %s may be missing there. Set login_shell=on or use a key command such as !/usr/bin/env -u ZDOTDIR /bin/zsh -c 'printenv %s' to load the profile", name, variable, variable))
+	}
+	return warnings
 }
 
 func ownObject(v any) *jsonjs.Object { o, _ := v.(*jsonjs.Object); return o }

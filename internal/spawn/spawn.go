@@ -2304,6 +2304,27 @@ func startHcAgentUsingServices(ctx *core.Config, o *spawnOptions, kind string, e
 		}
 		rep := rt.Start(context.Background(), transport.Start{Name: o.name, Kind: kind, Cwd: o.cwd, Timeout: o.timeout, Args: args, LaunchProfile: o.launchProfile.Name, EnvOverrides: overrides, LoginShell: o.loginShell, RegistryDir: o.registryDir, Agent: o.name}, transport.Call{Timeout: time.Duration(startWrapperTimeoutMs(o.timeout)) * time.Millisecond})
 		if rep.Err == nil {
+			if kind == "pi" {
+				screen := svc.Runtime.Read(context.Background(), transport.Target{ID: rep.Value}, transport.Read{Source: "visible", Lines: intPtr(40)}, transport.Call{})
+				keyFailure := false
+				if screen.Err == nil && screen.Valid {
+					for _, line := range strings.Split(screen.Value, "\n") {
+						if strings.Contains(line, "No API key found for") || strings.Contains(line, "Failed to resolve API key") || strings.Contains(line, "API key auth failed for provider") {
+							keyFailure = true
+							break
+						}
+					}
+				}
+				if keyFailure {
+					closed := svc.Runtime.Close(context.Background(), transport.Target{ID: rep.Value}, transport.Call{})
+					if closed.Err != nil || !closed.Value {
+						Warn(o.outputText(fmt.Sprintf("spawn: could not close hc terminal %s after the failed start; it may still hold the name '%s'", rep.Value, o.name)), ctx, env, "spawn")
+					}
+					Warn("spawn: pi worker could not load its provider key from the Core environment; use soho config set login_shell on (or --user), or a key command that starts a shell which loads the profile. Screen follows", ctx, env, "spawn")
+					_, _ = fmt.Fprint(platform.Stdout, o.outputText(screen.Value))
+					platform.Die("", 7)
+				}
+			}
 			o.pane = rep.Value
 			return
 		}
