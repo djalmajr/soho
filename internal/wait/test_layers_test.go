@@ -128,8 +128,8 @@ func TestWaitTestLayersAllPassIsQuiet(t *testing.T) { // scenario 6
 		if !strings.Contains(out, `"test_layers":{"pass":0,"fail":0,"not_run":0,"blocked":0,"na":0,"unmarked":2}`) {
 			t.Fatalf("test_layers missing or wrong: %q", out)
 		}
-		if !strings.Contains(errText, "report of 'worker' has 2 Test layers line(s) without a result") {
-			t.Fatalf("missing the unmarked warning: %q", errText)
+		if !strings.Contains(errText, "report of 'worker' has 2 Test layers line(s) without a result; the form is '- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a', with ': <reason>' after FAIL, NOT RUN and BLOCKED (first: \"- unit: **PASS**\")") {
+			t.Fatalf("missing the unmarked warning with the form and the first line: %q", errText)
 		}
 		if strings.Contains(errText, "did not pass") {
 			t.Fatalf("unmarked lines are not non-pass layers: %q", errText)
