@@ -1008,6 +1008,7 @@ func CmdCollect(args []string, command CommandContext) int {
 	}
 	sd := core.StateDir(ctx, env, cwd)
 	svc := backend.New(env)
+	hcMode := env.Get("SOHO_TRANSPORT") == "hc"
 	// An active collaboration outranks the report: while its assignment is
 	// active the participant is still working, so the initial or stale
 	// report is an artifact, never the completion. The cycle is shown
@@ -1072,7 +1073,11 @@ func CmdCollect(args []string, command CommandContext) int {
 			cause = stRep.Err.Message
 		}
 		if st.State == "unavailable" {
-			core.Warn("no report file yet for '"+agent+"', and herdr agent get failed: "+cause+". The worker may still be live.", logFile, "collect")
+			getCall := "herdr agent get"
+			if hcMode {
+				getCall = "hc get"
+			}
+			core.Warn("no report file yet for '"+agent+"', and "+getCall+" failed: "+cause+". The worker may still be live.", logFile, "collect")
 			return 4
 		}
 		if (st.State == "working" || st.State == "blocked") && !linesSet {
@@ -1081,6 +1086,9 @@ func CmdCollect(args []string, command CommandContext) int {
 		}
 	}
 	core.Warn("no report file yet for '"+agent+"' (expected "+orNone(report)+"); falling back to recent terminal output", logFile, "collect")
+	if hcMode {
+		return collectRecentHC(svc, agent, lines, logFile)
+	}
 	r := svc.Legacy.AgentReadRaw(context.Background(), transport.Target{ID: agent}, "recent-unwrapped", lines, transport.Call{Timeout: herdr.Timeout})
 	if r.Value != "" {
 		output(r.Value)
@@ -1099,6 +1107,30 @@ func CmdCollect(args []string, command CommandContext) int {
 	}
 	return 6
 }
+
+// collectRecentHC is collect's recent-output fallback under transport=hc: the
+// transport's neutral read of the history above the screen (`hc read
+// --lines N`), where the legacy path runs the raw `agent read`. The text
+// goes to stdout and a successful read exits 6 like the legacy path; a
+// count that is not a non-negative integer is refused before any read, and a
+// read that fails prints its cause and exits 4 (the worker's output could
+// not be read; it may still be live).
+func collectRecentHC(svc transport.Services, agent, lines, logFile string) int {
+	count, err := strconv.Atoi(lines)
+	if err != nil || count < 0 {
+		core.DieFriction("collect: --lines expects a non-negative integer under transport=hc, got '"+lines+"'", 2, logFile, "collect")
+	}
+	rep := svc.Runtime.Read(context.Background(), transport.Target{ID: agent}, transport.Read{Source: "recent-unwrapped", Lines: &count}, transport.Call{Timeout: herdr.Timeout})
+	if rep.Err != nil {
+		_, _ = fmt.Fprintf(platform.Stderr, "collect: could not read the recent output of '%s': %s\n", agent, rep.Err.Message)
+		return 4
+	}
+	if rep.Value != "" {
+		output(rep.Value)
+	}
+	return 6
+}
+
 func orNone(s string) string {
 	if s == "" {
 		return "<none dispatched>"

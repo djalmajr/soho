@@ -39,11 +39,11 @@ func treePaths(t *testing.T, root string) []string {
 
 // hcRefusedCommands is every known command the hc entry guard refuses.
 var hcRefusedCommands = []string{
-	"session", "find", "run", "resume", "collect",
+	"session", "find", "run", "resume",
 	"send", "stats", "clean",
-	"regrid", "roster", "friction", "feedback", "tab-label",
+	"regrid", "feedback", "tab-label",
 	"layout-plan", "review-snapshot",
-	"reopen", "compact", "metrics", "copies", "gc", "procs", "promote",
+	"reopen", "compact", "metrics", "promote",
 	"job", "plugin",
 }
 
@@ -102,7 +102,8 @@ func TestHcGuardRefusesEveryOtherCommand(t *testing.T) {
 	f.run(t, "config")
 	// The full allowed set: the read side (status, wait) plus spawn,
 	// dispatch, release and collaborate, which run through hc (DJA-604
-	// 2b-2b / 2b-3a / 2b-4 and the DJA-604 follow-up), the explicitly
+	// 2b-2b / 2b-3a / 2b-4 and the DJA-604 follow-up), the housekeeping
+	// commands (copies, gc, procs, friction, roster, collect), the explicitly
 	// allowed commands (doctor, config, explain, capabilities), the usage and
 	// version invocations, and the commands that never touch the transport
 	// (kinds, models, model, roles, role, lint, install, env), and hook,
@@ -115,7 +116,8 @@ func TestHcGuardRefusesEveryOtherCommand(t *testing.T) {
 		"doctor": true, "config": true, "explain": true, "capabilities": true,
 		"init": true, "title": true, "inventory": true,
 		"mutation-copy": true,
-		"kinds":         true, "models": true, "model": true, "roles": true, "role": true,
+		"copies":        true, "gc": true, "procs": true, "friction": true, "roster": true, "collect": true,
+		"kinds": true, "models": true, "model": true, "roles": true, "role": true,
 		"lint": true, "install": true, "env": true, "hook": true, "setup": true,
 	}
 	for _, command := range hcRefusedCommands {

@@ -400,21 +400,49 @@ func copiesList(ctx *core.Config, env platform.Env, cwd string) int {
 	}
 	now := platform.Now()
 	for _, row := range rows {
-		_, _ = fmt.Fprintf(platform.Stdout, "%s  %s  %s  %s\n", row.Path, row.Owner, humanAge(copyAge(row, now)), copyRowState(row, sd, svc))
+		_, _ = fmt.Fprintf(platform.Stdout, "%s  %s  %s  %s\n", row.Path, row.Owner, humanAge(copyAge(row, now)), copyRowState(row, sd, env, svc))
 	}
 	return 0
 }
+
+// Ownership of a recorded terminal is three-valued. live: a successful
+// machine-wide listing holds the address. absent: a successful listing does
+// not hold it, or the line records no terminal at all. unknown: the listing
+// failed or is not valid, so nothing is proven. Only absent may make a line
+// an orphan; unknown is the "unverified" state, which gc never acts on.
+const (
+	terminalLive    = "live"
+	terminalAbsent  = "absent"
+	terminalUnknown = "unknown"
+	// stateUnverified is the state word of a line whose owning terminal
+	// could not be checked; copies and gc print it, and gc --yes keeps the
+	// line (the copy on disk, the process running).
+	stateUnverified = "unverified"
+)
 
 // copyRowState is the state of a registry line: missing when the path is
 // gone, owned when the owner is a live roster agent, orphan otherwise (the
 // owner is "-", is not in the roster, or is gone). An owner Herdr cannot
 // answer for stays owned: gc must not drop a copy it cannot prove orphaned.
-func copyRowState(row core.CopyRow, sd string, svc transport.Services) string {
+// On the native transport a line with owner "-" and a recorded terminal
+// (a live caller outside the roster registered it) is owned while that
+// terminal is live, unverified when the listing cannot say, and an orphan
+// only when the listing proves the terminal absent; its age decides
+// nothing. The legacy transport does not read the recorded terminal.
+func copyRowState(row core.CopyRow, sd string, env platform.Env, svc transport.Services) string {
 	if _, err := os.Stat(row.Path); err != nil {
 		return "missing"
 	}
 	if row.Owner != "-" && core.RosterLine(sd, row.Owner) != "" && readState(svc, row.Owner, transport.Call{Timeout: herdr.Timeout}).State != "gone" {
 		return "owned"
+	}
+	if row.Owner == "-" && env.Get("SOHO_TRANSPORT") == "hc" {
+		switch terminalOwnership(svc, row.Pane) {
+		case terminalLive:
+			return "owned"
+		case terminalUnknown:
+			return stateUnverified
+		}
 	}
 	return "orphan"
 }
@@ -422,10 +450,12 @@ func copyRowState(row core.CopyRow, sd string, svc transport.Services) string {
 // gcProcState classifies one process line for gc: owned (running, the
 // owner is a live roster agent - the copies' rule, never touched), owned
 // (running, the owner is "-" and the line's registered pane is still alive
-// in the machine-wide pane list - the orchestrator's own line), orphan
-// (running, the owner is not live - or a "-" line whose pane has left the
-// list or cannot be confirmed), or gone/reused (any owner: --yes drops the
-// line, and a reused pid is never signalled).
+// in the machine-wide pane list - the orchestrator's own line), unverified
+// (running, the owner is "-" and the pane list cannot be read or is not
+// valid: nothing proves the terminal gone, so gc never stops it), orphan
+// (running, the owner is not live - or a "-" line whose pane the successful
+// list lacks, or that records no pane), or gone/reused (any owner: --yes
+// drops the line, and a reused pid is never signalled).
 func gcProcState(row core.ProcRow, sd string, env platform.Env, svc transport.Services) string {
 	if st := core.ProcRowState(row, env); st != "running" {
 		return st
@@ -433,31 +463,39 @@ func gcProcState(row core.ProcRow, sd string, env platform.Env, svc transport.Se
 	if row.Owner != "-" && core.RosterLine(sd, row.Owner) != "" && readState(svc, row.Owner, transport.Call{Timeout: herdr.Timeout}).State != "gone" {
 		return "owned"
 	}
-	if row.Owner == "-" && paneExists(svc, row.Pane) {
-		return "owned"
+	if row.Owner == "-" {
+		switch terminalOwnership(svc, row.Pane) {
+		case terminalLive:
+			return "owned"
+		case terminalUnknown:
+			return stateUnverified
+		}
 	}
 	return "orphan"
 }
 
-// paneExists is the pane check of a "-" process line for gc: the pane is
-// confirmed alive by the transport's machine-wide pane list, and only then.
-// A read that fails (the transport cannot confirm the pane) or a line with
-// no recorded pane (an older version) confirms nothing: the line keeps
-// today's orphan behavior rather than one the check cannot prove safe.
-func paneExists(svc transport.Services, pane string) bool {
-	if svc.Window == nil || pane == "" || pane == "-" {
-		return false
+// terminalOwnership is the check of a recorded terminal address against the
+// transport's machine-wide listing: live when the successful listing holds
+// it, absent when the successful listing lacks it (or the line records no
+// terminal: an older version, "-"), unknown when the read fails or the
+// reply is not valid.
+func terminalOwnership(svc transport.Services, pane string) string {
+	if pane == "" || pane == "-" {
+		return terminalAbsent
+	}
+	if svc.Window == nil {
+		return terminalUnknown
 	}
 	rep := svc.Window.ListPanes(context.Background(), transport.Scope{All: true}, transport.Call{Timeout: herdr.Timeout})
 	if rep.Err != nil || !rep.Valid {
-		return false
+		return terminalUnknown
 	}
 	for _, view := range rep.Value {
 		if view.PaneID == pane {
-			return true
+			return terminalLive
 		}
 	}
-	return false
+	return terminalAbsent
 }
 
 // gcOrphanProcs is the dry-run list: the running lines gc would stop.
@@ -469,6 +507,38 @@ func gcOrphanProcs(rows []core.ProcRow, sd string, env platform.Env, svc transpo
 		}
 	}
 	return out
+}
+
+// gcProcsInState is the running lines gcProcState classifies as state.
+func gcProcsInState(rows []core.ProcRow, state, sd string, env platform.Env, svc transport.Services) []core.ProcRow {
+	out := []core.ProcRow{}
+	for _, row := range rows {
+		if gcProcState(row, sd, env, svc) == state {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+// gcUnverifiedHeader opens the block of lines gc keeps because the terminal
+// that owns them could not be checked.
+const gcUnverifiedHeader = "unverified (kept: the terminal that owns them could not be checked):"
+
+// gcPrintUnverified lists the lines gc does not touch because their
+// owning terminal is unverified: copies first, then running processes. It
+// prints nothing when there are none.
+func gcPrintUnverified(copies []gcCandidate, procs []core.ProcRow) {
+	if len(copies) == 0 && len(procs) == 0 {
+		return
+	}
+	now := platform.Now()
+	_, _ = fmt.Fprintln(platform.Stdout, gcUnverifiedHeader)
+	for _, c := range copies {
+		_, _ = fmt.Fprintf(platform.Stdout, "copy %s  %s  %s\n", c.path, c.owner, humanAge(c.age))
+	}
+	for _, row := range procs {
+		_, _ = fmt.Fprintf(platform.Stdout, "process %d  %s  %s  %s\n", row.Pid, row.Name, row.Owner, humanAge(procAge(row, now)))
+	}
 }
 
 // gcProjectOrphans is gc's read of the unregistered orphan processes of
@@ -1140,8 +1210,13 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	threshold := time.Duration(thresholdHours) * time.Hour
 
 	candidates := []gcCandidate{}
+	unverifiedCopies := []gcCandidate{}
 	for _, row := range rows {
-		switch copyRowState(row, sd, svc) {
+		switch copyRowState(row, sd, env, svc) {
+		case stateUnverified:
+			// Its owning terminal could not be checked: never a candidate,
+			// whatever its age; listed apart.
+			unverifiedCopies = append(unverifiedCopies, gcCandidate{path: row.Path, owner: row.Owner, age: copyAge(row, now)})
 		case "missing":
 			candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: copyAge(row, now), missing: true})
 		case "orphan":
@@ -1184,11 +1259,13 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		// listed; --yes drops them with a note. Processes of live owners
 		// are never candidates.
 		orphan := gcOrphanProcs(procRows, sd, env, svc)
+		unverifiedProcs := gcProcsInState(procRows, stateUnverified, sd, env, svc)
 		// Nothing to remove or stop: only the line itself, no total and no
 		// hint (G1).
 		if !snapshotActivity && len(candidates) == 0 && len(unregistered) == 0 && len(orphan) == 0 && !gcOrphansWouldStop(orphanProcs, threshold, now) {
 			_, _ = fmt.Fprintln(platform.Stdout, "nothing to remove")
 			gcPrintOrphanProcs(orphanProcs, threshold, now)
+			gcPrintUnverified(unverifiedCopies, unverifiedProcs)
 			return 0
 		}
 		if len(candidates) > 0 {
@@ -1247,6 +1324,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			}
 		}
 		gcPrintOrphanProcs(orphanProcs, threshold, now)
+		gcPrintUnverified(unverifiedCopies, unverifiedProcs)
 		return 0
 	}
 
@@ -1282,6 +1360,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	freed := int64(0)
 	removedAny := false
 	procsHandled := 0
+	unverifiedProcs := []core.ProcRow{}
 	for _, cand := range candidates {
 		if cand.missing {
 			// Nothing is left on disk: the line only leaves the registry.
@@ -1374,7 +1453,14 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			unlock()
 		}
 		for _, row := range cands {
-			if gcProcState(row, sd, env, svc) == "owned" {
+			// Owned lines are never touched, and an unverified one (its
+			// terminal could not be checked) is kept and listed: only a
+			// successful listing that lacks the terminal makes it an orphan.
+			switch gcProcState(row, sd, env, svc) {
+			case "owned":
+				continue
+			case stateUnverified:
+				unverifiedProcs = append(unverifiedProcs, row)
 				continue
 			}
 			res := core.StopProcRow(sd, row, env)
@@ -1413,6 +1499,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		// --yes with nothing removed or stopped: the dry run's closing line.
 		_, _ = fmt.Fprintln(platform.Stdout, "nothing to remove")
 	}
+	gcPrintUnverified(unverifiedCopies, unverifiedProcs)
 	return 0
 }
 

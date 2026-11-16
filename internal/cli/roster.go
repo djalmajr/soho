@@ -12,6 +12,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	herdrtext "github.com/djalmajr/soho/internal/text"
@@ -104,6 +105,39 @@ func rosterArgs(argv []string) (scope string, jsonMode bool, ok bool) {
 	return scope, jsonMode, true
 }
 
+// hcRosterAgents is the roster's live list under transport=hc: every live
+// local terminal of the machine (the transport's machine listing, which
+// leaves finished and remote records out, as the legacy agent list does),
+// in the field names the reader consumes (name, agent, pane_id,
+// agent_status; an unnamed terminal has no name field), with the soho session each terminal belongs to as its
+// workspace. The agent field is the record's first program hint and is
+// absent when the record names none. A failed listing dies with the
+// transport's message, as the legacy raw list's die-on-failure does.
+func hcRosterAgents(svc transport.Services) ([]any, map[string]string) {
+	rep := svc.Runtime.List(context.Background(), transport.Scope{All: true}, transport.Call{Timeout: herdr.Timeout})
+	if rep.Err != nil || !rep.Valid {
+		cause := "no listing"
+		if rep.Err != nil {
+			cause = rep.Err.Message
+		}
+		platform.DieFriction("roster: cannot list the terminals ("+cause+")", 4)
+	}
+	live := make([]any, 0, len(rep.Value))
+	workspaceOf := map[string]string{}
+	for _, terminal := range rep.Value {
+		fields := []any{"pane_id", terminal.PaneID, "agent_status", terminal.State}
+		if terminal.Name != "" {
+			fields = append(fields, "name", terminal.Name)
+		}
+		if len(terminal.ProgramHints) > 0 {
+			fields = append(fields, "agent", terminal.ProgramHints[0])
+		}
+		live = append(live, jsonjs.O(fields...))
+		workspaceOf[terminal.PaneID] = terminal.WorkspaceID
+	}
+	return live, workspaceOf
+}
+
 func cmdRoster(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	scope, jsonMode, ok := rosterArgs(argv)
 	if !ok {
@@ -111,17 +145,25 @@ func cmdRoster(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	}
 	sd := core.StateDir(ctx, env, cwd)
 	svc := backend.New(env)
-	live := liveAgentsFriction(env)
 	ws := core.WorkspaceID(ctx, env, cwd)
-	panes := windowObjects(svc.Window.ListPanes(context.Background(), transport.Scope{WorkspaceID: ws}, transport.Call{}).Value)
-	tabs := windowObjects(svc.Window.ListTabs(context.Background(), ws, transport.Call{}).Value)
+	var live, panes, tabs []any
 	workspaceOf := map[string]string{}
-	for _, p := range panes {
-		workspaceOf[valueString(field(p, "pane_id"), "")] = ws
-	}
-	if scope == "server" {
-		for _, p := range windowObjects(svc.Window.ListPanes(context.Background(), transport.Scope{All: true}, transport.Call{}).Value) {
-			workspaceOf[valueString(field(p, "pane_id"), "")] = valueString(field(p, "workspace_id"), "unknown")
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		// hc has no panes or tabs: its terminals come from one machine
+		// listing in the field names this reader consumes, and each
+		// terminal's own soho session stands in for its workspace.
+		live, workspaceOf = hcRosterAgents(svc)
+	} else {
+		live = liveAgentsFriction(env)
+		panes = windowObjects(svc.Window.ListPanes(context.Background(), transport.Scope{WorkspaceID: ws}, transport.Call{}).Value)
+		tabs = windowObjects(svc.Window.ListTabs(context.Background(), ws, transport.Call{}).Value)
+		for _, p := range panes {
+			workspaceOf[valueString(field(p, "pane_id"), "")] = ws
+		}
+		if scope == "server" {
+			for _, p := range windowObjects(svc.Window.ListPanes(context.Background(), transport.Scope{All: true}, transport.Call{}).Value) {
+				workspaceOf[valueString(field(p, "pane_id"), "")] = valueString(field(p, "workspace_id"), "unknown")
+			}
 		}
 	}
 	// tabValue resolves the pane's tab label without the 16-cut, shared by
