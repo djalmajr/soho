@@ -105,6 +105,9 @@ func reviewAuthorWarning(briefPath, role, sidecar string, ctx dispatchAuthorCont
 	if tree == "" {
 		return reviewWorktreeMessage(briefPath)
 	}
+	if dispatch.SameRepository(ctx.env, tree, platform.ProjectRoot(ctx.env, ctx.cwd)) == dispatch.RepositoryDifferent {
+		return ""
+	}
 	return fmt.Sprintf("no author found for this review: no accepted edit-role brief declares Worktree: %s, so 'soho stats --by author-model' will not count it", tree)
 }
 

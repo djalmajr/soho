@@ -460,7 +460,13 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 		project := platform.ProjectRoot(env, options.OrchestratorCwd)
 		state := platform.StateProjectRoot(env, options.OrchestratorCwd)
 		if !SamePath(workerTree, project, platform.Current()) || !SamePath(workerTree, state, platform.Current()) {
-			result.UnseenPaths = unseenPathWarnings(brief, body, workerTree, []string{project, state})
+			var roots []string
+			for _, root := range []string{project, state} {
+				if SameRepository(env, workerTree, root) != RepositoryDifferent {
+					roots = append(roots, root)
+				}
+			}
+			result.UnseenPaths = unseenPathWarnings(brief, body, workerTree, roots)
 			result.Warnings = append(result.Warnings, result.UnseenPaths...)
 		}
 	}
