@@ -222,8 +222,8 @@ func TestGcUnregisteredOrigin(t *testing.T) {
 		want := "resource pressure: none (disk 60% free, swap 30% used)\n" +
 			gcUnregisteredHeader + "\n" +
 			bare + "  40 B  3h  no origin marker\n" +
-			other + "  40 B  3h  another project: /nonexistent/other\n" +
 			own + "  40 B  3h  this project\n" +
+			"1 unregistered copy of other projects (40 B) is not listed; 'soho gc --verbose' lists them\n" +
 			"run 'soho gc --yes --include-unregistered' to remove the unregistered ones\n"
 		if out != want {
 			t.Fatalf("stdout:\n got:  %q\nwant: %q", out, want)
@@ -237,7 +237,7 @@ func TestGcUnregisteredOrigin(t *testing.T) {
 
 	t.Run("the dry run names the new line when none is this project", func(t *testing.T) {
 		f := gcEmptyFixture(t)
-		_, other, bare := threeCopies(t, f)
+		_, _, bare := threeCopies(t, f)
 		if err := os.RemoveAll(filepath.Join(f.tmp, "soho-mutation-own")); err != nil {
 			t.Fatal(err)
 		}
@@ -248,7 +248,7 @@ func TestGcUnregisteredOrigin(t *testing.T) {
 		want := "resource pressure: none (disk 60% free, swap 30% used)\n" +
 			gcUnregisteredHeader + "\n" +
 			bare + "  40 B  3h  no origin marker\n" +
-			other + "  40 B  3h  another project: /nonexistent/other\n" +
+			"1 unregistered copy of other projects (40 B) is not listed; 'soho gc --verbose' lists them\n" +
 			"the unregistered copies belong to another project or have no origin marker; gc does not remove them (check each one and remove it by hand)\n"
 		if out != want {
 			t.Fatalf("stdout:\n got:  %q\nwant: %q", out, want)

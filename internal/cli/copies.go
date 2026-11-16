@@ -24,7 +24,7 @@ import (
 
 const (
 	copiesUsage = "usage: soho copies [add <path> [--agent <name>]]"
-	gcUsage     = "usage: soho gc [--yes] [--older-than HOURS] [--include-unregistered] [--include-unregistered-procs]"
+	gcUsage     = "usage: soho gc [--yes] [--verbose] [--older-than HOURS] [--include-unregistered] [--include-unregistered-procs]"
 
 	// copiesTimeLayout is the ISO-8601 UTC format the registry stores in the
 	// created column (core.FrictionISO).
@@ -1164,13 +1164,15 @@ func (v *gcVolumes) print() {
 // --include-unregistered-procs --yes.
 func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	svc := backend.New(env)
-	yes, includeUnregistered, includeProcs := false, false, false
+	yes, verbose, includeUnregistered, includeProcs := false, false, false, false
 	hours := "2"
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
 		switch arg {
 		case "--yes":
 			yes = true
+		case "--verbose":
+			verbose = true
 		case "--include-unregistered":
 			includeUnregistered = true
 		case "--include-unregistered-procs":
@@ -1300,10 +1302,11 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		}
 		if len(unregistered) > 0 {
 			_, _ = fmt.Fprintln(platform.Stdout, gcUnregisteredHeader)
+			listing := gcUnregisteredListing{verbose: verbose}
 			gcMeasureCopies(unregisteredPaths, func(i int, size int64) {
-				entry := unregistered[i]
-				_, _ = fmt.Fprintf(platform.Stdout, "%s  %s  %s  %s\n", entry.path, humanSize(size), humanAge(entry.age), entry.origin)
+				listing.print(unregistered[i], size)
 			})
+			listing.summary()
 			if len(candidates) == 0 {
 				// Only unregistered copies: name the flag that actually removes
 				// them, but only when gc may remove at least one of them (this
@@ -1430,9 +1433,11 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 				_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", entry.path, humanSize(entry.size))
 			}
 		} else {
+			listing := gcUnregisteredListing{verbose: verbose}
 			for _, entry := range unregistered {
-				_, _ = fmt.Fprintf(platform.Stdout, "%s  %s  %s  %s\n", entry.path, humanSize(entry.size), humanAge(entry.age), entry.origin)
+				listing.print(entry, entry.size)
 			}
+			listing.summary()
 		}
 	}
 	volumes.finish()
@@ -1592,6 +1597,33 @@ func gcPressureThreshold(ctx *core.Config, key string, limit int, env platform.E
 	return limit
 }
 
+// gcUnregisteredListing streams visible rows and summarizes other projects.
+type gcUnregisteredListing struct {
+	verbose bool
+	count   int
+	size    int64
+}
+
+func (listing *gcUnregisteredListing) print(entry gcUnregisteredCopy, size int64) {
+	if !listing.verbose && strings.HasPrefix(entry.origin, originOtherProject) {
+		listing.count++
+		listing.size += size
+		return
+	}
+	_, _ = fmt.Fprintf(platform.Stdout, "%s  %s  %s  %s\n", entry.path, humanSize(size), humanAge(entry.age), entry.origin)
+}
+
+func (listing *gcUnregisteredListing) summary() {
+	if listing.count == 0 {
+		return
+	}
+	noun, verb := "copies", "are"
+	if listing.count == 1 {
+		noun, verb = "copy", "is"
+	}
+	_, _ = fmt.Fprintf(platform.Stdout, "%d unregistered %s of other projects (%s) %s not listed; 'soho gc --verbose' lists them\n", listing.count, noun, humanSize(listing.size), verb)
+}
+
 // unregisteredHasThisProject reports whether at least one unregistered copy
 // may be removed (its marker names the current project).
 func unregisteredHasThisProject(entries []gcUnregisteredCopy) bool {
@@ -1605,8 +1637,9 @@ func unregisteredHasThisProject(entries []gcUnregisteredCopy) bool {
 
 // The origin classes of an unregistered mutation copy.
 const (
-	originThisProject = "this project"
-	originNoMarker    = "no origin marker"
+	originThisProject  = "this project"
+	originNoMarker     = "no origin marker"
+	originOtherProject = "another project: "
 )
 
 // originMarkerPath is the marker beside a copy: the copy's path with the
@@ -1660,7 +1693,7 @@ func copyOrigin(copyPath, current string) string {
 	if current != "" && sameOriginProject(project, current) {
 		return originThisProject
 	}
-	return "another project: " + source
+	return originOtherProject + source
 }
 
 func sameOriginProject(marker, current string) bool {

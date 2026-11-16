@@ -655,7 +655,7 @@ func nowriteReadInvocation(args []string) bool {
 	case "collect":
 		return nowriteCollectRead(args[1:])
 	case "gc":
-		return nowriteFlagOnly(args[1:], []string{"--older-than"}, []string{"--include-unregistered"})
+		return nowriteFlagOnly(args[1:], []string{"--older-than"}, []string{"--include-unregistered", "--verbose"})
 	}
 	return false
 }
