@@ -44,4 +44,6 @@ Set-Location -LiteralPath $copyDir -ErrorAction Stop
 # Only now edit files in the copy.
 ```
 
+Run `soho mutation-copy` in the worker's own shell environment, as started by `soho spawn`: that environment carries what registration needs (`SOHO_REGISTRY_DIR`, `SOHO_AGENT`, and on native Core `HC_TERMINAL_ID`), so `soho release <worker>` removes the copy. Isolate the environment only for the commands you run inside the copy (tests with a temporary `HOME`, for example), never for `mutation-copy` itself. When stderr says `mutation-copy: copy not registered (…); remove it yourself when done`, delete that copy before you write your report, and say so in it.
+
 The guard checks isolation when invoked; it does not reserve paths against later filesystem changes. These sequences require successful capture, directory validation, the explicit-source guard and directory entry before edits, and neither shell continues on a failed step.
