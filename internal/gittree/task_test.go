@@ -20,7 +20,14 @@ func TestMain(m *testing.M) { fakecli.Main(); os.Exit(m.Run()) }
 
 func audit338Fixture(t *testing.T, rules ...fakecli.Rule) (string, platform.Env, *bytes.Buffer) {
 	t.Helper()
+	return audit338FixtureWith(t, func(string) []fakecli.Rule { return rules })
+}
+
+// audit338FixtureWith builds the fixture with rules that may name its root.
+func audit338FixtureWith(t *testing.T, build func(root string) []fakecli.Rule) (string, platform.Env, *bytes.Buffer) {
+	t.Helper()
 	root := t.TempDir()
+	rules := build(root)
 	path := filepath.Join(root, "task.dispatch.json")
 	bin := filepath.Join(root, "bin")
 	old, next := strings.Repeat("a", 40), strings.Repeat("b", 40)
@@ -85,7 +92,7 @@ func TestAudit338EightConcurrentChecks(t *testing.T) {
 			moved++
 		}
 	}
-	if count := strings.Count(stderr.String(), "left a local commit"); count != 1 || moved != 1 || audit338Calls(t, path) != 3 {
+	if count := strings.Count(stderr.String(), "left a local commit"); count != 1 || moved != 1 || audit338Calls(t, path) != 4 {
 		t.Fatalf("warnings=%d movements=%d git_calls=%d stderr=%s", count, moved, audit338Calls(t, path), stderr.String())
 	}
 	if checked, _ := read(path).Get("git_checked"); checked != true {
@@ -98,10 +105,10 @@ func TestAudit338EightConcurrentChecks(t *testing.T) {
 	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Fatalf("marker mode=%v", info.Mode())
 	}
-	if Check(path, "worker", env, "", "collect") != nil || strings.Count(stderr.String(), "left a local commit") != 1 || audit338Calls(t, path) != 3 {
+	if Check(path, "worker", env, "", "collect") != nil || strings.Count(stderr.String(), "left a local commit") != 1 || audit338Calls(t, path) != 4 {
 		t.Fatal("repeat check was not silent")
 	}
-	t.Logf("8 concurrent checks: warnings=1 movements=1 git_calls=3 marker=%s", path+".git-checked")
+	t.Logf("8 concurrent checks: warnings=1 movements=1 git_calls=4 marker=%s", path+".git-checked")
 }
 
 func TestAudit338ExistingMarkerSilent(t *testing.T) {
@@ -299,4 +306,31 @@ func TestGitTree(t *testing.T) {
 			t.Fatalf("got %q want empty", got)
 		}
 	})
+}
+
+// SOH-297: the worker and the orchestrator share a Git identity, so the
+// warning names the commit by its subject instead of asserting the agent
+// made it.
+func TestCheckNamesTheCommitBySubject(t *testing.T) {
+	root := ""
+	path, env, stderr := audit338FixtureWith(t, func(r string) []fakecli.Rule {
+		root = r
+		next := strings.Repeat("b", 40)
+		return []fakecli.Rule{
+			{Argv: []string{"-C", r, "rev-parse", "HEAD"}, Stdout: next},
+			{Argv: []string{"-C", r, "symbolic-ref", "-q", "--short", "HEAD"}, Stdout: "main"},
+			{Argv: []string{"-C", r, "log", "-1", "--format=%s", next}, Stdout: "fix(wait): orchestrator's own fix\n"},
+			{AnyArgs: true},
+		}
+	})
+	if Check(path, "worker", env, "", "wait") == nil {
+		t.Fatal("no movement reported")
+	}
+	got := stderr.String()
+	if !strings.Contains(got, `with a local commit ("fix(wait): orchestrator's own fix") during the task of agent 'worker'; if you did not make it, the agent left a local commit`) {
+		t.Fatalf("warning does not name the commit neutrally: %s (root %s)", got, root)
+	}
+	if strings.Contains(got, "agent 'worker' left a local commit") {
+		t.Fatalf("warning still asserts the agent made the commit: %s", got)
+	}
 }
