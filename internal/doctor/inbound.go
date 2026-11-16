@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -20,7 +19,7 @@ import (
 // agent that could receive one has a UserPromptSubmit hook, and that the
 // signed peer settings of the previous design are gone. The hook reads no key
 // and checks no signature, so there is nothing else to check.
-func doctorPeerInbound(ctx *core.Config, env platform.Env, cwd string, s *Say) {
+func doctorPeerInbound(ctx *core.Config, svc transport.Services, env platform.Env, cwd string, s *Say) {
 	// The signed peer settings are retired: a file that still sets one is
 	// no longer read by anything.
 	for _, layer := range ctx.Layers {
@@ -45,7 +44,7 @@ func doctorPeerInbound(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 	// The hook is the protection: every live agent without a UserPromptSubmit
 	// hook receives a peer message as-is. This check no longer depends on a
 	// setting; it runs whenever the doctor runs in Herdr.
-	doctorUnprotectedAgents(ctx, env, cwd, s)
+	doctorUnprotectedAgentsWithServices(ctx, svc, env, cwd, s)
 }
 
 // userPromptSubmitProtected reports whether the settings file carries a
@@ -98,11 +97,9 @@ func userPromptSubmitProtected(file string) bool {
 	return false
 }
 
-// doctorUnprotectedAgents warns about each live agent of the roster that is
-// not protected by this project's supported inbound hooks.
-func doctorUnprotectedAgents(ctx *core.Config, env platform.Env, cwd string, s *Say) {
-	// One backend for this invocation of the probe (DJA-596).
-	svc := backend.New(env)
+// doctorUnprotectedAgentsWithServices warns about each live agent of the roster
+// that is not protected by this project's supported inbound hooks.
+func doctorUnprotectedAgentsWithServices(ctx *core.Config, svc transport.Services, env platform.Env, cwd string, s *Say) {
 	if !svc.Runtime.Caller().Inside {
 		return
 	}

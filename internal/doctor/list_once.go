@@ -7,8 +7,8 @@ import (
 )
 
 // listOnceRuntime answers every List of one doctor run with the first reply
-// for the same scope, so the checks that read the live terminals (worker
-// without a parent, finished worker left open) cost one listing together.
+// for the same scope, so the native orphan, parentless and done-open
+// checks can share an all-local listing.
 type listOnceRuntime struct {
 	transport.Transport
 	listed bool

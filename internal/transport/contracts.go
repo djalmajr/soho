@@ -178,6 +178,11 @@ type Terminal struct {
 	// session resolution uses). Source metadata for local discovery, never
 	// a public field.
 	WorkspaceID string
+	// SessionLabel is the hc record's explicit soho.session label, without
+	// the hc-<address> fallback ("" when the record has none, and on
+	// herdr): the membership a labeled hc listing selects. Source metadata,
+	// never a public field.
+	SessionLabel string
 	// ProgramHints are the executable hints the terminal record itself
 	// names, in record order: the herdr record's agent identifier alone,
 	// or the hc record's status app followed by the argv[0] basename when

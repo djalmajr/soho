@@ -173,10 +173,9 @@ func sessionFromGet(stdout string) (string, error) {
 	return "", errors.New("hc get returned no soho.session label and no address for the session fallback")
 }
 
-// sessionOfRecord is one terminal record's soho session: the soho.session
-// label when it names one, else the "hc-<address>" fallback the session
-// resolution uses ("" when the record names neither).
-func sessionOfRecord(obj *jsonjs.Object) string {
+// sessionLabelOfRecord is one terminal record's explicit soho.session
+// label ("" when it has none): the value a labeled listing selects.
+func sessionLabelOfRecord(obj *jsonjs.Object) string {
 	if labels, ok := obj.Get("labels"); ok {
 		if labelsObj, ok := labels.(*jsonjs.Object); ok {
 			if v, ok := labelsObj.Get(SessionLabel); ok {
@@ -185,6 +184,16 @@ func sessionOfRecord(obj *jsonjs.Object) string {
 				}
 			}
 		}
+	}
+	return ""
+}
+
+// sessionOfRecord is one terminal record's soho session: the soho.session
+// label when it names one, else the "hc-<address>" fallback the session
+// resolution uses ("" when the record names neither).
+func sessionOfRecord(obj *jsonjs.Object) string {
+	if label := sessionLabelOfRecord(obj); label != "" {
+		return label
 	}
 	if v, ok := obj.Get("address"); ok {
 		if address, isString := v.(string); isString && address != "" {
@@ -740,6 +749,7 @@ func (b *backend) listAllLocal(ctx context.Context, call transport.Call) transpo
 			Cwd:          cwdOf(rec),
 			CurrentCwd:   currentCwdOf(rec),
 			WorkspaceID:  sessionOfRecord(rec),
+			SessionLabel: sessionLabelOfRecord(rec),
 			ProgramHints: programHints(rec),
 		})
 	}
