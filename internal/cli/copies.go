@@ -842,21 +842,22 @@ func gcDiscardLeft(discard, cause string, env platform.Env, cwd string) {
 
 // gcUnregisteredOffers reports whether gcUnregistered lists path, while it
 // is not registered, as a copy of this project: a soho-mutation-* name
-// directly below TMPDIR (or os.TempDir()) with this project's marker.
+// directly below a configured scan directory with this project's marker.
 func gcUnregisteredOffers(path string, env platform.Env, cwd string) bool {
 	if !strings.HasPrefix(filepath.Base(path), "soho-mutation-") {
 		return false
 	}
-	tmpDir := env.Get("TMPDIR")
-	if tmpDir == "" {
-		tmpDir = os.TempDir()
-	}
 	dir := filepath.Dir(path)
-	if dir != filepath.Clean(tmpDir) {
-		resolved, err := filepath.EvalSymlinks(tmpDir)
-		if err != nil || dir != resolved {
-			return false
+	found := false
+	for _, scanDir := range mutationCopyScanDirs(env, cwd) {
+		resolved, err := filepath.EvalSymlinks(scanDir)
+		if dir == filepath.Clean(scanDir) || (err == nil && dir == resolved) {
+			found = true
+			break
 		}
+	}
+	if !found {
+		return false
 	}
 	current := ""
 	if project, err := gitCommonDirResolved(cwd, env); err == nil {
@@ -1704,16 +1705,12 @@ func sameOriginProject(marker, current string) bool {
 }
 
 // gcUnregistered lists the soho-mutation-* directories directly below
-// TMPDIR (or os.TempDir() without TMPDIR) that are not in the registry and
+// TMPDIR and copies_dir that are not in the registry and
 // whose mtime is older than the threshold, sorted by path. Each entry
 // carries the class of the marker beside it, computed against the git
 // common dir of cwd (the current project's identity; "" when cwd is not in
 // a git repository).
 func gcUnregistered(env platform.Env, rows []core.CopyRow, now time.Time, threshold time.Duration, cwd string) []gcUnregisteredCopy {
-	tmpDir := env.Get("TMPDIR")
-	if tmpDir == "" {
-		tmpDir = os.TempDir()
-	}
 	registered := map[string]bool{}
 	for _, row := range rows {
 		registered[row.Path] = true
@@ -1721,36 +1718,59 @@ func gcUnregistered(env platform.Env, rows []core.CopyRow, now time.Time, thresh
 			registered[resolved] = true
 		}
 	}
-	entries, err := os.ReadDir(tmpDir)
-	if err != nil {
-		return nil
-	}
 	current := ""
 	if project, err := gitCommonDirResolved(cwd, env); err == nil {
 		current = project
 	}
 	out := []gcUnregisteredCopy{}
-	for _, entry := range entries {
-		path := filepath.Join(tmpDir, entry.Name())
-		if !strings.HasPrefix(entry.Name(), "soho-mutation-") {
+	for _, scanDir := range mutationCopyScanDirs(env, cwd) {
+		entries, err := os.ReadDir(scanDir)
+		if err != nil {
 			continue
 		}
-		info, statErr := os.Stat(path)
-		if statErr != nil || !info.IsDir() {
-			continue
+		for _, entry := range entries {
+			path := filepath.Join(scanDir, entry.Name())
+			if !strings.HasPrefix(entry.Name(), "soho-mutation-") {
+				continue
+			}
+			info, statErr := os.Stat(path)
+			if statErr != nil || !info.IsDir() {
+				continue
+			}
+			resolved, resolveErr := filepath.EvalSymlinks(path)
+			if resolveErr != nil || registered[resolved] {
+				continue
+			}
+			age := now.Sub(info.ModTime())
+			if age <= threshold {
+				continue
+			}
+			out = append(out, gcUnregisteredCopy{path: path, age: age, origin: copyOrigin(path, current)})
 		}
-		resolved, resolveErr := filepath.EvalSymlinks(path)
-		if resolveErr != nil || registered[resolved] {
-			continue
-		}
-		age := now.Sub(info.ModTime())
-		if age <= threshold {
-			continue
-		}
-		out = append(out, gcUnregisteredCopy{path: path, age: age, origin: copyOrigin(path, current)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
 	return out
+}
+
+// mutationCopyScanDirs deduplicates aliases so a copy is offered only once.
+func mutationCopyScanDirs(env platform.Env, cwd string) []string {
+	tmp := env.Get("TMPDIR")
+	if tmp == "" {
+		tmp = os.TempDir()
+	}
+	dirs := []string{filepath.Clean(tmp)}
+	ctx := core.LoadConfig(env, cwd)
+	configured, err := configuredCopiesDir(&ctx, env, cwd)
+	if err != nil || configured == "" {
+		return dirs
+	}
+	configured = filepath.Clean(configured)
+	a, errA := filepath.EvalSymlinks(dirs[0])
+	b, errB := filepath.EvalSymlinks(configured)
+	if configured != dirs[0] && !(errA == nil && errB == nil && sameOriginProject(a, b)) {
+		dirs = append(dirs, configured)
+	}
+	return dirs
 }
 
 func gcUsageError() int {
