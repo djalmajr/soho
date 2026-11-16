@@ -10,6 +10,7 @@ import (
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/text"
 )
 
 var keys = []string{"git_head", "git_branch", "git_tree", "git_checked", "diff_checked"}
@@ -245,7 +246,19 @@ func Check(path, agent string, env platform.Env, logFile, command string) *jsonj
 		core.Warn(fmt.Sprintf("agent '%s' switched %s from branch %s to %s during its task; the brief owns git — check the tree before integrating", agent, tree, branch, nextBranch), logFile, command)
 	}
 	if local {
-		core.Warn(fmt.Sprintf("agent '%s' left a local commit in %s: HEAD moved from %s to %s during its task (briefs forbid commits) — inspect it before integrating", agent, tree, old[:7], head[:7]), logFile, command)
+		// The worker and the orchestrator commit with the same Git identity,
+		// so nothing proves who made the commit (SOH-297): name it by its
+		// subject and let the orchestrator recognize its own.
+		named := ""
+		if subject, ok := git(env, tree, "log", "-1", "--format=%s", head); ok {
+			if subject = text.SanitizeCause(strings.TrimSpace(subject)); subject != "" {
+				if len(subject) > 72 {
+					subject = subject[:72] + "..."
+				}
+				named = fmt.Sprintf(" (%q)", subject)
+			}
+		}
+		core.Warn(fmt.Sprintf("HEAD moved from %s to %s in %s with a local commit%s during the task of agent '%s'; if you did not make it, the agent left a local commit (briefs forbid commits) — inspect it before integrating", old[:7], head[:7], tree, named, agent), logFile, command)
 	}
 	if local || branch != nextBranch {
 		return jsonjs.O("from", old, "to", head, "branch_from", branch, "branch_to", nextBranch)
