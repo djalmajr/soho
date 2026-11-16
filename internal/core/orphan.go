@@ -222,7 +222,9 @@ func OrphansWithServices(ctx *Config, env platform.Env, cwd string, svc transpor
 	workspacePanes := map[string]bool{}
 	live := make([]transport.Terminal, 0, len(listed.Value))
 	for _, terminal := range listed.Value {
-		if terminal.WorkspaceID == caller.WorkspaceID {
+		// The explicit label, as the labeled listing selected it: an
+		// unlabeled terminal's hc-<address> fallback is not membership.
+		if terminal.SessionLabel == caller.WorkspaceID {
 			workspacePanes[terminal.PaneID] = true
 			live = append(live, terminal)
 		}
