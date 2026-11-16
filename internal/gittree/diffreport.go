@@ -49,9 +49,31 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 	if marker.Close() != nil {
 		return nil
 	}
+	// Only a descendant HEAD can separate intervening commits from the
+	// worker's uncommitted changes without changing the historical fallback.
+	base := head
+	committed := []string{}
+	if current, ok := gitOutput(env, tree, "rev-parse", "--verify", "HEAD"); ok {
+		current = strings.TrimSpace(current)
+		if diffHeadRE.MatchString(current) && current != head {
+			if _, ancestor := gitOutput(env, tree, "merge-base", "--is-ancestor", head, current); ancestor {
+				names, ok := gitOutput(env, tree, "diff", "--name-only", "--no-renames", "-z", head, current, "--")
+				if !ok {
+					return nil
+				}
+				for _, name := range strings.Split(names, "\x00") {
+					if name != "" {
+						committed = append(committed, name)
+					}
+				}
+				sort.Strings(committed)
+				base = current
+			}
+		}
+	}
 	// numstat forces content comparison even when the index's stat cache is
 	// stale; name-only can otherwise report unchanged files without refresh.
-	names, ok := gitOutput(env, tree, "-c", "diff.autoRefreshIndex=false", "diff", "--numstat", "--no-renames", "-z", head, "--")
+	names, ok := gitOutput(env, tree, "-c", "diff.autoRefreshIndex=false", "diff", "--numstat", "--no-renames", "-z", base, "--")
 	if !ok {
 		return nil
 	}
@@ -84,7 +106,7 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 	// Literal pathspecs keep glob-shaped file names from widening that set.
 	stat, untracked := "", ""
 	if len(tracked) > 0 {
-		args := append([]string{"--literal-pathspecs", "-c", "diff.autoRefreshIndex=false", "diff", "--stat", head, "--"}, tracked...)
+		args := append([]string{"--literal-pathspecs", "-c", "diff.autoRefreshIndex=false", "diff", "--stat", base, "--"}, tracked...)
 		stat, ok = gitOutput(env, tree, args...)
 		if !ok {
 			return nil
@@ -97,11 +119,15 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 			return nil
 		}
 	}
-	// A clean tree has no audit output or artifact, but still consumes the
+	// A clean tree has no artifact and no worker-diff output (only the
+	// committed_during_task list when HEAD moved), but still consumes the
 	// once-only attempt so a subsequent wait/collect cannot repeat it.
 	if stat == "" && untracked == "" {
 		o.Set("diff_checked", true)
 		_ = core.WriteScratchFile(sidecar, jsonjs.Stringify(o)+"\n")
+		if len(committed) > 0 {
+			return jsonjs.O("committed_during_task", committed)
+		}
 		return nil
 	}
 	artifact := strings.TrimSuffix(report, filepath.Ext(report)) + ".diff-stat.txt"
@@ -131,6 +157,9 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 	if err != nil {
 		return nil
 	}
+	for _, file := range committed {
+		changed[file] = true
+	}
 	cited := diffCited(tree, string(text), changed)
 	sort.Strings(outside)
 	o.Set("diff_checked", true)
@@ -138,6 +167,9 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 		return nil
 	}
 	out := jsonjs.O("diff_stat", artifact)
+	if len(committed) > 0 {
+		out.Set("committed_during_task", committed)
+	}
 	if len(outside) > 0 {
 		out.Set("outside_owned", outside)
 		core.Warn(fmt.Sprintf("'%s' changed files outside its Owned files: %s", agent, diffNames(outside)), logFile, command)
@@ -805,16 +837,30 @@ func diffOwnedMatch(pattern, file string) bool {
 	}
 	directory := strings.HasSuffix(pattern, "/")
 	parts, names := strings.Split(strings.TrimSuffix(pattern, "/"), "/"), strings.Split(file, "/")
-	if (!directory && len(parts) != len(names)) || (directory && len(names) <= len(parts)) {
-		return false
-	}
-	for i, part := range parts {
-		matched, err := filepath.Match(part, names[i])
-		if err != nil || !matched {
-			return false
+	type state struct{ part, name int }
+	memo := map[state]bool{}
+	visited := map[state]bool{}
+	var match func(int, int) bool
+	match = func(i, j int) bool {
+		key := state{i, j}
+		if visited[key] {
+			return memo[key]
 		}
+		visited[key] = true
+		result := false
+		switch {
+		case i == len(parts):
+			result = j == len(names) && !directory || j < len(names) && directory
+		case parts[i] == "**":
+			result = match(i+1, j) || j < len(names) && match(i, j+1)
+		case j < len(names):
+			matched, err := filepath.Match(parts[i], names[j])
+			result = err == nil && matched && match(i+1, j+1)
+		}
+		memo[key] = result
+		return result
 	}
-	return true
+	return match(0, 0)
 }
 
 // diffFilesChangedTitles are the report section titles that list the files
