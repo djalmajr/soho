@@ -1795,7 +1795,7 @@ func emitDispatchResult(agent, role, kind, composed, report, taskReport, status 
 	}
 	out.Set("auto_approved", approved)
 	if last != nil {
-		for _, key := range []string{"question", "lane", "model", "match", "renewal", "cause", "retries", "startup_evidence", "head_moved", "diff_stat", "outside_owned", "cited_unchanged"} {
+		for _, key := range []string{"question", "lane", "model", "match", "renewal", "cause", "retries", "startup_evidence", "head_moved", "diff_stat", "outside_owned", "cited_unchanged", "committed_during_task"} {
 			if v, ok := last.Get(key); ok {
 				out.Set(key, v)
 			}
