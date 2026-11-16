@@ -35,7 +35,7 @@ import (
 	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
 
-var dispatchWaitFiles = []string{"size", "screen", "since", "blocked", "approvals", "quota", "provider", "provider-cause", "capacity-retries", "capacity-at", "question", "stuck-hash", "stuck-since", "stuck-warned", "activity-at", "probe-at", "not-received", "queued", "enter-retry", "approve-screen"}
+var dispatchWaitFiles = []string{"size", "screen", "since", "blocked", "approvals", "quota", "provider", "provider-cause", "capacity-retries", "capacity-at", "question", "stuck-hash", "stuck-since", "stuck-warned", "activity-at", "probe-at", "not-received", "queued", "enter-retry", "approve-screen", "submit-failed"}
 var dispatchWaitFor = waitpkg.WaitFor
 var writeDispatchSidecar = dispatch.WriteSidecar
 var dispatchCodexSupportsNoDaemon = spawn.CodexSupportsNoDaemon
@@ -781,11 +781,29 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			promptRep.Err = &transport.Failure{Kind: transport.FailureBusy, Message: fmt.Sprintf("worker %s is still working after the idle wait; the send was not retried", agent)}
 		}
 	}
+	markSubmitFailed := func() string {
+		restoredReport := ""
+		if restored := taskreport.ReadTaskReportPointer(sd, agent); restored != nil {
+			if v, ok := restored.Get("task_report"); ok {
+				restoredReport, _ = v.(string)
+			}
+		}
+		markerReport := restoredReport
+		if markerReport == "" {
+			markerReport = "-"
+		}
+		path := filepath.Join(sd, "wait", agent+".submit-failed")
+		if err := writeNotReceivedMarker(path, fmt.Sprintf("%d %s %s\n", platform.Now().Unix(), briefSHA, markerReport)); err != nil {
+			core.Warn(fmt.Sprintf("could not record the failed submission marker %s: %s", path, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
+		}
+		return restoredReport
+	}
 	if hcMode && promptRep.Err != nil && promptRep.Err.Kind == transport.FailureBlocked {
 		// DJA-604 2b-3a: a person must answer the worker's prompt. Restore
 		// the task state, like the codex-hooks-review block, and end with the
 		// blocked result.
 		_ = restoreTaskDispatch(sd, agent, lastPath, lastData, priorPointer)
+		markSubmitFailed()
 		return emitDispatchResult(agent, role, kind, composed, report, taskReport, "blocked", false, jsonjs.O("cause", "hc-blocked"), 0, sd, false, false)
 	}
 	if promptRep.Err != nil {
@@ -793,14 +811,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		// The failed sidecar records the pointer's task_report after the
 		// restoration — the task the pointer actually keeps; without a
 		// restored pointer the field is absent.
-		restoredReport := ""
-		if restored := taskreport.ReadTaskReportPointer(sd, agent); restored != nil {
-			if v, ok := restored.Get("task_report"); ok {
-				if s, isStr := v.(string); isStr {
-					restoredReport = s
-				}
-			}
-		}
+		restoredReport := markSubmitFailed()
 		if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, restoredReport, briefSHA, "failed", "", session, role); err != nil {
 			core.Warn(fmt.Sprintf("could not record the failed submission in the attempt sidecar %s: %s", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 		}
@@ -814,6 +825,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session, role); err != nil {
 		core.Warn(fmt.Sprintf("could not record the accepted submission in the attempt sidecar %s: %s; the prompt went out", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 	}
+	_ = os.Remove(filepath.Join(sd, "wait", agent+".submit-failed"))
 	// The review author warning fires once per dispatched review, after the
 	// accepted write settled the author fields: advisory, never a refusal.
 	if warning := reviewAuthorWarning(brief, role, sidecar, authorContext); warning != "" {

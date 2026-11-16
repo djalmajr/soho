@@ -476,6 +476,10 @@ func TestDispatchHcBlockedRestoresThePointer(t *testing.T) {
 	if _, err := os.ReadFile(filepath.Join(f.sd, "last-report-worker")); err == nil {
 		t.Fatal("last-report pointer was not restored (still present)")
 	}
+	marker, err := os.ReadFile(filepath.Join(f.sd, "wait", "worker.submit-failed"))
+	if err != nil || !strings.HasSuffix(string(marker), " -\n") {
+		t.Fatalf("failed submission marker=%q err=%v, want absent-pointer sentinel", marker, err)
+	}
 	if help, schema := guardProbeCalls(f.hcCalls(t)); help != 1 || schema != 1 {
 		t.Fatalf("capability probes help=%d schema=%d, want the one read-only pair", help, schema)
 	}

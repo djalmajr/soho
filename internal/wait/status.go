@@ -360,6 +360,20 @@ func resolveAgentStatus(req agentStatusRequest, rc int) (agentStatusResult, int)
 			return res, rc
 		}
 	}
+	if failure := submitFailureState(sd, agent, req.source); failure != "" {
+		res.state = failure
+		cause := "submission-failed"
+		code := 15
+		if failure == "unknown" {
+			cause = "the submit-failed marker exists but cannot be read as safe metadata"
+			code = 4
+		}
+		res.line = fmt.Sprintf("%s\t%s\t%s\t%s\t-\t-\n", agent, failure, report, cause)
+		if WaitRank(code) > WaitRank(rc) {
+			rc = code
+		}
+		return res, rc
+	}
 	state, cause := "", ""
 	var terminal string // the probe's state word when the branch probed (F3)
 	match, renewal, kind, model, lane, question := "", "", "", "", "", ""
