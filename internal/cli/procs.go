@@ -3,7 +3,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -297,7 +296,7 @@ func procsAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) int
 	}
 	row := core.ProcRow{Pid: pid, Started: started, Name: name, Owner: owner, Pane: pane, Created: core.FrictionISO(platform.Now())}
 	if err := upsertProc(sd, row); err != nil {
-		if errors.Is(err, fs.ErrPermission) {
+		if platform.WriteRefused(err) {
 			queue, queueErr := core.QueueProc(env, filepath.Base(sd), sd, row)
 			if queueErr == nil {
 				pendingQueuedLine("procs add", sd, queue)
