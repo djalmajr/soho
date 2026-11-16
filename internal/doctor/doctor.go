@@ -570,7 +570,7 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	checkSetup(ctx, env, cwd, s)
 	doctorValidation(ctx, env, cwd, s)
 	doctorDesign(ctx, env, cwd, s)
-	doctorPeerInbound(ctx, env, cwd, s)
+	doctorPeerInbound(ctx, svc, env, cwd, s)
 	doctorFootprint(ctx, svc, env, cwd, s)
 	if adviseRegistration && inventory.CurrentMissingRegistration(env, cwd, ctx.User, svc) {
 		s.Warning(inventory.MissingRegistrationAdvisory)
@@ -1079,7 +1079,7 @@ func doctorOrphans(ctx *core.Config, svc transport.Services, env platform.Env, c
 				}
 			}
 		}()
-		orphans = core.Orphans(ctx, env, cwd)
+		orphans = core.OrphansWithServices(ctx, env, cwd, svc)
 	}()
 	for _, orphan := range orphans {
 		state := orphan.State

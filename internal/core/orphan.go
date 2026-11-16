@@ -149,6 +149,20 @@ func writeReleasedPanes(dir string, rows []ReleasedPane) {
 // workspace pane, so nothing is classified (no false orphan).
 func OrphansOf(ctx *Config, env platform.Env, cwd string, live []any) []Orphan {
 	svc := backend.New(env)
+	return orphansOfServices(ctx, env, cwd, live, svc)
+}
+
+func orphansOfServices(ctx *Config, env platform.Env, cwd string, live []any, svc transport.Services) []Orphan {
+	workspacePanes := map[string]bool{}
+	for _, pane := range livePanes(svc.Window.ListPanes(nil, transport.Scope{WorkspaceID: WorkspaceID(ctx, env, cwd)}, transport.Call{}).Value) {
+		if id := agentField(pane, "pane_id"); id != "" {
+			workspacePanes[id] = true
+		}
+	}
+	return classifyOrphans(ctx, env, cwd, live, workspacePanes, svc.Runtime.Caller().PaneID)
+}
+
+func classifyOrphans(ctx *Config, env platform.Env, cwd string, live []any, workspacePanes map[string]bool, orchestrator string) []Orphan {
 	rosterPanes := map[string]bool{}
 	for _, line := range RosterRows(StateDirPath(ctx, env, cwd)) {
 		fields := strings.Split(line, "\t")
@@ -156,17 +170,10 @@ func OrphansOf(ctx *Config, env platform.Env, cwd string, live []any) []Orphan {
 			rosterPanes[fields[1]] = true
 		}
 	}
-	workspacePanes := map[string]bool{}
-	for _, pane := range livePanes(svc.Window.ListPanes(nil, transport.Scope{WorkspaceID: WorkspaceID(ctx, env, cwd)}, transport.Call{}).Value) {
-		if id := agentField(pane, "pane_id"); id != "" {
-			workspacePanes[id] = true
-		}
-	}
 	released := map[string]bool{}
 	for _, row := range ReleasedPanes(ctx, env, cwd) {
 		released[row.Name+"\x00"+row.Pane] = true
 	}
-	orchestrator := svc.Runtime.Caller().PaneID
 	out := []Orphan{}
 	for _, agent := range live {
 		name := agentField(agent, "name")
@@ -191,14 +198,44 @@ func OrphansOf(ctx *Config, env platform.Env, cwd string, live []any) []Orphan {
 // section fails.
 func Orphans(ctx *Config, env platform.Env, cwd string) []Orphan {
 	svc := backend.New(env)
-	// OrphansOf still reads the live list as field objects: rebuild it from
-	// the transport terminals with the field names that function reads.
 	live := svc.Runtime.List(nil, transport.Scope{}, transport.Call{}).Value
+	return orphansOfServices(ctx, env, cwd, orphanAgentRows(live), svc)
+}
+
+// OrphansWithServices uses an invocation's services for its observations.
+// Native Core's all-local snapshot also carries each terminal's session, so
+// it can supply both the agent and workspace-pane views without another list.
+// Legacy retains its distinct agent and workspace-pane operations.
+func OrphansWithServices(ctx *Config, env platform.Env, cwd string, svc transport.Services) []Orphan {
+	if TransportMode(ctx, env) != "hc" {
+		live := svc.Runtime.List(nil, transport.Scope{}, transport.Call{}).Value
+		return orphansOfServices(ctx, env, cwd, orphanAgentRows(live), svc)
+	}
+	caller := svc.Runtime.Caller()
+	if caller.WorkspaceID == "" {
+		return nil
+	}
+	listed := svc.Runtime.List(nil, transport.Scope{All: true}, transport.Call{})
+	if listed.Err != nil || !listed.Valid {
+		return nil
+	}
+	workspacePanes := map[string]bool{}
+	live := make([]transport.Terminal, 0, len(listed.Value))
+	for _, terminal := range listed.Value {
+		if terminal.WorkspaceID == caller.WorkspaceID {
+			workspacePanes[terminal.PaneID] = true
+			live = append(live, terminal)
+		}
+	}
+	return classifyOrphans(ctx, env, cwd, orphanAgentRows(live), workspacePanes, caller.PaneID)
+}
+
+func orphanAgentRows(live []transport.Terminal) []any {
 	rows := make([]any, 0, len(live))
 	for _, a := range live {
 		rows = append(rows, jsonjs.O("name", a.Name, "pane_id", a.PaneID, "agent_status", a.State))
 	}
-	return OrphansOf(ctx, env, cwd, rows)
+	return rows
 }
 
 // FindOrphan reports the orphan named exactly name, when it has one.

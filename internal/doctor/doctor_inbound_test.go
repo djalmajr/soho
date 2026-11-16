@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/setuptext"
@@ -16,6 +17,12 @@ import (
 // The receiver side of unsigned peer messages (DJA-610): the deprecated
 // signed-peer settings, the leftover seen-state file, and every agent without
 // a UserPromptSubmit hook.
+
+// The direct probe tests each start with a fresh backend, as independent
+// invocations do. Whole-doctor tests exercise the shared services.
+func doctorUnprotectedAgents(ctx *core.Config, env platform.Env, cwd string, s *Say) {
+	doctorUnprotectedAgentsWithServices(ctx, backend.New(env), env, cwd, s)
+}
 
 type inboundDoctor struct {
 	t    *testing.T
