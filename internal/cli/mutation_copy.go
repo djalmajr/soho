@@ -62,7 +62,7 @@ func runMutationCopy(args []string, env platform.Env) int {
 		}
 	}
 
-	dest, destGiven, destCreated, reason := mutationCopyPrepareDest(parsed.dest, cwd, env, home, source)
+	dest, destGiven, destCreated, reason := mutationCopyPrepareDest(parsed.dest, cwd, env, home, source, &ctx)
 	if reason != "" {
 		if destCreated {
 			_ = os.RemoveAll(dest)
@@ -87,8 +87,8 @@ func runMutationCopy(args []string, env platform.Env) int {
 		_, _ = fmt.Fprintln(platform.Stderr, "fail copy-outside-repository: "+detail)
 		return 1
 	}
-	// The origin marker goes beside the copies this command creates in
-	// TMPDIR (no --dest: gc never scans the other paths). It is written
+	// The origin marker goes beside automatically placed copies
+	// (no --dest: gc never scans the other paths). It is written
 	// right after the destination exists and before the file copy, so an
 	// interrupted copy already carries it; a failure never changes the
 	// command's stdout or exit code.
@@ -597,12 +597,22 @@ func mutationCopyHome(env platform.Env) string {
 // mutationCopyPrepareDest resolves and creates the destination; on success it
 // returns the path, the value as given, whether this command created it, and
 // a "" reason.
-func mutationCopyPrepareDest(raw, cwd string, env platform.Env, home, source string) (string, string, bool, string) {
+func mutationCopyPrepareDest(raw, cwd string, env platform.Env, home, source string, ctx *core.Config) (string, string, bool, string) {
 	created := false
 	if raw == "" {
 		tmpDir := env.Get("TMPDIR")
 		if tmpDir == "" {
 			tmpDir = os.TempDir()
+		}
+		configured, err := configuredCopiesDir(ctx, env, cwd)
+		if err != nil {
+			return "", core.Cfg(ctx, "copies_dir", "", env), false, err.Error()
+		}
+		if configured != "" {
+			tmpDir = configured
+			if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+				return "", tmpDir, false, "copies_dir cannot be created: " + err.Error()
+			}
 		}
 		made, err := os.MkdirTemp(tmpDir, "soho-mutation-")
 		if err != nil {
@@ -654,6 +664,22 @@ func mutationCopyPrepareDest(raw, cwd string, env platform.Env, home, source str
 		return resolved, raw, created, "cannot be created: " + err.Error()
 	}
 	return resolved, raw, true, ""
+}
+
+// configuredCopiesDir resolves the same layered setting for copy creation and gc.
+func configuredCopiesDir(ctx *core.Config, env platform.Env, cwd string) (string, error) {
+	value := core.Cfg(ctx, "copies_dir", "", env)
+	if !core.ConfigValueOk("copies_dir", value, env, cwd) {
+		return "", fmt.Errorf("invalid copies_dir: must be absolute or start with ~/")
+	}
+	if strings.HasPrefix(value, "~/") {
+		home := mutationCopyHome(env)
+		if home == "" {
+			return "", fmt.Errorf("copies_dir cannot be resolved: HOME is unavailable")
+		}
+		value = filepath.Join(home, filepath.FromSlash(value[2:]))
+	}
+	return value, nil
 }
 
 func gitToplevel(dir string, env platform.Env) (string, bool) {

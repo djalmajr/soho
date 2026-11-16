@@ -89,7 +89,7 @@ var ConfigScalarKeys = []string{
 	"setup_target", "inbound", "caller_check", "worker_messages", "metrics",
 	"pressure_disk_free_percent", "pressure_disk_free_min_gb", "pressure_swap_percent",
 	"pressure_refuse_disk_free_percent", "pressure_refuse_disk_free_min_gb", "pressure_refuse_swap_percent",
-	"footprint_warn_gb", "login_shell",
+	"footprint_warn_gb", "login_shell", "copies_dir",
 }
 
 // jobMachineKeys are known to ConfigKeyOk. They stay out of ConfigScalarKeys
@@ -501,6 +501,8 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return false
 	}
 	switch {
+	case key == "copies_dir":
+		return value == "" || filepath.IsAbs(value) || strings.HasPrefix(value, "~/")
 	case key == "context_fresh_percent":
 		_, err := strconv.ParseInt(value, 10, 64)
 		return decimalRE.MatchString(value) && err == nil
