@@ -9,14 +9,19 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 )
 
-// doctorCopiesDir warns only about the default placement, before any copies are made.
+// doctorCopiesDir warns only about the default placement, before any copies
+// are made, and only for a TMPDIR set explicitly to a world-writable
+// directory (the reported case: a reviewer's TMPDIR=/private/tmp on macOS).
+// An unset TMPDIR falls back to the system default (/tmp on Linux, mode
+// 1777 everywhere), which would warn every Linux user: that case stays
+// quiet, and the key is documented in references/mutation-copies.md.
 func doctorCopiesDir(ctx *core.Config, env platform.Env, s *Say) {
 	if runtime.GOOS == "windows" || core.Cfg(ctx, "copies_dir", "", env) != "" {
 		return
 	}
 	tmp := env.Get("TMPDIR")
 	if tmp == "" {
-		tmp = os.TempDir()
+		return
 	}
 	info, err := os.Stat(tmp)
 	if err != nil || info.Mode().Perm()&0002 == 0 {

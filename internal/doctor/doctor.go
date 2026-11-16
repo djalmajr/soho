@@ -293,7 +293,6 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 // suppresses the advice to perform the registration init is about to do.
 func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, adviseRegistration bool) {
 	s := &Say{Out: out}
-	doctorCopiesDir(ctx, env, s)
 	// One backend for this invocation: every herdr probe of the doctor runs
 	// through it (DJA-596).
 	svc := backend.New(env)
@@ -545,6 +544,7 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	doctorProjectRoles(env, cwd, s)
 	doctorOrphans(ctx, svc, env, cwd, s)
 	doctorDoneOpen(ctx, svc, env, cwd, s)
+	doctorCopiesDir(ctx, env, s)
 	doctorWorkerCwds(ctx, svc, env, cwd, s)
 	doctorNativeParentless(ctx, svc, env, cwd, s)
 	doctorDiscardedModels(ctx, env, cwd, s)
