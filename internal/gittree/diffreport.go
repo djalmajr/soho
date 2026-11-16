@@ -119,7 +119,8 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 			return nil
 		}
 	}
-	// A clean tree has no audit output or artifact, but still consumes the
+	// A clean tree has no artifact and no worker-diff output (only the
+	// committed_during_task list when HEAD moved), but still consumes the
 	// once-only attempt so a subsequent wait/collect cannot repeat it.
 	if stat == "" && untracked == "" {
 		o.Set("diff_checked", true)
