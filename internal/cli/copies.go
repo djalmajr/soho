@@ -387,7 +387,13 @@ func cmdCopies(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 // does not show sizes.
 func copiesList(ctx *core.Config, env platform.Env, cwd string) int {
 	svc := backend.New(env)
-	sd := core.StateDir(ctx, env, cwd)
+	// A worker lists the registry its copies go to (SOH-311): without this,
+	// a native worker read its own state dir and said "no registered copies"
+	// right after mutation-copy registered one in the orchestrator's.
+	sd := registryDestination(env)
+	if sd == "" {
+		sd = core.StateDir(ctx, env, cwd)
+	}
 	incorporatePendingCopies("copies", sd, env, cwd)
 	rows, err := core.ReadCopies(sd)
 	if err != nil {
