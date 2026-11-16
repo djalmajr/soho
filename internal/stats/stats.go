@@ -34,6 +34,7 @@ import (
 var pairRE = regexp.MustCompile(`^(.+)-(\d{8}T\d{6})(-\d+)?$`)
 var roleRE = regexp.MustCompile("You are running as the `([^`]+)` role")
 var dateRE = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})$`)
+var relativeSinceRE = regexp.MustCompile(`^([1-9][0-9]{0,4})([hdw])$`)
 var isoRE = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(\.\d{1,9})?)?(Z|[+-]\d{2}:?\d{2})?$`)
 var jsWhitespace = `\t\n\v\f\r \x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}`
 var shaLineRE = regexp.MustCompile(`^[` + jsWhitespace + `]*([0-9a-f]{64})[` + jsWhitespace + `]+\*?([^` + jsWhitespace + `].*?)[` + jsWhitespace + `]*$`)
@@ -111,6 +112,27 @@ func die(msg string, code int, command, logFile string) {
 func warn(msg, logFile string)             { core.Warn(msg, logFile, "stats") }
 func jsObject(pairs ...any) *jsonjs.Object { return jsonjs.O(pairs...) }
 func number(v int) any                     { return v }
+
+// SinceUsage is the accepted forms of a `--since` flag, for its usage error.
+const SinceUsage = "AAAA-MM-DD, an ISO date or a duration such as 12h, 1d or 2w"
+
+// ParseSinceFlag reads a `--since` flag: what ParseSince accepts, or a
+// duration back from now, <N>h, <N>d or <N>w with N a positive integer
+// (SOH-306: `friction --since 1d`). A day is 24 hours.
+func ParseSinceFlag(value string, now time.Time) (time.Time, bool) {
+	if m := relativeSinceRE.FindStringSubmatch(value); m != nil {
+		n, _ := strconv.Atoi(m[1])
+		unit := time.Hour
+		switch m[2] {
+		case "d":
+			unit = 24 * time.Hour
+		case "w":
+			unit = 7 * 24 * time.Hour
+		}
+		return now.Add(-time.Duration(n) * unit), true
+	}
+	return ParseSince(value)
+}
 
 // ParseSince reads a `--since` value: AAAA-MM-DD (local midnight) or an ISO
 // 8601 date (with optional seconds, fraction and zone).
@@ -495,9 +517,9 @@ func CmdStats(args []string, command CommandContext) int {
 	hasSince := sinceRaw != ""
 	if hasSince {
 		var ok bool
-		since, ok = ParseSince(sinceRaw)
+		since, ok = ParseSinceFlag(sinceRaw, platform.Now())
 		if !ok {
-			die("stats: --since expects AAAA-MM-DD or an ISO date (got '"+sinceRaw+"')", 2, "stats", logFile)
+			die("stats: --since expects "+SinceUsage+" (got '"+sinceRaw+"')", 2, "stats", logFile)
 		}
 	}
 	sd := core.StateDir(ctx, env, cwd)

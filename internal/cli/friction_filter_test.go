@@ -177,7 +177,7 @@ func TestFrictionFilterOptions(t *testing.T) {
 			args []string
 			want string
 		}{
-			{[]string{"--since", "not-a-date"}, "friction: --since expects AAAA-MM-DD or an ISO date (got 'not-a-date')"},
+			{[]string{"--since", "not-a-date"}, "friction: --since expects AAAA-MM-DD, an ISO date or a duration such as 12h, 1d or 2w (got 'not-a-date')"},
 			{[]string{"--level", "bogus"}, "friction: --level expects warning, note or error (got 'bogus')"},
 			{[]string{"--command"}, "friction: --command expects a value"},
 			{[]string{"--agent", "--summary"}, "friction: --agent expects a value"},
