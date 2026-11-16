@@ -232,7 +232,7 @@ func TestFindHeadersContract(t *testing.T) {
 				closer = "[/soho:peer:0f23aac6]"
 			}
 			h := peerauth.FindHeaders(m[:strings.LastIndex(m, "\n"+closer)])
-			if len(h) != 1 || h[0].Closed || h[0].Text != "" {
+			if len(h) != 1 || h[0].Closed || peerauth.HeaderText(h[0]) != "" || h[0].Chars() != 0 {
 				t.Fatalf("headers = %+v", h)
 			}
 		})

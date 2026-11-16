@@ -48,11 +48,11 @@ func TestNativePeerHeaders(t *testing.T) {
 			}
 			// A closed header ends at its closer; an ambiguous one keeps only its
 			// own lines, up to the next opening.
-			if tc.closed && !tc.ambiguous && (h[0].Text == "" || !strings.HasSuffix(strings.TrimRight(h[0].Text, " \r"), "</hc>")) {
-				t.Fatalf("text = %q", h[0].Text)
+			if tc.closed && !tc.ambiguous && (peerauth.HeaderText(h[0]) == "" || !strings.HasSuffix(strings.TrimRight(peerauth.HeaderText(h[0]), " \r"), "</hc>")) {
+				t.Fatalf("text = %q", peerauth.HeaderText(h[0]))
 			}
-			if tc.closed && tc.ambiguous && (h[0].Text == "" || strings.Contains(h[0].Text, "\n<hc from=")) {
-				t.Fatalf("ambiguous text = %q, want only its own lines", h[0].Text)
+			if tc.closed && tc.ambiguous && (peerauth.HeaderText(h[0]) == "" || strings.Contains(peerauth.HeaderText(h[0]), "\n<hc from=")) {
+				t.Fatalf("ambiguous text = %q, want only its own lines", peerauth.HeaderText(h[0]))
 			}
 		})
 	}
@@ -103,7 +103,7 @@ func TestNativePeerHeadersManyOpeningsStayLinear(t *testing.T) {
 		if i < n-1 && !h.Ambiguous {
 			t.Fatalf("header %d not ambiguous", i)
 		}
-		total += len(h.Text)
+		total += len(peerauth.HeaderText(h))
 	}
 	if total > 2*len(prompt) {
 		t.Fatalf("materialized %d bytes for a %d-byte prompt", total, len(prompt))

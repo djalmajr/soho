@@ -37,10 +37,7 @@ type Header struct {
 	ID string
 	// NativeRef is the sender of a native Core message, which has no id.
 	NativeRef string
-	// Text is the message from its opening line to the first closing line
-	// after it, joined with LF; "" when Closed is false.
-	Text   string
-	Closed bool
+	Closed    bool
 	// Ambiguous reports that the framing does not say where the message
 	// ends: within its own format, another closing line for the same id
 	// after the one that closed it, or another opening line with the same
@@ -54,10 +51,42 @@ type Header struct {
 	Remote bool
 	// Sent is the header's send time as written ("" when there is none).
 	Sent string
+	// doc and first..last name the message text: the lines from the opening
+	// line to the closing line (an ambiguous native header stops before the
+	// next opening), inclusive, shared with every other header of the prompt.
+	// The text is never copied: overlapping spans would copy the same tail
+	// once per opening. doc is nil when Closed is false.
+	doc         *document
+	first, last int
 }
 
-// Chars is the number of characters of the message text.
-func (h Header) Chars() int { return utf8.RuneCountInString(h.Text) }
+// document is the line index every header of one prompt shares.
+type document struct {
+	lines []string
+	// runes[k] is the rune count of lines[:k] joined without separators, so
+	// the rune count of a span of lines joined by LF is a difference of two
+	// entries plus one LF per join.
+	runes []int
+	// sentLines and remoteSenderLines are the ascending indices of the lines
+	// that give a current-format header its send time (a `Sent:` line with a
+	// non-empty value) and its remote mark (a `Sender:` line whose reference
+	// is remote). A header reads the first of each inside its span.
+	sentLines, remoteSenderLines []int
+	// sentValues[k] is the trimmed value of line sentLines[k], computed once
+	// while indexing: many overlapping headers can share one long padded
+	// `Sent:` line, and trimming it per header would be quadratic.
+	sentValues []string
+}
+
+// Chars is the number of characters of the message text: the runes of the
+// span from the opening line to the closing line, joined by LF. It is 0 when
+// Closed is false.
+func (h Header) Chars() int {
+	if h.doc == nil {
+		return 0
+	}
+	return h.doc.runes[h.last+1] - h.doc.runes[h.first] + h.last - h.first
+}
 
 // FindHeaders returns every header in the prompt, in prompt order. Only the
 // lines matter, so the wrapper Claude Code puts around a paste is not
@@ -75,8 +104,11 @@ func (h Header) Chars() int { return utf8.RuneCountInString(h.Text) }
 // Native Core openings use the grammar in nativeOpening and close at the
 // first unquoted line ending in </hc>, including their opening line. They
 // are Ambiguous when another native opening precedes that closing.
+// Each header keeps the indices of its span in the shared lines, never a
+// copy, so the work and memory are linear in the prompt for every format.
 func FindHeaders(prompt string) []Header {
 	lines := strings.Split(strings.ReplaceAll(prompt, "\r\n", "\n"), "\n")
+	d := &document{lines: lines, runes: make([]int, len(lines)+1)}
 	var out []Header
 	// One pass indexes the opening lines per id and format and the closing
 	// lines per id and format, so a prompt of many lines is not scanned once
@@ -86,6 +118,15 @@ func FindHeaders(prompt string) []Header {
 	oldClosers, newClosers := map[string][]int{}, map[string][]int{}
 	var hcOpenings, hcClosers []int
 	for i, line := range lines {
+		d.runes[i+1] = d.runes[i] + utf8.RuneCountInString(line)
+		if rest := strings.TrimLeft(line, " \t"); strings.HasPrefix(rest, sentLinePrefix) {
+			if value := strings.TrimSpace(rest[len(sentLinePrefix):]); value != "" {
+				d.sentLines = append(d.sentLines, i)
+				d.sentValues = append(d.sentValues, value)
+			}
+		} else if strings.HasPrefix(rest, senderLinePrefix) && senderRefRemote(rest[len(senderLinePrefix):]) {
+			d.remoteSenderLines = append(d.remoteSenderLines, i)
+		}
 		if nativeOpeningRef(line) != "" {
 			hcOpenings = append(hcOpenings, i)
 		}
@@ -115,15 +156,12 @@ func FindHeaders(prompt string) []Header {
 				next := sort.SearchInts(hcOpenings, i+1)
 				h.Ambiguous = next < len(hcOpenings) && hcOpenings[next] <= end
 				// An ambiguous native header keeps only its own lines, up to the
-				// next opening: overlapping spans would copy the same tail once
-				// per opening (quadratic in a prompt of many openings and one
-				// closer), while these spans are disjoint and their total is
-				// bounded by the prompt.
+				// next opening.
 				last := end
 				if h.Ambiguous {
 					last = hcOpenings[next] - 1
 				}
-				h.Text = strings.Join(lines[i:last+1], "\n")
+				h.doc, h.first, h.last = d, i, last
 			} else {
 				h.Ambiguous = sort.SearchInts(hcOpenings, i+1) < len(hcOpenings)
 			}
@@ -131,11 +169,11 @@ func FindHeaders(prompt string) []Header {
 			continue
 		}
 		if id, ok := oldOpeningID(line); ok {
-			out = append(out, headerFor(id, i, oldOpenings[id], oldClosers[id], lines, line, oldShape))
+			out = append(out, headerFor(id, i, oldOpenings[id], oldClosers[id], d, true))
 			continue
 		}
 		if id, ok := newOpeningID(line); ok {
-			out = append(out, headerFor(id, i, newOpenings[id], newClosers[id], lines, line, newShape))
+			out = append(out, headerFor(id, i, newOpenings[id], newClosers[id], d, false))
 		}
 	}
 	return out
@@ -157,27 +195,24 @@ func nativeClosing(line string) bool {
 }
 
 // headerFor builds the header for one opening line at index i, pairing it
-// with the first closing line of the same format after it. shape reads the
-// format's remote and send-time fields from the opening line and the header
-// text (the previous format reads both from the opening line, the current
-// one from the header text).
-func headerFor(id string, i, openings int, closers []int, lines []string, line string, shape func(line, text string) (bool, string)) Header {
+// with the first closing line of the same format after it. The previous
+// format reads its remote and send-time fields from the opening line, the
+// current one from the lines of its span.
+func headerFor(id string, i, openings int, closers []int, d *document, previous bool) Header {
 	h := Header{ID: id, Ambiguous: openings > 1}
 	after := closers[sort.SearchInts(closers, i+1):]
 	if len(after) > 0 {
 		h.Closed = true
-		h.Text = strings.Join(lines[i:after[0]+1], "\n")
+		h.doc, h.first, h.last = d, i, after[0]
 		h.Ambiguous = h.Ambiguous || len(after) > 1
 	}
-	h.Remote, h.Sent = shape(line, h.Text)
+	if previous {
+		h.Remote, h.Sent = openingShape(d.lines[i])
+	} else if h.Closed {
+		h.Remote, h.Sent = d.spanShape(i, h.last)
+	}
 	return h
 }
-
-// oldShape reads the previous format's fields from the opening line.
-func oldShape(line, text string) (bool, string) { return openingShape(line) }
-
-// newShape reads the current format's fields from the header text.
-func newShape(line, text string) (bool, string) { return newHeaderShape(text) }
 
 // oldClosingID is the id of a previous-format closing line
 // `[/soho:peer] #<id> end of message`, with the whitespace around the line
@@ -281,22 +316,19 @@ func openingShape(line string) (remote bool, sent string) {
 	return remote, sent
 }
 
-// newHeaderShape reads a current-format header's (the text from its opening
-// line to its closing line) format and send time: the `Sent:` line holds the
-// time, and the `Sender:` line's reference is remote when it holds
-// `<pane> on <host>`. The body lines are quoted with "> ", so neither prefix
-// can hit a body line. An unclosed header holds no text: not remote, no time.
-func newHeaderShape(text string) (remote bool, sent string) {
-	for _, line := range strings.Split(text, "\n") {
-		rest := strings.TrimLeft(line, " \t")
-		switch {
-		case sent == "" && strings.HasPrefix(rest, sentLinePrefix):
-			sent = strings.TrimSpace(rest[len(sentLinePrefix):])
-		case !remote && strings.HasPrefix(rest, senderLinePrefix):
-			remote = senderRefRemote(rest[len(senderLinePrefix):])
-		}
+// spanShape reads a current-format header's (the lines from its opening line
+// to its closing line, inclusive) format and send time: the first `Sent:`
+// line with a value holds the time, and the span is remote when a `Sender:`
+// line's reference holds `<pane> on <host>`. The body lines are quoted with
+// "> ", so neither prefix can hit a body line. The first matching line comes
+// from the precomputed indices, so a header costs a binary search, not a scan
+// of its span. An unclosed header holds no lines: not remote, no time.
+func (d *document) spanShape(first, last int) (remote bool, sent string) {
+	if at := sort.SearchInts(d.sentLines, first); at < len(d.sentLines) && d.sentLines[at] <= last {
+		sent = d.sentValues[at]
 	}
-	return remote, sent
+	at := sort.SearchInts(d.remoteSenderLines, first)
+	return at < len(d.remoteSenderLines) && d.remoteSenderLines[at] <= last, sent
 }
 
 // senderRefRemote reports whether a Sender line's reference is remote: the
