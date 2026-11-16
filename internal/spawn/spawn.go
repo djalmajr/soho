@@ -2399,7 +2399,7 @@ func startHcAgentUsingServices(ctx *core.Config, o *spawnOptions, kind string, e
 			if os.MkdirAll(dir, 0o700) == nil {
 				path := filepath.Join(dir, o.name+"-"+time.Now().UTC().Format("20060102T150405Z")+".txt")
 				if f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); err == nil {
-					_, writeErr := f.WriteString(rep.Err.Screen)
+					_, writeErr := f.WriteString(o.outputText(rep.Err.Screen))
 					closeErr := f.Close()
 					if writeErr == nil && closeErr == nil {
 						message += "; screen saved to " + path

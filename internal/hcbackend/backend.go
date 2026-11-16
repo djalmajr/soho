@@ -1795,7 +1795,7 @@ func (b *backend) timeoutReply(ctx context.Context, call transport.Call, name, a
 // cleanTimeoutScreen bounds the saved screen by both lines and UTF-8 bytes.
 func cleanTimeoutScreen(screen string) string {
 	var out strings.Builder
-	for i, line := range strings.Split(screen, "\n") {
+	for i, line := range strings.Split(stripTerminalControlsStream(screen, true), "\n") {
 		if i >= 200 {
 			break
 		}
@@ -1805,7 +1805,7 @@ func cleanTimeoutScreen(screen string) string {
 			}
 			out.WriteByte('\n')
 		}
-		for _, r := range stripTerminalControls(line) {
+		for _, r := range line {
 			if out.Len()+len(string(r)) > 64*1024 {
 				return out.String()
 			}
@@ -1846,11 +1846,17 @@ func lastVisibleLine(screen string) string {
 // other control character, including the C1 range; a tab becomes a space.
 // A string sequence that never terminates is dropped to its end.
 func stripTerminalControls(s string) string {
+	return stripTerminalControlsStream(s, false)
+}
+
+func stripTerminalControlsStream(s string, keepNewlines bool) string {
 	rs := []rune(s)
 	var out strings.Builder
 	for i := 0; i < len(rs); i++ {
 		r := rs[i]
 		switch {
+		case r == '\n' && keepNewlines:
+			out.WriteByte('\n')
 		case r == '\t':
 			out.WriteByte(' ')
 		case r == 0x1b || r == 0x9b || r == 0x9d || r == 0x90 || r == 0x98 || r == 0x9e || r == 0x9f:

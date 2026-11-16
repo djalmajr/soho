@@ -2,6 +2,7 @@ package hcbackend
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode"
@@ -20,6 +21,19 @@ func TestCleanTimeoutScreenBounds(t *testing.T) {
 	}
 	if got := cleanTimeoutScreen(strings.Repeat("é", 40000)); len(got) != 65536 {
 		t.Fatalf("byte count: %d", len(got))
+	}
+}
+
+func TestCleanTimeoutScreenMultilineStrings(t *testing.T) {
+	for _, intro := range []string{"\x1b]", "\x1bP", "\x1bX", "\x1b^", "\x1b_", "\u009d", "\u0090", "\u0098", "\u009e", "\u009f"} {
+		t.Run(fmt.Sprintf("%q", intro), func(t *testing.T) {
+			if got := cleanTimeoutScreen("visible" + intro + "title\nhidden\x07after\nfooter"); got != "visibleafter\nfooter" {
+				t.Fatalf("got %q", got)
+			}
+			if got := cleanTimeoutScreen("visible\n" + intro + "title\nhidden"); got != "visible\n" {
+				t.Fatalf("unterminated: %q", got)
+			}
+		})
 	}
 }
 

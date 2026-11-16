@@ -64,13 +64,15 @@ func TestSpawnHcNeverReadyNamesTheScreenBeforeRemoval(t *testing.T) {
 	if err != nil || string(data) != "Trust project folder?\n  1. Yes, trust\n  2. No, exit\n\n" {
 		t.Fatalf("screen=%q err=%v", data, err)
 	}
-	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("file mode: %v %v", info, err)
-	}
-	dinfo, err := os.Stat(dir)
-	if err != nil || dinfo.Mode().Perm() != 0o700 {
-		t.Fatalf("dir mode: %v %v", dinfo, err)
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("file mode: %v %v", info, err)
+		}
+		dinfo, err := os.Stat(dir)
+		if err != nil || dinfo.Mode().Perm() != 0o700 {
+			t.Fatalf("dir mode: %v %v", dinfo, err)
+		}
 	}
 	read, kill, rm, reads := -1, -1, -1, 0
 	for i, c := range calls {
@@ -274,5 +276,57 @@ func TestSpawnHcTimeoutScreenWriteUnavailable(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Drives the real start failure consumer with an OSC spanning a newline.
+func TestR436MultilineOSCDoesNotPersistHiddenPayload(t *testing.T) {
+	cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "pi")
+	rules := append(hcFixtureRules(),
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":false,"status":{"state":"working"}}`},
+		fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Stdout: `{"text":"visible\u001b]0;title\nhidden-startup-metadata\u0007after\nfooter","complete":true}`},
+		fakecli.Rule{Argv: []string{"kill", "t7", "--json"}, Stdout: `{"address":"t7","state":"finished"}`},
+		fakecli.Rule{Argv: []string{"rm", "t7", "--json"}, Stdout: `{"address":"t7"}`},
+	)
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	exit, _, _, _ := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi", "--timeout", "300"}, ctx, env, cwd, newFakeSpawnRPCConn(rpcHelloSuccess+"\n"+rpcRunSuccess+"\n"))
+	prefix := `agent worker still not ready after 0.3s; last visible line: "footer"; screen saved to `
+	if exit == nil || exit.Code != 4 || !strings.HasPrefix(exit.Msg, prefix) {
+		t.Fatalf("exit=%+v", exit)
+	}
+	data, err := os.ReadFile(strings.TrimPrefix(exit.Msg, prefix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "hidden-startup-metadata") {
+		t.Fatalf("OSC payload persisted in screen file: %q", data)
+	}
+}
+
+func TestR436TimeoutScreenRedactsAdmittedEnv(t *testing.T) {
+	cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "pi")
+	env["SELECTED_CANARY"] = "FAKE-selected-private-canary"
+	rules := append(hcFixtureRules(),
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":false,"status":{"state":"working"}}`},
+		fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Stdout: `{"text":"startup diagnostic: FAKE-selected-private-canary\nfooter","complete":true}`},
+		fakecli.Rule{Argv: []string{"kill", "t7", "--json"}, Stdout: `{"address":"t7","state":"finished"}`},
+		fakecli.Rule{Argv: []string{"rm", "t7", "--json"}, Stdout: `{"address":"t7"}`},
+	)
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	exit, _, _, _ := spawnHcExitWithConn(t, bin, []string{"worker", "--fresh", "--env-from", "SELECTED_CANARY", "--timeout", "300"}, ctx, env, cwd, newFakeSpawnRPCConn(rpcHelloSuccess+"\n"+rpcRunSuccess+"\n"))
+	prefix := `agent worker still not ready after 0.3s; last visible line: "footer"; screen saved to `
+	if exit == nil || exit.Code != 4 || !strings.HasPrefix(exit.Msg, prefix) {
+		t.Fatalf("exit=%+v", exit)
+	}
+	data, err := os.ReadFile(strings.TrimPrefix(exit.Msg, prefix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), env["SELECTED_CANARY"]) {
+		t.Fatal("admitted private environment value persisted verbatim in screen file")
 	}
 }
