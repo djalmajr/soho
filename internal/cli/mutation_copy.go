@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
 )
@@ -387,14 +386,8 @@ func registerMutationCopy(env platform.Env, source, dest string) {
 			return
 		}
 	}
-	pane := backend.New(env).Runtime.Caller().PaneID
-	owner := rosterAgentForPane(sd, pane)
-	if pane == "" {
-		pane = "-"
-	}
-	if owner == "" {
-		owner = "-"
-	}
+	callerPane, lookupFailed := registrantPane(env)
+	owner, pane := registrantFromEnv(sd, env, callerPane, lookupFailed)
 	task, report := copyTaskColumns(sd, owner)
 	row := core.CopyRow{
 		Path:    dest,
@@ -409,8 +402,10 @@ func registerMutationCopy(env platform.Env, source, dest string) {
 	if err := upsertCopies(sd, row); err != nil {
 		if err = queueCopy("mutation-copy", sd, row, err, env); err != nil {
 			mutationCopyNotRegistered(err.Error())
+			return
 		}
 	}
+	registrantOwnerlessLine("mutation-copy", owner, pane, "copy", env)
 }
 
 func mutationCopyNotRegistered(cause string) {

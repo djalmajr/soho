@@ -17,7 +17,7 @@ import (
 )
 
 func TestSpawnEnvSnapshotBeforeStarter(t *testing.T) {
-	cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "pi")
+	cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "pi")
 	env["SELECTED_CANARY"] = "FAKE admitted value"
 	rules := append(hcFixtureRules(), fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker})
 	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
@@ -40,7 +40,7 @@ func TestSpawnEnvSnapshotBeforeStarter(t *testing.T) {
 		t.Fatalf("spawn refused: %d %s", code, message)
 	}
 	_, params := parseTerminalRunReq(t, conn.getWritten())
-	want := map[string]any{"SOHO_TRANSPORT": "hc", "SELECTED_CANARY": "FAKE admitted value"}
+	want := map[string]any{"SOHO_TRANSPORT": "hc", "SELECTED_CANARY": "FAKE admitted value", "SOHO_REGISTRY_DIR": filepath.Join(state, "sX"), "SOHO_AGENT": "worker"}
 	if !reflect.DeepEqual(params["env"], want) {
 		t.Fatal("starter changed admitted snapshot")
 	}
@@ -85,7 +85,7 @@ func TestSpawnEnvRPC(t *testing.T) {
 			if mode == "option-shaped-value" {
 				args = append(args, "--tab-label", "--env-from")
 			}
-			want := map[string]any{"SOHO_TRANSPORT": "hc"}
+			want := map[string]any{"SOHO_TRANSPORT": "hc", "SOHO_REGISTRY_DIR": filepath.Join(state, "sX"), "SOHO_AGENT": "worker"}
 			if mode != "absent" && mode != "native-boundary" && mode != "option-shaped-value" {
 				args = append(args, "--env-from", "SELECTED_CANARY")
 				want["SELECTED_CANARY"] = env["SELECTED_CANARY"]

@@ -1451,6 +1451,8 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 		Args:          args,
 		EnvOverrides:  envOverrides,
 		LaunchProfile: start.LaunchProfile,
+		RegistryDir:   start.RegistryDir,
+		Agent:         start.Agent,
 	})
 	runCancel()
 

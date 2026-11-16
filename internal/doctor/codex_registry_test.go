@@ -169,3 +169,66 @@ func TestPolicyTableIntroductionForms(t *testing.T) {
 		}
 	}
 }
+
+// SOH-292: on native Herdr Core a Codex include_only that drops
+// HC_TERMINAL_ID leaves workers unable to identify their terminal. The legacy
+// transport never gets that warning, and the SOHO_* warning is independent.
+func TestDoctorCodexHcTerminalPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name, transport, config string
+		wantHC, wantSoho        bool
+	}{
+		{name: "hc-drops", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['PATH', 'SOHO_*']", wantHC: true},
+		{name: "hc-drops-both", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['PATH']", wantHC: true, wantSoho: true},
+		{name: "hc-glob", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['SOHO_*', 'HC_*']"},
+		{name: "hc-exact", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['SOHO_*', 'HC_TERMINAL_ID']"},
+		{name: "hc-lowercase", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['soho_*', 'hc_*']"},
+		{name: "hc-all", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['*']"},
+		{name: "hc-other-hc-name", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['SOHO_*', 'HC_SCOPE']", wantHC: true},
+		{name: "hc-no-include-only", transport: "hc", config: "[shell_environment_policy]\ninherit = 'all'"},
+		{name: "hc-no-config", transport: "hc"},
+		{name: "legacy-drops-hc", transport: "", config: "[shell_environment_policy]\ninclude_only = ['SOHO_*']"},
+		{name: "legacy-drops-both", transport: "", config: "[shell_environment_policy]\ninclude_only = ['PATH']", wantSoho: true},
+		{name: "herdr-explicit", transport: "herdr", config: "[shell_environment_policy]\ninclude_only = ['SOHO_*']"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, cwd, ctx := contextWindowDoctorFixture(t)
+			env["CODEX_HOME"] = filepath.Join(cwd, "codex-home")
+			env["TMPDIR"] = t.TempDir()
+			env["SOHO_ROLES"] = filepath.Join(cwd, "roles")
+			if tc.transport == "" {
+				delete(env, "SOHO_TRANSPORT")
+			} else {
+				env["SOHO_TRANSPORT"] = tc.transport
+			}
+			if err := os.MkdirAll(env["SOHO_ROLES"], 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(env["SOHO_ROLES"], "worker.md"), []byte("---\nkind: codex\n---\nWorker\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(env["CODEX_HOME"], 0700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(env["CODEX_HOME"], "config.toml")
+			if tc.config != "" {
+				if err := os.WriteFile(path, []byte(tc.config), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var out, stderr strings.Builder
+			oldErr, oldOut := platform.Stderr, platform.Stdout
+			platform.Stderr, platform.Stdout = &stderr, &out
+			t.Cleanup(func() { platform.Stderr, platform.Stdout = oldErr, oldOut })
+			DoctorCheck(ctx, env, cwd, &out)
+			got := out.String()
+			wantHC := fmt.Sprintf(`codex: [shell_environment_policy] include_only in %s drops HC_TERMINAL_ID, so codex workers cannot identify their terminal; their registrations fall back to SOHO_AGENT and are unverified when that is missing too; add "HC_*" or "HC_TERMINAL_ID" to include_only`, path)
+			if strings.Contains(got, wantHC) != tc.wantHC {
+				t.Fatalf("HC_TERMINAL_ID warning wanted=%v stdout=%s", tc.wantHC, got)
+			}
+			if strings.Contains(got, "drops SOHO_* variables") != tc.wantSoho {
+				t.Fatalf("SOHO_* warning wanted=%v stdout=%s", tc.wantSoho, got)
+			}
+		})
+	}
+}

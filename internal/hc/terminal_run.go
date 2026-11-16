@@ -45,6 +45,8 @@ var (
 	errEnvValueNUL          = errors.New("terminal run: environment override value contains NUL")
 	errEnvValueInvalidUTF8  = errors.New("terminal run: environment override value contains invalid UTF-8")
 	errLaunchProfileInvalid = errors.New("terminal run: invalid launch profile name")
+	errRegistryDirInvalid   = errors.New("terminal run: SOHO_REGISTRY_DIR must be an absolute path without NUL, CR or LF")
+	errAgentInvalid         = errors.New("terminal run: SOHO_AGENT must be a valid terminal name")
 	errStateDirInvalid      = errors.New("terminal run: SOHO_STATE_DIR must be an absolute path without NUL, CR or LF")
 )
 
@@ -98,6 +100,18 @@ type TerminalRun struct {
 	// is refused before Connect otherwise. The empty value (the spawn request)
 	// adds nothing to the env.
 	StateDir string
+
+	// RegistryDir and Agent, when non-empty, are sent to the child as
+	// SOHO_REGISTRY_DIR and SOHO_AGENT: the orchestrator's state root, which
+	// mutation-copy, copies add and procs add read to register a resource,
+	// and the roster name the worker registers under when its terminal cannot
+	// be identified. Like StateDir they are dedicated fields, not EnvOverrides
+	// entries (the reserved names stay refused there). RegistryDir must be
+	// absolute and Agent must satisfy transport.ValidTerminalName; neither may
+	// hold NUL, CR or LF. A value that fails is refused before Connect. The
+	// empty value adds nothing to the env.
+	RegistryDir string
+	Agent       string
 }
 
 // runParams is the by-name parameter struct sent to the Core's terminal.run RPC.
@@ -281,6 +295,12 @@ func (c *Client) RunTerminal(ctx context.Context, input TerminalRun) (string, er
 	if input.StateDir != "" {
 		env["SOHO_STATE_DIR"] = input.StateDir
 	}
+	if input.RegistryDir != "" {
+		env["SOHO_REGISTRY_DIR"] = input.RegistryDir
+	}
+	if input.Agent != "" {
+		env["SOHO_AGENT"] = input.Agent
+	}
 
 	// The labels are exactly the existing session label plus, only when a
 	// validated nonempty profile was supplied, the launch profile label;
@@ -402,6 +422,16 @@ func validateTerminalRun(input TerminalRun) error {
 	if input.StateDir != "" {
 		if !utf8.ValidString(input.StateDir) || strings.ContainsAny(input.StateDir, "\x00\r\n") || !filepath.IsAbs(input.StateDir) {
 			return errStateDirInvalid
+		}
+	}
+	if input.RegistryDir != "" {
+		if !utf8.ValidString(input.RegistryDir) || strings.ContainsAny(input.RegistryDir, "\x00\r\n") || !filepath.IsAbs(input.RegistryDir) {
+			return errRegistryDirInvalid
+		}
+	}
+	if input.Agent != "" {
+		if !utf8.ValidString(input.Agent) || strings.ContainsAny(input.Agent, "\x00\r\n") || !transport.ValidTerminalName(input.Agent) {
+			return errAgentInvalid
 		}
 	}
 	return nil

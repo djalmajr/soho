@@ -966,6 +966,7 @@ type spawnOptions struct {
 	native                                                                                                 []string
 	envFrom                                                                                                []string
 	envSnapshot                                                                                            map[string]string
+	registryDir                                                                                            string
 	blockedAtStartup                                                                                       bool
 	startupDiag                                                                                            string
 	launchProfile                                                                                          kinds.LaunchProfile
@@ -1378,6 +1379,12 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		o.reuse = core.Cfg(ctx, "reuse_workers", "on", env)
 	}
 	sd := core.StateDir(ctx, env, cwd)
+	// The worker's registration hint must be absolute (hc refuses a relative
+	// one); a relative state dir forwards nothing and the worker falls back
+	// to its own state resolution.
+	if filepath.IsAbs(sd) {
+		o.registryDir = sd
+	}
 	// DJA-392: the pressure refusal is measured once, here, so the lane
 	// cleanup below and the refusal further down see the same answer.
 	var refuseParts []string
@@ -2295,7 +2302,7 @@ func startHcAgentUsingServices(ctx *core.Config, o *spawnOptions, kind string, e
 				overrides[name] = value
 			}
 		}
-		rep := rt.Start(context.Background(), transport.Start{Name: o.name, Kind: kind, Cwd: o.cwd, Timeout: o.timeout, Args: args, LaunchProfile: o.launchProfile.Name, EnvOverrides: overrides, LoginShell: o.loginShell}, transport.Call{Timeout: time.Duration(startWrapperTimeoutMs(o.timeout)) * time.Millisecond})
+		rep := rt.Start(context.Background(), transport.Start{Name: o.name, Kind: kind, Cwd: o.cwd, Timeout: o.timeout, Args: args, LaunchProfile: o.launchProfile.Name, EnvOverrides: overrides, LoginShell: o.loginShell, RegistryDir: o.registryDir, Agent: o.name}, transport.Call{Timeout: time.Duration(startWrapperTimeoutMs(o.timeout)) * time.Millisecond})
 		if rep.Err == nil {
 			o.pane = rep.Value
 			return
