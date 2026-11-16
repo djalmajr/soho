@@ -382,7 +382,7 @@ func UnfilledPlaceholders(body string, markers []string) []string {
 			continue
 		}
 		for _, marker := range markers {
-			hit := strings.Contains(line, marker)
+			hit := placeholderIn(line, marker)
 			if marker == "<slot>" {
 				hit = slotInPath.MatchString(line)
 			}
@@ -392,6 +392,41 @@ func UnfilledPlaceholders(body string, markers []string) []string {
 		}
 	}
 	return out
+}
+
+// placeholderIn reports whether line holds marker. A marker made only of
+// ASCII letters, digits and underscores (AGENT_NAME, MY_SLOT) counts only as
+// a whole word: SOHO_AGENT_NAME or AGENT_NAMES is another identifier, not the
+// unfilled placeholder. Any other marker is a plain substring.
+func placeholderIn(line, marker string) bool {
+	if marker == "" || !isIdentifierWord(marker) {
+		return strings.Contains(line, marker)
+	}
+	for from := 0; from <= len(line)-len(marker); {
+		at := strings.Index(line[from:], marker)
+		if at < 0 {
+			return false
+		}
+		start, end := from+at, from+at+len(marker)
+		if (start == 0 || !isIdentifierByte(line[start-1])) && (end == len(line) || !isIdentifierByte(line[end])) {
+			return true
+		}
+		from = start + 1
+	}
+	return false
+}
+
+func isIdentifierWord(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !isIdentifierByte(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isIdentifierByte(b byte) bool {
+	return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 // BriefLintFindings computes the diagnostics used by both lint and dispatch.
