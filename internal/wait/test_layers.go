@@ -58,11 +58,7 @@ func checkTestLayers(sd, agent, report, text string, line *jsonjs.Object, role s
 		// Name the exact form and the first line that missed it (SOH-319):
 		// "- Native: NOT RUN — reason" (a dash instead of ": ") is the
 		// usual miss.
-		first := []rune(layers.FirstUnmarked)
-		if len(first) > 80 {
-			first = append(first[:79], '…')
-		}
-		warn("report of '%s' has %d Test layers line(s) without a result; the form is '- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a', with ': <reason>' after FAIL, NOT RUN and BLOCKED (first: %q)", agent, layers.Unmarked, string(first))
+		warn("report of '%s' has %d Test layers line(s) without a result; the form is '- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a', with ': <reason>' after FAIL, NOT RUN and BLOCKED (first: %s)", agent, layers.Unmarked, unmarkedExample(layers.FirstUnmarked))
 	}
 	if hasValidation && validation != "PASS" {
 		warn("validation of '%s' is %s: read it before commit, push or release", agent, validation)
@@ -113,4 +109,15 @@ func validationFilePresent(root string) bool {
 	}
 	_ = f.Close()
 	return true
+}
+
+// unmarkedExample quotes the first unmarked line for the warning: at most 80
+// runes (the 80th becomes an ellipsis), Go-quoted so a control character in
+// report text never reaches the terminal raw.
+func unmarkedExample(line string) string {
+	runes := []rune(line)
+	if len(runes) > 80 {
+		runes = append(runes[:79], '…')
+	}
+	return fmt.Sprintf("%q", string(runes))
 }
