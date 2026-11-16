@@ -15,6 +15,13 @@ import (
 )
 
 func SessionConfPath(ctx *Config, env platform.Env, cwd string) string {
+	// The base configuration is already loaded here. Resolve its transport
+	// before asking for the caller, so a project-selected hc session is read
+	// by the same layer that writes it. Do not mutate the caller's env.
+	if env.Get("HC_TERMINAL_ID") != "" && TransportMode(ctx, env) == "hc" && env.Get("SOHO_TRANSPORT") != "hc" {
+		env = env.Clone()
+		env["SOHO_TRANSPORT"] = "hc"
+	}
 	svc := backend.New(env)
 	workspace := svc.Runtime.Caller().WorkspaceID
 	if workspace == "" && !svc.Runtime.Caller().Inside {
