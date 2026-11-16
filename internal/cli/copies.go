@@ -1765,12 +1765,18 @@ func mutationCopyScanDirs(env platform.Env, cwd string) []string {
 		return dirs
 	}
 	configured = filepath.Clean(configured)
-	a, errA := filepath.EvalSymlinks(dirs[0])
-	b, errB := filepath.EvalSymlinks(configured)
-	if configured != dirs[0] && !(errA == nil && errB == nil && sameOriginProject(a, b)) {
-		dirs = append(dirs, configured)
+	if configured == dirs[0] {
+		return dirs
 	}
-	return dirs
+	// The same directory under two spellings (a symlink, or a case-folded
+	// name on a case-insensitive filesystem) is scanned once: compare the
+	// directories' identities, not their names (R431).
+	if a, errA := os.Stat(dirs[0]); errA == nil {
+		if b, errB := os.Stat(configured); errB == nil && os.SameFile(a, b) {
+			return dirs
+		}
+	}
+	return append(dirs, configured)
 }
 
 func gcUsageError() int {

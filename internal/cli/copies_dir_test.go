@@ -123,3 +123,25 @@ func TestGcConfiguredCopiesDirUnregistered(t *testing.T) {
 		t.Fatalf("dry run changed copy: %v", err)
 	}
 }
+
+// R431 F1: copies_dir naming TMPDIR under another spelling (here the
+// upper-case name on a case-insensitive filesystem) is the same directory:
+// gc lists its unregistered copy once.
+func TestGcCopiesDirSameDirectoryOtherSpelling(t *testing.T) {
+	f := gcEmptyFixture(t)
+	alias := filepath.Join(filepath.Dir(f.tmp), strings.ToUpper(filepath.Base(f.tmp)))
+	if alias == f.tmp {
+		t.Skip("the temp directory name has no case to fold")
+	}
+	a, errA := os.Stat(f.tmp)
+	b, errB := os.Stat(alias)
+	if errA != nil || errB != nil || !os.SameFile(a, b) {
+		t.Skip("case-sensitive filesystem")
+	}
+	f.env["SOHO_COPIES_DIR"] = alias
+	tmp := mkOldUnregCopy(t, f.tmp, "soho-mutation-tmp", 40)
+	code, out, errOut := f.run(t, f.env, "gc")
+	if code != 0 || strings.Count(out, "soho-mutation-tmp") != 1 {
+		t.Fatalf("one physical copy must be listed once: code=%d out=%q err=%q (copy %s)", code, out, errOut, tmp)
+	}
+}
