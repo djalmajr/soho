@@ -2040,10 +2040,13 @@ func ownedPaths(body string, aliases map[string][]string) []string {
 		out = append(out, trimmed)
 	}
 	pendingValue := false
-	for _, line := range lines[start+1:] {
-		if m := regexp.MustCompile(`^(#{1,6}) `).FindStringSubmatch(line); len(m) > 0 && len(m[1]) <= level {
+	section := lines[start+1:]
+	filtered, fenced := dispatch.OwnedSectionLines(section)
+	for i, raw := range section {
+		if m := regexp.MustCompile(`^(#{1,6}) `).FindStringSubmatch(raw); !fenced[i] && len(m) > 0 && len(m[1]) <= level {
 			break
 		}
+		line := filtered[i]
 		item := strings.TrimSpace(regexp.MustCompile(`^\s*(?:[-*+]|\d+[.)])\s+`).ReplaceAllString(line, ""))
 		words := strings.Fields(item)
 		if len(words) > 0 && ownershipExclusions[strings.ToLower(words[0])] {
