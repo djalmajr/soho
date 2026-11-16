@@ -7,13 +7,18 @@ import (
 
 var ownedLabelListMarker = regexp.MustCompile(`^(?:[-*+]|[0-9]+[.)])[ \t]+`)
 
-// ownedLabel identifies a fixed label at the start of a line. The returned
-// remainder excludes the label and closing emphasis so an empty label is not
-// mistaken for an ownership item.
+// ownedLabel identifies a fixed label at the start of a line. For a positive
+// label, remainder is the value after the colon: without the label's own
+// closing emphasis ("**Owned:** x"), without a list marker of its own
+// ("Owned: - x") and without a symmetric emphasis pair around it
+// ("Owned: **x**"), so neither can become part of a path (review R379). A
+// glob such as src/** or **/x.go has no matching pair and is kept whole.
 func ownedLabel(line string) (negative, positive bool, remainder string) {
 	line = strings.TrimSpace(line)
 	line = ownedLabelListMarker.ReplaceAllString(line, "")
-	line = strings.TrimLeft(line, " \t*_")
+	trimmed := strings.TrimLeft(line, " \t*_")
+	labelEmphasis := line[:len(line)-len(trimmed)]
+	line = trimmed
 	colon := strings.IndexByte(line, ':')
 	if colon < 0 {
 		return false, false, ""
@@ -23,10 +28,27 @@ func ownedLabel(line string) (negative, positive bool, remainder string) {
 	case "proibido", "forbidden", "nao tocar", "do not touch", "fora do escopo", "out of scope":
 		return true, false, ""
 	case "pode tocar", "owned", "may edit", "arquivos proprios", "arquivos de posse":
-		return false, true, strings.TrimLeft(line[colon+1:], "*_ \t")
+		return false, true, ownedLabelValue(line[colon+1:], strings.TrimSpace(labelEmphasis))
 	default:
 		return false, false, ""
 	}
+}
+
+// ownedLabelValue cleans the text after a positive label's colon; see
+// ownedLabel.
+func ownedLabelValue(value, labelEmphasis string) string {
+	if labelEmphasis != "" {
+		value = strings.TrimPrefix(value, labelEmphasis)
+	}
+	value = strings.TrimSpace(value)
+	value = strings.TrimSpace(ownedLabelListMarker.ReplaceAllString(value, ""))
+	for _, pair := range []string{"**", "__", "*", "_"} {
+		if len(value) > 2*len(pair) && strings.HasPrefix(value, pair) && strings.HasSuffix(value, pair) {
+			value = strings.TrimSpace(value[len(pair) : len(value)-len(pair)])
+			break
+		}
+	}
+	return value
 }
 
 // OwnedSectionLines filters one Owned section, retaining its line positions.

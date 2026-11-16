@@ -22,6 +22,11 @@ func TestOwnedLabelsPaths(t *testing.T) {
 		{"last line", "## Owned files\n- `src/a.go`\nForbidden:", []string{"src/a.go"}},
 		{"consecutive and deeper", "## Owned files\n- `src/a.go`\nForbidden:\n### detail\nProibido:\n- `src/no.go`\nOwned: `src/b.go`\n## End\n- `src/no2.go`\n", []string{"src/a.go", "src/b.go"}},
 		{"crlf", "## Arquivos\r\nPode tocar:\r\n- `src/a.go`\r\nProibido:\r\n- `src/no.go`\r\nOwned: `src/b.go`\r\n", []string{"src/a.go", "src/b.go"}},
+		{"positive label own marker", "## Owned files\nOwned: - src/ui/app.go\n", []string{"src/ui/app.go"}},
+		{"positive label emphasis pair", "## Owned files\nOwned: **src/ui/app.go**\n", []string{"src/ui/app.go"}},
+		{"emphasized label", "## Owned files\n**Owned:** src/a.go\n", []string{"src/a.go"}},
+		{"positive label globs kept", "## Owned files\nOwned: src/**\nMay edit: **/x.go\n", []string{"src/**", "**/x.go"}},
+		{"positive label none", "## Owned files\nOwned: **None.**\n", []string{}},
 		{"positive label bare path", "## Owned files\n- Owned: src/ui/app.go\nPode tocar: src/b.go\nMay edit: arquivos de UI\n", []string{"src/ui/app.go", "src/b.go"}},
 		{"fenced label", "## Owned files\n- `src/a.go`\n```md\n## example\nForbidden:\n```\n- `src/b.go`\n", []string{"src/a.go", "src/b.go"}},
 	}

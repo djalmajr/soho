@@ -31,6 +31,24 @@ func TestBriefOwnedLabelsItems(t *testing.T) {
 	}
 }
 
+// Review R379: a positive label's value with its own list marker or an
+// emphasis pair still declares no files when it says so, for the read-only
+// signal.
+func TestBriefOwnedLabelValueDeclaresNoFiles(t *testing.T) {
+	for _, body := range []string{
+		"## Owned files\nOwned: - None.\n",
+		"## Owned files\nOwned: **None.**\n",
+		"## Owned files\n**Owned:** nenhum\n",
+	} {
+		if BriefHasLiteralOwnedItems(body) {
+			t.Fatalf("BriefHasLiteralOwnedItems(%q) = true, want false", body)
+		}
+	}
+	if !BriefHasLiteralOwnedItems("## Owned files\nOwned: - src/ui/app.go\n") {
+		t.Fatal("a real path after a positive label must stay an edit request")
+	}
+}
+
 func TestBriefForbiddenLabelLint(t *testing.T) {
 	prefix := "## Goal\nGoal\n## Expected result\nDone\n## Arquivos\nPode tocar:\n- `src/ui/**`\n"
 	suffix := "## Report\nNo commit.\n"
