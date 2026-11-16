@@ -47,7 +47,12 @@ func OwnedSectionLines(lines []string) ([]string, []bool) {
 		}
 		if positive {
 			excluded = false
-			out[i] = rest
+			// The rest keeps a list marker, so a bare path after the label
+			// ("- Owned: src/ui/app.go") is still read as an owned item
+			// (review R377); a backtick path reads the same either way.
+			if strings.TrimSpace(rest) != "" {
+				out[i] = "- " + rest
+			}
 			continue
 		}
 		if !excluded {

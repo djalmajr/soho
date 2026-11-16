@@ -22,6 +22,7 @@ func TestOwnedLabelsPaths(t *testing.T) {
 		{"last line", "## Owned files\n- `src/a.go`\nForbidden:", []string{"src/a.go"}},
 		{"consecutive and deeper", "## Owned files\n- `src/a.go`\nForbidden:\n### detail\nProibido:\n- `src/no.go`\nOwned: `src/b.go`\n## End\n- `src/no2.go`\n", []string{"src/a.go", "src/b.go"}},
 		{"crlf", "## Arquivos\r\nPode tocar:\r\n- `src/a.go`\r\nProibido:\r\n- `src/no.go`\r\nOwned: `src/b.go`\r\n", []string{"src/a.go", "src/b.go"}},
+		{"positive label bare path", "## Owned files\n- Owned: src/ui/app.go\nPode tocar: src/b.go\nMay edit: arquivos de UI\n", []string{"src/ui/app.go", "src/b.go"}},
 		{"fenced label", "## Owned files\n- `src/a.go`\n```md\n## example\nForbidden:\n```\n- `src/b.go`\n", []string{"src/a.go", "src/b.go"}},
 	}
 	for _, tc := range cases {
@@ -61,5 +62,10 @@ func TestOwnedLabelsOverlap(t *testing.T) {
 	yes := dja661OverlapFixture(t, mine, func(string) string { return "- `src/ui/app.go`" })
 	if !strings.Contains(yes, "owns files") {
 		t.Fatalf("missing control warning: %s", yes)
+	}
+	// Review R377: a bare path after a positive label is owned too.
+	bare := dja661OverlapFixture(t, func(string) string { return "- Owned: src/ui/app.go" }, func(string) string { return "- `src/ui/app.go`" })
+	if !strings.Contains(bare, "owns files") {
+		t.Fatalf("missing warning for a bare path after a positive label: %s", bare)
 	}
 }
