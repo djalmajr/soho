@@ -36,7 +36,7 @@ func TestLintReviewWorktreeAdvisory(t *testing.T) {
 	brief := filepath.Join(root, "review.md")
 	clean := "# Goal\nReview the slice.\n# Expected result\nDone.\n# Owned files\nnone\n# Forbidden\nNo commit/push.\n# Report\nDone.\n"
 	writeLintWorktreeFile(t, brief, clean)
-	const want = "has no Worktree: line: this review cannot be tied to its author, so 'soho stats --by author-model' will not count it; add 'Worktree: <absolute path>' here and in the implementer's brief"
+	const want = "has no Worktree: line: this review cannot be tied to its author, so 'soho stats --by author-model' will not count it; add 'Worktree: <absolute path>' here and in the implementer's brief, or 'Author: orchestrator' when the orchestrator wrote the code"
 	run := func(args []string, env platform.Env) (int, string, string) {
 		var stdout, stderr bytes.Buffer
 		oldOut, oldErr := platform.Stdout, platform.Stderr
@@ -77,6 +77,13 @@ func TestLintReviewWorktreeAdvisory(t *testing.T) {
 	rc, out, errText := run([]string{"lint", brief, "--role", "reviewer"}, env)
 	if rc != 0 || strings.Contains(errText, "Worktree: line") {
 		t.Fatalf("declared worktree: rc=%d out=%q stderr=%q", rc, out, errText)
+	}
+
+	// SOH-317: a review of the orchestrator's own code says so and is silent.
+	writeLintWorktreeFile(t, brief, "Author: orchestrator\n"+clean)
+	rc, out, errText = run([]string{"lint", brief, "--role", "reviewer"}, env)
+	if rc != 0 || strings.Contains(errText, "Worktree: line") {
+		t.Fatalf("orchestrator author: rc=%d out=%q stderr=%q", rc, out, errText)
 	}
 
 	// A non-review role stays silent and its exit code is unchanged.

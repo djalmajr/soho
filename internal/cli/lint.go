@@ -82,7 +82,7 @@ func lintWorktreeWarning(brief, role string) string {
 	if err != nil {
 		return ""
 	}
-	if dispatch.DeclaredWorktree(string(body)) != "" {
+	if dispatch.DeclaredWorktree(string(body)) != "" || dispatch.DeclaresOrchestratorAuthor(string(body)) {
 		return ""
 	}
 	return reviewWorktreeMessage(brief)
