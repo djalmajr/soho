@@ -184,6 +184,24 @@ func TestUnfilledPlaceholderMarks(t *testing.T) {
 			t.Fatalf("lowercase marker was counted: %q", findings.MissingMessage)
 		}
 	})
+	t.Run("an identifier-like marker counts only as a whole word", func(t *testing.T) {
+		file := write(t, "# Goal\nForward SOHO_AGENT_NAME and AGENT_NAMES, set MY_SLOT_DIR.\nKeep `AGENT_NAME`, (AGENT_NAME) and AGENT_NAME.\n# Expected result\nObserved.\n# Owned files\nnone\n# Forbidden\nNo commit or push.\n# Report\nDone.\nworktree: /tmp/WORKTREE_PATH_OLD\n")
+		ctx := defaultsCtx(t, map[string]string{"brief_lint_placeholders": "MY_SLOT, Other slot"})
+		findings := BriefLintFindings(file, ctx, platform.Env{}, BriefLintOptions{})
+		want := "brief " + file + " is missing sections: [unfilled placeholder 'AGENT_NAME' (line 3)]"
+		if findings.MissingMessage != want {
+			t.Fatalf("MissingMessage = %q, want %q", findings.MissingMessage, want)
+		}
+	})
+	t.Run("a marker with other characters stays a substring", func(t *testing.T) {
+		file := write(t, "# Goal\nsee xOther slotx here\n# Expected result\nObserved.\n# Owned files\nnone\n# Forbidden\nNo commit or push.\n# Report\nDone.\n")
+		ctx := defaultsCtx(t, map[string]string{"brief_lint_placeholders": "Other slot"})
+		findings := BriefLintFindings(file, ctx, platform.Env{}, BriefLintOptions{})
+		want := "brief " + file + " is missing sections: [unfilled placeholder 'Other slot' (line 2)]"
+		if findings.MissingMessage != want {
+			t.Fatalf("MissingMessage = %q, want %q", findings.MissingMessage, want)
+		}
+	})
 	t.Run("the brief_lint_placeholders list adds trimmed items in order and drops duplicates", func(t *testing.T) {
 		file := write(t, "# Goal\nslot MY_SLOT then Other slot\n# Expected result\nObserved.\n# Owned files\nnone\n# Forbidden\nNo commit or push.\n# Report\nDone.\n")
 		ctx := defaultsCtx(t, map[string]string{"brief_lint_placeholders": "MY_SLOT, Other slot, MY_SLOT, AGENT_NAME"})
