@@ -454,6 +454,16 @@ func TestGcShowsThePressureLine(t *testing.T) {
 			want: "resource pressure: disk " + sd + " has 3% free (3 GB of 100 GB); swap 95% used (95 GB of 100 GB); run 'soho gc' and close idle panes before opening more",
 		},
 		{
+			name: "below percent but above floor", diskFreeGB: 10, diskOK: true, swapUsedGB: 30, swapOK: true,
+			env:  platform.Env{"SOHO_PRESSURE_DISK_FREE_MIN_GB": "5"},
+			want: "resource pressure: none (disk 10% free, swap 30% used)",
+		},
+		{
+			name: "floor equality", diskFreeGB: 10, diskOK: true, swapUsedGB: 30, swapOK: true,
+			env:  platform.Env{"SOHO_PRESSURE_DISK_FREE_MIN_GB": "10"},
+			want: "resource pressure: none (disk 10% free, swap 30% used)",
+		},
+		{
 			name: "none", diskFreeGB: 60, diskOK: true, swapUsedGB: 30, swapOK: true,
 			want: "resource pressure: none (disk 60% free, swap 30% used)",
 		},
@@ -475,7 +485,7 @@ func TestGcShowsThePressureLine(t *testing.T) {
 		},
 		{
 			name: "the configured limit applies", diskFreeGB: 60, diskOK: true, swapUsedGB: 30, swapOK: true,
-			env:  platform.Env{"SOHO_PRESSURE_DISK_FREE_PERCENT": "70"},
+			env:  platform.Env{"SOHO_PRESSURE_DISK_FREE_PERCENT": "70", "SOHO_PRESSURE_DISK_FREE_MIN_GB": "0"},
 			want: "resource pressure: disk " + sd + " has 60% free (60 GB of 100 GB); run 'soho gc' and close idle panes before opening more",
 		},
 	}

@@ -87,8 +87,8 @@ var ConfigScalarKeys = []string{
 	"prompt_check_seconds", "prompt_settle_seconds", "stuck_warn_minutes", "context_warn_percent", "context_fresh_percent", "state_dir",
 	"report_language", "notify", "feedback", "feedback_repo", "feedback_dir", "feedback_to",
 	"setup_target", "inbound", "caller_check", "worker_messages", "metrics",
-	"pressure_disk_free_percent", "pressure_swap_percent",
-	"pressure_refuse_disk_free_percent", "pressure_refuse_swap_percent",
+	"pressure_disk_free_percent", "pressure_disk_free_min_gb", "pressure_swap_percent",
+	"pressure_refuse_disk_free_percent", "pressure_refuse_disk_free_min_gb", "pressure_refuse_swap_percent",
 	"footprint_warn_gb", "login_shell",
 }
 
@@ -510,6 +510,9 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		}
 		port, err := strconv.Atoi(value)
 		return decimalRE.MatchString(value) && err == nil && port >= 1024 && port <= 65000
+	case key == "pressure_disk_free_min_gb" || key == "pressure_refuse_disk_free_min_gb":
+		_, ok := pressureDiskFloorValue(value)
+		return ok
 	case key == "report_working_max" || key == "idle_alert_minutes":
 		// The wait readers parse int64 values: refuse values they cannot honor.
 		_, err := strconv.ParseInt(value, 10, 64)
