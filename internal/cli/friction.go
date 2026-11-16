@@ -155,9 +155,9 @@ func cmdFriction(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 		hasSince := sinceRaw != ""
 		if hasSince {
 			var ok bool
-			since, ok = stats.ParseSince(sinceRaw)
+			since, ok = stats.ParseSinceFlag(sinceRaw, platform.Now())
 			if !ok {
-				platform.DieFriction("friction: --since expects AAAA-MM-DD or an ISO date (got '"+sinceRaw+"')", 2)
+				platform.DieFriction("friction: --since expects "+stats.SinceUsage+" (got '"+sinceRaw+"')", 2)
 			}
 		}
 		if level != "" && level != "warning" && level != "note" && level != "error" {

@@ -265,6 +265,18 @@ func Run(args []string, env platform.Env) (code int) {
 	if decisionEnv.Get("SOHO_NOWRITE") == "1" && !nowriteReadInvocation(args) {
 		dieNowriteGenericRefusal(command, args)
 	}
+	if command == "help" && len(args) > 1 {
+		// help <command> prints what <command> --help prints (SOH-307);
+		// help help, help --help and help -h print help's own line.
+		if args[1] == "--help" || args[1] == "-h" {
+			args[1] = "help"
+		}
+		if args[1] != "help" && !knownCommands[args[1]] {
+			platform.Die("unknown command '"+args[1]+"'", 2)
+		}
+		_, _ = io.WriteString(platform.Stdout, commandHelp(args[1]))
+		return 0
+	}
 	if command == "help" || command == "-h" || command == "--help" || command == "" {
 		_, _ = io.WriteString(platform.Stdout, usage)
 		return 0

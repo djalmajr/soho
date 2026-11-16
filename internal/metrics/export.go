@@ -137,9 +137,9 @@ func parseExportArgs(args []string, logFile string) exportArgOptions {
 			}
 			i++
 			value := args[i]
-			since, ok := stats.ParseSince(value)
+			since, ok := stats.ParseSinceFlag(value, platform.Now())
 			if !ok {
-				core.DieFriction("metrics export: --since expects AAAA-MM-DD or an ISO date (got '"+value+"')", 2, logFile, "metrics")
+				core.DieFriction("metrics export: --since expects "+stats.SinceUsage+" (got '"+value+"')", 2, logFile, "metrics")
 			}
 			opts.since, opts.hasSince = since, true
 		case "--project-label":
