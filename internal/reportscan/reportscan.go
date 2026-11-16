@@ -276,24 +276,54 @@ func ValidationLine(text string) (string, bool) {
 	if ReviewHeader(text) == nil {
 		return "", false
 	}
-	seen := 0
+	lines := headerLines(text)
+	if len(lines) < 2 {
+		return "", false
+	}
+	for _, result := range []string{"PASS", "FAIL", "NOT RUN", "BLOCKED"} {
+		if lines[1] == "validation: "+result {
+			return result, true
+		}
+	}
+	return "", false
+}
+
+// headerLines returns the report's first two non-empty lines, trimmed, after
+// any HTML comments that open the report (a project's own report marker such
+// as "<!-- security-review:report sha=… -->", on one line or several): the
+// review header and the validation line are read after them (SOH-325).
+func headerLines(text string) []string {
+	out := []string{}
+	inComment, leading := false, true
 	for _, raw := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
 		line := strings.TrimFunc(raw, isJSTrimSpace)
+		for leading && line != "" {
+			if inComment {
+				end := strings.Index(line, "-->")
+				if end < 0 {
+					line = ""
+					break
+				}
+				inComment = false
+				line = strings.TrimFunc(line[end+3:], isJSTrimSpace)
+				continue
+			}
+			if strings.HasPrefix(line, "<!--") {
+				inComment = true
+				line = line[4:]
+				continue
+			}
+			leading = false
+		}
 		if line == "" {
 			continue
 		}
-		seen++
-		if seen != 2 {
-			continue
+		out = append(out, line)
+		if len(out) == 2 {
+			break
 		}
-		for _, result := range []string{"PASS", "FAIL", "NOT RUN", "BLOCKED"} {
-			if line == "validation: "+result {
-				return result, true
-			}
-		}
-		return "", false
 	}
-	return "", false
+	return out
 }
 
 // ReviewHeader is the parsed first-line review summary.
@@ -303,24 +333,22 @@ type ReviewHeaderResult struct {
 	Verdict  string             `json:"verdict"`
 }
 
-// ParseReviewHeader recognizes a review header only on the first non-empty line.
+// ReviewHeader recognizes a review header only on the first non-empty line
+// after any HTML comments that open the report.
 func ReviewHeader(text string) *ReviewHeaderResult {
-	for _, raw := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
-		line := strings.TrimFunc(raw, isJSTrimSpace)
-		if line == "" {
-			continue
-		}
-		match := reviewHeaderRE.FindStringSubmatch(lowerASCII(line))
-		if match == nil {
-			return nil
-		}
-		return &ReviewHeaderResult{
-			Findings: jsNumber(match[1]),
-			Severity: map[string]float64{"P0": jsNumber(match[2]), "P1": jsNumber(match[3]), "P2": jsNumber(match[4]), "P3": jsNumber(match[5])},
-			Verdict:  strings.ToLower(match[6]),
-		}
+	lines := headerLines(text)
+	if len(lines) == 0 {
+		return nil
 	}
-	return nil
+	match := reviewHeaderRE.FindStringSubmatch(lowerASCII(lines[0]))
+	if match == nil {
+		return nil
+	}
+	return &ReviewHeaderResult{
+		Findings: jsNumber(match[1]),
+		Severity: map[string]float64{"P0": jsNumber(match[2]), "P1": jsNumber(match[3]), "P2": jsNumber(match[4]), "P3": jsNumber(match[5])},
+		Verdict:  strings.ToLower(match[6]),
+	}
 }
 
 func lowerASCII(value string) string {
