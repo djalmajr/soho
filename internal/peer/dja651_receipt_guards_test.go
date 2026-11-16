@@ -1,6 +1,7 @@
 package peer_test
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -34,8 +35,10 @@ func TestDJA651ReceiptShortcutGuards(t *testing.T) {
 				case "refusal":
 					post = "  └ [soho:peer-refused:" + id + "] refused-inbound-off\n" + pre
 				}
+				dir := t.TempDir()
+				release := filepath.Join(dir, "typed-append-complete")
 				p := dja651PromptRule(prompt)
-				p.Delay = 100
+				p.WaitFile = release
 				if stalled {
 					p.Code, p.Stderr = 1, stalledPromptErr
 				}
@@ -72,10 +75,10 @@ func TestDJA651ReceiptShortcutGuards(t *testing.T) {
 					{Argv: []string{"agent", "read", "w0test:p0a", "--source", "recent-unwrapped"}, ArgvPrefix: true, Stdout: recent}, p,
 					{Argv: []string{"agent", "send-keys", "w0test:p0a", "enter"}},
 				}
-				f := newFixture(t, rules)
+				f := newFixtureAt(t, dir, rules)
 				dja651Isolate(f)
 				journal := dja651Journal(t, f, `{"type":"session_meta","payload":{"id":"`+dja651Session+`"}}`+"\n")
-				join := dja651Append(t, f, journal, id, dja651Record(t, "user", prompt))
+				join := dja651ReviewAppend(t, f, journal, id, dja651Record(t, "user", prompt), release)
 				defer join()
 				code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "1s", "hello"})
 				join()

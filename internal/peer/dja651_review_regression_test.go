@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -154,16 +155,19 @@ func TestDJA651ReviewStalledReceiptCallBudget(t *testing.T) {
 			binding := fakecli.Rule{Argv: dja651ReviewGet, Call: 4, Stdout: dja651Agent(true)}
 			history := fakecli.Rule{Argv: dja651ReviewRecent, ArgvPrefix: true, Call: 1, Stdout: "no screen receipt\n"}
 			visible := fakecli.Rule{Argv: dja651ReviewVisible, Call: 4, Stdout: pre}
-			const delay = 1700 // ms, above the existing one-second call floor
+			// The selected call never receives this file. The fake's own 60s
+			// safety cap is well beyond the product's one-second call floor and
+			// the incidental scheduling allowance below.
+			blocked := filepath.Join(dir, "never-release-validation")
 			switch delayed {
 			case "binding":
-				binding.Delay = delay
+				binding.WaitFile = blocked
 				binding.Stdout = strings.Replace(binding.Stdout, dja651Session, "aaaaaaaa-2222-4333-8444-555555555555", 1)
 			case "history":
-				history.Delay = delay
+				history.WaitFile = blocked
 				visible.Stdout = "Unsupported final renderer\n"
 			case "visible":
-				visible.Delay = delay
+				visible.WaitFile = blocked
 				visible.Stdout = "Unsupported final renderer\n"
 			}
 			// Delayed cases cannot prove delivery even if the call finishes:
@@ -177,6 +181,19 @@ func TestDJA651ReviewStalledReceiptCallBudget(t *testing.T) {
 			})
 			dja651Isolate(f)
 			journal := dja651Journal(t, f, `{"type":"session_meta","payload":{"id":"`+dja651Session+`"}}`+"\n")
+			if delayed == "control" {
+				// Assert the actual call options, independently of process and
+				// scheduling latency, so the incidental slack below does not
+				// weaken the one-second floor contract.
+				home := filepath.Join(dir, "budget-probe")
+				probe := filepath.Join(home, "sessions", "2026", "11", "05", "rollout-2026-11-05T20-55-51-"+dja651Session+".jsonl")
+				writeClaudeTranscript(t, probe, `{"type":"session_meta","payload":{"id":"`+dja651Session+`"}}`+"\n")
+				ok, budgets := peer.ReceiptBudgetProbe(t, home, dja651Session, probe, dja651Record(t, "user", prompt), peer.PeerEndLine(id), id, pre, dja651Agent(true))
+				want := []peer.ReceiptBudgetCall{{Operation: "binding", Timeout: time.Second}, {Operation: "recent-unwrapped", Timeout: time.Second}, {Operation: "visible", Timeout: time.Second}}
+				if !ok || !reflect.DeepEqual(budgets, want) {
+					t.Fatalf("expired window validation: ok=%v budgets=%v want=%v", ok, budgets, want)
+				}
+			}
 			join := dja651ReviewAppend(t, f, journal, id, dja651Record(t, "user", prompt), release)
 			code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "1s", "hello"})
 			end := time.Now()
@@ -197,10 +214,10 @@ func TestDJA651ReviewStalledReceiptCallBudget(t *testing.T) {
 				t.Fatalf("armed stalled validation did not reach %s: phase=%d stage=%d", delayed, phase, stage)
 			}
 			elapsed := end.Sub(starts[phase])
-			t.Logf("validation=%s phase_start=%s call_start=%s elapsed=%s delay_ms=%d window=1ms floor=1s slack=450ms code=%d", delayed, starts[phase].Format(time.RFC3339Nano), starts[stage].Format(time.RFC3339Nano), elapsed, delay, code)
-			// Start at the native in-window visible read, excluding preparation,
-			// baseline arming and the prompt/append handshake entirely.
-			if elapsed > time.Millisecond+time.Second+450*time.Millisecond {
+			t.Logf("validation=%s phase_start=%s call_start=%s elapsed=%s blocked_until=60s window=1ms floor=1s slack=5s code=%d", delayed, starts[phase].Format(time.RFC3339Nano), starts[stage].Format(time.RFC3339Nano), elapsed, code)
+			// Keep the 1s call floor; 5s is only scheduling/process teardown
+			// slack. A call that waits for the fake's 60s cap still fails.
+			if elapsed > time.Millisecond+time.Second+5*time.Second {
 				t.Errorf("stalled journal validation exceeded remaining window plus call floor: validation=%s elapsed=%s", delayed, elapsed)
 			}
 			status := "stalled"

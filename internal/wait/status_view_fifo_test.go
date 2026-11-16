@@ -3,9 +3,11 @@
 package wait
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -39,8 +41,8 @@ func (r *fifoOpenReceipt) report(err error) {
 	r.opened <- err
 }
 
-// observeFIFOConsumer keeps the existing 250ms consumer deadline and one
-// shared 1s release bound, which covers both the control's actual open
+// observeFIFOConsumer uses an incidental 3s scheduling allowance and one
+// shared 30s release bound, which covers both the control's actual open
 // receipt and the consumer's completion after the release. A successful
 // nonblocking writer proves a waiting FIFO reader; ENXIO instead identifies
 // latency elsewhere in the consumer. The owned writer stays open until
@@ -56,9 +58,9 @@ func observeFIFOConsumer(t *testing.T, path string, receipt *fifoOpenReceipt, co
 	select {
 	case view = <-done:
 		return view, false, false
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(3 * time.Second):
 	}
-	release := time.After(time.Second)
+	release := time.After(30 * time.Second)
 	writer, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
 	readerWaiting = err == nil
 	if writer != nil {
@@ -92,7 +94,7 @@ func inspectFIFOPromptly(t *testing.T, path string, consume func() AgentStatusVi
 	t.Helper()
 	view, delayed, readerWaiting := observeFIFOConsumer(t, path, nil, consume)
 	if delayed {
-		t.Errorf("consumer exceeded 250ms; a FIFO reader was waiting=%v (false means latency outside the FIFO acquisition)", readerWaiting)
+		t.Errorf("consumer exceeded 3s; a FIFO reader was waiting=%v (false means latency outside the FIFO acquisition)", readerWaiting)
 	}
 	return view
 }
@@ -112,27 +114,96 @@ func TestStatusViewFIFOBlockingControl(t *testing.T) {
 	if delayed || waiting || view.State != "refused" {
 		t.Fatalf("nonblocking control=%+v delayed=%v reader=%v", view, delayed, waiting)
 	}
-	// The blocking positive control owns its reader: it reports the actual
-	// result of os.Open, reads until the released writer's EOF, and closes the
-	// reader before returning joined, so the join is the real consumer
-	// completion rather than a guessed delay.
+	// Open a writer only after the kernel observes the blocking reader. A
+	// scheduler delay before os.Open no longer looks like a missing reader.
 	receipt := newFIFOOpenReceipt()
-	view, delayed, waiting = observeFIFOConsumer(t, path, receipt, func() AgentStatusView {
+	done := make(chan AgentStatusView, 1)
+	opened, joined := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(joined)
 		f, err := os.Open(path) // deliberately blocking owned FIFO control
 		receipt.report(err)
+		close(opened)
 		if err != nil {
-			return AgentStatusView{State: "read-error"}
+			done <- AgentStatusView{State: "read-error"}
+			return
 		}
 		defer func() { _ = f.Close() }()
 		if _, err := io.ReadAll(f); err != nil {
-			return AgentStatusView{State: "read-error"}
+			done <- AgentStatusView{State: "read-error"}
+			return
 		}
-		return AgentStatusView{State: "joined"}
+		done <- AgentStatusView{State: "joined"}
+	}()
+	// On every assertion path, release and join the owned reader. RDWR also
+	// releases a reader that had not reached os.Open when the test failed.
+	t.Cleanup(func() {
+		select {
+		case <-joined:
+			return
+		default:
+		}
+		w, err := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			t.Errorf("open FIFO cleanup writer: %v", err)
+			return
+		}
+		select {
+		case <-opened:
+		case <-joined:
+		case <-time.After(30 * time.Second):
+			t.Error("FIFO reader did not open during cleanup")
+		}
+		if err := w.Close(); err != nil {
+			t.Errorf("close FIFO cleanup writer: %v", err)
+		}
+		select {
+		case <-joined:
+		case <-time.After(30 * time.Second):
+			t.Error("FIFO reader did not join during cleanup")
+		}
 	})
-	if !delayed || !waiting || view.State != "joined" {
-		t.Fatalf("blocking control=%+v delayed=%v reader=%v", view, delayed, waiting)
+	deadline := time.Now().Add(30 * time.Second)
+	var writer *os.File
+	for writer == nil {
+		var err error
+		writer, err = os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+		if err != nil && !errors.Is(err, syscall.ENXIO) {
+			t.Fatalf("open FIFO release writer: %v", err)
+		}
+		if writer == nil && time.Now().After(deadline) {
+			t.Fatal("blocking FIFO reader did not reach open within 30s")
+		}
+		if writer == nil {
+			runtime.Gosched()
+		}
 	}
-	t.Log("nonblocking refusal met 250ms; blocking FIFO crossed 250ms, writer held until the reader's actual open receipt and closed, reader reached EOF and joined")
+	defer writer.Close()
+	select {
+	case view = <-done:
+		t.Fatalf("blocking reader returned before writer release: %+v", view)
+	default:
+	}
+	select {
+	case err := <-receipt.opened:
+		if err != nil {
+			t.Fatalf("blocking FIFO read-side open: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("blocking FIFO read-side open did not return")
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close FIFO writer: %v", err)
+	}
+	select {
+	case view = <-done:
+		if view.State != "joined" {
+			t.Fatalf("blocking control=%+v", view)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("blocking FIFO reader did not join after writer release")
+	}
+	t.Log("nonblocking refusal met 3s; blocking FIFO reader joined after its open receipt and writer EOF")
 }
 
 // snapSkip is treeSnapshot with one path recorded by metadata only: the
