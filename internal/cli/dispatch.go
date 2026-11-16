@@ -35,7 +35,7 @@ import (
 	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
 
-var dispatchWaitFiles = []string{"size", "screen", "since", "blocked", "approvals", "quota", "provider", "provider-cause", "capacity-retries", "capacity-at", "question", "stuck-hash", "stuck-since", "stuck-warned", "activity-at", "probe-at", "not-received", "queued", "enter-retry", "approve-screen", "submit-failed"}
+var dispatchWaitFiles = []string{"size", "screen", "since", "blocked", "approvals", "quota", "provider", "provider-cause", "capacity-retries", "capacity-at", "question", "stuck-hash", "stuck-since", "stuck-warned", "activity-at", "probe-at", "not-received", "queued", "enter-retry", "approve-screen"}
 var dispatchWaitFor = waitpkg.WaitFor
 var writeDispatchSidecar = dispatch.WriteSidecar
 var dispatchCodexSupportsNoDaemon = spawn.CodexSupportsNoDaemon
@@ -825,6 +825,9 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session, role); err != nil {
 		core.Warn(fmt.Sprintf("could not record the accepted submission in the attempt sidecar %s: %s; the prompt went out", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 	}
+	// Only an accepted submission ends the failed-submission protection: a
+	// dispatch that stops before sending (a hooks review block, a restore)
+	// keeps the marker, so wait still refuses the previous report.
 	_ = os.Remove(filepath.Join(sd, "wait", agent+".submit-failed"))
 	// The review author warning fires once per dispatched review, after the
 	// accepted write settled the author fields: advisory, never a refusal.
