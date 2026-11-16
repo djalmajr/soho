@@ -750,14 +750,27 @@ func TestHcFriction(t *testing.T) {
 	if len(tail) < 2 || !strings.HasSuffix(tail[len(tail)-2], "\tnote\tfriction\t[hc-note] a note for the next run") || !strings.HasSuffix(tail[len(tail)-1], "\tfixed\tfriction\thc-note handled in the skill") {
 		t.Fatalf("log tail = %q; want the note and the fixed line", tail)
 	}
-	// A rejected invocation keeps its exit code and writes nothing.
+	// A rejected invocation keeps its exit code and appends the error in
+	// the existing session log, just like other friction-aware commands.
 	before := string(raw)
 	code, _, errOut = hcHkRun(t, env, "friction", "--level", "bogus")
 	if code != 2 || !strings.Contains(errOut, "friction: --level expects warning, note or error (got 'bogus')") {
 		t.Fatalf("bad level: code=%d err=%q", code, errOut)
 	}
-	if after, _ := os.ReadFile(logPath); string(after) != before {
-		t.Fatalf("a rejected friction invocation wrote the log: %q", after)
+	after, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, ok := strings.CutPrefix(string(after), before)
+	if !ok {
+		t.Fatalf("existing log changed: %q", after)
+	}
+	fields := strings.Split(strings.TrimSuffix(added, "\n"), "\t")
+	if len(fields) != 4 || fields[1] != "error(exit 2)" || fields[2] != "friction" || fields[3] != "friction: --level expects warning, note or error (got 'bogus')" || !strings.HasSuffix(added, "\n") {
+		t.Fatalf("unexpected appended error: %q", added)
+	}
+	if _, err := time.Parse(time.RFC3339, fields[0]); err != nil {
+		t.Fatalf("bad error timestamp %q: %v", fields[0], err)
 	}
 	hcHkAssertReads(t, fakeDir, "get")
 }
