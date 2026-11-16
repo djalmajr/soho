@@ -213,7 +213,7 @@ func TestTypeSectionWarnings(t *testing.T) {
 		{
 			"security-mutations-prose-only-input-still-needs-list",
 			"Type: security\n## Input and response\nprose only\n## Mutations\nprose is enough here\n",
-			[]string{"brief " + path + " 'Input and response' section is empty"},
+			[]string{"brief " + path + " 'Input and response' section has text but no list or table item: nothing lists the inputs and the expected response"},
 		},
 		{
 			"backend-risk-markers-whole-na",
