@@ -1289,11 +1289,28 @@ func doctorLaneEfforts(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 				model, _ = kinds.ResolveModel(res.Kind, model, effort, env, func(string) {})
 			}
 			effective := spawn.ResolveSpawnEffort(role, lane, res.Kind, res.KindLayer, ctx, env, cwd, model)
-			if requested, _ := spawn.LaneRoleEffortConflict(role, res.Kind, model, effective, ctx, env, cwd); requested != "" {
-				s.Warning(fmt.Sprintf("lane %s runs %s at %s; the role asks for %s", lane, role, effective, requested))
+			requested, source := spawn.LaneRoleEffortConflict(role, res.Kind, model, effective, ctx, env, cwd)
+			if requested == "" || laneEffortChosen(ctx, lane, env) && source == "role file" {
+				// A lane effort the user or project chose wins over the role
+				// file's suggestion without a warning on every doctor and
+				// session hook (SOH-299); an explicit role.<role>.effort that
+				// disagrees with the lane is still a conflict worth a line.
+				continue
 			}
+			s.Warning(fmt.Sprintf("lane %s runs %s at %s; the role asks for %s", lane, role, effective, requested))
 		}
 	}
+}
+
+// laneEffortChosen reports whether lane.<lane>.effort comes from a layer
+// the user controls (user, project, session file or environment), not from
+// the skill defaults or the built-in value.
+func laneEffortChosen(ctx *core.Config, lane string, env platform.Env) bool {
+	switch core.CfgSource(ctx, core.LaneKey(lane, "effort"), env) {
+	case "defaults", "builtin":
+		return false
+	}
+	return true
 }
 
 func doctorLaneArgs(ctx *core.Config, env platform.Env, s *Say) {
