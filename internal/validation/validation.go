@@ -31,7 +31,8 @@ type Layer struct {
 
 // Document is the parsed "## Test layers" section of a VALIDATION.md.
 type Document struct {
-	// HasLayers is true when the exact title "## Test layers" exists.
+	// HasLayers is true when the title "## Test layers" (or its pt-BR form
+	// "## Camadas de teste", see isSectionTitle) exists.
 	HasLayers bool
 	// Layers is the accepted layer lines, in file order.
 	Layers []Layer
@@ -44,11 +45,43 @@ type Document struct {
 // sectionTitle is the exact title that opens the section.
 const sectionTitle = "## Test layers"
 
+// sectionTitlePTBR is the pt-BR title that opens the same section; it is
+// matched case-insensitively over ASCII letters only (no Unicode folding, so
+// a lookalike character never opens the section).
+const sectionTitlePTBR = "## Camadas de teste"
+
+// isSectionTitle reports whether line opens the layers section: the exact
+// English title, or the pt-BR title in any letter case. Every other line is
+// not a title.
+func isSectionTitle(line string) bool {
+	return line == sectionTitle || asciiEqualFold(line, sectionTitlePTBR)
+}
+
+// asciiEqualFold compares a and b ignoring the case of ASCII letters only.
+func asciiEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		x, y := a[i], b[i]
+		if 'A' <= x && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+		if 'A' <= y && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
+}
+
 // Parse analyses the text of a VALIDATION.md and returns the parsed
 // document. Code fences are tracked from the first line of the file: a
 // fenced title neither opens nor ends the section, and a fenced item is
 // never a layer. The section runs from the exact (unfenced) title
-// "## Test layers" to the next unfenced "## " title or the end of the
+// "## Test layers" (or "## Camadas de teste") to the next unfenced "## " title or the end of the
 // file; outside the section, every line is ignored. Inside the section,
 // non-list lines are ignored and each list item (a line starting with
 // "- ") must be one of the three forms, else its line number lands in
@@ -64,7 +97,7 @@ func Parse(text string) Document {
 		if fence.consume(line) {
 			continue
 		}
-		if line == sectionTitle {
+		if isSectionTitle(line) {
 			start = i
 			break
 		}

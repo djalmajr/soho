@@ -67,7 +67,7 @@ In legacy Herdr environments (`transport=herdr`), verify `HERDR_ENV=1`, the nati
 
 ## First run
 
-`soho init` and `soho doctor` print `first_run: true` when the project file has no team choice yet (no `multi_role`, `role.<role>.kind`, or `lane.<name>.kind`) and the state root has no roster row. `init` also sets `first_run` in its JSON. A header-only roster file is still a first run. `first_run: false` means this project already chose a team, or agents are already open.
+`soho init` and `soho doctor` print `first_run: true` when neither the project file nor the user file has a team choice yet (no `multi_role`, `role.<role>.kind`, or `lane.<name>.kind`) and the state root has no roster row. `init` also sets `first_run` in its JSON. A header-only roster file is still a first run. `first_run: false` means this project already chose a team (in the project file or the user file), or agents are already open.
 
 When `first_run` is true, **before any spawn**, tell the user what is about to happen and wait for a yes. Use their language. Adapt this model; do not open a pane in the same turn.
 

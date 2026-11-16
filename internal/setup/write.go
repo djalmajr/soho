@@ -561,11 +561,12 @@ func writeSetupLanes(conf string, lanes []core.LaneSpec, env platform.Env, cwd s
 	}
 }
 
-// userLayerChoosesTeam reports whether the user's own configuration file
+// UserLayerChoosesTeam reports whether the user's own configuration file
 // already holds a team choice (the same keys projectNeedsConfigPrompt looks
 // for in the project file). That choice is in effect in every project that
-// does not override it, so setup has nothing to ask.
-func userLayerChoosesTeam(ctx *core.Config) bool {
+// does not override it, so setup has nothing to ask and a project is not
+// on its first run (doctor.ProjectIsFirstRun calls this same function).
+func UserLayerChoosesTeam(ctx *core.Config) bool {
 	if ctx == nil {
 		return false
 	}
@@ -587,7 +588,7 @@ func userLayerChoosesTeam(ctx *core.Config) bool {
 
 func promptConfigNotice(ctx *core.Config, conf string, local bool) {
 	path := conf
-	if !projectNeedsConfigPrompt(path) || userLayerChoosesTeam(ctx) {
+	if !projectNeedsConfigPrompt(path) || UserLayerChoosesTeam(ctx) {
 		return
 	}
 	flag := ""

@@ -403,3 +403,47 @@ func TestRepoValidationHasNoMalformedPlaceholderOrMissingLayer(t *testing.T) {
 		}
 	}
 }
+
+// TestParseSectionTitles covers the titles that open the layers section: the
+// exact English title and the pt-BR title in any ASCII letter case. A fenced
+// title, another title (including a lookalike and an English title in
+// another case) and a missing title do not open it.
+func TestParseSectionTitles(t *testing.T) {
+	body := "- unit: `go test`\n- integration: n/a: none\n"
+	tests := []struct {
+		name       string
+		title      string
+		wantHas    bool
+		wantLayers int
+	}{
+		{"English title", "## Test layers", true, 2},
+		{"pt-BR title", "## Camadas de teste", true, 2},
+		{"pt-BR title in lower case", "## camadas de teste", true, 2},
+		{"pt-BR title in upper case", "## CAMADAS DE TESTE", true, 2},
+		{"English title in another case stays refused", "## test layers", false, 0},
+		{"pt-BR title in the plural is another title", "## Camadas de testes", false, 0},
+		{"pt-BR title with a Unicode lookalike (long s)", "## Camadas de teſte", false, 0},
+		{"pt-BR title with a different level", "### Camadas de teste", false, 0},
+		{"no title", "## Items", false, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := Parse("# Validation\n\n" + tt.title + "\n" + body)
+			if doc.HasLayers != tt.wantHas || len(doc.Layers) != tt.wantLayers {
+				t.Fatalf("HasLayers=%v layers=%d, want %v and %d", doc.HasLayers, len(doc.Layers), tt.wantHas, tt.wantLayers)
+			}
+		})
+	}
+	t.Run("a fenced pt-BR title opens nothing", func(t *testing.T) {
+		doc := Parse("```\n## Camadas de teste\n" + body + "```\n")
+		if doc.HasLayers {
+			t.Fatal("a fenced title opened the section")
+		}
+	})
+	t.Run("the pt-BR section ends at the next title", func(t *testing.T) {
+		doc := Parse("## Camadas de teste\n" + body + "## Itens\n- e2e: `x`\n")
+		if !doc.HasLayers || len(doc.Layers) != 2 {
+			t.Fatalf("HasLayers=%v layers=%d, want true and 2", doc.HasLayers, len(doc.Layers))
+		}
+	})
+}

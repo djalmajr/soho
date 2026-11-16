@@ -398,6 +398,30 @@ func TestDoctorValidationFailureMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("the pt-BR title raises no missing-section warning", func(t *testing.T) {
+		root := t.TempDir()
+		content := "## Camadas de teste\n- unit: `go test ./...`\n- integration: n/a: no separate integration layer\n- contract: n/a: covered by the job smoke\n- e2e: manual: the procedure of the docs\n- mutation: `go test -race ./...`\n"
+		if err := os.WriteFile(filepath.Join(root, "VALIDATION.md"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out := validationFixture(t, root, validationEnv(root))
+		if got := validationLines(out); len(got) != 1 || got[0] != "ok     VALIDATION.md: 2 commands, 2 n/a, 1 manual" {
+			t.Fatalf("pt-BR lines = %q", got)
+		}
+	})
+
+	t.Run("neither title still warns", func(t *testing.T) {
+		root := t.TempDir()
+		content := "## Camadas de testes\n- unit: `go test ./...`\n\n## Items\n- unit: `go test ./...`\n"
+		if err := os.WriteFile(filepath.Join(root, "VALIDATION.md"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out := validationFixture(t, root, validationEnv(root))
+		if got := validationLines(out); len(got) != 1 || got[0] != warnNoSection {
+			t.Fatalf("neither-title lines = %q", got)
+		}
+	})
+
 	t.Run("a section without items warns the five missing layers", func(t *testing.T) {
 		root := t.TempDir()
 		content := "## Test layers\n\nnothing else declared\n"
