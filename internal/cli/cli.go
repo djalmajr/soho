@@ -347,7 +347,9 @@ func Run(args []string, env platform.Env) (code int) {
 	}
 	if command == "collect" {
 		frictionLogPath = ""
-		if !core.Nowrite(decisionEnv) {
+		// Like every other hc command, collect initializes no friction
+		// state under hc: the herdr binary is not the signal there.
+		if transportMode != "hc" && !core.Nowrite(decisionEnv) {
 			if _, found := platform.FindExecutable("herdr", decisionEnv, platform.Current()); found {
 				frictionLogPath = filepath.Join(core.StateDir(configCtx, decisionEnv, commandCwd), "friction.log")
 			}
@@ -520,7 +522,8 @@ func transportModeFor(ctx *core.Config, env, decisionEnv platform.Env, cwd strin
 
 // hcCommandAllowed lists the commands that run under transport=hc
 // (DJA-604): the five transport commands (status, wait, spawn, dispatch,
-// release), collaborate (without identity verification yet), the
+// release), the housekeeping commands (copies, gc, procs, friction, roster,
+// collect), collaborate (without identity verification yet), the
 // diagnostics and configuration commands (doctor, config, explain,
 // capabilities), the usage and version invocations, the advisory hook, and
 // the commands that never touch the transport (kinds, models, model, roles,
@@ -535,6 +538,12 @@ func hcCommandAllowed(command string) bool {
 	case "", "help", "-h", "--help":
 		return true
 	case "status", "wait", "spawn", "dispatch", "release", "collaborate", "doctor", "config", "explain", "capabilities":
+		return true
+	case "copies", "gc", "procs", "friction", "roster", "collect":
+		// The housekeeping commands (DJA-604): they read and write soho's own
+		// state, and reach the transport only through its neutral reads (the
+		// terminal state, the terminal listing, the recent output); gc and
+		// procs never close or signal a terminal.
 		return true
 	case "kinds", "models", "model", "roles", "role", "lint", "install", "env", "validate", "setup":
 		// validate never touches the worker transport: it reads the project's

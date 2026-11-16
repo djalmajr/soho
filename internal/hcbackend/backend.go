@@ -385,6 +385,17 @@ func addressOf(obj *jsonjs.Object) string {
 	return ""
 }
 
+// listedAddress is a listing record's terminal address. A record whose
+// address is missing, not a string or empty is a protocol failure that
+// refuses the whole listing: callers use a valid listing as proof that a
+// terminal is absent, and a record without identity proves nothing.
+func listedAddress(rec *jsonjs.Object) (string, *transport.Failure) {
+	if address := addressOf(rec); address != "" {
+		return address, nil
+	}
+	return "", &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned a terminal without an address"}
+}
+
 // cwdOf reads the record's cwd ("" when the terminal reports none).
 func cwdOf(obj *jsonjs.Object) string {
 	if v, ok := obj.Get("cwd"); ok {
@@ -637,10 +648,14 @@ func (b *backend) List(ctx context.Context, scope transport.Scope, call transpor
 		if !ok {
 			return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned a non-object terminal"}}
 		}
+		address, bad := listedAddress(rec)
+		if bad != nil {
+			return transport.Reply[[]transport.Terminal]{Err: bad}
+		}
 		terms = append(terms, transport.Terminal{
-			Target:      transport.Target{ID: addressOf(rec)},
+			Target:      transport.Target{ID: address},
 			Name:        nameOf(rec),
-			PaneID:      addressOf(rec),
+			PaneID:      address,
 			State:       stateOf(rec),
 			NativeState: nativeStateOf(rec),
 			Sequence:    listTurn(records, i),
@@ -687,7 +702,10 @@ func (b *backend) listAllLocal(ctx context.Context, call transport.Call) transpo
 		if !ok {
 			return transport.Reply[[]transport.Terminal]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned a non-object terminal"}}
 		}
-		address := addressOf(rec)
+		address, bad := listedAddress(rec)
+		if bad != nil {
+			return transport.Reply[[]transport.Terminal]{Err: bad}
+		}
 		// A finished record is gone, and a machine-prefixed address is a
 		// remote terminal, not part of the local listing.
 		if stateOf(rec) == "gone" || strings.Contains(address, "/") {
@@ -939,9 +957,31 @@ func (b *backend) Layout(ctx context.Context, pane string, call transport.Call) 
 // OrphansOf reads. The soho session is the workspace under transport=hc,
 // and the orphan classification is the only consumer that reaches this
 // under hc (the layout paths that also read the pane list never run under
-// hc). A roster query names no target, so a failure is the backend being
-// unavailable, never a target not found.
+// hc). Scope.All lists every live local terminal of the machine instead
+// (listAllLocal). A roster query names no target, so a failure is the
+// backend being unavailable, never a target not found.
 func (b *backend) ListPanes(ctx context.Context, scope transport.Scope, call transport.Call) transport.Reply[[]transport.View] {
+	if scope.All {
+		// Every live local terminal of the machine, as the contract's
+		// Scope.All says, never only the caller's session: a caller terminal
+		// that carries no soho.session label is outside its own session
+		// listing, and a machine-wide existence check must still see it.
+		// Each view's Raw also names the terminal's session as its
+		// workspace_id.
+		listed := b.listAllLocal(ctx, call)
+		if listed.Err != nil {
+			return transport.Reply[[]transport.View]{Err: listed.Err}
+		}
+		views := make([]transport.View, 0, len(listed.Value))
+		for _, terminal := range listed.Value {
+			raw, _ := json.Marshal(struct {
+				PaneID      string `json:"pane_id"`
+				WorkspaceID string `json:"workspace_id"`
+			}{terminal.PaneID, terminal.WorkspaceID})
+			views = append(views, transport.View{ID: terminal.PaneID, PaneID: terminal.PaneID, WorkspaceID: terminal.WorkspaceID, Raw: json.RawMessage(raw)})
+		}
+		return transport.Reply[[]transport.View]{Value: views, Valid: true}
+	}
 	session, err := b.session(ctx, call)
 	if err != nil {
 		return transport.Reply[[]transport.View]{Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: "cannot resolve the soho.session label: " + err.Error(), Cause: err}}
@@ -974,7 +1014,10 @@ func (b *backend) ListPanes(ctx context.Context, scope transport.Scope, call tra
 		if !ok {
 			return transport.Reply[[]transport.View]{Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned a non-object terminal"}}
 		}
-		address := addressOf(rec)
+		address, bad := listedAddress(rec)
+		if bad != nil {
+			return transport.Reply[[]transport.View]{Err: bad}
+		}
 		raw, _ := json.Marshal(struct {
 			PaneID string `json:"pane_id"`
 		}{address})
