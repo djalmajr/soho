@@ -49,17 +49,20 @@ var registrantCaller = func(env platform.Env) (string, bool) {
 
 // registrantFromEnv resolves the owner and pane of a registration that names
 // no agent, in this order: (a) the roster agent whose pane is the caller's;
-// (b) when SOHO_AGENT names a live row of this state dir's roster, that
-// agent, with the pane of its row (the caller's pane stays when the row has
-// none); (c) owner "-" with the caller's pane, or "-" when the lookup
-// succeeded with none. When the lookup failed, whatever has no pane is
-// "unverified", never "-". SOHO_AGENT is a hint from the environment: it only
-// selects an existing roster row, it never creates one and never builds a
-// path.
+// (b) only when the caller has no terminal (the lookup failed or gave no
+// pane), SOHO_AGENT naming
+// a row of this state dir's roster: that agent, with the pane of its row;
+// (c) owner "-" with the caller's pane, or "-" when the lookup succeeded with
+// none. When the lookup failed, whatever has no pane is "unverified", never
+// "-". SOHO_AGENT is a hint from the environment that stands in for a missing
+// identity: an identified caller outside the roster keeps its own terminal
+// (a child terminal of a worker inherits SOHO_AGENT, and must not hand its
+// copy to that worker's lifetime). It only selects an existing roster row,
+// never creates one and never builds a path.
 func registrantFromEnv(sd string, env platform.Env, callerPane string, lookupFailed bool) (owner, pane string) {
 	pane = callerPane
 	owner = rosterAgentForPane(sd, callerPane)
-	if owner == "" {
+	if owner == "" && (lookupFailed || callerPane == "") {
 		if name := env.Get("SOHO_AGENT"); strings.TrimSpace(name) != "" {
 			if line := core.RosterLine(sd, name); line != "" {
 				owner = name

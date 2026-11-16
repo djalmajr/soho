@@ -367,8 +367,10 @@ func TestRegistrationCallerPaneWinsOverSohoAgent(t *testing.T) {
 
 // A terminal that is identified but not in the roster keeps today's row
 // (owner "-" on its terminal) and prints no ownerless line, because the
-// recorded terminal still ties the row to something gc can check; SOHO_AGENT
-// naming a roster row takes over as the fallback.
+// recorded terminal still ties the row to something gc can check. SOHO_AGENT
+// does not take over: it stands in only for a missing terminal (review R369:
+// a worker's child terminal inherits it, and the worker's release or gone
+// row must not remove the child's copy).
 func TestRegistrationIdentifiedUnrosteredTerminal(t *testing.T) {
 	old := registrantCaller
 	t.Cleanup(func() { registrantCaller = old })
@@ -382,7 +384,7 @@ func TestRegistrationIdentifiedUnrosteredTerminal(t *testing.T) {
 			target := make(t)
 			env := target.env.Clone()
 			env["SOHO_AGENT"] = "worker"
-			registrantExpect(t, target, env, "worker", registrantAgentPane, "")
+			registrantExpect(t, target, env, "-", "p-unrostered", "")
 		})
 	}
 }
