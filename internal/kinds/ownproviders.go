@@ -41,6 +41,23 @@ func OwnProviderDoctorLines(ctx *core.Config, env platform.Env, cwd string) (boo
 	return len(models) > 0, warnings
 }
 
+// PiAgentDir is the directory pi reads its models, settings and sessions
+// from: PI_CODING_AGENT_DIR when it is absolute or starts with "~/", else
+// <home>/.pi/agent. A relative override is ignored, because soho cannot know
+// the directory pi would resolve it against.
+func PiAgentDir(env platform.Env) string {
+	home := platform.HomeDir(platform.Current(), env)
+	if dir := env.Get("PI_CODING_AGENT_DIR"); dir != "" {
+		if rest, ok := strings.CutPrefix(dir, "~/"); ok && home != "" {
+			return filepath.Join(home, rest)
+		}
+		if filepath.IsAbs(dir) {
+			return filepath.Clean(dir)
+		}
+	}
+	return filepath.Join(home, ".pi", "agent")
+}
+
 var piBarePrintenvRE = regexp.MustCompile(`^![ \t]*printenv[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*$`)
 
 func piBarePrintenvWarnings(ctx *core.Config, env platform.Env) []string {
@@ -50,7 +67,7 @@ func piBarePrintenvWarnings(ctx *core.Config, env platform.Env) []string {
 	if env.Get("SOHO_TRANSPORT") != "hc" || core.Cfg(ctx, "login_shell", "off", env) == "on" {
 		return nil
 	}
-	file := filepath.Join(platform.HomeDir(platform.Current(), env), ".pi", "agent", "models.json")
+	file := filepath.Join(PiAgentDir(env), "models.json")
 	providers := ownObjectValue(parseOwnFile(file), "providers")
 	if providers == nil {
 		return nil
@@ -110,7 +127,7 @@ func parseOwnFile(file string) *jsonjs.Object {
 // PiOwnModels returns only public model identifiers and thinking ceilings; provider credentials are never copied.
 func PiOwnModels(env platform.Env) []OwnModel { return PiOwnModelsWithConfig(nil, env) }
 func PiOwnModelsWithConfig(ctx *core.Config, env platform.Env) []OwnModel {
-	file := filepath.Join(platform.HomeDir(platform.Current(), env), ".pi", "agent", "models.json")
+	file := filepath.Join(PiAgentDir(env), "models.json")
 	root := parseOwnFile(file)
 	providers := ownObjectValue(root, "providers")
 	if providers == nil {
@@ -181,7 +198,7 @@ func PiOwnModelsWithConfig(ctx *core.Config, env platform.Env) []OwnModel {
 				budgetLevel := core.Cfg(ctx, "effort_pi", "high", env)
 				defaults := map[string]float64{"minimal": 1024, "low": 2048, "medium": 8192, "high": 16384}
 				budget, known := defaults[budgetLevel]
-				settings := parseOwnFile(filepath.Join(platform.HomeDir(platform.Current(), env), ".pi", "agent", "settings.json"))
+				settings := parseOwnFile(filepath.Join(PiAgentDir(env), "settings.json"))
 				if tb := ownObjectValue(settings, "thinkingBudgets"); tb != nil {
 					if v, ok := tb.Get(budgetLevel); ok {
 						if n, ok := v.(float64); ok {
