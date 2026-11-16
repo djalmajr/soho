@@ -450,6 +450,18 @@ func TestConfigOutputSources(t *testing.T) {
 			t.Fatalf("multi_role row = %q", line)
 		}
 	}
+	for key, value := range map[string]string{"pressure_disk_free_min_gb": "20", "pressure_refuse_disk_free_min_gb": "5"} {
+		found := false
+		for _, line := range strings.Split(out, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 3 && fields[0] == key && fields[1] == value && fields[2] == "defaults" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing default row %s=%s:\n%s", key, value, out)
+		}
+	}
 	if !strings.Contains(out, "layers read: defaults") || !strings.Contains(out, "session file: "+filepath.Join(env.Get("SOHO_DIR"), "ws", "session.conf")) {
 		t.Fatalf("config output missing source/path:\n%s", out)
 	}

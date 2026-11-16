@@ -280,6 +280,9 @@ context_fresh_percent=0
 # Percent of disk free on the state dir's filesystem at which `spawn`, `wait`, and `status` warn. 0 = off.
 pressure_disk_free_percent=15
 
+# Minimum free disk in GiB for the warning, along with the percent limit. 0 = floor off; the percent alone decides.
+pressure_disk_free_min_gb=20
+
 # Percent of swap in use at which `spawn`, `wait`, and `status` warn. 0 = off.
 pressure_swap_percent=80
 
@@ -287,6 +290,9 @@ pressure_swap_percent=80
 # (exit 25; `--force` skips only this refusal, the warning above stays).
 # Measured like the warning limits; 0 = off. A given --pane is never refused.
 pressure_refuse_disk_free_percent=5
+
+# Minimum free disk in GiB for refusal, along with the percent limit. 0 = floor off; the percent alone decides.
+pressure_refuse_disk_free_min_gb=5
 
 # Same as the disk refusal limit, for swap in use. 0 = off.
 pressure_refuse_swap_percent=95

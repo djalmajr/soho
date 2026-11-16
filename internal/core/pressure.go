@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,20 +22,25 @@ import (
 // no warning goes out and the spawn is never refused.
 
 const (
-	pressureDiskKey = "pressure_disk_free_percent"
-	pressureSwapKey = "pressure_swap_percent"
+	pressureDiskKey      = "pressure_disk_free_percent"
+	pressureDiskFloorKey = "pressure_disk_free_min_gb"
+	pressureSwapKey      = "pressure_swap_percent"
 
 	// The harder spawn-only limits: above them the spawn refuses to open a
 	// new pane (exit 25) unless it gets --force. They measure the same
 	// things as the warning keys (platform.DiskFree / platform.SwapUsage);
 	// on Windows the swap is not measured, so only the disk part applies.
-	pressureRefuseDiskKey     = "pressure_refuse_disk_free_percent"
-	pressureRefuseSwapKey     = "pressure_refuse_swap_percent"
-	pressureRefuseDiskDefault = 5
-	pressureRefuseSwapDefault = 95
+	pressureRefuseDiskKey          = "pressure_refuse_disk_free_percent"
+	pressureRefuseDiskFloorKey     = "pressure_refuse_disk_free_min_gb"
+	pressureRefuseDiskFloorDefault = 5
+	pressureRefuseSwapKey          = "pressure_refuse_swap_percent"
+	pressureRefuseDiskDefault      = 5
+	pressureRefuseSwapDefault      = 95
 
-	pressureDiskDefault = 15
-	pressureSwapDefault = 80
+	pressureDiskDefault      = 15
+	pressureDiskFloorDefault = 20
+	pressureSwapDefault      = 80
+	pressureGiB              = int64(1024 * 1024 * 1024)
 
 	// wait/status warn at most once per 10 minutes per state dir; the
 	// stamp is the mtime of <state>/wait/pressure-warned.
@@ -94,6 +100,7 @@ func PressureRefuseParts(ctx *Config, env platform.Env, cwd string) []string {
 	}
 	return pressureMeasure(ctx, env, stateDir,
 		pressureThreshold(ctx, pressureRefuseDiskKey, pressureRefuseDiskDefault, env),
+		PressureDiskFloor(ctx, env, true),
 		pressureThreshold(ctx, pressureRefuseSwapKey, pressureRefuseSwapDefault, env))
 }
 
@@ -113,19 +120,20 @@ func pressureStateDir(ctx *Config, env platform.Env, cwd string) string {
 func pressureParts(ctx *Config, env platform.Env, stateDir string) []string {
 	return pressureMeasure(ctx, env, stateDir,
 		pressureThreshold(ctx, pressureDiskKey, pressureDiskDefault, env),
+		PressureDiskFloor(ctx, env, false),
 		pressureThreshold(ctx, pressureSwapKey, pressureSwapDefault, env))
 }
 
 // pressureMeasure holds only the parts that passed the given limits: the
-// disk part when the free percent is below diskLimit (0 disables), the
-// swap part when the used percent is above swapLimit (0 disables, and a
-// zero swap total never counts). Any measurement failure yields no part.
-func pressureMeasure(ctx *Config, env platform.Env, stateDir string, diskLimit, swapLimit int) []string {
+// disk part when free percent is below diskLimit and free bytes below the
+// floor (0 disables the percent, or turns the floor off), and the swap part
+// when used percent is above swapLimit. Measurement failure yields no part.
+func pressureMeasure(ctx *Config, env platform.Env, stateDir string, diskLimit int, diskFloor int64, swapLimit int) []string {
 	var parts []string
 	if diskLimit > 0 {
 		if free, total, ok := platform.DiskFree(stateDir); ok && total > 0 {
 			pct := free * 100 / total
-			if pct < int64(diskLimit) {
+			if DiskUnderPressure(free, pct, diskLimit, diskFloor) {
 				parts = append(parts, fmt.Sprintf("disk %s has %d%% free (%s of %s)", stateDir, pct, platform.HumanSize(free), platform.HumanSize(total)))
 			}
 		}
@@ -139,6 +147,35 @@ func pressureMeasure(ctx *Config, env platform.Env, stateDir string, diskLimit, 
 		}
 	}
 	return parts
+}
+
+// DiskUnderPressure applies the shared warning/refusal disk rule. floor is
+// in bytes; zero leaves the percent as the sole limit.
+func DiskUnderPressure(free, pct int64, limit int, floor int64) bool {
+	return limit > 0 && pct < int64(limit) && (floor == 0 || free < floor)
+}
+
+func pressureDiskFloorValue(raw string) (int64, bool) {
+	if !decimalRE.MatchString(raw) {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	return value, err == nil && value <= math.MaxInt64/pressureGiB
+}
+
+// PressureDiskFloor reads the warning or refusal floor, returning bytes.
+// Invalid values use the corresponding default and emit the normal warning.
+func PressureDiskFloor(ctx *Config, env platform.Env, refuse bool) int64 {
+	key, fallback := pressureDiskFloorKey, pressureDiskFloorDefault
+	if refuse {
+		key, fallback = pressureRefuseDiskFloorKey, pressureRefuseDiskFloorDefault
+	}
+	raw := Cfg(ctx, key, strconv.Itoa(fallback), env)
+	if value, ok := pressureDiskFloorValue(raw); ok {
+		return value * pressureGiB
+	}
+	_, _ = fmt.Fprintf(platform.Stderr, "soho: warning: invalid value '%s' for %s; using the default %d\n", raw, key, fallback)
+	return int64(fallback) * pressureGiB
 }
 
 // pressureThreshold reads the key through the usual layers (env override

@@ -171,9 +171,10 @@ func TestPressureRefusalKeysFollowSwapPercentInTheScalarList(t *testing.T) {
 			index = i
 		}
 	}
-	if index < 0 || index+2 >= len(core.ConfigScalarKeys) ||
+	if index < 0 || index+3 >= len(core.ConfigScalarKeys) ||
 		core.ConfigScalarKeys[index+1] != "pressure_refuse_disk_free_percent" ||
-		core.ConfigScalarKeys[index+2] != "pressure_refuse_swap_percent" {
+		core.ConfigScalarKeys[index+2] != "pressure_refuse_disk_free_min_gb" ||
+		core.ConfigScalarKeys[index+3] != "pressure_refuse_swap_percent" {
 		t.Fatalf("the refusal keys do not follow pressure_swap_percent: %v", core.ConfigScalarKeys)
 	}
 }

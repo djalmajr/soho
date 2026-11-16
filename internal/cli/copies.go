@@ -1524,6 +1524,7 @@ var gcPressureDecimalRE = regexp.MustCompile(`^[0-9]+$`)
 // when it could not be measured.
 func gcPressureLine(ctx *core.Config, env platform.Env, stateDir string) string {
 	diskLimit := gcPressureThreshold(ctx, gcPressureDiskKey, gcPressureDiskDefault, env)
+	diskFloor := core.PressureDiskFloor(ctx, env, false)
 	swapLimit := gcPressureThreshold(ctx, gcPressureSwapKey, gcPressureSwapDefault, env)
 
 	diskMeasured := false
@@ -1532,7 +1533,7 @@ func gcPressureLine(ctx *core.Config, env platform.Env, stateDir string) string 
 	if free, total, ok := platform.DiskFree(stateDir); ok && total > 0 {
 		diskMeasured = true
 		diskPct = free * 100 / total
-		if diskLimit > 0 && diskPct < int64(diskLimit) {
+		if core.DiskUnderPressure(free, diskPct, diskLimit, diskFloor) {
 			diskPart = fmt.Sprintf("disk %s has %d%% free (%s of %s)", stateDir, diskPct, platform.HumanSize(free), platform.HumanSize(total))
 		}
 	}
