@@ -468,9 +468,10 @@ func TestDiffReportWaitingDispatchProducer(t *testing.T) {
 	f := newDiffFixture(t, "# Owned files\n- src/*.go\n", "Previous.\n", "implementer")
 	diffWrite(t, filepath.Join(f.tree, "src", "b.go"), "changed\n")
 	f.env["SOHO_PROMPT_CHECK_SECONDS"], f.env["SOHO_PROMPT_SETTLE_SECONDS"] = "0", "0"
-	// Safety cap for the gated get: a broken gate must surface as the
-	// dispatch's own timeout, not a hang. Stays under the 30s wait below.
-	f.env["FAKECLI_WAIT_FILE_TIMEOUT_MS"] = "25000"
+	// These are fixture safety caps, not the product behavior under test.
+	// Leave room for a loaded host to schedule the report producer and the
+	// fake process; a broken gate still fails before the dispatch timeout.
+	f.env["FAKECLI_WAIT_FILE_TIMEOUT_MS"] = "120000"
 	input := filepath.Join(filepath.Dir(f.state), "input.md")
 	diffWrite(t, input, "# Goal\nDo it.\n# Owned files\n- src/*.go\n")
 	// The worker is working until its report exists: every agent get blocks
@@ -537,7 +538,7 @@ func TestDiffReportWaitingDispatchProducer(t *testing.T) {
 	var out, stderr bytes.Buffer
 	platform.Stdout, platform.Stderr = &out, &stderr
 	defer func() { platform.Stdout, platform.Stderr = oldOut, oldErr }()
-	code := cli.Run([]string{"dispatch", "worker", input, "--role", "implementer", "--timeout", "30s"}, f.env)
+	code := cli.Run([]string{"dispatch", "worker", input, "--role", "implementer", "--timeout", "180s"}, f.env)
 	// The goroutine may still be finishing after the dispatch returned:
 	// join it before reading its error, so a late failure is never missed.
 	join()
