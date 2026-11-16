@@ -10,6 +10,7 @@ package spawn
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -117,8 +118,9 @@ func TestSpawnLoginShellOnWrapsTheAgentArgvAndKeepsTheRosterUnwrapped(t *testing
 			if params["no_notify"] != true || params["outlive_parent"] != true || params["wait"] != false {
 				t.Fatalf("flags changed: %v", params)
 			}
-			if childEnv, _ := params["env"].(map[string]any); childEnv["SOHO_TRANSPORT"] != "hc" || len(childEnv) != 1 {
-				t.Fatalf("env=%v, want exactly SOHO_TRANSPORT=hc", params["env"])
+			wantEnv := map[string]any{"SOHO_TRANSPORT": "hc", "SOHO_REGISTRY_DIR": filepath.Join(state, "sX"), "SOHO_AGENT": "implementer"}
+			if !reflect.DeepEqual(params["env"], wantEnv) {
+				t.Fatalf("env=%v, want exactly %v", params["env"], wantEnv)
 			}
 			// The JSON and the roster keep the agent's own argv.
 			if got := spawnJSONString(t, out.String(), "agent_args"); got != strings.Join(agent, " ") {

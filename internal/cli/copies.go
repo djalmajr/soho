@@ -478,8 +478,15 @@ func gcProcState(row core.ProcRow, sd string, env platform.Env, svc transport.Se
 // transport's machine-wide listing: live when the successful listing holds
 // it, absent when the successful listing lacks it (or the line records no
 // terminal: an older version, "-"), unknown when the read fails or the
-// reply is not valid.
+// reply is not valid, and unknown, without reading the listing, for the
+// recorded literal "unverified" (a registration that could not identify its
+// terminal).
 func terminalOwnership(svc transport.Services, pane string) string {
+	if pane == registrantUnverifiedPane {
+		// A registration whose terminal could not be identified: nothing
+		// proves it gone, so gc never removes or stops the row.
+		return terminalUnknown
+	}
 	if pane == "" || pane == "-" {
 		return terminalAbsent
 	}
@@ -941,7 +948,7 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		sd = core.StateDir(ctx, env, cwd)
 	}
 	incorporatePendingCopies("copies add", sd, env, cwd)
-	pane := backend.New(env).Runtime.Caller().PaneID
+	pane, lookupFailed := registrantPane(env)
 	owner := "-"
 	if agentSeen {
 		line := core.RosterLine(sd, agent)
@@ -952,14 +959,9 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		if fields := strings.Split(line, "\t"); len(fields) > 1 && fields[1] != "" {
 			pane = fields[1]
 		}
-	} else if pane != "" {
-		owner = rosterAgentForPane(sd, pane)
-		if owner == "" {
-			owner = "-"
-		}
-	}
-	if pane == "" {
-		pane = "-"
+		pane = registrantPaneOrUnknown(pane, lookupFailed)
+	} else {
+		owner, pane = registrantFromEnv(sd, env, pane, lookupFailed)
 	}
 	task, report := copyTaskColumns(sd, owner)
 	if warning := copiesAddNestedWarning(sd, resolved); warning != "" {
@@ -968,6 +970,7 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	row := core.CopyRow{Path: resolved, Owner: owner, Pane: pane, Created: core.FrictionISO(platform.Now()), Source: "-", Origin: "add", Task: task, Report: report}
 	if err := upsertCopies(sd, row); err != nil {
 		if err = queueCopy("copies add", sd, row, err, env); err == nil {
+			registrantOwnerlessLine("copies add", owner, pane, "copy", env)
 			return 0
 		}
 		var locked *core.CopiesLockedError
@@ -976,6 +979,7 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		}
 		core.DieFriction(fmt.Sprintf("copies add: could not register '%s' (%v)", path, err), 4, frictionLogPath, "copies")
 	}
+	registrantOwnerlessLine("copies add", owner, pane, "copy", env)
 	return 0
 }
 

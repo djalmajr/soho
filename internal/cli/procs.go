@@ -271,21 +271,16 @@ func procsAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) int
 		}
 		core.DieFriction(fmt.Sprintf(message, pidArg), 4, frictionLogPath, "procs")
 	}
-	pane := backend.New(env).Runtime.Caller().PaneID
+	pane, lookupFailed := registrantPane(env)
 	owner := "-"
 	if agentSeen {
 		owner = agent
 		if fields := strings.Split(core.RosterLine(sd, agent), "\t"); len(fields) > 1 && fields[1] != "" {
 			pane = fields[1]
 		}
-	} else if pane != "" {
-		owner = rosterAgentForPane(sd, pane)
-		if owner == "" {
-			owner = "-"
-		}
-	}
-	if pane == "" {
-		pane = "-"
+		pane = registrantPaneOrUnknown(pane, lookupFailed)
+	} else {
+		owner, pane = registrantFromEnv(sd, env, pane, lookupFailed)
 	}
 	row := core.ProcRow{Pid: pid, Started: started, Name: name, Owner: owner, Pane: pane, Created: core.FrictionISO(platform.Now())}
 	if err := upsertProc(sd, row); err != nil {
@@ -293,6 +288,7 @@ func procsAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) int
 			queue, queueErr := core.QueueProc(env, filepath.Base(sd), sd, row)
 			if queueErr == nil {
 				pendingQueuedLine("procs add", sd, queue)
+				registrantOwnerlessLine("procs add", owner, pane, "process", env)
 				return 0
 			}
 			err = fmt.Errorf("%v; the queue failed too: %v", err, queueErr)
@@ -303,6 +299,7 @@ func procsAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) int
 		}
 		core.DieFriction(fmt.Sprintf("procs add: could not register pid %s (%v)", pidArg, err), 4, frictionLogPath, "procs")
 	}
+	registrantOwnerlessLine("procs add", owner, pane, "process", env)
 	return 0
 }
 

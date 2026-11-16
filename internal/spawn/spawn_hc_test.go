@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -400,9 +401,9 @@ func TestSpawnHcWorkersRunWithTheHerdrArgv(t *testing.T) {
 			if labels["soho.session"] != "sX" {
 				t.Fatalf("labels.soho.session=%v, want sX", labels["soho.session"])
 			}
-			childEnv, _ := params["env"].(map[string]any)
-			if childEnv["SOHO_TRANSPORT"] != "hc" || len(childEnv) != 1 {
-				t.Fatalf("env=%v, want exactly SOHO_TRANSPORT=hc", childEnv)
+			wantEnv := map[string]any{"SOHO_TRANSPORT": "hc", "SOHO_REGISTRY_DIR": filepath.Join(state, "sX"), "SOHO_AGENT": tc.role}
+			if !reflect.DeepEqual(params["env"], wantEnv) {
+				t.Fatalf("env=%v, want exactly %v", params["env"], wantEnv)
 			}
 			exe := filepath.Join(bin, tc.kind)
 			if runtime.GOOS == "windows" {
@@ -488,6 +489,14 @@ func TestSpawnHcNameTakenMovesToTheNextFreeSuffix(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "worker,worker-2,worker-3" {
 		t.Fatalf("run names %v, want worker,worker-2,worker-3", names)
+	}
+	// Each retry forwards the name it asks for as SOHO_AGENT, so the Start
+	// that succeeds carries the name the roster row records.
+	for i, r := range runs {
+		want := map[string]any{"SOHO_TRANSPORT": "hc", "SOHO_REGISTRY_DIR": filepath.Join(state, "sX"), "SOHO_AGENT": names[i]}
+		if got := r["params"].(map[string]any)["env"]; !reflect.DeepEqual(got, want) {
+			t.Fatalf("run %d env=%v, want %v", i+1, got, want)
+		}
 	}
 	if n := strings.Count(stderr.String(), "is taken by another pane or workspace; using"); n != 2 {
 		t.Fatalf("stderr=%q, want two is-taken warnings", stderr.String())

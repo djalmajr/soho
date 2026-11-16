@@ -29,12 +29,25 @@ func doctorCodexRegistryPolicy(env platform.Env, s *Say) {
 	if !present {
 		return
 	}
+	if !includeOnlyAdmits(patterns, "SOHO_REGISTRY_DIR") {
+		s.Warning(fmt.Sprintf(`codex: [shell_environment_policy] include_only in %s drops SOHO_* variables, so codex workers do not see SOHO_REGISTRY_DIR and register copies and processes in the wrong state dir; add "SOHO_*" to include_only`, path))
+	}
+	// On native Herdr Core a worker identifies its terminal through
+	// HC_TERMINAL_ID; without it, mutation-copy, copies add and procs add
+	// fall back to SOHO_AGENT, and register an unverified row when that names
+	// no roster agent either.
+	if env.Get("SOHO_TRANSPORT") == "hc" && !includeOnlyAdmits(patterns, "HC_TERMINAL_ID") {
+		s.Warning(fmt.Sprintf(`codex: [shell_environment_policy] include_only in %s drops HC_TERMINAL_ID, so codex workers cannot identify their terminal; their registrations fall back to SOHO_AGENT and are unverified when that is missing too; add "HC_*" or "HC_TERMINAL_ID" to include_only`, path))
+	}
+}
+
+func includeOnlyAdmits(patterns []string, name string) bool {
 	for _, pattern := range patterns {
-		if codexenv.GlobMatch(pattern, "SOHO_REGISTRY_DIR") {
-			return
+		if codexenv.GlobMatch(pattern, name) {
+			return true
 		}
 	}
-	s.Warning(fmt.Sprintf(`codex: [shell_environment_policy] include_only in %s drops SOHO_* variables, so codex workers do not see SOHO_REGISTRY_DIR and register copies and processes in the wrong state dir; add "SOHO_*" to include_only`, path))
+	return false
 }
 
 // registryIncludeOnly validates only shell_environment_policy/include_only.

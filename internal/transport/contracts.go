@@ -268,6 +268,15 @@ type Start struct {
 	// shell before any terminal exists; the backend only refuses a value that
 	// is not absolute. The herdr backend ignores it.
 	LoginShell string
+
+	// RegistryDir, when non-empty, is the caller's resolved state root handed
+	// to the child as SOHO_REGISTRY_DIR: absolute, without NUL, CR or LF.
+	// Agent, when non-empty, is the roster name the child registers under,
+	// handed as SOHO_AGENT: it must satisfy ValidTerminalName. They are
+	// dedicated fields because the reserved names stay refused in
+	// EnvOverrides. Empty adds nothing. The herdr backend ignores both.
+	RegistryDir string
+	Agent       string
 }
 
 // ConfiguredLaunchPreflight is optional and leaves existing method sets intact.

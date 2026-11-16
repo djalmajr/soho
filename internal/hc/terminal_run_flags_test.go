@@ -138,3 +138,78 @@ func TestRunTerminal_StateDirRefusals(t *testing.T) {
 		})
 	}
 }
+
+// SOH-292: the registry hint and the agent name ride in the dedicated
+// RegistryDir and Agent fields. Each adds exactly its own env entry, only
+// when non-empty, next to SOHO_TRANSPORT=hc; the override map keeps
+// refusing both names.
+func TestRunTerminal_RegistryDirAndAgentEnv(t *testing.T) {
+	abs := filepath.Join(t.TempDir(), "state root")
+	for _, tc := range []struct {
+		name        string
+		registryDir string
+		agent       string
+		want        map[string]any
+	}{
+		{"empty values add nothing", "", "", map[string]any{"SOHO_TRANSPORT": "hc"}},
+		{"both ride next to the transport marker", abs, "worker-2", map[string]any{"SOHO_TRANSPORT": "hc", "SOHO_REGISTRY_DIR": abs, "SOHO_AGENT": "worker-2"}},
+		{"only the registry dir", abs, "", map[string]any{"SOHO_TRANSPORT": "hc", "SOHO_REGISTRY_DIR": abs}},
+		{"only the agent", "", "w_1", map[string]any{"SOHO_TRANSPORT": "hc", "SOHO_AGENT": "w_1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := validTerminalRunInput()
+			input.RegistryDir, input.Agent = tc.registryDir, tc.agent
+			params := runFlagsRequest(t, input)
+			if !reflect.DeepEqual(params["env"], tc.want) {
+				t.Fatalf("env=%v want %v", params["env"], tc.want)
+			}
+		})
+	}
+}
+
+func TestRunTerminal_RegistryDirAndAgentRefusals(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	for _, tc := range []struct {
+		name  string
+		input func(*TerminalRun)
+		want  error
+	}{
+		{"relative registry dir", func(in *TerminalRun) { in.RegistryDir = "state" }, errRegistryDirInvalid},
+		{"registry dir NUL", func(in *TerminalRun) { in.RegistryDir = root + "\x00x" }, errRegistryDirInvalid},
+		{"registry dir CR", func(in *TerminalRun) { in.RegistryDir = root + "\rx" }, errRegistryDirInvalid},
+		{"registry dir LF", func(in *TerminalRun) { in.RegistryDir = root + "\nx" }, errRegistryDirInvalid},
+		{"registry dir invalid UTF-8", func(in *TerminalRun) { in.RegistryDir = root + "\xff" }, errRegistryDirInvalid},
+		{"agent with a space", func(in *TerminalRun) { in.Agent = "a b" }, errAgentInvalid},
+		{"agent uppercase", func(in *TerminalRun) { in.Agent = "Worker" }, errAgentInvalid},
+		{"agent path-like", func(in *TerminalRun) { in.Agent = "../x" }, errAgentInvalid},
+		{"agent NUL", func(in *TerminalRun) { in.Agent = "a\x00b" }, errAgentInvalid},
+		{"agent CR", func(in *TerminalRun) { in.Agent = "a\rb" }, errAgentInvalid},
+		{"agent LF", func(in *TerminalRun) { in.Agent = "a\nb" }, errAgentInvalid},
+		{"agent trailing LF", func(in *TerminalRun) { in.Agent = "worker\n" }, errAgentInvalid},
+		{"agent too long", func(in *TerminalRun) { in.Agent = "abcdefghijklmnopqrstuvwxyz0123456" }, errAgentInvalid},
+		{"agent invalid UTF-8", func(in *TerminalRun) { in.Agent = "w\xff" }, errAgentInvalid},
+		{"the override map still refuses SOHO_REGISTRY_DIR", func(in *TerminalRun) {
+			in.EnvOverrides = map[string]string{"SOHO_REGISTRY_DIR": root}
+		}, errEnvNameReserved},
+		{"the override map still refuses SOHO_AGENT", func(in *TerminalRun) {
+			in.EnvOverrides = map[string]string{"SOHO_AGENT": "worker"}
+		}, errEnvNameReserved},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			connects := 0
+			c := &Client{Connect: func(ctx context.Context, env platform.Env) (io.WriteCloser, io.Reader, func() error, error) {
+				connects++
+				return nil, nil, nil, errors.New("should not be called")
+			}}
+			input := validTerminalRunInput()
+			tc.input(&input)
+			_, err := c.RunTerminal(context.Background(), input)
+			if !errors.Is(err, tc.want) || err.Error() != tc.want.Error() {
+				t.Fatalf("err=%v want %v", err, tc.want)
+			}
+			if connects != 0 {
+				t.Fatalf("Connect called %d times for a refused run", connects)
+			}
+		})
+	}
+}
