@@ -319,7 +319,31 @@ func Run(args []string, env platform.Env) (code int) {
 		// own validation: a rejected HC init/title must not create state
 		// merely because the herdr binary happens to be installed
 		// (DJA-611 D4).
-		if transportMode != "hc" {
+		if transportMode == "hc" && command != "init" && command != "title" && !core.Nowrite(decisionEnv) {
+			// StateDirPath uses the command's hc session resolver, but StateRoot
+			// can update .gitignore. Resolve with a read-only clone and leave
+			// caller failures to the command itself. Init/title validate a
+			// stricter caller and project root, so do not guess their path here.
+			// Known limit (R395 F1): this is a lookup of its own, so a caller
+			// whose hc session changes between it and the command's lookup
+			// would log the command's warnings in the previous session's
+			// existing friction.log; nothing is created either way.
+			func() {
+				defer func() {
+					if value := recover(); value != nil {
+						if _, ok := value.(*platform.ExitError); !ok {
+							panic(value)
+						}
+					}
+				}()
+				readEnv := decisionEnv.Clone()
+				readEnv["SOHO_NOWRITE"] = "1"
+				sd := core.StateDirPath(commandConfig, readEnv, commandCwd)
+				if info, err := os.Stat(sd); err == nil && info.IsDir() {
+					frictionLogPath = filepath.Join(sd, "friction.log")
+				}
+			}()
+		} else if transportMode != "hc" {
 			if !core.Nowrite(decisionEnv) {
 				if _, found := platform.FindExecutable("herdr", decisionEnv, platform.Current()); found {
 					if command == "release" || command == "reopen" {
@@ -345,11 +369,9 @@ func Run(args []string, env platform.Env) (code int) {
 	if command == "wait" || command == "status" {
 		waitpkg.SetFrictionLogFile(frictionLogPath)
 	}
-	if command == "collect" {
+	if command == "collect" && transportMode != "hc" {
 		frictionLogPath = ""
-		// Like every other hc command, collect initializes no friction
-		// state under hc: the herdr binary is not the signal there.
-		if transportMode != "hc" && !core.Nowrite(decisionEnv) {
+		if !core.Nowrite(decisionEnv) {
 			if _, found := platform.FindExecutable("herdr", decisionEnv, platform.Current()); found {
 				frictionLogPath = filepath.Join(core.StateDir(configCtx, decisionEnv, commandCwd), "friction.log")
 			}
