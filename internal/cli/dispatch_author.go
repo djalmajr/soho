@@ -239,6 +239,12 @@ func lookupDispatchAuthor(path string, contexts ...dispatchAuthorContext) map[st
 	if err != nil {
 		return nil
 	}
+	// A review of the orchestrator's own code has no edit-role author to
+	// freeze, even when an older implementer brief declared the same tree
+	// (R424 F1).
+	if dispatch.DeclaresOrchestratorAuthor(string(body)) {
+		return nil
+	}
 	tree := dispatch.DeclaredWorktree(string(body))
 	if tree == "" {
 		return nil
