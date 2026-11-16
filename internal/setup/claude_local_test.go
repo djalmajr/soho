@@ -107,8 +107,10 @@ func TestSetupClaudeLocalMigrationEmptyAndLegacy(t *testing.T) {
 			seed := jsonjs.StringifyIndent(jsonjs.O("hooks", jsonjs.O("SessionStart", []any{jsonjs.O("hooks", []any{jsonjs.O("command", command)})})), 2)
 			writeLocalSetupFixtureFile(t, root, ".claude/settings.json", seed)
 			code, out, msg := runSetupWrite([]string{"--local"}, ctx, env, root)
+			// SOH-290: a shared file that held only soho hooks is removed,
+			// not left as an empty {}.
 			b, err := os.ReadFile(filepath.Join(root, ".claude/settings.json"))
-			if code != 0 || err != nil || strings.TrimSpace(string(b)) != "{}" {
+			if code != 0 || !os.IsNotExist(err) {
 				t.Fatalf("code=%d out=%s msg=%s shared=%s err=%v", code, out, msg, b, err)
 			}
 		})
@@ -130,5 +132,24 @@ func TestSetupClaudeLocalTrackedDestination(t *testing.T) {
 	}
 	if _, tracked := gitOutput(env, root, "ls-files", "--error-unmatch", "--", ".claude/settings.local.json"); !tracked {
 		t.Fatal("local file untracked")
+	}
+}
+
+// SOH-290: --plan and --dry-run announce the removal of a shared file that
+// holds only soho hooks, and leave it in place.
+func TestSetupClaudeLocalPreviewAnnouncesTheRemoval(t *testing.T) {
+	for _, mode := range []string{"--plan", "--dry-run"} {
+		t.Run(mode, func(t *testing.T) {
+			root, env, ctx := tm5LocalFixture(t)
+			seed := jsonjs.StringifyIndent(jsonjs.O("hooks", jsonjs.O("SessionStart", []any{jsonjs.O("hooks", []any{jsonjs.O("command", setuptext.SetupHookDoctor())})})), 2)
+			writeLocalSetupFixtureFile(t, root, ".claude/settings.json", seed)
+			code, out, msg := runSetupWrite([]string{"--local", mode}, ctx, env, root)
+			if code != 0 || !strings.Contains(out, string(filepath.Separator)+filepath.Join(".claude", "settings.json")+" (it holds only soho-managed hooks)") || !strings.Contains(out, "# would remove ") {
+				t.Fatalf("code=%d out=%s msg=%s", code, out, msg)
+			}
+			if b, err := os.ReadFile(filepath.Join(root, ".claude/settings.json")); err != nil || string(b) != seed {
+				t.Fatalf("preview changed the shared file: %s %v", b, err)
+			}
+		})
 	}
 }

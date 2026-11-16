@@ -386,7 +386,11 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 					if warning := sharedHooksTrackingWarning(trackingStatus(root, ".claude/settings.json", env)); warning != "" {
 						_, _ = fmt.Fprintln(platform.Stdout, "# "+warning)
 					} else {
-						_, _ = fmt.Fprintf(platform.Stdout, "# would remove soho-managed hooks from %s\n", shared)
+						if sharedHooksMigrationEmpties(after) {
+							_, _ = fmt.Fprintf(platform.Stdout, "# would remove %s (it holds only soho-managed hooks)\n", shared)
+						} else {
+							_, _ = fmt.Fprintf(platform.Stdout, "# would remove soho-managed hooks from %s\n", shared)
+						}
 					}
 				}
 			}
