@@ -7,11 +7,12 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil/testenv"
 )
 
 func TestReviewAuthorWarningRepository(t *testing.T) {
 	home := t.TempDir()
-	env := platform.Env{"PATH": os.Getenv("PATH"), "HOME": home, "USERPROFILE": home, "XDG_CONFIG_HOME": home, "TMPDIR": home, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.DevNull}
+	env := platform.Env{"PATH": testenv.HostPath(), "HOME": home, "USERPROFILE": home, "XDG_CONFIG_HOME": home, "TMPDIR": home, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.DevNull}
 	git := func(dir string, args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)

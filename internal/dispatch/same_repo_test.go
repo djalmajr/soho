@@ -7,12 +7,13 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil/testenv"
 )
 
 func repoTestEnv(t *testing.T) platform.Env {
 	t.Helper()
 	home := t.TempDir()
-	return platform.Env{"PATH": os.Getenv("PATH"), "HOME": home, "USERPROFILE": home, "XDG_CONFIG_HOME": home, "TMPDIR": home, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.DevNull}
+	return platform.Env{"PATH": testenv.HostPath(), "HOME": home, "USERPROFILE": home, "XDG_CONFIG_HOME": home, "TMPDIR": home, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.DevNull}
 }
 
 func repoTestGit(t *testing.T, env platform.Env, dir string, args ...string) {
