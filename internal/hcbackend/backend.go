@@ -396,6 +396,18 @@ func listedAddress(rec *jsonjs.Object) (string, *transport.Failure) {
 	return "", &transport.Failure{Kind: transport.FailureProtocol, Message: "hc ls returned a terminal without an address"}
 }
 
+// listedParent reads the record's parent: "" and known when it is omitted,
+// the string when it is one. A parent of any other type is unknown, never
+// "no parent", and never fails the listing the other consumers read.
+func listedParent(rec *jsonjs.Object) (parent string, known bool) {
+	value, ok := rec.Get("parent")
+	if !ok {
+		return "", true
+	}
+	parent, ok = value.(string)
+	return parent, ok
+}
+
 // cwdOf reads the record's cwd ("" when the terminal reports none).
 func cwdOf(obj *jsonjs.Object) string {
 	if v, ok := obj.Get("cwd"); ok {
@@ -652,8 +664,11 @@ func (b *backend) List(ctx context.Context, scope transport.Scope, call transpor
 		if bad != nil {
 			return transport.Reply[[]transport.Terminal]{Err: bad}
 		}
+		parent, parentKnown := listedParent(rec)
 		terms = append(terms, transport.Terminal{
 			Target:      transport.Target{ID: address},
+			Parent:      parent,
+			ParentKnown: parentKnown,
 			Name:        nameOf(rec),
 			PaneID:      address,
 			State:       stateOf(rec),
@@ -706,6 +721,7 @@ func (b *backend) listAllLocal(ctx context.Context, call transport.Call) transpo
 		if bad != nil {
 			return transport.Reply[[]transport.Terminal]{Err: bad}
 		}
+		parent, parentKnown := listedParent(rec)
 		// A finished record is gone, and a machine-prefixed address is a
 		// remote terminal, not part of the local listing.
 		if stateOf(rec) == "gone" || strings.Contains(address, "/") {
@@ -713,6 +729,8 @@ func (b *backend) listAllLocal(ctx context.Context, call transport.Call) transpo
 		}
 		terms = append(terms, transport.Terminal{
 			Target:       transport.Target{ID: address},
+			Parent:       parent,
+			ParentKnown:  parentKnown,
 			Name:         nameOf(rec),
 			PaneID:       address,
 			State:        stateOf(rec),

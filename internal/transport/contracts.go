@@ -154,6 +154,12 @@ type Terminal struct {
 	// missing/non-string stays empty), independent of mapped agent activity
 	// in State. Source metadata for local verification, never a public field.
 	NativeState string
+	// Parent is the native terminal address of its parent, or empty when
+	// the backend reports none. ParentKnown is false when the backend sent a
+	// parent that is not a string: Parent "" then proves nothing. Source
+	// metadata, never public fields.
+	Parent      string
+	ParentKnown bool
 	// Msg carries the message the terminal record reports next to its
 	// state word (the hc status message, "" when the backend reports
 	// none), so a consumer that maps the state word can also carry the

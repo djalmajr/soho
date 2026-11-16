@@ -544,6 +544,7 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	doctorOrphans(ctx, svc, env, cwd, s)
 	doctorDoneOpen(ctx, svc, env, cwd, s)
 	doctorWorkerCwds(ctx, svc, env, cwd, s)
+	doctorNativeParentless(ctx, svc, env, cwd, s)
 	doctorDiscardedModels(ctx, env, cwd, s)
 	doctorModelPairs(ctx, env, cwd, s)
 	doctorLaneArgs(ctx, env, s)
