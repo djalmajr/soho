@@ -23,6 +23,13 @@ jobs:
         # time budget and disk: one after the other they no longer fit the
         # Windows runner.
         suite: [native, race]
+        # Hosted macOS arm64 runners are capacity-constrained ("The job was
+        # not acquired by Runner … even after multiple attempts"): a pull
+        # request runs the macOS native suite only, and the macOS race suite
+        # runs on every push to main, before a release is tagged.
+        exclude:
+          - os: ${{ github.event_name == 'pull_request' && 'macos-15' || 'none' }}
+            suite: race
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     env:
