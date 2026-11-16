@@ -1,6 +1,7 @@
 package kinds
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,9 @@ func TestPiAgentDirHonorsTheOverride(t *testing.T) {
 // warning reads the overridden models.json, and the maxTokens headroom check
 // reads thinkingBudgets from the overridden settings.json (R396 F1).
 func TestPiAgentDirDiagnosticReaders(t *testing.T) {
+	stubPiCoreEnvLaunch(t, func(_ context.Context, _ platform.Env, _ ...string) platform.RunResult {
+		return platform.RunResult{NotFound: true}
+	})
 	home := t.TempDir()
 	override := filepath.Join(home, "private-pi")
 	if err := os.MkdirAll(override, 0700); err != nil {
