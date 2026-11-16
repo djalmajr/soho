@@ -2355,6 +2355,16 @@ func startHcAgentUsingServices(ctx *core.Config, o *spawnOptions, kind string, e
 							}
 							return r.Value
 						},
+						Wait: func(delay time.Duration) bool {
+							timer := time.NewTimer(delay)
+							defer timer.Stop()
+							select {
+							case <-callCtx.Done():
+								return false
+							case <-timer.C:
+								return callCtx.Err() == nil
+							}
+						},
 						Pause: pollMillis(env),
 					}
 					if _, ok := codexhooks.Approve(screen, io); ok {

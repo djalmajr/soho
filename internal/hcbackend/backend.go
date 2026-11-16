@@ -1645,11 +1645,20 @@ func (b *backend) waitReady(ctx context.Context, call transport.Call, name, addr
 			}
 			readCtx, cancel := context.WithDeadline(ctx, deadlineAt)
 			screen := b.Read(readCtx, transport.Target{ID: address}, transport.Read{Source: "visible"}, readCall)
-			if screen.Err == nil && screen.Valid && dialog(readCtx, address, screen.Value) == transport.StartupDialogBlocked {
-				cancel()
-				return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureBlocked, Message: "agent " + name + " is blocked during startup"}}
+			action := transport.StartupDialogContinue
+			if screen.Err == nil && screen.Valid {
+				action = dialog(readCtx, address, screen.Value)
 			}
 			cancel()
+			if err := ctx.Err(); err != nil {
+				return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCancelled, Message: err.Error(), Cause: err}}
+			}
+			if time.Until(deadlineAt) <= 0 {
+				return b.timeoutReply(ctx, call, name, address, deadline, lastErr)
+			}
+			if action == transport.StartupDialogBlocked {
+				return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureBlocked, Message: "agent " + name + " is blocked during startup"}}
+			}
 		}
 		wait := startPollInterval
 		if remaining := time.Until(deadlineAt); wait > remaining {

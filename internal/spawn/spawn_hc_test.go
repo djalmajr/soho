@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/hc"
@@ -1683,5 +1684,39 @@ func TestSpawnHcCodexHooksReview(t *testing.T) {
 				t.Fatalf("missing blocked warning: %s", stderr)
 			}
 		})
+	}
+}
+
+func TestSpawnHcCodexHooksStalledRedrawDeadline(t *testing.T) {
+	menu := "Hooks need review\n3 hooks are new or changed.\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting\nenter confirm · esc skip\n"
+	cwd, bin, _, env, cfg := hcSpawnFixture(t, "reviewer", "codex")
+	cfg.Entries["hooks_review"] = core.ConfigEntry{Value: "trust"}
+	env["SOHO_WAIT_POLL_MS"] = "500"
+	body, _ := json.Marshal(map[string]string{"text": menu})
+	rules := append(hcFixtureRules(),
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"working"}}`},
+		fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Stdout: string(body)},
+		fakecli.Rule{Argv: []string{"keys", "t7", "down", "--json"}},
+		fakecli.Rule{Argv: []string{"kill", "t7", "--json"}},
+		fakecli.Rule{Argv: []string{"rm", "t7", "--json"}},
+	)
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	const timeout = 200 * time.Millisecond
+	begin := time.Now()
+	exit, out, stderr, calls := spawnHcExitWithLaunch(t, bin, []string{"reviewer", "--timeout", "200"}, cfg, env, cwd, newFakeSpawnRPCConn(), nil)
+	elapsed := time.Since(begin)
+	if exit == nil || exit.Code != 4 || elapsed >= timeout+time.Second {
+		t.Fatalf("exit=%v elapsed=%s timeout=%s calls=%v out=%s stderr=%s", exit, elapsed, timeout, calls, out, stderr)
+	}
+	keys := []string{}
+	for _, c := range calls {
+		if c.Argv[0] == "keys" {
+			keys = append(keys, c.Argv[2])
+		}
+	}
+	if !reflect.DeepEqual(keys, []string{"down"}) || strings.Contains(stderr.String(), "fakecli: no rule") {
+		t.Fatalf("keys=%v calls=%v stderr=%s", keys, calls, stderr)
 	}
 }
