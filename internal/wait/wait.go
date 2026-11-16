@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/djalmajr/soho/internal/backend"
@@ -36,6 +37,10 @@ const enterRetryLimit = 3
 
 var uintPattern = regexp.MustCompile(`^[0-9]+$`)
 var frictionLogFile string
+
+// diskWarned keeps the disk-error warning to one line per state dir and
+// agent within one process.
+var diskWarned sync.Map
 
 func SetFrictionLogFile(file string) { frictionLogFile = file }
 
@@ -792,6 +797,13 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 			writeWaitFile(sd, agent, "quota", content)
 			clearProvider()
 			return "quota"
+		}
+		if disk := provider.DiskFullDetect(st.State, quotaVisible); disk != "" {
+			// A full disk or disk quota is not the assistant's usage quota
+			// (SOH-302): one warning per agent and wait run, status unchanged.
+			if _, seen := diskWarned.LoadOrStore(sd+"\x00"+agent, true); !seen {
+				_, _ = fmt.Fprintf(platform.Stderr, "soho: warning: worker '%s' hit a disk error: %s; free space (soho gc removes registered copies) and dispatch again\n", agent, disk)
+			}
 		}
 		ptext, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
 		p := core.ProviderDetectTexts(st.State, ptext, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))

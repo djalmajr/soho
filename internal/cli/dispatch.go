@@ -2653,6 +2653,9 @@ func noWaitObservation(agent, role, kind, lane, model, report string, env platfo
 		}
 		return "quota", jsonjs.O("status", "quota", "lane", lane, "model", model, "match", q[0], "renewal", q[1])
 	}
+	if line := provider.DiskFullDetect(st.State, visible20); line != "" {
+		fmt.Fprintf(platform.Stderr, "soho: warning: worker '%s' hit a disk error: %s; free space (soho gc removes registered copies) and dispatch again\n", agent, line)
+	}
 	visible40, _ := readScreen(svc, agent, "visible", intPtr(40))
 	if provider.DialogKind(kind, visible40) == "question" {
 		return "submitted", nil
