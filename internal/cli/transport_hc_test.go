@@ -39,10 +39,10 @@ func treePaths(t *testing.T, root string) []string {
 
 // hcRefusedCommands is every known command the hc entry guard refuses.
 var hcRefusedCommands = []string{
-	"session", "find", "run", "resume",
+	"find", "run", "resume",
 	"send", "stats", "clean",
 	"regrid", "feedback", "tab-label",
-	"layout-plan", "review-snapshot",
+	"layout-plan",
 	"reopen", "compact", "metrics", "promote",
 	"job", "plugin",
 }
@@ -115,8 +115,8 @@ func TestHcGuardRefusesEveryOtherCommand(t *testing.T) {
 		"status": true, "wait": true, "spawn": true, "dispatch": true, "release": true, "collaborate": true,
 		"doctor": true, "config": true, "explain": true, "capabilities": true,
 		"init": true, "title": true, "inventory": true,
-		"mutation-copy": true,
-		"copies":        true, "gc": true, "procs": true, "friction": true, "roster": true, "collect": true,
+		"mutation-copy": true, "review-snapshot": true, "session": true,
+		"copies": true, "gc": true, "procs": true, "friction": true, "roster": true, "collect": true,
 		"kinds": true, "models": true, "model": true, "roles": true, "role": true,
 		"lint": true, "install": true, "env": true, "hook": true, "setup": true,
 	}

@@ -129,6 +129,12 @@ func Run(args []string, env platform.Env) (code int) {
 		}
 		code = exitErr.Code
 	}()
+	// Exact command help does not load configuration, state, or transport.
+	// Keep the existing NOWRITE policy for every invocation.
+	if len(args) == 2 && knownCommands[args[0]] && (args[1] == "--help" || args[1] == "-h") && env.Get("SOHO_NOWRITE") != "1" {
+		_, _ = io.WriteString(platform.Stdout, commandHelp(args[0]))
+		return 0
+	}
 	// Machine-wide inventory owns its read-only bootstrap; it must not
 	// enter caller, managed-job, current-project or friction setup.
 	if len(args) > 0 && args[0] == "inventory" {
@@ -567,7 +573,7 @@ func transportModeFor(ctx *core.Config, env, decisionEnv platform.Env, cwd strin
 // setup skips TUI plugin migration; mutation-copy uses the guarded copier.
 func hcCommandAllowed(command string) bool {
 	switch command {
-	case "mutation-copy":
+	case "mutation-copy", "review-snapshot", "session":
 		return true
 	case "", "help", "-h", "--help":
 		return true

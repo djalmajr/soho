@@ -133,7 +133,20 @@ func cmdReviewSnapshot(args []string, ctx *core.Config, env platform.Env, cwd st
 	if slug == "" {
 		return fail(2, fmt.Errorf("empty snapshot slug"))
 	}
-	sd := core.StateDirPath(ctx, env, cwd)
+	sd := ""
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		sd = registryDestination(env)
+	}
+	if sd == "" {
+		sd = core.StateDirPath(ctx, env, cwd)
+	}
+	if !ownerSpecified && env.Get("SOHO_TRANSPORT") == "hc" {
+		pane, failed := registrantPane(env)
+		owner, _ = registrantFromEnv(sd, env, pane, failed)
+		if owner == "-" {
+			owner = ""
+		}
+	}
 	if ownerSpecified && (owner == "" || core.RosterLine(sd, owner) == "") {
 		return fail(2, fmt.Errorf("agent %q is not in the roster", owner))
 	}
