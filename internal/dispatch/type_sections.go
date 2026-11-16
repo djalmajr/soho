@@ -96,7 +96,13 @@ func TypeSectionWarnings(briefPath, body string) []string {
 				has = has || sectionHasText(lines, mask, start, end)
 			}
 			if !has {
-				out = append(out, fmt.Sprintf("brief %s '%s' section is empty", briefPath, spec.title))
+				if sectionHasText(lines, mask, start, end) {
+					// Prose is there, but this section needs one list or table
+					// item per entry (SOH-303): "is empty" misled the author.
+					out = append(out, fmt.Sprintf("brief %s '%s' section has text but no list or table item: %s", briefPath, spec.title, spec.reason))
+				} else {
+					out = append(out, fmt.Sprintf("brief %s '%s' section is empty", briefPath, spec.title))
+				}
 			}
 			return
 		}
