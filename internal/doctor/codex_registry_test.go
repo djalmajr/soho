@@ -175,14 +175,16 @@ func TestPolicyTableIntroductionForms(t *testing.T) {
 // transport never gets that warning, and the SOHO_* warning is independent.
 func TestDoctorCodexHcTerminalPolicy(t *testing.T) {
 	for _, tc := range []struct {
-		name, transport, config string
-		wantHC, wantSoho        bool
+		name, transport, config     string
+		wantHC, wantSoho, wantBroad bool
 	}{
 		{name: "hc-drops", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['PATH', 'SOHO_*']", wantHC: true},
 		{name: "hc-drops-both", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['PATH']", wantHC: true, wantSoho: true},
-		{name: "hc-glob", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['SOHO_*', 'HC_*']"},
+		{name: "hc-glob", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['SOHO_*', 'HC_*']", wantBroad: true},
 		{name: "hc-exact", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['SOHO_*', 'HC_TERMINAL_ID']"},
-		{name: "hc-lowercase", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['soho_*', 'hc_*']"},
+		{name: "hc-lowercase", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['soho_*', 'hc_*']", wantBroad: true},
+		{name: "hc-socket-prefix", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['SOHO_*', 'HC_TERMINAL_ID', 'HC_S*']", wantBroad: true},
+		{name: "legacy-hc-glob", transport: "", config: "[shell_environment_policy]\ninclude_only = ['SOHO_*', 'HC_*']"},
 		{name: "hc-all", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['*']"},
 		{name: "hc-other-hc-name", transport: "hc", config: "[shell_environment_policy]\ninclude_only = ['SOHO_*', 'HC_SCOPE']", wantHC: true},
 		{name: "hc-no-include-only", transport: "hc", config: "[shell_environment_policy]\ninherit = 'all'"},
@@ -222,13 +224,52 @@ func TestDoctorCodexHcTerminalPolicy(t *testing.T) {
 			t.Cleanup(func() { platform.Stderr, platform.Stdout = oldErr, oldOut })
 			DoctorCheck(ctx, env, cwd, &out)
 			got := out.String()
-			wantHC := fmt.Sprintf(`codex: [shell_environment_policy] include_only in %s drops HC_TERMINAL_ID, so codex workers cannot identify their terminal; their registrations fall back to SOHO_AGENT and are unverified when that is missing too; add "HC_*" or "HC_TERMINAL_ID" to include_only`, path)
+			wantHC := fmt.Sprintf(`codex: [shell_environment_policy] include_only in %s drops HC_TERMINAL_ID, so codex workers cannot identify their terminal; their registrations fall back to SOHO_AGENT and are unverified when that is missing too; add "HC_TERMINAL_ID" to include_only (not "HC_*": it also passes HC_SOCKET, which lets the codex shell drive Core)`, path)
 			if strings.Contains(got, wantHC) != tc.wantHC {
 				t.Fatalf("HC_TERMINAL_ID warning wanted=%v stdout=%s", tc.wantHC, got)
+			}
+			if strings.Contains(got, "which passes HC_SOCKET too: a codex shell that sees the hc socket can drive Core; list \"HC_TERMINAL_ID\" instead") != tc.wantBroad {
+				t.Fatalf("broad HC_ pattern warning wanted=%v stdout=%s", tc.wantBroad, got)
 			}
 			if strings.Contains(got, "drops SOHO_* variables") != tc.wantSoho {
 				t.Fatalf("SOHO_* warning wanted=%v stdout=%s", tc.wantSoho, got)
 			}
 		})
+	}
+}
+
+// SOH-308: the broad-pattern warning names the HC_ variables it would pass
+// from the environment, and never their values.
+func TestDoctorCodexBroadHcPatternNamesOnly(t *testing.T) {
+	env, cwd, ctx := contextWindowDoctorFixture(t)
+	env["CODEX_HOME"] = filepath.Join(cwd, "codex-home")
+	env["TMPDIR"] = t.TempDir()
+	env["SOHO_TRANSPORT"] = "hc"
+	env["HC_SOCKET"] = "/secret/socket-value-DO-NOT-PRINT"
+	env["HC_SCOPE"] = "scope-value-DO-NOT-PRINT"
+	env["SOHO_ROLES"] = filepath.Join(cwd, "roles")
+	if err := os.MkdirAll(env["SOHO_ROLES"], 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(env["SOHO_ROLES"], "worker.md"), []byte("---\nkind: codex\n---\nWorker\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(env["CODEX_HOME"], 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(env["CODEX_HOME"], "config.toml"), []byte("[shell_environment_policy]\ninclude_only = ['SOHO_*', 'HC_*']"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, stderr strings.Builder
+	oldErr, oldOut := platform.Stderr, platform.Stdout
+	platform.Stderr, platform.Stdout = &stderr, &out
+	t.Cleanup(func() { platform.Stderr, platform.Stdout = oldErr, oldOut })
+	DoctorCheck(ctx, env, cwd, &out)
+	got := out.String() + stderr.String()
+	if !strings.Contains(got, "HC_ variables it would pass from this environment: HC_SCOPE, HC_SOCKET") {
+		t.Fatalf("names missing: %s", got)
+	}
+	if strings.Contains(got, "DO-NOT-PRINT") {
+		t.Fatalf("a value leaked: %s", got)
 	}
 }
