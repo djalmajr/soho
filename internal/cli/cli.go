@@ -324,6 +324,10 @@ func Run(args []string, env platform.Env) (code int) {
 			// can update .gitignore. Resolve with a read-only clone and leave
 			// caller failures to the command itself. Init/title validate a
 			// stricter caller and project root, so do not guess their path here.
+			// Known limit (R395 F1): this is a lookup of its own, so a caller
+			// whose hc session changes between it and the command's lookup
+			// would log the command's warnings in the previous session's
+			// existing friction.log; nothing is created either way.
 			func() {
 				defer func() {
 					if value := recover(); value != nil {
