@@ -28,13 +28,15 @@ func TestReviewAuthorWarningRepository(t *testing.T) {
 	git(main, "worktree", "add", "-q", "-b", "worker", worker)
 	git(other, "init", "-q")
 	for _, tc := range []struct {
-		name, tree     string
-		noLine, silent bool
+		name, tree             string
+		noLine, silent, author bool
 	}{
-		{"different repository", other, false, true},
-		{"same linked repository", worker, false, false},
-		{"unknown repository", nongit, false, false},
-		{"missing worktree line", "", true, false},
+		{"different repository", other, false, true, false},
+		{"same linked repository", worker, false, false, false},
+		{"unknown repository", nongit, false, false, false},
+		{"missing worktree line", "", true, false, false},
+		{"orchestrator author without a worktree line", "", true, true, true},
+		{"orchestrator author with a worktree line", worker, false, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -43,15 +45,18 @@ func TestReviewAuthorWarningRepository(t *testing.T) {
 			if !tc.noLine {
 				body = "Worktree: " + tc.tree + "\n"
 			}
+			if tc.author {
+				body += "Author: orchestrator\n"
+			}
 			if err := os.WriteFile(filepath.Join(dir, "review.brief.md"), []byte(body), 0600); err != nil {
 				t.Fatal(err)
 			}
 			got := reviewAuthorWarning("source.md", "reviewer", sidecar, dispatchAuthorContext{env: env, cwd: main})
-			want := "no author found for this review: no accepted edit-role brief declares Worktree: " + tc.tree + ", so 'soho stats --by author-model' will not count it"
-			if tc.noLine {
-				want = "brief source.md has no Worktree: line: this review cannot be tied to its author, so 'soho stats --by author-model' will not count it; add 'Worktree: <absolute path>' here and in the implementer's brief"
-			} else if tc.silent {
+			want := "no author found for this review: no accepted edit-role brief declares Worktree: " + tc.tree + ", so 'soho stats --by author-model' will not count it; when the orchestrator wrote the code, add 'Author: orchestrator' to the review brief"
+			if tc.silent {
 				want = ""
+			} else if tc.noLine {
+				want = "brief source.md has no Worktree: line: this review cannot be tied to its author, so 'soho stats --by author-model' will not count it; add 'Worktree: <absolute path>' here and in the implementer's brief, or 'Author: orchestrator' when the orchestrator wrote the code"
 			}
 			if got != want {
 				t.Fatalf("got %q, want %q", got, want)

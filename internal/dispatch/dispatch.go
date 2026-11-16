@@ -224,6 +224,24 @@ func DeclaredWorktree(body string) string {
 	return ""
 }
 
+// DeclaresOrchestratorAuthor reports whether the first Author: line outside
+// fenced code blocks says the orchestrator wrote the reviewed code (the
+// value is "orchestrator", case-insensitive, optionally between backticks).
+// A review brief for the orchestrator's own code has no implementer brief to
+// tie it to (SOH-317).
+func DeclaresOrchestratorAuthor(body string) bool {
+	lines := strings.Split(body, "\n")
+	fenced := briefFenceMask(lines)
+	for i, line := range lines {
+		if fenced[i] || !strings.HasPrefix(line, "Author:") {
+			continue
+		}
+		value := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "Author:")), "`")
+		return strings.EqualFold(strings.TrimSpace(value), "orchestrator")
+	}
+	return false
+}
+
 // declaredWorktreeLine returns the first Worktree: line outside fenced code
 // blocks as written, the one DeclaredWorktree reads, so that a copy of it reads
 // the same: a path with spaces only stays whole between its backticks.
