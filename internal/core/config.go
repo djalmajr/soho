@@ -1063,7 +1063,11 @@ func CmdConfig(ctx *Config, env platform.Env, cwd string) {
 	}
 	lines := []string{row("KEY", "VALUE", "SOURCE")}
 	for _, key := range ConfigScalarKeys {
-		lines = append(lines, row(key, ConfigScalarValue(ctx, key, env, cwd), CfgSource(ctx, key, env)))
+		source := CfgSource(ctx, key, env)
+		if key == "max_workers" && LanesEnabled(ctx, env) && !ConfigExplicit(ctx, key, env) {
+			source = "lanes"
+		}
+		lines = append(lines, row(key, ConfigScalarValue(ctx, key, env, cwd), source))
 	}
 	dotted := map[string]bool{}
 	for _, key := range ctx.Order {
@@ -1085,6 +1089,7 @@ func CmdConfig(ctx *Config, env platform.Env, cwd string) {
 		keys = append(keys, key)
 	}
 	textutil.SortUTF16(keys)
+	listedLanes := map[string]bool{}
 	for _, key := range keys {
 		entry := ctx.Entries[key]
 		name := entry.Original
@@ -1092,6 +1097,17 @@ func CmdConfig(ctx *Config, env platform.Env, cwd string) {
 			name = DottedKeyName(key, ctx, env, cwd)
 		}
 		lines = append(lines, row(name, Cfg(ctx, key, "", env), CfgSource(ctx, key, env)))
+		parts := strings.Split(name, ".")
+		if len(parts) == 3 && parts[0] == "lane" {
+			listedLanes[NormalizeKey(parts[1])] = true
+		}
+	}
+	if LanesEnabled(ctx, env) {
+		for _, lane := range LaneNames(ctx, env) {
+			if !listedLanes[NormalizeKey(lane)] {
+				lines = append(lines, row("lane."+lane+".roles", PresetLaneRoles(lane, PanesValue(ctx, env), PaneMode(ctx, env)), "skill default"))
+			}
+		}
 	}
 	layers := " (none)"
 	if len(ctx.Sources) != 0 {
@@ -1118,11 +1134,14 @@ func CmdConfig(ctx *Config, env platform.Env, cwd string) {
 }
 
 // ConfigScalarValue is the listing's VALUE column for one scalar key: the
-// Cfg value over ctx and env, with the state_dir special case (a state_dir
-// whose only source is the defaults layer prints its effective setting).
+// Cfg value over ctx and env, with effective state_dir and lane-derived
+// max_workers special cases.
 // CmdConfig and `soho config get` both read it, so the listing and the get
 // command never diverge.
 func ConfigScalarValue(ctx *Config, key string, env platform.Env, cwd string) string {
+	if key == "max_workers" && LanesEnabled(ctx, env) && !ConfigExplicit(ctx, key, env) {
+		return MaxWorkers(ctx, env)
+	}
 	value := Cfg(ctx, key, "", env)
 	if key == "state_dir" && CfgSource(ctx, key, env) == "defaults" {
 		value = StateDirSetting(ctx, env, cwd)

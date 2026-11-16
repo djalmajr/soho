@@ -309,7 +309,7 @@ soho tab-label "wave 2" [--tab ID]           # pin a label (newest herd tab, or 
 soho spawn reviewer --tab-label "wave 2"     # place the worker in the herd tab of that name (created if needed)
 soho layout-plan                             # where the next spawn lands (anchor, direction, overflow reason)
 soho status [a b …]                          # non-blocking completion check; no names = the whole team (all roster agents, in roster order, same output and exit code as naming them)
-soho config                                  # effective configuration and sources (incl. the session layer)
+soho config                                  # effective configuration and sources (incl. the session layer); derived max_workers shows the lanes' total (source lanes), and preset lanes show as skill default
 soho config set <key> <value> [--project|--user]   # write one key (default: the project file); also <key>=<value>; a value may begin with hyphens, and -- makes the rest (--project/--user included) the value
 soho config get <key>                        # one key's effective value on one line, without the source (empty line when unset; exit 2 for an unknown key); the job's machine keys print what the job reads from the user file, with its defaults; also runs under SOHO_NOWRITE=1
 soho inventory --json                        # opt-in local machine inventory, schema 1; read-only, no caller required, exit 4 with no stdout if the terminal server cannot be read

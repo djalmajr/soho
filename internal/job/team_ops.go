@@ -259,7 +259,8 @@ func (c selfCLI) EnsureJobLane() error {
 // parseMaxWorkers reads the max_workers row of the config output: the key,
 // the value and the source are whitespace-separated, and the source names
 // the layer the value came from. An absent row or a non-integer value is an
-// error; explicit is true when the source is not defaults.
+// error; explicit is true when the source is neither defaults nor lanes (a
+// total derived from the lanes already counts the job lane, R413 F1).
 func parseMaxWorkers(output string) (value int, explicit bool, err error) {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
@@ -270,7 +271,7 @@ func parseMaxWorkers(output string) (value int, explicit bool, err error) {
 		if parseErr != nil {
 			return 0, false, errors.New("max_workers value is not an integer")
 		}
-		return n, fields[2] != "defaults", nil
+		return n, fields[2] != "defaults" && fields[2] != "lanes", nil
 	}
 	return 0, false, errors.New("no max_workers row")
 }
