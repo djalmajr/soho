@@ -258,7 +258,7 @@ func Check(path, agent string, env platform.Env, logFile, command string) *jsonj
 				named = fmt.Sprintf(" (%q)", subject)
 			}
 		}
-		core.Warn(fmt.Sprintf("HEAD of %s moved from %s to %s with a local commit%s during the task of agent '%s'; if you did not make it, the agent left a local commit (briefs forbid commits) — inspect it before integrating", tree, old[:7], head[:7], named, agent), logFile, command)
+		core.Warn(fmt.Sprintf("HEAD moved from %s to %s in %s with a local commit%s during the task of agent '%s'; if you did not make it, the agent left a local commit (briefs forbid commits) — inspect it before integrating", old[:7], head[:7], tree, named, agent), logFile, command)
 	}
 	if local || branch != nextBranch {
 		return jsonjs.O("from", old, "to", head, "branch_from", branch, "branch_to", nextBranch)
