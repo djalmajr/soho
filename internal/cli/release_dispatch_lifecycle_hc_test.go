@@ -183,6 +183,7 @@ func TestReleaseHcConcurrentDispatchDoesNotCloseWorkingWorker(t *testing.T) {
 	rules := append(guardProbeRules(),
 		fakecli.Rule{Argv: []string{"get", "t1", "--json"}, ArgvPrefix: true, Stdout: hcDispatchCaller},
 		fakecli.Rule{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Call: 1, Stdout: hcWorkerGet(5, "idle")},
+		fakecli.Rule{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Call: 2, Stdout: hcWorkerGet(5, "idle")},
 		fakecli.Rule{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(5, "idle"), WaitFile: releaseGate},
 		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(5, "idle")},
 		fakecli.Rule{Argv: []string{"ls"}, ArgvPrefix: true, Stdout: hcDispatchSessionLS},
@@ -211,7 +212,7 @@ func TestReleaseHcConcurrentDispatchDoesNotCloseWorkingWorker(t *testing.T) {
 		// Without dispatch's guard, release has entered and loaded its stale
 		// idle snapshot. Keep that process paused until the send completes.
 		awaitLifecycle(t, func() bool {
-			return len(hcCallIndexes(f.hcCalls(t), []string{"get", "worker"})) >= 2
+			return len(hcCallIndexes(f.hcCalls(t), []string{"get", "worker"})) >= 3
 		})
 	}
 	// The fake Core now answers working. A get already in flight retains

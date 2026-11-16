@@ -775,8 +775,11 @@ func (b *backend) Get(ctx context.Context, target transport.Target, call transpo
 // ordinary (non-queue) send selects its --if guard through the client's
 // SendIfGuard under one deadline shared by every probe and the send: ready
 // only when the local parser and the serving enum prove it, idle only when
-// both prove idle, and a refusal is the capability failure with zero input
-// — never a guardless, downgraded or resent send. The reply's Value is the
+// both prove idle, and a refusal is the capability failure with zero input.
+// When idle is selected and a fresh get reports done, one unguarded send is
+// used: hc has no done guard, and done means the turn ended at the prompt.
+// This leaves a window for status changes between get and send; it is never
+// retried. Otherwise the send retains its proven guard. The reply's Value is the
 // raw SendResult record: its started flag is the immediate arrival proof
 // and its turn the turn the send started. A worker that sits on a person's
 // prompt is FailureBlocked, a worker whose status mismatches the guard that
@@ -795,7 +798,10 @@ func (b *backend) Send(ctx context.Context, target transport.Target, send transp
 // one deadline (the call's timeout, else the 30s default) clamps every
 // probe and the send together, so the probes never extend the call's
 // budget or outrun its cancellation; a guard refusal is the capability
-// failure with zero input — the send is never issued.
+// failure with zero input — the send is never issued. If the proven guard is
+// idle, one get immediately before the send permits an unguarded send only
+// for done, because hc lacks a done guard and the agent is at its prompt.
+// The status can change in this window; the send is never retried.
 func (b *backend) sendGuarded(ctx context.Context, target transport.Target, send transport.Send, call transport.Call) transport.Reply[string] {
 	timeout := hcTimeoutDefault
 	if call.Timeout > 0 {
@@ -810,7 +816,21 @@ func (b *backend) sendGuarded(ctx context.Context, target transport.Target, send
 	if err != nil {
 		return transport.Reply[string]{Err: guardRefusal(addr(target), err)}
 	}
-	args := []string{"send", "--if", guard, "--", addr(target), send.Text}
+	address := addr(target)
+	args := []string{"send", "--if", guard, "--", address, send.Text}
+	if guard == hc.GuardIdle {
+		if record, getErr := b.client.Run(shared, "get", address); getErr == nil {
+			if obj, ok := terminalObject(record); ok && nativeStateOf(obj) != "finished" {
+				if raw, ok := obj.Get("status"); ok {
+					if status, ok := raw.(*jsonjs.Object); ok {
+						if state, ok := status.Get("state"); ok && state == "done" {
+							args = []string{"send", "--", address, send.Text}
+						}
+					}
+				}
+			}
+		}
+	}
 	out, err := b.client.Run(shared, args...)
 	return b.sendReply(target, out, err, guard)
 }
