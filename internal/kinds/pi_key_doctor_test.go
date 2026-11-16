@@ -101,12 +101,13 @@ func TestDoctorPiCoreEnvProbe(t *testing.T) {
 		message string
 	}{
 		{"present", platform.RunResult{Status: status(0)}, ""},
-		{"absent", platform.RunResult{Status: status(3)}, "KEY is not set in the Core environment, so its workers cannot read the key; set login_shell=on or use a key command such as !/usr/bin/env -u ZDOTDIR /bin/zsh -c 'printenv KEY' to load the profile"},
+		{"absent", platform.RunResult{Status: status(97)}, "KEY is not set in the Core environment, so its workers cannot read the key; set login_shell=on or use a key command such as !/usr/bin/env -u ZDOTDIR /bin/zsh -c 'printenv KEY' to load the profile"},
 		{"other exit", platform.RunResult{Status: status(1)}, "worker inherits only the Core environment; KEY may be missing there. Set login_shell=on or use a key command such as !/usr/bin/env -u ZDOTDIR /bin/zsh -c 'printenv KEY' to load the profile"},
 		{"hc missing", platform.RunResult{NotFound: true}, "worker inherits only the Core environment; KEY may be missing there. Set login_shell=on or use a key command such as !/usr/bin/env -u ZDOTDIR /bin/zsh -c 'printenv KEY' to load the profile"},
 		{"core down", platform.RunResult{Status: status(2)}, "worker inherits only the Core environment; KEY may be missing there. Set login_shell=on or use a key command such as !/usr/bin/env -u ZDOTDIR /bin/zsh -c 'printenv KEY' to load the profile"},
 		{"timeout", platform.RunResult{TimedOut: true, Error: "ETIMEDOUT"}, "worker inherits only the Core environment; KEY may be missing there. Set login_shell=on or use a key command such as !/usr/bin/env -u ZDOTDIR /bin/zsh -c 'printenv KEY' to load the profile"},
-		{"error with status", platform.RunResult{Status: status(3), Error: "ETIMEDOUT"}, "worker inherits only the Core environment; KEY may be missing there. Set login_shell=on or use a key command such as !/usr/bin/env -u ZDOTDIR /bin/zsh -c 'printenv KEY' to load the profile"},
+		{"hc not found exit", platform.RunResult{Status: status(3)}, "worker inherits only the Core environment; KEY may be missing there. Set login_shell=on or use a key command such as !/usr/bin/env -u ZDOTDIR /bin/zsh -c 'printenv KEY' to load the profile"},
+		{"error with status", platform.RunResult{Status: status(97), Error: "ETIMEDOUT"}, "worker inherits only the Core environment; KEY may be missing there. Set login_shell=on or use a key command such as !/usr/bin/env -u ZDOTDIR /bin/zsh -c 'printenv KEY' to load the profile"},
 		{"no status", platform.RunResult{Error: "failed"}, "worker inherits only the Core environment; KEY may be missing there. Set login_shell=on or use a key command such as !/usr/bin/env -u ZDOTDIR /bin/zsh -c 'printenv KEY' to load the profile"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -121,7 +122,7 @@ func TestDoctorPiCoreEnvProbe(t *testing.T) {
 			calls := 0
 			stubPiCoreEnvLaunch(t, func(ctx context.Context, _ platform.Env, args ...string) platform.RunResult {
 				calls++
-				want := []string{"exec", "--timeout", "5", "sh", "-c", `test -n "${KEY+x}" && exit 0 || exit 3`}
+				want := []string{"exec", "--timeout", "5", "sh", "-c", `test -n "${KEY+x}" && exit 0 || exit 97`}
 				if !reflect.DeepEqual(args, want) {
 					t.Errorf("argv = %#v; want %#v", args, want)
 				}
@@ -171,13 +172,13 @@ func TestDoctorPiCoreEnvDeadlineOverridesExit(t *testing.T) {
 	}
 	stubPiCoreEnvLaunch(t, func(ctx context.Context, _ platform.Env, _ ...string) platform.RunResult {
 		<-ctx.Done()
-		status := 3
+		status := 97
 		return platform.RunResult{Status: &status}
 	})
 	env := platform.Env{"HOME": root, "USERPROFILE": root, "XDG_CONFIG_HOME": filepath.Join(root, "xdg"), "SOHO_TRANSPORT": "hc", "SOHO_LOGIN_SHELL": "off"}
 	_, warnings := OwnProviderDoctorLines(&core.Config{}, env, root)
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "KEY may be missing there") {
-		t.Fatalf("deadline with exit 3 must be unknown; warnings = %q", warnings)
+		t.Fatalf("deadline with the absent exit must be unknown; warnings = %q", warnings)
 	}
 }
 
@@ -196,7 +197,7 @@ func TestDoctorPiCoreEnvProbePerRunAndVariable(t *testing.T) {
 		scripts = append(scripts, script)
 		status := 0
 		if strings.Contains(script, "_KEY2") {
-			status = 3
+			status = 97
 		}
 		return platform.RunResult{Status: &status}
 	})
@@ -207,7 +208,7 @@ func TestDoctorPiCoreEnvProbePerRunAndVariable(t *testing.T) {
 			t.Fatalf("run %d warnings = %q", run, warnings)
 		}
 	}
-	want := []string{`test -n "${KEY+x}" && exit 0 || exit 3`, `test -n "${_KEY2+x}" && exit 0 || exit 3`, `test -n "${KEY+x}" && exit 0 || exit 3`, `test -n "${_KEY2+x}" && exit 0 || exit 3`}
+	want := []string{`test -n "${KEY+x}" && exit 0 || exit 97`, `test -n "${_KEY2+x}" && exit 0 || exit 97`, `test -n "${KEY+x}" && exit 0 || exit 97`, `test -n "${_KEY2+x}" && exit 0 || exit 97`}
 	if !reflect.DeepEqual(scripts, want) {
 		t.Fatalf("scripts = %#v; want %#v", scripts, want)
 	}

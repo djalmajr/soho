@@ -63,6 +63,11 @@ func PiAgentDir(env platform.Env) string {
 
 var piBarePrintenvRE = regexp.MustCompile(`^![ \t]*printenv[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*$`)
 
+// piCoreEnvAbsent is the probe's exit for "the variable is not set". It is
+// not one of hc's own named exits (3 is hc's not-found), so an hc failure is
+// never read as an absent variable.
+const piCoreEnvAbsent = 97
+
 var piCoreEnvLaunch = func(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
 	return hc.New(env).Launch(ctx, env, args...)
 }
@@ -91,7 +96,7 @@ func piBarePrintenvWarnings(ctx *core.Config, env platform.Env) []string {
 		status, ok := results[variable]
 		if !ok {
 			probeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			result := piCoreEnvLaunch(probeCtx, env, "exec", "--timeout", "5", "sh", "-c", fmt.Sprintf(`test -n "${%s+x}" && exit 0 || exit 3`, variable))
+			result := piCoreEnvLaunch(probeCtx, env, "exec", "--timeout", "5", "sh", "-c", fmt.Sprintf(`test -n "${%s+x}" && exit 0 || exit %d`, variable, piCoreEnvAbsent))
 			probeErr := probeCtx.Err()
 			cancel()
 			status = -1
@@ -103,7 +108,7 @@ func piBarePrintenvWarnings(ctx *core.Config, env platform.Env) []string {
 		switch status {
 		case 0:
 			continue
-		case 3:
+		case piCoreEnvAbsent:
 			warnings = append(warnings, fmt.Sprintf("pi provider '%s': %s is not set in the Core environment, so its workers cannot read the key; set login_shell=on or use a key command such as !/usr/bin/env -u ZDOTDIR /bin/zsh -c 'printenv %s' to load the profile", name, variable, variable))
 			continue
 		}
