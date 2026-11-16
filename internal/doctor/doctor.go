@@ -296,6 +296,7 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	// One backend for this invocation: every herdr probe of the doctor runs
 	// through it (DJA-596).
 	svc := backend.New(env)
+	svc.Runtime = &listOnceRuntime{Transport: svc.Runtime}
 	doctorRestartNotices(ctx, env, cwd, platform.Stderr)
 	if svc.Runtime.Caller().Inside {
 		// Under the native transport HERDR_PANE_ID holds a Core terminal
@@ -544,6 +545,7 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	doctorOrphans(ctx, svc, env, cwd, s)
 	doctorDoneOpen(ctx, svc, env, cwd, s)
 	doctorWorkerCwds(ctx, svc, env, cwd, s)
+	doctorNativeParentless(ctx, svc, env, cwd, s)
 	doctorDiscardedModels(ctx, env, cwd, s)
 	doctorModelPairs(ctx, env, cwd, s)
 	doctorLaneArgs(ctx, env, s)
