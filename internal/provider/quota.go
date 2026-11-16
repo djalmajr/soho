@@ -19,6 +19,7 @@ var (
 	quotaFuncRE         = regexp.MustCompile(`(^|[^A-Za-z0-9_])func` + jsWhitespace)
 	quotaAssignRE       = regexp.MustCompile(`[A-Za-z0-9_]` + jsWhitespace + `+` + `=` + jsWhitespace + `*`)
 	quotaQuotedAssignRE = regexp.MustCompile(`[A-Za-z0-9_]=["']`)
+	diskFullRE          = regexp.MustCompile(`disk quota exceeded|no space left on device|edquot|enospc`)
 	quotaRes            = []*regexp.Regexp{
 		regexp.MustCompile(`hit your usage limit`),
 		regexp.MustCompile(`individual quota reached`),
@@ -116,6 +117,19 @@ func sliceUTF16(value string, start, end int) string {
 	return string(utf16.Decode(units[start:end]))
 }
 
+// DiskFullDetect returns the first sanitized disk-space error line, excluding source and quoted literals.
+func DiskFullDetect(state, screen string) string {
+	if state == "working" || screen == "" {
+		return ""
+	}
+	for _, line := range strings.Split(strings.ReplaceAll(screen, "\r\n", "\n"), "\n") {
+		if diskFullRE.MatchString(text.ASCIILower(line)) && !QuotaLineIsCode(line) && !QuotaPhraseQuoted(line, diskFullRE) {
+			return text.SanitizeCause(text.RedactSecrets(line))
+		}
+	}
+	return ""
+}
+
 // QuotaDetect returns the sanitized quota and renewal lines, or nil when the screen is not a quota stop.
 func QuotaDetect(state, screen string) []string {
 	if state == "working" || screen == "" {
@@ -125,7 +139,7 @@ func QuotaDetect(state, screen string) []string {
 	lines := strings.Split(textScreen, "\n")
 	matched := ""
 	for _, candidate := range lines {
-		if candidate == "" || QuotaLineIsCode(candidate) {
+		if candidate == "" || diskFullRE.MatchString(text.ASCIILower(candidate)) || QuotaLineIsCode(candidate) {
 			continue
 		}
 		for _, re := range quotaRes {

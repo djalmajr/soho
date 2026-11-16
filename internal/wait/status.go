@@ -140,6 +140,9 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		if res.quota {
 			core.Warn(fmt.Sprintf("quota: agent '%s' lane=%s kind=%s model=%s : %s%s", agent, showOr(res.quotaLane, "?"), res.quotaKind, showOr(res.quotaModel, "?"), res.quotaMatch, renewalSuffix(res.quotaRenewal)), frictionLogFile, "status")
 		}
+		if res.diskFull != "" {
+			fmt.Fprintf(platform.Stderr, "soho: warning: worker '%s' hit a disk error: %s; free space (soho gc removes registered copies) and dispatch again\n", agent, res.diskFull)
+		}
 		if res.mirror {
 			mirrorReport(sd, agent, res.report, ctx, env, cwd)
 		}
@@ -268,6 +271,7 @@ type agentStatusResult struct {
 	quotaModel        string
 	quotaMatch        string
 	quotaRenewal      string
+	diskFull          string
 	mirror            bool
 	restart           stateProbe
 	restartValid      bool
@@ -493,6 +497,7 @@ func resolveAgentStatus(req agentStatusRequest, rc int) (agentStatusResult, int)
 				res.quotaMatch, res.quotaRenewal = match, renewal
 				rc = 11
 			} else {
+				res.diskFull = stop.diskFull
 				p = stop.p
 				if p != nil && WaitRank(14) > WaitRank(rc) {
 					rc = 14
@@ -1315,6 +1320,7 @@ type terminalStop struct {
 	quota        bool
 	quotaMatch   string
 	quotaRenewal string
+	diskFull     string
 }
 
 // classifyTerminal applies the status resolver's exact detection order to
@@ -1345,6 +1351,7 @@ func classifyTerminal(svc transport.Services, target, orig, kind string, ctx *co
 			stop.quotaMatch, stop.quotaRenewal = q[0], q[1]
 			return stop, ""
 		}
+		stop.diskFull = provider.DiskFullDetect(orig, visible)
 		recent, _ := readScreen(svc, target, "recent-unwrapped", intPtr(40))
 		stop.p = provider.ProviderDetectTexts(orig, recent, capacity, errorTexts)
 	case orig == "working":
