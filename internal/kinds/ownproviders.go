@@ -1,13 +1,16 @@
 package kinds
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/hc"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 )
@@ -60,6 +63,15 @@ func PiAgentDir(env platform.Env) string {
 
 var piBarePrintenvRE = regexp.MustCompile(`^![ \t]*printenv[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*$`)
 
+// piCoreEnvAbsent is the probe's exit for "the variable is not set". It is
+// not one of hc's own named exits (3 is hc's not-found), so an hc failure is
+// never read as an absent variable.
+const piCoreEnvAbsent = 97
+
+var piCoreEnvLaunch = func(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
+	return hc.New(env).Launch(ctx, env, args...)
+}
+
 func piBarePrintenvWarnings(ctx *core.Config, env platform.Env) []string {
 	if ctx == nil {
 		ctx = &core.Config{}
@@ -73,6 +85,7 @@ func piBarePrintenvWarnings(ctx *core.Config, env platform.Env) []string {
 		return nil
 	}
 	var warnings []string
+	results := map[string]int{}
 	for _, name := range providers.Keys() {
 		provider := ownObjectValue(providers, name)
 		match := piBarePrintenvRE.FindStringSubmatch(ownStringValue(provider, "apiKey"))
@@ -80,6 +93,25 @@ func piBarePrintenvWarnings(ctx *core.Config, env platform.Env) []string {
 			continue
 		}
 		variable := match[1]
+		status, ok := results[variable]
+		if !ok {
+			probeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			result := piCoreEnvLaunch(probeCtx, env, "exec", "--timeout", "5", "sh", "-c", fmt.Sprintf(`test -n "${%s+x}" && exit 0 || exit %d`, variable, piCoreEnvAbsent))
+			probeErr := probeCtx.Err()
+			cancel()
+			status = -1
+			if probeErr == nil && !result.NotFound && !result.TimedOut && result.Error == "" && result.Signal == "" && result.Status != nil {
+				status = *result.Status
+			}
+			results[variable] = status
+		}
+		switch status {
+		case 0:
+			continue
+		case piCoreEnvAbsent:
+			warnings = append(warnings, fmt.Sprintf("pi provider '%s': %s is not set in the Core environment, so its workers cannot read the key; set login_shell=on or use a key command such as !/usr/bin/env -u ZDOTDIR /bin/zsh -c 'printenv %s' to load the profile", name, variable, variable))
+			continue
+		}
 		warnings = append(warnings, fmt.Sprintf("pi provider '%s': worker inherits only the Core environment; %s may be missing there. Set login_shell=on or use a key command such as !/usr/bin/env -u ZDOTDIR /bin/zsh -c 'printenv %s' to load the profile", name, variable, variable))
 	}
 	return warnings
