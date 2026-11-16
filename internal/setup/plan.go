@@ -402,11 +402,14 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		settingsBefore = readOrRefuse(settingsFile, true)
 	}
 	var settingsAfter *string
+	var settingsNote string
 	settingsFailed := false
 	if hooks {
 		settingsAfter = setuptext.SettingsHooksResult(settingsBefore)
 		if settingsAfter == nil {
 			settingsFailed = true
+		} else if !modeLocal {
+			settingsAfter, settingsNote = canonicalClaudeHooks(root, settingsBefore, true)
 		}
 	}
 	_, _ = io.WriteString(platform.Stdout, "plan (nothing is written):\n\n")
@@ -421,7 +424,12 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		platform.DieFriction("setup --plan: could not merge hooks into "+settingsFile+" (setup would refuse it and leave the file untouched)", 4)
 	}
 	if hooks {
-		_, _ = io.WriteString(platform.Stdout, planFileDiff(settingsFile, stringValue(settingsBefore), *settingsAfter))
+		if settingsNote != "" {
+			_, _ = fmt.Fprintln(platform.Stdout, settingsNote)
+		}
+		if settingsNote == "" || (settingsAfter != nil && (settingsBefore == nil || *settingsAfter != *settingsBefore)) {
+			_, _ = io.WriteString(platform.Stdout, planFileDiff(settingsFile, stringValue(settingsBefore), *settingsAfter))
+		}
 		if modeLocal {
 			shared, after := sharedHooksMigration(root)
 			if after != nil {

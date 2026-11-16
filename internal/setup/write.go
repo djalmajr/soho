@@ -132,13 +132,31 @@ func markedLines(text string) string {
 func writeHooksSection(root string, env platform.Env, local bool) []string {
 	var ready []string
 	settings := claudeSettingsPath(root, local)
-	setupWriteHooks(settings)
 	if local {
+		setupWriteHooks(settings)
 		ready = append(ready, claudeLocalHookRel)
 		migrateSharedHooks(root, env)
+		_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder, SessionStart doctor)\n", settings)
+	} else {
+		before := readOrRefuse(settings, false)
+		if setuptext.SettingsHooksResult(before) == nil {
+			platform.DieFriction("could not merge hooks into "+settings, 4)
+		}
+		after, note := canonicalClaudeHooks(root, before, false)
+		if note != "" {
+			_, _ = fmt.Fprintln(platform.Stdout, note)
+		}
+		if note == "" || (after != nil && (before == nil || *after != *before)) {
+			if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+				platform.DieFriction("could not merge hooks into "+settings, 4)
+			}
+			if err := platform.AtomicWrite(settings, *after); err != nil {
+				platform.DieFriction("could not merge hooks into "+settings, 4)
+			}
+			_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder, SessionStart doctor)\n", settings)
+			noteUntrackedHookFile(settings, env, false)
+		}
 	}
-	_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder, SessionStart doctor)\n", settings)
-	noteUntrackedHookFile(settings, env, local)
 	if writePiInboundExtension(root) {
 		ready = append(ready, piInboundRel)
 	}
@@ -380,7 +398,21 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			_, _ = fmt.Fprint(platform.Stdout, setuptext.SetupBlock())
 		}
 		if hooks {
-			_, _ = fmt.Fprintf(platform.Stdout, "\n# would merge into %s: UserPromptSubmit + SessionStart hooks\n", claudeSettingsPath(root, modeLocal))
+			settings := claudeSettingsPath(root, modeLocal)
+			var after *string
+			var note string
+			if !modeLocal {
+				before := readOrRefuse(settings, false)
+				after, note = canonicalClaudeHooks(root, before, false)
+				if note != "" {
+					_, _ = fmt.Fprintln(platform.Stdout, note)
+				}
+				if note == "" || (after != nil && (before == nil || *after != *before)) {
+					_, _ = fmt.Fprintf(platform.Stdout, "\n# would merge into %s: UserPromptSubmit + SessionStart hooks\n", settings)
+				}
+			} else {
+				_, _ = fmt.Fprintf(platform.Stdout, "\n# would merge into %s: UserPromptSubmit + SessionStart hooks\n", settings)
+			}
 			if modeLocal {
 				if shared, after := sharedHooksMigration(root); after != nil {
 					if warning := sharedHooksTrackingWarning(trackingStatus(root, ".claude/settings.json", env)); warning != "" {
@@ -516,6 +548,9 @@ func setupPreflight(root string, ctx *core.Config, env platform.Env, cwd string,
 		old := readOrRefuse(settings, false)
 		if setuptext.SettingsHooksResult(old) == nil {
 			platform.DieFriction("could not merge hooks into "+settings, 4)
+		}
+		if !modeLocal {
+			canonicalClaudeHooks(root, old, false)
 		}
 	}
 	// The exclude check is the final preflight step: its write probe

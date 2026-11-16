@@ -20,6 +20,90 @@ func claudeSettingsPath(root string, local bool) string {
 	return filepath.Join(root, ".claude", "settings.json")
 }
 
+const claudeLocalHooksNote = "hooks stay in .claude/settings.local.json; setup --local manages them"
+const claudeDuplicateHooksWarning = "warning: soho hooks run twice; remove the duplicate hooks from .claude/settings.json or .claude/settings.local.json manually"
+
+var claudeHookEvents = []string{"UserPromptSubmit", "SessionStart"}
+
+// claudeHookMask uses the same exact command recognition as the hook merge.
+func claudeHookMask(content *string) uint8 {
+	if content == nil {
+		return 0
+	}
+	parsed, err := jsonjs.Parse([]byte(*content))
+	if err != nil {
+		return 0
+	}
+	doc, ok := parsed.(*jsonjs.Object)
+	if !ok {
+		return 0
+	}
+	value, _ := doc.Get("hooks")
+	hooks, ok := value.(*jsonjs.Object)
+	if !ok {
+		return 0
+	}
+	var mask uint8
+	for i, event := range claudeHookEvents {
+		value, _ := hooks.Get(event)
+		rows, _ := value.([]any)
+		if rowsContainSoho(rows, recognizedSohoCommands(event)) {
+			mask |= 1 << i
+		}
+	}
+	return mask
+}
+
+// canonicalClaudeHooks computes the same merge for plan, preflight and write.
+// A duplicate event requires manual repair; never rewrite either file then.
+func canonicalClaudeHooks(root string, before *string, plan bool) (after *string, note string) {
+	merged := setuptext.SettingsHooksResult(before)
+	if merged == nil {
+		return nil, ""
+	}
+	local := readOrRefuse(claudeSettingsPath(root, true), plan)
+	localMask := claudeHookMask(local)
+	if localMask == 0 {
+		return merged, ""
+	}
+	if localMask&claudeHookMask(before) != 0 {
+		return before, claudeDuplicateHooksWarning
+	}
+	// If both events are local, there is no shared change at all, including
+	// when the shared file contains unrelated settings.
+	if localMask == 3 {
+		return before, claudeLocalHooksNote
+	}
+	// Preserve the shared value of each locally managed event; merge the
+	// missing events as usual so a partial local installation remains useful.
+	parsed, _ := jsonjs.Parse([]byte(*merged))
+	doc := parsed.(*jsonjs.Object)
+	hooksValue, _ := doc.Get("hooks")
+	hooks := hooksValue.(*jsonjs.Object)
+	var oldHooks *jsonjs.Object
+	if before != nil {
+		original, _ := jsonjs.Parse([]byte(*before))
+		if oldDoc, ok := original.(*jsonjs.Object); ok {
+			value, _ := oldDoc.Get("hooks")
+			oldHooks, _ = value.(*jsonjs.Object)
+		}
+	}
+	for i, event := range claudeHookEvents {
+		if localMask&(1<<i) == 0 {
+			continue
+		}
+		if oldHooks != nil {
+			if value, exists := oldHooks.Get(event); exists {
+				hooks.Set(event, value)
+				continue
+			}
+		}
+		hooks.Delete(event)
+	}
+	text := jsonjs.StringifyIndent(doc, 2) + "\n"
+	return &text, claudeLocalHooksNote
+}
+
 // Reuse the merge's exact ownership recognition: its last row is the newly
 // generated hook, and every preceding row is a preserved foreign entry.
 func sharedHooksMigration(root string) (string, *string) {
