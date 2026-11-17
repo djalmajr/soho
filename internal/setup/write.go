@@ -61,9 +61,12 @@ func setupWriteBlock(file string) string {
 	return "written"
 }
 
-func setupWriteHooks(file string) {
+func setupWriteHooks(file string, guards ...bool) {
 	content := readOrRefuse(file, false)
 	merged := setuptext.SettingsHooksResult(content)
+	if len(guards) > 0 && guards[0] {
+		merged = setuptext.SettingsHooksGuardedResult(content)
+	}
 	if merged == nil {
 		platform.DieFriction("could not merge hooks into "+file, 4)
 	}
@@ -129,11 +132,11 @@ func markedLines(text string) string {
 	return strings.Join(out, "\n") + "\n"
 }
 
-func writeHooksSection(root string, env platform.Env, local bool) []string {
+func writeHooksSection(root string, env platform.Env, local, guard bool) []string {
 	var ready []string
 	settings := claudeSettingsPath(root, local)
 	if local {
-		setupWriteHooks(settings)
+		setupWriteHooks(settings, guard)
 		ready = append(ready, claudeLocalHookRel)
 		migrateSharedHooks(root, env)
 		_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder, SessionStart doctor)\n", settings)
@@ -142,7 +145,7 @@ func writeHooksSection(root string, env platform.Env, local bool) []string {
 		if setuptext.SettingsHooksResult(before) == nil {
 			platform.DieFriction("could not merge hooks into "+settings, 4)
 		}
-		after, note := canonicalClaudeHooks(root, before, false)
+		after, note := canonicalClaudeHooks(root, before, false, guard)
 		if note != "" {
 			_, _ = fmt.Fprintln(platform.Stdout, note)
 		}
@@ -168,7 +171,11 @@ func writeHooksSection(root string, env platform.Env, local bool) []string {
 		core.Warn("could not read hooks from "+codex+"; file left untouched", "", "setup")
 		return ready
 	}
-	if merged := setuptext.CodexHooksResult(content); merged == nil {
+	merged := setuptext.CodexHooksResult(content)
+	if guard {
+		merged = setuptext.CodexHooksGuardedResult(content)
+	}
+	if merged == nil {
 		core.Warn("could not merge hooks into "+codex+"; file left untouched", "", "setup")
 	} else {
 		if err := os.MkdirAll(filepath.Dir(codex), 0o755); err != nil {
@@ -261,6 +268,9 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		CmdPlan(withoutSetupArg(args, "--plan"), ctx, env, cwd)
 		if !containsSetupArg(args, "--no-hooks") {
 			_, _ = fmt.Fprintf(platform.Stdout, "# would merge into %s/.codex/hooks.json: UserPromptSubmit reminder + SessionStart doctor (codex)\n", platform.ProjectRoot(env, cwd))
+			if containsSetupArg(args, "--guard-hooks") {
+				_, _ = fmt.Fprintln(platform.Stdout, "# guarded Codex hooks: "+setuptext.GuardedHookCodexReminder()+"; "+setuptext.GuardedHookCodexDoctor())
+			}
 			_, _ = fmt.Fprintf(platform.Stdout, "# would write %s/.pi/extensions/soho-inbound.ts: input + session extension (pi)\n", platform.ProjectRoot(env, cwd))
 			if containsSetupArg(args, "--local") || (!containsSetupArg(args, "--target") && core.Cfg(ctx, "setup_target", "canonical", env) == "local") {
 				root := platform.ProjectRoot(env, cwd)
@@ -280,7 +290,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	}
 	var target, panes, argTarget string
 	var lanes []string
-	local, hooks, dry, detect := false, true, false, false
+	local, hooks, dry, detect, guard := false, true, false, false, false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch a {
@@ -306,6 +316,8 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 				hint = "soho session set <key> <value>"
 			}
 			platform.DieFriction(fmt.Sprintf("setup: %s is a --plan option (it previews a value without writing); to write it, run '%s'", a, hint), 2)
+		case "--guard-hooks":
+			guard = true
 		case "--no-hooks":
 			hooks = false
 		case "--dry-run":
@@ -404,6 +416,9 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			_, _ = fmt.Fprint(platform.Stdout, setuptext.SetupBlock())
 		}
 		if hooks {
+			if guard {
+				_, _ = fmt.Fprintln(platform.Stdout, "# guarded hooks: "+setuptext.GuardedHookReminder()+"; "+setuptext.GuardedHookDoctor()+"; "+setuptext.GuardedHookCodexReminder()+"; "+setuptext.GuardedHookCodexDoctor())
+			}
 			settings := claudeSettingsPath(root, modeLocal)
 			var after *string
 			var note string
@@ -465,7 +480,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			_, _ = fmt.Fprintf(platform.Stdout, "local excludes updated: %s (%s)\n", path, strings.Join(added, ", "))
 		}
 		if hooks {
-			ready := writeHooksSection(root, env, true)
+			ready := writeHooksSection(root, env, true, guard)
 			hookPath, hookAdded := ensureLocalExcludes(root, untrackedLocalHooks(root, ready, env), env, "setup")
 			if len(hookAdded) > 0 {
 				_, _ = fmt.Fprintf(platform.Stdout, "local excludes updated: %s (%s)\n", hookPath, strings.Join(hookAdded, ", "))
@@ -499,7 +514,10 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 	}
 	if hooks {
-		writeHooksSection(root, env, false)
+		writeHooksSection(root, env, false, guard)
+		if !guard {
+			_, _ = fmt.Fprintln(platform.Stdout, "soho: setup: the versioned hooks call soho; a clone without soho shows a hook error on every prompt; for a public repository use 'soho setup --guard-hooks' (needs sh) or 'soho setup --local'")
+		}
 	}
 	writeCanonicalStateIgnore(ctx, env, cwd)
 	_, _ = fmt.Fprintf(platform.Stdout, "state dir ignored: %s/\n", core.StateDirSetting(ctx, env, cwd))

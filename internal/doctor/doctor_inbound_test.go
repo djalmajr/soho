@@ -201,6 +201,7 @@ func TestDoctorInboundProjectWithoutTheHook(t *testing.T) {
 		"only a SessionStart hook": {`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"soho hook doctor"}]}]}}`, false},
 		"a foreign prompt hook":    {`{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}`, false},
 		"broken json":              {`{`, false},
+		"guarded reminder":         {`{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":` + quoteCommand(setuptext.GuardedHookReminder()) + `}]}]}}`, true},
 		"hook reminder":            {`{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder"}]}]}}`, true},
 		"hook inbound":             {`{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound"}]}]}}`, true},
 	}
@@ -325,6 +326,7 @@ func TestDoctorCodexInboundHook(t *testing.T) {
 		{"legacy inbound", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook inbound --codex"}]}]}}`, gapBothLine},
 		{"reminder only", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex"}]}]}}`, gapDoctorLine},
 		{"doctor only", `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"soho hook doctor --codex"}]}]}}`, notProtectedLine},
+		{"guarded pair", `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":` + quoteCommand(setuptext.GuardedHookCodexDoctor()) + `}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":` + quoteCommand(setuptext.GuardedHookCodexReminder()) + `}]}]}}`, ""},
 		{"merged pair", `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"soho hook doctor --codex"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex"}]}]}}`, ""},
 		{"async reminder true", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex","async":true}]}]}}`, notProtectedLine},
 		{"async reminder false", `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder --codex","async":false}]}]}}`, gapDoctorLine},

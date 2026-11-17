@@ -89,7 +89,7 @@ func userPromptSubmitProtected(file string) bool {
 				continue
 			}
 			command, _ := entryObject.Get("command")
-			if command == setuptext.SetupHookReminder() || command == "soho hook inbound" {
+			if command == setuptext.SetupHookReminder() || command == setuptext.GuardedHookReminder() || command == "soho hook inbound" {
 				return true
 			}
 		}

@@ -38,6 +38,8 @@ Run `soho env` once to resolve or materialize the embedded skill. To expose the 
 
 Run `soho setup` once per project: it writes the delegation block and the hooks. The skill's [What each assistant gets](skills/soho/SKILL.md#what-each-assistant-gets) lists every hook per assistant and what to commit.
 
+Use `soho setup --guard-hooks` to make hooks quiet when soho is absent. The guard needs `sh` (on Windows, Git Bash).
+
 ### Installing via skills.sh
 
 The repository distributes one installable skill, [`skills/soho/`](skills/soho/), with its roles, references, templates, and defaults packaged as relative supporting resources. The external `skills` installer uses Node.js, but Soho itself retains Go as its sole runtime and tooling without adding any Node.js, Bun, or Bash dependency.

@@ -56,8 +56,11 @@ func claudeHookMask(content *string) uint8 {
 
 // canonicalClaudeHooks computes the same merge for plan, preflight and write.
 // A duplicate event requires manual repair; never rewrite either file then.
-func canonicalClaudeHooks(root string, before *string, plan bool) (after *string, note string) {
+func canonicalClaudeHooks(root string, before *string, plan bool, guards ...bool) (after *string, note string) {
 	merged := setuptext.SettingsHooksResult(before)
+	if len(guards) > 0 && guards[0] {
+		merged = setuptext.SettingsHooksGuardedResult(before)
+	}
 	if merged == nil {
 		return nil, ""
 	}
@@ -212,9 +215,9 @@ func sharedHooksTrackingWarning(status fileTracking) string {
 func recognizedSohoCommands(event string) []string {
 	switch event {
 	case "UserPromptSubmit":
-		return []string{setuptext.SetupHookReminder(), setuptext.PreviousHookReminder(), setuptext.LegacyHookReminder()}
+		return []string{setuptext.SetupHookReminder(), setuptext.GuardedHookReminder(), setuptext.PreviousHookReminder(), setuptext.LegacyHookReminder()}
 	case "SessionStart":
-		return []string{setuptext.SetupHookDoctor(), setuptext.PreviousHookDoctor(), setuptext.LegacyHookDoctor()}
+		return []string{setuptext.SetupHookDoctor(), setuptext.GuardedHookDoctor(), setuptext.PreviousHookDoctor(), setuptext.LegacyHookDoctor()}
 	}
 	return nil
 }
