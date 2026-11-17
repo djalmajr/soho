@@ -147,8 +147,8 @@ func TestValidateCommitLineShowsTheCommit(t *testing.T) {
 	git("add", "VALIDATION.md")
 	git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed")
 	code, out, _ := runIn(t, []string{"validate", "--layer", "unit"}, env, cwd)
-	if code != 5 {
-		t.Fatalf("code=%d (unit PASS, the other command layer NOT RUN: the overall is NOT RUN) out=%s", code, out)
+	if code != 0 {
+		t.Fatalf("code=%d (selected unit should PASS) out=%s", code, out)
 	}
 	commitRE := regexp.MustCompile(`^commit: [0-9a-f]{40} \(clean\)$`)
 	if !hasLineMatch(out, commitRE) {
@@ -162,7 +162,7 @@ func TestValidateCommitLineShowsTheCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out, _ = runIn(t, []string{"validate", "--layer", "unit"}, env, cwd)
-	if code != 5 || !hasLineMatch(out, regexp.MustCompile(`^commit: [0-9a-f]{40} \(dirty\)$`)) {
+	if code != 0 || !hasLineMatch(out, regexp.MustCompile(`^commit: [0-9a-f]{40} \(dirty\)$`)) {
 		t.Fatalf("dirty run code=%d out=%s", code, out)
 	}
 }
@@ -312,7 +312,7 @@ func TestValidateManualAndNAOnlyIsNotRun(t *testing.T) {
 	if lines := strings.Split(out, "\n"); lines[0] != "validation: NOT RUN" {
 		t.Fatalf("first line = %q, want validation: NOT RUN", lines[0])
 	}
-	if !hasLinePrefix(out, "unit: NOT RUN: manual") || !hasLinePrefix(out, "contract: NOT RUN: manual") {
+	if !hasLinePrefix(out, "manual: unit, contract (not run by validate)") {
 		t.Fatalf("manual layers are not NOT RUN: manual in:\n%s", out)
 	}
 	if !hasLinePrefix(out, "integration: n/a") {
@@ -426,7 +426,7 @@ func TestValidateLayerSelection(t *testing.T) {
 	t.Run("the unselected command layer is NOT RUN", func(t *testing.T) {
 		requireSh(t)
 		code, out, errOut := runIn(t, []string{"validate", "--layer", "unit"}, env, cwd)
-		if code != 5 || errOut != "" {
+		if code != 0 || errOut != "" {
 			t.Fatalf("code=%d err=%q out=%s", code, errOut, out)
 		}
 		if !hasLinePrefix(out, "unit: PASS (") || !hasLinePrefix(out, "contract: NOT RUN: not selected") {
@@ -920,9 +920,8 @@ func TestValidateControlCharactersNeverReachTheOutput(t *testing.T) {
 		t.Fatalf("the command text without the control byte is not in the --json plan output:\n%s", out)
 	}
 	code, out, errOut = runIn(t, []string{"validate"}, env, cwd)
-	// The e2e layer is manual: the overall is NOT RUN, exit 5 — the run
-	// happened and its output is what is checked here.
-	if code != 5 || errOut != "" {
+	// Manual does not affect the command result.
+	if code != 0 || errOut != "" {
 		t.Fatalf("run code=%d err=%q out=%s", code, errOut, out)
 	}
 	if strings.ContainsRune(out, '\x01') || strings.ContainsRune(out, '\x02') || strings.ContainsRune(out, '\x1b') {
@@ -1549,5 +1548,99 @@ func TestValidateFinishClosesTheLogOnEveryPath(t *testing.T) {
 	finishValidateEvidence(f, "0", 1, true, &outcome)
 	if err := f.Close(); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("the log was left open: second close = %v", err)
+	}
+}
+
+func TestValidateManualSelectionAndCovered(t *testing.T) {
+	requireSh(t)
+	for _, tc := range []struct {
+		command string
+		code    int
+		result  string
+	}{{"true", 0, "PASS"}, {"false", 1, "FAIL"}} {
+		t.Run(tc.result, func(t *testing.T) {
+			env, cwd := commandFixture(t)
+			writeValidationMD(t, cwd, "## Test layers\n- integration: covered: unit\n- unit: `"+tc.command+"` — CI checks\n- contract: `false`\n- e2e: manual: browser\n- mutation: n/a: none\n")
+			code, out, errOut := runIn(t, []string{"validate", "--layer", "integration"}, env, cwd)
+			if code != tc.code || errOut != "" || !strings.Contains(out, "validation: "+tc.result) || !strings.Contains(out, "integration: "+tc.result+" (covered by unit)") || !strings.Contains(out, "unit: NOT RUN") || !strings.Contains(out, "command executed for coverage") || !strings.Contains(out, "manual: e2e (not run by validate)") {
+				t.Fatalf("code=%d stderr=%q output=%s", code, errOut, out)
+			}
+			code, out, _ = runIn(t, []string{"validate", "--plan"}, env, cwd)
+			if code != 0 || !strings.Contains(out, "unit: run "+tc.command+" — CI checks") {
+				t.Fatalf("plan code=%d out=%s", code, out)
+			}
+		})
+	}
+}
+
+func TestValidatePlanMatchesCoveredExecution(t *testing.T) {
+	requireSh(t)
+	env, cwd := commandFixture(t)
+	writeValidationMD(t, cwd, "## Test layers\n- integration: covered: unit\n- unit: `echo unit >> ran`\n- contract: `echo contract >> ran`\n- e2e: covered: contract\n- mutation: n/a: none\n")
+	args := []string{"validate", "--layer", "integration"}
+	code, textPlan, errOut := runIn(t, append(append([]string{}, args...), "--plan"), env, cwd)
+	if code != 0 || errOut != "" || !strings.Contains(textPlan, "unit: run echo unit >> ran (runs for integration)") || !strings.Contains(textPlan, "e2e: not selected") {
+		t.Fatalf("text plan code=%d stderr=%q out=%s", code, errOut, textPlan)
+	}
+	code, jsonPlan, errOut := runIn(t, append(append([]string{}, args...), "--plan", "--json"), env, cwd)
+	if code != 0 || errOut != "" {
+		t.Fatalf("json plan code=%d stderr=%q out=%s", code, errOut, jsonPlan)
+	}
+	var plan struct {
+		Layers []struct {
+			Name    string   `json:"name"`
+			Kind    string   `json:"kind"`
+			Reason  string   `json:"reason"`
+			RunsFor []string `json:"runs_for"`
+		} `json:"layers"`
+	}
+	if err := json.Unmarshal([]byte(jsonPlan), &plan); err != nil {
+		t.Fatal(err)
+	}
+	planned := map[string]bool{}
+	for _, l := range plan.Layers {
+		if l.Kind == "command" && l.Reason != "not selected" {
+			planned[l.Name] = true
+		}
+		if l.Name == "unit" && (l.Reason != "echo unit >> ran" || len(l.RunsFor) != 1 || l.RunsFor[0] != "integration") {
+			t.Fatalf("unit plan: %+v", l)
+		}
+		if l.Name == "e2e" && l.Reason != "not selected" {
+			t.Fatalf("unselected coverage: %+v", l)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(cwd, "ran")); !os.IsNotExist(err) {
+		t.Fatalf("plan ran command: %v", err)
+	}
+	code, out, errOut := runIn(t, args, env, cwd)
+	if code != 0 || errOut != "" {
+		t.Fatalf("run code=%d stderr=%q out=%s", code, errOut, out)
+	}
+	raw, err := os.ReadFile(filepath.Join(cwd, "ran"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := map[string]bool{}
+	for _, name := range strings.Fields(string(raw)) {
+		ran[name] = true
+	}
+	if len(planned) != len(ran) || !planned["unit"] || !ran["unit"] || planned["contract"] || ran["contract"] {
+		t.Fatalf("planned=%v ran=%v", planned, ran)
+	}
+}
+
+func TestValidateManualWithCommand(t *testing.T) {
+	requireSh(t)
+	for _, tc := range []struct {
+		command string
+		code    int
+		result  string
+	}{{"true", 0, "PASS"}, {"false", 1, "FAIL"}} {
+		env, cwd := commandFixture(t)
+		writeValidationMD(t, cwd, "## Test layers\n- unit: `"+tc.command+"`\n- integration: n/a: none\n- contract: n/a: none\n- e2e: manual: browser\n- mutation: n/a: none\n")
+		code, out, _ := runIn(t, []string{"validate"}, env, cwd)
+		if code != tc.code || !strings.Contains(out, "validation: "+tc.result) || !strings.Contains(out, "manual: e2e (not run by validate)") {
+			t.Fatalf("code=%d out=%s", code, out)
+		}
 	}
 }

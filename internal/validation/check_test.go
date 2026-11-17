@@ -245,3 +245,27 @@ func mustDirNames(t *testing.T, dir string) []string {
 	}
 	return names
 }
+
+func TestCoveredTargets(t *testing.T) {
+	for _, tc := range []struct{ name, unit, integration, want string }{
+		{"valid", "`echo ok`", "covered: unit", ""},
+		{"unknown", "`echo ok`", "covered: absent", "VALIDATION.md:3: covered target absent is not declared"},
+		{"manual target", "manual: hand", "covered: unit", "VALIDATION.md:3: covered target unit has no command"},
+		{"cycle", "covered: integration", "covered: unit", "VALIDATION.md:2: covered layer cycle"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "VALIDATION.md")
+			text := "## Test layers\n- unit: " + tc.unit + "\n- integration: " + tc.integration + "\n- contract: n/a: none\n- e2e: n/a: none\n- mutation: n/a: none\n"
+			if err := os.WriteFile(p, []byte(text), 0600); err != nil {
+				t.Fatal(err)
+			}
+			got := Check(p)
+			if tc.want == "" && len(got.Problems) != 0 {
+				t.Fatalf("problems=%q", got.Problems)
+			}
+			if tc.want != "" && !strings.Contains(strings.Join(got.Problems, "\n"), tc.want) {
+				t.Fatalf("problems=%q want=%q", got.Problems, tc.want)
+			}
+		})
+	}
+}

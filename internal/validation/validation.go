@@ -25,6 +25,8 @@ type Layer struct {
 	// Value is the command, the n/a reason, or the manual description —
 	// the text the layer carries.
 	Value string
+	// Note is optional explanatory text following a command.
+	Note string
 	// Line is the 1-based number of the line that declared the layer.
 	Line int
 }
@@ -33,6 +35,9 @@ type Layer struct {
 type Document struct {
 	// HasLayers is true when a matching title or a section with layer items exists.
 	HasLayers bool
+	// SectionLine is the 1-based heading line; HasTable marks a table in it.
+	SectionLine int
+	HasTable    bool
 	// Layers is the accepted layer lines, in file order.
 	Layers []Layer
 	// Malformed holds the 1-based line numbers of the list items in the
@@ -117,6 +122,7 @@ func Parse(text string) Document {
 	if start < 0 {
 		return doc
 	}
+	doc.SectionLine = start + 1
 	fence = fenceState{}
 	declared := make(map[string]bool)
 	for i := start + 1; i < len(lines); i++ {
@@ -126,6 +132,9 @@ func Parse(text string) Document {
 		}
 		if strings.HasPrefix(line, "## ") {
 			break
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "|") {
+			doc.HasTable = true
 		}
 		if !strings.HasPrefix(line, "- ") {
 			continue
@@ -192,10 +201,8 @@ func fenceDelimiter(line string) (byte, int, string) {
 }
 
 // parseLayerLine parses one list item of the section. The name must match
-// the layer grammar; the value must be one of the three forms. The command
-// form is strict: the trimmed rest of the line is exactly one span between
-// two backticks — no text before or after them, no backtick inside, no
-// whitespace-only command — because the span is executed as a command.
+// the layer grammar; the value must be one of the three forms. A command is
+// one nonempty backticked span, optionally followed by a separated note.
 func parseLayerLine(line string) (Layer, bool) {
 	rest := line[2:]
 	colon := strings.IndexByte(rest, ':')
@@ -220,19 +227,35 @@ func parseLayerLine(line string) (Layer, bool) {
 			return Layer{}, false
 		}
 		return Layer{Name: name, Kind: "manual", Value: desc}, true
-	case strings.HasPrefix(value, "`"):
-		if len(value) < 2 || !strings.HasSuffix(value, "`") {
+	case strings.HasPrefix(value, "covered:"):
+		target := strings.TrimSpace(strings.TrimPrefix(value, "covered:"))
+		if !layerNameRe.MatchString(target) {
 			return Layer{}, false
 		}
-		inner := value[1 : len(value)-1]
-		if strings.ContainsRune(inner, '`') {
+		return Layer{Name: name, Kind: "covered", Value: target}, true
+	case strings.HasPrefix(value, "`"):
+		end := strings.IndexByte(value[1:], '`')
+		if end < 0 {
 			return Layer{}, false
+		}
+		end++
+		inner := value[1:end]
+		tail := value[end+1:]
+		note := ""
+		if tail != "" {
+			if !strings.HasPrefix(tail, " — ") && !strings.HasPrefix(tail, " – ") {
+				return Layer{}, false
+			}
+			note = strings.TrimSpace(tail[len(" — "):])
+			if note == "" {
+				return Layer{}, false
+			}
 		}
 		command := strings.TrimSpace(inner)
 		if command == "" {
 			return Layer{}, false
 		}
-		return Layer{Name: name, Kind: "command", Value: command}, true
+		return Layer{Name: name, Kind: "command", Value: command, Note: note}, true
 	default:
 		return Layer{}, false
 	}

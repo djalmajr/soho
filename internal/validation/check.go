@@ -79,6 +79,9 @@ func Check(path string) Result {
 	if !doc.HasLayers {
 		return Result{Problems: []string{`VALIDATION.md has no "## Test layers" section: the tester adds it (see the skill's templates/VALIDATION.md)`}}
 	}
+	if doc.HasTable && len(doc.Layers) == 0 {
+		return Result{Problems: []string{fmt.Sprintf("VALIDATION.md: Test layers section found at line %d but it has no layer lines (a table is not read)", doc.SectionLine)}}
+	}
 	var problems []string
 	for _, n := range doc.Malformed {
 		problems = append(problems, fmt.Sprintf("VALIDATION.md:%d: malformed layer line (%s)", n, malformedForms))
@@ -89,8 +92,44 @@ func Check(path string) Result {
 		}
 	}
 	declared := make(map[string]bool, len(doc.Layers))
+	byName := make(map[string]Layer, len(doc.Layers))
 	for _, layer := range doc.Layers {
 		declared[layer.Name] = true
+		byName[layer.Name] = layer
+	}
+	for _, layer := range doc.Layers {
+		if layer.Kind != "covered" {
+			continue
+		}
+		seen := map[string]bool{layer.Name: true}
+		target := layer.Value
+		for {
+			if seen[target] {
+				problems = append(problems, fmt.Sprintf("VALIDATION.md:%d: covered layer cycle", layer.Line))
+				break
+			}
+			seen[target] = true
+			next, ok := byName[target]
+			if !ok {
+				problems = append(problems, fmt.Sprintf("VALIDATION.md:%d: covered target %s is not declared", layer.Line, target))
+				break
+			}
+			if next.Kind != "command" {
+				if next.Kind == "covered" {
+					if _, ok := byName[next.Value]; !ok {
+						problems = append(problems, fmt.Sprintf("VALIDATION.md:%d: covered target %s has no command", layer.Line, layer.Value))
+						break
+					}
+					target = next.Value
+					continue
+				}
+				problems = append(problems, fmt.Sprintf("VALIDATION.md:%d: covered target %s has no command", layer.Line, target))
+			}
+			if target != layer.Value && next.Kind == "command" {
+				problems = append(problems, fmt.Sprintf("VALIDATION.md:%d: covered target %s has no command", layer.Line, layer.Value))
+			}
+			break
+		}
 	}
 	for _, name := range RequiredLayers {
 		if !declared[name] {
@@ -100,7 +139,7 @@ func Check(path string) Result {
 	if len(problems) > 0 {
 		return Result{Problems: problems}
 	}
-	var commands, notApplicable, manual int
+	var commands, notApplicable, manual, covered int
 	for _, layer := range doc.Layers {
 		switch layer.Kind {
 		case "command":
@@ -109,9 +148,15 @@ func Check(path string) Result {
 			notApplicable++
 		case "manual":
 			manual++
+		case "covered":
+			covered++
 		}
 	}
-	return Result{Doc: doc, OK: fmt.Sprintf("VALIDATION.md: %d commands, %d n/a, %d manual", commands, notApplicable, manual)}
+	ok := fmt.Sprintf("VALIDATION.md: %d commands, %d n/a, %d manual", commands, notApplicable, manual)
+	if covered > 0 {
+		ok += fmt.Sprintf(", %d covered", covered)
+	}
+	return Result{Doc: doc, OK: ok}
 }
 
 // shortReadReason reduces a read error to its short reason — the failure
