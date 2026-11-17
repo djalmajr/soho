@@ -410,9 +410,9 @@ func TestDoctorValidationFailureMatrix(t *testing.T) {
 		}
 	})
 
-	t.Run("neither title still warns", func(t *testing.T) {
+	t.Run("no layer list still warns", func(t *testing.T) {
 		root := t.TempDir()
-		content := "## Camadas de testes\n- unit: `go test ./...`\n\n## Items\n- unit: `go test ./...`\n"
+		content := "## Camadas de testes\nNo layers here.\n\n## Items\nNo list here.\n"
 		if err := os.WriteFile(filepath.Join(root, "VALIDATION.md"), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -481,4 +481,61 @@ func mustReadDir(t *testing.T, path string) []os.DirEntry {
 		t.Fatal(err)
 	}
 	return entries
+}
+
+func TestDoctorTranslatedLayerSections(t *testing.T) {
+	for _, heading := range []string{"## 1. Camadas de teste", "## 2. Test layers", "## 2. Capas de prueba", "## Prüfebenen"} {
+		t.Run(heading, func(t *testing.T) {
+			root := t.TempDir()
+			content := heading + "\n- unit: `go test`\n- integration: n/a: none\n- contract: n/a: none\n- e2e: n/a: none\n- mutation: n/a: none\n"
+			if err := os.WriteFile(filepath.Join(root, "VALIDATION.md"), []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			lines := validationLines(validationFixture(t, root, validationEnv(root)))
+			if len(lines) != 1 || !strings.HasPrefix(lines[0], "ok     VALIDATION.md") {
+				t.Fatalf("lines = %q", lines)
+			}
+		})
+	}
+}
+
+func TestDoctorApprovalsGrouped(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  platform.Env
+		want string
+	}{
+		{"three", platform.Env{"SOHO_APPROVALS": "unsandboxed", "SOHO_LANE_BUILD_APPROVALS": "unsandboxed", "SOHO_LANE_REVIEW_APPROVALS": "unsandboxed"}, "approvals, lane.build.approvals, lane.review.approvals"},
+		{"one", platform.Env{"SOHO_APPROVALS": "unsandboxed"}, "approvals"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out strings.Builder
+			doctorApprovals(&core.Config{Entries: map[string]core.ConfigEntry{}}, tc.env, &Say{Out: &out})
+			want := "warn   config: " + tc.want + "=unsandboxed; workers run without a sandbox by the owner's choice\n"
+			if out.String() != want {
+				t.Fatalf("got %q, want %q", out.String(), want)
+			}
+		})
+	}
+}
+
+func TestDoctorNotesBeforeTranslatedLayers(t *testing.T) {
+	for _, tc := range []struct {
+		name, content string
+		want          string
+	}{
+		{"notes only", "## Notes\n- note: remember to test\n", warnNoSection},
+		{"notes then layers", "## Notes\n- note: remember to test\n## Capas de prueba\n- unit: `go test`\n- integration: n/a: none\n- contract: n/a: none\n- e2e: manual: browser\n- mutation: n/a: none\n", "ok     VALIDATION.md: 1 commands, 3 n/a, 1 manual"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "VALIDATION.md"), []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got := validationLines(validationFixture(t, root, validationEnv(root)))
+			if len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("lines = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
