@@ -450,15 +450,19 @@ func cmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string, cach
 		if settingsNote != "" {
 			_, _ = fmt.Fprintln(platform.Stdout, settingsNote)
 		}
+		skippedLocalHooks := false
 		if settingsNote == "" || (settingsAfter != nil && (settingsBefore == nil || *settingsAfter != *settingsBefore)) {
 			if modeLocal && trackedLocalChange(root, claudeLocalHookRel, env, settingsBefore, settingsAfter, cache) {
+				skippedLocalHooks = true
 			} else if settingsBefore != nil && *settingsBefore == *settingsAfter {
 				fmt.Fprintf(platform.Stdout, "# no change: %s\n", settingsFile)
 			} else {
 				_, _ = io.WriteString(platform.Stdout, planFileDiff(settingsFile, stringValue(settingsBefore), *settingsAfter))
 			}
 		}
-		if modeLocal {
+		if modeLocal && skippedLocalHooks {
+			printSharedHooksDestinationSkipped(root, env, cache)
+		} else if modeLocal {
 			shared, after := sharedHooksMigration(root)
 			if after != nil {
 				if warning := sharedHooksTrackingWarning(cache.status(root, ".claude/settings.json", env)); warning != "" {

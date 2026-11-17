@@ -165,7 +165,11 @@ func writeHooksSection(root string, env platform.Env, local, guard bool, cache *
 			changed = setupWriteHooks(settings, guard)
 		}
 		ready = append(ready, claudeLocalHookRel)
-		migrateSharedHooks(root, env, cache)
+		if skipped {
+			printSharedHooksDestinationSkipped(root, env, cache)
+		} else {
+			migrateSharedHooks(root, env, cache)
+		}
 		if changed {
 			_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder, SessionStart doctor)\n", settings)
 		} else if !skipped {
@@ -536,6 +540,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			settings := claudeSettingsPath(root, modeLocal)
 			var after *string
 			var note string
+			skippedLocalHooks := false
 			if !modeLocal {
 				before := readOrRefuse(settings, false)
 				after, note = canonicalClaudeHooks(root, before, false)
@@ -546,9 +551,19 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 					_, _ = fmt.Fprintf(platform.Stdout, "\n# would merge into %s: UserPromptSubmit + SessionStart hooks\n", settings)
 				}
 			} else {
-				_, _ = fmt.Fprintf(platform.Stdout, "\n# would merge into %s: UserPromptSubmit + SessionStart hooks\n", settings)
+				before := readOrRefuse(settings, false)
+				after = setuptext.SettingsHooksResult(before)
+				if guard {
+					after = setuptext.SettingsHooksGuardedResult(before)
+				}
+				skippedLocalHooks = trackedLocalChange(root, claudeLocalHookRel, env, before, after, cache)
+				if skippedLocalHooks {
+					printSharedHooksDestinationSkipped(root, env, cache)
+				} else {
+					_, _ = fmt.Fprintf(platform.Stdout, "\n# would merge into %s: UserPromptSubmit + SessionStart hooks\n", settings)
+				}
 			}
-			if modeLocal {
+			if modeLocal && !skippedLocalHooks {
 				if shared, after := sharedHooksMigration(root); after != nil {
 					if warning := sharedHooksTrackingWarning(cache.status(root, ".claude/settings.json", env)); warning != "" {
 						_, _ = fmt.Fprintln(platform.Stdout, "# "+warning)

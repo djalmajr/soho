@@ -750,7 +750,7 @@ func warnTrackedCanonical(root, file string, env platform.Env, before, after *st
 		if _, ok := platform.FindExecutable("git", env, platform.Current()); !ok {
 			reason = "git not found"
 		}
-		fmt.Fprintf(platform.Stdout, "could not tell whether %s is tracked (%s); --local leaves it as is\n", file, reason)
+		fmt.Fprintf(platform.Stdout, "could not tell whether %s is tracked (%s)\n", file, reason)
 		return
 	}
 	if status != trackingTracked {

@@ -205,7 +205,11 @@ func TestTrackingFailureProtectsManagedFile(t *testing.T) {
 				}
 				code, out, msg := runSetupWrite(args, ctx, env, root)
 				got := mustReadFile(t, filepath.Join(root, rel))
-				if code != 0 || !strings.Contains(out, "could not tell whether") || (local && got != "original\n") || (!local && mode == "" && !strings.Contains(got, setuptext.SetupStart)) {
+				message := " is tracked (git not found)"
+				if !strings.Contains(out, "could not tell whether ") || !strings.Contains(out, message) || strings.Contains(out, message+"; --local leaves it as is") != local {
+					t.Fatalf("local=%v out=%s", local, out)
+				}
+				if code != 0 || (local && got != "original\n") || (!local && mode == "" && !strings.Contains(got, setuptext.SetupStart)) {
 					t.Fatalf("code=%d out=%s msg=%s file=%q", code, out, msg, got)
 				}
 			})

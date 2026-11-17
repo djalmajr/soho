@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -168,6 +169,16 @@ func sharedHooksMigration(root string) (string, *string) {
 	}
 	after := jsonjs.StringifyIndent(document, 2) + "\n"
 	return file, &after
+}
+
+func printSharedHooksDestinationSkipped(root string, env platform.Env, cache *setupTracking) {
+	if _, after := sharedHooksMigration(root); after != nil {
+		reason := "its tracking status could not be determined"
+		if cache.status(root, claudeLocalHookRel, env) == trackingTracked {
+			reason = "it is tracked"
+		}
+		fmt.Fprintf(platform.Stdout, "shared .claude/settings.json keeps its soho hooks because the local destination was left untouched: %s\n", reason)
+	}
 }
 
 func migrateSharedHooks(root string, env platform.Env, cache *setupTracking) {
