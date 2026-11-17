@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -21,6 +22,31 @@ import (
 // wakeServices builds the transport services the arming runs on; tests
 // replace it to put a fake terminal.run connection behind the hc backend.
 var wakeServices = backend.New
+
+// parentRosterHint is advisory: an unreadable caller or parent leaves the
+// original missing-roster error unchanged.
+func parentRosterHint(agent string, cfg *core.Config, env platform.Env, cwd string) string {
+	caller := env.Get("HC_TERMINAL_ID")
+	if env.Get("SOHO_TRANSPORT") != "hc" || caller == "" {
+		return ""
+	}
+	svc := backend.New(env)
+	child := svc.Runtime.Get(context.Background(), transport.Target{ID: caller}, transport.Call{})
+	if child.Err != nil || !child.Valid || !child.Value.ParentKnown || child.Value.Parent == "" {
+		return ""
+	}
+	parent := child.Value.Parent
+	parentRecord := svc.Runtime.Get(context.Background(), transport.Target{ID: parent}, transport.Call{})
+	session := parentRecord.Value.WorkspaceID
+	if parentRecord.Err != nil || !parentRecord.Valid || session == "" || session == "." || session == ".." || strings.ContainsAny(session, "/\\") {
+		return ""
+	}
+	parentDir := filepath.Join(core.StateRootPath(cfg, env, cwd), session)
+	if core.RosterLine(parentDir, agent) == "" {
+		return ""
+	}
+	return fmt.Sprintf("; this terminal (%s) is a child of %s, whose roster holds '%s': run 'soho wait %s --wake' in %s's terminal (--wake creates its own child)", caller, parent, agent, agent, parent)
+}
 
 // WakeName is the terminal name of the child that `wait <agents> --wake`
 // arms. A single agent is `wake-<agent>` when that satisfies the native
@@ -63,7 +89,7 @@ func wakeChildArgs(agents []string, timeoutMs int64, anyDone bool) []string {
 // note) and notifies the caller on exit. A finished child of the caller with
 // the same name is removed first, best effort; a live one makes the run
 // answer name_taken, reported as already-armed with nothing started.
-func cmdWake(agents []string, timeoutMs float64, anyDone bool, ctx *core.Config, env platform.Env, cwd string) int {
+func cmdWake(agents []string, timeoutMs float64, anyDone bool, ctx *core.Config, env platform.Env, cwd, sd string) int {
 	if env.Get("SOHO_TRANSPORT") != "hc" {
 		core.DieFriction("wait: --wake needs the native transport (SOHO_TRANSPORT=hc)", 2, "", "wait")
 	}
@@ -82,6 +108,14 @@ func cmdWake(agents []string, timeoutMs float64, anyDone bool, ctx *core.Config,
 	if runner == nil {
 		core.DieFriction("wait: --wake needs the native transport (SOHO_TRANSPORT=hc)", 2, "", "wait")
 	}
+	remaining, err := uncoveredWakeAgents(svc, env.Get("HC_TERMINAL_ID"), sd, agents)
+	if err != nil {
+		core.DieFriction("wait: --wake could not check existing wakes: "+err.Error(), 4, "", "wait")
+	}
+	if len(remaining) == 0 {
+		return 0
+	}
+	agents = remaining
 	ms := int64(timeoutMs)
 	name := WakeName(agents)
 	runCtx := context.Background()
@@ -109,8 +143,94 @@ func cmdWake(agents []string, timeoutMs float64, anyDone bool, ctx *core.Config,
 		}
 		core.DieFriction(message, 4, "", "wait")
 	}
+	if err := recordWake(sd, rep.Value, agents); err != nil {
+		core.DieFriction(fmt.Sprintf("wait: --wake started child '%s' but could not record its agents: %v; check it before arming again", rep.Value, err), 4, "", "wait")
+	}
 	jsonLine(jsonjs.O("wake", "armed", "agents", stringsAny(agents), "terminal", rep.Value, "name", name, "timeout_ms", ms))
 	return 0
+}
+
+// uncoveredWakeAgents reconciles records only after a successful live listing.
+func uncoveredWakeAgents(svc transport.Services, caller, sd string, agents []string) ([]string, error) {
+	rep := svc.Runtime.List(context.Background(), transport.Scope{All: true}, transport.Call{})
+	if rep.Err != nil {
+		return nil, rep.Err
+	}
+	if !rep.Valid {
+		return nil, fmt.Errorf("terminal listing is invalid")
+	}
+	live := make(map[string]bool)
+	for _, term := range rep.Value {
+		if term.ParentKnown && term.Parent == caller && term.NativeState == "live" {
+			live[term.Target.ID] = true
+		}
+	}
+	dir := filepath.Join(sd, "wakes")
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return agents, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	covered := make(map[string]string)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !live[name] {
+			if err := os.Remove(filepath.Join(dir, name)); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if !entry.Type().IsRegular() {
+			return nil, fmt.Errorf("invalid wake record %q", name)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return nil, err
+		}
+		for _, agent := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+			if agent != "" {
+				if _, exists := covered[agent]; !exists {
+					covered[agent] = name
+				}
+			}
+		}
+	}
+	remaining := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		if terminal, ok := covered[agent]; ok {
+			fmt.Fprintf(platform.Stderr, "soho: wait: a wake for '%s' is already armed (%s); not arming another for it\n", agent, terminal)
+		} else {
+			remaining = append(remaining, agent)
+		}
+	}
+	return remaining, nil
+}
+
+func recordWake(sd, terminal string, agents []string) error {
+	if terminal == "" || terminal == "." || terminal == ".." || strings.ContainsAny(terminal, "/\\\x00\r\n") {
+		return fmt.Errorf("invalid terminal address %q", terminal)
+	}
+	for _, agent := range agents {
+		if strings.ContainsAny(agent, "\x00\r\n") {
+			return fmt.Errorf("invalid agent name")
+		}
+	}
+	dir := filepath.Join(sd, "wakes")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, terminal), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := f.WriteString(strings.Join(agents, "\n") + "\n")
+	closeErr := f.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
 }
 
 // stringsAny is the JSON array of the agents, in the order they were given.

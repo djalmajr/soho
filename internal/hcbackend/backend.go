@@ -775,11 +775,14 @@ func (b *backend) Get(ctx context.Context, target transport.Target, call transpo
 		return transport.Reply[transport.Terminal]{Value: transport.Terminal{Target: target, State: "unknown"}, Err: &transport.Failure{Kind: transport.FailureProtocol, Message: "hc get returned no terminal record"}}
 	}
 	address := addressOf(obj)
+	parent, parentKnown := listedParent(obj)
 	return transport.Reply[transport.Terminal]{
 		Value: transport.Terminal{
 			Target:        transport.Target{ID: address, Machine: target.Machine},
 			Name:          nameOf(obj),
 			PaneID:        address,
+			Parent:        parent,
+			ParentKnown:   parentKnown,
 			State:         stateOf(obj),
 			NativeState:   nativeStateOf(obj),
 			Sequence:      turnRaw(json.RawMessage(out)),
