@@ -61,7 +61,7 @@ Pass the assistants you use to `--agent` (for example `codex`, `claude-code`, `o
 To install a specific release directly from GitHub matching your installed Soho binary version, replace `<tag>` with an existing release tag matching the installed Soho binary before running:
 
 ```sh
-npx skills add "djalmajr/soho#<tag>" --global --skill soho
+npx -y skills add "djalmajr/soho#<tag>" --global --skill soho -y
 ```
 
 The `#` fragment selects a Git ref, whereas `@` in the `skills` CLI shorthand acts as a skill filter; double quotes prevent the placeholder from being interpreted as shell redirection.

@@ -19,8 +19,8 @@ func TestDoctorHomeSkillVersion(t *testing.T) {
 		name, build, suffix string
 		stale               bool
 	}{
-		{"release", "v1.2.3", `differs from the skill built into soho v1.2.3; update it with: npx skills add "djalmajr/soho#v1.2.3" --global --skill soho`, true},
-		{"release candidate", "v1.2.3-rc.13", `differs from the skill built into soho v1.2.3-rc.13; update it with: npx skills add "djalmajr/soho#v1.2.3-rc.13" --global --skill soho`, true},
+		{"release", "v1.2.3", `differs from the skill built into soho v1.2.3; update it with: npx -y skills add "djalmajr/soho#v1.2.3" --global --skill soho -y`, true},
+		{"release candidate", "v1.2.3-rc.13", `differs from the skill built into soho v1.2.3-rc.13; update it with: npx -y skills add "djalmajr/soho#v1.2.3-rc.13" --global --skill soho -y`, true},
 		{"development", "dev", "differs from the skill of this build", true},
 		{"other version", "v1.2.3-evil", "differs from the skill of this build", true},
 		{"identical", "v1.2.3", "", false},
@@ -57,7 +57,7 @@ func TestDoctorHomeSkillVersion(t *testing.T) {
 			prefix := "warn   skill: " + dir + " differs"
 			if tc.stale {
 				want := "warn   skill: " + dir + " " + tc.suffix
-				if !strings.Contains(out.String(), want+"\n") || (tc.build == "dev" || tc.build == "v1.2.3-evil") && strings.Contains(out.String(), "npx skills add") {
+				if !strings.Contains(out.String(), want+"\n") || (tc.build == "dev" || tc.build == "v1.2.3-evil") && strings.Contains(out.String(), "npx -y skills add") {
 					t.Fatalf("missing expected warning %q: %s", want, out.String())
 				}
 			} else if strings.Contains(out.String(), prefix) {

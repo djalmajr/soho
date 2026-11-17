@@ -600,7 +600,7 @@ func doctorSohoSkill(env platform.Env, s *Say) {
 		s.Warning(fmt.Sprintf("skill: cannot read %s: %v", dir, err))
 	} else if !same {
 		if releaseSkillVersion.MatchString(BuildVersion) {
-			s.Warning(fmt.Sprintf("skill: %s differs from the skill built into soho %s; update it with: npx skills add \"djalmajr/soho#%s\" --global --skill soho", dir, BuildVersion, BuildVersion))
+			s.Warning(fmt.Sprintf("skill: %s differs from the skill built into soho %s; update it with: npx -y skills add \"djalmajr/soho#%s\" --global --skill soho -y", dir, BuildVersion, BuildVersion))
 		} else {
 			s.Warning(fmt.Sprintf("skill: %s differs from the skill of this build", dir))
 		}

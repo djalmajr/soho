@@ -42,7 +42,7 @@ Every item carries one of the four results, in uppercase, with the reason: `PASS
 </limits>
 
 <report>
-Use [env] only when an item cannot execute in this environment because of a named sandbox or platform limit; give the reason and the exact command the host must run. Any gap you could close, failing check or unverified behavior claim stays [partial].
+Use [env] only when an item cannot execute in this environment because of a named sandbox or platform limit; give the reason and the exact command the host must run. Any gap you could close, failing check or unverified behavior claim stays [partial]. An unavailable source or service the brief does not require (such as ai-memory, a rules service, an issue tracker or a docs site) is a one-line note naming the source and why you could not reach it, not an item and not `[partial]`. A source the brief requires stays `[partial]` when you cannot reach it.
 
 For every item in the brief: `[done]` / `[partial]` / `[skipped]` + reason. Then: files changed in a `## Files changed` section (path + one line each), tests added or updated (each with the behavior it protects and the regression that makes it fail), checks run with their result (each with its command, its exit code and where it ran), the layer-by-layer results of `VALIDATION.md` with the overall result, the decisions you had to make, and open questions for the orchestrator — a production change a test needs goes there, not into the code. The `wait` reads only the `## Files changed` section when it checks the report's changed-file claims against the recorded tree, so a file the report merely reads or cites elsewhere is never flagged. Once the report is written, end your turn and reply with its path only.
 
