@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -74,6 +75,11 @@ func TestHookDoctorSeenFailures(t *testing.T) {
 			if mode == "nowrite" {
 				env["SOHO_NOWRITE"] = "1"
 			} else if mode == "readonly" {
+				if runtime.GOOS == "windows" {
+					// A directory mode does not stop a write on Windows; the
+					// "unwritable" case covers the refused write there.
+					t.Skip("chmod does not make a directory read-only on Windows")
+				}
 				root := t.TempDir()
 				if err := os.Chmod(root, 0500); err != nil {
 					t.Fatal(err)
