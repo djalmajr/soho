@@ -230,3 +230,39 @@ func TestNowriteAndFormerEnv(t *testing.T) {
 func nowriteRoutingEnv() platform.Env {
 	return isolatedUserEnv(platform.Env{"SOHO_NOWRITE": "1"})
 }
+
+func TestUnwritableUninitializedState(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod does not enforce Unix directory permissions on Windows")
+	}
+	env, repo := commandFixture(t)
+	bin := t.TempDir()
+	if _, err := fakecli.Install(t, bin, "herdr", nil); err != nil {
+		t.Fatal(err)
+	}
+	env = withFakeCLI(env, bin)
+	env["HERDR_ENV"] = "1"
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+	if err := os.Mkdir(filepath.Join(parent, "probe"), 0o700); err == nil {
+		_ = os.Remove(filepath.Join(parent, "probe"))
+		t.Skip("effective user can write despite chmod")
+	}
+	state := filepath.Join(parent, "state")
+	env["SOHO_DIR"] = state
+	code, out, stderr := runIn(t, []string{"status"}, env, repo)
+	if code != 4 || !strings.Contains(stderr, state) || !strings.Contains(stderr, "permission denied") || strings.Count(stderr, "\n") != 1 || strings.Contains(stderr, "panic") {
+		t.Fatalf("status code=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	code, out, stderr = runIn(t, []string{"doctor"}, env, repo)
+	if code != 0 || !strings.Contains(out, "warn   state dir not writable: "+state) {
+		t.Fatalf("doctor code=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	code, out, stderr = runIn(t, []string{"help"}, env, repo)
+	if code != 0 {
+		t.Fatalf("help code=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+}

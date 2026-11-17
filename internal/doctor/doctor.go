@@ -490,8 +490,22 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	} else if former, target, waiting := core.FormerStateWaiting(ctx, env, cwd); waiting && !core.Nowrite(env) {
 		s.Ok(fmt.Sprintf("state dir not created: 'soho setup' moves %s to %s", former, target))
 	} else {
-		d := core.StateRoot(ctx, env, cwd)
-		if core.Nowrite(env) {
+		d := core.StateRootPath(ctx, env, cwd)
+		rootOK := true
+		func() {
+			defer func() {
+				if value := recover(); value != nil {
+					if _, ok := value.(*os.PathError); !ok {
+						panic(value)
+					}
+					rootOK = false
+				}
+			}()
+			d = core.StateRoot(ctx, env, cwd)
+		}()
+		if !rootOK {
+			s.Warning("state dir not writable: " + d)
+		} else if core.Nowrite(env) {
 			if st, e := os.Stat(d); e != nil {
 				if os.IsNotExist(e) {
 					s.Ok("state dir absent (no-write mode, not created): " + d)
