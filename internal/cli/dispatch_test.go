@@ -266,3 +266,39 @@ func noWaitDispatchEnv(t *testing.T, bin, state, roles, root string) platform.En
 	t.Helper()
 	return isolatedUserEnv(platform.Env{"PATH": bin, "SOHO_FAKECLI_CONFIG": bin, "HERDR_ENV": "1", "SOHO_DIR": state, "HERDR_WORKSPACE_ID": "ws", "SOHO_ROLES": roles, "SOHO_SKILL_DIR": testSkillDir(t), "SOHO_PROMPT_CHECK_SECONDS": "0", "SOHO_PROMPT_SETTLE_SECONDS": "0", "SOHO_BRIEF_LINT": "off", "TMPDIR": root})
 }
+
+func TestDispatchMcpNoneLegacyWorkspaceFromPane(t *testing.T) {
+	for _, amend := range []bool{false, true} {
+		t.Run(map[bool]string{false: "initial", true: "amendment"}[amend], func(t *testing.T) {
+			f := newDispatchArrivalFixture(t, "idle", 1, 2, "$CURRENT_PATHS", "0", fakecli.Rule{Argv: []string{"pane", "current", "--current"}, Stdout: `{"result":{"pane":{"workspace_id":"ws"}}}`}, fakecli.Rule{Argv: []string{"agent", "get", "worker"}, Call: 2, Stdout: `{"result":{"agent":{"agent_status":"working","state_change_seq":2}}}`})
+			delete(f.env, "HERDR_WORKSPACE_ID")
+			roster := "worker\tw0test:p0a\tcodex\timplementer\topenai\t0\t\tnow\tgpt-5\ttask\timplementer\t\t\t\thigh\tnone\n"
+			if err := os.WriteFile(filepath.Join(f.state, "ws", "agents.tsv"), []byte(roster), 0600); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"worker", f.brief, "--no-wait"}
+			if amend {
+				if err := os.WriteFile(filepath.Join(f.state, "ws", "last-report-worker"), []byte(filepath.Join(f.state, "ws", "reports", "old.md")+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args = append(args, "--amend")
+			}
+			code, out, stderr := f.run(t, args...)
+			if code != 0 {
+				t.Fatalf("dispatch code=%d stdout=%q stderr=%q", code, out, stderr)
+			}
+			path, ok := dispatchOutputField(t, out, "composed_prompt")
+			if !ok {
+				t.Fatalf("missing composed prompt: %s", out)
+			}
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const note = "The orchestrator asked for you to run without MCP servers (mcp: none): project instructions to query MCP services (memory, trackers) do not apply to this task, and an MCP tool you cannot reach is not a gap to report."
+			if strings.Count(string(body), note) != 1 {
+				t.Fatalf("expected one MCP note in composed prompt %q: %s", path, body)
+			}
+		})
+	}
+}

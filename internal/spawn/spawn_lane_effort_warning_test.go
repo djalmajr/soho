@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -108,5 +109,49 @@ func TestSpawnLaneEffortWarning(t *testing.T) {
 			}
 			t.Logf("effective=%s reused=%v warning=%v stderr=%s", tc.wantEffort, obj["reused"], tc.wantSource != "", stderr)
 		})
+	}
+}
+
+func TestLaneEffortWarningOncePerLaneAndRole(t *testing.T) {
+	f := newSpawnFixture(t, freshSpawnRules())
+	f.ctx.Entries["role_reviewer_effort"] = core.ConfigEntry{Value: "xhigh"}
+	f.ctx.Entries["role_scouter_effort"] = core.ConfigEntry{Value: "xhigh"}
+	old := platform.Stderr
+	var stderr strings.Builder
+	platform.Stderr = &stderr
+	t.Cleanup(func() { platform.Stderr = old })
+	for _, role := range []string{"reviewer", "reviewer", "scouter"} {
+		warnLaneRoleEffort("worker", role, "review", "grok", "", "high", true, f.ctx, f.env, f.cwd)
+	}
+	if got := strings.Count(stderr.String(), "the role asks for"); got != 2 {
+		t.Fatalf("want one warning per role, got %d: %s", got, stderr.String())
+	}
+}
+
+func TestSpawnLaneEffortWarningOnce(t *testing.T) {
+	f := newSpawnFixture(t, freshSpawnRules())
+	configureSpawnFixture(t, &f)
+	if _, err := fakecli.Install(t, f.bin, "codex", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"reviewer", "scouter"} {
+		if err := os.WriteFile(filepath.Join(f.root, "roles", role+".md"), []byte("---\nkind: codex\neffort: xhigh\napprovals: auto\n---\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.env["HERDR_PANE_ID"] = "p1"
+	f.env["SOHO_LANES"] = "on"
+	for key, value := range map[string]string{"lane_review_roles": "reviewer,scouter", "lane_review_kind": "codex", "lane_review_effort": "high", "lane_review_panes": "5"} {
+		f.ctx.Entries[key] = core.ConfigEntry{Value: value, Source: "project"}
+		f.ctx.Order = append(f.ctx.Order, key)
+	}
+	for i, tc := range []struct {
+		role, name string
+		want       int
+	}{{"reviewer", "first", 1}, {"reviewer", "second", 0}, {"scouter", "third", 1}} {
+		code, out, stderr, _ := runCmdSpawn(t, f, []string{tc.role, "--name", tc.name})
+		if code != 0 || strings.Count(stderr, "the role asks for") != tc.want {
+			t.Fatalf("spawn %d: exit=%d stdout=%s stderr=%s", i, code, out, stderr)
+		}
 	}
 }

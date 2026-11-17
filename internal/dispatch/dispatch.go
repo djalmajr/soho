@@ -48,7 +48,20 @@ func standingRulesFor(role, cooperative string) string {
 
 const sharedTreeNote = "- Another worker edits this same tree now: run the global checks the brief asks for, but report failures in files you do not own as outside your slice (name the files), not as [partial] items of yours.\n"
 
-func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Config, env platform.Env, kind, args, approvals string, shared bool) string {
+const mcpNoneNote = "- The orchestrator asked for you to run without MCP servers (mcp: none): project instructions to query MCP services (memory, trackers) do not apply to this task, and an MCP tool you cannot reach is not a gap to report.\n"
+
+func workerMcpNote(agent, stateDir string) string {
+	if agent == "" || stateDir == "" {
+		return ""
+	}
+	row := strings.Split(core.RosterLine(stateDir, agent), "\t")
+	if len(row) > 15 && row[15] == "none" {
+		return mcpNoneNote
+	}
+	return ""
+}
+
+func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Config, env platform.Env, kind, args, approvals string, shared bool, stateDirs ...string) string {
 	var out strings.Builder
 	cooperative := cooperativePrompt(agent, report, ctx, env)
 	fmt.Fprintf(&out, "# Role: %s\n\n", core.FmGet(roleFile, "name"))
@@ -77,6 +90,9 @@ func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Con
 	fmt.Fprintf(&out, "- Run every `soho` command this prompt names through the launcher at `%s`, not through PATH.\n", platform.LauncherPath(env))
 	if shared {
 		out.WriteString(sharedTreeNote)
+	}
+	if len(stateDirs) != 0 {
+		out.WriteString(workerMcpNote(agent, stateDirs[0]))
 	}
 	out.WriteString(standingRulesFor(role, cooperative))
 	out.WriteString(cooperative)
@@ -116,6 +132,9 @@ func ComposeAmendment(raw, report, original, role string, ctx *core.Config, env 
 	}
 	if shared {
 		out.WriteString(sharedTreeNote)
+	}
+	if len(agents) > 1 {
+		out.WriteString(workerMcpNote(agents[0], agents[1]))
 	}
 	out.WriteString(standingRulesFor(role, cooperative))
 	out.WriteString(cooperative)
