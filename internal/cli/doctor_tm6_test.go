@@ -165,6 +165,27 @@ func TestDoctorTM6CLIAndParity(t *testing.T) {
 }
 
 func TestDoctorTM6FixTargets(t *testing.T) {
+	t.Run("user fix ignores project capacity", func(t *testing.T) {
+		env, cwd := tm6CLIEnv(t)
+		user := filepath.Join(env.Get("XDG_CONFIG_HOME"), "soho", "config")
+		tm6Write(t, user, "panes=4\nmax_workers=9\n")
+		tm6Write(t, filepath.Join(cwd, ".agents", "soho.conf"), "panes=2\n")
+		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--user", "--panes", "4"}, env, cwd)
+		data, err := os.ReadFile(user)
+		if err != nil || code != 0 || !strings.Contains(string(data), "max_workers=3\n") {
+			t.Fatalf("code=%d out=%q stderr=%q user=%q err=%v", code, out, stderr, data, err)
+		}
+	})
+	t.Run("new user layout removes frozen cap", func(t *testing.T) {
+		env, cwd := tm6CLIEnv(t)
+		user := filepath.Join(env.Get("XDG_CONFIG_HOME"), "soho", "config")
+		tm6Write(t, user, "max_workers=9\n")
+		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--user", "--panes", "4"}, env, cwd)
+		data, err := os.ReadFile(user)
+		if err != nil || code != 0 || strings.Contains(string(data), "max_workers=") {
+			t.Fatalf("code=%d out=%q stderr=%q user=%q err=%v", code, out, stderr, data, err)
+		}
+	})
 	t.Run(`doctorFix: the preset 3 and 4 rewrites (no frozen roles or limits, planner dropped)`, func(t *testing.T) { // JS: "doctorFix: the preset 3 and 4 rewrites (no frozen roles or limits, planner dropped)"
 		// Mutation captured: retaining role or capacity overrides in a preset file freezes choices the fix is meant to release.
 		env, cwd := tm6CLIEnv(t)
@@ -176,7 +197,7 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if code != 0 || stderr != "" || !strings.Contains(out, "set panes="+panes) || strings.Contains(string(data), "role.planner") || !strings.Contains(string(data), map[string]string{"3": "max_workers=2", "4": "max_workers=3"}[panes]) || strings.Contains(string(data), "split_max_panes") {
+				if code != 0 || stderr != "" || !strings.Contains(out, "set panes="+panes) || strings.Contains(string(data), "role.planner") || strings.Contains(string(data), "max_workers=") || strings.Contains(string(data), "split_max_panes") {
 					t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
 				}
 			})

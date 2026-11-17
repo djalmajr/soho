@@ -279,14 +279,38 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 	}
 	before, _ := platform.ReadTextFile(dest)
 	before = strings.TrimRight(before, "\n")
+	hadOwnLayout := core.FileKeyValue(dest, "panes") != "" || core.FileLaneSignature(dest) != ""
 	lines := core.ApplyLaneFile(dest, panes, env, cwd)
 	fixed := core.LoadConfig(env, cwd)
-	sum := core.AlwaysOpenLaneCapacitySum(&fixed, env)
-	if core.PaneMode(&fixed, env) == "flex" {
-		sum += core.FlexExtra(&fixed, env)
+	if where != "session" {
+		selected := core.Config{Entries: make(map[string]core.ConfigEntry)}
+		for _, layer := range fixed.Layers {
+			if layer.Source == "session" || (where == "user" && layer.Source == "project") {
+				continue
+			}
+			for key, entry := range layer.Entries {
+				selected.Entries[key] = entry
+			}
+		}
+		for _, key := range fixed.Order {
+			if _, ok := selected.Entries[key]; ok {
+				selected.Order = append(selected.Order, key)
+			}
+		}
+		fixed = selected
 	}
-	core.ConfigWritePair(dest, "max_workers", strconv.Itoa(sum), env, cwd)
-	hasSplit := core.ConfigExplicit(&fixed, "split_max_panes", env)
+	capacityEnv := env
+	if where == "user" {
+		capacityEnv = platform.Env{}
+	}
+	sum := core.AlwaysOpenLaneCapacitySum(&fixed, capacityEnv)
+	if core.PaneMode(&fixed, capacityEnv) == "flex" {
+		sum += core.FlexExtra(&fixed, capacityEnv)
+	}
+	if hadOwnLayout {
+		core.ConfigWritePair(dest, "max_workers", strconv.Itoa(sum), env, cwd)
+	}
+	hasSplit := hadOwnLayout && core.FileKeyValue(dest, "split_max_panes") != ""
 	if hasSplit {
 		core.ConfigWritePair(dest, "split_max_panes", strconv.Itoa(1+sum), env, cwd)
 	}

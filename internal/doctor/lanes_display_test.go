@@ -61,6 +61,24 @@ func TestDoctorDisplayPolicyUIRole(t *testing.T) {
 	}
 }
 
+func TestDoctorDisplayPolicyEmptyInclude(t *testing.T) {
+	env, root := tm6DoctorEnv(t)
+	env["WAYLAND_DISPLAY"] = "private-display-sentinel"
+	env["CODEX_HOME"] = filepath.Join(root, "codex")
+	if err := os.MkdirAll(env["CODEX_HOME"], 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(env["CODEX_HOME"], "config.toml"), []byte("[shell_environment_policy]\ninclude_only=[]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tm6DoctorConfig(map[string]string{"lane_build_roles": "designer", "lane_build_kind": "codex"}, "project")
+	var out strings.Builder
+	doctorCodexRegistryPolicy(ctx, env, root, &Say{Out: &out})
+	if strings.Contains(out.String(), "display variables") || strings.Contains(out.String(), "WAYLAND_DISPLAY") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
 func TestDoctorDisplayPolicyRoleConfig(t *testing.T) {
 	for _, lanes := range []string{"on", "off"} {
 		t.Run(lanes, func(t *testing.T) {

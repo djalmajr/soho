@@ -34,7 +34,7 @@ func doctorCodexRegistryPolicy(ctx *core.Config, env platform.Env, cwd string, s
 		return
 	}
 
-	if uiRoleUsesCodex(ctx, env, cwd) {
+	if codexenv.HasIncludeFilter(patterns) && uiRoleUsesCodex(ctx, env, cwd) {
 		var dropped []string
 		for _, name := range DisplayVariables {
 			if env.Get(name) != "" && !includeOnlyAdmits(patterns, name) {
