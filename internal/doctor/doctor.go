@@ -491,21 +491,19 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 		s.Ok(fmt.Sprintf("state dir not created: 'soho setup' moves %s to %s", former, target))
 	} else {
 		d := core.StateRootPath(ctx, env, cwd)
-		rootOK := true
 		func() {
 			defer func() {
 				if value := recover(); value != nil {
-					if _, ok := value.(*os.PathError); !ok {
+					err, ok := value.(*os.PathError)
+					if !ok {
 						panic(value)
 					}
-					rootOK = false
+					s.Warning("state ignore update failed: " + err.Error())
 				}
 			}()
 			d = core.StateRoot(ctx, env, cwd)
 		}()
-		if !rootOK {
-			s.Warning("state dir not writable: " + d)
-		} else if core.Nowrite(env) {
+		if core.Nowrite(env) {
 			if st, e := os.Stat(d); e != nil {
 				if os.IsNotExist(e) {
 					s.Ok("state dir absent (no-write mode, not created): " + d)
@@ -726,7 +724,7 @@ func doctorFootprint(ctx *core.Config, svc transport.Services, env platform.Env,
 	if err != nil || limit <= 0 {
 		return
 	}
-	fp := core.MeasureFootprint(core.StateDirPath(ctx, env, cwd), workspaceID, env)
+	fp := core.MeasureFootprint(filepath.Join(core.StateRootPath(ctx, env, cwd), workspaceID), workspaceID, env)
 	if line := doctorFootprintLine(fp, raw); line != "" {
 		s.Warning(line)
 	}
