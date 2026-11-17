@@ -247,6 +247,22 @@ func TestStatePathFileComponent(t *testing.T) {
 
 func TestReadOnlyGitignoreStateRecovery(t *testing.T) {
 	env, repo := commandFixture(t)
+	// doctor probes codex once per process (spawn.CodexSupportsNoDaemon): a
+	// fake codex keeps the host's real one from deciding it for later tests.
+	bin := t.TempDir()
+	for _, name := range []string{"herdr", "codex"} {
+		if _, err := fakecli.Install(t, bin, name, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Keep the host PATH after the fakes: the ignore update needs git.
+	faked := platform.Env{}
+	for _, item := range fakecli.Env(env.List(), bin, fakecli.EnvOptions{IncludeBasePath: true}) {
+		if key, value, ok := strings.Cut(item, "="); ok {
+			faked[key] = value
+		}
+	}
+	env = faked
 	env["HERDR_ENV"] = "1"
 	ignore := filepath.Join(repo, ".gitignore")
 	if err := os.WriteFile(ignore, []byte("# fixture\n"), 0o400); err != nil {
