@@ -460,15 +460,9 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		if localPlan != nil && localPlan.path != "" {
 			if localPlan.after != localPlan.before {
 				_, _ = io.WriteString(platform.Stdout, planFileDiff(localPlan.path, localPlan.before, localPlan.after))
-			} else {
-				all := localPlan
-				if hooks {
-					all = preflightLocalExcludes(root, append(localRels(root, ctx, env, cwd), localHookRels(root, env)...), env, "setup --plan", false, false)
-				}
-				if all != nil && all.before == all.after {
-					if _, err := os.Stat(localPlan.path); err == nil {
-						_, _ = fmt.Fprintf(platform.Stdout, "# no change: %s\n", localPlan.path)
-					}
+			} else if !hooks {
+				if _, err := os.Stat(localPlan.path); err == nil {
+					_, _ = fmt.Fprintf(platform.Stdout, "# no change: %s\n", localPlan.path)
 				}
 			}
 		}

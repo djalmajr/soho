@@ -24,6 +24,7 @@ var userTeamKey = regexp.MustCompile(`^(multi_role|role_[A-Za-z0-9_]+_kind|lane_
 // unreadable file, a directory in place of the file, ENOTDIR above it)
 // refuses with exit 4 before any write, because a merge that could not read
 // the file would overwrite what it could not see.
+// ReadTextFile normalizes CRLF, so CRLF-only differences are unchanged by design.
 func readOrRefuse(file string, plan bool) *string {
 	raw, err := platform.ReadTextFile(file)
 	if err == nil {
@@ -148,6 +149,7 @@ func markedLines(text string) string {
 	return strings.Join(out, "\n") + "\n"
 }
 
+// Managed hook comparisons use ReadTextFile: CRLF-only differences are unchanged by design.
 func writeHooksSection(root string, env platform.Env, local, guard bool) []string {
 	var ready []string
 	settings := claudeSettingsPath(root, local)
@@ -242,6 +244,7 @@ func noteUntrackedHookFile(file string, env platform.Env, local bool) {
 	_, _ = fmt.Fprintf(platform.Stdout, "note: %s is untracked; commit it to share the hooks, or run 'setup --local' to keep them out of the repository\n", file)
 }
 
+// ReadTextFile makes CRLF-only differences unchanged by design.
 func writePiInboundExtension(root string) bool {
 	file := filepath.Join(root, filepath.FromSlash(piInboundRel))
 	var content *string

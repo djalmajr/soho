@@ -832,6 +832,58 @@ func TestSetupUnchangedAndRepair(t *testing.T) {
 	assertCodexPair(t, file)
 }
 
+func TestSetupCRLFUnchangedAndRepair(t *testing.T) {
+	root, env, ctx := codexSetupFixture(t)
+	if code, _, msg := runSetupWrite(nil, ctx, env, root); code != 0 {
+		t.Fatalf("initial setup: %d %s", code, msg)
+	}
+	cases := []struct{ rel, from, to, line string }{
+		{"AGENTS.md", setuptext.SetupStart + "\r\n", setuptext.SetupStart + "\r\nold\r\n", "block updated: "},
+		{".claude/settings.json", "soho hook reminder", "soho hook remindeX", "hooks written: "},
+		{".codex/hooks.json", "soho hook reminder", "soho hook remindeX", "hooks written: "},
+		{".pi/extensions/soho-inbound.ts", setuptext.PiInboundMarker + "\r\n", setuptext.PiInboundMarker + "\r\nold\r\n", "extension ready: "},
+	}
+	stamp := time.Unix(1000000000, 0)
+	for _, tc := range cases {
+		t.Run(tc.rel, func(t *testing.T) {
+			file := filepath.Join(root, filepath.FromSlash(tc.rel))
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			crlf := strings.ReplaceAll(string(data), "\n", "\r\n")
+			if crlf == string(data) {
+				t.Fatal("fixture has no newlines")
+			}
+			if err := os.WriteFile(file, []byte(crlf), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(file, stamp, stamp); err != nil {
+				t.Fatal(err)
+			}
+			code, out, msg := runSetupWrite(nil, ctx, env, root)
+			info, err := os.Stat(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code != 0 || !info.ModTime().Equal(stamp) || !strings.Contains(out, "unchanged: "+file+"\n") {
+				t.Fatalf("CRLF: code=%d mtime=%v out=%s msg=%s", code, info.ModTime(), out, msg)
+			}
+			damaged := strings.Replace(crlf, tc.from, tc.to, 1)
+			if damaged == crlf {
+				t.Fatal("repair fixture did not change")
+			}
+			if err := os.WriteFile(file, []byte(damaged), 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, out, msg = runSetupWrite(nil, ctx, env, root)
+			if code != 0 || !strings.Contains(out, tc.line+file) {
+				t.Fatalf("repair: code=%d out=%s msg=%s", code, out, msg)
+			}
+		})
+	}
+}
+
 func TestSetupPlanWarningsMatchSetup(t *testing.T) {
 	for _, tc := range []struct {
 		name, rel, content, warning string

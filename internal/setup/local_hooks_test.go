@@ -377,6 +377,13 @@ func TestSetupLocalUnchangedFiles(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("plan: %d %s", code, msg)
 	}
+	if line := "# no change: " + excludePath(root, env) + "\n"; strings.Count(out, line) != 1 {
+		t.Errorf("exclude plan line count=%d, want 1: %s", strings.Count(out, line), out)
+	}
+	code, noHooksOut, msg := runSetupWrite([]string{"--local", "--plan", "--no-hooks"}, ctx, env, root)
+	if line := "# no change: " + excludePath(root, env) + "\n"; code != 0 || strings.Count(noHooksOut, line) != 1 {
+		t.Errorf("no-hooks plan: code=%d count=%d out=%s msg=%s", code, strings.Count(noHooksOut, line), noHooksOut, msg)
+	}
 	for _, file := range files {
 		if !strings.Contains(out, "# no change: "+file+"\n") {
 			t.Errorf("missing %s: %s", file, out)
