@@ -539,3 +539,33 @@ func TestDoctorNotesBeforeTranslatedLayers(t *testing.T) {
 		})
 	}
 }
+
+func TestValidationTableWithoutLayerLines(t *testing.T) {
+	root := t.TempDir()
+	content := "# Project\n\n## Test layers\n| Layer | Command |\n| --- | --- |\n| unit | go test |\n- unrelated bullet\n"
+	if err := os.WriteFile(filepath.Join(root, "VALIDATION.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := validationLines(validationFixture(t, root, validationEnv(root)))
+	want := "warn   VALIDATION.md: Test layers section found at line 3 but it has no layer lines (a table is not read)"
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestValidationCoveredLayers(t *testing.T) {
+	for _, tc := range []struct{ unit, integration, want string }{
+		{"`echo ok`", "covered: unit", "ok     VALIDATION.md:"},
+		{"covered: integration", "covered: unit", "warn   VALIDATION.md:2: covered layer cycle"},
+		{"`echo ok`", "covered: absent", "warn   VALIDATION.md:3: covered target absent is not declared"},
+	} {
+		root := t.TempDir()
+		content := "## Test layers\n- unit: " + tc.unit + "\n- integration: " + tc.integration + "\n- contract: n/a: none\n- e2e: n/a: none\n- mutation: n/a: none\n"
+		if err := os.WriteFile(filepath.Join(root, "VALIDATION.md"), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if out := validationFixture(t, root, validationEnv(root)); !strings.Contains(out, tc.want) {
+			t.Fatalf("want %q in %s", tc.want, out)
+		}
+	}
+}

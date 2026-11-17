@@ -147,8 +147,8 @@ func TestValidateCommitLineShowsTheCommit(t *testing.T) {
 	git("add", "VALIDATION.md")
 	git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed")
 	code, out, _ := runIn(t, []string{"validate", "--layer", "unit"}, env, cwd)
-	if code != 5 {
-		t.Fatalf("code=%d (unit PASS, the other command layer NOT RUN: the overall is NOT RUN) out=%s", code, out)
+	if code != 0 {
+		t.Fatalf("code=%d (selected unit should PASS) out=%s", code, out)
 	}
 	commitRE := regexp.MustCompile(`^commit: [0-9a-f]{40} \(clean\)$`)
 	if !hasLineMatch(out, commitRE) {
@@ -162,7 +162,7 @@ func TestValidateCommitLineShowsTheCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out, _ = runIn(t, []string{"validate", "--layer", "unit"}, env, cwd)
-	if code != 5 || !hasLineMatch(out, regexp.MustCompile(`^commit: [0-9a-f]{40} \(dirty\)$`)) {
+	if code != 0 || !hasLineMatch(out, regexp.MustCompile(`^commit: [0-9a-f]{40} \(dirty\)$`)) {
 		t.Fatalf("dirty run code=%d out=%s", code, out)
 	}
 }
@@ -312,7 +312,7 @@ func TestValidateManualAndNAOnlyIsNotRun(t *testing.T) {
 	if lines := strings.Split(out, "\n"); lines[0] != "validation: NOT RUN" {
 		t.Fatalf("first line = %q, want validation: NOT RUN", lines[0])
 	}
-	if !hasLinePrefix(out, "unit: NOT RUN: manual") || !hasLinePrefix(out, "contract: NOT RUN: manual") {
+	if !hasLinePrefix(out, "manual: unit, contract (not run by validate)") {
 		t.Fatalf("manual layers are not NOT RUN: manual in:\n%s", out)
 	}
 	if !hasLinePrefix(out, "integration: n/a") {
@@ -426,7 +426,7 @@ func TestValidateLayerSelection(t *testing.T) {
 	t.Run("the unselected command layer is NOT RUN", func(t *testing.T) {
 		requireSh(t)
 		code, out, errOut := runIn(t, []string{"validate", "--layer", "unit"}, env, cwd)
-		if code != 5 || errOut != "" {
+		if code != 0 || errOut != "" {
 			t.Fatalf("code=%d err=%q out=%s", code, errOut, out)
 		}
 		if !hasLinePrefix(out, "unit: PASS (") || !hasLinePrefix(out, "contract: NOT RUN: not selected") {
@@ -920,9 +920,8 @@ func TestValidateControlCharactersNeverReachTheOutput(t *testing.T) {
 		t.Fatalf("the command text without the control byte is not in the --json plan output:\n%s", out)
 	}
 	code, out, errOut = runIn(t, []string{"validate"}, env, cwd)
-	// The e2e layer is manual: the overall is NOT RUN, exit 5 — the run
-	// happened and its output is what is checked here.
-	if code != 5 || errOut != "" {
+	// Manual does not affect the command result.
+	if code != 0 || errOut != "" {
 		t.Fatalf("run code=%d err=%q out=%s", code, errOut, out)
 	}
 	if strings.ContainsRune(out, '\x01') || strings.ContainsRune(out, '\x02') || strings.ContainsRune(out, '\x1b') {
@@ -1549,5 +1548,43 @@ func TestValidateFinishClosesTheLogOnEveryPath(t *testing.T) {
 	finishValidateEvidence(f, "0", 1, true, &outcome)
 	if err := f.Close(); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("the log was left open: second close = %v", err)
+	}
+}
+
+func TestValidateManualSelectionAndCovered(t *testing.T) {
+	requireSh(t)
+	for _, tc := range []struct {
+		command string
+		code    int
+		result  string
+	}{{"true", 0, "PASS"}, {"false", 1, "FAIL"}} {
+		t.Run(tc.result, func(t *testing.T) {
+			env, cwd := commandFixture(t)
+			writeValidationMD(t, cwd, "## Test layers\n- integration: covered: unit\n- unit: `"+tc.command+"` — CI checks\n- contract: `false`\n- e2e: manual: browser\n- mutation: n/a: none\n")
+			code, out, errOut := runIn(t, []string{"validate", "--layer", "integration"}, env, cwd)
+			if code != tc.code || errOut != "" || !strings.Contains(out, "validation: "+tc.result) || !strings.Contains(out, "integration: "+tc.result+" (covered by unit)") || !strings.Contains(out, "unit: NOT RUN") || !strings.Contains(out, "command executed for coverage") || !strings.Contains(out, "manual: e2e (not run by validate)") {
+				t.Fatalf("code=%d stderr=%q output=%s", code, errOut, out)
+			}
+			code, out, _ = runIn(t, []string{"validate", "--plan"}, env, cwd)
+			if code != 0 || !strings.Contains(out, "unit: run "+tc.command+" — CI checks") {
+				t.Fatalf("plan code=%d out=%s", code, out)
+			}
+		})
+	}
+}
+
+func TestValidateManualWithCommand(t *testing.T) {
+	requireSh(t)
+	for _, tc := range []struct {
+		command string
+		code    int
+		result  string
+	}{{"true", 0, "PASS"}, {"false", 1, "FAIL"}} {
+		env, cwd := commandFixture(t)
+		writeValidationMD(t, cwd, "## Test layers\n- unit: `"+tc.command+"`\n- integration: n/a: none\n- contract: n/a: none\n- e2e: manual: browser\n- mutation: n/a: none\n")
+		code, out, _ := runIn(t, []string{"validate"}, env, cwd)
+		if code != tc.code || !strings.Contains(out, "validation: "+tc.result) || !strings.Contains(out, "manual: e2e (not run by validate)") {
+			t.Fatalf("code=%d out=%s", code, out)
+		}
 	}
 }

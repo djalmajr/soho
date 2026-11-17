@@ -467,3 +467,22 @@ func TestFallbackRequiresValidRequiredLayer(t *testing.T) {
 		t.Fatalf("recognized title did not win: %+v", doc)
 	}
 }
+
+func TestCommandNotesRequireSeparator(t *testing.T) {
+	for _, sep := range []string{" — ", " – "} {
+		doc := Parse("## Test layers\n- unit: `bun run test`" + sep + "CI checks\n")
+		if len(doc.Layers) != 1 || doc.Layers[0].Value != "bun run test" || doc.Layers[0].Note != "CI checks" {
+			t.Fatalf("separator %q: %#v", sep, doc)
+		}
+	}
+	doc := Parse("## Test layers\n- unit: `cmd` — checks `unit`\n")
+	if len(doc.Layers) != 1 || doc.Layers[0].Note != "checks `unit`" {
+		t.Fatalf("note with code: %#v", doc)
+	}
+	for _, suffix := range []string{"trailing", " - note", " — "} {
+		doc := Parse("## Test layers\n- unit: `cmd`" + suffix + "\n")
+		if len(doc.Layers) != 0 || len(doc.Malformed) != 1 {
+			t.Fatalf("suffix %q accepted: %#v", suffix, doc)
+		}
+	}
+}

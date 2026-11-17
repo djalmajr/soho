@@ -176,6 +176,25 @@ func doValidate(args []string, ctx *core.Config, env platform.Env, cwd string, w
 		// evidence directory, no git, no command.
 		return emitValidatePlan(w, asJSON, check.Doc.Layers, selected)
 	}
+	// Selecting an alias runs its covering command, without selecting the
+	// covering layer for the overall calculation.
+	runSelected := make(map[string]bool, len(selected))
+	for name := range selected {
+		runSelected[name] = true
+	}
+	byName := make(map[string]validation.Layer, len(check.Doc.Layers))
+	for _, l := range check.Doc.Layers {
+		byName[l.Name] = l
+	}
+	for _, l := range check.Doc.Layers {
+		if selected[l.Name] && l.Kind == "covered" {
+			target := byName[l.Value]
+			for target.Kind == "covered" {
+				target = byName[target.Value]
+			}
+			runSelected[target.Name] = true
+		}
+	}
 	evidenceDir, reason := createValidateEvidenceDir(ctx, env, cwd)
 	if reason != "" {
 		// A state the evidence cannot use blocks before any layer runs.
@@ -193,7 +212,7 @@ func doValidate(args []string, ctx *core.Config, env platform.Env, cwd string, w
 			r.result = validateResultNotRun
 			r.reason = "manual"
 		case "command":
-			if !selected[l.Name] {
+			if !runSelected[l.Name] {
 				r.result = validateResultNotRun
 				r.reason = "not selected"
 			} else {
@@ -205,12 +224,39 @@ func doValidate(args []string, ctx *core.Config, env platform.Env, cwd string, w
 		}
 		results = append(results, r)
 	}
+	resultByName := make(map[string]validateLayerResult, len(results))
+	for _, r := range results {
+		resultByName[r.layer.Name] = r
+	}
+	for i := range results {
+		r := &results[i]
+		if r.kind != "covered" {
+			continue
+		}
+		if !selected[r.layer.Name] {
+			r.result, r.reason = validateResultNotRun, "not selected"
+			continue
+		}
+		target := byName[r.layer.Value]
+		for target.Kind == "covered" {
+			target = byName[target.Value]
+		}
+		r.result = resultByName[target.Name].result
+		r.reason = "covered by " + r.layer.Value
+	}
+	for i := range results {
+		r := &results[i]
+		if r.kind == "command" && !selected[r.layer.Name] && runSelected[r.layer.Name] {
+			r.result = validateResultNotRun
+			r.reason = "not selected (command executed for coverage)"
+		}
+	}
 	// The overall is the worst of the layer results in the order FAIL,
 	// BLOCKED, NOT RUN, PASS; n/a layers do not count.
 	var worst int
 	have := false
 	for _, r := range results {
-		if r.result != validateResultNA {
+		if selected[r.layer.Name] && r.kind != "manual" && r.result != validateResultNA {
 			if rank := validateResultRank(r.result); !have || rank > worst {
 				worst, have = rank, true
 			}
@@ -287,8 +333,16 @@ func doValidate(args []string, ctx *core.Config, env platform.Env, cwd string, w
 		} else {
 			fmt.Fprintln(&b, "commit: none")
 		}
+		var manual []string
 		for _, r := range results {
+			if r.kind == "manual" {
+				manual = append(manual, printable(r.layer.Name))
+				continue
+			}
 			fmt.Fprintln(&b, validateLayerLine(r))
+		}
+		if len(manual) > 0 {
+			fmt.Fprintf(&b, "manual: %s (not run by validate)\n", strings.Join(manual, ", "))
 		}
 		fmt.Fprintf(&b, "evidence: %s\n", evidenceDir)
 		_, _ = w.Write(b.Bytes())
@@ -638,11 +692,16 @@ func emitValidatePlan(w io.Writer, asJSON bool, layers []validation.Layer, selec
 			case "command":
 				if selected[l.Name] {
 					reason = printable(l.Value)
+					if l.Note != "" {
+						reason += " — " + printable(l.Note)
+					}
 				} else {
 					reason = "not selected"
 				}
 			case "manual":
 				reason = "manual"
+			case "covered":
+				reason = "covered by " + printable(l.Value)
 			}
 			doc.Layers = append(doc.Layers, validateLayer{Name: printable(l.Name), Kind: l.Kind, Result: validateResultPlan, Reason: reason})
 		}
@@ -655,9 +714,15 @@ func emitValidatePlan(w io.Writer, asJSON bool, layers []validation.Layer, selec
 				fmt.Fprintf(w, "%s: n/a\n", printable(l.Name))
 			case "manual":
 				fmt.Fprintf(w, "%s: manual: %s\n", printable(l.Name), printable(l.Value))
+			case "covered":
+				fmt.Fprintf(w, "%s: covered by %s\n", printable(l.Name), printable(l.Value))
 			case "command":
 				if selected[l.Name] {
-					fmt.Fprintf(w, "%s: run %s\n", printable(l.Name), printable(l.Value))
+					fmt.Fprintf(w, "%s: run %s", printable(l.Name), printable(l.Value))
+					if l.Note != "" {
+						fmt.Fprintf(w, " — %s", printable(l.Note))
+					}
+					fmt.Fprintln(w)
 				} else {
 					fmt.Fprintf(w, "%s: not selected\n", printable(l.Name))
 				}
@@ -674,6 +739,9 @@ func emitValidatePlan(w io.Writer, asJSON bool, layers []validation.Layer, selec
 func validateLayerLine(r validateLayerResult) string {
 	name := printable(r.layer.Name)
 	reason := printable(r.reason)
+	if r.kind == "covered" && reason != "not selected" {
+		return fmt.Sprintf("%s: %s (%s)", name, r.result, reason)
+	}
 	switch r.result {
 	case validateResultNA:
 		return fmt.Sprintf("%s: n/a", name)
