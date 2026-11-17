@@ -769,14 +769,26 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	if kind == "cursor" {
 		clearDispatchWait()
 	}
-	promptRep := svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue}, transport.Call{})
+	sendCall := transport.Call{}
+	if hcMode && amend {
+		// An amendment cannot rely on an unguarded queue: hc does not prove
+		// that a working CLI accepted the input. Bound the guarded send too.
+		seconds := checkSecs
+		if seconds <= 0 {
+			seconds = 15
+		}
+		sendCall.Timeout = time.Duration(seconds) * time.Second
+	}
+	promptRep := svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue && !(hcMode && amend)}, sendCall)
 	if hcMode && promptRep.Err != nil && promptRep.Err.Kind == transport.FailureBusy {
 		// DJA-604 2b-3a: the worker went working between the dispatch's idle
 		// check and the send. Poll Get until it settles, within the
 		// dispatch's idle wait (the --when-idle budget), then retry the send
 		// once; still working at the budget, or a failed retry, takes the
 		// submission-failed path below.
-		if hcSettled(svc, agent, timeoutRaw, timeoutGiven, sd, ctx, env, cwd) {
+		if amend {
+			promptRep.Err.Message = fmt.Sprintf("worker %s is still working; amendment was not sent. Wait for it to settle, then dispatch again without --amend", agent)
+		} else if hcSettled(svc, agent, timeoutRaw, timeoutGiven, sd, ctx, env, cwd) {
 			promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue}, transport.Call{})
 		} else {
 			promptRep.Err = &transport.Failure{Kind: transport.FailureBusy, Message: fmt.Sprintf("worker %s is still working after the idle wait; the send was not retried", agent)}
@@ -849,6 +861,11 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		// started is not probed, as the ported behavior keeps. A prompt with
 		// no turn rise takes the not-received path, once.
 		started, sendTurn, sendTurnOK := hcSendResult(promptRep.Value)
+		if amend && !started {
+			_ = restoreTaskDispatch(sd, agent, lastPath, lastData, priorPointer)
+			markSubmitFailed()
+			return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "hc did not confirm a started turn; inspect the worker before retrying", before.Seq)
+		}
 		if !started && checkOn {
 			// The proof must be read inside the window: each get is capped
 			// to the remaining time and a result that returns after the
@@ -1687,9 +1704,9 @@ func recordDispatchTask(sd, agent, role, brief string, amend bool, env platform.
 	core.PaneTaskTitle(sd, agent, &title, env)
 }
 
-func dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA string, env platform.Env, wasWorking bool, why string) int {
+func dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA string, env platform.Env, wasWorking bool, why string, knownSeq ...string) int {
 	_ = lane
-	markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA, env, wasWorking)
+	markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA, env, wasWorking, knownSeq...)
 	obj := jsonjs.O("wait_status", "not-received", "agent", agent, "role", role, "kind", kind, "composed_prompt", composed, "report", report, "task_report", taskReport, "report_exists", nonEmpty(report))
 	markReportVolatile(obj, report, sd)
 	fmt.Fprintln(platform.Stdout, jsonjs.Stringify(obj))
@@ -1699,7 +1716,7 @@ func dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, si
 
 // markNotReceived records the not-received arrival in the attempt sidecar and
 // writes wait/<agent>.not-received, which the next wait reads.
-func markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA string, env platform.Env, wasWorking bool) {
+func markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskReport, session, briefSHA string, env platform.Env, wasWorking bool, knownSeq ...string) {
 	cwd, _ := os.Getwd()
 	if err := writeDispatchSidecarWithAuthorContext(dispatchAuthorContext{stateDir: sd, env: env, cwd: cwd}, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "not-received", session); err != nil {
 		core.Warn(fmt.Sprintf("could not record the not-received arrival in the attempt sidecar %s: %s; the dispatch result stands", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
@@ -1709,7 +1726,14 @@ func markNotReceived(agent, composed, sd, sidecar, kind, model, effort, taskRepo
 	// call, so it builds its one-shot backend from the dispatch's env (the
 	// helper's env-based signature is kept so its existing callers and tests
 	// stay unchanged).
-	seq := readState(backend.New(env), agent, transport.Call{Timeout: herdr.Timeout}).Seq
+	var seq string
+	if len(knownSeq) != 0 {
+		// The hc amendment send already consumed its budget; do not start a
+		// fresh transport read while holding the worker lifecycle lock.
+		seq = knownSeq[0]
+	} else {
+		seq = readState(backend.New(env), agent, transport.Call{Timeout: herdr.Timeout}).Seq
+	}
 	marker := strconv.FormatInt(platform.Now().Unix(), 10)
 	if wasWorking {
 		// The prompt path goes in the marker (as in .queued): the next wait then
