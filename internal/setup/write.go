@@ -805,8 +805,8 @@ func promptConfigNotice(ctx *core.Config, conf string, local bool) {
 }
 
 func writeCanonicalStateIgnore(ctx *core.Config, env platform.Env, cwd string, cache *setupTracking) {
-	stateRoot := platform.StateProjectRoot(env, cwd)
-	rel := core.StateGitignoreRel(stateRoot, core.StateRootPath(ctx, env, cwd))
+	stateRoot := platform.ProjectRoot(env, cwd)
+	rel := core.StateGitignoreRel(stateRoot, core.StateRootPathForProject(ctx, env, stateRoot))
 	if rel == "" {
 		return
 	}

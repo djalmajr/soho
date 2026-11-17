@@ -652,7 +652,7 @@ func TestSetupCanonicalGitignoreAppendsWithoutRewriting(t *testing.T) {
 	})
 }
 
-func TestSetupCanonicalIgnoreUsesMainCheckoutFromLinkedWorktree(t *testing.T) {
+func TestSetupCanonicalIgnoreUsesLinkedWorktree(t *testing.T) {
 	root, env, _ := setupWriteFixture(t)
 	if err := os.WriteFile(filepath.Join(root, "tracked"), []byte("seed\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -668,12 +668,27 @@ func TestSetupCanonicalIgnoreUsesMainCheckoutFromLinkedWorktree(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add: %v: %s", err, out)
 	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("# main\n.soho/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(linked, ".gitignore"), []byte("# linked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	ctx := core.LoadConfig(env, linked)
 	code, out, msg := runSetupWrite([]string{"--no-hooks"}, &ctx, env, linked)
 	mainIgnore, mainErr := os.ReadFile(filepath.Join(root, ".gitignore"))
 	linkIgnore, linkErr := os.ReadFile(filepath.Join(linked, ".gitignore"))
-	if code != 0 || mainErr != nil || string(mainIgnore) != ".soho/\n" || !os.IsNotExist(linkErr) || !strings.Contains(out, "state dir ignored: .soho/") {
+	if code != 0 || mainErr != nil || string(mainIgnore) != "# main\n.soho/\n" || linkErr != nil || string(linkIgnore) != "# linked\n.soho/\n" || !strings.Contains(out, "state dir ignored: .soho/") {
 		t.Fatalf("code=%d stdout=%q message=%q main .gitignore=%q/%v linked .gitignore=%q/%v", code, out, msg, mainIgnore, mainErr, linkIgnore, linkErr)
+	}
+	code, out, msg = runSetupWrite([]string{"--no-hooks"}, &ctx, env, linked)
+	if code != 0 || !strings.Contains(out, "unchanged: "+filepath.Join(platform.ProjectRoot(env, linked), ".gitignore")) {
+		t.Fatalf("second setup: code=%d stdout=%q message=%q", code, out, msg)
+	}
+	got, gotErr := filepath.EvalSymlinks(excludePath(linked, env))
+	want, wantErr := filepath.EvalSymlinks(excludePath(root, env))
+	if gotErr != nil || wantErr != nil || got != want {
+		t.Fatalf("exclude linked=%q/%v main=%q/%v", got, gotErr, want, wantErr)
 	}
 }
 

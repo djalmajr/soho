@@ -309,6 +309,9 @@ func TestTrackedCanonicalManagedKinds(t *testing.T) {
 					}
 					code, out, msg := runSetupWrite(args, ctx, env, root)
 					warning := filepath.Join(root, filepath.FromSlash(rel)) + " is tracked; make this change on a work branch and open a PR"
+					if rel == ".claude/settings.json" {
+						warning = filepath.Join(root, filepath.FromSlash(rel)) + " is tracked; commit .claude/settings.json on a work branch; add --guard-hooks if people without soho open this repository"
+					}
 					if code != 0 || strings.Contains(out, warning) != (branch == "main") {
 						t.Fatalf("code=%d out=%s msg=%s expected=%q", code, out, msg, warning)
 					}
