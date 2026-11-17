@@ -516,7 +516,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	if hooks {
 		writeHooksSection(root, env, false, guard)
 		if !guard {
-			_, _ = fmt.Fprintln(platform.Stdout, "soho: setup: the versioned hooks call soho; a clone without soho shows a hook error on every prompt; for a public repository use 'soho setup --guard-hooks' (needs sh) or 'soho setup --local'")
+			_, _ = fmt.Fprintln(platform.Stdout, "soho: setup: the versioned hooks call soho; anyone who works in a clone without soho installed (a teammate, a contributor, CI) sees a hook error on every prompt; 'soho setup --guard-hooks' (needs sh) keeps those clones quiet, and 'soho setup --local' keeps the hooks out of the repository")
 		}
 	}
 	writeCanonicalStateIgnore(ctx, env, cwd)

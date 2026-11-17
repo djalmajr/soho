@@ -55,6 +55,10 @@ func TestGuardHooksUpgradeAndPlan(t *testing.T) {
 	root, env, ctx := setupWriteFixture(t)
 	if code, out, msg := runSetupWrite(nil, ctx, env, root); code != 0 || !strings.Contains(out, "the versioned hooks call soho") {
 		t.Fatalf("plain: %d %s %s", code, out, msg)
+	} else if !strings.Contains(out, "anyone who works in a clone without soho installed") || strings.Contains(out, "public repository") {
+		// SOH-348: the hint holds for private repositories too (a
+		// teammate or CI without soho), so it names no visibility.
+		t.Fatalf("plain hint assumes a public repository: %s", out)
 	}
 	if code, out, msg := runSetupWrite([]string{"--plan", "--guard-hooks"}, ctx, env, root); code != 0 || !strings.Contains(out, setuptext.GuardedHookReminder()) {
 		t.Fatalf("plan: %d %s %s", code, out, msg)
