@@ -363,24 +363,41 @@ func incorporatePending(stateDir, queue, header, kind string, lockRegistryOf fun
 // queue lines for stateDir (the footprint's read-only count). A queue
 // whose directory or file is refused reads as no lines, silently.
 func PendingCopiesFor(stateDir, workspaceID string, env platform.Env) []CopyRow {
+	rows, _ := ReadPendingCopiesFor(stateDir, workspaceID, env)
+	return rows
+}
+
+// ReadPendingCopiesFor returns queue read failures to callers that must fail closed.
+func ReadPendingCopiesFor(stateDir, workspaceID string, env platform.Env) ([]CopyRow, error) {
 	out := []CopyRow{}
 	if _, err := pendingQueueDir(env, workspaceID, ScratchRead); err != nil {
-		return out
+		if errors.Is(err, os.ErrNotExist) {
+			return out, nil
+		}
+		return nil, err
 	}
 	lines, err := readPendingLines(PendingCopiesFile(env, workspaceID))
+	if errors.Is(err, os.ErrNotExist) {
+		return out, nil
+	}
 	if err != nil {
-		return out
+		return nil, err
 	}
 	for _, line := range lines {
 		target, fields, ok := pendingTarget(line)
-		if !ok || !sameStateDir(target, stateDir) {
+		if !ok {
+			return nil, fmt.Errorf("malformed pending copy")
+		}
+		if !sameStateDir(target, stateDir) {
 			continue
 		}
-		if row, ok := parsePendingCopy(fields); ok {
-			out = append(out, row)
+		row, ok := parsePendingCopy(fields)
+		if !ok {
+			return nil, fmt.Errorf("malformed pending copy")
 		}
+		out = append(out, row)
 	}
-	return out
+	return out, nil
 }
 
 // PendingProcsFor reads, without any lock or write, the well-formed process

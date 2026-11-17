@@ -230,3 +230,44 @@ func TestCopiesReleaseIncorporationFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCopiesReleaseOwnerless(t *testing.T) {
+	for _, owner := range []string{"-", ""} {
+		t.Run(fmt.Sprintf("owner_%q", owner), func(t *testing.T) {
+			f := newCopiesFixture(t, nil)
+			path := filepath.Join(f.tmp, "copy")
+			if err := os.Mkdir(path, 0700); err != nil {
+				t.Fatal(err)
+			}
+			f.writeCopies(t, []core.CopyRow{{Path: path, Owner: owner, Pane: "p", Created: "2026-01-01T00:00:00Z", Source: "-", Origin: "add"}})
+			f.env["SOHO_AGENT"] = "-"
+			code, _, stderr := f.run(t, f.env, "copies", "release", path)
+			if code != 2 || !strings.Contains(stderr, "soho gc") || len(f.copiesRows(t)) != 1 {
+				t.Fatalf("code=%d stderr=%q rows=%v", code, stderr, f.copiesRows(t))
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestCopiesReleasePendingRecheckFailure(t *testing.T) {
+	f := newCopiesFixture(t, nil)
+	path := filepath.Join(f.tmp, "copy")
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	f.writeCopies(t, []core.CopyRow{{Path: path, Owner: "worker", Pane: "p", Created: "2026-01-01T00:00:00Z", Source: "-", Origin: "add"}})
+	f.env["SOHO_AGENT"] = "worker"
+	old := copiesReleasePending
+	t.Cleanup(func() { copiesReleasePending = old })
+	copiesReleasePending = func(string, string, platform.Env) ([]core.CopyRow, error) { return nil, os.ErrPermission }
+	code, _, stderr := f.run(t, f.env, "copies", "release", path)
+	if code != 4 || !strings.Contains(stderr, "permission denied") || len(f.copiesRows(t)) != 1 {
+		t.Fatalf("code=%d stderr=%q rows=%v", code, stderr, f.copiesRows(t))
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -15,6 +15,7 @@ import (
 var copiesReleaseLock = core.LockCopies
 var copiesReleaseRead = core.ReadCopies
 var copiesReleaseDrop = core.DropCopiesLinesHeld
+var copiesReleasePending = core.ReadPendingCopiesFor
 
 // restoreDiscard restores the original entry and marker through the checked
 // parent after a registry-write failure. Never overwrite an existing entry.
@@ -95,7 +96,13 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 		_, _ = fmt.Fprintf(platform.Stderr, "copies release: cannot read registry (%v); nothing removed\n", err)
 		return 4
 	}
-	for _, pending := range core.PendingCopiesFor(sd, filepath.Base(sd), env) {
+	pendingRows, err := copiesReleasePending(sd, filepath.Base(sd), env)
+	if err != nil {
+		unlock()
+		_, _ = fmt.Fprintf(platform.Stderr, "copies release: cannot read pending registrations (%v); nothing removed\n", err)
+		return 4
+	}
+	for _, pending := range pendingRows {
 		for _, path := range paths {
 			if pending.Path == path || inside(path, pending.Path) || inside(pending.Path, path) {
 				unlock()
@@ -117,6 +124,8 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 			reason = "not an absolute path"
 		case !ok:
 			reason = "not registered"
+		case row.Owner == "" || row.Owner == "-":
+			reason = "ownerless copy; use soho gc"
 		case caller != row.Owner:
 			reason = "owned by another agent"
 		}

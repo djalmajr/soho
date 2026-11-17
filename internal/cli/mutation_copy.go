@@ -406,6 +406,7 @@ func registerMutationCopy(env platform.Env, source, dest string) {
 		}
 	}
 	registrantOwnerlessLine("mutation-copy", owner, pane, "copy", env)
+	warnLiveCopies(sd, owner, owner, env)
 }
 
 func mutationCopyNotRegistered(cause string) {

@@ -2696,3 +2696,32 @@ func TestAQueueOpenToOthersIsNeverTrusted(t *testing.T) {
 		}
 	})
 }
+
+func TestCopiesAddLiveCopyWarning(t *testing.T) {
+	f := newCopiesFixture(t, nil)
+	f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+	f.env["SOHO_AGENT"] = "worker"
+	for i := 1; i <= 3; i++ {
+		path := filepath.Join(f.tmp, fmt.Sprintf("live-%d", i))
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+		code, _, stderr := f.run(t, f.env, "copies", "add", path)
+		if code != 0 {
+			t.Fatalf("%d: code=%d stderr=%q", i, code, stderr)
+		}
+		if (i == 3) != strings.Contains(stderr, "warning:") {
+			t.Fatalf("%d: stderr=%q", i, stderr)
+		}
+		if i == 3 {
+			for j := 1; j <= 3; j++ {
+				if !strings.Contains(stderr, fmt.Sprintf("live-%d", j)) {
+					t.Fatalf("missing path: %q", stderr)
+				}
+			}
+			if !strings.Contains(stderr, "soho copies release <path>") {
+				t.Fatal(stderr)
+			}
+		}
+	}
+}
