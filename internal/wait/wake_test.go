@@ -476,11 +476,14 @@ func TestWakeMembershipReconciliation(t *testing.T) {
 			if err != nil || string(data) != wantRecord {
 				t.Fatalf("record=%q err=%v want %q", data, err, wantRecord)
 			}
-			if info, err := os.Stat(record); err != nil || info.Mode().Perm() != 0600 {
-				t.Fatalf("record mode: %v %v", info, err)
-			}
-			if info, err := os.Stat(filepath.Dir(record)); err != nil || info.Mode().Perm() != 0700 {
-				t.Fatalf("directory mode: %v %v", info, err)
+			// Windows does not represent owner/group/other bits in the mode.
+			if runtime.GOOS != "windows" {
+				if info, err := os.Stat(record); err != nil || info.Mode().Perm() != 0600 {
+					t.Fatalf("record mode: %v %v", info, err)
+				}
+				if info, err := os.Stat(filepath.Dir(record)); err != nil || info.Mode().Perm() != 0700 {
+					t.Fatalf("directory mode: %v %v", info, err)
+				}
 			}
 			conn.response = wakeRPCHello + "\n" + `{"jsonrpc":"2.0","id":2,"result":{"address":"t10"}}` + "\n"
 			code, msg, out, stderr := f.cmd(t, tc.second...)
