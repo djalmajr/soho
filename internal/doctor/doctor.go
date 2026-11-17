@@ -307,8 +307,13 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 	if core.PaneMode(&fixed, capacityEnv) == "flex" {
 		sum += core.FlexExtra(&fixed, capacityEnv)
 	}
-	if hadOwnLayout {
+	source := core.CfgSource(&fixed, "max_workers", capacityEnv)
+	inherited := (where == "project" && source == "user") || (where == "session" && (source == "user" || source == "project"))
+	if hadOwnLayout || inherited {
 		core.ConfigWritePair(dest, "max_workers", strconv.Itoa(sum), env, cwd)
+		if inherited && !hadOwnLayout {
+			lines = append(lines, "set max_workers="+strconv.Itoa(sum))
+		}
 	}
 	hasSplit := hadOwnLayout && core.FileKeyValue(dest, "split_max_panes") != ""
 	if hasSplit {
@@ -1103,10 +1108,19 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 	}
 	mw := core.Cfg(ctx, "max_workers", "3", env)
 	limit, err := strconv.Atoi(core.MaxWorkers(ctx, env))
-	if core.ConfigExplicit(ctx, "max_workers", env) && (err != nil || limit < sum || limit > full) {
-		s.Warning(fmt.Sprintf("config: max_workers=%s but the lanes hold %d always-open to %d total workers (%s). Set max_workers=%d (doctor --fix aligns it).", mw, sum, full, strings.Join(caps, " "), full))
+	if err == nil && limit == 0 {
+		s.Ok("config: max_workers=0 (no cap on live workers)")
+	} else if core.ConfigExplicit(ctx, "max_workers", env) && (err != nil || limit < sum || limit > full) {
+		source := core.CfgSource(ctx, "max_workers", env)
+		fix := "doctor --fix"
+		if source == "user" || source == "session" {
+			fix += " --" + source
+		} else if source == "env" {
+			fix = "unset SOHO_MAX_WORKERS and run doctor --fix"
+		}
+		s.Warning(fmt.Sprintf("config: max_workers=%s but the lanes hold %d always-open to %d total workers (%s). Set max_workers=%d in the %s layer (%s).", mw, sum, full, strings.Join(caps, " "), full, source, fix))
 	} else if limit < full {
-		fmt.Fprintf(s.Out, "note   config: max_workers=%d allows on-demand lanes only when a slot is free; spawn refuses when the limit is reached\n", limit)
+		fmt.Fprintf(s.Out, "note   config: max_workers=%d allows creating a new worker in an on-demand lane only when a slot is free; spawn refuses creation when the limit is reached\n", limit)
 	} else {
 		s.Ok(fmt.Sprintf("config: max_workers=%s matches the lanes (%s)", core.MaxWorkers(ctx, env), strings.Join(caps, " ")))
 	}

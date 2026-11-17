@@ -12,7 +12,7 @@ func TestDoctorOnDemandLaneAndFix(t *testing.T) {
 	ctx := tm6DoctorConfig(map[string]string{"panes": "4", "max_workers": "3"}, "project")
 	var out strings.Builder
 	doctorLaneWarnings(ctx, env, root, &Say{Out: &out})
-	if strings.Contains(out.String(), "but the lanes hold") || !strings.Contains(out.String(), "note   config: max_workers=3 allows on-demand lanes only when a slot is free; spawn refuses when the limit is reached") {
+	if strings.Contains(out.String(), "but the lanes hold") || !strings.Contains(out.String(), "note   config: max_workers=3 allows creating a new worker in an on-demand lane only when a slot is free") {
 		t.Fatalf("unexpected diagnostics: %s", out.String())
 	}
 	file := filepath.Join(root, ".agents", "soho.conf")
@@ -29,6 +29,35 @@ func TestDoctorOnDemandLaneAndFix(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "max_workers=4\n") {
 		t.Fatalf("fix: %s", raw)
+	}
+}
+
+func TestDoctorUnlimitedOnDemandLane(t *testing.T) {
+	env, root := tm6DoctorEnv(t)
+	ctx := tm6DoctorConfig(map[string]string{"max_workers": "0", "lane_critical_roles": "critical-implementer", "lane_critical_panes": "1"}, "project")
+	var out strings.Builder
+	doctorLaneWarnings(ctx, env, root, &Say{Out: &out})
+	got := out.String()
+	if !strings.Contains(got, "max_workers=0 (no cap on live workers)") || strings.Contains(got, "but the lanes hold") || strings.Contains(got, "note   config: max_workers=") {
+		t.Fatalf("unexpected diagnostics: %s", got)
+	}
+}
+
+func TestDoctorCapacityWarningNamesLayer(t *testing.T) {
+	for _, tc := range []struct{ source, fix string }{
+		{"user", "doctor --fix --user"},
+		{"project", "doctor --fix"},
+		{"session", "doctor --fix --session"},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			env, root := tm6DoctorEnv(t)
+			ctx := tm6DoctorConfig(map[string]string{"panes": "4", "max_workers": "1"}, tc.source)
+			var out strings.Builder
+			doctorLaneWarnings(ctx, env, root, &Say{Out: &out})
+			if !strings.Contains(out.String(), "in the "+tc.source+" layer ("+tc.fix+")") {
+				t.Fatalf("unexpected diagnostics: %s", out.String())
+			}
+		})
 	}
 }
 

@@ -172,7 +172,7 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 		tm6Write(t, filepath.Join(cwd, ".agents", "soho.conf"), "panes=2\n")
 		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--user", "--panes", "4"}, env, cwd)
 		data, err := os.ReadFile(user)
-		if err != nil || code != 0 || !strings.Contains(string(data), "max_workers=3\n") {
+		if err != nil || code != 0 || !strings.Contains(string(data), "max_workers=4\n") {
 			t.Fatalf("code=%d out=%q stderr=%q user=%q err=%v", code, out, stderr, data, err)
 		}
 	})
@@ -185,8 +185,37 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 		env["SOHO_LANE_BUILD_PANES"] = "1"
 		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--panes", "4"}, env, cwd)
 		data, err := os.ReadFile(conf)
-		if err != nil || code != 0 || !strings.Contains(string(data), "max_workers=3\n") {
+		if err != nil || code != 0 || !strings.Contains(string(data), "max_workers=4\n") {
 			t.Fatalf("code=%d out=%q stderr=%q conf=%q err=%v", code, out, stderr, data, err)
+		}
+	})
+	t.Run("inherited user cap warning and repairs", func(t *testing.T) {
+		for _, target := range []string{"user", "project"} {
+			t.Run(target, func(t *testing.T) {
+				env, cwd := tm6CLIEnv(t)
+				user := filepath.Join(env.Get("XDG_CONFIG_HOME"), "soho", "config")
+				tm6Write(t, user, "panes=4\nmax_workers=1\n")
+				code, out, stderr := runIn(t, []string{"doctor"}, env, cwd)
+				if code != 0 || !strings.Contains(out, "in the user layer (doctor --fix --user)") {
+					t.Fatalf("before code=%d out=%q stderr=%q", code, out, stderr)
+				}
+				args := []string{"doctor", "--fix", "--panes", "4"}
+				if target == "user" {
+					args = append(args, "--user")
+				}
+				code, out, stderr = runIn(t, args, env, cwd)
+				if code != 0 || strings.Contains(out, "but the lanes hold") {
+					t.Fatalf("after code=%d out=%q stderr=%q", code, out, stderr)
+				}
+				file := user
+				if target == "project" {
+					file = filepath.Join(cwd, ".agents", "soho.conf")
+				}
+				data, err := os.ReadFile(file)
+				if err != nil || !strings.Contains(string(data), "max_workers=4\n") {
+					t.Fatalf("file=%s data=%q err=%v", file, data, err)
+				}
+			})
 		}
 	})
 	t.Run("new user layout removes frozen cap", func(t *testing.T) {
@@ -297,10 +326,10 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(out, "set max_workers=4\n") || strings.Contains(out, "set split_max_panes=5\n") || !strings.Contains(out, "set max_workers=2\n") || !strings.Contains(out, "set split_max_panes=3\n") {
+		if strings.Contains(out, "set max_workers=2\n") || strings.Contains(out, "set split_max_panes=3\n") || !strings.Contains(out, "set max_workers=4\n") || !strings.Contains(out, "set split_max_panes=5\n") {
 			t.Fatalf("intermediate or missing final values: %q", out)
 		}
-		if code != 0 || !strings.Contains(string(data), "lane.critical.roles=critical-implementer") || !strings.Contains(string(data), "lane.critical.panes=2") || !strings.Contains(string(data), "lane.critical.kind=codex") || !strings.Contains(string(data), "max_workers=2") || !strings.Contains(string(data), "split_max_panes=3") {
+		if code != 0 || !strings.Contains(string(data), "lane.critical.roles=critical-implementer") || !strings.Contains(string(data), "lane.critical.panes=2") || !strings.Contains(string(data), "lane.critical.kind=codex") || !strings.Contains(string(data), "max_workers=4") || !strings.Contains(string(data), "split_max_panes=5") {
 			t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
 		}
 	})
