@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -108,7 +109,13 @@ func cmdWake(agents []string, timeoutMs float64, anyDone bool, ctx *core.Config,
 	if runner == nil {
 		core.DieFriction("wait: --wake needs the native transport (SOHO_TRANSPORT=hc)", 2, "", "wait")
 	}
-	remaining, err := uncoveredWakeAgents(svc, env.Get("HC_TERMINAL_ID"), sd, agents)
+	storage, storageErr := openWakeStorage(sd)
+	if storageErr != nil {
+		fmt.Fprintf(platform.Stderr, "soho: wait: wake storage unavailable (%v); wake is armed without duplicate detection for this call\n", storageErr)
+	} else {
+		defer storage.Close()
+	}
+	remaining, err := uncoveredWakeAgents(svc, env.Get("HC_TERMINAL_ID"), storage, agents)
 	if err != nil {
 		core.DieFriction("wait: --wake could not check existing wakes: "+err.Error(), 4, "", "wait")
 	}
@@ -143,15 +150,44 @@ func cmdWake(agents []string, timeoutMs float64, anyDone bool, ctx *core.Config,
 		}
 		core.DieFriction(message, 4, "", "wait")
 	}
-	if err := recordWake(sd, rep.Value, agents); err != nil {
+	if err := recordWake(storage, rep.Value, agents); err != nil {
 		core.DieFriction(fmt.Sprintf("wait: --wake started child '%s' but could not record its agents: %v; check it before arming again", rep.Value, err), 4, "", "wait")
 	}
 	jsonLine(jsonjs.O("wake", "armed", "agents", stringsAny(agents), "terminal", rep.Value, "name", name, "timeout_ms", ms))
 	return 0
 }
 
+// openWakeStorage retains the checked directory for all record operations.
+func openWakeStorage(sd string) (*os.Root, error) {
+	path := filepath.Join(sd, "wakes")
+	if err := os.Mkdir(path, 0700); err != nil && !os.IsExist(err) {
+		return nil, err
+	}
+	if err := core.CheckPrivateStateDirectory(path, "wakes"); err != nil {
+		return nil, err
+	}
+	before, err := os.Lstat(path)
+	if err != nil || !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("wake directory changed")
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := root.Stat(".")
+	if err != nil || !os.SameFile(before, opened) {
+		_ = root.Close()
+		return nil, fmt.Errorf("wake directory changed")
+	}
+	if err := core.CheckPrivateStateDirectoryInfo(path, "wakes", opened); err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	return root, nil
+}
+
 // uncoveredWakeAgents reconciles records only after a successful live listing.
-func uncoveredWakeAgents(svc transport.Services, caller, sd string, agents []string) ([]string, error) {
+func uncoveredWakeAgents(svc transport.Services, caller string, dir *os.Root, agents []string) ([]string, error) {
 	rep := svc.Runtime.List(context.Background(), transport.Scope{All: true}, transport.Call{})
 	if rep.Err != nil {
 		return nil, rep.Err
@@ -159,33 +195,61 @@ func uncoveredWakeAgents(svc transport.Services, caller, sd string, agents []str
 	if !rep.Valid {
 		return nil, fmt.Errorf("terminal listing is invalid")
 	}
-	live := make(map[string]bool)
-	for _, term := range rep.Value {
-		if term.ParentKnown && term.Parent == caller && term.NativeState == "live" {
-			live[term.Target.ID] = true
-		}
-	}
-	dir := filepath.Join(sd, "wakes")
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
+	if dir == nil {
 		return agents, nil
 	}
+	live := make(map[string]bool)
+	children := make(map[string]bool)
+	for _, term := range rep.Value {
+		if term.NativeState == "live" {
+			live[term.Target.ID] = true
+			if term.ParentKnown && term.Parent == caller {
+				children[term.Target.ID] = true
+			}
+		}
+	}
+	f, err := dir.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	entries, err := f.ReadDir(-1)
+	_ = f.Close()
 	if err != nil {
 		return nil, err
 	}
 	covered := make(map[string]string)
 	for _, entry := range entries {
 		name := entry.Name()
+		if !validWakeAddress(name) {
+			return nil, fmt.Errorf("invalid wake record %q", name)
+		}
 		if !live[name] {
-			if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			if err := dir.Remove(name); err != nil {
 				return nil, err
 			}
 			continue
 		}
-		if !entry.Type().IsRegular() {
+		if !children[name] {
+			continue
+		}
+		info, err := dir.Lstat(name)
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("invalid wake record %q", name)
 		}
-		data, err := os.ReadFile(filepath.Join(dir, name))
+		file, err := dir.Open(name)
+		if err != nil {
+			return nil, err
+		}
+		opened, statErr := file.Stat()
+		if statErr != nil || !os.SameFile(info, opened) {
+			_ = file.Close()
+			return nil, fmt.Errorf("wake record %q changed", name)
+		}
+		data, err := io.ReadAll(file)
+		_ = file.Close()
 		if err != nil {
 			return nil, err
 		}
@@ -208,8 +272,12 @@ func uncoveredWakeAgents(svc transport.Services, caller, sd string, agents []str
 	return remaining, nil
 }
 
-func recordWake(sd, terminal string, agents []string) error {
-	if terminal == "" || terminal == "." || terminal == ".." || strings.ContainsAny(terminal, "/\\\x00\r\n") {
+func validWakeAddress(terminal string) bool {
+	return terminal != "" && terminal != "." && terminal != ".." && !strings.ContainsAny(terminal, "/\\\x00\r\n")
+}
+
+func recordWake(dir *os.Root, terminal string, agents []string) error {
+	if !validWakeAddress(terminal) {
 		return fmt.Errorf("invalid terminal address %q", terminal)
 	}
 	for _, agent := range agents {
@@ -217,11 +285,10 @@ func recordWake(sd, terminal string, agents []string) error {
 			return fmt.Errorf("invalid agent name")
 		}
 	}
-	dir := filepath.Join(sd, "wakes")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
+	if dir == nil {
+		return nil
 	}
-	f, err := os.OpenFile(filepath.Join(dir, terminal), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	f, err := dir.OpenFile(terminal, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
 	}

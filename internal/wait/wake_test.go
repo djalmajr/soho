@@ -776,3 +776,53 @@ func TestWakeRefusesAStateRootWithALineBreak(t *testing.T) {
 		})
 	}
 }
+
+func TestWakeOtherCallerPreservesLiveRecord(t *testing.T) {
+	conn := newWakeRPCConn(wakeRPCRun)
+	live := `{"terminals":[{"address":"t9","name":"wake-5eeaadf3","state":"live","parent":"t1"}]}`
+	f := newWakeFixture(t, conn, []string{"w1", "w2"},
+		fakecli.Rule{Argv: []string{"ls", "--json"}, Call: 1, Stdout: `{"terminals":[]}`},
+		fakecli.Rule{Argv: []string{"ls", "--json"}, Call: 2, Stdout: live},
+		fakecli.Rule{Argv: []string{"ls", "--json"}, Call: 3, Stdout: live},
+		notFoundRule(WakeName([]string{"w1", "w2"})), notFoundRule("wake-w1"))
+	if code, msg, _, _ := f.cmd(t, "w1", "w2", "--wake"); code != 0 {
+		t.Fatalf("first: %d %s", code, msg)
+	}
+	root, err := openWakeStorage(f.sd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	remaining, err := uncoveredWakeAgents(wakeServices(f.env), "t2", root, []string{"w1"})
+	if err != nil || !reflect.DeepEqual(remaining, []string{"w1"}) {
+		t.Fatalf("other caller: %v %v", remaining, err)
+	}
+	if _, err := os.Stat(filepath.Join(f.sd, "wakes", "t9")); err != nil {
+		t.Fatal(err)
+	}
+	code, msg, _, stderr := f.cmd(t, "w1", "--wake")
+	if code != 0 || !strings.Contains(stderr, "already armed (t9)") || len(conn.runs(t)) != 1 {
+		t.Fatalf("repeat: %d %s stderr=%q runs=%d", code, msg, stderr, len(conn.runs(t)))
+	}
+}
+
+func TestWakeRefusesLinkedStorage(t *testing.T) {
+	conn := newWakeRPCConn(wakeRPCRun)
+	f := newWakeFixture(t, conn, []string{"w1"}, notFoundRule("wake-w1"))
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "keep"), []byte("unrelated"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(f.sd, "wakes")); err != nil {
+		t.Fatal(err)
+	}
+	code, msg, out, stderr := f.cmd(t, "w1", "--wake")
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(outside, "keep"))
+	if code != 0 || wakeJSON(t, out)["wake"] != "armed" || len(conn.runs(t)) != 1 || strings.Count(stderr, "duplicate detection") != 1 || err != nil || string(data) != "unrelated" || len(entries) != 1 {
+		t.Fatalf("code=%d msg=%q stderr=%q entries=%v data=%q err=%v", code, msg, stderr, entries, data, err)
+	}
+}
