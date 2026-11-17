@@ -263,6 +263,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	}
 	refuseReadOnlyEditBrief(briefRaw, brief, agent, role, explicitRole, ctx, env, cwd)
 	warnSecurityBriefOnBuildLane(briefRaw, brief, agent, at(11), ctx, env)
+	warnDispatchDisplay(briefRaw, kind, agent, at(13), sd, env)
 	// The report and the composed prompt follow the state dir only when the
 	// worker can reach it: a sandboxed worker writes inside its own cwd, so
 	// a sandboxed codex (approvals other than unsandboxed) with a non-empty

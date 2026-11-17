@@ -3,8 +3,6 @@ package spawn
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -56,30 +54,9 @@ func Warn(message string, ctx *core.Config, env platform.Env, command string) {
 	core.Warn(message, filepath.Join(core.StateDirPath(ctx, env, mustGetwd()), "friction.log"), command)
 }
 
-// warnOnce prints a spawn warning once per session state dir: later spawns
-// that would repeat it stay quiet (SOH-309). The marker is
-// <state dir>/warned/<hash of key>, created only when the state dir already
-// exists and writes are allowed; otherwise the warning always prints. An
-// admission-only pass prints nothing and leaves no marker.
-func warnOnce(key, message string, ctx *core.Config, env platform.Env, cwd string, admissionOnly bool, warn func(string, *core.Config, platform.Env, string)) {
-	if admissionOnly {
-		return
-	}
-	sd := core.StateDirPath(ctx, env, cwd)
-	if info, err := os.Stat(sd); err == nil && info.IsDir() && !core.Nowrite(env) {
-		dir := filepath.Join(sd, "warned")
-		if os.MkdirAll(dir, 0o700) == nil {
-			sum := sha256.Sum256([]byte(key))
-			f, err := os.OpenFile(filepath.Join(dir, hex.EncodeToString(sum[:8])), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-			if err != nil && os.IsExist(err) {
-				return
-			}
-			if err == nil {
-				_ = f.Close()
-			}
-		}
-	}
-	warn(message, ctx, env, "spawn")
+// warnOnce retains the spawn adapter while the marker implementation is shared.
+var warnOnce = func(key, message string, ctx *core.Config, env platform.Env, cwd string, admissionOnly bool, warn func(string, *core.Config, platform.Env, string)) {
+	core.WarnOnce(key, func() string { return core.StateDirPath(ctx, env, cwd) }, env, admissionOnly, func() { warn(message, ctx, env, "spawn") })
 }
 
 func mustGetwd() string { cwd, _ := os.Getwd(); return cwd }
