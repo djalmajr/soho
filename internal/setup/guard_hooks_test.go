@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -47,6 +48,97 @@ func TestGuardHooksSetup(t *testing.T) {
 		raw, err := os.ReadFile(filepath.Join(root, f.path))
 		if err != nil || string(raw) != before[i] {
 			t.Fatalf("%s changed: %v\n%s", f.path, err, raw)
+		}
+	}
+}
+
+func TestHookSelectionWithOtherGuard(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		for _, event := range []string{"UserPromptSubmit", "SessionStart"} {
+			for _, guardFlag := range []bool{false, true} {
+				for _, tc := range []struct {
+					name  string
+					forms []string
+				}{{"plain", []string{"plain"}}, {"guarded", []string{"guard"}}, {"plain-first", []string{"plain", "guard"}}, {"guard-first", []string{"guard", "plain"}}} {
+					t.Run(provider+"/"+event+"/"+tc.name+map[bool]string{false: "/ordinary", true: "/guarded-setup"}[guardFlag], func(t *testing.T) {
+						root, env, ctx := setupWriteFixture(t)
+						plain, guarded, other := setuptext.SetupHookReminder(), setuptext.GuardedHookReminder(), setuptext.GuardedHookDoctor()
+						file := ".claude/settings.json"
+						if event == "SessionStart" {
+							plain, guarded, other = setuptext.SetupHookDoctor(), setuptext.GuardedHookDoctor(), setuptext.GuardedHookReminder()
+						}
+						if provider == "codex" {
+							file = ".codex/hooks.json"
+							plain, guarded, other = setuptext.SetupHookCodexReminder(), setuptext.GuardedHookCodexReminder(), setuptext.GuardedHookCodexDoctor()
+							if event == "SessionStart" {
+								plain, guarded, other = setuptext.SetupHookCodexDoctor(), setuptext.GuardedHookCodexDoctor(), setuptext.GuardedHookCodexReminder()
+							}
+						}
+						rows := []any{}
+						wantMarker := "plain"
+						for _, form := range tc.forms {
+							command := plain
+							if form == "guard" {
+								command, wantMarker = guarded, "guard"
+							}
+							rows = append(rows, map[string]any{"matcher": form + "-row", "hooks": []any{map[string]any{"type": "command", "command": command, "marker": form, "timeout": 73}}})
+						}
+						foreign := []any{map[string]any{"matcher": "other-row", "hooks": []any{map[string]any{"type": "command", "command": other, "marker": "other", "timeout": float64(42)}}}, map[string]any{"matcher": "user-row", "hooks": []any{map[string]any{"type": "command", "command": "echo user hook", "marker": "user"}}}}
+						rows = append(rows, foreign...)
+						body, err := json.Marshal(map[string]any{"hooks": map[string]any{event: rows}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						path := filepath.Join(root, file)
+						if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(path, body, 0600); err != nil {
+							t.Fatal(err)
+						}
+						var args []string
+						if guardFlag {
+							args = []string{"--guard-hooks"}
+						}
+						if rc, out, msg := runSetupWrite(args, ctx, env, root); rc != 0 {
+							t.Fatalf("setup=%d %s %s", rc, out, msg)
+						}
+						raw, err := os.ReadFile(path)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var doc struct {
+							Hooks map[string][]map[string]any `json:"hooks"`
+						}
+						if err := json.Unmarshal(raw, &doc); err != nil {
+							t.Fatal(err)
+						}
+						got := doc.Hooks[event]
+						if len(got) != 3 {
+							t.Fatalf("rows: %s", raw)
+						}
+						wantCommand := plain
+						if wantMarker == "guard" || guardFlag {
+							wantCommand = guarded
+						}
+						entry := map[string]any{"type": "command", "command": wantCommand, "marker": wantMarker, "timeout": float64(73)}
+						if provider == "codex" && guardFlag {
+							entry["commandWindows"] = plain
+						}
+						want := map[string]any{"matcher": wantMarker + "-row", "hooks": []any{entry}}
+						if !reflect.DeepEqual(got[0], want) || !reflect.DeepEqual(got[1], foreign[0]) || !reflect.DeepEqual(got[2], foreign[1]) {
+							t.Fatalf("selection or metadata changed: %s", raw)
+						}
+						if rc, out, msg := runSetupWrite(args, ctx, env, root); rc != 0 {
+							t.Fatalf("repeat=%d %s %s", rc, out, msg)
+						}
+						again, err := os.ReadFile(path)
+						if err != nil || string(again) != string(raw) {
+							t.Fatalf("rerun changed: %v\n%s", err, again)
+						}
+					})
+				}
+			}
 		}
 	}
 }

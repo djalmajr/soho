@@ -967,6 +967,10 @@ func putHook(hooks *jsonjs.Object, event, command string, recognized []string, g
 	// Keep the existing placement and metadata of a native or guarded hook.
 	preserve := false
 	guardedPresent := false
+	guardedCommand := GuardedHookReminder()
+	if event == "SessionStart" {
+		guardedCommand = GuardedHookDoctor()
+	}
 	for _, entry := range entries {
 		row, ok := entry.(*jsonjs.Object)
 		if !ok {
@@ -980,7 +984,7 @@ func putHook(hooks *jsonjs.Object, event, command string, recognized []string, g
 				continue
 			}
 			c, _ := h.Get("command")
-			if c == GuardedHookReminder() || c == GuardedHookDoctor() {
+			if c == guardedCommand {
 				guardedPresent = true
 			}
 			if c == GuardedHookReminder() || c == GuardedHookDoctor() || c == SetupHookReminder() || c == SetupHookDoctor() {
