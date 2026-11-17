@@ -84,6 +84,17 @@ func TestDoctorLaneCapacityRange(t *testing.T) {
 	}
 }
 
+func TestDoctorFlexExtraIsTemporary(t *testing.T) {
+	env, root := tm6DoctorEnv(t)
+	ctx := tm6DoctorConfig(map[string]string{"panes": "2", "pane_mode": "flex", "flex_extra": "1", "max_workers": "1"}, "project")
+	var out strings.Builder
+	doctorLaneWarnings(ctx, env, root, &Say{Out: &out})
+	got := out.String()
+	if strings.Contains(got, "but the lanes hold") || !strings.Contains(got, "temporary flex worker only when a slot is free") {
+		t.Fatalf("unexpected diagnostics: %s", got)
+	}
+}
+
 func TestDoctorDisplayPolicyUIRole(t *testing.T) {
 	for _, tc := range []struct {
 		name, roles, kind string

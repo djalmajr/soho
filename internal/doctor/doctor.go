@@ -280,8 +280,14 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 	before, _ := platform.ReadTextFile(dest)
 	before = strings.TrimRight(before, "\n")
 	hadOwnLayout := core.FileKeyValue(dest, "panes") != "" || core.FileLaneSignature(dest) != ""
-	lines := core.ApplyLaneFile(dest, panes, env, cwd)
-	fixed := core.LoadConfig(env, cwd)
+	repairEnv := platform.Env{}
+	for key, value := range env {
+		if !strings.HasPrefix(strings.ToUpper(key), "SOHO_") {
+			repairEnv[key] = value
+		}
+	}
+	lines := core.ApplyLaneFile(dest, panes, repairEnv, cwd)
+	fixed := core.LoadConfig(repairEnv, cwd)
 	if where != "session" {
 		selected := core.Config{Entries: make(map[string]core.ConfigEntry)}
 		for _, layer := range fixed.Layers {
@@ -302,7 +308,7 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 	// The repaired limit describes the destination file alone: transient
 	// overrides (SOHO_PANES, SOHO_LANE_*_PANES) never leak into it, for the
 	// user, project and session destinations alike.
-	capacityEnv := platform.Env{}
+	capacityEnv := repairEnv
 	sum := core.LaneCapacitySum(&fixed, capacityEnv)
 	if core.PaneMode(&fixed, capacityEnv) == "flex" {
 		sum += core.FlexExtra(&fixed, capacityEnv)
@@ -1098,7 +1104,6 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 		}
 	}
 	if mode == "flex" {
-		sum += core.FlexExtra(ctx, env)
 		full += core.FlexExtra(ctx, env)
 	}
 	mw := core.Cfg(ctx, "max_workers", "3", env)
@@ -1123,7 +1128,11 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 		}
 		s.Warning(fmt.Sprintf("config: max_workers=%s but the lanes hold %d always-open to %d total workers (%s). %s", mw, sum, full, strings.Join(caps, " "), advice))
 	} else if limit < full {
-		fmt.Fprintf(s.Out, "note   config: max_workers=%d allows creating a new worker in an on-demand lane only when a slot is free; spawn refuses creation when the limit is reached\n", limit)
+		if mode == "flex" && core.FlexExtra(ctx, env) > 0 {
+			fmt.Fprintf(s.Out, "note   config: max_workers=%d allows creating a new worker in an on-demand lane or a temporary flex worker only when a slot is free; spawn refuses creation when the limit is reached\n", limit)
+		} else {
+			fmt.Fprintf(s.Out, "note   config: max_workers=%d allows creating a new worker in an on-demand lane only when a slot is free; spawn refuses creation when the limit is reached\n", limit)
+		}
 	} else {
 		s.Ok(fmt.Sprintf("config: max_workers=%s matches the lanes (%s)", core.MaxWorkers(ctx, env), strings.Join(caps, " ")))
 	}

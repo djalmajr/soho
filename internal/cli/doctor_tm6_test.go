@@ -165,6 +165,19 @@ func TestDoctorTM6CLIAndParity(t *testing.T) {
 }
 
 func TestDoctorTM6FixTargets(t *testing.T) {
+	t.Run("project fix uses persisted flex mode", func(t *testing.T) {
+		env, cwd := tm6CLIEnv(t)
+		user := filepath.Join(env.Get("XDG_CONFIG_HOME"), "soho", "config")
+		conf := filepath.Join(cwd, ".agents", "soho.conf")
+		tm6Write(t, user, "max_workers=5\n")
+		tm6Write(t, conf, "panes=2\npane_mode=flex\nlane.review.panes=3\n")
+		env["SOHO_PANE_MODE"] = "strict"
+		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--panes", "2"}, env, cwd)
+		data, err := os.ReadFile(conf)
+		if err != nil || code != 0 || !strings.Contains(string(data), "lane.review.panes=3\n") || !strings.Contains(string(data), "max_workers=5\n") {
+			t.Fatalf("code=%d out=%q stderr=%q conf=%q err=%v", code, out, stderr, data, err)
+		}
+	})
 	t.Run("user fix ignores project capacity", func(t *testing.T) {
 		env, cwd := tm6CLIEnv(t)
 		user := filepath.Join(env.Get("XDG_CONFIG_HOME"), "soho", "config")

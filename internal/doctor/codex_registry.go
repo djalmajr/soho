@@ -30,7 +30,7 @@ func doctorCodexRegistryPolicy(ctx *core.Config, env platform.Env, cwd string, s
 		s.Warning("codex: invalid TOML in " + path + "; cannot check shell_environment_policy include_only")
 		return
 	}
-	if !present {
+	if !present || !codexenv.HasIncludeFilter(patterns) {
 		return
 	}
 
