@@ -299,7 +299,13 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 				lanes = append(lanes, v)
 			}
 		case "--set", "--user-set", "--session-set":
-			platform.DieFriction(fmt.Sprintf("setup: unknown option '%s'", a), 2)
+			hint := "soho config set <key> <value>"
+			if a == "--user-set" {
+				hint += " --user"
+			} else if a == "--session-set" {
+				hint = "soho session set <key> <value>"
+			}
+			platform.DieFriction(fmt.Sprintf("setup: %s is a --plan option (it previews a value without writing); to write it, run '%s'", a, hint), 2)
 		case "--no-hooks":
 			hooks = false
 		case "--dry-run":
@@ -570,7 +576,7 @@ func applySetupPreset(conf, panes string, lanes []core.LaneSpec, env platform.En
 	if err := os.MkdirAll(filepath.Dir(conf), 0o755); err != nil {
 		platform.DieFriction(fmt.Sprintf("config set: could not rewrite %s (file left untouched)", conf), 4)
 	}
-	for _, line := range core.ApplyLaneFile(conf, panes, env, cwd) {
+	for _, line := range core.ApplyLaneFile(conf, panes, env, cwd, lanes...) {
 		_, _ = fmt.Fprintln(platform.Stdout, line)
 	}
 	writeSetupLanes(conf, lanes, env, cwd)
