@@ -26,6 +26,8 @@ metadata:
 
 Turn the calling agent into an **orchestrator** and give it a team of **role agents** running as real CLI agents in Herdr panes. The orchestrator is not configured anywhere: it is whichever agent runs this skill from a Herdr pane — either under native Herdr Core (`SOHO_TRANSPORT=hc` with `$HC_TERMINAL_ID` set) or legacy Herdr (`HERDR_ENV=1`). Every other role is a file under `roles/` whose `kind` says which CLI agent plays it. Roles are markdown files with frontmatter (like omp's `.omp/agents/*.md`); the transport is either native `hc` or legacy `herdr` CLI. The orchestrator decomposes, briefs, waits, integrates, verifies, and commits. Workers implement, research, or review one slice each and report to a file.
 
+When a settled report contains a `blocked-by-scope: <file>:<line> — <change>` marker, wait lists it in its summary.
+
 ## Non-negotiables (each one is a mistake that was actually made)
 
 1. **Without an active assignment, the report file is the completion signal.** An active collaboration ends only through orchestrator `finalize`. Use `dispatch` (waits), `wait`, or `status`; never hand-roll an agent-state loop.

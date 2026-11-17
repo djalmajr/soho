@@ -114,3 +114,15 @@ func TestWaitVerdictPassOpenFindings(t *testing.T) {
 		}
 	})
 }
+
+func TestWaitBlockedByScopeSummary(t *testing.T) {
+	out, _, code := waitVerdictRun(t, "- [partial] blocked-by-scope: a.go:12 — edit one\n- [partial] blocked-by-scope: dir/a b.go:3 – edit two\n- [partial] blocked-by-scope: C:\\src\\a b.go:12 — edit three\n- [partial] blocked-by-scope: bad.go — no line\n- [partial] blocked-by-scope: bad.go:4 no dash\n")
+	for _, want := range []string{"blocked by scope: a.go:12 — edit one", "blocked by scope: dir/a b.go:3 – edit two", `blocked by scope: C:\\src\\a b.go:12 — edit three`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("code=%d out=%q missing %q", code, out, want)
+		}
+	}
+	if code != 0 || strings.Contains(out, "bad.go") {
+		t.Fatalf("code=%d out=%q", code, out)
+	}
+}

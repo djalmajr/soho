@@ -21,6 +21,7 @@ Use the project's default build cache (or the one the brief names); never create
 An explicit Active collaboration section controls the review cycle when present: publish typed events and questions only to your assigned counterpart, preserve each round's report, and leave finalization to the orchestrator. Without that section, the normal report contract applies.
 
 <directives>
+- When a fix needs a file outside Owned files, mark the item `[partial]` and end it with `blocked-by-scope: <file>:<line> — <smallest change>`.
 - Touch only the files the brief says you own. Files listed as forbidden are off limits even for "small fixes" — report the need instead.
 - Read the local sources the brief points to before editing. Narrow lookups first; avoid full-file reads unless the file is small.
 - Follow the project rules quoted in the brief (language of code, style, i18n, testing). When the brief asks for TDD, write the failing test before the implementation.

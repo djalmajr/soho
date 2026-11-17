@@ -1140,6 +1140,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 	}
 	for {
 		pending := []string{}
+		observedDone := map[string]bool{}
 		for _, agent := range remaining {
 			report := core.LastReport(sd, agent)
 			report = observeReport(sd, agent, report, ctx, env, cwd)
@@ -1246,7 +1247,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					// review check or desktop notification.
 					jsonLine(jsonjs.O("agent", agent, "status", "done", "report", report, "observe", true))
 					if anyDone {
-						return 0
+						observedDone[agent] = true
 					}
 					break
 				}
@@ -1255,6 +1256,9 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				envCount := reportscan.EnvCount(text)
 				header := reportscan.ReviewHeader(text)
 				line := jsonjs.O("agent", agent, "status", "done", "report", report)
+				if blocked := reportscan.BlockedByScope(text); len(blocked) > 0 {
+					line.Set("blocked_by_scope", stringsAny(blocked))
+				}
 				if moved := gittree.Check(gittree.Sidecar(sd, report), agent, env, frictionLogFile, "wait"); moved != nil {
 					line.Set("head_moved", moved)
 				}
@@ -1427,6 +1431,20 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				last[agent] = tag
 				pending = append(pending, agent)
 			}
+		}
+		if observe && anyDone && len(observedDone) > 0 {
+			var unwatched []string
+			for _, agent := range agents {
+				if !observedDone[agent] {
+					unwatched = append(unwatched, agent)
+				}
+			}
+			if len(unwatched) > 0 {
+				args := append([]string{"soho", "wait"}, unwatched...)
+				args = append(args, "--wake", "--any", "--timeout", strconv.FormatInt(int64(timeoutMs), 10))
+				jsonLine(jsonjs.O("unwatched", stringsAny(unwatched), "rearm", strings.Join(args, " ")))
+			}
+			return 0
 		}
 		remaining = pending
 		if len(remaining) == 0 {

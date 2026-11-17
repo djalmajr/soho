@@ -41,6 +41,7 @@ Glassmorphism and decorative glow, gradient text, identical card grids, cards in
 </avoid>
 
 <directives>
+- When a fix needs a file outside Owned files, mark the item `[partial]` and end it with `blocked-by-scope: <file>:<line> — <smallest change>`.
 - Prefer editing existing files over creating new ones; keep changes minimal and consistent with the codebase style.
 - No hardcoded UI strings when the project has i18n: use the catalog and add keys in the shared file only if the brief assigns that file to you.
 - Never create documentation files unless the brief asks.
