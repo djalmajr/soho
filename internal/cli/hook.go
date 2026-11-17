@@ -75,10 +75,18 @@ func cmdHook(args []string, env platform.Env, cwd string) int {
 		ctx := core.LoadConfig(readEnv, cwd)
 		doctor.CmdDoctor(nil, &ctx, readEnv, cwd)
 	}()
+	var warnings []string
 	for _, line := range strings.Split(captured.String(), "\n") {
 		if rest, ok := strings.CutPrefix(line, "warn"); ok && strings.HasPrefix(rest, " ") {
-			fmt.Fprintf(out, "soho doctor: %s\n", strings.TrimLeft(rest, " \t"))
+			warnings = append(warnings, strings.TrimLeft(rest, " \t"))
 		}
+	}
+	shown, hidden := hookSeenWarnings(env, cwd, warnings)
+	for _, warning := range shown {
+		fmt.Fprintf(out, "soho doctor: %s\n", warning)
+	}
+	if hidden > 0 {
+		fmt.Fprintf(out, "soho doctor: %d warning(s) shown in the last 24h are hidden; run 'soho doctor' to see all\n", hidden)
 	}
 	return 0
 }
