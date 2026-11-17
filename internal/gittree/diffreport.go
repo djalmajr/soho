@@ -17,6 +17,18 @@ import (
 	"github.com/djalmajr/soho/internal/taskreport"
 )
 
+// Legacy sidecars did not record the executable bit. Preserve their content-only comparison.
+func sameFingerprint(before any, now string) bool {
+	old, ok := before.(string)
+	if !ok {
+		return false
+	}
+	if strings.HasPrefix(old, "file:") && !strings.HasPrefix(old, "file:true:") && !strings.HasPrefix(old, "file:false:") {
+		return old == "file:"+strings.TrimPrefix(strings.TrimPrefix(now, "file:true:"), "file:false:")
+	}
+	return old == now
+}
+
 // DiffReport audits a recorded edit task once, at settle or successful collect.
 // Its permanent marker and readable flag follow Check's scratch-mirror policy.
 // Git/read/write failures leave the command's status and exit code unchanged.
@@ -90,9 +102,7 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 		return nil
 	}
 	defer root.Close()
-	snapshotValue, snapshotPresent := o.Get("git_snapshot")
-	snapshot, snapshotOK := snapshotValue.(*jsonjs.Object)
-	snapshotPresent = snapshotPresent && snapshotOK
+	snapshot, snapshotPresent := snapshotFromSidecar(sidecar, o)
 	if snapshotPresent {
 		for _, name := range snapshot.Keys() {
 			v, _ := snapshot.Get(name)
@@ -112,7 +122,7 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 			return true
 		}
 		now, ok := contentHash(root, name)
-		return !ok || before != now
+		return !ok || !sameFingerprint(before, now)
 	}
 	tracked, fresh := []string{}, []string{}
 	for _, record := range strings.Split(names, "\x00") {
@@ -129,16 +139,21 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 			fresh = append(fresh, name)
 		}
 	}
+	snapshotOnly := []string{}
+	committedSet := make(map[string]bool, len(committed))
+	for _, name := range committed {
+		committedSet[name] = true
+	}
 	if snapshotPresent {
 		for _, name := range snapshot.Keys() {
-			if headChanged[name] {
+			if headChanged[name] || committedSet[name] {
 				continue
 			}
 			before, _ := snapshot.Get(name)
 			now, ok := contentHash(root, name)
-			if !ok || before != now {
+			if !ok || !sameFingerprint(before, now) {
 				changed[name] = true
-				tracked = append(tracked, name)
+				snapshotOnly = append(snapshotOnly, name)
 			}
 		}
 	}
@@ -170,10 +185,9 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 		}
 		return nil
 	}
-	if stat == "" && untracked == "" {
-		for name := range changed {
-			stat += name + "\n"
-		}
+	sort.Strings(snapshotOnly)
+	if len(snapshotOnly) > 0 {
+		stat += "Snapshot-only changes:\n" + strings.Join(snapshotOnly, "\n") + "\n"
 	}
 	artifact := strings.TrimSuffix(report, filepath.Ext(report)) + ".diff-stat.txt"
 	if core.WriteScratchFile(artifact, stat+untracked) != nil {
@@ -312,8 +326,23 @@ func diffEffectiveOwnedRead(sidecar, agent string, o *jsonjs.Object, seams owned
 	return owned, found, ok
 }
 
+// EffectiveOwned resolves the recorded task scope, including inherited entries.
+func EffectiveOwned(sidecar, agent string) ([]string, bool) {
+	o := read(sidecar)
+	if o == nil {
+		return nil, false
+	}
+	owned, found, ok := diffEffectiveOwned(sidecar, agent, o)
+	return owned, found && ok
+}
+
 // PreviousOwned reads only the previous task's own declared scope.
 func PreviousOwned(sidecar, agent, tree string) ([]string, bool) {
+	return PreviousOwnedWithPointer(sidecar, agent, tree, nil)
+}
+
+// PreviousOwnedWithPointer resolves history against a previously saved pointer.
+func PreviousOwnedWithPointer(sidecar, agent, tree string, prior *jsonjs.Object) ([]string, bool) {
 	o := read(sidecar)
 	if o == nil {
 		return nil, false
@@ -322,7 +351,11 @@ func PreviousOwned(sidecar, agent, tree string) ([]string, bool) {
 	if previousTree == "" || platform.CanonPath(previousTree, platform.Current()) != platform.CanonPath(tree, platform.Current()) {
 		return nil, false
 	}
-	owned, _, ok := diffEffectiveSectionRead(sidecar, agent, o, commandOwnedSeams(), "owned files")
+	seams := commandOwnedSeams()
+	if prior != nil {
+		seams.pointer = func(string, string) (*jsonjs.Object, bool) { return prior, false }
+	}
+	owned, _, ok := diffEffectiveSectionRead(sidecar, agent, o, seams, "owned files")
 	filtered := owned[:0]
 	for _, item := range owned {
 		if item != "\x00inherit previous brief" {

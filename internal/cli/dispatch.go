@@ -779,7 +779,17 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		}
 		sendCall.Timeout = time.Duration(seconds) * time.Second
 	}
+	snapshotCapWarned := false
+	warnSnapshotCap := func(fields *jsonjs.Object) {
+		if !amend && !snapshotCapWarned && fields != nil {
+			if over, _ := fields.Get("git_snapshot_over_limit"); over == true {
+				snapshotCapWarned = true
+				core.Warn("Git snapshot exceeds the size cap; using mtime for the task audit", frictionLogPath, "dispatch")
+			}
+		}
+	}
 	gitFields := dispatchCaptureGit(sidecar, briefRaw, workerCwd, cwd, sd, agent, amend, priorPointer, env)
+	warnSnapshotCap(gitFields)
 	defer func() { gittree.Preserve(sidecar, gitFields) }()
 	promptRep := svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue && !(hcMode && amend)}, sendCall)
 	if hcMode && promptRep.Err != nil && promptRep.Err.Kind == transport.FailureBusy {
@@ -791,7 +801,13 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		if amend {
 			promptRep.Err.Message = fmt.Sprintf("worker %s is still working; amendment was not sent. Wait for it to settle, then dispatch again without --amend", agent)
 		} else if hcSettled(svc, agent, timeoutRaw, timeoutGiven, sd, ctx, env, cwd) {
-			promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue}, transport.Call{})
+			gitFields = dispatchGitFields(briefRaw, workerCwd, cwd, sd, agent, false, priorPointer, env)
+			warnSnapshotCap(gitFields)
+			if err := gittree.ReplaceBaseline(sidecar, gitFields); err != nil {
+				promptRep.Err = &transport.Failure{Kind: transport.FailureBusy, Message: "could not persist refreshed Git baseline; the send was not retried"}
+			} else {
+				promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue}, transport.Call{})
+			}
 		} else {
 			promptRep.Err = &transport.Failure{Kind: transport.FailureBusy, Message: fmt.Sprintf("worker %s is still working after the idle wait; the send was not retried", agent)}
 		}
@@ -1896,10 +1912,15 @@ func warnOwnedOverlap(brief, role, agent, sd string, ctx *core.Config, env platf
 	aliases, _ := dispatch.ParseBriefLintAliases(core.Cfg(ctx, "brief_lint_aliases", "", env))
 	body, _ := platform.ReadTextFile(brief)
 	mine := ownedPaths(body, aliases)
+	mineTree, _ := effectiveBriefTree(body, workerCwd)
+	if gittree.InheritsPrevious(body) {
+		if inherited, ok := dispatchPreviousOwned(sd, agent, mineTree, taskreport.ReadTaskReportPointer(sd, agent)); ok {
+			mine = append(mine, inherited...)
+		}
+	}
 	if len(mine) == 0 {
 		return
 	}
-	mineTree, _ := effectiveBriefTree(body, workerCwd)
 	goos := platform.Current()
 	for i, p := range mine {
 		mine[i] = ownedPathForOverlap(p, mineTree, goos)
@@ -1929,6 +1950,11 @@ func warnOwnedOverlap(brief, role, agent, sd string, ctx *core.Config, env platf
 			continue
 		}
 		theirs := ownedPaths(pendingBody, aliases)
+		if gittree.InheritsPrevious(pendingBody) {
+			if resolved, ok := gittree.EffectiveOwned(gittree.Sidecar(sd, report), cols[0]); ok {
+				theirs = resolved
+			}
+		}
 		for i, q := range theirs {
 			theirs[i] = ownedPathForOverlap(q, mineTree, goos)
 		}

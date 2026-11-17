@@ -50,7 +50,7 @@ func dispatchPreviousOwned(sd, agent, tree string, prior *jsonjs.Object) ([]stri
 	if report == "" {
 		return nil, false
 	}
-	return gittree.PreviousOwned(gittree.Sidecar(sd, report), agent, tree)
+	return gittree.PreviousOwnedWithPointer(gittree.Sidecar(sd, report), agent, tree, prior)
 }
 
 func dispatchCaptureGit(sidecar, body, workerCwd, cwd, sd, agent string, amend bool, prior *jsonjs.Object, env platform.Env) *jsonjs.Object {

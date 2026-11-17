@@ -15,6 +15,11 @@ import (
 	"github.com/djalmajr/soho/internal/text"
 )
 
+// SnapshotMaxBytes caps the serialized snapshot; tests may lower it.
+var SnapshotMaxBytes = 16 << 20
+
+const snapshotReadLimit = 16 << 20
+
 var keys = []string{"git_head", "git_branch", "git_tree", "git_snapshot", "git_previous_owned", "git_checked", "diff_checked"}
 
 func git(env platform.Env, tree string, args ...string) (string, bool) {
@@ -67,7 +72,11 @@ func Snapshot(env platform.Env, tree string) *jsonjs.Object {
 	}
 	fields := jsonjs.O("git_head", head, "git_branch", branch, "git_tree", abs)
 	if snapshot, ok := contentSnapshot(env, abs, head); ok {
-		fields.Set("git_snapshot", snapshot)
+		if len(jsonjs.Stringify(snapshot))+1 > SnapshotMaxBytes {
+			fields.Set("git_snapshot_over_limit", true)
+		} else {
+			fields.Set("git_snapshot", snapshot)
+		}
 	}
 	return fields
 }
@@ -114,28 +123,28 @@ func contentHash(root *os.Root, name string) (string, bool) {
 		return "missing", true
 	}
 	if err != nil {
-		return "", false
+		return "unreadable", true
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		target, err := root.Readlink(filepath.FromSlash(name))
 		if err != nil {
-			return "", false
+			return "unreadable-link", true
 		}
 		return fmt.Sprintf("link:%x", sha256.Sum256([]byte(target))), true
 	}
 	if !info.Mode().IsRegular() {
-		return "", false
+		return fmt.Sprintf("special:%s", info.Mode().Type()), true
 	}
 	f, err := root.Open(filepath.FromSlash(name))
 	if err != nil {
-		return "", false
+		return "unreadable-file", true
 	}
 	defer f.Close()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		return "", false
+		return "unreadable-file", true
 	}
-	return fmt.Sprintf("file:%x", h.Sum(nil)), true
+	return fmt.Sprintf("file:%t:%x", info.Mode()&0100 != 0, h.Sum(nil)), true
 }
 
 func read(path string) *jsonjs.Object {
@@ -172,6 +181,25 @@ func readSidecarInspect(path string) *jsonjs.Object {
 	return o
 }
 
+// snapshotFromSidecar supports both inline version-1 snapshots and the new companion.
+func snapshotFromSidecar(path string, o *jsonjs.Object) (*jsonjs.Object, bool) {
+	if v, ok := o.Get("git_snapshot"); ok {
+		snapshot, ok := v.(*jsonjs.Object)
+		return snapshot, ok
+	}
+	marker, _ := o.Get("git_snapshot_file")
+	if marker != true {
+		return nil, false
+	}
+	raw, err := core.ReadScratchReportLimited(path+".snapshot", snapshotReadLimit)
+	if err != nil {
+		return nil, false
+	}
+	value, err := jsonjs.Parse(raw)
+	snapshot, ok := value.(*jsonjs.Object)
+	return snapshot, err == nil && ok
+}
+
 // Fields reads only the task's Git metadata, retaining a previous once marker.
 func Fields(path string) *jsonjs.Object {
 	o := read(path)
@@ -183,6 +211,9 @@ func Fields(path string) *jsonjs.Object {
 		if v, ok := o.Get(k); ok {
 			fields.Set(k, v)
 		}
+	}
+	if snapshot, ok := snapshotFromSidecar(path, o); ok {
+		fields.Set("git_snapshot", snapshot)
 	}
 	return fields
 }
@@ -217,6 +248,9 @@ func Preserve(path string, fields *jsonjs.Object) {
 	}
 	changed := false
 	for _, k := range keys {
+		if k == "git_snapshot" {
+			continue
+		}
 		if _, exists := o.Get(k); exists {
 			continue
 		}
@@ -225,9 +259,50 @@ func Preserve(path string, fields *jsonjs.Object) {
 			changed = true
 		}
 	}
+	if _, inline := o.Get("git_snapshot"); !inline {
+		if marker, _ := o.Get("git_snapshot_file"); marker != true {
+			if v, ok := fields.Get("git_snapshot"); ok {
+				if err := core.WriteScratchFile(path+".snapshot", jsonjs.Stringify(v)+"\n"); err == nil {
+					o.Set("git_snapshot_file", true)
+					changed = true
+				}
+			}
+		}
+	}
 	if changed {
 		_ = core.WriteScratchFile(path, jsonjs.Stringify(o)+"\n")
 	}
+}
+
+// ReplaceBaseline persists a fresh task baseline after a refused guarded send.
+func ReplaceBaseline(path string, fields *jsonjs.Object) error {
+	o := read(path)
+	if o == nil {
+		return fmt.Errorf("cannot read dispatch sidecar")
+	}
+	o.Delete("git_snapshot_file")
+	for _, k := range []string{"git_head", "git_branch", "git_tree", "git_snapshot"} {
+		o.Delete(k)
+		if k == "git_snapshot" || fields == nil {
+			continue
+		}
+		if v, ok := fields.Get(k); ok {
+			o.Set(k, v)
+		}
+	}
+	if fields != nil {
+		if v, ok := fields.Get("git_snapshot"); ok {
+			if err := core.WriteScratchFile(path+".snapshot", jsonjs.Stringify(v)+"\n"); err != nil {
+				return err
+			}
+			o.Set("git_snapshot_file", true)
+		} else if err := os.Remove(path + ".snapshot"); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	} else if err := os.Remove(path + ".snapshot"); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return core.WriteScratchFile(path, jsonjs.Stringify(o)+"\n")
 }
 
 // Sidecar locates the task's sidecar in state or alongside scratch reports.
