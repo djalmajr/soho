@@ -7,16 +7,21 @@ import (
 	"path/filepath"
 )
 
-// CopiesDirSize counts logical file sizes without following symlinks; cancellation marks the result unknown.
+// CopiesDirSize counts logical file sizes without following symlinks; incomplete walks are unknown.
 
 func CopiesDirSize(ctx context.Context, root string) (int64, bool) {
 	var total int64
+	known := true
 	seen := map[[2]uint64]bool{}
 	err := filepath.WalkDir(root, func(_ string, entry fs.DirEntry, err error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err != nil || entry.Type()&fs.ModeSymlink != 0 || !entry.Type().IsRegular() {
+		if err != nil {
+			known = false
+			return nil
+		}
+		if entry.Type()&fs.ModeSymlink != 0 || !entry.Type().IsRegular() {
 			return nil
 		}
 		if info, e := entry.Info(); e == nil {
@@ -27,8 +32,10 @@ func CopiesDirSize(ctx context.Context, root string) (int64, bool) {
 				seen[key] = true
 			}
 			total += info.Size()
+		} else {
+			known = false
 		}
 		return nil
 	})
-	return total, err == nil && ctx.Err() == nil
+	return total, known && err == nil && ctx.Err() == nil
 }

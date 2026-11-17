@@ -31,6 +31,7 @@ func doctorCopiesPressure(ctx *core.Config, env platform.Env, cwd string, s *Say
 	if err != nil {
 		return
 	}
+	rows = append(rows, core.PendingCopiesFor(stateDir, workspace, env)...)
 	entries := core.UnregisteredCopies(core.CopiesScanDirs(env, cwd), rows, time.Now(), -time.Duration(1<<63-1))
 	parentDevice, parentOK := core.CopiesDevice(parent)
 	// Determine the same git common-directory identity stored in origin markers.

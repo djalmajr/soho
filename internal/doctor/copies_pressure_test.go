@@ -1,10 +1,12 @@
 package doctor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -129,5 +131,82 @@ func TestDoctorCopiesPressureSizeDeadline(t *testing.T) {
 	out := doctorCheckOutput(t, env, root)
 	if strings.Count(out, "size unknown") != 2 {
 		t.Fatalf("deadline should leave both sizes unknown: %s", out)
+	}
+}
+
+func TestDoctorCopiesPressurePendingRegistration(t *testing.T) {
+	env, cwd := paneContextFixture(t, doctorFootprintRules())
+	parent := t.TempDir()
+	env["TMPDIR"], env["SOHO_COPIES_DIR"], env["HERDR_WORKSPACE_ID"] = parent, parent, "ws"
+	env["SOHO_PRESSURE_DISK_FREE_MIN_GB"] = "0"
+	queued := filepath.Join(parent, "soho-mutation-queued")
+	control := filepath.Join(parent, "soho-mutation-control")
+	for _, p := range []string{queued, control} {
+		if err := os.Mkdir(p, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := filepath.Join(env["SOHO_DIR"], "ws")
+	if _, err := core.QueueCopy(env, "ws", state, core.CopyRow{Path: queued, Owner: "live", Pane: "pane", Created: "now", Source: "source", Origin: "mutation-copy"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(core.PendingCopiesFor(state, "ws", env)) != 1 {
+		t.Fatal("queue fixture invalid")
+	}
+	oldDisk, oldDevice := platform.DiskFree, platform.DiskDevice
+	t.Cleanup(func() { platform.DiskFree, platform.DiskDevice = oldDisk, oldDevice })
+	platform.DiskFree = func(string) (int64, int64, bool) { return 1, 100, true }
+	platform.DiskDevice = func(string) (string, bool) { return "copy", true }
+	cfg := core.LoadConfig(env, cwd)
+	var out bytes.Buffer
+	doctorCopiesPressure(&cfg, env, cwd, &Say{Out: &out})
+	if strings.Contains(out.String(), queued) || !strings.Contains(out.String(), control) {
+		t.Fatalf("incorrect listing: %s", out.String())
+	}
+	if len(core.PendingCopiesFor(state, "ws", env)) != 1 {
+		t.Fatal("doctor consumed queue")
+	}
+}
+
+func TestDoctorCopiesPressureUnreadableSize(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod fixture requires Unix permissions")
+	}
+	env, cwd := paneContextFixture(t, doctorFootprintRules())
+	parent := t.TempDir()
+	env["TMPDIR"], env["SOHO_COPIES_DIR"], env["HERDR_WORKSPACE_ID"] = parent, parent, "ws"
+	env["SOHO_PRESSURE_DISK_FREE_MIN_GB"] = "0"
+	unknown := filepath.Join(parent, "soho-mutation-unknown")
+	known := filepath.Join(parent, "soho-mutation-known")
+	child := filepath.Join(unknown, "private")
+	if err := os.MkdirAll(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(known, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "data"), []byte("hidden bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(known, "data"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(child, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(child, 0700) })
+	if _, err := os.ReadDir(child); err == nil {
+		t.Skip("fixture is readable with current privileges")
+	}
+	oldDisk, oldDevice := platform.DiskFree, platform.DiskDevice
+	t.Cleanup(func() { platform.DiskFree, platform.DiskDevice = oldDisk, oldDevice })
+	platform.DiskFree = func(string) (int64, int64, bool) { return 1, 100, true }
+	platform.DiskDevice = func(string) (string, bool) { return "copy", true }
+	cfg := core.LoadConfig(env, cwd)
+	var out bytes.Buffer
+	doctorCopiesPressure(&cfg, env, cwd, &Say{Out: &out})
+	a, b := strings.Index(out.String(), "1 B  "+known), strings.Index(out.String(), "size unknown  "+unknown)
+	if a < 0 || b <= a {
+		t.Fatalf("incorrect sizes or order: %s", out.String())
 	}
 }
