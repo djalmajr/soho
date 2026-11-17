@@ -357,6 +357,30 @@ func TestTestLayers(t *testing.T) {
 	}
 }
 
+func TestTestLayersSeparators(t *testing.T) {
+	for _, result := range []string{"FAIL", "NOT RUN", "BLOCKED", "PASS", "n/a"} {
+		for _, sep := range []string{": ", " — ", " – "} {
+			t.Run(result+sep, func(t *testing.T) {
+				got := TestLayers("## Test layers\n- unit: " + result + sep + "FAIL note\n")
+				if got.Unmarked != 0 || got.Pass+got.Fail+got.NotRun+got.Blocked+got.NA != 1 {
+					t.Fatalf("result=%q sep=%q: %+v", result, sep, got)
+				}
+				if result == "PASS" && got.Pass != 1 || result == "n/a" && got.NA != 1 || result == "FAIL" && got.Fail != 1 || result == "NOT RUN" && got.NotRun != 1 || result == "BLOCKED" && got.Blocked != 1 {
+					t.Fatalf("wrong result: %+v", got)
+				}
+			})
+		}
+	}
+	for _, value := range []string{"PASSED", "PASS!", "PASS - note", "n/a - note", "FAIL - reason", "NOT RUN - reason", "BLOCKED - reason", "FAIL", "NOT RUN", "BLOCKED", "NOT RUN — ...", "PASS—note", "PASS —note", "PASS— note"} {
+		t.Run("invalid "+value, func(t *testing.T) {
+			got := TestLayers("## Test layers\n- unit: " + value + "\n")
+			if got.Unmarked != 1 {
+				t.Fatalf("%q: %+v", value, got)
+			}
+		})
+	}
+}
+
 func TestValidationLine(t *testing.T) {
 	for _, tc := range []struct {
 		name string
