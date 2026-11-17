@@ -3,6 +3,7 @@ package setuptext
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -93,6 +94,25 @@ func GuardedHookReminder() string      { return guardHook(SetupHookReminder()) }
 func GuardedHookDoctor() string        { return guardHook(SetupHookDoctor()) }
 func GuardedHookCodexReminder() string { return guardHook(SetupHookCodexReminder()) }
 func GuardedHookCodexDoctor() string   { return guardHook(SetupHookCodexDoctor()) }
+
+// HookCommandMatches recognizes only a simple soho availability guard around an owned command.
+var hookGuardPattern = regexp.MustCompile(`^command[ \t]+-v[ \t]+soho(?:>[ \t]*/dev/null)?(?:[ \t]+(?:1?>[ \t]*/dev/null|2>[ \t]*/dev/null|2>&1))*[ \t]*\|\|[ \t]*exit[ \t]+0[ \t]*;[ \t]*(?:exec[ \t]+)?(soho[ \t]+hook[ \t]+[a-z]+(?:[ \t]+--codex)?)[ \t]*$`)
+var hookShellWrapper = regexp.MustCompile(`^sh[ \t]+-c[ \t]+(['"])(.*)['"]$`)
+
+func HookCommandMatches(command, want string) bool {
+	if command == want {
+		return true
+	}
+	command = strings.TrimSpace(command)
+	if m := hookShellWrapper.FindStringSubmatch(command); m != nil {
+		if command[len(command)-1] != m[1][0] {
+			return false
+		}
+		command = m[2]
+	}
+	m := hookGuardPattern.FindStringSubmatch(strings.TrimSpace(command))
+	return m != nil && strings.Join(strings.Fields(m[1]), " ") == want
+}
 
 // The Codex project hooks are the soho binary's own PATH commands with the
 // receiver flag: the UserPromptSubmit reminder carries the peer check (a
@@ -525,11 +545,17 @@ func codexRowsValid(rows []json.RawMessage) bool {
 // text changes no byte. An async soho entry never counts as the line and stays
 // in place.
 func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []string, guard bool) ([]json.RawMessage, error) {
+	writeWindows := guard
 	// An ordinary setup keeps an existing guarded line: when any synchronous
 	// entry of the event already holds the guarded form, that form is the
 	// line, wherever it sits among the recognized entries (SOH-337).
-	if !guard && codexRowsHold(rows, guardHook(newCommand)) {
-		newCommand, guard = guardHook(newCommand), true
+	guardedCommand := newCommand
+	if !guard {
+		guardedCommand = guardHook(newCommand)
+	}
+	preferGuard := codexRowsHold(rows, guardedCommand)
+	if preferGuard {
+		newCommand, guard = guardedCommand, true
 	}
 	recognized := append([]string{newCommand}, recognizedOld...)
 	kept, placed := make([]json.RawMessage, 0, len(rows)+1), false
@@ -559,7 +585,7 @@ func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []s
 				filtered = append(filtered, entry)
 				continue
 			}
-			if placed {
+			if placed || (preferGuard && !codexSohoEntry(entry, []string{newCommand})) {
 				changed = true
 				continue
 			}
@@ -570,7 +596,7 @@ func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []s
 				_ = json.Unmarshal(entry, &obj)
 				_ = json.Unmarshal(obj["command"], &target)
 			}
-			migrated, entryChanged := codexEntryWithCommand(entry, target)
+			migrated, entryChanged := codexEntryWithCommand(entry, target, writeWindows)
 			changed = changed || entryChanged
 			filtered = append(filtered, migrated)
 		}
@@ -589,7 +615,9 @@ func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []s
 		kept = append(kept, object.encode())
 	}
 	if !placed {
-		kept = append(kept, json.RawMessage(`{"hooks":[{"type":"command","command":`+string(mustMarshal(newCommand))+`}]}`))
+		entry := json.RawMessage(`{"type":"command","command":` + string(mustMarshal(newCommand)) + `}`)
+		entry, _ = codexEntryWithCommand(entry, newCommand, writeWindows)
+		kept = append(kept, json.RawMessage(`{"hooks":[`+string(entry)+`]}`))
 	}
 	return kept, nil
 }
@@ -611,7 +639,10 @@ func codexRowsHold(rows []json.RawMessage, command string) bool {
 			continue
 		}
 		for _, entry := range entries {
-			if codexSohoEntry(entry, []string{command}) {
+			object, ok := codexObjectParse(entry)
+			var actual string
+			raw, _ := object.get("command")
+			if ok && json.Unmarshal(raw, &actual) == nil && actual == command && codexSohoEntry(entry, []string{command}) {
 				return true
 			}
 		}
@@ -622,16 +653,32 @@ func codexRowsHold(rows []json.RawMessage, command string) bool {
 // codexEntryWithCommand rewrites a recognized entry's command member, keeping
 // every other member, and reports whether the entry changed. An entry already
 // on the command comes back as the same bytes.
-func codexEntryWithCommand(raw json.RawMessage, command string) (json.RawMessage, bool) {
+func codexEntryWithCommand(raw json.RawMessage, command string, guard bool) (json.RawMessage, bool) {
 	object, ok := codexObjectParse(raw)
 	if !ok {
 		return raw, false
 	}
+	changed := false
 	var current string
-	if value, has := object.get("command"); has && json.Unmarshal(value, &current) == nil && current == command {
+	if value, has := object.get("command"); !has || json.Unmarshal(value, &current) != nil || current != command {
+		object.set("command", mustMarshal(command))
+		changed = true
+	}
+	if guard {
+		plain := SetupHookCodexReminder()
+		if command == GuardedHookCodexDoctor() {
+			plain = SetupHookCodexDoctor()
+		}
+		var windows string
+		value, has := object.get("commandWindows")
+		if !has || json.Unmarshal(value, &windows) != nil || windows != plain {
+			object.set("commandWindows", mustMarshal(plain))
+			changed = true
+		}
+	}
+	if !changed {
 		return raw, false
 	}
-	object.set("command", mustMarshal(command))
 	return object.encode(), true
 }
 
@@ -659,7 +706,7 @@ func codexSohoEntry(raw json.RawMessage, recognized []string) bool {
 		return false
 	}
 	for _, want := range recognized {
-		if command == want {
+		if HookCommandMatches(command, want) {
 			return true
 		}
 	}
@@ -917,9 +964,13 @@ func putHook(hooks *jsonjs.Object, event, command string, recognized []string, g
 	if !ok {
 		return false
 	}
-	// Keep the existing placement only when a guarded hook is already present,
-	// or when explicitly upgrading a native hook to the guarded form.
+	// Keep the existing placement and metadata of a native or guarded hook.
 	preserve := false
+	guardedPresent := false
+	guardedCommand := GuardedHookReminder()
+	if event == "SessionStart" {
+		guardedCommand = GuardedHookDoctor()
+	}
 	for _, entry := range entries {
 		row, ok := entry.(*jsonjs.Object)
 		if !ok {
@@ -933,7 +984,10 @@ func putHook(hooks *jsonjs.Object, event, command string, recognized []string, g
 				continue
 			}
 			c, _ := h.Get("command")
-			if c == GuardedHookReminder() || c == GuardedHookDoctor() || (guard && (c == SetupHookReminder() || c == SetupHookDoctor())) {
+			if c == guardedCommand {
+				guardedPresent = true
+			}
+			if c == GuardedHookReminder() || c == GuardedHookDoctor() || c == SetupHookReminder() || c == SetupHookDoctor() {
 				preserve = true
 			}
 		}
@@ -976,7 +1030,7 @@ func putHook(hooks *jsonjs.Object, event, command string, recognized []string, g
 			}
 			owned := false
 			for _, k := range known {
-				if text == k {
+				if HookCommandMatches(text, k) {
 					owned = true
 					break
 				}
@@ -986,8 +1040,8 @@ func putHook(hooks *jsonjs.Object, event, command string, recognized []string, g
 				continue
 			}
 			changed = true
-			if preserve && !placed && (text == GuardedHookReminder() || text == GuardedHookDoctor() || (guard && (text == SetupHookReminder() || text == SetupHookDoctor()))) {
-				if guard {
+			if !placed && (!guardedPresent || (text == GuardedHookReminder() || text == GuardedHookDoctor())) && ((preserve && (text == GuardedHookReminder() || text == GuardedHookDoctor() || (text == SetupHookReminder() || text == SetupHookDoctor()))) || (text != SetupHookReminder() && text != SetupHookDoctor() && (HookCommandMatches(text, SetupHookReminder()) || HookCommandMatches(text, SetupHookDoctor())))) {
+				if guard || (text != GuardedHookReminder() && text != GuardedHookDoctor()) {
 					h.Set("command", command)
 				}
 				filtered = append(filtered, item)

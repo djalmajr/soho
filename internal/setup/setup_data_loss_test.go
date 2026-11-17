@@ -51,7 +51,7 @@ func samePathList(a, b map[string]string) bool {
 }
 
 // DJA-701 scenario 1: a mixed Claude hook row keeps the foreign command,
-// its matcher and its order; the soho command is removed, never duplicated.
+// its matcher and its order; the soho command stays in place, never duplicated.
 func TestSetupMixedClaudeHookRowKeepsForeign(t *testing.T) {
 	for _, mode := range []string{"canonical", "local", "shared-migration"} {
 		for _, event := range []string{"UserPromptSubmit", "SessionStart"} {
@@ -98,8 +98,8 @@ func TestSetupMixedClaudeHookRowKeepsForeign(t *testing.T) {
 				if !strings.Contains(got, `"matcher": "*"`) {
 					t.Fatalf("row matcher lost: %s", got)
 				}
-				if strings.Index(got, "project-audit-command") > strings.Index(got, command) {
-					t.Fatalf("order changed: foreign must stay before the appended soho row: %s", got)
+				if strings.Index(got, command) > strings.Index(got, "project-audit-command") {
+					t.Fatalf("order changed: soho must stay before the foreign command: %s", got)
 				}
 			})
 		}
