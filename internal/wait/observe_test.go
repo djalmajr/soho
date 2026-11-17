@@ -366,3 +366,21 @@ func TestObserveAnyNamesUnwatchedAgents(t *testing.T) {
 		t.Fatalf("code=%d msg=%q out=%q stderr=%q", code, msg, out, stderr)
 	}
 }
+
+func TestForegroundAnyNamesUnwatchedAgents(t *testing.T) {
+	o := newObserveFixture(t, fakecli.Rule{Argv: []string{"get", "zother", "--json"}, Stdout: hcWakeWorking5})
+	f, err := os.OpenFile(filepath.Join(o.sd, "agents.tsv"), os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("zother\tp0b\tclaude\timplementer\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	code, msg, out, stderr := o.cmd(t, "worker", "zother", "--any", "--timeout", "5000")
+	if code != 0 || msg != "" || !strings.Contains(out, `"status":"done"`) || !strings.Contains(out, `"unwatched":["zother"]`) || !strings.Contains(out, `soho wait zother --wake --any --timeout 5000`) {
+		t.Fatalf("code=%d msg=%q out=%q stderr=%q", code, msg, out, stderr)
+	}
+}

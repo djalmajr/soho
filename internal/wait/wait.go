@@ -1097,6 +1097,20 @@ func jsonLine(value *jsonjs.Object) {
 	_, _ = platform.Stdout.Write([]byte(jsonjs.Stringify(value) + "\n"))
 }
 
+func emitUnwatched(agents []string, done map[string]bool, timeoutMs float64) {
+	var unwatched []string
+	for _, agent := range agents {
+		if !done[agent] {
+			unwatched = append(unwatched, agent)
+		}
+	}
+	if len(unwatched) > 0 {
+		args := append([]string{"soho", "wait"}, unwatched...)
+		args = append(args, "--wake", "--any", "--timeout", strconv.FormatInt(int64(timeoutMs), 10))
+		jsonLine(jsonjs.O("unwatched", stringsAny(unwatched), "rearm", strings.Join(args, " ")))
+	}
+}
+
 func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, timeoutMs float64, anyDone bool, cwd string) int {
 	return waitFor(agents, sd, ctx, env, timeoutMs, anyDone, false, cwd)
 }
@@ -1165,6 +1179,9 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					// Actionable: the orchestrator has to decide; the wait ends
 					// here with 10, not with the timeout.
 					printCollaborationStatus(agent, cs, report)
+					if anyDone && len(observedDone) > 0 {
+						emitUnwatched(agents, observedDone, timeoutMs)
+					}
 					return 10
 				default:
 					// preparing, reviewing and fixing stay pending under the
@@ -1340,7 +1357,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				_ = core.MarkTaskDone(sd, agent, env)
 				mirrorReport(sd, agent, report, ctx, env, cwd)
 				if anyDone {
-					return 0
+					observedDone[agent] = true
 				}
 			case "blocked":
 				blockedVisible, _ := readScreen(svc, agent, "visible", nil)
@@ -1432,18 +1449,8 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				pending = append(pending, agent)
 			}
 		}
-		if observe && anyDone && len(observedDone) > 0 {
-			var unwatched []string
-			for _, agent := range agents {
-				if !observedDone[agent] {
-					unwatched = append(unwatched, agent)
-				}
-			}
-			if len(unwatched) > 0 {
-				args := append([]string{"soho", "wait"}, unwatched...)
-				args = append(args, "--wake", "--any", "--timeout", strconv.FormatInt(int64(timeoutMs), 10))
-				jsonLine(jsonjs.O("unwatched", stringsAny(unwatched), "rearm", strings.Join(args, " ")))
-			}
+		if anyDone && len(observedDone) > 0 {
+			emitUnwatched(agents, observedDone, timeoutMs)
 			return 0
 		}
 		remaining = pending
