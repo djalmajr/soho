@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/setuptext"
@@ -342,6 +343,43 @@ func TestSetupImplicitCompleteBlockDecision(t *testing.T) {
 					t.Error("allowed write did not perform canonical setup")
 				}
 			})
+		}
+	}
+}
+
+func TestSetupLocalUnchangedFiles(t *testing.T) {
+	root, env, ctx := codexSetupFixture(t)
+	args := []string{"--local"}
+	if code, _, msg := runSetupWrite(args, ctx, env, root); code != 0 {
+		t.Fatalf("first: %d %s", code, msg)
+	}
+	files := []string{filepath.Join(root, "CLAUDE.local.md"), filepath.Join(root, ".claude", "settings.local.json"), codexFile(root), filepath.Join(root, ".pi", "extensions", "soho-inbound.ts"), excludePath(root, env)}
+	stamp := time.Unix(1000000000, 0)
+	for _, file := range files {
+		if err := os.Chtimes(file, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, out, msg := runSetupWrite(args, ctx, env, root)
+	if code != 0 {
+		t.Fatalf("second: %d %s", code, msg)
+	}
+	for _, file := range files {
+		info, err := os.Stat(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.ModTime().Equal(stamp) || !strings.Contains(out, "unchanged: "+file+"\n") {
+			t.Errorf("%s mtime=%v output=%s", file, info.ModTime(), out)
+		}
+	}
+	code, out, msg = runSetupWrite([]string{"--local", "--plan"}, ctx, env, root)
+	if code != 0 {
+		t.Fatalf("plan: %d %s", code, msg)
+	}
+	for _, file := range files {
+		if !strings.Contains(out, "# no change: "+file+"\n") {
+			t.Errorf("missing %s: %s", file, out)
 		}
 	}
 }
