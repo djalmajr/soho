@@ -30,6 +30,7 @@ import (
 	textutil "github.com/djalmajr/soho/internal/text"
 	"github.com/djalmajr/soho/internal/transport"
 	waitpkg "github.com/djalmajr/soho/internal/wait"
+	skillassets "github.com/djalmajr/soho/skills/soho"
 )
 
 type Say struct {
@@ -59,6 +60,10 @@ func isDoctorJSWhitespace(r rune) bool {
 
 var decimal = regexp.MustCompile(`^[0-9]+$`)
 var teamChoice = regexp.MustCompile(`^(multi_role|role\.[A-Za-z0-9_-]+\.kind|lane\.[A-Za-z0-9_-]+\.kind)=`)
+var releaseSkillVersion = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$`)
+
+// BuildVersion is supplied by the CLI before running doctor, init, or its hook.
+var BuildVersion = "dev"
 
 func ProjectHasRoster(ctx *core.Config, env platform.Env, cwd string) bool {
 	root := core.StateRootPath(ctx, env, cwd)
@@ -371,6 +376,7 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 		doctorHcTransport(env, s)
 	}
 	home := platform.HomeDir(platform.Current(), env)
+	doctorSohoSkill(env, s)
 	skill := ""
 	for _, p := range []string{filepath.Join(home, ".agents", "skills", "herdr", "SKILL.md"), filepath.Join(home, ".claude", "skills", "herdr", "SKILL.md")} {
 		if isFile(p) {
@@ -578,6 +584,27 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 		s.Warning(inventory.MissingRegistrationAdvisory)
 	}
 	fmt.Fprintf(out, "first_run: %t\n%d ok, %d warning(s)\n", ProjectIsFirstRun(ctx, env, cwd), s.OK, s.Warn)
+}
+
+func doctorSohoSkill(env platform.Env, s *Say) {
+	dir, source := platform.SkillDirSourceOrEmpty(env)
+	if dir == "" {
+		return
+	}
+	s.Ok(fmt.Sprintf("skill: %s (%s)", dir, source))
+	if source != "home" {
+		return
+	}
+	same, err := skillassets.MatchesEmbedded(dir)
+	if err != nil {
+		s.Warning(fmt.Sprintf("skill: cannot read %s: %v", dir, err))
+	} else if !same {
+		if releaseSkillVersion.MatchString(BuildVersion) {
+			s.Warning(fmt.Sprintf("skill: %s differs from the skill built into soho %s; update it with: npx skills add \"djalmajr/soho#%s\" --global --skill soho", dir, BuildVersion, BuildVersion))
+		} else {
+			s.Warning(fmt.Sprintf("skill: %s differs from the skill of this build", dir))
+		}
+	}
 }
 
 // doctorHcTransport is the transport=hc doctor check (DJA-603 stage 2a):

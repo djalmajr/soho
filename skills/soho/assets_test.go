@@ -37,6 +37,37 @@ func TestBundlePublishesExactResourcesWithoutEngines(t *testing.T) {
 	}
 }
 
+func TestMatchesEmbedded(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"identical", true}, {"changed-role", false}, {"missing", false}, {"extra", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, err := Materialize(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch tc.name {
+			case "changed-role":
+				err = os.WriteFile(filepath.Join(dir, "roles", "implementer.md"), []byte("changed"), 0o600)
+			case "missing":
+				err = os.Remove(filepath.Join(dir, "config.defaults"))
+			case "extra":
+				err = os.WriteFile(filepath.Join(dir, "user-addition"), []byte("keep"), 0o600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := MatchesEmbedded(dir)
+			if err != nil || got != tc.want {
+				t.Fatalf("MatchesEmbedded(%s) = %v, %v; want %v", dir, got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestBundleRefusesCorruptionWithoutOverwriting(t *testing.T) {
 	for _, kind := range []string{"changed", "missing", "extra", "extra-directory"} {
 		t.Run(kind, func(t *testing.T) {

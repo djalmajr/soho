@@ -317,6 +317,9 @@ func Run(args []string, env platform.Env) (code int) {
 		_, _ = io.WriteString(platform.Stdout, commandHelp(command))
 		return 0
 	}
+	if command == "doctor" || command == "init" || command == "hook" {
+		doctor.BuildVersion = version
+	}
 	if command == "hook" {
 		return cmdHook(args[1:], decisionEnv, commandCwd)
 	}

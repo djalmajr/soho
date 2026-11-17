@@ -48,6 +48,36 @@ func bundledFiles() ([]resource, string, error) {
 	return files, hex.EncodeToString(hash.Sum(nil)), err
 }
 
+// MatchesEmbedded compares only files shipped in the embedded skill. Extra
+// files in dir are ignored; missing files differ and other read errors surface.
+func MatchesEmbedded(dir string) (bool, error) {
+	files, expected, err := bundledFiles()
+	if err != nil {
+		return false, err
+	}
+	hash := sha256.New()
+	for _, file := range files {
+		name := filepath.Join(dir, filepath.FromSlash(file.name))
+		info, err := os.Stat(name)
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if !info.Mode().IsRegular() {
+			return false, fmt.Errorf("not a regular file: %s", name)
+		}
+		data, err := os.ReadFile(name)
+		if err != nil {
+			return false, err
+		}
+		digest := sha256.Sum256(data)
+		fmt.Fprintf(hash, "%s\x00%x\n", file.name, digest)
+	}
+	return hex.EncodeToString(hash.Sum(nil)) == expected, nil
+}
+
 // Materialize publishes immutable, verified bundled resources into a cache.
 // Existing corrupt or unknown content is refused rather than repaired or
 // overwritten. Concurrent callers may share a fully verified completed bundle.
