@@ -1695,6 +1695,12 @@ func TestSpawnHcCodexHooksReview(t *testing.T) {
 }
 
 func TestSpawnHcCodexHooksStalledRedrawDeadline(t *testing.T) {
+	if raceDetector {
+		// Under the race detector one fake hc call can outlast the 200ms
+		// deadline, so the dialog is never read and the case proves
+		// nothing; the native jobs run it.
+		t.Skip("needs a screen read inside a 200ms deadline")
+	}
 	menu := "Hooks need review\n3 hooks are new or changed.\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting\nenter confirm · esc skip\n"
 	cwd, bin, _, env, cfg := hcSpawnFixture(t, "reviewer", "codex")
 	cfg.Entries["hooks_review"] = core.ConfigEntry{Value: "trust"}
@@ -1712,9 +1718,8 @@ func TestSpawnHcCodexHooksStalledRedrawDeadline(t *testing.T) {
 	}
 	// The outcome is the timeout (exit 4), never blocked (exit 7): an
 	// approval whose redraw pauses ran past the deadline used to report
-	// blocked (R439). No wall-clock bound: under the race detector one fake
-	// hc call can outlast the whole deadline, so the dialog may not even be
-	// read before it (then no key is sent at all).
+	// blocked (R439). No wall-clock bound (fake-call overhead varies by
+	// host), and exactly one "down": the approval path must run.
 	exit, out, stderr, calls := spawnHcExitWithLaunch(t, bin, []string{"reviewer", "--timeout", "200"}, cfg, env, cwd, newFakeSpawnRPCConn(), nil)
 	if exit == nil || exit.Code != 4 {
 		t.Fatalf("exit=%v calls=%v out=%s stderr=%s", exit, calls, out, stderr)
@@ -1725,7 +1730,7 @@ func TestSpawnHcCodexHooksStalledRedrawDeadline(t *testing.T) {
 			keys = append(keys, c.Argv[2])
 		}
 	}
-	if len(keys) > 1 || (len(keys) == 1 && keys[0] != "down") || strings.Contains(stderr.String(), "fakecli: no rule") {
+	if !reflect.DeepEqual(keys, []string{"down"}) || strings.Contains(stderr.String(), "fakecli: no rule") {
 		t.Fatalf("keys=%v calls=%v stderr=%s", keys, calls, stderr)
 	}
 }
