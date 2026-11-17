@@ -213,7 +213,7 @@ func sharedHooksTrackingWarning(status fileTracking) string {
 	if status == trackingUntracked {
 		return ""
 	}
-	warning := "shared .claude/settings.json still holds soho hooks and needs a manual commit or removal"
+	warning := "shared .claude/settings.json still holds soho hooks; once .claude/settings.local.json holds the soho hooks (setup --local writes them there), remove them from .claude/settings.json"
 	if status == trackingUnknown {
 		warning += "; tracking status could not be determined; file left untouched"
 	}

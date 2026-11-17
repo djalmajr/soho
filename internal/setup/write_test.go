@@ -652,7 +652,7 @@ func TestSetupCanonicalGitignoreAppendsWithoutRewriting(t *testing.T) {
 	})
 }
 
-func TestSetupCanonicalIgnoreUsesMainCheckoutFromLinkedWorktree(t *testing.T) {
+func TestSetupCanonicalIgnoreUsesLinkedWorktree(t *testing.T) {
 	root, env, _ := setupWriteFixture(t)
 	if err := os.WriteFile(filepath.Join(root, "tracked"), []byte("seed\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -668,12 +668,48 @@ func TestSetupCanonicalIgnoreUsesMainCheckoutFromLinkedWorktree(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add: %v: %s", err, out)
 	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("# main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(linked, ".gitignore"), []byte("# linked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	ctx := core.LoadConfig(env, linked)
-	code, out, msg := runSetupWrite([]string{"--no-hooks"}, &ctx, env, linked)
+	mainFile := filepath.Join(platform.StateProjectRoot(env, linked), ".gitignore")
+	suffix := " (the state directory is shared by this repository's worktrees and lives in the main checkout)"
+	code, out, msg := runSetupWrite([]string{"--plan", "--no-hooks"}, &ctx, env, linked)
+	if code != 0 || !strings.Contains(out, "# would update: "+mainFile+suffix) || !strings.Contains(out, "+.soho/") {
+		t.Fatalf("plan: code=%d stdout=%q message=%q", code, out, msg)
+	}
+	code, out, msg = runSetupWrite([]string{"--no-hooks"}, &ctx, env, linked)
 	mainIgnore, mainErr := os.ReadFile(filepath.Join(root, ".gitignore"))
 	linkIgnore, linkErr := os.ReadFile(filepath.Join(linked, ".gitignore"))
-	if code != 0 || mainErr != nil || string(mainIgnore) != ".soho/\n" || !os.IsNotExist(linkErr) || !strings.Contains(out, "state dir ignored: .soho/") {
+	if code != 0 || mainErr != nil || string(mainIgnore) != "# main\n.soho/\n" || linkErr != nil || string(linkIgnore) != "# linked\n" || !strings.Contains(out, "added: "+mainFile+suffix) {
 		t.Fatalf("code=%d stdout=%q message=%q main .gitignore=%q/%v linked .gitignore=%q/%v", code, out, msg, mainIgnore, mainErr, linkIgnore, linkErr)
+	}
+	code, out, msg = runSetupWrite([]string{"--no-hooks"}, &ctx, env, linked)
+	if code != 0 || !strings.Contains(out, "unchanged: "+mainFile+suffix) {
+		t.Fatalf("second setup: code=%d stdout=%q message=%q", code, out, msg)
+	}
+	code, out, msg = runSetupWrite([]string{"--plan", "--no-hooks"}, &ctx, env, linked)
+	if code != 0 || !strings.Contains(out, "# no change: "+mainFile+suffix) {
+		t.Fatalf("second plan: code=%d stdout=%q message=%q", code, out, msg)
+	}
+	got, gotErr := filepath.EvalSymlinks(excludePath(linked, env))
+	want, wantErr := filepath.EvalSymlinks(excludePath(root, env))
+	if gotErr != nil || wantErr != nil || got != want {
+		t.Fatalf("exclude linked=%q/%v main=%q/%v", got, gotErr, want, wantErr)
+	}
+}
+
+func TestSetupCanonicalIgnoreNormalCheckoutHasNoSharedSuffix(t *testing.T) {
+	root, env, ctx := setupWriteFixture(t)
+	file := filepath.Join(platform.StateProjectRoot(env, root), ".gitignore")
+	for _, args := range [][]string{{"--plan", "--no-hooks"}, {"--no-hooks"}, {"--plan", "--no-hooks"}, {"--no-hooks"}} {
+		code, out, msg := runSetupWrite(args, ctx, env, root)
+		if code != 0 || !strings.Contains(out, file+"\n") || strings.Contains(out, "the state directory is shared") {
+			t.Fatalf("args=%v code=%d stdout=%q message=%q", args, code, out, msg)
+		}
 	}
 }
 

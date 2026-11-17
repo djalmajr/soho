@@ -240,7 +240,7 @@ func TestSetupClaudeLocalMigration(t *testing.T) {
 					t.Fatal(e)
 				}
 				if tracked {
-					if string(shared) != *merged || !strings.Contains(msg, "manual commit or removal") {
+					if string(shared) != *merged || !strings.Contains(msg, "once .claude/settings.local.json holds the soho hooks (setup --local writes them there), remove them from .claude/settings.json") {
 						t.Fatalf("shared=%s warning=%q", shared, msg)
 					}
 				} else if strings.Contains(string(shared), "soho hook") || !strings.Contains(string(shared), "echo foreign") || !strings.Contains(string(shared), `"custom": true`) {

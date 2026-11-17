@@ -771,6 +771,10 @@ func warnTrackedCanonical(root, file string, env platform.Env, before, after *st
 		}
 	}
 	if branch == def {
-		fmt.Fprintf(platform.Stdout, "%s is tracked; make this change on a work branch and open a PR\n", file)
+		if filepath.ToSlash(rel) == ".claude/settings.json" {
+			fmt.Fprintf(platform.Stdout, "%s is tracked; commit .claude/settings.json on a work branch; add --guard-hooks if people without soho open this repository\n", file)
+		} else {
+			fmt.Fprintf(platform.Stdout, "%s is tracked; make this change on a work branch and open a PR\n", file)
+		}
 	}
 }
