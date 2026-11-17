@@ -486,6 +486,7 @@ func cmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string, cach
 			}
 		}
 	} else {
+		root := platform.StateProjectRoot(env, cwd)
 		state := core.StateRootPath(ctx, env, cwd)
 		rel := core.StateGitignoreRel(root, state)
 		if rel != "" {
@@ -494,12 +495,13 @@ func cmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string, cach
 			if cmd.Run() == nil {
 				file := filepath.Join(root, ".gitignore")
 				if !core.GitignoreNeeds(root, rel, env) {
-					fmt.Fprintf(platform.Stdout, "# no change: %s\n", file)
+					fmt.Fprintf(platform.Stdout, "# no change: %s%s\n", file, stateIgnoreSuffix(root, env, cwd))
 					return
 				}
 				before := readOrEmpty(file)
 				after := core.GitignoreAfter(before, rel)
 				warnTrackedCanonical(root, file, env, &before, &after, cache)
+				fmt.Fprintf(platform.Stdout, "# would update: %s%s\n", file, stateIgnoreSuffix(root, env, cwd))
 				_, _ = io.WriteString(platform.Stdout, planFileDiff(file, before, after))
 			}
 		}

@@ -805,8 +805,8 @@ func promptConfigNotice(ctx *core.Config, conf string, local bool) {
 }
 
 func writeCanonicalStateIgnore(ctx *core.Config, env platform.Env, cwd string, cache *setupTracking) {
-	stateRoot := platform.ProjectRoot(env, cwd)
-	rel := core.StateGitignoreRel(stateRoot, core.StateRootPathForProject(ctx, env, stateRoot))
+	stateRoot := platform.StateProjectRoot(env, cwd)
+	rel := core.StateGitignoreRel(stateRoot, core.StateRootPath(ctx, env, cwd))
 	if rel == "" {
 		return
 	}
@@ -815,7 +815,7 @@ func writeCanonicalStateIgnore(ctx *core.Config, env platform.Env, cwd string, c
 		return
 	}
 	if !core.GitignoreNeeds(stateRoot, rel, env) {
-		_, _ = fmt.Fprintf(platform.Stdout, "unchanged: %s\n", filepath.Join(stateRoot, ".gitignore"))
+		_, _ = fmt.Fprintf(platform.Stdout, "unchanged: %s%s\n", filepath.Join(stateRoot, ".gitignore"), stateIgnoreSuffix(stateRoot, env, cwd))
 		return
 	}
 	file := filepath.Join(stateRoot, ".gitignore")
@@ -838,5 +838,13 @@ func writeCanonicalStateIgnore(ctx *core.Config, env platform.Env, cwd string, c
 		if err := f.Close(); err != nil {
 			platform.DieFriction(fmt.Sprintf("setup: could not write %s (file left untouched)", file), 4)
 		}
+		_, _ = fmt.Fprintf(platform.Stdout, "added: %s%s\n", file, stateIgnoreSuffix(stateRoot, env, cwd))
 	}
+}
+
+func stateIgnoreSuffix(stateRoot string, env platform.Env, cwd string) string {
+	if filepath.Clean(stateRoot) != filepath.Clean(platform.ProjectRoot(env, cwd)) {
+		return " (the state directory is shared by this repository's worktrees and lives in the main checkout)"
+	}
+	return ""
 }
