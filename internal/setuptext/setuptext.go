@@ -86,6 +86,14 @@ func SetupBlock() string        { return setupBlockText }
 func SetupHookReminder() string { return setupHookReminderText }
 func SetupHookDoctor() string   { return setupHookDoctorText }
 
+func guardHook(command string) string {
+	return "sh -c 'command -v soho >/dev/null 2>&1 || exit 0; exec " + command + "'"
+}
+func GuardedHookReminder() string      { return guardHook(SetupHookReminder()) }
+func GuardedHookDoctor() string        { return guardHook(SetupHookDoctor()) }
+func GuardedHookCodexReminder() string { return guardHook(SetupHookCodexReminder()) }
+func GuardedHookCodexDoctor() string   { return guardHook(SetupHookCodexDoctor()) }
+
 // The Codex project hooks are the soho binary's own PATH commands with the
 // receiver flag: the UserPromptSubmit reminder carries the peer check (a
 // blocked prompt gets the Codex block JSON and no reminder) and the
@@ -391,8 +399,11 @@ func installNativeBullet(content string) string {
 
 // SettingsHooksResult merges the generated hooks and returns jq-compatible indented JSON, or nil on invalid input.
 func SettingsHooksResult(content *string) *string {
-	return settingsHooksResult(content)
+	return settingsHooksResult(content, false)
 }
+
+// SettingsHooksGuardedResult merges guarded hooks.
+func SettingsHooksGuardedResult(content *string) *string { return settingsHooksResult(content, true) }
 
 // CodexHooksResult merges the generated pair (UserPromptSubmit reminder,
 // SessionStart doctor) and returns jq-compatible indented JSON, or nil on
@@ -401,7 +412,9 @@ func SettingsHooksResult(content *string) *string {
 // the exact previous-generation inbound line with the reminder: a file that
 // already carries the pair comes back byte for byte, so a rerun writes
 // nothing.
-func CodexHooksResult(content *string) *string {
+func CodexHooksResult(content *string) *string        { return codexHooksResult(content, false) }
+func CodexHooksGuardedResult(content *string) *string { return codexHooksResult(content, true) }
+func codexHooksResult(content *string, guard bool) *string {
 	document := codexObject{}
 	if content != nil {
 		var ok bool
@@ -427,11 +440,15 @@ func CodexHooksResult(content *string) *string {
 	if !ssValid || !codexRowsValid(ssRows) {
 		return nil
 	}
-	mergedUp, err := codexMergeRows(upRows, SetupHookCodexReminder(), []string{SetupHookCodexInbound()})
+	reminder, doctor := SetupHookCodexReminder(), SetupHookCodexDoctor()
+	if guard {
+		reminder, doctor = GuardedHookCodexReminder(), GuardedHookCodexDoctor()
+	}
+	mergedUp, err := codexMergeRows(upRows, reminder, []string{SetupHookCodexReminder(), GuardedHookCodexReminder(), SetupHookCodexInbound()}, guard)
 	if err != nil {
 		return nil
 	}
-	mergedSs, err := codexMergeRows(ssRows, SetupHookCodexDoctor(), nil)
+	mergedSs, err := codexMergeRows(ssRows, doctor, []string{SetupHookCodexDoctor(), GuardedHookCodexDoctor()}, guard)
 	if err != nil {
 		return nil
 	}
@@ -507,7 +524,13 @@ func codexRowsValid(rows []json.RawMessage) bool {
 // appended last only when no entry was recognized, so a rerun over the merged
 // text changes no byte. An async soho entry never counts as the line and stays
 // in place.
-func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []string) ([]json.RawMessage, error) {
+func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []string, guard bool) ([]json.RawMessage, error) {
+	// An ordinary setup keeps an existing guarded line: when any synchronous
+	// entry of the event already holds the guarded form, that form is the
+	// line, wherever it sits among the recognized entries (SOH-337).
+	if !guard && codexRowsHold(rows, guardHook(newCommand)) {
+		newCommand, guard = guardHook(newCommand), true
+	}
 	recognized := append([]string{newCommand}, recognizedOld...)
 	kept, placed := make([]json.RawMessage, 0, len(rows)+1), false
 	for _, row := range rows {
@@ -541,7 +564,13 @@ func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []s
 				continue
 			}
 			placed = true
-			migrated, entryChanged := codexEntryWithCommand(entry, newCommand)
+			target := newCommand
+			if !guard && codexSohoEntry(entry, []string{GuardedHookCodexReminder(), GuardedHookCodexDoctor()}) {
+				var obj map[string]json.RawMessage
+				_ = json.Unmarshal(entry, &obj)
+				_ = json.Unmarshal(obj["command"], &target)
+			}
+			migrated, entryChanged := codexEntryWithCommand(entry, target)
 			changed = changed || entryChanged
 			filtered = append(filtered, migrated)
 		}
@@ -563,6 +592,31 @@ func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []s
 		kept = append(kept, json.RawMessage(`{"hooks":[{"type":"command","command":`+string(mustMarshal(newCommand))+`}]}`))
 	}
 	return kept, nil
+}
+
+// codexRowsHold reports whether any synchronous entry of the rows runs
+// exactly command.
+func codexRowsHold(rows []json.RawMessage, command string) bool {
+	for _, row := range rows {
+		object, ok := codexObjectParse(row)
+		if !ok {
+			continue
+		}
+		listRaw, hasList := object.get("hooks")
+		if !hasList {
+			continue
+		}
+		var entries []json.RawMessage
+		if json.Unmarshal(listRaw, &entries) != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if codexSohoEntry(entry, []string{command}) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // codexEntryWithCommand rewrites a recognized entry's command member, keeping
@@ -625,7 +679,7 @@ func mustMarshal(value any) json.RawMessage {
 // guarantee it provides (the prompt check) is still true.
 func CodexHooksProtected(content string) bool {
 	rows, ok := codexProtectedRows(content)
-	return ok && codexRowsHave(rows, []string{SetupHookCodexReminder(), SetupHookCodexInbound()})
+	return ok && codexRowsHave(rows, []string{SetupHookCodexReminder(), GuardedHookCodexReminder(), SetupHookCodexInbound()})
 }
 
 // CodexHooksCurrent reports the merged generation: the exact synchronous
@@ -648,7 +702,7 @@ func CodexHooksCurrent(content string) bool {
 	if !ok || !codexRowsValid(ssRows) {
 		return false
 	}
-	return codexRowsHave(upRows, []string{SetupHookCodexReminder()}) && codexRowsHave(ssRows, []string{SetupHookCodexDoctor()})
+	return codexRowsHave(upRows, []string{SetupHookCodexReminder(), GuardedHookCodexReminder()}) && codexRowsHave(ssRows, []string{SetupHookCodexDoctor(), GuardedHookCodexDoctor()})
 }
 
 // CodexHooksGap names the merged pair's lines the content lacks, the way the
@@ -656,11 +710,11 @@ func CodexHooksCurrent(content string) bool {
 func CodexHooksGap(content string) []string {
 	var missing []string
 	upRows, upOK := codexProtectedRows(content)
-	if !upOK || !codexRowsHave(upRows, []string{SetupHookCodexReminder()}) {
+	if !upOK || !codexRowsHave(upRows, []string{SetupHookCodexReminder(), GuardedHookCodexReminder()}) {
 		missing = append(missing, "'"+SetupHookCodexReminder()+"' in UserPromptSubmit")
 	}
 	ssRows, ssOK := codexSessionStartRows(content)
-	if !ssOK || !codexRowsHave(ssRows, []string{SetupHookCodexDoctor()}) {
+	if !ssOK || !codexRowsHave(ssRows, []string{SetupHookCodexDoctor(), GuardedHookCodexDoctor()}) {
 		missing = append(missing, "'"+SetupHookCodexDoctor()+"' in SessionStart")
 	}
 	return missing
@@ -811,7 +865,7 @@ func (object codexObject) encode() []byte {
 	return out.Bytes()
 }
 
-func settingsHooksResult(content *string) *string {
+func settingsHooksResult(content *string, guard bool) *string {
 	var document *jsonjs.Object
 	if content == nil || strings.TrimFunc(*content, isJSWhitespace) == "" {
 		document = jsonjs.O()
@@ -835,8 +889,12 @@ func settingsHooksResult(content *string) *string {
 	if !ok {
 		return nil
 	}
-	if !putHook(hooksObject, "UserPromptSubmit", SetupHookReminder(), []string{PreviousHookReminder(), LegacyHookReminder()}) ||
-		!putHook(hooksObject, "SessionStart", SetupHookDoctor(), []string{PreviousHookDoctor(), LegacyHookDoctor()}) {
+	reminder, doctor := SetupHookReminder(), SetupHookDoctor()
+	if guard {
+		reminder, doctor = GuardedHookReminder(), GuardedHookDoctor()
+	}
+	if !putHook(hooksObject, "UserPromptSubmit", reminder, []string{SetupHookReminder(), GuardedHookReminder(), PreviousHookReminder(), LegacyHookReminder()}, guard) ||
+		!putHook(hooksObject, "SessionStart", doctor, []string{SetupHookDoctor(), GuardedHookDoctor(), PreviousHookDoctor(), LegacyHookDoctor()}, guard) {
 		return nil
 	}
 	result := jsonjs.StringifyIndent(document, 2) + "\n"
@@ -849,7 +907,7 @@ func settingsHooksResult(content *string) *string {
 // of the exact recognized previous/legacy migration commands, so a rerun is
 // idempotent instead of stacking. A row leaves only when its last command
 // was soho's; the new soho entry goes to the end.
-func putHook(hooks *jsonjs.Object, event, command string, recognized []string) bool {
+func putHook(hooks *jsonjs.Object, event, command string, recognized []string, guard bool) bool {
 	known := append([]string{command}, recognized...)
 	value, exists := hooks.Get(event)
 	if !exists || value == nil || isFalse(value) {
@@ -859,14 +917,36 @@ func putHook(hooks *jsonjs.Object, event, command string, recognized []string) b
 	if !ok {
 		return false
 	}
+	// Keep the existing placement only when a guarded hook is already present,
+	// or when explicitly upgrading a native hook to the guarded form.
+	preserve := false
+	for _, entry := range entries {
+		row, ok := entry.(*jsonjs.Object)
+		if !ok {
+			continue
+		}
+		v, _ := row.Get("hooks")
+		list, _ := v.([]any)
+		for _, item := range list {
+			h, ok := item.(*jsonjs.Object)
+			if !ok {
+				continue
+			}
+			c, _ := h.Get("command")
+			if c == GuardedHookReminder() || c == GuardedHookDoctor() || (guard && (c == SetupHookReminder() || c == SetupHookDoctor())) {
+				preserve = true
+			}
+		}
+	}
 	kept := make([]any, 0, len(entries)+1)
+	placed := false
 	for _, entry := range entries {
 		if entry == nil {
 			kept = append(kept, entry)
 			continue
 		}
-		object, objectOK := entry.(*jsonjs.Object)
-		if !objectOK {
+		object, ok := entry.(*jsonjs.Object)
+		if !ok {
 			return false
 		}
 		hooksValue, hasHooks := object.Get("hooks")
@@ -874,21 +954,56 @@ func putHook(hooks *jsonjs.Object, event, command string, recognized []string) b
 			kept = append(kept, entry)
 			continue
 		}
-		filtered, changed, ok := stripSohoEntries(hooksValue, known)
+		list, ok := hooksValue.([]any)
 		if !ok {
 			return false
 		}
+		filtered := make([]any, 0, len(list))
+		changed := false
+		for _, item := range list {
+			h, ok := item.(*jsonjs.Object)
+			if !ok {
+				filtered = append(filtered, item)
+				continue
+			}
+			c, _ := h.Get("command")
+			if c == nil || isFalse(c) || isUndefined(c) {
+				c = ""
+			}
+			text, ok := c.(string)
+			if !ok {
+				return false
+			}
+			owned := false
+			for _, k := range known {
+				if text == k {
+					owned = true
+					break
+				}
+			}
+			if !owned {
+				filtered = append(filtered, item)
+				continue
+			}
+			changed = true
+			if preserve && !placed && (text == GuardedHookReminder() || text == GuardedHookDoctor() || (guard && (text == SetupHookReminder() || text == SetupHookDoctor()))) {
+				if guard {
+					h.Set("command", command)
+				}
+				filtered = append(filtered, item)
+				placed = true
+			}
+		}
 		if !changed {
 			kept = append(kept, entry)
-			continue
+		} else if len(filtered) > 0 {
+			object.Set("hooks", filtered)
+			kept = append(kept, entry)
 		}
-		if len(filtered) == 0 {
-			continue
-		}
-		object.Set("hooks", filtered)
-		kept = append(kept, entry)
 	}
-	kept = append(kept, jsonjs.O("hooks", []any{jsonjs.O("type", "command", "command", command)}))
+	if !placed {
+		kept = append(kept, jsonjs.O("hooks", []any{jsonjs.O("type", "command", "command", command)}))
+	}
 	hooks.Set(event, kept)
 	return true
 }

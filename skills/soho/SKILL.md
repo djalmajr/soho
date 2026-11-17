@@ -59,6 +59,8 @@ Peer replies use `soho send <ref> …` on the legacy TUI and `hc send <terminal>
 
 In a third-party fork, run `soho setup --local` before the first `soho init` if the state directory is not yet Git-ignored. Otherwise `init` can add that directory to the fork's tracked `.gitignore` before local setup runs.
 
+Use `soho setup --guard-hooks` to make hooks quiet when soho is absent. The guard needs `sh` (on Windows, Git Bash).
+
 ```text
 soho init
 ```

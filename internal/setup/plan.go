@@ -254,7 +254,7 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 	}
 	var panes, target string
-	local, hooks := false, true
+	local, hooks, guard := false, true, false
 	var proj, user, sess [][2]string
 	var laneSpecs []core.LaneSpec
 	for i := 0; i < len(args); i++ {
@@ -296,6 +296,8 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			default:
 				sess = append(sess, [2]string{k, v})
 			}
+		case "--guard-hooks":
+			guard = true
 		case "--no-hooks":
 			hooks = false
 		case "--local":
@@ -406,10 +408,13 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	settingsFailed := false
 	if hooks {
 		settingsAfter = setuptext.SettingsHooksResult(settingsBefore)
+		if guard {
+			settingsAfter = setuptext.SettingsHooksGuardedResult(settingsBefore)
+		}
 		if settingsAfter == nil {
 			settingsFailed = true
 		} else if !modeLocal {
-			settingsAfter, settingsNote = canonicalClaudeHooks(root, settingsBefore, true)
+			settingsAfter, settingsNote = canonicalClaudeHooks(root, settingsBefore, true, guard)
 		}
 	}
 	_, _ = io.WriteString(platform.Stdout, "plan (nothing is written):\n\n")

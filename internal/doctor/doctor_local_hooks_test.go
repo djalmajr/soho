@@ -10,6 +10,7 @@ import (
 
 func TestDoctorLocalAndSharedHooks(t *testing.T) {
 	for _, tc := range []struct{ name, shared, local, ok, warning string }{
+		{name: "guarded", shared: setuptext.GuardedHookDoctor(), ok: ".claude/settings.json"},
 		{name: "local-only", local: setuptext.SetupHookDoctor(), ok: ".claude/settings.local.json"},
 		{name: "shared-only", shared: setuptext.SetupHookDoctor(), ok: ".claude/settings.json"},
 		{name: "both", shared: setuptext.SetupHookDoctor(), local: setuptext.SetupHookDoctor(), ok: ".claude/settings.json, .claude/settings.local.json"},

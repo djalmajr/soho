@@ -1624,7 +1624,7 @@ func settingsDoctorHook(file string) string {
 				continue
 			}
 			c, _ := obj.Get("command")
-			if c == setuptext.SetupHookDoctor() {
+			if c == setuptext.SetupHookDoctor() || c == setuptext.GuardedHookDoctor() {
 				native = true
 			}
 			if c == setuptext.PreviousHookDoctor() {
