@@ -444,3 +444,48 @@ func TestSetupRetirementPlanEffectsContract(t *testing.T) {
 		})
 	}
 }
+
+func TestSetupPlanHandGuardedClaudeReplacement(t *testing.T) {
+	for _, guarded := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plain", true: "guarded"}[guarded], func(t *testing.T) {
+			f := newSetupTM7Fixture(t)
+			before := "{\n  \"hooks\": {\n    \"UserPromptSubmit\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"command -v soho >/dev/null 2>&1 || exit 0; soho hook reminder\"}]}],\n    \"SessionStart\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"command -v soho >/dev/null 2>&1 || exit 0; soho hook doctor\"}]}]\n  }\n}\n"
+			writeSetupTM7Seed(t, f.Repo, ".claude/settings.json", before)
+			tree := setupTM7TreeOf(t, f.Root)
+			args := []string{"setup", "--plan"}
+			if guarded {
+				args = append(args, "--guard-hooks")
+			}
+			result := runSetupTM7Steps(t, f, []setupTM7Step{setupTM7SetupStep(args)})[0]
+			if result.RC != 0 {
+				t.Fatalf("args=%q rc=%d out=%s err=%s", args, result.RC, result.Out, result.Err)
+			}
+			// Both old lines must be removed, and exactly one new command per event added.
+			for _, name := range []string{"reminder", "doctor"} {
+				old := "command -v soho >/dev/null 2>&1 || exit 0; soho hook " + name
+				want := "soho hook " + name
+				if guarded {
+					want = "sh -c 'command -v soho >/dev/null 2>&1 || exit 0; exec " + want + "'"
+				}
+				removed, added, retained := 0, 0, 0
+				for _, line := range strings.Split(result.Out, "\n") {
+					if strings.HasPrefix(line, "-") && strings.Contains(line, old) {
+						removed++
+					}
+					if strings.HasPrefix(line, "+") && strings.Contains(line, old) {
+						retained++
+					}
+					if strings.HasPrefix(line, "+") && strings.Contains(line, want) {
+						added++
+					}
+				}
+				if removed != 1 || added != 1 || retained != 0 {
+					t.Fatalf("args=%q %s removed=%d added=%d retained=%d out=%s", args, name, removed, added, retained, result.Out)
+				}
+			}
+			if after := setupTM7TreeOf(t, f.Root); !reflect.DeepEqual(tree, after) {
+				t.Fatalf("plan wrote: before=%v after=%v", tree, after)
+			}
+		})
+	}
+}

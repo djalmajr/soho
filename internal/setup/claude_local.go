@@ -252,7 +252,7 @@ func rowsContainSoho(rows []any, known []string) bool {
 				continue
 			}
 			for _, k := range known {
-				if commandText == k {
+				if setuptext.HookCommandMatches(commandText, k) {
 					return true
 				}
 			}
@@ -312,7 +312,7 @@ func rowsWithoutSoho(rows []any, known []string) []any {
 			}
 			matched := false
 			for _, k := range known {
-				if commandText == k {
+				if setuptext.HookCommandMatches(commandText, k) {
 					matched = true
 					break
 				}

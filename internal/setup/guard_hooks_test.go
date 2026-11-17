@@ -245,3 +245,144 @@ func TestGuardHooksMixedCodexPairKeepsTheGuardedLine(t *testing.T) {
 		}
 	}
 }
+
+func TestHandGuardedHooksReplacement(t *testing.T) {
+	for _, guard := range []bool{false, true} {
+		for _, codex := range []bool{false, true} {
+			suffix := ""
+			if codex {
+				suffix = " --codex"
+			}
+			reminder := "command -v soho >/dev/null 2>&1 || exit 0; soho hook reminder" + suffix
+			doctor := "sh -c \"command  -v soho > /dev/null 2>&1 || exit 0; exec soho hook doctor" + suffix + "\""
+			foreign := "command -v foo >/dev/null 2>&1 || exit 0; foo"
+			input, _ := json.Marshal(map[string]any{"hooks": map[string]any{
+				"UserPromptSubmit": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": reminder}, map[string]any{"type": "command", "command": foreign}}}},
+				"SessionStart":     []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": doctor}}}},
+			}})
+			text := string(input)
+			var result *string
+			if codex {
+				if guard {
+					result = setuptext.CodexHooksGuardedResult(&text)
+				} else {
+					result = setuptext.CodexHooksResult(&text)
+				}
+			} else {
+				if guard {
+					result = setuptext.SettingsHooksGuardedResult(&text)
+				} else {
+					result = setuptext.SettingsHooksResult(&text)
+				}
+			}
+			if result == nil {
+				t.Fatal("merge failed")
+			}
+			var doc struct {
+				Hooks map[string][]struct {
+					Hooks []map[string]any `json:"hooks"`
+				} `json:"hooks"`
+			}
+			if err := json.Unmarshal([]byte(*result), &doc); err != nil {
+				t.Fatal(err)
+			}
+			for event, name := range map[string]string{"UserPromptSubmit": "reminder", "SessionStart": "doctor"} {
+				count := 0
+				for _, row := range doc.Hooks[event] {
+					for _, hook := range row.Hooks {
+						cmd, _ := hook["command"].(string)
+						if cmd == foreign {
+							continue
+						}
+						count++
+						want := "soho hook " + name + suffix
+						if guard {
+							want = "sh -c 'command -v soho >/dev/null 2>&1 || exit 0; exec " + want + "'"
+						}
+						if cmd != want {
+							t.Fatalf("guard=%v codex=%v got %q want %q", guard, codex, cmd, want)
+						}
+						if guard && codex && hook["commandWindows"] != "soho hook "+name+suffix {
+							t.Fatalf("missing commandWindows: %v", hook)
+						}
+					}
+				}
+				if count != 1 {
+					t.Fatalf("%s count %d: %s", event, count, *result)
+				}
+			}
+			if !strings.Contains(decodeHookText(t, []byte(*result)), foreign) {
+				t.Fatalf("foreign lost: %s", *result)
+			}
+			if guard {
+				var again *string
+				if codex {
+					again = setuptext.CodexHooksGuardedResult(result)
+				} else {
+					again = setuptext.SettingsHooksGuardedResult(result)
+				}
+				if again == nil || *again != *result {
+					t.Fatalf("non-idempotent: %v", again)
+				}
+			}
+		}
+	}
+}
+
+func TestHandGuardedPlanAndWindowsPreservation(t *testing.T) {
+	root, env, ctx := setupWriteFixture(t)
+	path := filepath.Join(root, ".codex", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	before := `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"command -v soho >/dev/null 2>&1 || exit 0; soho hook reminder --codex","commandWindows":"custom windows"}]}],"SessionStart":[{"hooks":[{"type":"command","command":"command -v soho >/dev/null 2>&1 || exit 0; soho hook doctor --codex"}]}]}}`
+	if err := os.WriteFile(path, []byte(before), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, msg := runSetupWrite([]string{"--plan", "--guard-hooks"}, ctx, env, root)
+	if code != 0 || !strings.Contains(out, setuptext.GuardedHookCodexReminder()) || strings.Count(out, setuptext.GuardedHookCodexReminder()) != 1 {
+		t.Fatalf("plan: %d %s %s", code, out, msg)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != before {
+		t.Fatalf("plan wrote: %v %s", err, after)
+	}
+	result := setuptext.CodexHooksResult(&before)
+	if result == nil || !strings.Contains(*result, "custom windows") || !setuptext.CodexHooksProtected(*result) || !setuptext.CodexHooksCurrent(*result) {
+		t.Fatalf("plain result: %v", result)
+	}
+}
+
+func TestPlainCodexSetupKeepsWindowsUntouched(t *testing.T) {
+	for _, windows := range []string{"", `,"commandWindows":"custom"`} {
+		input := `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":` + string(mustJSONForGuardTest(t, setuptext.GuardedHookCodexReminder())) + windows + `}]}],"SessionStart":[{"hooks":[{"type":"command","command":` + string(mustJSONForGuardTest(t, setuptext.GuardedHookCodexDoctor())) + `}]}]}}`
+		got := setuptext.CodexHooksResult(&input)
+		if got == nil {
+			t.Fatal("merge failed")
+		}
+		var doc struct {
+			Hooks map[string][]struct {
+				Hooks []map[string]any `json:"hooks"`
+			} `json:"hooks"`
+		}
+		if err := json.Unmarshal([]byte(*got), &doc); err != nil {
+			t.Fatal(err)
+		}
+		up := doc.Hooks["UserPromptSubmit"][0].Hooks[0]
+		_, present := up["commandWindows"]
+		if present != (windows != "") || (present && up["commandWindows"] != "custom") {
+			t.Fatalf("windows changed: %v", up)
+		}
+		if _, present := doc.Hooks["SessionStart"][0].Hooks[0]["commandWindows"]; present {
+			t.Fatal("added commandWindows")
+		}
+	}
+}
+func mustJSONForGuardTest(t *testing.T, value string) []byte {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
