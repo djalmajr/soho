@@ -2,7 +2,9 @@
 package gittree
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +15,7 @@ import (
 	"github.com/djalmajr/soho/internal/text"
 )
 
-var keys = []string{"git_head", "git_branch", "git_tree", "git_checked", "diff_checked"}
+var keys = []string{"git_head", "git_branch", "git_tree", "git_snapshot", "git_previous_owned", "git_checked", "diff_checked"}
 
 func git(env platform.Env, tree string, args ...string) (string, bool) {
 	out, ok := gitOutput(env, tree, args...)
@@ -63,7 +65,77 @@ func Snapshot(env platform.Env, tree string) *jsonjs.Object {
 	if !ok {
 		return nil
 	}
-	return jsonjs.O("git_head", head, "git_branch", branch, "git_tree", abs)
+	fields := jsonjs.O("git_head", head, "git_branch", branch, "git_tree", abs)
+	if snapshot, ok := contentSnapshot(env, abs, head); ok {
+		fields.Set("git_snapshot", snapshot)
+	}
+	return fields
+}
+
+// contentSnapshot records the worktree content for every path differing from
+// the dispatch HEAD, including deletions and untracked files.
+func contentSnapshot(env platform.Env, tree, head string) (*jsonjs.Object, bool) {
+	names, ok := gitOutput(env, tree, "-c", "diff.autoRefreshIndex=false", "diff", "--numstat", "--no-renames", "-z", head, "--")
+	if !ok {
+		return nil, false
+	}
+	untracked, ok := gitOutput(env, tree, "ls-files", "--others", "--exclude-standard", "-z")
+	if !ok {
+		return nil, false
+	}
+	root, err := os.OpenRoot(tree)
+	if err != nil {
+		return nil, false
+	}
+	defer root.Close()
+	result := jsonjs.O()
+	paths := strings.Split(untracked, "\x00")
+	for _, record := range strings.Split(names, "\x00") {
+		if parts := strings.SplitN(record, "\t", 3); len(parts) == 3 {
+			paths = append(paths, parts[2])
+		}
+	}
+	for _, name := range paths {
+		if name == "" {
+			continue
+		}
+		hash, ok := contentHash(root, name)
+		if !ok {
+			return nil, false
+		}
+		result.Set(name, hash)
+	}
+	return result, true
+}
+
+func contentHash(root *os.Root, name string) (string, bool) {
+	info, err := root.Lstat(filepath.FromSlash(name))
+	if os.IsNotExist(err) {
+		return "missing", true
+	}
+	if err != nil {
+		return "", false
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := root.Readlink(filepath.FromSlash(name))
+		if err != nil {
+			return "", false
+		}
+		return fmt.Sprintf("link:%x", sha256.Sum256([]byte(target))), true
+	}
+	if !info.Mode().IsRegular() {
+		return "", false
+	}
+	f, err := root.Open(filepath.FromSlash(name))
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", false
+	}
+	return fmt.Sprintf("file:%x", h.Sum(nil)), true
 }
 
 func read(path string) *jsonjs.Object {

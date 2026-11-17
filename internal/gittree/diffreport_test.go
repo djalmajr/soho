@@ -510,6 +510,9 @@ func TestDiffReportWaitingDispatchProducer(t *testing.T) {
 				if e == nil {
 					report := strings.TrimSpace(string(b))
 					if report != "" && report != f.report {
+						if !diffSnapshotReady(f, report) {
+							continue
+						}
 						if err := diffAfterCurrentDispatch(f, report, false); err != nil {
 							goErr <- err
 							return

@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/gittree"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/text"
 )
@@ -59,6 +60,7 @@ var emptyBacktickRun = regexp.MustCompile("`+")
 
 // BriefLintOptions controls the role-dependent part of the brief contract.
 type BriefLintOptions struct {
+	PreviousTask    bool
 	ReadOnly        bool
 	PathsOnly       bool
 	WorkerCwd       string
@@ -445,6 +447,9 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 		bodyBytes = nil
 	}
 	body := strings.ToValidUTF8(string(bodyBytes), "\uFFFD")
+	if !options.PathsOnly && !options.PreviousTask && gittree.InheritsPrevious(body) {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("brief %s inherits Owned files but the worker has no previous task in this worktree", brief))
+	}
 	result.MissingMessage = strings.Join(referenceLintFindings(body, env), "; ")
 	if options.WorkerCwd != "" {
 		// The worker works in the tree the brief declares. A reused pane

@@ -316,7 +316,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	}
 	core.CompactPhaseCheck(sd, agent, at(1), env)
 
-	findings := dispatch.BriefLintFindings(brief, ctx, env, dispatch.BriefLintOptions{ReadOnly: !core.RoleIsEdit(role, env, cwd), WorkerCwd: workerCwd, OrchestratorCwd: cwd})
+	findings := dispatch.BriefLintFindings(brief, ctx, env, dispatchLintOptions(briefRaw, workerCwd, cwd, sd, agent, role, ctx, env))
 	if amend {
 		findings = dispatch.BriefLintFindings(brief, ctx, env, dispatch.BriefLintOptions{ReadOnly: !core.RoleIsEdit(role, env, cwd), PathsOnly: true, WorkerCwd: workerCwd, OrchestratorCwd: cwd, InheritedWorktree: dispatch.DeclaredWorktree(amendmentOriginalBrief(sd, taskreport.ReadTaskReportPointer(sd, agent)))})
 	}
@@ -779,6 +779,8 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		}
 		sendCall.Timeout = time.Duration(seconds) * time.Second
 	}
+	gitFields := dispatchCaptureGit(sidecar, briefRaw, workerCwd, cwd, sd, agent, amend, priorPointer, env)
+	defer func() { gittree.Preserve(sidecar, gitFields) }()
 	promptRep := svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue && !(hcMode && amend)}, sendCall)
 	if hcMode && promptRep.Err != nil && promptRep.Err.Kind == transport.FailureBusy {
 		// DJA-604 2b-3a: the worker went working between the dispatch's idle
@@ -847,11 +849,9 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	if warning := reviewAuthorWarning(brief, role, sidecar, authorContext); warning != "" {
 		core.Warn(warning, frictionLogPath, "dispatch")
 	}
-	gitFields := dispatchGitFields(briefRaw, workerCwd, cwd, sd, amend, priorPointer, env)
 	gittree.Preserve(sidecar, gitFields)
 	// Arrival updates rewrite the sidecar. Preserve the first identity on
 	// early returns too, without replacing a check made by blocking wait.
-	defer func() { gittree.Preserve(sidecar, gitFields) }()
 	status, resent, enterSent := "submitted", false, false
 	if hcMode {
 		// DJA-604 2b-3a: hc's arrival is the send's own proof — its started
