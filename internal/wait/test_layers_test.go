@@ -128,13 +128,25 @@ func TestWaitTestLayersAllPassIsQuiet(t *testing.T) { // scenario 6
 		if !strings.Contains(out, `"test_layers":{"pass":0,"fail":0,"not_run":0,"blocked":0,"na":0,"unmarked":2}`) {
 			t.Fatalf("test_layers missing or wrong: %q", out)
 		}
-		if !strings.Contains(errText, "report of 'worker' has 2 Test layers line(s) without a result; the form is '- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a', with ': <reason>' after FAIL, NOT RUN and BLOCKED (first: \"- unit: **PASS**\")") {
+		if !strings.Contains(errText, "report of 'worker' has 2 Test layers line(s) without a result; the form is '- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a', with ': <reason>' (or ' — <reason>') after FAIL, NOT RUN and BLOCKED, and an optional note after PASS (first: \"- unit: **PASS**\")") {
 			t.Fatalf("missing the unmarked warning with the form and the first line: %q", errText)
 		}
 		if strings.Contains(errText, "did not pass") {
 			t.Fatalf("unmarked lines are not non-pass layers: %q", errText)
 		}
 	})
+}
+
+func TestWaitTestLayersSeparators(t *testing.T) {
+	body := "## Test layers\n- a: FAIL: reason\n- b: FAIL — reason\n- c: FAIL – reason\n- d: NOT RUN: reason\n- e: NOT RUN — reason\n- f: NOT RUN – reason\n- g: BLOCKED: reason\n- h: BLOCKED — reason\n- i: BLOCKED – reason\n- j: PASS: note\n- k: PASS — FAIL\n- l: PASS – note\n- m: n/a: note\n- n: n/a — note\n- o: n/a – note\n- p: PASS - note\n"
+	f := newMetricsFixture(t, "off", metricsImplementerRoster, body, metricsBriefBackend, "")
+	out, errText, rc := f.run(t)
+	if rc != 0 || !strings.Contains(out, `"test_layers":{"pass":3,"fail":3,"not_run":3,"blocked":3,"na":3,"unmarked":1}`) {
+		t.Fatalf("rc=%d out=%q err=%q", rc, out, errText)
+	}
+	if !strings.Contains(errText, "lists 9 test layer(s) that did not pass (a FAIL, b FAIL, c FAIL, d NOT RUN, e NOT RUN, f NOT RUN, g BLOCKED, h BLOCKED, i BLOCKED)") || !strings.Contains(errText, "has 1 Test layers line(s) without a result") {
+		t.Fatalf("warnings: %q", errText)
+	}
 }
 
 func TestWaitTestLayersMissingSection(t *testing.T) { // scenario 8
