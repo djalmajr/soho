@@ -2376,6 +2376,15 @@ func startHcAgentUsingServices(ctx *core.Config, o *spawnOptions, kind string, e
 				return transport.StartupDialogBlocked
 			}
 		}
+		if kind == "pi" {
+			start.StartupDialog = func(_ context.Context, _, screen string) transport.StartupDialogAction {
+				if !isPiTrustDialog(screen) {
+					return transport.StartupDialogContinue
+				}
+				o.hooksBlocked = fmt.Sprintf("spawn: pi '%s' is waiting at its \"Trust project folder?\" dialog for %s; answer it in that terminal, or pass --approve after -- to trust project-local files for this run", o.name, o.cwd)
+				return transport.StartupDialogBlocked
+			}
+		}
 		rep := rt.Start(context.Background(), start, transport.Call{Timeout: time.Duration(startWrapperTimeoutMs(o.timeout)) * time.Millisecond})
 		if rep.Err == nil {
 			if kind == "pi" {
