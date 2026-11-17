@@ -279,7 +279,23 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 	}
 	before, _ := platform.ReadTextFile(dest)
 	before = strings.TrimRight(before, "\n")
-	for _, line := range core.ApplyLaneFile(dest, panes, env, cwd) {
+	lines := core.ApplyLaneFile(dest, panes, env, cwd)
+	fixed := core.LoadConfig(env, cwd)
+	sum := core.AlwaysOpenLaneCapacitySum(&fixed, env)
+	if core.PaneMode(&fixed, env) == "flex" {
+		sum += core.FlexExtra(&fixed, env)
+	}
+	core.ConfigWritePair(dest, "max_workers", strconv.Itoa(sum), env, cwd)
+	hasSplit := core.ConfigExplicit(&fixed, "split_max_panes", env)
+	if hasSplit {
+		core.ConfigWritePair(dest, "split_max_panes", strconv.Itoa(1+sum), env, cwd)
+	}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "set max_workers=") {
+			line = "set max_workers=" + strconv.Itoa(sum)
+		} else if strings.HasPrefix(line, "set split_max_panes=") && hasSplit {
+			line = "set split_max_panes=" + strconv.Itoa(1+sum)
+		}
 		fmt.Fprintln(platform.Stdout, line)
 	}
 	after, _ := platform.ReadTextFile(dest)
@@ -404,11 +420,15 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 		}
 	}
 	used := usedKinds(ctx, env, cwd)
+	checkCodex := uiRoleUsesCodex(ctx, env, cwd)
 	for _, kind := range used {
 		if kind == "codex" {
-			doctorCodexRegistryPolicy(env, s)
+			checkCodex = true
 			break
 		}
+	}
+	if checkCodex {
+		doctorCodexRegistryPolicy(ctx, env, cwd, s)
 	}
 	var missing []string
 	for _, k := range used {
@@ -1046,8 +1066,10 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 	sum := 0
 	for _, l := range lanes {
 		c := core.LaneCapacity(ctx, l, env)
-		sum += c
-		caps = append(caps, fmt.Sprintf("%s=%d", l, c))
+		if !core.LaneOnDemand(ctx, l, env) {
+			sum += c
+			caps = append(caps, fmt.Sprintf("%s=%d", l, c))
+		}
 	}
 	if mode == "flex" {
 		sum += core.FlexExtra(ctx, env)
@@ -1057,6 +1079,14 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 		s.Warning(fmt.Sprintf("config: max_workers=%s but the lanes hold %d workers (%s). Set max_workers=%d (doctor --fix aligns it).", mw, sum, strings.Join(caps, " "), sum))
 	} else {
 		s.Ok(fmt.Sprintf("config: max_workers=%s matches the lanes (%s)", core.MaxWorkers(ctx, env), strings.Join(caps, " ")))
+	}
+	limit, err := strconv.Atoi(core.MaxWorkers(ctx, env))
+	if err == nil && limit > 0 {
+		for _, lane := range lanes {
+			if core.LaneOnDemand(ctx, lane, env) && sum+core.LaneCapacity(ctx, lane, env) > limit {
+				s.Warning(fmt.Sprintf("config: the on-demand lane %s would make %d workers, above max_workers=%d; spawn requires a free slot or a higher limit", lane, sum+core.LaneCapacity(ctx, lane, env), limit))
+			}
+		}
 	}
 	if !native && core.ConfigExplicit(ctx, "split_max_panes", env) {
 		sp := core.Cfg(ctx, "split_max_panes", "", env)

@@ -176,7 +176,7 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if code != 0 || stderr != "" || !strings.Contains(out, "set panes="+panes) || strings.Contains(string(data), "role.planner") || strings.Contains(string(data), "max_workers") || strings.Contains(string(data), "split_max_panes") {
+				if code != 0 || stderr != "" || !strings.Contains(out, "set panes="+panes) || strings.Contains(string(data), "role.planner") || !strings.Contains(string(data), map[string]string{"3": "max_workers=2", "4": "max_workers=3"}[panes]) || strings.Contains(string(data), "split_max_panes") {
 					t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
 				}
 			})
@@ -263,7 +263,10 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if code != 0 || !strings.Contains(string(data), "lane.critical.roles=critical-implementer") || !strings.Contains(string(data), "lane.critical.panes=2") || !strings.Contains(string(data), "lane.critical.kind=codex") || !strings.Contains(string(data), "max_workers=4") || !strings.Contains(string(data), "split_max_panes=5") {
+		if strings.Contains(out, "set max_workers=4\n") || strings.Contains(out, "set split_max_panes=5\n") || !strings.Contains(out, "set max_workers=2\n") || !strings.Contains(out, "set split_max_panes=3\n") {
+			t.Fatalf("intermediate or missing final values: %q", out)
+		}
+		if code != 0 || !strings.Contains(string(data), "lane.critical.roles=critical-implementer") || !strings.Contains(string(data), "lane.critical.panes=2") || !strings.Contains(string(data), "lane.critical.kind=codex") || !strings.Contains(string(data), "max_workers=2") || !strings.Contains(string(data), "split_max_panes=3") {
 			t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
 		}
 	})

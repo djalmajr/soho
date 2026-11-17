@@ -288,6 +288,22 @@ func LaneCapacity(ctx *Config, lane string, env platform.Env) int {
 	}
 	return 1
 }
+
+// LaneOnDemand identifies a lane reserved solely for critical slices.
+func LaneOnDemand(ctx *Config, lane string, env platform.Env) bool {
+	return strings.TrimSpace(LaneRolesCSV(ctx, lane, env)) == "critical-implementer"
+}
+
+func AlwaysOpenLaneCapacitySum(ctx *Config, env platform.Env) int {
+	n := 0
+	for _, lane := range LaneNames(ctx, env) {
+		if !LaneOnDemand(ctx, lane, env) {
+			n += LaneCapacity(ctx, lane, env)
+		}
+	}
+	return n
+}
+
 func LaneCapacitySum(ctx *Config, env platform.Env) int {
 	n := 0
 	for _, lane := range LaneNames(ctx, env) {
