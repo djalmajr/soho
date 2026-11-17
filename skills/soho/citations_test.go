@@ -45,7 +45,22 @@ func checkCitations(root, doc string, report func(string, ...any)) {
 			return
 		}
 		text := string(content)
-		for _, at := range citationPattern.FindAllStringSubmatchIndex(text, -1) {
+		// The scan resumes where each citation's line list really ends, not
+		// where the broad pattern stopped: an unquoted list cut short at a
+		// comma leaves the next citation to be found on its own.
+		for pos := 0; pos < len(text); {
+			rel := citationPattern.FindStringSubmatchIndex(text[pos:])
+			if rel == nil {
+				break
+			}
+			at := make([]int, len(rel))
+			for i, v := range rel {
+				at[i] = v
+				if v >= 0 {
+					at[i] = v + pos
+				}
+			}
+			pos = at[1]
 			path, ranges := text[at[2]:at[3]], text[at[4]:at[5]]
 			tailStart := at[1]
 			quoted := false
@@ -54,6 +69,7 @@ func checkCitations(root, doc string, report func(string, ...any)) {
 					ranges = text[at[4] : at[4]+end]
 					tailStart = at[4] + end + 1
 					quoted = true
+					pos = tailStart
 				}
 			}
 			if !quoted {
@@ -68,9 +84,11 @@ func checkCitations(root, doc string, report func(string, ...any)) {
 						end++
 					}
 					report("%s: %s:%s: malformed range", doc, path, rest[:end])
+					pos = at[4] + end
 					continue
 				}
 				ranges, tailStart = rest[:n], at[4]+n
+				pos = tailStart
 			}
 			if !rangePattern.MatchString(ranges) {
 				report("%s: %s:%s: malformed range", doc, path, ranges)
@@ -224,6 +242,8 @@ func TestCitationFixtures(t *testing.T) {
 		{"generic pair", "`internal/probe.go:5` `Pair.Bar`", ""},
 		{"unquoted then prose", "See internal/probe.go:3, where the method is declared.", ""},
 		{"unquoted pair", "See internal/probe.go:3, internal/probe.go:6.", ""},
+		{"unquoted pair second out of file", "See internal/probe.go:3, internal/probe.go:999.", "range outside file"},
+		{"unquoted pair second missing", "See internal/probe.go:3, internal/missing_probe.go:6.", "missing_probe.go"},
 		{"unquoted list", "<!-- internal/probe.go:3, 5 -->", ""},
 		{"unquoted list out of file", "<!-- internal/probe.go:3, 999 -->", "range outside file"},
 		{"unquoted glued letter", "<!-- internal/probe.go:3x -->", "malformed range"},
