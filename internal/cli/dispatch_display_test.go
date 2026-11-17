@@ -13,6 +13,19 @@ func TestDispatchDisplayWarning(t *testing.T) {
 		warn                                   bool
 	}{
 		{"native", "codex", "ui", `-c shell_environment_policy.include_only=["PATH"]`, ``, "secret-display-value", true},
+		{"long-equals-drop", "codex", "ui", `--config=shell_environment_policy.include_only=["PATH"]`, `[shell_environment_policy]
+include_only=["WAYLAND_DISPLAY"]`, "secret-display-value", true},
+		{"long-equals-allow", "codex", "ui", `--config=shell_environment_policy.include_only=["WAYLAND_DISPLAY"]`, `[shell_environment_policy]
+include_only=["PATH"]`, "secret-display-value", false},
+		{"short-attached", "codex", "ui", `-cshell_environment_policy.include_only=["PATH"]`, ``, "secret-display-value", true},
+		{"last-override", "codex", "ui", `-c shell_environment_policy.include_only=["PATH"] --config=shell_environment_policy.include_only=["WAYLAND_DISPLAY"]`, ``, "secret-display-value", false},
+		{"last-drop", "codex", "ui", `--config=shell_environment_policy.include_only=["WAYLAND_DISPLAY"] -c shell_environment_policy.include_only=["PATH"]`, ``, "secret-display-value", true},
+		{"single-literals", "codex", "ui", `-c shell_environment_policy.include_only=['WAYLAND_DISPLAY']`, ``, "secret-display-value", false},
+		{"case-question", "codex", "ui", `-c shell_environment_policy.include_only=["wayland_displa?"]`, ``, "secret-display-value", false},
+		{"empty-native", "codex", "ui", `-c shell_environment_policy.include_only=[]`, `[shell_environment_policy]
+include_only=["PATH"]`, "secret-display-value", false},
+		{"empty-file", "codex", "ui", ``, `[shell_environment_policy]
+include_only=[]`, "secret-display-value", false},
 		{"config", "codex", "ui", ``, `[shell_environment_policy]
 include_only = ["PATH"]`, "secret-display-value", true},
 		{"glob", "codex", "ui", `-c shell_environment_policy.include_only=["WAYLAND_*"]`, ``, "secret-display-value", false},

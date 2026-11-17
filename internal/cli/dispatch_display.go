@@ -28,8 +28,10 @@ func dispatchDisplayNativePolicy(args string) ([]string, bool) {
 				break
 			}
 			value = fields[i]
-		} else if strings.HasPrefix(fields[i], "-c=") {
-			value = strings.TrimPrefix(fields[i], "-c=")
+		} else if strings.HasPrefix(fields[i], "--config=") {
+			value = strings.TrimPrefix(fields[i], "--config=")
+		} else if strings.HasPrefix(fields[i], "-c") {
+			value = strings.TrimPrefix(strings.TrimPrefix(fields[i], "-c"), "=")
 		} else {
 			continue
 		}
@@ -78,6 +80,9 @@ func warnDispatchDisplay(body, kind, agent, args, sd string, env platform.Env) {
 		if !valid || !present {
 			return
 		}
+	}
+	if len(patterns) == 0 {
+		return
 	}
 	var dropped []string
 	for _, name := range names {
