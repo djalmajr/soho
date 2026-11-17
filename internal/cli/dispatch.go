@@ -769,14 +769,26 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	if kind == "cursor" {
 		clearDispatchWait()
 	}
-	promptRep := svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue}, transport.Call{})
+	sendCall := transport.Call{}
+	if hcMode && amend {
+		// An amendment cannot rely on an unguarded queue: hc does not prove
+		// that a working CLI accepted the input. Bound the guarded send too.
+		seconds := checkSecs
+		if seconds <= 0 {
+			seconds = 15
+		}
+		sendCall.Timeout = time.Duration(seconds) * time.Second
+	}
+	promptRep := svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue && !(hcMode && amend)}, sendCall)
 	if hcMode && promptRep.Err != nil && promptRep.Err.Kind == transport.FailureBusy {
 		// DJA-604 2b-3a: the worker went working between the dispatch's idle
 		// check and the send. Poll Get until it settles, within the
 		// dispatch's idle wait (the --when-idle budget), then retry the send
 		// once; still working at the budget, or a failed retry, takes the
 		// submission-failed path below.
-		if hcSettled(svc, agent, timeoutRaw, timeoutGiven, sd, ctx, env, cwd) {
+		if amend {
+			promptRep.Err.Message = fmt.Sprintf("worker %s is still working; amendment was not sent. Wait for it to settle, then dispatch again without --amend", agent)
+		} else if hcSettled(svc, agent, timeoutRaw, timeoutGiven, sd, ctx, env, cwd) {
 			promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue}, transport.Call{})
 		} else {
 			promptRep.Err = &transport.Failure{Kind: transport.FailureBusy, Message: fmt.Sprintf("worker %s is still working after the idle wait; the send was not retried", agent)}
@@ -849,6 +861,11 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		// started is not probed, as the ported behavior keeps. A prompt with
 		// no turn rise takes the not-received path, once.
 		started, sendTurn, sendTurnOK := hcSendResult(promptRep.Value)
+		if amend && !started {
+			_ = restoreTaskDispatch(sd, agent, lastPath, lastData, priorPointer)
+			markSubmitFailed()
+			return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "hc did not confirm a started turn; inspect the worker before retrying")
+		}
 		if !started && checkOn {
 			// The proof must be read inside the window: each get is capped
 			// to the remaining time and a result that returns after the

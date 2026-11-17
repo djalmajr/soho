@@ -11,6 +11,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,9 +20,166 @@ import (
 	"testing"
 	"time"
 
+	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/taskreport"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
+
+func TestDispatchHcAmendBusyThenWaitAndNewTask(t *testing.T) {
+	f := newDispatchHcFixture(t, nil)
+	clock := platform.Now
+	var offset time.Duration
+	platform.Now = func() time.Time { return clock().Add(offset) }
+	t.Cleanup(func() { platform.Now = clock })
+	setWorker := func(state string, busy bool) {
+		t.Helper()
+		bin := t.TempDir()
+		send := fakecli.Rule{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":true}`}
+		if busy {
+			send.Code = 10
+			send.Stdout = ""
+			send.Stderr = `{"error":{"kind":"status_mismatch","message":"busy"}}`
+		}
+		rules := append([]fakecli.Rule{
+			{Argv: []string{"get", "t1", "--json"}, ArgvPrefix: true, Stdout: hcDispatchCaller},
+			{Argv: []string{"ls", "--label", "soho.session=sX", "--json"}, ArgvPrefix: true, Stdout: hcDispatchSessionLS},
+		}, guardProbeRules()...)
+		rules = append(rules, fakecli.Rule{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, state)}, send)
+		if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+			t.Fatal(err)
+		}
+		f.env["PATH"], f.env["SOHO_FAKECLI_CONFIG"] = bin, bin
+	}
+	decode := func(out string) map[string]any {
+		t.Helper()
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &obj); err != nil {
+			t.Fatalf("output=%q: %v", out, err)
+		}
+		return obj
+	}
+	setWorker("idle", false)
+	code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
+	if code != 0 {
+		t.Fatalf("first dispatch: exit=%d out=%q stderr=%q", code, out, stderr)
+	}
+	first := decode(out)
+	firstReport, ok := first["report"].(string)
+	if !ok || firstReport == "" || first["wait_status"] != "submitted" {
+		t.Fatalf("first=%v", first)
+	}
+	if err := os.WriteFile(firstReport, []byte("# First task report\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	offset += 5 * time.Second
+	setWorker("working", true)
+	code, out, stderr = f.run(t, "worker", f.brief, "--amend", "--no-wait")
+	t.Logf("refused amendment stdout: %s", strings.TrimSpace(out))
+	t.Logf("refused amendment stderr: %s", strings.TrimSpace(stderr))
+	if code != 4 || !strings.Contains(out, "amendment was not sent") || !strings.Contains(out, "without --amend") {
+		t.Fatalf("amend exit=%d out=%q stderr=%q", code, out, stderr)
+	}
+	amend := decode(out)
+	if amend["report"] == firstReport {
+		t.Fatalf("amendment reused first report: %v", amend)
+	}
+	var waitOut, waitErr bytes.Buffer
+	oldOut, oldErr := platform.Stdout, platform.Stderr
+	platform.Stdout, platform.Stderr = &waitOut, &waitErr
+	waitCode := func() int {
+		defer func() { platform.Stdout, platform.Stderr = oldOut, oldErr }()
+		return Run([]string{"wait", "worker", "--timeout", "5s"}, f.env)
+	}()
+	if waitCode != 15 || !strings.Contains(waitOut.String(), `"status":"not-received"`) || !strings.Contains(waitOut.String(), `"cause":"submission-failed"`) || !strings.Contains(waitErr.String(), "the report on disk belongs to the previous task") {
+		t.Fatalf("wait exit=%d out=%q stderr=%q", waitCode, waitOut.String(), waitErr.String())
+	}
+	offset += 5 * time.Second
+	setWorker("idle", false)
+	if err := os.WriteFile(f.brief, []byte("# Goal\n\nNew task.\n# Report\n\ndone\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, stderr = f.run(t, "worker", f.brief, "--no-wait")
+	if code != 0 {
+		t.Fatalf("new dispatch: exit=%d out=%q stderr=%q", code, out, stderr)
+	}
+	last := decode(out)
+	if last["wait_status"] != "submitted" || last["report"] == firstReport || last["report"] == amend["report"] {
+		t.Fatalf("new task=%v first=%v amend=%v", last, first, amend)
+	}
+	ptr := taskreport.ReadTaskReportPointer(f.sd, "worker")
+	if ptr == nil {
+		t.Fatal("missing new task pointer")
+	}
+	current, _ := ptr.Get("current")
+	if current != last["report"] {
+		t.Fatalf("current=%v new report=%v", current, last["report"])
+	}
+	if _, err := os.Stat(filepath.Join(f.sd, "wait", "worker.submit-failed")); !os.IsNotExist(err) {
+		t.Fatalf("failed marker remains: %v", err)
+	}
+}
+
+func TestDispatchHcAmendBusyPreservesAttribution(t *testing.T) {
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
+		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "working")},
+		{Argv: []string{"send"}, ArgvPrefix: true, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`},
+	}...))
+	old := filepath.Join(f.sd, "reports", "previous.md")
+	pointer := []byte(fmt.Sprintf(`{"version":1,"task_report":%q,"current":%q,"history":[],"role":"implementer","pane":"t7"}`, old, old) + "\n")
+	path := taskreport.TaskReportPointerPath(f.sd, "worker")
+	if err := os.WriteFile(path, pointer, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.sd, "last-report-worker"), []byte(old+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	code, out, stderr := f.run(t, "worker", f.brief, "--amend", "--no-wait", "--timeout", "1s")
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("dispatch took %v", elapsed)
+	}
+	if code != 4 || !strings.Contains(out, "amendment was not sent") || !strings.Contains(out, "without --amend") {
+		t.Fatalf("exit=%d out=%q stderr=%q", code, out, stderr)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(pointer, after) {
+		t.Fatalf("pointer=%q err=%v", after, err)
+	}
+	if _, err := os.Stat(filepath.Join(f.sd, "wait", "worker.submit-failed")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDispatchHcAmendSendDeadline(t *testing.T) {
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
+		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "working")},
+		{Argv: []string{"send"}, ArgvPrefix: true, Delay: 4000, Stdout: `{"turn":7,"started":true}`},
+	}...))
+	old := filepath.Join(f.sd, "reports", "previous.md")
+	pointer := []byte(fmt.Sprintf(`{"version":1,"task_report":%q,"current":%q,"history":[],"role":"implementer","pane":"t7"}`, old, old) + "\n")
+	path := taskreport.TaskReportPointerPath(f.sd, "worker")
+	if err := os.WriteFile(path, pointer, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.sd, "last-report-worker"), []byte(old+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	code, out, stderr := f.run(t, "worker", f.brief, "--amend", "--no-wait")
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("dispatch took %v", elapsed)
+	}
+	if code != 4 {
+		t.Fatalf("exit=%d out=%q stderr=%q", code, out, stderr)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(pointer, after) {
+		t.Fatalf("pointer=%q err=%v", after, err)
+	}
+	if _, err := os.Stat(filepath.Join(f.sd, "wait", "worker.submit-failed")); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // TestDispatchHcNoPreSendScreenWork is the ported NoPreSendScreens probe:
 // a pi under hc makes zero screen reads and sends no key before the send
