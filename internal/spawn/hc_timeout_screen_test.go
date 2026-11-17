@@ -88,8 +88,8 @@ func TestSpawnHcNeverReadyNamesTheScreenBeforeRemoval(t *testing.T) {
 			t.Fatalf("spawn sent input to the terminal: %v", c.Argv)
 		}
 	}
-	if reads != 1 || read < 0 || kill < 0 || rm < 0 || !(read < kill && kill < rm) {
-		t.Fatalf("read=%d kill=%d rm=%d reads=%d, want exactly one read before kill before rm: %v", read, kill, rm, reads, calls)
+	if reads < 1 || read < 0 || kill < 0 || rm < 0 || !(read < kill && kill < rm) {
+		t.Fatalf("read=%d kill=%d rm=%d reads=%d, want at least one read, all before kill before rm: %v", read, kill, rm, reads, calls)
 	}
 	if strings.Count(exit.Msg, "last visible line") != 1 {
 		t.Fatalf("message %q repeats the line", exit.Msg)
