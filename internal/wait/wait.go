@@ -1842,7 +1842,9 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	sd := core.StateDir(ctx, env, cwd)
 	for _, agent := range agents {
 		if core.RosterLine(sd, agent) == "" {
-			core.DieFriction("agent '"+agent+"' is not in the roster (state dir: "+sd+")", 3, "", "wait")
+			message := "agent '" + agent + "' is not in the roster (state dir: " + sd + ")"
+			message += parentRosterHint(agent, ctx, env, cwd)
+			core.DieFriction(message, 3, "", "wait")
 		}
 	}
 	if math.IsNaN(timeout) {
@@ -1872,7 +1874,7 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		panic(value)
 	}()
 	if wake {
-		return cmdWake(agents, timeout, any, ctx, env, cwd)
+		return cmdWake(agents, timeout, any, ctx, env, cwd, sd)
 	}
 	return waitFor(agents, sd, ctx, env, timeout, any, observe, cwd)
 }

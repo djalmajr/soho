@@ -40,6 +40,38 @@ const (
 	wakeHcNameRule = `^[a-z0-9_-]{1,32}$`
 )
 
+func TestWaitParentRosterHint(t *testing.T) {
+	for _, holds := range []bool{true, false} {
+		t.Run(fmt.Sprintf("parent-holds-%t", holds), func(t *testing.T) {
+			f := newHcWakeFixture(t, "1", "none")
+			parentDir := filepath.Join(f.base, "state", "parent-session")
+			if err := os.MkdirAll(parentDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if holds {
+				if err := os.WriteFile(filepath.Join(parentDir, "agents.tsv"), []byte("other\tp2\tclaude\trole\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := fakecli.Install(t, f.bin, "hc", []fakecli.Rule{
+				{Argv: []string{"get", "t1", "--json"}, Stdout: `{"address":"t1","parent":"t2","state":"live","labels":{"soho.session":"sW"}}`},
+				{Argv: []string{"get", "t2", "--json"}, Stdout: `{"address":"t2","state":"live","labels":{"soho.session":"parent-session"}}`},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			code, msg, _, _ := (&wakeFixture{hcWakeFixture: f}).cmd(t, "other", "--wake")
+			base := "agent 'other' is not in the roster (state dir: " + f.sd + ")"
+			if holds {
+				base += "; this terminal (t1) is a child of t2, whose roster holds 'other': run 'soho wait other --wake' in t2's terminal (--wake creates its own child)"
+			}
+			if code != 3 || msg != base {
+				t.Fatalf("code=%d msg=%q want 3 %q", code, msg, base)
+			}
+		})
+	}
+}
+
 // wakeRPCConn is the fake terminal.run connection: it answers the hello and
 // the run from a canned response and records what the client wrote and how
 // many times it connected. onRun runs when the terminal.run line is written.
@@ -129,6 +161,7 @@ func newWakeFixture(t *testing.T, conn *wakeRPCConn, agents []string, rules ...f
 		t.Fatal(err)
 	}
 	f.ctx.Entries["dispatch_timeout"] = core.ConfigEntry{Value: "123000"}
+	rules = append(rules, fakecli.Rule{Argv: []string{"ls", "--json"}, Stdout: `{"terminals":[]}`})
 	f.installHc(t, rules...)
 	client := hc.New(f.env)
 	client.Connect = conn.Connect
@@ -261,7 +294,7 @@ func TestWakeArmsOneChildTerminal(t *testing.T) {
 			// No probe of the worker: the only hc reads are the caller's
 			// session (the state dir's, then the run's own), and the
 			// finished-record check of the child's own name.
-			wantCalls := [][]string{{"get", "t1", "--json"}, {"get", "wake-w1", "--json"}, {"get", "t1", "--json"}}
+			wantCalls := [][]string{{"get", "t1", "--json"}, {"ls", "--json"}, {"get", "wake-w1", "--json"}, {"get", "t1", "--json"}}
 			if got := f.hcArgvs(t); !reflect.DeepEqual(got, wantCalls) {
 				t.Fatalf("hc calls %v, want %v", got, wantCalls)
 			}
@@ -402,6 +435,91 @@ func TestWakeAlreadyArmed(t *testing.T) {
 		if argv[0] == "kill" || argv[0] == "rm" {
 			t.Fatalf("a live child was closed: %v", argv)
 		}
+	}
+}
+
+func TestWakeMembershipReconciliation(t *testing.T) {
+	live := `{"terminals":[{"address":"t9","name":"wake-w1","state":"live","parent":"t1"}]}`
+	for _, tc := range []struct {
+		name               string
+		first, second      []string
+		secondList         string
+		wantRuns           int
+		wantArgs           []string
+		wantWarning, stale bool
+	}{
+		{"same agent", []string{"w1", "--wake"}, []string{"w1", "--wake"}, live, 1, nil, true, false},
+		{"partial any", []string{"w1", "--wake"}, []string{"w1", "w2", "--any", "--wake"}, live, 2, []string{"wait", "w2", "--timeout", "123000", "--any", "--observe"}, true, false},
+		{"stale child", []string{"w1", "--wake"}, []string{"w1", "--wake"}, `{"terminals":[]}`, 2, []string{"wait", "w1", "--timeout", "123000", "--observe"}, false, true},
+		{"hashed membership", []string{"w1", "w2", "--any", "--wake"}, []string{"w2", "--wake"}, live, 1, nil, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := newWakeRPCConn(wakeRPCRun)
+			firstName := WakeName([]string{"w1"})
+			if tc.name == "hashed membership" {
+				firstName = WakeName([]string{"w1", "w2"})
+			}
+			f := newWakeFixture(t, conn, []string{"w1", "w2"},
+				fakecli.Rule{Argv: []string{"ls", "--json"}, Call: 1, Stdout: `{"terminals":[]}`},
+				fakecli.Rule{Argv: []string{"ls", "--json"}, Call: 2, Stdout: tc.secondList},
+				notFoundRule(firstName), notFoundRule("wake-w2"))
+			code, msg, _, stderr := f.cmd(t, tc.first...)
+			if code != 0 {
+				t.Fatalf("first: code=%d msg=%q stderr=%q", code, msg, stderr)
+			}
+			record := filepath.Join(f.sd, "wakes", "t9")
+			data, err := os.ReadFile(record)
+			wantRecord := "w1\n"
+			if tc.name == "hashed membership" {
+				wantRecord = "w1\nw2\n"
+			}
+			if err != nil || string(data) != wantRecord {
+				t.Fatalf("record=%q err=%v want %q", data, err, wantRecord)
+			}
+			// Windows does not represent owner/group/other bits in the mode.
+			if runtime.GOOS != "windows" {
+				if info, err := os.Stat(record); err != nil || info.Mode().Perm() != 0600 {
+					t.Fatalf("record mode: %v %v", info, err)
+				}
+				if info, err := os.Stat(filepath.Dir(record)); err != nil || info.Mode().Perm() != 0700 {
+					t.Fatalf("directory mode: %v %v", info, err)
+				}
+			}
+			conn.response = wakeRPCHello + "\n" + `{"jsonrpc":"2.0","id":2,"result":{"address":"t10"}}` + "\n"
+			code, msg, out, stderr := f.cmd(t, tc.second...)
+			if code != 0 {
+				t.Fatalf("second: code=%d msg=%q stderr=%q", code, msg, stderr)
+			}
+			warnAgent := "w1"
+			if tc.name == "hashed membership" {
+				warnAgent = "w2"
+			}
+			warning := fmt.Sprintf("soho: wait: a wake for '%s' is already armed (t9); not arming another for it\n", warnAgent)
+			if (stderr == warning) != tc.wantWarning {
+				t.Fatalf("stderr=%q want warning %v (%q)", stderr, tc.wantWarning, warning)
+			}
+			runs := conn.runs(t)
+			if len(runs) != tc.wantRuns {
+				t.Fatalf("runs=%d want=%d out=%q", len(runs), tc.wantRuns, out)
+			}
+			if runs[0]["name"] != firstName {
+				t.Fatalf("first wake name=%v want %q", runs[0]["name"], firstName)
+			}
+			if tc.wantArgs != nil {
+				want := append([]string{platform.LauncherPath(f.env)}, tc.wantArgs...)
+				if got := stringsOf(runs[1]["argv"]); !reflect.DeepEqual(got, want) {
+					t.Fatalf("argv=%q want %q", got, want)
+				}
+				if got := stringsOf(wakeJSON(t, out)["agents"]); !reflect.DeepEqual(got, tc.wantArgs[1:2]) {
+					t.Fatalf("armed agents=%v want %v", got, tc.wantArgs[1:2])
+				}
+			}
+			if tc.stale {
+				if _, err := os.Stat(record); !os.IsNotExist(err) {
+					t.Fatalf("stale record remains: %v", err)
+				}
+			}
+		})
 	}
 }
 
@@ -659,5 +777,55 @@ func TestWakeRefusesAStateRootWithALineBreak(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWakeOtherCallerPreservesLiveRecord(t *testing.T) {
+	conn := newWakeRPCConn(wakeRPCRun)
+	live := `{"terminals":[{"address":"t9","name":"wake-5eeaadf3","state":"live","parent":"t1"}]}`
+	f := newWakeFixture(t, conn, []string{"w1", "w2"},
+		fakecli.Rule{Argv: []string{"ls", "--json"}, Call: 1, Stdout: `{"terminals":[]}`},
+		fakecli.Rule{Argv: []string{"ls", "--json"}, Call: 2, Stdout: live},
+		fakecli.Rule{Argv: []string{"ls", "--json"}, Call: 3, Stdout: live},
+		notFoundRule(WakeName([]string{"w1", "w2"})), notFoundRule("wake-w1"))
+	if code, msg, _, _ := f.cmd(t, "w1", "w2", "--wake"); code != 0 {
+		t.Fatalf("first: %d %s", code, msg)
+	}
+	root, err := openWakeStorage(f.sd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	remaining, err := uncoveredWakeAgents(wakeServices(f.env), "t2", root, []string{"w1"})
+	if err != nil || !reflect.DeepEqual(remaining, []string{"w1"}) {
+		t.Fatalf("other caller: %v %v", remaining, err)
+	}
+	if _, err := os.Stat(filepath.Join(f.sd, "wakes", "t9")); err != nil {
+		t.Fatal(err)
+	}
+	code, msg, _, stderr := f.cmd(t, "w1", "--wake")
+	if code != 0 || !strings.Contains(stderr, "already armed (t9)") || len(conn.runs(t)) != 1 {
+		t.Fatalf("repeat: %d %s stderr=%q runs=%d", code, msg, stderr, len(conn.runs(t)))
+	}
+}
+
+func TestWakeRefusesLinkedStorage(t *testing.T) {
+	conn := newWakeRPCConn(wakeRPCRun)
+	f := newWakeFixture(t, conn, []string{"w1"}, notFoundRule("wake-w1"))
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "keep"), []byte("unrelated"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(f.sd, "wakes")); err != nil {
+		t.Fatal(err)
+	}
+	code, msg, out, stderr := f.cmd(t, "w1", "--wake")
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(outside, "keep"))
+	if code != 0 || wakeJSON(t, out)["wake"] != "armed" || len(conn.runs(t)) != 1 || strings.Count(stderr, "duplicate detection") != 1 || err != nil || string(data) != "unrelated" || len(entries) != 1 {
+		t.Fatalf("code=%d msg=%q stderr=%q entries=%v data=%q err=%v", code, msg, stderr, entries, data, err)
 	}
 }

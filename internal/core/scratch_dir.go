@@ -121,6 +121,32 @@ func PrivateScratchReports(env platform.Env, workspaceID string, mode ScratchMod
 	return privateScratchDir(env, workspaceID, "reports", mode, "reports")
 }
 
+// CheckPrivateStateDirectory refuses a non-private existing state subdirectory.
+func CheckPrivateStateDirectory(path, kind string) error {
+	if err := privateScratchLevel(path, kind, ScratchRead); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	return CheckPrivateStateDirectoryInfo(path, kind, info)
+}
+
+// CheckPrivateStateDirectoryInfo validates the identity held by an open directory.
+func CheckPrivateStateDirectoryInfo(path, kind string, info fs.FileInfo) error {
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return &ScratchRefusedError{Kind: kind, Path: path, Cause: "it is not a plain directory"}
+	}
+	if cause := scratchOwnerRefusal(info); cause != "" {
+		return &ScratchRefusedError{Kind: kind, Path: path, Cause: cause}
+	}
+	if scratchChecksOwner && info.Mode().Perm()&0o077 != 0 {
+		return &ScratchRefusedError{Kind: kind, Path: path, Cause: "it is accessible by other users"}
+	}
+	return nil
+}
+
 func privateScratchLevel(path, kind string, mode ScratchMode) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) && mode == ScratchCreate {
