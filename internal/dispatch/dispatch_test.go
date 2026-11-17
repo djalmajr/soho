@@ -9,7 +9,50 @@ import (
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
+
+func TestComposeMcpNoneNote(t *testing.T) {
+	const note = "- The orchestrator started you without MCP servers on purpose (mcp: none): project instructions to query MCP services (memory, trackers) do not apply to this task, and an MCP tool you cannot reach is not a gap to report.\n"
+	for _, transport := range []string{"legacy", "hc"} {
+		for _, choice := range []string{"none", "alpha,beta", "inherit", ""} {
+			t.Run(transport+"/"+choice, func(t *testing.T) {
+				root := t.TempDir()
+				env := platform.Env{"HOME": root, "USERPROFILE": root, "XDG_CONFIG_HOME": root, "TMPDIR": root, "PATH": root, "SOHO_DIR": root, "SOHO_SKILL_DIR": root, "HERDR_WORKSPACE_ID": "ws"}
+				if transport == "hc" {
+					if _, err := fakecli.Install(t, root, "hc", []fakecli.Rule{{Argv: []string{"get", "t1", "--json"}, Stdout: `{"address":"t1","labels":{"soho.session":"ws"}}`}}); err != nil {
+						t.Fatal(err)
+					}
+					env["SOHO_TRANSPORT"], env["HC_TERMINAL_ID"], env["SOHO_FAKECLI_CONFIG"] = "hc", "t1", root
+				}
+				ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
+				sd := filepath.Join(root, "ws")
+				if err := os.MkdirAll(sd, 0700); err != nil {
+					t.Fatal(err)
+				}
+				row := []string{"worker", "t7", "codex", "reviewer", "openai", "0", root, "now", "", "auto", "reviewer", "", "", "", "high"}
+				if choice != "" {
+					row = append(row, choice)
+				}
+				core.RosterAppend(sd, row)
+				role := filepath.Join(root, "role.md")
+				if err := os.WriteFile(role, []byte("---\nname: reviewer\n---\nRole body\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				prompts := []string{ComposePrompt(role, "reviewer", "worker", "brief", "/report", ctx, env, "codex", "", "", false), ComposeAmendment("amend", "/report", "", "reviewer", ctx, env, "codex", "", "", false, "worker")}
+				for _, prompt := range prompts {
+					want := 0
+					if choice == "none" {
+						want = 1
+					}
+					if got := strings.Count(prompt, note); got != want {
+						t.Fatalf("transport=%s choice=%q note count=%d want=%d", transport, choice, got, want)
+					}
+				}
+			})
+		}
+	}
+}
 
 // composeEnv is the env the CLI always has when it composes a prompt: the
 // skill directory resolvable. A throwaway tree stands in for the skill.

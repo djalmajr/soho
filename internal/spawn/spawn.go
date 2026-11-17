@@ -528,7 +528,9 @@ func warnLaneRoleEffort(name, role, lane, kind, model, effective string, fromLan
 		return
 	}
 	if requested, source := LaneRoleEffortConflict(role, kind, model, effective, ctx, env, cwd); requested != "" {
-		warnSpawnOutput(output, fmt.Sprintf("spawn: '%s' runs %s at the lane's effort %s; the role asks for %s (%s) — pass --effort %s or set lane.%s.effort", name, role, effective, requested, source, requested, lane), ctx, env)
+		core.WarnOnce("lane-role-effort:"+lane+":"+role, func() string { return core.StateDirPath(ctx, env, cwd) }, env, false, func() {
+			warnSpawnOutput(output, fmt.Sprintf("spawn: '%s' runs %s at the lane's effort %s; the role asks for %s (%s) — pass --effort %s or set lane.%s.effort", name, role, effective, requested, source, requested, lane), ctx, env)
+		})
 	}
 }
 
