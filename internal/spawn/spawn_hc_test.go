@@ -28,6 +28,7 @@ import (
 	backend "github.com/djalmajr/soho/internal/hcbackend"
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/spawn/codexhooks"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 	"github.com/djalmajr/soho/internal/transport"
 )
@@ -299,6 +300,10 @@ func spawnHcWithConn(t *testing.T, bin string, argv []string, ctx *core.Config, 
 }
 
 func spawnHcExitWithConn(t *testing.T, bin string, argv []string, ctx *core.Config, env platform.Env, cwd string, conn *fakeSpawnRPCConn) (exit *platform.ExitError, out, stderr *bytes.Buffer, calls []fakecli.Call) {
+	return spawnHcExitWithLaunch(t, bin, argv, ctx, env, cwd, conn, nil)
+}
+
+func spawnHcExitWithLaunch(t *testing.T, bin string, argv []string, ctx *core.Config, env platform.Env, cwd string, conn *fakeSpawnRPCConn, adjust func([]string, platform.RunResult) platform.RunResult) (exit *platform.ExitError, out, stderr *bytes.Buffer, calls []fakecli.Call) {
 	t.Helper()
 	oldOut, oldErr := platform.Stdout, platform.Stderr
 	out, stderr = &bytes.Buffer{}, &bytes.Buffer{}
@@ -316,7 +321,11 @@ func spawnHcExitWithConn(t *testing.T, bin string, argv []string, ctx *core.Conf
 		if len(args) > 0 && (args[0] == "run" || args[0] == "connect") {
 			t.Fatalf("unexpected CLI %s call: %v", args[0], args)
 		}
-		return origLaunch(ctx, env, args...)
+		result := origLaunch(ctx, env, args...)
+		if adjust != nil {
+			result = adjust(args, result)
+		}
+		return result
 	}
 
 	func() {
@@ -1601,4 +1610,127 @@ func TestSpawnOpenCodePrimary(t *testing.T) {
 			t.Fatalf("roster row %v, want the legacy 16-column row", f)
 		}
 	})
+}
+
+func TestSpawnHcCodexHooksReview(t *testing.T) {
+	menu := "Hooks need review\n3 hooks are new or changed.\nHooks can run outside the sandbox after you trust them.\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won't run)\nenter confirm · esc skip\n"
+	selected := strings.Replace(strings.Replace(menu, "› 1.", "  1.", 1), "  2.", "› 2.", 1)
+	jsonScreen := func(s string) string { b, _ := json.Marshal(map[string]string{"text": s}); return string(b) }
+	for _, tc := range []struct {
+		name, kind, mode   string
+		repeat, quote      bool
+		wantExit, wantKeys int
+	}{
+		{"trust", "codex", "trust", false, false, 0, 2},
+		{"block", "codex", "block", false, false, 7, 0},
+		{"repeat", "codex", "trust", true, false, 7, 2},
+		{"other", "pi", "trust", false, false, 4, 0},
+		{"quoted", "codex", "trust", false, true, 4, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd, bin, _, env, ctx := hcSpawnFixture(t, "reviewer", tc.kind)
+			ctx.Entries["hooks_review"] = core.ConfigEntry{Value: tc.mode}
+			working := `{"address":"t7","state":"live","reported":true,"status":{"state":"working"}}`
+			read := []string{"read", "t7", "--lines", "0", "--json"}
+			get := []string{"get", "t7", "--json"}
+			screen := menu
+			if tc.quote {
+				screen += "› composer\n"
+			}
+			rules := hcFixtureRules()
+			rules = append(rules, fakecli.Rule{Argv: get, Stdout: working})
+			if tc.wantKeys > 0 {
+				rules = append(rules, fakecli.Rule{Argv: read, Call: 1, Stdout: jsonScreen(menu)}, fakecli.Rule{Argv: read, Call: 2, Stdout: jsonScreen(selected)}, fakecli.Rule{Argv: read, Call: 3, Stdout: jsonScreen("› composer\n")})
+			}
+			rules = append(rules, fakecli.Rule{Argv: read, Stdout: jsonScreen(screen)}, fakecli.Rule{Argv: []string{"keys", "t7", "down", "--json"}}, fakecli.Rule{Argv: []string{"keys", "t7", "enter", "--json"}}, fakecli.Rule{Argv: []string{"kill", "t7", "--json"}}, fakecli.Rule{Argv: []string{"rm", "t7", "--json"}})
+			if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+				t.Fatal(err)
+			}
+			adjust := func(args []string, result platform.RunResult) platform.RunResult {
+				if tc.name == "trust" && reflect.DeepEqual(args, get) {
+					for _, c := range hcCallLog(t, bin) {
+						if reflect.DeepEqual(c.Argv, []string{"keys", "t7", "enter", "--json"}) {
+							result.Stdout = hcReadyWorker
+						}
+					}
+				}
+				return result
+			}
+			// The dialog cases end on their own (ready or blocked), so their
+			// deadline is generous: under the race detector one fake hc call
+			// can take longer than a short deadline. The cases that expect
+			// the timeout keep a short one.
+			timeout := "1600"
+			if tc.wantExit != 4 {
+				timeout = "60000"
+			}
+			exit, out, stderr, calls := spawnHcExitWithLaunch(t, bin, []string{"reviewer", "--timeout", timeout}, ctx, env, cwd, newFakeSpawnRPCConn(), adjust)
+			code := 0
+			if exit != nil {
+				code = exit.Code
+			}
+			if code != tc.wantExit {
+				t.Fatalf("exit=%d want=%d stderr=%s out=%s", code, tc.wantExit, stderr, out)
+			}
+			keys := 0
+			for _, c := range calls {
+				if c.Argv[0] == "keys" {
+					keys++
+				}
+				if tc.wantExit == 7 && (c.Argv[0] == "kill" || c.Argv[0] == "rm") {
+					t.Fatalf("blocked terminal removed: %v", c.Argv)
+				}
+			}
+			if keys != tc.wantKeys {
+				t.Fatalf("keys=%d want=%d calls=%v", keys, tc.wantKeys, calls)
+			}
+			if tc.wantKeys > 0 && !strings.Contains(stderr.String(), codexhooks.TrustedLine("spawn", "reviewer", "3")) {
+				t.Fatalf("missing trusted warning: %s", stderr)
+			}
+			if tc.wantExit == 7 && !strings.Contains(stderr.String(), codexhooks.BlockedLine("spawn", "reviewer", tc.mode)) {
+				t.Fatalf("missing blocked warning: %s", stderr)
+			}
+		})
+	}
+}
+
+func TestSpawnHcCodexHooksStalledRedrawDeadline(t *testing.T) {
+	if raceDetector {
+		// Under the race detector one fake hc call can outlast the 200ms
+		// deadline, so the dialog is never read and the case proves
+		// nothing; the native jobs run it.
+		t.Skip("needs a screen read inside a 200ms deadline")
+	}
+	menu := "Hooks need review\n3 hooks are new or changed.\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting\nenter confirm · esc skip\n"
+	cwd, bin, _, env, cfg := hcSpawnFixture(t, "reviewer", "codex")
+	cfg.Entries["hooks_review"] = core.ConfigEntry{Value: "trust"}
+	env["SOHO_WAIT_POLL_MS"] = "500"
+	body, _ := json.Marshal(map[string]string{"text": menu})
+	rules := append(hcFixtureRules(),
+		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: `{"address":"t7","state":"live","reported":true,"status":{"state":"working"}}`},
+		fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Stdout: string(body)},
+		fakecli.Rule{Argv: []string{"keys", "t7", "down", "--json"}},
+		fakecli.Rule{Argv: []string{"kill", "t7", "--json"}},
+		fakecli.Rule{Argv: []string{"rm", "t7", "--json"}},
+	)
+	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+		t.Fatal(err)
+	}
+	// The outcome is the timeout (exit 4), never blocked (exit 7): an
+	// approval whose redraw pauses ran past the deadline used to report
+	// blocked (R439). No wall-clock bound (fake-call overhead varies by
+	// host), and exactly one "down": the approval path must run.
+	exit, out, stderr, calls := spawnHcExitWithLaunch(t, bin, []string{"reviewer", "--timeout", "200"}, cfg, env, cwd, newFakeSpawnRPCConn(), nil)
+	if exit == nil || exit.Code != 4 {
+		t.Fatalf("exit=%v calls=%v out=%s stderr=%s", exit, calls, out, stderr)
+	}
+	keys := []string{}
+	for _, c := range calls {
+		if c.Argv[0] == "keys" {
+			keys = append(keys, c.Argv[2])
+		}
+	}
+	if !reflect.DeepEqual(keys, []string{"down"}) || strings.Contains(stderr.String(), "fakecli: no rule") {
+		t.Fatalf("keys=%v calls=%v stderr=%s", keys, calls, stderr)
+	}
 }

@@ -132,6 +132,7 @@ type IO struct {
 	SendKey func(key string) bool
 	Read    func() string
 	Pause   time.Duration
+	Wait    func(time.Duration) bool
 }
 
 // codexHooksRedrawReads bounds the re-reads after each key: codex redraws
@@ -161,9 +162,13 @@ func Approve(screen string, io IO) (string, bool) {
 			if !io.SendKey("down") {
 				return screen, false
 			}
-			screen = codexHooksReread(screen, io, func(s string) bool {
+			var ok bool
+			screen, ok = codexHooksReread(screen, io, func(s string) bool {
 				return codexHooksSelected(s) != before || !IsMenu(s)
 			})
+			if !ok {
+				return screen, false
+			}
 		}
 		// The last screen read is checked again right before the enter: a
 		// redraw that lost the menu but kept the "› 2. Trust all and
@@ -178,33 +183,43 @@ func Approve(screen string, io IO) (string, bool) {
 		if !io.SendKey("t") {
 			return screen, false
 		}
-		screen = codexHooksReread(screen, io, func(s string) bool { return !IsTable(s) })
+		var ok bool
+		screen, ok = codexHooksReread(screen, io, func(s string) bool { return !IsTable(s) })
+		if !ok {
+			return screen, false
+		}
 		if IsTable(screen) && !io.SendKey("esc") {
 			return screen, false
 		}
 	default:
 		return screen, false
 	}
-	screen = codexHooksReread(screen, io, func(s string) bool { return !IsReview(s) })
-	return screen, !IsReview(screen)
+	screen, ok := codexHooksReread(screen, io, func(s string) bool { return !IsReview(s) })
+	return screen, ok && !IsReview(screen)
 }
 
 // codexHooksReread re-reads the visible screen until done holds, up to
 // codexHooksRedrawReads reads; it returns the last screen read (the given
 // one when every read came back empty).
-func codexHooksReread(screen string, io IO, done func(string) bool) string {
+func codexHooksReread(screen string, io IO, done func(string) bool) (string, bool) {
 	for i := 0; i < codexHooksRedrawReads; i++ {
 		if i > 0 && io.Pause > 0 {
-			time.Sleep(io.Pause)
+			if io.Wait != nil {
+				if !io.Wait(io.Pause) {
+					return screen, false
+				}
+			} else {
+				time.Sleep(io.Pause)
+			}
 		}
 		if s := io.Read(); s != "" {
 			screen = s
 			if done(s) {
-				return screen
+				return screen, true
 			}
 		}
 	}
-	return screen
+	return screen, true
 }
 
 // TrustedLine is the one stderr line of an approval that took.

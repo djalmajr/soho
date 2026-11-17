@@ -592,6 +592,7 @@ var keysHC = map[string]string{
 	"Up":        "up",
 	"down":      "down",
 	"Down":      "down",
+	"t":         "t",
 	"ctrl+c":    "ctrl+c",
 	"ctrl+u":    "ctrl+u",
 	"shift+tab": "shift+tab",
@@ -1527,7 +1528,7 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 		return startRunFailure(start.Name, err)
 	}
 
-	return b.waitReady(ctx, call, start.Name, address, start.LaunchProfile, startTimeout(start.Timeout))
+	return b.waitReady(ctx, call, start.Name, address, start.LaunchProfile, startTimeout(start.Timeout), start.StartupDialog)
 }
 
 // loginShellLaunch wraps the agent launch in the user's login shell: the
@@ -1591,9 +1592,10 @@ func startRunFailure(name string, err error) transport.Reply[string] {
 // second observation is made, and blocked, exited, cancelled and timeout
 // keep their original priority (the qualification runs only after an
 // ordinary success).
-func (b *backend) waitReady(ctx context.Context, call transport.Call, name, address, expectedProfile string, deadline time.Duration) transport.Reply[string] {
+func (b *backend) waitReady(ctx context.Context, call transport.Call, name, address, expectedProfile string, deadline time.Duration, dialog func(context.Context, string, string) transport.StartupDialogAction) transport.Reply[string] {
 	deadlineAt := time.Now().Add(deadline)
 	var lastErr *transport.Failure
+	var lastDialogRead time.Time
 	for {
 		if err := ctx.Err(); err != nil {
 			return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCancelled, Message: err.Error(), Cause: err}}
@@ -1634,6 +1636,29 @@ func (b *backend) waitReady(ctx context.Context, call transport.Call, name, addr
 				return *rep
 			}
 			lastErr = perr
+		}
+		if dialog != nil && time.Since(lastDialogRead) >= time.Second && time.Until(deadlineAt) > 0 {
+			lastDialogRead = time.Now()
+			readCall := call
+			if readCall.Timeout <= 0 || readCall.Timeout > timeoutScreenReadCap {
+				readCall.Timeout = timeoutScreenReadCap
+			}
+			readCtx, cancel := context.WithDeadline(ctx, deadlineAt)
+			screen := b.Read(readCtx, transport.Target{ID: address}, transport.Read{Source: "visible"}, readCall)
+			action := transport.StartupDialogContinue
+			if screen.Err == nil && screen.Valid {
+				action = dialog(readCtx, address, screen.Value)
+			}
+			cancel()
+			if err := ctx.Err(); err != nil {
+				return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCancelled, Message: err.Error(), Cause: err}}
+			}
+			if time.Until(deadlineAt) <= 0 {
+				return b.timeoutReply(ctx, call, name, address, deadline, lastErr)
+			}
+			if action == transport.StartupDialogBlocked {
+				return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureBlocked, Message: "agent " + name + " is blocked during startup"}}
+			}
 		}
 		wait := startPollInterval
 		if remaining := time.Until(deadlineAt); wait > remaining {

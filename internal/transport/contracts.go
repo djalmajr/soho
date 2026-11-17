@@ -256,6 +256,11 @@ type Start struct {
 	Timeout string
 	Args    []string
 
+	// StartupDialog observes a visible screen on a not-ready poll. It may
+	// handle a dialog using the supplied terminal address, or block startup.
+	// The hc backend calls it at most once per second; other backends ignore it.
+	StartupDialog func(context.Context, string, string) StartupDialogAction
+
 	// Cwd is the worker's working directory. The herdr backend ignores it
 	// (its pane already has a cwd); the hc backend passes it as --cwd when
 	// it is non-empty.
@@ -291,6 +296,15 @@ type Start struct {
 	RegistryDir string
 	Agent       string
 }
+
+// StartupDialogAction directs readiness polling after a dialog observation.
+type StartupDialogAction uint8
+
+const (
+	StartupDialogContinue StartupDialogAction = iota
+	StartupDialogHandled
+	StartupDialogBlocked
+)
 
 // ConfiguredLaunchPreflight is optional and leaves existing method sets intact.
 // Callers must invoke it before placement, adoption, shell clearing, report

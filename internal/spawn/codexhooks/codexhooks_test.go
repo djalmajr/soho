@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The real codex 0.163.0 screens of the brief (DJA-434).
@@ -81,5 +82,21 @@ func TestApproveRedrawThatLosesTheMenuSendsNoEnter(t *testing.T) {
 	}
 	if want := []string{"down"}; !reflect.DeepEqual(s.keys, want) {
 		t.Fatalf("keys = %q, want %q", s.keys, want)
+	}
+}
+
+func TestApproveCancelledWaitStopsBeforeFurtherKeys(t *testing.T) {
+	for _, screen := range []string{menuScreen, tableScreen} {
+		t.Run(strings.Split(screen, "\n")[0], func(t *testing.T) {
+			s := &scriptedIO{reads: []string{screen}}
+			io := s.io()
+			io.Pause = time.Millisecond
+			waits := 0
+			io.Wait = func(time.Duration) bool { waits++; return false }
+			_, ok := Approve(screen, io)
+			if ok || waits != 1 || len(s.keys) != 1 {
+				t.Fatalf("ok=%v waits=%d keys=%v", ok, waits, s.keys)
+			}
+		})
 	}
 }
