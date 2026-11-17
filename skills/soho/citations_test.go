@@ -13,24 +13,45 @@ import (
 	"testing"
 )
 
-var citationPattern = regexp.MustCompile("(internal/[A-Za-z0-9_/-]+\\.go):([0-9]+(?:-[0-9]+)?(?:,[0-9]+(?:-[0-9]+)?)*)`?")
-var firstSymbol = regexp.MustCompile("^[ \\t]+`([A-Za-z_][A-Za-z0-9_]*|\\(\\*[A-Za-z_][A-Za-z0-9_]*\\)\\.[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z_][A-Za-z0-9_]*)`")
-var nextSymbol = regexp.MustCompile("^,[ \\t]+`([A-Za-z_][A-Za-z0-9_]*|\\(\\*[A-Za-z_][A-Za-z0-9_]*\\)\\.[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z_][A-Za-z0-9_]*)`")
+var citationPattern = regexp.MustCompile("(internal/[A-Za-z0-9_/-]+\\.go):([0-9][A-Za-z0-9_-]*(?:,[ \t]*[A-Za-z0-9_-]*)*)`?")
+var rangePattern = regexp.MustCompile(`^[0-9]+(?:-[0-9]+)?(?:,[ \t]*[0-9]+(?:-[0-9]+)?)*$`)
+
+const symbolPattern = `([A-Za-z_][A-Za-z0-9_]*|\(\*[A-Za-z_][A-Za-z0-9_]*\)\.[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)`
+
+var firstSymbol = regexp.MustCompile("^(?:[ \t]+\\([ \t]*|[ \t]*:[ \t]*|[ \t]+)\x60" + symbolPattern + "\x60")
+var nextSymbol = regexp.MustCompile("^,[ \t]+\x60" + symbolPattern + "\x60")
 
 type citationSpan struct{ start, end int }
 
 func TestDocumentationCodeCitations(t *testing.T) {
 	root := filepath.Join("..", "..")
 	for _, doc := range []string{"skills/soho/references/feature-map.md", "docs/formal/README.md"} {
+		checkCitations(root, doc, t.Errorf)
+	}
+}
+
+func checkCitations(root, doc string, report func(string, ...any)) {
+	{
 		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(doc)))
 		if err != nil {
-			t.Errorf("%s: %v", doc, err)
-			continue
+			report("%s: %v", doc, err)
+			return
 		}
 		text := string(content)
 		for _, at := range citationPattern.FindAllStringSubmatchIndex(text, -1) {
 			path, ranges := text[at[2]:at[3]], text[at[4]:at[5]]
-			tail := text[at[1]:]
+			tailStart := at[1]
+			if at[0] > 0 && text[at[0]-1] == '`' {
+				if end := strings.IndexByte(text[at[4]:], '`'); end >= 0 {
+					ranges = text[at[4] : at[4]+end]
+					tailStart = at[4] + end + 1
+				}
+			}
+			if !rangePattern.MatchString(ranges) {
+				report("%s: %s:%s: malformed range", doc, path, ranges)
+				continue
+			}
+			tail := text[tailStart:]
 			var symbols []string
 			if m := firstSymbol.FindStringSubmatchIndex(tail); m != nil {
 				symbols = append(symbols, tail[m[2]:m[3]])
@@ -46,7 +67,7 @@ func TestDocumentationCodeCitations(t *testing.T) {
 			}
 			source, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
 			if err != nil {
-				t.Errorf("%s: %s:%s: %v", doc, path, ranges, err)
+				report("%s: %s:%s: %v", doc, path, ranges, err)
 				continue
 			}
 			lines := strings.Count(string(source), "\n")
@@ -55,6 +76,7 @@ func TestDocumentationCodeCitations(t *testing.T) {
 			}
 			var spans []citationSpan
 			for _, part := range strings.Split(ranges, ",") {
+				part = strings.TrimSpace(part)
 				ends := strings.Split(part, "-")
 				start, _ := strconv.Atoi(ends[0])
 				end := start
@@ -63,19 +85,19 @@ func TestDocumentationCodeCitations(t *testing.T) {
 				}
 				spans = append(spans, citationSpan{start, end})
 				if start < 1 || end < start || end > lines {
-					t.Errorf("%s: %s:%s: range outside file (lines: %d)", doc, path, part, lines)
+					report("%s: %s:%s: range outside file (lines: %d)", doc, path, part, lines)
 				}
 			}
 			if len(symbols) == 0 {
 				if doc == "docs/formal/README.md" {
-					t.Errorf("%s: %s:%s: missing symbol", doc, path, ranges)
+					report("%s: %s:%s: missing symbol", doc, path, ranges)
 				}
 				continue
 			}
 			fset := token.NewFileSet()
 			file, err := parser.ParseFile(fset, path, source, 0)
 			if err != nil {
-				t.Errorf("%s: %s: %v", doc, path, err)
+				report("%s: %s: %v", doc, path, err)
 				continue
 			}
 			var extents []citationSpan
@@ -101,6 +123,12 @@ func TestDocumentationCodeCitations(t *testing.T) {
 							typ := x.Recv.List[0].Type
 							if star, ok := typ.(*ast.StarExpr); ok {
 								typ = star.X
+							}
+							switch indexed := typ.(type) {
+							case *ast.IndexExpr:
+								typ = indexed.X
+							case *ast.IndexListExpr:
+								typ = indexed.X
 							}
 							id, ok := typ.(*ast.Ident)
 							if !ok || id.Name != receiver {
@@ -130,7 +158,7 @@ func TestDocumentationCodeCitations(t *testing.T) {
 					return true
 				})
 				if len(found) == 0 {
-					t.Errorf("%s: %s:%s: symbol %s not found", doc, path, ranges, symbol)
+					report("%s: %s:%s: symbol %s not found", doc, path, ranges, symbol)
 				}
 				extents = append(extents, found...)
 			}
@@ -143,9 +171,44 @@ func TestDocumentationCodeCitations(t *testing.T) {
 					}
 				}
 				if !matched {
-					t.Errorf("%s: %s:%d-%d: outside symbol extent %s (declarations %s)", doc, path, span.start, span.end, strings.Join(symbols, ", "), fmt.Sprint(extents))
+					report("%s: %s:%d-%d: outside symbol extent %s (declarations %s)", doc, path, span.start, span.end, strings.Join(symbols, ", "), fmt.Sprint(extents))
 				}
 			}
 		}
+	}
+}
+
+func TestCitationFixtures(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "internal"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	source := "package p\ntype Box[T any] struct{}\nfunc (b *Box[T]) Foo() {}\ntype Pair[K, V any] struct{}\nfunc (p Pair[K, V]) Bar() {}\nfunc Other() {}\n"
+	if err := os.WriteFile(filepath.Join(root, "internal", "probe.go"), []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, cite, want string }{
+		{"parenthesized", "`internal/probe.go:3` (`(*Box).Foo` note)", ""},
+		{"parenthesized wrong", "`internal/probe.go:3` (`Other`)", "outside symbol extent"},
+		{"colon", "`internal/probe.go:3`: `(*Box).Foo`", ""},
+		{"colon wrong", "`internal/probe.go:3`: `Other`", "outside symbol extent"},
+		{"space range", "`internal/probe.go:3, 999` `(*Box).Foo`", "range outside file"},
+		{"malformed", "`internal/probe.go:3, 4x` `(*Box).Foo`", "malformed range"},
+		{"malformed punctuation", "`internal/probe.go:3.4` `(*Box).Foo`", "malformed range"},
+		{"generic pointer", "`internal/probe.go:3` `Box.Foo`", ""},
+		{"generic pair", "`internal/probe.go:5` `Pair.Bar`", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := "fixture.md"
+			if err := os.WriteFile(filepath.Join(root, doc), []byte(tc.cite), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var errors []string
+			checkCitations(root, doc, func(format string, args ...any) { errors = append(errors, fmt.Sprintf(format, args...)) })
+			got := strings.Join(errors, "\n")
+			if (tc.want == "" && got != "") || (tc.want != "" && !strings.Contains(got, tc.want)) {
+				t.Fatalf("want %q; got %s", tc.want, got)
+			}
+		})
 	}
 }
