@@ -15,6 +15,44 @@ import (
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
+func TestAnySummaryBeforeActionableCollaboration(t *testing.T) {
+	for _, observe := range []bool{false, true} {
+		t.Run(strconv.FormatBool(observe), func(t *testing.T) {
+			f, _ := activeStatusFixture(t, collabFixtureOptions{workspaceID: "ws", policyMode: "policy"}, collaboration.AwaitingOrchestrator, "queued")
+			file, err := os.OpenFile(filepath.Join(f.sd, "agents.tsv"), os.O_APPEND|os.O_WRONLY, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := file.WriteString("complete\tp0c\tclaude\timplementer\n"); err != nil {
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			f.writeStaleReport(t, "complete")
+			report := filepath.Join(f.sd, "reports", "stale-complete.md")
+			info, err := os.Stat(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(f.sd, "wait"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(f.sd, "wait", "complete.report-settled"), []byte(reportIdentity(report, info)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"complete", "author", "--any", "--timeout", "5000"}
+			if observe {
+				args = append(args, "--observe")
+			}
+			code, out, stderr := runWaitCommand(t, f, func() int { return CmdWait(args, f.ctx, f.env, f.cwd) })
+			if code != 10 || !strings.Contains(out, `"status":"done"`) || !strings.Contains(out, `awaiting-orchestrator`) || !strings.Contains(out, `"unwatched":["author"]`) || !strings.Contains(out, `soho wait author --wake --any --timeout 5000`) {
+				t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+			}
+		})
+	}
+}
+
 // collabFixture is the cooperative-completion fixture: a project dir, a
 // workspace state dir (roster + wait dir), two roster participants whose
 // registration verifies against a fake herdr, and an optional active

@@ -11,6 +11,7 @@ import (
 )
 
 var (
+	blockedScopeRE = regexp.MustCompile(`blocked-by-scope: (\S.*:[0-9]+ [—–] \S.*)$`)
 	partialMarker  = regexp.MustCompile("[`*]*\\[partial\\][`*]*")
 	envMarker      = regexp.MustCompile("[`*]*\\[env\\][`*]*")
 	anyItemState   = regexp.MustCompile(`\[(?:done|partial|env|skipped)\]`)
@@ -28,6 +29,29 @@ var (
 	layerBulletRE  = regexp.MustCompile(`^[-*+][ \t]+`)
 	layerNumberRE  = regexp.MustCompile(`^[0-9]+[.)][ \t]+`)
 )
+
+// BlockedByScope returns actionable scope markers outside fenced examples.
+func BlockedByScope(text string) []string {
+	var result []string
+	inFence, fenceChar, fenceLen := false, byte(0), 0
+	for _, line := range strings.Split(text, "\n") {
+		if !inFence {
+			if open := fenceOpen.FindStringSubmatch(line); open != nil {
+				inFence, fenceChar, fenceLen = true, open[1][0], len(open[1])
+				continue
+			}
+		} else {
+			if close := fenceClose.FindStringSubmatch(line); close != nil && close[1][0] == fenceChar && len(close[1]) >= fenceLen {
+				inFence = false
+			}
+			continue
+		}
+		if match := blockedScopeRE.FindStringSubmatch(strings.TrimSpace(line)); match != nil {
+			result = append(result, "blocked by scope: "+match[1])
+		}
+	}
+	return result
+}
 
 // PartialCount counts report lines that state a [partial] item outside fenced
 // code blocks. A line counts at most once.

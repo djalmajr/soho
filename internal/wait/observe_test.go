@@ -58,7 +58,7 @@ func observeGit(t *testing.T, home, dir string, args ...string) string {
 // only owned.txt, and the tree holds an owned and an outside untracked file
 // written after that cutoff and before the report. The fake hc answers every probe with an idle
 // worker.
-func newObserveFixture(t *testing.T) *observeFixture {
+func newObserveFixture(t *testing.T, extra ...fakecli.Rule) *observeFixture {
 	t.Helper()
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
@@ -71,7 +71,7 @@ func newObserveFixture(t *testing.T) *observeFixture {
 		// Git for Windows needs SystemRoot, which this minimal env lacks.
 		f.env["SystemRoot"] = testutil.HostSystemRoot()
 	}
-	f.installHc(t, fakecli.Rule{Argv: []string{"get", "worker", "--json"}, Stdout: hcWakeIdle7})
+	f.installHc(t, append([]fakecli.Rule{{Argv: []string{"get", "worker", "--json"}, Stdout: hcWakeIdle7}}, extra...)...)
 	dir, err := core.PrivateScratchReports(f.env, "sW", core.ScratchCreate)
 	if err != nil {
 		t.Fatal(err)
@@ -337,5 +337,50 @@ func TestObserveFlagNeedsAnAgent(t *testing.T) {
 	code, msg, _, _ := (&wakeFixture{hcWakeFixture: f}).cmd(t, "--observe")
 	if code != 2 || msg != "wait: give at least one agent name" {
 		t.Fatalf("code=%d msg=%q", code, msg)
+	}
+}
+
+func TestObserveAnyNamesUnwatchedAgents(t *testing.T) {
+	o := newObserveFixture(t, fakecli.Rule{Argv: []string{"get", "complete", "--json"}, Stdout: hcWakeIdle7}, fakecli.Rule{Argv: []string{"get", "zother", "--json"}, Stdout: hcWakeWorking5})
+	roster := "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\nworker\tp0a\tclaude\timplementer\t\t\t\t\t\t\t\t\ncomplete\tp0c\tclaude\timplementer\t\t\t\t\t\t\t\t\nzother\tp0b\tclaude\timplementer\t\t\t\t\t\t\t\t\n"
+	if err := os.WriteFile(filepath.Join(o.sd, "agents.tsv"), []byte(roster), 0600); err != nil {
+		t.Fatal(err)
+	}
+	completed := filepath.Join(o.base, "complete.md")
+	if err := os.WriteFile(completed, []byte("done\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(o.sd, "last-report-complete"), []byte(completed+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A previous report exists for zother, but its current pointer names a missing report.
+	stale := filepath.Join(o.base, "old.md")
+	if err := os.WriteFile(stale, []byte("old\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(o.sd, "last-report-zother"), []byte(filepath.Join(o.base, "new.md")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, msg, out, stderr := o.cmd(t, "worker", "complete", "zother", "--observe", "--any", "--timeout", "5000")
+	if code != 0 || msg != "" || !strings.Contains(out, `"unwatched":["zother"]`) || !strings.Contains(out, `soho wait zother --wake --any --timeout 5000`) {
+		t.Fatalf("code=%d msg=%q out=%q stderr=%q", code, msg, out, stderr)
+	}
+}
+
+func TestForegroundAnyNamesUnwatchedAgents(t *testing.T) {
+	o := newObserveFixture(t, fakecli.Rule{Argv: []string{"get", "zother", "--json"}, Stdout: hcWakeWorking5})
+	f, err := os.OpenFile(filepath.Join(o.sd, "agents.tsv"), os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("zother\tp0b\tclaude\timplementer\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	code, msg, out, stderr := o.cmd(t, "worker", "zother", "--any", "--timeout", "5000")
+	if code != 0 || msg != "" || !strings.Contains(out, `"status":"done"`) || !strings.Contains(out, `"unwatched":["zother"]`) || !strings.Contains(out, `soho wait zother --wake --any --timeout 5000`) {
+		t.Fatalf("code=%d msg=%q out=%q stderr=%q", code, msg, out, stderr)
 	}
 }
