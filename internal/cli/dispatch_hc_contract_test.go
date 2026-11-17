@@ -150,6 +150,47 @@ func TestDispatchHcAmendBusyPreservesAttribution(t *testing.T) {
 	}
 }
 
+func TestDispatchHcAmendUnconfirmedSlowGet(t *testing.T) {
+	for _, reply := range []string{`{"turn":7,"started":false}`, `not-json`} {
+		t.Run(reply, func(t *testing.T) {
+			f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
+				{Argv: []string{"get", "worker", "--json"}, Call: 1, Stdout: hcWorkerGet(7, "working")},
+				{Argv: []string{"get", "worker", "--json"}, Call: 2, Stdout: hcWorkerGet(7, "working")},
+				{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Delay: 4000, Stdout: hcWorkerGet(7, "working")},
+				{Argv: []string{"send"}, ArgvPrefix: true, Stdout: reply},
+			}...))
+			f.env["SOHO_PROMPT_SETTLE_SECONDS"] = "0"
+			old := filepath.Join(f.sd, "reports", "previous.md")
+			pointer := []byte(fmt.Sprintf(`{"version":1,"task_report":%q,"current":%q,"history":[],"role":"implementer","pane":"t7"}`, old, old) + "\n")
+			path := taskreport.TaskReportPointerPath(f.sd, "worker")
+			if err := os.WriteFile(path, pointer, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(f.sd, "last-report-worker"), []byte(old+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			code, out, stderr := f.run(t, "worker", f.brief, "--amend", "--no-wait")
+			elapsed := time.Since(start)
+			if elapsed > 3*time.Second {
+				t.Errorf("budget=1s delayed get=4s elapsed=%v", elapsed)
+			}
+			if code != 15 || !strings.Contains(out, `"wait_status":"not-received"`) {
+				t.Fatalf("exit=%d out=%q stderr=%q", code, out, stderr)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(pointer, after) {
+				t.Fatalf("pointer=%q err=%v", after, err)
+			}
+			for _, marker := range []string{"worker.submit-failed", "worker.not-received"} {
+				if _, err := os.Stat(filepath.Join(f.sd, "wait", marker)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func TestDispatchHcAmendSendDeadline(t *testing.T) {
 	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "working")},
