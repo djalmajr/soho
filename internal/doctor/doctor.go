@@ -282,7 +282,7 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 	hadOwnLayout := core.FileKeyValue(dest, "panes") != "" || core.FileLaneSignature(dest) != ""
 	repairEnv := platform.Env{}
 	for key, value := range env {
-		if !strings.HasPrefix(strings.ToUpper(key), "SOHO_") {
+		if !core.LayoutCapacityOverride(key) {
 			repairEnv[key] = value
 		}
 	}

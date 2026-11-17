@@ -313,8 +313,24 @@ func trimJSWhitespace(value string) string {
 	return strings.TrimFunc(value, isJSWhitespace)
 }
 
+func configEnvName(key string) string { return "SOHO_" + strings.ToUpper(key) }
+
+// LayoutCapacityOverride reports whether an environment key overrides layout or capacity configuration.
+func LayoutCapacityOverride(name string) bool {
+	name = strings.ToUpper(name)
+	if strings.HasPrefix(name, configEnvName("lane_")) {
+		return true
+	}
+	for _, key := range []string{"panes", "pane_mode", "max_workers", "flex_extra", "flex_roles", "split_max_panes"} {
+		if name == configEnvName(key) {
+			return true
+		}
+	}
+	return false
+}
+
 func Cfg(ctx *Config, key, fallback string, env platform.Env) string {
-	if value := env.Get("SOHO_" + strings.ToUpper(key)); value != "" {
+	if value := env.Get(configEnvName(key)); value != "" {
 		return value
 	}
 	if entry, ok := ctx.Entries[key]; ok && entry.Value != "" {

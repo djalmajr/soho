@@ -165,6 +165,19 @@ func TestDoctorTM6CLIAndParity(t *testing.T) {
 }
 
 func TestDoctorTM6FixTargets(t *testing.T) {
+	t.Run("session fix reads lanes from selected state root", func(t *testing.T) {
+		env, cwd := tm6CLIEnv(t)
+		env["SOHO_DIR"] = filepath.Join(t.TempDir(), "selected-state")
+		env["HERDR_WORKSPACE_ID"] = "ws"
+		path := filepath.Join(env.Get("SOHO_DIR"), "ws", "session.conf")
+		tm6Write(t, filepath.Join(cwd, ".agents", "soho.conf"), "panes=4\npane_mode=strict\n")
+		tm6Write(t, path, "panes=4\nlane.build.roles=implementer\nlane.build.panes=7\nmax_workers=9\nsplit_max_panes=10\n")
+		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--session", "--panes", "4"}, env, cwd)
+		data, err := os.ReadFile(path)
+		if err != nil || code != 0 || !strings.Contains(string(data), "max_workers=7\n") || !strings.Contains(string(data), "split_max_panes=8\n") {
+			t.Fatalf("code=%d out=%q stderr=%q conf=%q err=%v", code, out, stderr, data, err)
+		}
+	})
 	t.Run("project fix uses persisted flex mode", func(t *testing.T) {
 		env, cwd := tm6CLIEnv(t)
 		user := filepath.Join(env.Get("XDG_CONFIG_HOME"), "soho", "config")
