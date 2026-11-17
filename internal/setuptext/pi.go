@@ -73,8 +73,8 @@ function runHook(args, payload) {
   });
 }
 
-function checkPeer(text) {
-  return runHook(["hook", "inbound", "--pi"], {
+function checkPeer(text, run) {
+  return run(["hook", "inbound", "--pi"], {
     hook_event_name: "UserPromptSubmit",
     prompt: text,
     cwd: process.cwd(),
@@ -90,6 +90,19 @@ export default function (pi) {
   // goes on; the hooks never block, and the text always comes from the
   // soho binary, so nothing is delivered outside Herdr.
   let deliveryArmed = false;
+  let missing = false;
+  async function runSessionHook(args, payload, ctx) {
+    if (missing) return { output: "" };
+    const result = await runHook(args, payload);
+    if (result.error === "ENOENT") {
+      if (!missing) {
+        missing = true;
+        ctx.ui.notify("soho: not installed here; the soho hooks are off for this session. Choose soho_<os>_<arch> on the releases page: https://github.com/djalmajr/soho/releases", "warning");
+      }
+      return { output: "" };
+    }
+    return result;
+  }
   pi.on("input", async (event, ctx) => {
     // The prefilter accepts the current format's opening tag
     // [soho:peer:<id>] and the previous format's marker [soho:peer]
@@ -98,7 +111,7 @@ export default function (pi) {
     if (typeof event.text !== "string" || (!event.text.includes("[soho:peer") && !event.text.includes('<hc from="'))) {
       return { action: "continue" };
     }
-    const result = await checkPeer(event.text);
+    const result = await checkPeer(event.text, (args, payload) => runSessionHook(args, payload, ctx));
     let decision: { decision?: unknown; reason?: unknown } | undefined;
     if (!result.error && result.output.trim() !== "") {
       try {
@@ -148,7 +161,7 @@ export default function (pi) {
       ],
       ["doctor", ["hook", "doctor", "--pi"], {}],
     ]) {
-      const result = await runHook(args, payload);
+      const result = await runSessionHook(args, payload, ctx);
       if (result.error) {
         ctx.ui.notify(
           "soho: session " + name + " did not run (" + result.error + ")",

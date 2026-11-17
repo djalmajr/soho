@@ -355,6 +355,9 @@ func TestSetupPiExtensionRuntime(t *testing.T) {
 					cause = "unreadable output"
 				}
 				want := "soho: peer check did not run (" + cause + "); the message was not checked"
+				if tc.mode == "absent" {
+					want = missingPiWarning
+				}
 				if len(got.Notifications) != 1 || got.Notifications[0].Type != "warning" || got.Notifications[0].Message != want {
 					t.Fatalf("notification=%s", output)
 				}
@@ -392,7 +395,7 @@ func TestSetupPiSessionDelivery(t *testing.T) {
 		{"fork does not deliver", "text", "fork", "", 0, 0},
 		{"reload does not deliver", "text", "reload", "", 0, 0},
 		{"no text no message", "empty", "startup", "", 0, 2},
-		{"absent notifies", "absent", "startup", "ENOENT", 0, 2},
+		{"absent notifies", "absent", "startup", "ENOENT", 0, 1},
 		{"nonzero notifies", "nonzero", "startup", "exit 7", 0, 2},
 		{"timeout notifies", "timeout", "startup", "timeout", 0, 2},
 	} {
@@ -575,6 +578,9 @@ func TestSetupPiSessionDelivery(t *testing.T) {
 				{"soho: session reminder did not run (" + tc.cause + ")", "warning"},
 				{"soho: session doctor did not run (" + tc.cause + ")", "warning"},
 			}
+			if tc.mode == "absent" {
+				want = []struct{ message, kind string }{{missingPiWarning, "warning"}}
+			}
 			if len(got.Notifications) != len(want) {
 				t.Fatalf("notifications=%s: %s", got.Notifications, output)
 			}
@@ -593,4 +599,58 @@ func mustJSONString(value string) string {
 		panic(err)
 	}
 	return string(raw)
+}
+
+const missingPiWarning = "soho: not installed here; the soho hooks are off for this session. Choose soho_<os>_<arch> on the releases page: https://github.com/djalmajr/soho/releases"
+
+func TestSetupPiMissingSession(t *testing.T) {
+	node := realNode(t)
+	root, env, ctx := codexSetupFixture(t)
+	code, _, warning := runSetupWrite(nil, ctx, env, root)
+	if code != 0 {
+		t.Fatalf("setup=%d warning=%s", code, warning)
+	}
+	bin := t.TempDir()
+	harness := filepath.Join(t.TempDir(), "harness.mjs")
+	if err := os.WriteFile(harness, []byte(piRuntimeHarness), 0600); err != nil {
+		t.Fatal(err)
+	}
+	events, _ := json.Marshal([]map[string]any{{"type": "session_start", "reason": "startup"}, {"type": "before_agent_start"}, {"type": "input", "text": "[soho:peer:a]"}, {"type": "input", "text": "[soho:peer:b]"}, {"type": "session_start", "reason": "new"}, {"type": "before_agent_start"}})
+	commandCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	command := exec.CommandContext(commandCtx, node, harness, piFile(root), string(events))
+	command.Dir = root
+	command.Env = []string{"HOME=" + env["HOME"], "USERPROFILE=" + env["HOME"], "XDG_CONFIG_HOME=" + env["XDG_CONFIG_HOME"], "TMPDIR=" + env["TMPDIR"], "PATH=" + bin}
+	if runtime.GOOS == "windows" {
+		command.Env = append(command.Env, "SystemRoot="+testutil.HostSystemRoot())
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("node: %v: %s", err, output)
+	}
+	var got struct {
+		Calls         []json.RawMessage
+		Notifications []struct{ Message, Type string }
+		Results       []struct {
+			Error  string
+			Result *struct{ Action string }
+		}
+		Closed bool
+	}
+	if err := json.Unmarshal(output, &got); err != nil {
+		t.Fatalf("parse: %v: %s", err, output)
+	}
+	if !got.Closed || len(got.Calls) != 1 || len(got.Notifications) != 1 || got.Notifications[0].Message != missingPiWarning || got.Notifications[0].Type != "warning" || len(got.Results) != 6 {
+		t.Fatalf("session: %s", output)
+	}
+	for _, result := range got.Results {
+		if result.Error != "" {
+			t.Fatalf("handler: %s", output)
+		}
+	}
+	for _, i := range []int{2, 3} {
+		if got.Results[i].Result == nil || got.Results[i].Result.Action != "continue" {
+			t.Fatalf("input: %s", output)
+		}
+	}
 }
