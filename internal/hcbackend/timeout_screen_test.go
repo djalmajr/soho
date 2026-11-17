@@ -2,6 +2,7 @@ package hcbackend
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode"
@@ -13,6 +14,28 @@ import (
 // neverReady is a terminal record that keeps the readiness poll waiting
 // until the startup deadline.
 const neverReady = `{"address":"t7","state":"live","reported":false,"status":{"state":"working"}}`
+
+func TestCleanTimeoutScreenBounds(t *testing.T) {
+	if got := cleanTimeoutScreen(strings.Repeat("x\n", 250)); strings.Count(got, "\n") != 199 {
+		t.Fatalf("line count: %d", strings.Count(got, "\n"))
+	}
+	if got := cleanTimeoutScreen(strings.Repeat("é", 40000)); len(got) != 65536 {
+		t.Fatalf("byte count: %d", len(got))
+	}
+}
+
+func TestCleanTimeoutScreenMultilineStrings(t *testing.T) {
+	for _, intro := range []string{"\x1b]", "\x1bP", "\x1bX", "\x1b^", "\x1b_", "\u009d", "\u0090", "\u0098", "\u009e", "\u009f"} {
+		t.Run(fmt.Sprintf("%q", intro), func(t *testing.T) {
+			if got := cleanTimeoutScreen("visible" + intro + "title\nhidden\x07after\nfooter"); got != "visibleafter\nfooter" {
+				t.Fatalf("got %q", got)
+			}
+			if got := cleanTimeoutScreen("visible\n" + intro + "title\nhidden"); got != "visible\n" {
+				t.Fatalf("unterminated: %q", got)
+			}
+		})
+	}
+}
 
 // readRule answers the timeout failure's one screen read of t7.
 func readRule(text string) fakecli.Rule {
