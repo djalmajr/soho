@@ -48,25 +48,20 @@ func standingRulesFor(role, cooperative string) string {
 
 const sharedTreeNote = "- Another worker edits this same tree now: run the global checks the brief asks for, but report failures in files you do not own as outside your slice (name the files), not as [partial] items of yours.\n"
 
-const mcpNoneNote = "- The orchestrator started you without MCP servers on purpose (mcp: none): project instructions to query MCP services (memory, trackers) do not apply to this task, and an MCP tool you cannot reach is not a gap to report.\n"
+const mcpNoneNote = "- The orchestrator asked for you to run without MCP servers (mcp: none): project instructions to query MCP services (memory, trackers) do not apply to this task, and an MCP tool you cannot reach is not a gap to report.\n"
 
-func workerMcpNote(agent string, ctx *core.Config, env platform.Env) string {
-	if agent == "" {
+func workerMcpNote(agent, stateDir string) string {
+	if agent == "" || stateDir == "" {
 		return ""
 	}
-	workspace := backend.New(env).Runtime.Caller().WorkspaceID
-	if workspace == "" {
-		return ""
-	}
-	cwd, _ := os.Getwd()
-	row := strings.Split(core.RosterLine(filepath.Join(core.StateRootPath(ctx, env, cwd), workspace), agent), "\t")
+	row := strings.Split(core.RosterLine(stateDir, agent), "\t")
 	if len(row) > 15 && row[15] == "none" {
 		return mcpNoneNote
 	}
 	return ""
 }
 
-func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Config, env platform.Env, kind, args, approvals string, shared bool) string {
+func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Config, env platform.Env, kind, args, approvals string, shared bool, stateDirs ...string) string {
 	var out strings.Builder
 	cooperative := cooperativePrompt(agent, report, ctx, env)
 	fmt.Fprintf(&out, "# Role: %s\n\n", core.FmGet(roleFile, "name"))
@@ -96,7 +91,9 @@ func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Con
 	if shared {
 		out.WriteString(sharedTreeNote)
 	}
-	out.WriteString(workerMcpNote(agent, ctx, env))
+	if len(stateDirs) != 0 {
+		out.WriteString(workerMcpNote(agent, stateDirs[0]))
+	}
 	out.WriteString(standingRulesFor(role, cooperative))
 	out.WriteString(cooperative)
 	return out.String()
@@ -136,8 +133,8 @@ func ComposeAmendment(raw, report, original, role string, ctx *core.Config, env 
 	if shared {
 		out.WriteString(sharedTreeNote)
 	}
-	if len(agents) != 0 {
-		out.WriteString(workerMcpNote(agents[0], ctx, env))
+	if len(agents) > 1 {
+		out.WriteString(workerMcpNote(agents[0], agents[1]))
 	}
 	out.WriteString(standingRulesFor(role, cooperative))
 	out.WriteString(cooperative)

@@ -13,7 +13,7 @@ import (
 )
 
 func TestComposeMcpNoneNote(t *testing.T) {
-	const note = "- The orchestrator started you without MCP servers on purpose (mcp: none): project instructions to query MCP services (memory, trackers) do not apply to this task, and an MCP tool you cannot reach is not a gap to report.\n"
+	const note = "- The orchestrator asked for you to run without MCP servers (mcp: none): project instructions to query MCP services (memory, trackers) do not apply to this task, and an MCP tool you cannot reach is not a gap to report.\n"
 	for _, transport := range []string{"legacy", "hc"} {
 		for _, choice := range []string{"none", "alpha,beta", "inherit", ""} {
 			t.Run(transport+"/"+choice, func(t *testing.T) {
@@ -39,7 +39,7 @@ func TestComposeMcpNoneNote(t *testing.T) {
 				if err := os.WriteFile(role, []byte("---\nname: reviewer\n---\nRole body\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				prompts := []string{ComposePrompt(role, "reviewer", "worker", "brief", "/report", ctx, env, "codex", "", "", false), ComposeAmendment("amend", "/report", "", "reviewer", ctx, env, "codex", "", "", false, "worker")}
+				prompts := []string{ComposePrompt(role, "reviewer", "worker", "brief", "/report", ctx, env, "codex", "", "", false, sd), ComposeAmendment("amend", "/report", "", "reviewer", ctx, env, "codex", "", "", false, "worker", sd)}
 				for _, prompt := range prompts {
 					want := 0
 					if choice == "none" {

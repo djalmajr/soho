@@ -570,9 +570,9 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	if live := safeLiveAgents(svc); len(live) > 0 {
 		shared = sharedTreeEditor(core.RosterRows(sd), live, agent, workerCwd, env, cwd, sharedTreeBriefs{body: briefRaw, stateDir: sd})
 	}
-	prompt := dispatch.ComposePrompt(roleFile, role, agent, briefRaw, report, ctx, env, kind, args, approvals, shared)
+	prompt := dispatch.ComposePrompt(roleFile, role, agent, briefRaw, report, ctx, env, kind, args, approvals, shared, sd)
 	if amend {
-		prompt = dispatch.ComposeAmendment(briefRaw, report, amendmentOriginalBrief(sd, priorPointer), role, ctx, env, kind, args, approvals, shared, agent)
+		prompt = dispatch.ComposeAmendment(briefRaw, report, amendmentOriginalBrief(sd, priorPointer), role, ctx, env, kind, args, approvals, shared, agent, sd)
 		prompt = strings.Replace(prompt, "# Amendment to your current brief\n\n", "# Amendment to your current brief\n\n"+amendmentRoleHeader(roleFile, role, agent), 1)
 	}
 	prompt = dispatchReferencePrompt(prompt, briefRaw, role, sd, report, env)
