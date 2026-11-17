@@ -2725,3 +2725,40 @@ func TestCopiesAddLiveCopyWarning(t *testing.T) {
 		}
 	}
 }
+
+func TestCopiesAddWarningIgnoresMissingAndMarksUnknown(t *testing.T) {
+	f := newCopiesFixture(t, nil)
+	f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+	f.env["SOHO_AGENT"] = "worker"
+	missing1, missing2 := filepath.Join(f.tmp, "missing-1"), filepath.Join(f.tmp, "missing-2")
+	f.writeCopies(t, []core.CopyRow{{Path: missing1, Owner: "worker"}, {Path: missing2, Owner: "worker"}})
+	for i := 1; i <= 3; i++ {
+		path := filepath.Join(f.tmp, fmt.Sprintf("present-%d", i))
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if i == 3 {
+			sub := filepath.Join(path, "unreadable")
+			if err := os.Mkdir(sub, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(sub, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(sub, 0700) })
+			if _, err := os.ReadDir(sub); err == nil {
+				t.Skip("cannot make subtree unreadable for this user")
+			}
+		}
+		code, _, stderr := f.run(t, f.env, "copies", "add", path)
+		if code != 0 {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+		if i < 3 && strings.Contains(stderr, "warning:") {
+			t.Fatalf("unexpected warning: %s", stderr)
+		}
+		if i == 3 && (!strings.Contains(stderr, "warning: 3 registered copies") || !strings.Contains(stderr, path+"  size unknown") || strings.Contains(stderr, missing1) || strings.Contains(stderr, missing2)) {
+			t.Fatalf("stderr=%q", stderr)
+		}
+	}
+}

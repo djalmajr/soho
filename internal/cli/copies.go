@@ -1000,13 +1000,10 @@ func warnLiveCopies(sd, owner, caller string, env platform.Env) {
 	if err != nil {
 		return
 	}
-	pending, err := core.ReadPendingCopiesFor(sd, filepath.Base(sd), env)
-	if err != nil {
-		return
-	}
+	pending := core.PendingCopiesFor(sd, filepath.Base(sd), env)
 	paths := map[string]bool{}
 	for _, row := range append(rows, pending...) {
-		if row.Owner == owner {
+		if row.Owner == owner && isExistingDir(row.Path) {
 			paths[row.Path] = true
 		}
 	}
@@ -1020,7 +1017,12 @@ func warnLiveCopies(sd, owner, caller string, env platform.Env) {
 	sort.Strings(ordered)
 	_, _ = fmt.Fprintf(platform.Stderr, "warning: %d registered copies held by %s:\n", len(ordered), owner)
 	for _, path := range ordered {
-		_, _ = fmt.Fprintf(platform.Stderr, "  %s  %s\n", path, humanSize(copyDirSize(path)))
+		size, known := core.CopiesDirSize(context.Background(), path)
+		label := "size unknown"
+		if known {
+			label = humanSize(size)
+		}
+		_, _ = fmt.Fprintf(platform.Stderr, "  %s  %s\n", path, label)
 	}
 	_, _ = fmt.Fprintln(platform.Stderr, "release superseded copies from outside them: soho copies release <path>")
 }

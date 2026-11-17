@@ -271,3 +271,38 @@ func TestCopiesReleasePendingRecheckFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCopiesReleaseMalformedMixedQueue(t *testing.T) {
+	f := newCopiesFixture(t, nil)
+	path := filepath.Join(f.tmp, "copy")
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	f.writeCopies(t, []core.CopyRow{{Path: path, Owner: "worker", Pane: "p", Created: "2026-01-01T00:00:00Z", Source: "-", Origin: "add"}})
+	f.env["SOHO_AGENT"] = "worker"
+	queued := filepath.Join(f.tmp, "queued")
+	if err := os.Mkdir(queued, 0700); err != nil {
+		t.Fatal(err)
+	}
+	queue, err := core.QueueCopy(f.env, "ws", f.stateDir(t), core.CopyRow{Path: queued, Owner: "worker", Pane: "p", Created: "2026-01-01T00:00:00Z", Source: "-", Origin: "add"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(queue, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("malformed\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := f.run(t, f.env, "copies", "release", path)
+	if code != 4 {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+}

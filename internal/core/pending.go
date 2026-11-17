@@ -363,8 +363,24 @@ func incorporatePending(stateDir, queue, header, kind string, lockRegistryOf fun
 // queue lines for stateDir (the footprint's read-only count). A queue
 // whose directory or file is refused reads as no lines, silently.
 func PendingCopiesFor(stateDir, workspaceID string, env platform.Env) []CopyRow {
-	rows, _ := ReadPendingCopiesFor(stateDir, workspaceID, env)
-	return rows
+	out := []CopyRow{}
+	if _, err := pendingQueueDir(env, workspaceID, ScratchRead); err != nil {
+		return out
+	}
+	lines, err := readPendingLines(PendingCopiesFile(env, workspaceID))
+	if err != nil {
+		return out
+	}
+	for _, line := range lines {
+		target, fields, ok := pendingTarget(line)
+		if !ok || !sameStateDir(target, stateDir) {
+			continue
+		}
+		if row, ok := parsePendingCopy(fields); ok {
+			out = append(out, row)
+		}
+	}
+	return out
 }
 
 // ReadPendingCopiesFor returns queue read failures to callers that must fail closed.
