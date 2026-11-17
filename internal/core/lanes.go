@@ -837,11 +837,15 @@ func FileRoleResolved(file, role, attr string, env platform.Env, cwd string) str
 
 type laneMigration struct{ DropKind, DropModel, Lines []string }
 
-func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env platform.Env, cwd string, decided bool) {
+func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env platform.Env, cwd string, decided, explicitKind bool) {
 	ctx := LoadConfig(env, cwd)
 	key := "lane." + lane + "." + attr
+	kindLayer := LaneKindLayer(&ctx, lane, env)
+	if (explicitKind || FileKeyValue(file, "lane."+lane+".kind") != "") && kindLayer < 2 {
+		kindLayer = 2 // The migration file is the project layer.
+	}
 	// A decided lane wins over roles; preserve the role keys without migrating them.
-	if decided || FileKeyValue(file, key) != "" || Cfg(&ctx, NormalizeKey(key), "", env) != "" {
+	if decided || LaneAttr(&ctx, lane, attr, &kindLayer, env) != "" || (FileKeyValue(file, key) != "" && (attr != "model" || kindLayer <= 2)) {
 		return
 	}
 	laneKind := FileKeyValue(file, "lane."+lane+".kind")
@@ -1042,8 +1046,8 @@ func ApplyLaneFile(file, panes string, env platform.Env, cwd string, lanes ...La
 				modelDecided = lane.Model != ""
 			}
 		}
-		MigrateLaneAttr(file, pair[0], pair[1], "kind", &acc, env, cwd, kindDecided)
-		MigrateLaneAttr(file, pair[0], pair[1], "model", &acc, env, cwd, modelDecided)
+		MigrateLaneAttr(file, pair[0], pair[1], "kind", &acc, env, cwd, kindDecided, kindDecided)
+		MigrateLaneAttr(file, pair[0], pair[1], "model", &acc, env, cwd, modelDecided, kindDecided)
 	}
 	if err := ConfigDropLegacy(file, DropLegacyOptions{acc.DropKind, acc.DropModel, isPreset}); err != nil {
 		panic(err)
