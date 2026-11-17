@@ -12,7 +12,7 @@ func TestDoctorOnDemandLaneAndFix(t *testing.T) {
 	ctx := tm6DoctorConfig(map[string]string{"panes": "4", "max_workers": "3"}, "project")
 	var out strings.Builder
 	doctorLaneWarnings(ctx, env, root, &Say{Out: &out})
-	if strings.Contains(out.String(), "but the lanes hold") || !strings.Contains(out.String(), "on-demand lane critical would make 4 workers") {
+	if strings.Contains(out.String(), "but the lanes hold") || !strings.Contains(out.String(), "note   config: max_workers=3 allows on-demand lanes only when a slot is free; spawn refuses when the limit is reached") {
 		t.Fatalf("unexpected diagnostics: %s", out.String())
 	}
 	file := filepath.Join(root, ".agents", "soho.conf")
@@ -27,8 +27,32 @@ func TestDoctorOnDemandLaneAndFix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), "max_workers=3\n") {
+	if !strings.Contains(string(raw), "max_workers=4\n") {
 		t.Fatalf("fix: %s", raw)
+	}
+}
+
+func TestDoctorLaneCapacityRange(t *testing.T) {
+	for _, tc := range []struct {
+		limit, want   string
+		warning, note bool
+	}{
+		{"6", "7 always-open to 9 total", true, false},
+		{"7", "only when a slot is free", false, true},
+		{"8", "only when a slot is free", false, true},
+		{"9", "matches the lanes", false, false},
+		{"10", "7 always-open to 9 total", true, false},
+	} {
+		t.Run(tc.limit, func(t *testing.T) {
+			env, root := tm6DoctorEnv(t)
+			ctx := tm6DoctorConfig(map[string]string{"max_workers": tc.limit, "lane_build_roles": "implementer", "lane_build_panes": "7", "lane_critical_roles": "critical-implementer", "lane_critical_panes": "2"}, "project")
+			var out strings.Builder
+			doctorLaneWarnings(ctx, env, root, &Say{Out: &out})
+			got := out.String()
+			if !strings.Contains(got, tc.want) || strings.Contains(got, "but the lanes hold") != tc.warning || (strings.Count(got, "note   config: max_workers=") == 1) != tc.note {
+				t.Fatalf("unexpected diagnostics: %s", got)
+			}
+		})
 	}
 }
 

@@ -303,7 +303,7 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 	// overrides (SOHO_PANES, SOHO_LANE_*_PANES) never leak into it, for the
 	// user, project and session destinations alike.
 	capacityEnv := platform.Env{}
-	sum := core.AlwaysOpenLaneCapacitySum(&fixed, capacityEnv)
+	sum := core.LaneCapacitySum(&fixed, capacityEnv)
 	if core.PaneMode(&fixed, capacityEnv) == "flex" {
 		sum += core.FlexExtra(&fixed, capacityEnv)
 	}
@@ -1088,29 +1088,27 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 	lanes := core.LaneNames(ctx, env)
 	caps := []string{}
 	sum := 0
+	full := 0
 	for _, l := range lanes {
 		c := core.LaneCapacity(ctx, l, env)
+		full += c
+		caps = append(caps, fmt.Sprintf("%s=%d", l, c))
 		if !core.LaneOnDemand(ctx, l, env) {
 			sum += c
-			caps = append(caps, fmt.Sprintf("%s=%d", l, c))
 		}
 	}
 	if mode == "flex" {
 		sum += core.FlexExtra(ctx, env)
+		full += core.FlexExtra(ctx, env)
 	}
 	mw := core.Cfg(ctx, "max_workers", "3", env)
-	if core.ConfigExplicit(ctx, "max_workers", env) && mw != strconv.Itoa(sum) {
-		s.Warning(fmt.Sprintf("config: max_workers=%s but the lanes hold %d workers (%s). Set max_workers=%d (doctor --fix aligns it).", mw, sum, strings.Join(caps, " "), sum))
+	limit, err := strconv.Atoi(core.MaxWorkers(ctx, env))
+	if core.ConfigExplicit(ctx, "max_workers", env) && (err != nil || limit < sum || limit > full) {
+		s.Warning(fmt.Sprintf("config: max_workers=%s but the lanes hold %d always-open to %d total workers (%s). Set max_workers=%d (doctor --fix aligns it).", mw, sum, full, strings.Join(caps, " "), full))
+	} else if limit < full {
+		fmt.Fprintf(s.Out, "note   config: max_workers=%d allows on-demand lanes only when a slot is free; spawn refuses when the limit is reached\n", limit)
 	} else {
 		s.Ok(fmt.Sprintf("config: max_workers=%s matches the lanes (%s)", core.MaxWorkers(ctx, env), strings.Join(caps, " ")))
-	}
-	limit, err := strconv.Atoi(core.MaxWorkers(ctx, env))
-	if err == nil && limit > 0 {
-		for _, lane := range lanes {
-			if core.LaneOnDemand(ctx, lane, env) && sum+core.LaneCapacity(ctx, lane, env) > limit {
-				s.Warning(fmt.Sprintf("config: the on-demand lane %s would make %d workers, above max_workers=%d; spawn requires a free slot or a higher limit", lane, sum+core.LaneCapacity(ctx, lane, env), limit))
-			}
-		}
 	}
 	if !native && core.ConfigExplicit(ctx, "split_max_panes", env) {
 		sp := core.Cfg(ctx, "split_max_panes", "", env)
