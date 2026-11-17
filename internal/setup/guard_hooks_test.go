@@ -386,3 +386,129 @@ func mustJSONForGuardTest(t *testing.T, value string) []byte {
 	}
 	return raw
 }
+
+func TestR470PlainRerunPreservesHandGuardedMetadata(t *testing.T) {
+	root, env, ctx := setupWriteFixture(t)
+	path := filepath.Join(root, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	before := `{"hooks":{"UserPromptSubmit":[{"matcher":"keep","hooks":[{"type":"command","command":"command -v soho >/dev/null 2>&1 || exit 0; soho hook reminder","timeout":73}]}],"SessionStart":[{"hooks":[{"type":"command","command":"command -v soho >/dev/null 2>&1 || exit 0; soho hook doctor"}]}]}}`
+	if err := os.WriteFile(path, []byte(before), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var first string
+	for pass := 1; pass <= 2; pass++ {
+		code, out, msg := runSetupWrite(nil, ctx, env, root)
+		if code != 0 {
+			t.Fatalf("pass=%d code=%d out=%s msg=%s", pass, code, out, msg)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("pass=%d settings=%s", pass, raw)
+		if pass == 1 {
+			first = string(raw)
+		}
+		if !strings.Contains(string(raw), `"matcher": "keep"`) || !strings.Contains(string(raw), `"timeout": 73`) {
+			t.Errorf("pass=%d lost matcher or timeout", pass)
+		}
+		if pass == 2 && first != string(raw) {
+			t.Error("second plain setup changed the migrated file")
+		}
+	}
+}
+
+func TestR470GuardTokenBoundary(t *testing.T) {
+	for _, guard := range []string{"command -v soho2>/dev/null || exit 0; soho hook reminder", "command -v soho1>/dev/null || exit 0; soho hook reminder"} {
+		matched := setuptext.HookCommandMatches(guard, setuptext.SetupHookReminder())
+		if matched {
+			t.Errorf("false match %q", guard)
+		}
+		if runtime.GOOS == "windows" {
+			continue
+		}
+		cmd := exec.Command("/bin/sh", "-c", "soho() { printf 'CALLED'; }; "+guard)
+		cmd.Env = []string{"PATH=" + t.TempDir()}
+		out, err := cmd.CombinedOutput()
+		t.Logf("command=%q matcher=%v shell_output=%q error=%v", guard, matched, out, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if matched && string(out) != "CALLED" {
+			t.Error("matcher accepts a guard that skips the available soho function")
+		}
+	}
+}
+
+func TestR470ControlsV2(t *testing.T) {
+	commands := []string{
+		"command -v soho || exit 0; soho-other",
+		"command -v soho || exit 0; soho hook reminder && echo extra",
+		"sh -c 'command -v soho || exit 0; soho hook reminder' extra",
+		"sh -c \"command -v soho || exit 0; soho hook reminder'",
+		"command -v soho || exit 0; C:\\tools\\soho.exe hook reminder",
+		"sh -c 'command -v soho || exit 0; soho hook \"reminder\"'",
+		"sh -c \"command -v soho || exit 0; soho hook \\\"reminder\\\"\"",
+	}
+	for _, s := range commands {
+		if setuptext.HookCommandMatches(s, setuptext.SetupHookReminder()) {
+			t.Errorf("false match %q", s)
+		}
+		data, _ := json.Marshal(map[string]any{"hooks": map[string]any{"UserPromptSubmit": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": s}}}}}})
+		body := string(data)
+		got := setuptext.SettingsHooksGuardedResult(&body)
+		if got == nil {
+			t.Fatal("nil merge")
+		}
+		decoded := decodeHookText(t, []byte(*got))
+		if !strings.Contains(decoded, s+"\n") {
+			t.Errorf("foreign command lost %q: %s", s, *got)
+		}
+		t.Logf("foreign command retained: %q", s)
+	}
+}
+
+func TestR470GuardConsumer(t *testing.T) {
+	before := `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"command -v soho2>/dev/null || exit 0; soho hook reminder --codex"}]}]}}`
+	protected := setuptext.CodexHooksProtected(before)
+	merged := setuptext.CodexHooksGuardedResult(&before)
+	t.Logf("doctor protection consumer=%v setup merge=%s", protected, *merged)
+	if protected {
+		t.Error("doctor consumer accepts unavailable soho2 guard as peer protection")
+	}
+	if !strings.Contains(*merged, "soho2") {
+		t.Error("setup rewrites an unrelated availability guard")
+	}
+}
+
+func TestR470GuardTokenPositiveControls(t *testing.T) {
+	for _, prefix := range []string{"soho", "soho>/dev/null", "soho >/dev/null", "soho 2>&1", "soho 1>/dev/null"} {
+		command := "command -v " + prefix + " || exit 0; soho hook reminder"
+		if !setuptext.HookCommandMatches(command, setuptext.SetupHookReminder()) {
+			t.Errorf("guard not recognized: %q", command)
+		}
+	}
+}
+
+func TestR470GuardedMetadataIdempotence(t *testing.T) {
+	for _, codex := range []bool{false, true} {
+		suffix := ""
+		if codex {
+			suffix = " --codex"
+		}
+		body := `{"hooks":{"UserPromptSubmit":[{"matcher":"keep","hooks":[{"type":"command","command":"command -v soho >/dev/null 2>&1 || exit 0; exec soho hook reminder` + suffix + `","timeout":73,"commandWindows":"custom"}]}]}}`
+		var got, again *string
+		if codex {
+			got = setuptext.CodexHooksGuardedResult(&body)
+			again = setuptext.CodexHooksGuardedResult(got)
+		} else {
+			got = setuptext.SettingsHooksGuardedResult(&body)
+			again = setuptext.SettingsHooksGuardedResult(got)
+		}
+		if got == nil || again == nil || *got != *again || !strings.Contains(*got, `"timeout": 73`) || !strings.Contains(*got, `"matcher": "keep"`) {
+			t.Fatalf("guarded codex=%v metadata or idempotence failed: %v", codex, got)
+		}
+	}
+}
