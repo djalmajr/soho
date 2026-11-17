@@ -8,33 +8,8 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/testutil/fakecli"
+	"github.com/djalmajr/soho/internal/platform"
 )
-
-func TestCopiesReleaseSuffixedOrchestrator(t *testing.T) {
-	f := newCopiesFixture(t, nil)
-	dir := t.TempDir()
-	response := fmt.Sprintf(`{"result":{"agent":{"name":"orchestrator-2","pane_id":"ws:p0","workspace_id":"ws","cwd":%q}}}`, f.repo)
-	if _, err := fakecli.Install(t, dir, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "ws:p0"}, Stdout: response}}); err != nil {
-		t.Fatal(err)
-	}
-	f.env["SOHO_FAKECLI_CONFIG"] = dir
-	f.env["PATH"] = dir + string(os.PathListSeparator) + f.env.Get("PATH")
-	f.env["HERDR_PANE_ID"] = "ws:p0"
-	f.env["SOHO_AGENT"] = "orchestrator-2"
-	path := filepath.Join(f.tmp, "copy")
-	if err := os.Mkdir(path, 0700); err != nil {
-		t.Fatal(err)
-	}
-	f.writeCopies(t, []core.CopyRow{{Path: path, Owner: "worker", Pane: "p-worker", Created: "2026-01-01T00:00:00Z", Source: "-", Origin: "add"}})
-	code, out, stderr := f.run(t, f.env, "copies", "release", path)
-	if code != 0 || !strings.Contains(out, "removed "+path) || len(f.copiesRows(t)) != 0 {
-		t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("copy remains: %v", err)
-	}
-}
 
 func TestCopiesReleaseRejectsAnotherOwnersNestedCopy(t *testing.T) {
 	f := newCopiesFixture(t, nil)
@@ -66,8 +41,8 @@ func TestCopiesRelease(t *testing.T) {
 		note                string
 	}{
 		{"owner", "worker", true, false, 0, true, "removed "},
-		{"orchestrator", "orchestrator", true, false, 0, true, "removed "},
-		{"no agent", "", true, false, 0, true, "removed "},
+		{"orchestrator", "orchestrator", true, false, 2, false, "soho release <agent>"},
+		{"no agent", "", true, false, 2, false, "soho release <agent>"},
 		{"other agent", "other", true, false, 2, false, "owned by another agent"},
 		{"unverified orchestrator suffix", "orchestrator-2", true, false, 2, false, "owned by another agent"},
 		{"unregistered", "worker", false, false, 2, false, "not registered"},
@@ -210,5 +185,48 @@ func TestCopiesReleaseStateRefusalBeforeRename(t *testing.T) {
 				t.Fatalf("copy moved: %v", err)
 			}
 		})
+	}
+}
+
+func TestCopiesReleaseQueuedChild(t *testing.T) {
+	f := newCopiesFixture(t, nil)
+	parent := filepath.Join(f.tmp, "parent")
+	child := filepath.Join(parent, "child")
+	if err := os.MkdirAll(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+	f.writeCopies(t, []core.CopyRow{{Path: parent, Owner: "worker", Pane: "p", Created: "2026-01-01T00:00:00Z", Source: "-", Origin: "add"}})
+	f.env["SOHO_AGENT"] = "worker"
+	if _, err := core.QueueCopy(f.env, "ws", f.stateDir(t), core.CopyRow{Path: child, Owner: "other", Pane: "p", Created: "2026-01-01T00:00:00Z", Source: "-", Origin: "add", Task: "-", Report: "-"}); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := f.run(t, f.env, "copies", "release", parent)
+	if code != 2 || !strings.Contains(stderr, "contains a copy owned by another agent") || len(f.copiesRows(t)) != 2 {
+		t.Fatalf("code=%d stderr=%q rows=%v", code, stderr, f.copiesRows(t))
+	}
+	if _, err := os.Stat(child); err != nil {
+		t.Fatalf("child missing: %v", err)
+	}
+}
+
+func TestCopiesReleaseIncorporationFailure(t *testing.T) {
+	f := newCopiesFixture(t, nil)
+	path := filepath.Join(f.tmp, "copy")
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	f.writeCopies(t, []core.CopyRow{{Path: path, Owner: "worker", Pane: "p", Created: "2026-01-01T00:00:00Z", Source: "-", Origin: "add"}})
+	f.env["SOHO_AGENT"] = "worker"
+	old := incorporateCopies
+	t.Cleanup(func() { incorporateCopies = old })
+	incorporateCopies = func(string, string, platform.Env, func(core.CopyRow) (core.CopyRow, string)) (core.PendingResult, error) {
+		return core.PendingResult{}, fmt.Errorf("queue failure")
+	}
+	code, _, stderr := f.run(t, f.env, "copies", "release", path)
+	if code != 4 || !strings.Contains(stderr, "queue failure") || len(f.copiesRows(t)) != 1 {
+		t.Fatalf("code=%d stderr=%q rows=%v", code, stderr, f.copiesRows(t))
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
 	}
 }

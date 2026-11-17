@@ -43,4 +43,4 @@ Use [env] only when an item cannot execute in this environment because of a name
 Count of files changed, each file listed in a `## Files changed` section (path + one line each), the verification command and its output, and every skipped case with the reason. The `wait` reads only the `## Files changed` section when it checks the report's changed-file claims against the recorded tree, so a file the report merely reads or cites elsewhere is never flagged.
 </report>
 
-Release your mutation copies with `soho copies release <path>` when the task report is written, unless the brief asks you to keep them.
+Before writing your report, release the mutation copies you created with `soho copies release <path>`, unless the brief asks you to keep them; name any kept copy in the report.

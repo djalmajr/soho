@@ -97,4 +97,4 @@ When the project has a `VALIDATION.md`, the report carries a `## Test layers` se
 When the brief names a review with a `Review:` line, the report carries a `## Review responses` section with one line per finding of that review, in one of the exact forms `- F<n>: fixed`, `- F<n>: fixed: <note>`, or `- F<n>: declined: <reason>` — silence is not an answer, `fixed` only after the proof ran, and `declined` with the reason. The `wait` counts the findings left without a response and warns; it only warns: it never blocks and never runs anything.
 </report>
 
-Release your mutation copies with `soho copies release <path>` when the task report is written, unless the brief asks you to keep them.
+Before writing your report, release the mutation copies you created with `soho copies release <path>`, unless the brief asks you to keep them; name any kept copy in the report.

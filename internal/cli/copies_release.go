@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
 )
@@ -55,13 +54,35 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 	if sd == "" {
 		sd = core.StateDir(ctx, env, cwd)
 	}
-	incorporatePendingCopies("copies release", sd, env, cwd)
 	caller := env.Get("SOHO_AGENT")
 	orch := core.Cfg(ctx, "orchestrator_name", "orchestrator", env)
-	verifiedOrchestrator := false
-	if caller != "" && caller != orch && strings.HasPrefix(caller, orch+"-") {
-		svc := backend.New(env)
-		verifiedOrchestrator = rosterAgentForPane(sd, svc.Runtime.Caller().PaneID) == "" && collaborationOrchestrator(sd, ctx, env, svc, cwd) == nil
+	if caller == "" || caller == orch {
+		_, _ = fmt.Fprintln(platform.Stderr, "copies release: caller must be a copy owner; orchestrators use soho release <agent> or soho gc")
+		return 2
+	}
+	res, err := incorporateCopies(sd, filepath.Base(sd), env, func(row core.CopyRow) (core.CopyRow, string) {
+		resolved, cause := checkCopyPath(row.Path, env, cwd)
+		if cause != "" {
+			return row, cause
+		}
+		if !isExistingDir(resolved) {
+			return row, "not an existing directory"
+		}
+		row.Path = resolved
+		return row, ""
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(platform.Stderr, "copies release: cannot incorporate pending registrations (%v); nothing removed\n", err)
+		return 4
+	}
+	pendingResultLines("copies release", "copy", res, nil)
+	for _, dropped := range res.Dropped {
+		for _, path := range paths {
+			if dropped.Malformed || dropped.What == path || inside(path, dropped.What) || inside(dropped.What, path) {
+				_, _ = fmt.Fprintf(platform.Stderr, "copies release: unresolved queued registration %q (%s); nothing removed\n", dropped.What, dropped.Cause)
+				return 4
+			}
+		}
 	}
 	unlock, err := copiesReleaseLock(sd)
 	if err != nil {
@@ -73,6 +94,15 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 		unlock()
 		_, _ = fmt.Fprintf(platform.Stderr, "copies release: cannot read registry (%v); nothing removed\n", err)
 		return 4
+	}
+	for _, pending := range core.PendingCopiesFor(sd, filepath.Base(sd), env) {
+		for _, path := range paths {
+			if pending.Path == path || inside(path, pending.Path) || inside(pending.Path, path) {
+				unlock()
+				_, _ = fmt.Fprintf(platform.Stderr, "copies release: pending registration %q overlaps request; nothing removed\n", pending.Path)
+				return 4
+			}
+		}
 	}
 	byPath := map[string]core.CopyRow{}
 	for _, row := range rows {
@@ -87,7 +117,7 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 			reason = "not an absolute path"
 		case !ok:
 			reason = "not registered"
-		case caller != "" && caller != orch && caller != row.Owner && !verifiedOrchestrator:
+		case caller != row.Owner:
 			reason = "owned by another agent"
 		}
 		if reason == "" {
