@@ -525,6 +525,12 @@ func codexRowsValid(rows []json.RawMessage) bool {
 // text changes no byte. An async soho entry never counts as the line and stays
 // in place.
 func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []string, guard bool) ([]json.RawMessage, error) {
+	// An ordinary setup keeps an existing guarded line: when any synchronous
+	// entry of the event already holds the guarded form, that form is the
+	// line, wherever it sits among the recognized entries (SOH-337).
+	if !guard && codexRowsHold(rows, guardHook(newCommand)) {
+		newCommand, guard = guardHook(newCommand), true
+	}
 	recognized := append([]string{newCommand}, recognizedOld...)
 	kept, placed := make([]json.RawMessage, 0, len(rows)+1), false
 	for _, row := range rows {
@@ -586,6 +592,31 @@ func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []s
 		kept = append(kept, json.RawMessage(`{"hooks":[{"type":"command","command":`+string(mustMarshal(newCommand))+`}]}`))
 	}
 	return kept, nil
+}
+
+// codexRowsHold reports whether any synchronous entry of the rows runs
+// exactly command.
+func codexRowsHold(rows []json.RawMessage, command string) bool {
+	for _, row := range rows {
+		object, ok := codexObjectParse(row)
+		if !ok {
+			continue
+		}
+		listRaw, hasList := object.get("hooks")
+		if !hasList {
+			continue
+		}
+		var entries []json.RawMessage
+		if json.Unmarshal(listRaw, &entries) != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if codexSohoEntry(entry, []string{command}) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // codexEntryWithCommand rewrites a recognized entry's command member, keeping

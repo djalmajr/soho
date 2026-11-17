@@ -218,3 +218,30 @@ func TestGuardHooksUpgradeInPlace(t *testing.T) {
 		}
 	}
 }
+
+// R443 F1: an ordinary setup over a Codex event that holds both the plain and
+// the guarded reminder keeps the guarded one, in either order, and leaves one.
+func TestGuardHooksMixedCodexPairKeepsTheGuardedLine(t *testing.T) {
+	for _, guardedFirst := range []bool{false, true} {
+		plain := map[string]any{"type": "command", "command": setuptext.SetupHookCodexReminder()}
+		guarded := map[string]any{"type": "command", "command": setuptext.GuardedHookCodexReminder()}
+		entries := []any{plain, guarded}
+		if guardedFirst {
+			entries = []any{guarded, plain}
+		}
+		body, _ := json.Marshal(map[string]any{"hooks": map[string]any{"UserPromptSubmit": []any{map[string]any{"hooks": entries}}}})
+		input := string(body)
+		merged := setuptext.CodexHooksResult(&input)
+		if merged == nil {
+			t.Fatal("merge refused")
+		}
+		commands := decodeHookText(t, []byte(*merged))
+		if strings.Count(commands, setuptext.GuardedHookCodexReminder()) != 1 || strings.Contains(commands, setuptext.SetupHookCodexReminder()+"\n") {
+			t.Fatalf("guarded-first=%v commands=%q; want only the guarded reminder", guardedFirst, commands)
+		}
+		again := setuptext.CodexHooksResult(merged)
+		if again == nil || *again != *merged {
+			t.Fatalf("guarded-first=%v: a rerun changed the merged text", guardedFirst)
+		}
+	}
+}
