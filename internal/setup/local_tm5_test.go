@@ -34,7 +34,7 @@ func TestSetupLocalTM5Cases(t *testing.T) {
 			t.Fatalf("code=%d msg=%q exclude=%q err=%v", code, msg, data, err)
 		}
 	})
-	t.Run("// JS: \"setup --local refuses a tracked CLAUDE.local.md before any mutation (rc 4)\"", func(t *testing.T) { // Mutation captured: writing a tracked local instruction file destroys project-owned content.
+	t.Run("// JS: \"setup --local leaves tracked CLAUDE.local.md untouched\"", func(t *testing.T) { // Mutation captured: writing a tracked local instruction file destroys project-owned content.
 		root, env, ctx := tm5LocalFixture(t)
 		file := filepath.Join(root, localInstructionFile)
 		if err := os.WriteFile(file, []byte("tracked upstream\n"), 0o600); err != nil {
@@ -44,10 +44,9 @@ func TestSetupLocalTM5Cases(t *testing.T) {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git add: %v: %s", err, out)
 		}
-		before := setupFilesystemSnapshot(t, root)
 		code, out, msg := runSetupWrite([]string{"--local", "--no-hooks"}, ctx, env, root)
 		after, _ := os.ReadFile(file)
-		if code != 4 || out != "" || !strings.Contains(msg, "tracked by git") || string(after) != "tracked upstream\n" || !reflect.DeepEqual(before, setupFilesystemSnapshot(t, root)) {
+		if code != 0 || !strings.Contains(out, "is tracked; --local leaves it as is") || string(after) != "tracked upstream\n" {
 			t.Fatalf("code=%d out=%q msg=%q file=%q", code, out, msg, after)
 		}
 	})

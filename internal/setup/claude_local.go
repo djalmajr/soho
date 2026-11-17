@@ -170,12 +170,12 @@ func sharedHooksMigration(root string) (string, *string) {
 	return file, &after
 }
 
-func migrateSharedHooks(root string, env platform.Env) {
+func migrateSharedHooks(root string, env platform.Env, cache *setupTracking) {
 	file, after := sharedHooksMigration(root)
 	if after == nil {
 		return
 	}
-	if warning := sharedHooksTrackingWarning(trackingStatus(root, ".claude/settings.json", env)); warning != "" {
+	if warning := sharedHooksTrackingWarning(cache.status(root, ".claude/settings.json", env)); warning != "" {
 		core.Warn(warning, "", "setup")
 		return
 	}

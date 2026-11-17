@@ -150,16 +150,25 @@ func markedLines(text string) string {
 }
 
 // Managed hook comparisons use ReadTextFile: CRLF-only differences are unchanged by design.
-func writeHooksSection(root string, env platform.Env, local, guard bool) []string {
+func writeHooksSection(root string, env platform.Env, local, guard bool, cache *setupTracking) []string {
 	var ready []string
 	settings := claudeSettingsPath(root, local)
 	if local {
-		changed := setupWriteHooks(settings, guard)
+		old := readOrRefuse(settings, false)
+		next := setuptext.SettingsHooksResult(old)
+		if guard {
+			next = setuptext.SettingsHooksGuardedResult(old)
+		}
+		skipped := trackedLocalChange(root, claudeLocalHookRel, env, old, next, cache)
+		changed := false
+		if !skipped {
+			changed = setupWriteHooks(settings, guard)
+		}
 		ready = append(ready, claudeLocalHookRel)
-		migrateSharedHooks(root, env)
+		migrateSharedHooks(root, env, cache)
 		if changed {
 			_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder, SessionStart doctor)\n", settings)
-		} else {
+		} else if !skipped {
 			_, _ = fmt.Fprintf(platform.Stdout, "unchanged: %s\n", settings)
 		}
 	} else {
@@ -168,6 +177,7 @@ func writeHooksSection(root string, env platform.Env, local, guard bool) []strin
 			platform.DieFriction("could not merge hooks into "+settings, 4)
 		}
 		after, note := canonicalClaudeHooks(root, before, false, guard)
+		warnTrackedCanonical(root, settings, env, before, after, cache)
 		if note != "" {
 			_, _ = fmt.Fprintln(platform.Stdout, note)
 		}
@@ -184,7 +194,20 @@ func writeHooksSection(root string, env platform.Env, local, guard bool) []strin
 			noteUntrackedHookFile(settings, env, false)
 		}
 	}
-	if writePiInboundExtension(root) {
+	if !local {
+		file := filepath.Join(root, filepath.FromSlash(piInboundRel))
+		var before *string
+		if raw, err := platform.ReadTextFile(file); err == nil {
+			before = &raw
+		} else if !os.IsNotExist(err) {
+			before = nil
+			file = ""
+		}
+		if file != "" {
+			warnTrackedCanonical(root, file, env, before, setuptext.PiInboundResult(before), cache)
+		}
+	}
+	if writePiInboundExtension(root, env, local, cache) {
 		ready = append(ready, piInboundRel)
 	}
 	codex := filepath.Join(root, filepath.FromSlash(codexHookRel))
@@ -199,7 +222,12 @@ func writeHooksSection(root string, env platform.Env, local, guard bool) []strin
 	if guard {
 		merged = setuptext.CodexHooksGuardedResult(content)
 	}
-	if merged == nil {
+	if !local {
+		warnTrackedCanonical(root, codex, env, content, merged, cache)
+	}
+	if local && trackedLocalChange(root, codexHookRel, env, content, merged, cache) {
+		ready = append(ready, codexHookRel)
+	} else if merged == nil {
 		core.Warn("could not merge hooks into "+codex+"; file left untouched", "", "setup")
 	} else if content != nil && *content == *merged {
 		_, _ = fmt.Fprintf(platform.Stdout, "unchanged: %s\n", codex)
@@ -245,7 +273,7 @@ func noteUntrackedHookFile(file string, env platform.Env, local bool) {
 }
 
 // ReadTextFile makes CRLF-only differences unchanged by design.
-func writePiInboundExtension(root string) bool {
+func writePiInboundExtension(root string, env platform.Env, local bool, cache *setupTracking) bool {
 	file := filepath.Join(root, filepath.FromSlash(piInboundRel))
 	var content *string
 	if raw, err := platform.ReadTextFile(file); err == nil {
@@ -255,6 +283,9 @@ func writePiInboundExtension(root string) bool {
 		return false
 	}
 	next := setuptext.PiInboundResult(content)
+	if local && trackedLocalChange(root, piInboundRel, env, content, next, cache) {
+		return true
+	}
 	if next == nil {
 		core.Warn("could not install extension into "+file+"; file has no soho marker and was left untouched", "", "setup")
 		return false
@@ -275,7 +306,7 @@ func writePiInboundExtension(root string) bool {
 	return true
 }
 
-func planExtraHooks(root string, guard bool) {
+func planExtraHooks(root string, guard, local bool, env platform.Env, cache *setupTracking) {
 	codex := filepath.Join(root, filepath.FromSlash(codexHookRel))
 	var before *string
 	raw, err := platform.ReadTextFile(codex)
@@ -289,7 +320,11 @@ func planExtraHooks(root string, guard bool) {
 		if guard {
 			after = setuptext.CodexHooksGuardedResult(before)
 		}
-		if after == nil {
+		if !local {
+			warnTrackedCanonical(root, codex, env, before, after, cache)
+		}
+		if local && trackedLocalChange(root, codexHookRel, env, before, after, cache) {
+		} else if after == nil {
 			core.Warn("could not merge hooks into "+codex+"; file left untouched", "", "setup")
 		} else if before != nil && *before == *after {
 			fmt.Fprintf(platform.Stdout, "# no change: %s\n", codex)
@@ -307,7 +342,11 @@ func planExtraHooks(root string, guard bool) {
 		return
 	}
 	next := setuptext.PiInboundResult(old)
-	if next == nil {
+	if !local {
+		warnTrackedCanonical(root, pi, env, old, next, cache)
+	}
+	if local && trackedLocalChange(root, piInboundRel, env, old, next, cache) {
+	} else if next == nil {
 		core.Warn("could not install extension into "+pi+"; file has no soho marker and was left untouched", "", "setup")
 	} else if old != nil && *old == *next {
 		fmt.Fprintf(platform.Stdout, "# no change: %s\n", pi)
@@ -321,6 +360,7 @@ func planExtraHooks(root string, guard bool) {
 var BuildVersion = "dev"
 
 func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
+	cache := &setupTracking{}
 	if containsSetupArg(args, "--roles") {
 		cmdSetupRoles(args, env, cwd)
 		return
@@ -338,15 +378,15 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		refuseImplicitCanonicalSetup(args, ctx, env, cwd)
 	}
 	if wantPlan {
-		CmdPlan(withoutSetupArg(args, "--plan"), ctx, env, cwd)
+		cmdPlan(withoutSetupArg(args, "--plan"), ctx, env, cwd, cache)
 		if !containsSetupArg(args, "--no-hooks") {
-			planExtraHooks(platform.ProjectRoot(env, cwd), containsSetupArg(args, "--guard-hooks"))
+			planExtraHooks(platform.ProjectRoot(env, cwd), containsSetupArg(args, "--guard-hooks"), containsSetupArg(args, "--local") || (!containsSetupArg(args, "--target") && core.Cfg(ctx, "setup_target", "canonical", env) == "local"), env, cache)
 			if containsSetupArg(args, "--guard-hooks") {
 				_, _ = fmt.Fprintln(platform.Stdout, "# guarded Codex hooks: "+setuptext.GuardedHookCodexReminder()+"; "+setuptext.GuardedHookCodexDoctor())
 			}
 			if containsSetupArg(args, "--local") || (!containsSetupArg(args, "--target") && core.Cfg(ctx, "setup_target", "canonical", env) == "local") {
 				root := platform.ProjectRoot(env, cwd)
-				rels := append(localRels(root, ctx, env, cwd), localHookRels(root, env)...)
+				rels := append(localRels(root, ctx, env, cwd), localHookRels(root, env, cache)...)
 				if plan := preflightLocalExcludes(root, rels, env, "setup", false, false); plan != nil && plan.path != "" {
 					if added := missingExcludeEntries(plan.before, plan.needed); len(added) > 0 {
 						_, _ = fmt.Fprintf(platform.Stdout, "# would ensure %s ignores: %s\n", plan.path, strings.Join(added, ", "))
@@ -458,7 +498,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	// the git exclude directory, so a refusal there precedes no write at
 	// all. The second pass may probe (active=!dry), and only as the last
 	// preflight step, after the destination and settings are validated.
-	before, preview := setupPreflight(root, ctx, env, cwd, modeLocal, dest, hooks, false, false)
+	before, preview := setupPreflight(root, ctx, env, cwd, modeLocal, dest, hooks, false, false, cache)
 	// Migrate the herdr-soho and herdr-agents names. Everything after reads
 	// and writes only the soho names.
 	for _, line := range migrateNames(ctx, env, cwd, dry) {
@@ -472,7 +512,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	if modeLocal {
 		dest = localTarget(root)
 	}
-	before, preview = setupPreflight(root, ctx, env, cwd, modeLocal, dest, hooks, !dry, true)
+	before, preview = setupPreflight(root, ctx, env, cwd, modeLocal, dest, hooks, !dry, true, cache)
 	if dry {
 		if panes != "" {
 			_, _ = fmt.Fprintf(platform.Stdout, "# would set panes=%s and the preset lanes in %s\n", panes, conf)
@@ -510,7 +550,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			}
 			if modeLocal {
 				if shared, after := sharedHooksMigration(root); after != nil {
-					if warning := sharedHooksTrackingWarning(trackingStatus(root, ".claude/settings.json", env)); warning != "" {
+					if warning := sharedHooksTrackingWarning(cache.status(root, ".claude/settings.json", env)); warning != "" {
 						_, _ = fmt.Fprintln(platform.Stdout, "# "+warning)
 					} else {
 						if sharedHooksMigrationEmpties(after) {
@@ -527,7 +567,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		if modeLocal {
 			rels := localRels(root, ctx, env, cwd)
 			if hooks {
-				rels = append(rels, localHookRels(root, env)...)
+				rels = append(rels, localHookRels(root, env, cache)...)
 			}
 			if plan := preflightLocalExcludes(root, rels, env, "setup", false, false); plan != nil && plan.path != "" {
 				added := missingExcludeEntries(plan.before, plan.needed)
@@ -549,14 +589,18 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	if modeLocal {
 		rels := localRels(root, ctx, env, cwd)
 		path, added := ensureLocalExcludes(root, rels, env, "setup")
-		printBlockResult(dest)
+		if _, note := trackedClaudeBlock(root, env, cache); note != "" {
+			fmt.Fprintln(platform.Stdout, note)
+		} else if !trackedLocalChange(root, localInstructionFile, env, before, preview, cache) {
+			printBlockResult(dest)
+		}
 		if len(added) > 0 {
 			_, _ = fmt.Fprintf(platform.Stdout, "local excludes updated: %s (%s)\n", path, strings.Join(added, ", "))
 		}
 		excludeChanged := len(added) > 0
 		if hooks {
-			ready := writeHooksSection(root, env, true, guard)
-			hookPath, hookAdded := ensureLocalExcludes(root, untrackedLocalHooks(root, ready, env), env, "setup")
+			ready := writeHooksSection(root, env, true, guard, cache)
+			hookPath, hookAdded := ensureLocalExcludes(root, untrackedLocalHooks(root, ready, env, cache), env, "setup")
 			if len(hookAdded) > 0 {
 				excludeChanged = true
 				_, _ = fmt.Fprintf(platform.Stdout, "local excludes updated: %s (%s)\n", hookPath, strings.Join(hookAdded, ", "))
@@ -582,6 +626,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		promptConfigNotice(ctx, conf, true)
 		return
 	}
+	warnTrackedCanonical(root, dest, env, before, preview, cache)
 	printBlockResult(dest)
 	claude := filepath.Join(root, "CLAUDE.md")
 	if info, err := os.Stat(claude); err == nil && info.Mode().IsRegular() && !setupIsSymlink(claude) && dest != claude {
@@ -593,12 +638,12 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 	}
 	if hooks {
-		writeHooksSection(root, env, false, guard)
+		writeHooksSection(root, env, false, guard, cache)
 		if !guard {
 			_, _ = fmt.Fprintln(platform.Stdout, "soho: setup: the versioned Claude Code and Codex hooks call soho; anyone who opens a clone in those assistants without soho installed (a teammate, a contributor, an assistant run in CI) sees a hook error on every prompt; 'soho setup --guard-hooks' (needs sh) keeps those hooks quiet there, and 'soho setup --local' keeps them out of the repository")
 		}
 	}
-	writeCanonicalStateIgnore(ctx, env, cwd)
+	writeCanonicalStateIgnore(ctx, env, cwd, cache)
 	_, _ = fmt.Fprintf(platform.Stdout, "state dir ignored: %s/\n", core.StateDirSetting(ctx, env, cwd))
 	_, _ = fmt.Fprintln(platform.Stdout, "note: Claude Code, Codex and pi run the peer checks; Grok, Cursor and agy only read the instruction file.")
 	promptConfigNotice(ctx, conf, false)
@@ -632,14 +677,14 @@ func withoutSetupArg(args []string, remove string) []string {
 // twice around the name migrations without duplicating output.
 // postMigration marks the pass that runs after the migrations: its
 // refusals may not promise that nothing changed.
-func setupPreflight(root string, ctx *core.Config, env platform.Env, cwd string, modeLocal bool, dest string, hooks, active, postMigration bool) (before, preview *string) {
+func setupPreflight(root string, ctx *core.Config, env platform.Env, cwd string, modeLocal bool, dest string, hooks, active, postMigration bool, cache *setupTracking) (before, preview *string) {
 	if modeLocal {
 		refuseUnignorableStateDir(root, ctx, env, cwd, "setup", postMigration)
-		refuseTrackedLocal(root, env, "setup")
+		refuseTrackedLocal(root, env, "setup", cache)
 	}
 	before = readOrRefuse(dest, false)
 	preview = setuptext.SetupBlockResult(before)
-	if preview == nil {
+	if preview == nil && !(modeLocal && protectedLocalFile(root, localInstructionFile, env, cache)) {
 		markerNote := "file left untouched"
 		if postMigration {
 			markerNote += ", but files may already have changed"
@@ -649,7 +694,7 @@ func setupPreflight(root string, ctx *core.Config, env platform.Env, cwd string,
 	if hooks {
 		settings := claudeSettingsPath(root, modeLocal)
 		old := readOrRefuse(settings, false)
-		if setuptext.SettingsHooksResult(old) == nil {
+		if setuptext.SettingsHooksResult(old) == nil && !(modeLocal && protectedLocalFile(root, claudeLocalHookRel, env, cache)) {
 			platform.DieFriction("could not merge hooks into "+settings, 4)
 		}
 		if !modeLocal {
@@ -662,7 +707,7 @@ func setupPreflight(root string, ctx *core.Config, env platform.Env, cwd string,
 	if modeLocal {
 		rels := localRels(root, ctx, env, cwd)
 		if hooks {
-			rels = append(rels, localHookRels(root, env)...)
+			rels = append(rels, localHookRels(root, env, cache)...)
 		}
 		preflightLocalExcludes(root, rels, env, "setup", active, postMigration)
 	}
@@ -744,7 +789,7 @@ func promptConfigNotice(ctx *core.Config, conf string, local bool) {
 	core.Warn(fmt.Sprintf("%s sets neither multi_role, any lane.<name>.kind, nor any role.<role>.kind. max_workers alone is not that choice. Orchestrator: run 'setup --detect', ask the user in their language how many agents at once (4 recommended, 3, or 2) and which detected assistant should implement, review, and research — do not say lane, kind, or panes to them — then run 'setup %s--panes 2|3|4 [--lane name=kind:model:effort]'. If doctor reports a missing or legacy config, finish with 'doctor --fix --panes 2|3|4'.", subject, flag), "", "setup")
 }
 
-func writeCanonicalStateIgnore(ctx *core.Config, env platform.Env, cwd string) {
+func writeCanonicalStateIgnore(ctx *core.Config, env platform.Env, cwd string, cache *setupTracking) {
 	stateRoot := platform.StateProjectRoot(env, cwd)
 	rel := core.StateGitignoreRel(stateRoot, core.StateRootPath(ctx, env, cwd))
 	if rel == "" {
@@ -763,7 +808,9 @@ func writeCanonicalStateIgnore(ctx *core.Config, env platform.Env, cwd string) {
 	if err != nil {
 		text = ""
 	}
-	appendText := core.GitignoreAfter(text, rel)[len(text):]
+	after := core.GitignoreAfter(text, rel)
+	warnTrackedCanonical(stateRoot, file, env, &text, &after, cache)
+	appendText := after[len(text):]
 	if appendText != "" {
 		f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o666)
 		if err != nil {

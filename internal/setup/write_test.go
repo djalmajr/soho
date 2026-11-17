@@ -203,21 +203,11 @@ func TestCmdSetupDryRunAndRefusalPrecedeWrites(t *testing.T) {
 	t.Run("local refusal occurs before exclude, instruction, hooks, or config writes", func(t *testing.T) { // Mutation captured: moving local exclude/config writes before refusal leaves partial setup state behind.
 		root, env, ctx := setupWriteFixture(t)
 		file := filepath.Join(root, localInstructionFile)
-		if err := os.WriteFile(file, []byte("tracked"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		// Hermetic commit identity: the runner may have no global git
-		// identity (and no auto-detectable e-mail), and host signing
-		// settings must not be able to interfere, so the identity and
-		// the signing policy come from the command itself.
-		for _, args := range [][]string{{"add", localInstructionFile}, {"-c", "user.name=test", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "initial"}} {
-			cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("git %v: %v: %s", args, err, out)
-			}
+		if err := os.Symlink("other.md", file); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
 		}
 		code, out, msg := runSetupWrite([]string{"--local", "--panes", "3"}, ctx, env, root)
-		if code != 4 || out != "" || !strings.Contains(msg, "tracked by git") {
+		if code != 4 || out != "" || !strings.Contains(msg, "is a symlink") {
 			t.Fatalf("code=%d out=%q msg=%q", code, out, msg)
 		}
 		for _, p := range []string{".claude/settings.json", ".agents/soho.conf"} {

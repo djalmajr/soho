@@ -45,6 +45,47 @@ func trackingStatus(root, rel string, env platform.Env) fileTracking {
 	return trackingTracked
 }
 
+func hasGitMetadata(root string) bool {
+	dir, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	for {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+// setupTracking is scoped to a single setup invocation.
+type setupTracking struct {
+	values map[string]fileTracking
+}
+
+func (c *setupTracking) status(root, rel string, env platform.Env) fileTracking {
+	if c == nil {
+		return trackingStatus(root, rel, env)
+	}
+	if c.values == nil {
+		c.values = make(map[string]fileTracking)
+	}
+	key := filepath.Clean(filepath.Join(root, filepath.FromSlash(rel)))
+	if value, ok := c.values[key]; ok {
+		return value
+	}
+	value := trackingStatus(root, rel, env)
+	if !hasGitMetadata(root) && rel != ".claude/settings.json" {
+		value = trackingUntracked
+	}
+	c.values[key] = value
+	return value
+}
+
 func hasCompleteSetupBlock(text string) bool {
 	currentStarted, legacyStarted := false, false
 	for _, line := range strings.Split(text, "\n") {
@@ -79,10 +120,14 @@ func refuseImplicitCanonicalSetup(args []string, ctx *core.Config, env platform.
 	platform.DieFriction("setup: this project keeps the soho block in CLAUDE.local.md; run 'setup --local', 'setup --target <file>', or 'session set setup_target local' (no files were changed)", 2)
 }
 
-func untrackedLocalHooks(root string, rels []string, env platform.Env) []string {
+func untrackedLocalHooks(root string, rels []string, env platform.Env, caches ...*setupTracking) []string {
+	var cache *setupTracking
+	if len(caches) > 0 {
+		cache = caches[0]
+	}
 	var untracked []string
 	for _, rel := range rels {
-		if trackingStatus(root, rel, env) == trackingUntracked {
+		if cache.status(root, rel, env) == trackingUntracked {
 			untracked = append(untracked, rel)
 		}
 	}
@@ -91,7 +136,7 @@ func untrackedLocalHooks(root string, rels []string, env platform.Env) []string 
 
 // Preview only hooks the writers can install or confirm. Excludes are applied
 // after successful writes, using the writers' actual results instead.
-func localHookRels(root string, env platform.Env) []string {
+func localHookRels(root string, env platform.Env, cache *setupTracking) []string {
 	var rels []string
 	for _, hook := range []struct {
 		rel   string
@@ -107,7 +152,7 @@ func localHookRels(root string, env platform.Env) []string {
 			rels = append(rels, hook.rel)
 		}
 	}
-	return untrackedLocalHooks(root, rels, env)
+	return untrackedLocalHooks(root, rels, env, cache)
 }
 
 func resolveSetupMode(local bool, target string, ctx *core.Config, env platform.Env, cmd string) bool {
@@ -380,13 +425,13 @@ func refuseUnignorableStateDir(root string, ctx *core.Config, env platform.Env, 
 	}
 }
 
-func refuseTrackedLocal(root string, env platform.Env, cmdName string) {
+func refuseTrackedLocal(root string, env platform.Env, cmdName string, cache *setupTracking) {
+	if _, note := trackedClaudeBlock(root, env, cache); note != "" {
+		return
+	}
 	file := filepath.Join(root, localInstructionFile)
 	if info, err := os.Lstat(file); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		platform.DieFriction(fmt.Sprintf("%s: %s is a symlink; refusing to write local instructions through it (file left untouched; delete the link or replace it with a regular file, then re-run)", cmdName, localInstructionFile), 4)
-	}
-	if _, ok := gitOutput(env, root, "ls-files", "--error-unmatch", "--", localInstructionFile); ok {
-		platform.DieFriction(fmt.Sprintf("%s: %s is tracked by git; refusing to overwrite it with local instructions (file left untouched)", cmdName, localInstructionFile), 4)
 	}
 }
 
@@ -634,4 +679,98 @@ func missingExcludeEntries(current string, entries []string) []string {
 func excludeAfterText(current string, entries []string) string {
 	after, _ := excludeAfter(current, entries)
 	return after
+}
+
+// trackedClaudeBlock finds the instruction file Claude reads, following its symlink.
+func trackedClaudeBlock(root string, env platform.Env, cache *setupTracking) (string, string) {
+	file := filepath.Join(root, "CLAUDE.md")
+	resolved, err := filepath.EvalSymlinks(file)
+	if err != nil {
+		return "", ""
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", ""
+	}
+	if cache.status(root, "CLAUDE.md", env) != trackingTracked && cache.status(root, filepath.ToSlash(rel), env) != trackingTracked {
+		return "", ""
+	}
+	raw, err := platform.ReadTextFile(resolved)
+	if err != nil || !hasCompleteSetupBlock(raw) {
+		return "", ""
+	}
+	next := setuptext.SetupBlockResult(&raw)
+	hint := ""
+	if next != nil && *next != raw {
+		hint = " (its block is older: refresh it with 'soho setup' on a work branch)"
+	}
+	note := fmt.Sprintf("soho block already in %s (tracked); CLAUDE.local.md not written%s", resolved, hint)
+	if local, err := platform.ReadTextFile(localTarget(root)); err == nil && hasCompleteSetupBlock(local) {
+		note += "; warning: soho block is in both files; the local copy can be removed"
+	}
+	return resolved, note
+}
+
+func protectedLocalFile(root, rel string, env platform.Env, cache *setupTracking) bool {
+	_, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel)))
+	return err == nil && cache.status(root, rel, env) != trackingUntracked
+}
+
+func trackedLocalChange(root, rel string, env platform.Env, before, after *string, cache *setupTracking) bool {
+	if before == nil || (after != nil && *before == *after) {
+		return false
+	}
+	file := filepath.Join(root, filepath.FromSlash(rel))
+	switch cache.status(root, rel, env) {
+	case trackingTracked:
+		fmt.Fprintf(platform.Stdout, "%s is tracked; --local leaves it as is (run 'soho setup' on a work branch to refresh it)\n", file)
+		return true
+	case trackingUnknown:
+		reason := "git lookup failed"
+		if _, ok := platform.FindExecutable("git", env, platform.Current()); !ok {
+			reason = "git not found"
+		}
+		fmt.Fprintf(platform.Stdout, "could not tell whether %s is tracked (%s); --local leaves it as is\n", file, reason)
+		return true
+	}
+	return false
+}
+
+func warnTrackedCanonical(root, file string, env platform.Env, before, after *string, cache *setupTracking) {
+	if after == nil || (before != nil && *before == *after) {
+		return
+	}
+	rel, err := filepath.Rel(root, file)
+	if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return
+	}
+	status := cache.status(root, filepath.ToSlash(rel), env)
+	if status == trackingUnknown {
+		reason := "git lookup failed"
+		if _, ok := platform.FindExecutable("git", env, platform.Current()); !ok {
+			reason = "git not found"
+		}
+		fmt.Fprintf(platform.Stdout, "could not tell whether %s is tracked (%s); --local leaves it as is\n", file, reason)
+		return
+	}
+	if status != trackingTracked {
+		return
+	}
+	branch, ok := gitOutput(env, root, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if !ok {
+		return
+	}
+	def, ok := gitOutput(env, root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+	if ok {
+		def = strings.TrimPrefix(def, "origin/")
+	} else {
+		if _, ok = gitOutput(env, root, "show-ref", "--verify", "--quiet", "refs/heads/main"); ok || branch == "main" {
+			def = "main"
+		} else {
+			def = "master"
+		}
+	}
+	if branch == def {
+		fmt.Fprintf(platform.Stdout, "%s is tracked; make this change on a work branch and open a PR\n", file)
+	}
 }
