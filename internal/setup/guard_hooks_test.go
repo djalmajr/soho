@@ -53,13 +53,17 @@ func TestGuardHooksSetup(t *testing.T) {
 
 func TestGuardHooksUpgradeAndPlan(t *testing.T) {
 	root, env, ctx := setupWriteFixture(t)
-	if code, out, msg := runSetupWrite(nil, ctx, env, root); code != 0 || !strings.Contains(out, "the versioned hooks call soho") {
+	if code, out, msg := runSetupWrite(nil, ctx, env, root); code != 0 || !strings.Contains(out, "the versioned Claude Code and Codex hooks call soho") {
 		t.Fatalf("plain: %d %s %s", code, out, msg)
+	} else if !strings.Contains(out, "anyone who opens a clone in those assistants without soho installed") || strings.Contains(out, "public repository") {
+		// SOH-348: the hint holds for private repositories too (a
+		// teammate or CI without soho), so it names no visibility.
+		t.Fatalf("plain hint assumes a public repository: %s", out)
 	}
 	if code, out, msg := runSetupWrite([]string{"--plan", "--guard-hooks"}, ctx, env, root); code != 0 || !strings.Contains(out, setuptext.GuardedHookReminder()) {
 		t.Fatalf("plan: %d %s %s", code, out, msg)
 	}
-	if code, out, msg := runSetupWrite([]string{"--guard-hooks"}, ctx, env, root); code != 0 || strings.Contains(out, "the versioned hooks call soho") {
+	if code, out, msg := runSetupWrite([]string{"--guard-hooks"}, ctx, env, root); code != 0 || strings.Contains(out, "the versioned Claude Code and Codex hooks call soho") {
 		t.Fatalf("guard: %d %s %s", code, out, msg)
 	}
 	for _, f := range []struct{ path, command string }{{".claude/settings.json", setuptext.GuardedHookReminder()}, {".codex/hooks.json", setuptext.GuardedHookCodexReminder()}} {
@@ -88,7 +92,7 @@ func TestGuardHooksUpgradeAndPlan(t *testing.T) {
 		}
 	}
 	root, env, ctx = setupWriteFixture(t)
-	if code, out, msg := runSetupWrite([]string{"--local"}, ctx, env, root); code != 0 || strings.Contains(out, "the versioned hooks call soho") {
+	if code, out, msg := runSetupWrite([]string{"--local"}, ctx, env, root); code != 0 || strings.Contains(out, "the versioned Claude Code and Codex hooks call soho") {
 		t.Fatalf("local: %d %s %s", code, out, msg)
 	}
 }
