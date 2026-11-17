@@ -24,6 +24,7 @@ var userTeamKey = regexp.MustCompile(`^(multi_role|role_[A-Za-z0-9_]+_kind|lane_
 // unreadable file, a directory in place of the file, ENOTDIR above it)
 // refuses with exit 4 before any write, because a merge that could not read
 // the file would overwrite what it could not see.
+// ReadTextFile normalizes CRLF, so CRLF-only differences are unchanged by design.
 func readOrRefuse(file string, plan bool) *string {
 	raw, err := platform.ReadTextFile(file)
 	if err == nil {
@@ -51,6 +52,9 @@ func setupWriteBlock(file string) string {
 	if result == nil {
 		platform.DieFriction(fmt.Sprintf("setup: %s has an unpaired soho marker; fix it by hand and run setup again (file left untouched)", file), 4)
 	}
+	if content != nil && *content == *result {
+		return "unchanged"
+	}
 	had := content != nil && (strings.Contains(*content, setuptext.SetupStart) || strings.Contains(*content, setuptext.LegacySetupStart))
 	if err := platform.AtomicWrite(file, *result); err != nil {
 		platform.DieFriction(fmt.Sprintf("setup: could not write %s (file left untouched)", file), 4)
@@ -61,7 +65,7 @@ func setupWriteBlock(file string) string {
 	return "written"
 }
 
-func setupWriteHooks(file string, guards ...bool) {
+func setupWriteHooks(file string, guards ...bool) bool {
 	content := readOrRefuse(file, false)
 	merged := setuptext.SettingsHooksResult(content)
 	if len(guards) > 0 && guards[0] {
@@ -70,12 +74,25 @@ func setupWriteHooks(file string, guards ...bool) {
 	if merged == nil {
 		platform.DieFriction("could not merge hooks into "+file, 4)
 	}
+	if content != nil && *content == *merged {
+		return false
+	}
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		platform.DieFriction("could not merge hooks into "+file, 4)
 	}
 	if err := platform.AtomicWrite(file, *merged); err != nil {
 		platform.DieFriction("could not merge hooks into "+file, 4)
 	}
+	return true
+}
+
+func printBlockResult(file string) {
+	result := setupWriteBlock(file)
+	if result == "unchanged" {
+		_, _ = fmt.Fprintf(platform.Stdout, "unchanged: %s\n", file)
+		return
+	}
+	_, _ = fmt.Fprintf(platform.Stdout, "block %s: %s\n", result, file)
 }
 
 func projectNeedsConfigPrompt(file string) bool {
@@ -132,14 +149,19 @@ func markedLines(text string) string {
 	return strings.Join(out, "\n") + "\n"
 }
 
+// Managed hook comparisons use ReadTextFile: CRLF-only differences are unchanged by design.
 func writeHooksSection(root string, env platform.Env, local, guard bool) []string {
 	var ready []string
 	settings := claudeSettingsPath(root, local)
 	if local {
-		setupWriteHooks(settings, guard)
+		changed := setupWriteHooks(settings, guard)
 		ready = append(ready, claudeLocalHookRel)
 		migrateSharedHooks(root, env)
-		_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder, SessionStart doctor)\n", settings)
+		if changed {
+			_, _ = fmt.Fprintf(platform.Stdout, "hooks written: %s (UserPromptSubmit reminder, SessionStart doctor)\n", settings)
+		} else {
+			_, _ = fmt.Fprintf(platform.Stdout, "unchanged: %s\n", settings)
+		}
 	} else {
 		before := readOrRefuse(settings, false)
 		if setuptext.SettingsHooksResult(before) == nil {
@@ -149,7 +171,9 @@ func writeHooksSection(root string, env platform.Env, local, guard bool) []strin
 		if note != "" {
 			_, _ = fmt.Fprintln(platform.Stdout, note)
 		}
-		if note == "" || (after != nil && (before == nil || *after != *before)) {
+		if after != nil && before != nil && *after == *before && note == "" {
+			_, _ = fmt.Fprintf(platform.Stdout, "unchanged: %s\n", settings)
+		} else if note == "" || (after != nil && (before == nil || *after != *before)) {
 			if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
 				platform.DieFriction("could not merge hooks into "+settings, 4)
 			}
@@ -177,6 +201,9 @@ func writeHooksSection(root string, env platform.Env, local, guard bool) []strin
 	}
 	if merged == nil {
 		core.Warn("could not merge hooks into "+codex+"; file left untouched", "", "setup")
+	} else if content != nil && *content == *merged {
+		_, _ = fmt.Fprintf(platform.Stdout, "unchanged: %s\n", codex)
+		ready = append(ready, codexHookRel)
 	} else {
 		if err := os.MkdirAll(filepath.Dir(codex), 0o755); err != nil {
 			platform.DieFriction("could not merge hooks into "+codex, 4)
@@ -217,6 +244,7 @@ func noteUntrackedHookFile(file string, env platform.Env, local bool) {
 	_, _ = fmt.Fprintf(platform.Stdout, "note: %s is untracked; commit it to share the hooks, or run 'setup --local' to keep them out of the repository\n", file)
 }
 
+// ReadTextFile makes CRLF-only differences unchanged by design.
 func writePiInboundExtension(root string) bool {
 	file := filepath.Join(root, filepath.FromSlash(piInboundRel))
 	var content *string
@@ -231,6 +259,10 @@ func writePiInboundExtension(root string) bool {
 		core.Warn("could not install extension into "+file+"; file has no soho marker and was left untouched", "", "setup")
 		return false
 	}
+	if content != nil && *content == *next {
+		_, _ = fmt.Fprintf(platform.Stdout, "unchanged: %s\n", file)
+		return true
+	}
 	if content == nil || *content != *next {
 		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 			platform.DieFriction("could not install extension into "+file, 4)
@@ -241,6 +273,47 @@ func writePiInboundExtension(root string) bool {
 	}
 	_, _ = fmt.Fprintf(platform.Stdout, "extension ready: %s (input + session, pi)\n", file)
 	return true
+}
+
+func planExtraHooks(root string, guard bool) {
+	codex := filepath.Join(root, filepath.FromSlash(codexHookRel))
+	var before *string
+	raw, err := platform.ReadTextFile(codex)
+	if err == nil {
+		before = &raw
+	} else if !os.IsNotExist(err) {
+		core.Warn("could not read hooks from "+codex+"; file left untouched", "", "setup")
+	}
+	if err == nil || os.IsNotExist(err) {
+		after := setuptext.CodexHooksResult(before)
+		if guard {
+			after = setuptext.CodexHooksGuardedResult(before)
+		}
+		if after == nil {
+			core.Warn("could not merge hooks into "+codex+"; file left untouched", "", "setup")
+		} else if before != nil && *before == *after {
+			fmt.Fprintf(platform.Stdout, "# no change: %s\n", codex)
+		} else {
+			fmt.Fprintf(platform.Stdout, "# would merge into %s/.codex/hooks.json: UserPromptSubmit reminder + SessionStart doctor (codex)\n", root)
+		}
+	}
+	pi := filepath.Join(root, filepath.FromSlash(piInboundRel))
+	var old *string
+	raw, err = platform.ReadTextFile(pi)
+	if err == nil {
+		old = &raw
+	} else if !os.IsNotExist(err) {
+		core.Warn("could not read extension from "+pi+"; file left untouched", "", "setup")
+		return
+	}
+	next := setuptext.PiInboundResult(old)
+	if next == nil {
+		core.Warn("could not install extension into "+pi+"; file has no soho marker and was left untouched", "", "setup")
+	} else if old != nil && *old == *next {
+		fmt.Fprintf(platform.Stdout, "# no change: %s\n", pi)
+	} else {
+		fmt.Fprintf(platform.Stdout, "# would write %s/.pi/extensions/soho-inbound.ts: input + session extension (pi)\n", root)
+	}
 }
 
 // BuildVersion is the version the CLI was built with ("dev" outside a
@@ -267,17 +340,18 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	if wantPlan {
 		CmdPlan(withoutSetupArg(args, "--plan"), ctx, env, cwd)
 		if !containsSetupArg(args, "--no-hooks") {
-			_, _ = fmt.Fprintf(platform.Stdout, "# would merge into %s/.codex/hooks.json: UserPromptSubmit reminder + SessionStart doctor (codex)\n", platform.ProjectRoot(env, cwd))
+			planExtraHooks(platform.ProjectRoot(env, cwd), containsSetupArg(args, "--guard-hooks"))
 			if containsSetupArg(args, "--guard-hooks") {
 				_, _ = fmt.Fprintln(platform.Stdout, "# guarded Codex hooks: "+setuptext.GuardedHookCodexReminder()+"; "+setuptext.GuardedHookCodexDoctor())
 			}
-			_, _ = fmt.Fprintf(platform.Stdout, "# would write %s/.pi/extensions/soho-inbound.ts: input + session extension (pi)\n", platform.ProjectRoot(env, cwd))
 			if containsSetupArg(args, "--local") || (!containsSetupArg(args, "--target") && core.Cfg(ctx, "setup_target", "canonical", env) == "local") {
 				root := platform.ProjectRoot(env, cwd)
 				rels := append(localRels(root, ctx, env, cwd), localHookRels(root, env)...)
 				if plan := preflightLocalExcludes(root, rels, env, "setup", false, false); plan != nil && plan.path != "" {
 					if added := missingExcludeEntries(plan.before, plan.needed); len(added) > 0 {
 						_, _ = fmt.Fprintf(platform.Stdout, "# would ensure %s ignores: %s\n", plan.path, strings.Join(added, ", "))
+					} else {
+						_, _ = fmt.Fprintf(platform.Stdout, "# no change: %s\n", plan.path)
 					}
 				}
 			}
@@ -475,16 +549,21 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	if modeLocal {
 		rels := localRels(root, ctx, env, cwd)
 		path, added := ensureLocalExcludes(root, rels, env, "setup")
-		_, _ = fmt.Fprintf(platform.Stdout, "block %s: %s\n", setupWriteBlock(dest), dest)
+		printBlockResult(dest)
 		if len(added) > 0 {
 			_, _ = fmt.Fprintf(platform.Stdout, "local excludes updated: %s (%s)\n", path, strings.Join(added, ", "))
 		}
+		excludeChanged := len(added) > 0
 		if hooks {
 			ready := writeHooksSection(root, env, true, guard)
 			hookPath, hookAdded := ensureLocalExcludes(root, untrackedLocalHooks(root, ready, env), env, "setup")
 			if len(hookAdded) > 0 {
+				excludeChanged = true
 				_, _ = fmt.Fprintf(platform.Stdout, "local excludes updated: %s (%s)\n", hookPath, strings.Join(hookAdded, ", "))
 			}
+		}
+		if path != "" && !excludeChanged {
+			_, _ = fmt.Fprintf(platform.Stdout, "unchanged: %s\n", path)
 		}
 		if panes != "" {
 			applySetupPreset(conf, panes, parsed, env, cwd)
@@ -503,7 +582,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		promptConfigNotice(ctx, conf, true)
 		return
 	}
-	_, _ = fmt.Fprintf(platform.Stdout, "block %s: %s\n", setupWriteBlock(dest), dest)
+	printBlockResult(dest)
 	claude := filepath.Join(root, "CLAUDE.md")
 	if info, err := os.Stat(claude); err == nil && info.Mode().IsRegular() && !setupIsSymlink(claude) && dest != claude {
 		text, readErr := platform.ReadTextFile(claude)
@@ -672,7 +751,11 @@ func writeCanonicalStateIgnore(ctx *core.Config, env platform.Env, cwd string) {
 		return
 	}
 	result := platform.RunCli("git", []string{"-C", stateRoot, "rev-parse", "--is-inside-work-tree"}, platform.RunOptions{Env: env, Cwd: stateRoot})
-	if result.Status == nil || *result.Status != 0 || !core.GitignoreNeeds(stateRoot, rel, env) {
+	if result.Status == nil || *result.Status != 0 {
+		return
+	}
+	if !core.GitignoreNeeds(stateRoot, rel, env) {
+		_, _ = fmt.Fprintf(platform.Stdout, "unchanged: %s\n", filepath.Join(stateRoot, ".gitignore"))
 		return
 	}
 	file := filepath.Join(stateRoot, ".gitignore")

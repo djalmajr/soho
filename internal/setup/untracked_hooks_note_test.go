@@ -74,8 +74,8 @@ func TestSetupNoUntrackedNoteForTrackedHookFiles(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("second run code=%d message=%q", code, msg)
 	}
-	if !strings.Contains(stdout, "hooks written: ") {
-		t.Fatalf("control: the hooks must still be written:\n%s", stdout)
+	if !strings.Contains(stdout, "unchanged: ") {
+		t.Fatalf("control: the hooks must be unchanged:\n%s", stdout)
 	}
 	if got := untrackedNoteLines(stdout); len(got) != 0 {
 		t.Fatalf("tracked files must not be noted: %q", got)

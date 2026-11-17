@@ -424,7 +424,11 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 		_, _ = io.WriteString(platform.Stdout, section.file+"\n"+planConfigDiff(readOrEmpty(section.file), sectionAfter[i])+"\n")
 	}
-	_, _ = io.WriteString(platform.Stdout, planFileDiff(target, stringValue(instrBefore), *instrAfter))
+	if instrBefore != nil && *instrBefore == *instrAfter {
+		fmt.Fprintf(platform.Stdout, "# no change: %s\n", target)
+	} else {
+		_, _ = io.WriteString(platform.Stdout, planFileDiff(target, stringValue(instrBefore), *instrAfter))
+	}
 	if settingsFailed {
 		platform.DieFriction("setup --plan: could not merge hooks into "+settingsFile+" (setup would refuse it and leave the file untouched)", 4)
 	}
@@ -433,7 +437,11 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			_, _ = fmt.Fprintln(platform.Stdout, settingsNote)
 		}
 		if settingsNote == "" || (settingsAfter != nil && (settingsBefore == nil || *settingsAfter != *settingsBefore)) {
-			_, _ = io.WriteString(platform.Stdout, planFileDiff(settingsFile, stringValue(settingsBefore), *settingsAfter))
+			if settingsBefore != nil && *settingsBefore == *settingsAfter {
+				fmt.Fprintf(platform.Stdout, "# no change: %s\n", settingsFile)
+			} else {
+				_, _ = io.WriteString(platform.Stdout, planFileDiff(settingsFile, stringValue(settingsBefore), *settingsAfter))
+			}
 		}
 		if modeLocal {
 			shared, after := sharedHooksMigration(root)
@@ -449,8 +457,14 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 	}
 	if modeLocal {
-		if localPlan != nil && localPlan.path != "" && localPlan.after != localPlan.before {
-			_, _ = io.WriteString(platform.Stdout, planFileDiff(localPlan.path, localPlan.before, localPlan.after))
+		if localPlan != nil && localPlan.path != "" {
+			if localPlan.after != localPlan.before {
+				_, _ = io.WriteString(platform.Stdout, planFileDiff(localPlan.path, localPlan.before, localPlan.after))
+			} else if !hooks {
+				if _, err := os.Stat(localPlan.path); err == nil {
+					_, _ = fmt.Fprintf(platform.Stdout, "# no change: %s\n", localPlan.path)
+				}
+			}
 		}
 	} else {
 		state := core.StateRootPath(ctx, env, cwd)
@@ -458,8 +472,12 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		if rel != "" {
 			cmd := exec.Command("git", "-C", root, "rev-parse", "--is-inside-work-tree")
 			cmd.Env = env.List()
-			if cmd.Run() == nil && core.GitignoreNeeds(root, rel, env) {
+			if cmd.Run() == nil {
 				file := filepath.Join(root, ".gitignore")
+				if !core.GitignoreNeeds(root, rel, env) {
+					fmt.Fprintf(platform.Stdout, "# no change: %s\n", file)
+					return
+				}
 				before := readOrEmpty(file)
 				_, _ = io.WriteString(platform.Stdout, planFileDiff(file, before, core.GitignoreAfter(before, rel)))
 			}

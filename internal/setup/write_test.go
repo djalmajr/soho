@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -783,4 +784,178 @@ func isolatedHerdrEnv(t *testing.T, git string) platform.Env {
 	sep := string(os.PathListSeparator)
 	env["PATH"] = bin + sep + filepath.Dir(git) + sep + strings.TrimPrefix(env.Get("PATH"), bin+sep)
 	return env
+}
+
+func TestSetupUnchangedAndRepair(t *testing.T) {
+	root, env, ctx := codexSetupFixture(t)
+	code, _, msg := runSetupWrite(nil, ctx, env, root)
+	if code != 0 {
+		t.Fatalf("first setup: %d %s", code, msg)
+	}
+	files := []string{filepath.Join(root, "AGENTS.md"), filepath.Join(root, ".claude", "settings.json"), filepath.Join(root, ".codex", "hooks.json"), filepath.Join(root, ".pi", "extensions", "soho-inbound.ts"), filepath.Join(root, ".gitignore")}
+	stamp := time.Unix(1000000000, 0)
+	for _, file := range files {
+		if err := os.Chtimes(file, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, out, msg := runSetupWrite(nil, ctx, env, root)
+	if code != 0 {
+		t.Fatalf("second setup: %d %s", code, msg)
+	}
+	for _, file := range files {
+		info, err := os.Stat(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.ModTime().Equal(stamp) || !strings.Contains(out, "unchanged: "+file+"\n") {
+			t.Errorf("file %s mtime=%v output=%s", file, info.ModTime(), out)
+		}
+	}
+	code, out, msg = runSetupWrite([]string{"--plan"}, ctx, env, root)
+	if code != 0 {
+		t.Fatalf("plan: %d %s", code, msg)
+	}
+	for _, file := range files {
+		if !strings.Contains(out, "# no change: "+file+"\n") {
+			t.Errorf("missing no change for %s: %s", file, out)
+		}
+	}
+	file := filepath.Join(root, ".codex", "hooks.json")
+	if err := os.WriteFile(file, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, msg = runSetupWrite(nil, ctx, env, root)
+	if code != 0 || !strings.Contains(out, "hooks written: "+file) {
+		t.Fatalf("repair: %d %s %s", code, out, msg)
+	}
+	assertCodexPair(t, file)
+}
+
+func TestSetupCRLFUnchangedAndRepair(t *testing.T) {
+	root, env, ctx := codexSetupFixture(t)
+	if code, _, msg := runSetupWrite(nil, ctx, env, root); code != 0 {
+		t.Fatalf("initial setup: %d %s", code, msg)
+	}
+	cases := []struct{ rel, from, to, line string }{
+		{"AGENTS.md", setuptext.SetupStart + "\r\n", setuptext.SetupStart + "\r\nold\r\n", "block updated: "},
+		{".claude/settings.json", "soho hook reminder", "soho hook remindeX", "hooks written: "},
+		{".codex/hooks.json", "soho hook reminder", "soho hook remindeX", "hooks written: "},
+		{".pi/extensions/soho-inbound.ts", setuptext.PiInboundMarker + "\r\n", setuptext.PiInboundMarker + "\r\nold\r\n", "extension ready: "},
+	}
+	stamp := time.Unix(1000000000, 0)
+	for _, tc := range cases {
+		t.Run(tc.rel, func(t *testing.T) {
+			file := filepath.Join(root, filepath.FromSlash(tc.rel))
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			crlf := strings.ReplaceAll(string(data), "\n", "\r\n")
+			if crlf == string(data) {
+				t.Fatal("fixture has no newlines")
+			}
+			if err := os.WriteFile(file, []byte(crlf), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(file, stamp, stamp); err != nil {
+				t.Fatal(err)
+			}
+			code, out, msg := runSetupWrite(nil, ctx, env, root)
+			info, err := os.Stat(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code != 0 || !info.ModTime().Equal(stamp) || !strings.Contains(out, "unchanged: "+file+"\n") {
+				t.Fatalf("CRLF: code=%d mtime=%v out=%s msg=%s", code, info.ModTime(), out, msg)
+			}
+			damaged := strings.Replace(crlf, tc.from, tc.to, 1)
+			if damaged == crlf {
+				t.Fatal("repair fixture did not change")
+			}
+			if err := os.WriteFile(file, []byte(damaged), 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, out, msg = runSetupWrite(nil, ctx, env, root)
+			if code != 0 || !strings.Contains(out, tc.line+file) {
+				t.Fatalf("repair: code=%d out=%s msg=%s", code, out, msg)
+			}
+		})
+	}
+}
+
+func TestSetupPlanWarningsMatchSetup(t *testing.T) {
+	for _, tc := range []struct {
+		name, rel, content, warning string
+		directory                   bool
+	}{
+		{"codex-unreadable", ".codex/hooks.json", "", "could not read hooks from ", true},
+		{"codex-invalid", ".codex/hooks.json", "{broken", "could not merge hooks into ", false},
+		{"pi-unreadable", ".pi/extensions/soho-inbound.ts", "", "could not read extension from ", true},
+		{"pi-unmarked", ".pi/extensions/soho-inbound.ts", "foreign extension\n", "could not install extension into ", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, env, ctx := codexSetupFixture(t)
+			file := filepath.Join(root, filepath.FromSlash(tc.rel))
+			if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if tc.directory {
+				if err := os.Mkdir(file, 0700); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(file, []byte(tc.content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			planCode, planOut, planErr := runSetupWrite([]string{"--plan"}, ctx, env, root)
+			setupCode, _, setupErr := runSetupWrite(nil, ctx, env, root)
+			var planLine, setupLine string
+			for _, line := range strings.Split(planErr, "\n") {
+				if strings.Contains(line, tc.warning+file) {
+					planLine = line
+				}
+			}
+			for _, line := range strings.Split(setupErr, "\n") {
+				if strings.Contains(line, tc.warning+file) {
+					setupLine = line
+				}
+			}
+			if planCode != setupCode || planCode != 0 || planLine == "" || planLine != setupLine || strings.Contains(planOut, "# would write "+file) || strings.Contains(planOut, "# would merge into "+file) {
+				t.Fatalf("plan=%d setup=%d planWarning=%q setupWarning=%q planOut=%s", planCode, setupCode, planLine, setupLine, planOut)
+			}
+		})
+	}
+}
+
+func TestSetupRepairsExistingManagedFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		args                  []string
+		rel, damaged, message string
+	}{
+		{"block", nil, "AGENTS.md", setuptext.SetupStart + "\nold\n" + setuptext.SetupEnd + "\n", "block updated: "},
+		{"claude-canonical", nil, ".claude/settings.json", "{}\n", "hooks written: "},
+		{"claude-local", []string{"--local"}, ".claude/settings.local.json", "{}\n", "hooks written: "},
+		{"pi", nil, ".pi/extensions/soho-inbound.ts", setuptext.PiInboundMarker + "\nold\n", "extension ready: "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, env, ctx := codexSetupFixture(t)
+			if code, _, msg := runSetupWrite(tc.args, ctx, env, root); code != 0 {
+				t.Fatalf("initial=%d %s", code, msg)
+			}
+			file := filepath.Join(root, filepath.FromSlash(tc.rel))
+			expected, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(file, []byte(tc.damaged), 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, out, msg := runSetupWrite(tc.args, ctx, env, root)
+			got, err := os.ReadFile(file)
+			if code != 0 || err != nil || !bytes.Equal(got, expected) || !strings.Contains(out, tc.message+file) {
+				t.Fatalf("repair=%d err=%v output=%s warning=%s", code, err, out, msg)
+			}
+		})
+	}
 }
