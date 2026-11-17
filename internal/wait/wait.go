@@ -1752,7 +1752,7 @@ func mirrorReport(sd, agent, report string, ctx *core.Config, env platform.Env, 
 	}()
 	base := filepath.Base(report)
 	stem := strings.TrimSuffix(base, filepath.Ext(base))
-	jobs := [][4]string{{report, "reports", base, ""}, {filepath.Join(dir, stem+".brief.md"), "briefs", stem + ".md", ""}, {filepath.Join(dir, stem+".dispatch.json"), "briefs", stem + ".dispatch.json", "optional"}, {filepath.Join(dir, stem+".dispatch.json.snapshot"), "briefs", stem + ".dispatch.json.snapshot", "optional"}}
+	jobs := [][4]string{{report, "reports", base, ""}, {filepath.Join(dir, stem+".brief.md"), "briefs", stem + ".md", ""}, {filepath.Join(dir, stem+".dispatch.json.snapshot"), "briefs", stem + ".dispatch.json.snapshot", "optional"}, {filepath.Join(dir, stem+".dispatch.json"), "briefs", stem + ".dispatch.json", "optional"}}
 	for _, job := range jobs {
 		src, folder, name := job[0], job[1], job[2]
 		dst := filepath.Join(sd, folder, name)

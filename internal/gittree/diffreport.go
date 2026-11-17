@@ -54,14 +54,28 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 	if !scopeOK {
 		return nil
 	}
+	snapshot, snapshotPresent := snapshotFromSidecar(sidecar, o)
+	if snapshotPresent {
+		for _, name := range snapshot.Keys() {
+			v, _ := snapshot.Get(name)
+			if _, ok := v.(string); !ok {
+				snapshotPresent = false
+				break
+			}
+		}
+	}
+	markerValue, _ := o.Get("git_snapshot_file")
+	incomplete := markerValue == true && !snapshotPresent
 	// An unreadable optional scope cannot suppress the existing Owned audit.
 	orchestrator, _, _ := diffEffectiveSectionRead(sidecar, agent, o, commandOwnedSeams(), "orchestrator files")
-	marker, err := os.OpenFile(sidecar+".diff-checked", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		return nil
-	}
-	if marker.Close() != nil {
-		return nil
+	if !incomplete {
+		marker, err := os.OpenFile(sidecar+".diff-checked", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			return nil
+		}
+		if marker.Close() != nil {
+			return nil
+		}
 	}
 	// Only a descendant HEAD can separate intervening commits from the
 	// worker's uncommitted changes without changing the historical fallback.
@@ -102,16 +116,6 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 		return nil
 	}
 	defer root.Close()
-	snapshot, snapshotPresent := snapshotFromSidecar(sidecar, o)
-	if snapshotPresent {
-		for _, name := range snapshot.Keys() {
-			v, _ := snapshot.Get(name)
-			if _, ok := v.(string); !ok {
-				snapshotPresent = false
-				break
-			}
-		}
-	}
 	changedNow := func(name string) bool {
 		headChanged[name] = true
 		if !snapshotPresent {
@@ -121,7 +125,7 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 		if !exists {
 			return true
 		}
-		now, ok := contentHash(root, name)
+		now, ok := contentHashForGit(env, tree, root, name)
 		return !ok || !sameFingerprint(before, now)
 	}
 	tracked, fresh := []string{}, []string{}
@@ -150,7 +154,7 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 				continue
 			}
 			before, _ := snapshot.Get(name)
-			now, ok := contentHash(root, name)
+			now, ok := contentHashForGit(env, tree, root, name)
 			if !ok || !sameFingerprint(before, now) {
 				changed[name] = true
 				snapshotOnly = append(snapshotOnly, name)
@@ -178,8 +182,10 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 	// committed_during_task list when HEAD moved), but still consumes the
 	// once-only attempt so a subsequent wait/collect cannot repeat it.
 	if stat == "" && untracked == "" && len(changed) == 0 {
-		o.Set("diff_checked", true)
-		_ = core.WriteScratchFile(sidecar, jsonjs.Stringify(o)+"\n")
+		if !incomplete {
+			o.Set("diff_checked", true)
+			_ = core.WriteScratchFile(sidecar, jsonjs.Stringify(o)+"\n")
+		}
 		if len(committed) > 0 {
 			return jsonjs.O("committed_during_task", committed)
 		}
@@ -237,9 +243,11 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 	}
 	cited := diffCited(tree, string(text), changed)
 	sort.Strings(outside)
-	o.Set("diff_checked", true)
-	if core.WriteScratchFile(sidecar, jsonjs.Stringify(o)+"\n") != nil {
-		return nil
+	if !incomplete {
+		o.Set("diff_checked", true)
+		if core.WriteScratchFile(sidecar, jsonjs.Stringify(o)+"\n") != nil {
+			return nil
+		}
 	}
 	out := jsonjs.O("diff_stat", artifact)
 	if len(committed) > 0 {

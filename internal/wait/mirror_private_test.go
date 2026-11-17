@@ -126,3 +126,24 @@ func TestMirrorReadsNothingWithoutTheScratch(t *testing.T) {
 		t.Fatalf("the reader created the scratch: %v", err)
 	}
 }
+
+func TestMirrorPublishesSnapshotBeforeSidecar(t *testing.T) {
+	ctx, env, state, _, stem := privateMirror(t)
+	writeFiles(t, map[string]string{stem + ".md": "report\n", stem + ".brief.md": "brief\n", stem + ".dispatch.json": "{\"git_snapshot_file\":true}\n", stem + ".dispatch.json.snapshot": "{}\n"})
+	old := linkMirrorFile
+	t.Cleanup(func() { linkMirrorFile = old })
+	seen := false
+	linkMirrorFile = func(root *os.Root, tmp, dst string) error {
+		if strings.HasSuffix(dst, ".dispatch.json") {
+			seen = true
+			if _, err := root.Stat(dst + ".snapshot"); err != nil {
+				t.Errorf("sidecar published before companion: %v", err)
+			}
+		}
+		return old(root, tmp, dst)
+	}
+	mirrorReport(state, "worker", stem+".md", ctx, env, "")
+	if !seen {
+		t.Fatal("sidecar publication not observed")
+	}
+}

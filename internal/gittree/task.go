@@ -108,13 +108,37 @@ func contentSnapshot(env platform.Env, tree, head string) (*jsonjs.Object, bool)
 		if name == "" {
 			continue
 		}
-		hash, ok := contentHash(root, name)
+		hash, ok := contentHashForGit(env, tree, root, name)
 		if !ok {
 			return nil, false
 		}
 		result.Set(name, hash)
 	}
 	return result, true
+}
+
+func contentHashForGit(env platform.Env, tree string, root *os.Root, name string) (string, bool) {
+	info, err := root.Lstat(filepath.FromSlash(name))
+	if err != nil || !info.IsDir() {
+		return contentHash(root, name)
+	}
+	entry, ok := gitOutput(env, tree, "--literal-pathspecs", "ls-files", "-s", "--", name)
+	if !ok {
+		return "", false
+	}
+	if strings.HasPrefix(entry, "160000 ") {
+		path := filepath.Join(tree, filepath.FromSlash(name))
+		head, ok := git(env, path, "rev-parse", "--verify", "HEAD")
+		if !ok {
+			return "", false
+		}
+		dirty, ok := gitOutput(env, path, "status", "--porcelain", "-z", "--untracked-files=normal")
+		if !ok {
+			return "", false
+		}
+		return fmt.Sprintf("gitlink:%s:%t", head, dirty != ""), true
+	}
+	return contentHash(root, name)
 }
 
 func contentHash(root *os.Root, name string) (string, bool) {
@@ -307,7 +331,7 @@ func ReplaceBaseline(path string, fields *jsonjs.Object) error {
 
 // Sidecar locates the task's sidecar in state or alongside scratch reports.
 func Sidecar(sd, report string) string {
-	return sidecarLocate(sd, report, read)
+	return sidecarLocateComplete(sd, report)
 }
 
 // SidecarInspect is the inspection's sidecar location: the same two
@@ -411,4 +435,24 @@ func Check(path, agent string, env platform.Env, logFile, command string) *jsonj
 		return jsonjs.O("from", old, "to", head, "branch_from", branch, "branch_to", nextBranch)
 	}
 	return nil
+}
+
+func sidecarLocateComplete(sd, report string) string {
+	base := strings.TrimSuffix(filepath.Base(report), ".md") + ".dispatch.json"
+	paths := []string{filepath.Join(sd, "briefs", base), filepath.Join(filepath.Dir(report), base)}
+	incomplete := ""
+	for _, path := range paths {
+		if o := read(path); o != nil {
+			if marker, _ := o.Get("git_snapshot_file"); marker == true {
+				if _, ok := snapshotFromSidecar(path, o); !ok {
+					if incomplete == "" {
+						incomplete = path
+					}
+					continue
+				}
+			}
+			return path
+		}
+	}
+	return incomplete
 }
