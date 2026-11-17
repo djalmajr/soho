@@ -138,6 +138,9 @@ func pressureMeasure(ctx *Config, env platform.Env, stateDir string, diskLimit i
 			}
 		}
 	}
+	if part, _ := CopiesPressure(ctx, env, stateDir, diskLimit, diskFloor); part != "" {
+		parts = append(parts, part)
+	}
 	if swapLimit > 0 {
 		if used, total, ok := platform.SwapUsage(env); ok && total > 0 {
 			pct := used * 100 / total
@@ -147,6 +150,61 @@ func pressureMeasure(ctx *Config, env platform.Env, stateDir string, diskLimit i
 		}
 	}
 	return parts
+}
+
+// CopiesPressure measures the copy parent only when its device is known and distinct.
+func CopiesPressure(ctx *Config, env platform.Env, stateDir string, limit int, floor int64) (string, string) {
+	if limit <= 0 {
+		return "", ""
+	}
+	parent, _, err := CopiesParent(ctx, env, "")
+	if err != nil {
+		return "", ""
+	}
+	stateDev, stateOK := CopiesDevice(stateDir)
+	copyDev, copyOK := CopiesDevice(parent)
+	if !stateOK || !copyOK || stateDev == copyDev {
+		return "", ""
+	}
+	return copiesDiskPart(parent, limit, floor), parent
+}
+
+func copiesDiskPart(parent string, limit int, floor int64) string {
+	free, total, ok := platform.DiskFree(parent)
+	if !ok || total <= 0 {
+		return ""
+	}
+	pct := free * 100 / total
+	if !DiskUnderPressure(free, pct, limit, floor) {
+		return ""
+	}
+	return fmt.Sprintf("disk %s (mutation copies) has %d%% free (%s of %s)", parent, pct, platform.HumanSize(free), platform.HumanSize(total))
+}
+
+// CopiesDevice resolves missing directories to the filesystem of their nearest existing ancestor.
+func CopiesDevice(path string) (string, bool) {
+	for {
+		if dev, ok := platform.DiskDevice(path); ok {
+			return dev, true
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			return "", false
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return "", false
+		}
+		path = parent
+	}
+}
+
+// CopiesWarningPressure applies the configured warning threshold.
+func CopiesWarningPressure(ctx *Config, env platform.Env, stateDir string) (string, string) {
+	parent, _, err := CopiesParent(ctx, env, "")
+	if err != nil {
+		return "", ""
+	}
+	return copiesDiskPart(parent, pressureThreshold(ctx, pressureDiskKey, pressureDiskDefault, env), PressureDiskFloor(ctx, env, false)), parent
 }
 
 // DiskUnderPressure applies the shared warning/refusal disk rule. floor is

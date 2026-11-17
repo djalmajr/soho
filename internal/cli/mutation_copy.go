@@ -600,16 +600,11 @@ func mutationCopyHome(env platform.Env) string {
 func mutationCopyPrepareDest(raw, cwd string, env platform.Env, home, source string, ctx *core.Config) (string, string, bool, string) {
 	created := false
 	if raw == "" {
-		tmpDir := env.Get("TMPDIR")
-		if tmpDir == "" {
-			tmpDir = os.TempDir()
-		}
-		configured, err := configuredCopiesDir(ctx, env, cwd)
+		tmpDir, configured, err := core.CopiesParent(ctx, env, cwd)
 		if err != nil {
 			return "", core.Cfg(ctx, "copies_dir", "", env), false, err.Error()
 		}
-		if configured != "" {
-			tmpDir = configured
+		if configured {
 			if err := os.MkdirAll(tmpDir, 0o700); err != nil {
 				return "", tmpDir, false, "copies_dir cannot be created: " + err.Error()
 			}
@@ -664,22 +659,6 @@ func mutationCopyPrepareDest(raw, cwd string, env platform.Env, home, source str
 		return resolved, raw, created, "cannot be created: " + err.Error()
 	}
 	return resolved, raw, true, ""
-}
-
-// configuredCopiesDir resolves the same layered setting for copy creation and gc.
-func configuredCopiesDir(ctx *core.Config, env platform.Env, cwd string) (string, error) {
-	value := core.Cfg(ctx, "copies_dir", "", env)
-	if !core.ConfigValueOk("copies_dir", value, env, cwd) {
-		return "", fmt.Errorf("invalid copies_dir: must be absolute or start with ~/")
-	}
-	if strings.HasPrefix(value, "~/") {
-		home := mutationCopyHome(env)
-		if home == "" {
-			return "", fmt.Errorf("copies_dir cannot be resolved: HOME is unavailable")
-		}
-		value = filepath.Join(home, filepath.FromSlash(value[2:]))
-	}
-	return value, nil
 }
 
 func gitToplevel(dir string, env platform.Env) (string, bool) {
