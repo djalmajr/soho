@@ -1412,10 +1412,14 @@ func doctorApprovals(ctx *core.Config, env platform.Env, s *Say) {
 		ordered = append(ordered, key)
 	}
 	textutil.SortUTF16(ordered)
+	var unsandboxed []string
 	for _, key := range ordered {
 		if core.Cfg(ctx, key, "", env) == "unsandboxed" {
-			s.Warning(fmt.Sprintf("config: %s=unsandboxed; workers run without a sandbox by the owner's choice", keys[key]))
+			unsandboxed = append(unsandboxed, keys[key])
 		}
+	}
+	if len(unsandboxed) > 0 {
+		s.Warning(fmt.Sprintf("config: %s=unsandboxed; workers run without a sandbox by the owner's choice", strings.Join(unsandboxed, ", ")))
 	}
 }
 

@@ -287,8 +287,8 @@ func TestParse(t *testing.T) {
 			wantMalformed: nil,
 		},
 		{
-			name:          "a different title is not the section",
-			text:          "## test layers\n- unit: `go test`\n### Test layers\n- unit: `go test`\n",
+			name:          "a different level is not the section",
+			text:          "### test layers\n- unit: `go test`\n### Test layers\n- unit: `go test`\n",
 			wantHas:       false,
 			wantMalformed: nil,
 		},
@@ -420,11 +420,11 @@ func TestParseSectionTitles(t *testing.T) {
 		{"pt-BR title", "## Camadas de teste", true, 2},
 		{"pt-BR title in lower case", "## camadas de teste", true, 2},
 		{"pt-BR title in upper case", "## CAMADAS DE TESTE", true, 2},
-		{"English title in another case stays refused", "## test layers", false, 0},
-		{"pt-BR title in the plural is another title", "## Camadas de testes", false, 0},
-		{"pt-BR title with a Unicode lookalike (long s)", "## Camadas de teſte", false, 0},
+		{"English title in another case", "## test layers", true, 2},
+		{"translated heading with items", "## 1. Camadas de teste", true, 2},
+		{"numbered English heading", "## 2. Test layers", true, 2},
 		{"pt-BR title with a different level", "### Camadas de teste", false, 0},
-		{"no title", "## Items", false, 0},
+		{"another heading with items", "## Items", true, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

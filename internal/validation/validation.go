@@ -31,8 +31,7 @@ type Layer struct {
 
 // Document is the parsed "## Test layers" section of a VALIDATION.md.
 type Document struct {
-	// HasLayers is true when the title "## Test layers" (or its pt-BR form
-	// "## Camadas de teste", see isSectionTitle) exists.
+	// HasLayers is true when a matching title or a section with layer items exists.
 	HasLayers bool
 	// Layers is the accepted layer lines, in file order.
 	Layers []Layer
@@ -42,19 +41,21 @@ type Document struct {
 	Malformed []int
 }
 
-// sectionTitle is the exact title that opens the section.
-const sectionTitle = "## Test layers"
-
-// sectionTitlePTBR is the pt-BR title that opens the same section; it is
-// matched case-insensitively over ASCII letters only (no Unicode folding, so
-// a lookalike character never opens the section).
-const sectionTitlePTBR = "## Camadas de teste"
-
-// isSectionTitle reports whether line opens the layers section: the exact
-// English title, or the pt-BR title in any letter case. Every other line is
-// not a title.
+// isSectionTitle recognizes the English title with an optional numeric prefix,
+// and preserves the previously supported Portuguese title.
 func isSectionTitle(line string) bool {
-	return line == sectionTitle || asciiEqualFold(line, sectionTitlePTBR)
+	if !strings.HasPrefix(line, "## ") {
+		return false
+	}
+	title := strings.TrimPrefix(line, "## ")
+	i := 0
+	for i < len(title) && title[i] >= '0' && title[i] <= '9' {
+		i++
+	}
+	if i > 0 && i+1 < len(title) && (title[i] == '.' || title[i] == ')') && title[i+1] == ' ' {
+		title = title[i+2:]
+	}
+	return asciiEqualFold(title, "Test layers") || asciiEqualFold(title, "Camadas de teste")
 }
 
 // asciiEqualFold compares a and b ignoring the case of ASCII letters only.
@@ -77,34 +78,41 @@ func asciiEqualFold(a, b string) bool {
 	return true
 }
 
-// Parse analyses the text of a VALIDATION.md and returns the parsed
-// document. Code fences are tracked from the first line of the file: a
-// fenced title neither opens nor ends the section, and a fenced item is
-// never a layer. The section runs from the exact (unfenced) title
-// "## Test layers" (or "## Camadas de teste") to the next unfenced "## " title or the end of the
-// file; outside the section, every line is ignored. Inside the section,
-// non-list lines are ignored and each list item (a line starting with
-// "- ") must be one of the three forms, else its line number lands in
-// Document.Malformed. The parser reads nothing and writes nothing, and the
-// line text never leaves it.
+// Parse finds an unfenced matching heading or the first level-2 section with
+// a layer-shaped item, then parses its items up to the next level-2 heading.
+// Fenced headings and items are ignored.
 func Parse(text string) Document {
 	doc := Document{}
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	var fence fenceState
-	start := -1
+	start, candidate, fallback := -1, -1, -1
 	for i, line := range lines {
 		line = strings.TrimSuffix(line, "\r")
 		if fence.consume(line) {
 			continue
 		}
-		if isSectionTitle(line) {
-			start = i
-			break
+		if strings.HasPrefix(line, "## ") {
+			candidate = i
+			if isSectionTitle(line) {
+				start = i
+				break
+			}
+			continue
 		}
+		if candidate >= 0 && fallback < 0 && strings.HasPrefix(line, "- ") {
+			name, _, found := strings.Cut(line[2:], ":")
+			if found && layerNameRe.MatchString(name) {
+				fallback = candidate
+			}
+		}
+	}
+	if start < 0 {
+		start = fallback
 	}
 	if start < 0 {
 		return doc
 	}
+	fence = fenceState{}
 	declared := make(map[string]bool)
 	for i := start + 1; i < len(lines); i++ {
 		line := strings.TrimSuffix(lines[i], "\r")
