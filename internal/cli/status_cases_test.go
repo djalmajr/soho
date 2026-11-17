@@ -560,6 +560,16 @@ func TestWaitJavaScriptDoneReportCases(t *testing.T) {
 			t.Fatalf("code=%d out=%q", code, out)
 		}
 	})
+	t.Run("wait: a report marker in an HTML comment before the header does not warn", func(t *testing.T) {
+		row := "review\tp0a\tclaude\tsecurity-reviewer\tanthropic\t\t\t\tmodel-x\t\t\t\n"
+		f := newWaitStatusFixture(t, row, nil)
+		advancingWaitClock(t, 200*time.Millisecond)
+		writeReport(t, f, "review", "security-reviewer", "<!-- security-review:report sha=abc123 -->\nfindings: 0 (P0 0, P1 0, P2 0, P3 0) | verdict: pass\n\nNothing found.\n")
+		code, out, stderr := f.runWait(t, "review", "--timeout", "200")
+		if code != 0 || !strings.Contains(out, `"verdict":"pass"`) || strings.Contains(stderr, "has no 'findings:") {
+			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+		}
+	})
 	t.Run("wait: a review report without the header warns for all four review roles", func(t *testing.T) { // JS: "wait: a review report without the header warns for all four review roles"
 		rows := "review1\tp1\tclaude\treviewer\t\t\t\t\t\t\t\t\nreview2\tp2\tclaude\tsecurity-reviewer\t\t\t\t\t\t\t\nreview3\tp3\tclaude\tui-reviewer\t\t\t\t\t\t\t\nreview4\tp4\tclaude\tinspector\t\t\t\t\t\t\t\n"
 		f := newWaitStatusFixture(t, rows, nil)
