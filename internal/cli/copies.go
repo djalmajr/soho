@@ -300,11 +300,12 @@ func rosterAgentForPane(stateDir, pane string) string {
 var upsertCopies = core.UpsertCopies
 
 // queueCopy is the fallback of a copy registration that the state dir
-// refused with a permission error (DJA-323): the row goes to the copy queue
+// refused with a permission error or a read-only file system (DJA-323,
+// platform.WriteRefused): the row goes to the copy queue
 // below the soho scratch dir, with the stderr line that says so. Any other
 // error, the held lock included, is returned as it is, with no queue.
 func queueCopy(cmd, sd string, row core.CopyRow, err error, env platform.Env) error {
-	if !errors.Is(err, fs.ErrPermission) {
+	if !platform.WriteRefused(err) {
 		return err
 	}
 	queue, queueErr := core.QueueCopy(env, filepath.Base(sd), sd, row)
@@ -365,7 +366,7 @@ func pendingResultLines(cmd, kind string, res core.PendingResult, err error) {
 		}
 		_, _ = fmt.Fprintf(platform.Stderr, "%s: dropped the queued copy '%s' from %s, not registered: %s\n", cmd, drop.What, res.Queue, drop.Cause)
 	}
-	if err != nil && !errors.Is(err, fs.ErrPermission) {
+	if err != nil && !platform.WriteRefused(err) {
 		_, _ = fmt.Fprintf(platform.Stderr, "%s: the queued %s registrations in %s were not incorporated (%v); the queue stays and the registry is used as it is\n", cmd, kind, res.Queue, err)
 	}
 }
