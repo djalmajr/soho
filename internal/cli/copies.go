@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	copiesUsage = "usage: soho copies [add <path> [--agent <name>]]"
+	copiesUsage = "usage: soho copies [add <path> [--agent <name>] | release <path>...]"
 	gcUsage     = "usage: soho gc [--yes] [--verbose] [--older-than HOURS] [--include-unregistered] [--include-unregistered-procs]"
 
 	// copiesTimeLayout is the ISO-8601 UTC format the registry stores in the
@@ -374,6 +374,9 @@ func pendingResultLines(cmd, kind string, res core.PendingResult, err error) {
 func cmdCopies(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	if len(argv) == 0 {
 		return copiesList(ctx, env, cwd)
+	}
+	if argv[0] == "release" {
+		return copiesRelease(argv[1:], ctx, env, cwd)
 	}
 	if argv[0] != "add" {
 		_, _ = fmt.Fprintf(platform.Stderr, "soho: %s\n", copiesUsage)
