@@ -518,3 +518,24 @@ func TestDoctorApprovalsGrouped(t *testing.T) {
 		})
 	}
 }
+
+func TestDoctorNotesBeforeTranslatedLayers(t *testing.T) {
+	for _, tc := range []struct {
+		name, content string
+		want          string
+	}{
+		{"notes only", "## Notes\n- note: remember to test\n", warnNoSection},
+		{"notes then layers", "## Notes\n- note: remember to test\n## Capas de prueba\n- unit: `go test`\n- integration: n/a: none\n- contract: n/a: none\n- e2e: manual: browser\n- mutation: n/a: none\n", "ok     VALIDATION.md: 1 commands, 3 n/a, 1 manual"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "VALIDATION.md"), []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got := validationLines(validationFixture(t, root, validationEnv(root)))
+			if len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("lines = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

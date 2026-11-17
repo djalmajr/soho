@@ -79,7 +79,7 @@ func asciiEqualFold(a, b string) bool {
 }
 
 // Parse finds an unfenced matching heading or the first level-2 section with
-// a layer-shaped item, then parses its items up to the next level-2 heading.
+// a valid required layer declaration, then parses items up to the next level-2 heading.
 // Fenced headings and items are ignored.
 func Parse(text string) Document {
 	doc := Document{}
@@ -100,9 +100,14 @@ func Parse(text string) Document {
 			continue
 		}
 		if candidate >= 0 && fallback < 0 && strings.HasPrefix(line, "- ") {
-			name, _, found := strings.Cut(line[2:], ":")
-			if found && layerNameRe.MatchString(name) {
-				fallback = candidate
+			layer, ok := parseLayerLine(line)
+			if ok {
+				for _, name := range RequiredLayers {
+					if layer.Name == name {
+						fallback = candidate
+						break
+					}
+				}
 			}
 		}
 	}

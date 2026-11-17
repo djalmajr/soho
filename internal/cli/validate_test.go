@@ -357,7 +357,7 @@ func TestValidateProblemsBlockEverything(t *testing.T) {
 
 // TestValidatePlanAcceptsThePTBRTitle: a VALIDATION.md whose section is
 // titled "## Camadas de teste" is planned like the English one, and a file
-// with neither title is BLOCKED with the missing-section problem.
+// with no layer declaration is BLOCKED with the missing-section problem.
 func TestValidatePlanAcceptsThePTBRTitle(t *testing.T) {
 	env, cwd := commandFixture(t)
 	writeValidationMD(t, cwd, strings.Replace(validateSentinelMD, "## Test layers", "## Camadas de teste", 1))
@@ -369,6 +369,14 @@ func TestValidatePlanAcceptsThePTBRTitle(t *testing.T) {
 		t.Fatalf("pt-BR title: the plan does not name the unit command in:\n%s", out)
 	}
 	writeValidationMD(t, cwd, strings.Replace(validateSentinelMD, "## Test layers", "## Camadas", 1))
+	code, out, errOut = runIn(t, []string{"validate", "--plan"}, env, cwd)
+	if code != 0 || errOut != "" || !hasLinePrefix(out, "unit: run touch sentinel") {
+		t.Fatalf("fallback title: code=%d err=%q out=%s", code, errOut, out)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, "sentinel")); !os.IsNotExist(err) {
+		t.Fatalf("plan ran a command (sentinel exists, err=%v)", err)
+	}
+	writeValidationMD(t, cwd, "## Camadas\n- note: remember to test\n")
 	code, out, _ = runIn(t, []string{"validate", "--plan"}, env, cwd)
 	if code != 5 || !strings.Contains(out, `VALIDATION.md has no "## Test layers" section`) {
 		t.Fatalf("neither title: code=%d out=%s", code, out)

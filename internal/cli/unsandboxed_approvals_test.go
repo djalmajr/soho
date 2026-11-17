@@ -158,11 +158,9 @@ func TestDoctorUnsandboxedApprovals(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 			}
-			for _, key := range keys {
-				want := "warn   config: " + key + "=unsandboxed; workers run without a sandbox by the owner's choice"
-				if strings.Contains(out, want) != (value == "unsandboxed") {
-					t.Fatalf("key=%s value=%s out=%s", key, value, out)
-				}
+			want := "warn   config: approvals, lane.build.approvals, role.scouter.approvals=unsandboxed; workers run without a sandbox by the owner's choice"
+			if strings.Count(out, want) != map[bool]int{true: 1, false: 0}[value == "unsandboxed"] || strings.Count(out, "workers run without a sandbox by the owner's choice") != map[bool]int{true: 1, false: 0}[value == "unsandboxed"] {
+				t.Fatalf("value=%s out=%s", value, out)
 			}
 			// The effective environment value must replace the file's value.
 			for _, key := range []string{"SOHO_APPROVALS", "SOHO_ROLE_SCOUTER_APPROVALS", "SOHO_LANE_BUILD_APPROVALS"} {
@@ -178,6 +176,15 @@ func TestDoctorUnsandboxedApprovals(t *testing.T) {
 			}
 		})
 	}
+	t.Run("one key", func(t *testing.T) {
+		env, cwd := tm6CLIEnv(t)
+		tm6Write(t, filepath.Join(cwd, ".agents", "soho.conf"), "lane.build.approvals=unsandboxed\n")
+		code, out, stderr := runIn(t, []string{"doctor"}, env, cwd)
+		want := "warn   config: lane.build.approvals=unsandboxed; workers run without a sandbox by the owner's choice"
+		if code != 0 || strings.Count(out, want) != 1 || strings.Count(out, "workers run without a sandbox by the owner's choice") != 1 {
+			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+		}
+	})
 }
 
 func TestDispatchUnsandboxedRosterApprovals(t *testing.T) {

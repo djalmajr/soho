@@ -447,3 +447,23 @@ func TestParseSectionTitles(t *testing.T) {
 		}
 	})
 }
+
+func TestFallbackRequiresValidRequiredLayer(t *testing.T) {
+	for _, line := range []string{"- note: `command`", "- unit: arbitrary", "- unit: n/a:", "- unit: manual:", "- unit: ``"} {
+		if doc := Parse("## Notes\n" + line + "\n"); doc.HasLayers {
+			t.Errorf("%q selected section: %+v", line, doc)
+		}
+	}
+	for _, name := range RequiredLayers {
+		for _, value := range []string{"`command`", "n/a: reason", "manual: procedure"} {
+			doc := Parse("## Translated\n- " + name + ": " + value + "\n- custom: `check`\n")
+			if !doc.HasLayers || len(doc.Layers) != 2 {
+				t.Errorf("%s %s: %+v", name, value, doc)
+			}
+		}
+	}
+	doc := Parse("## Notes\n- unit: `earlier`\n## 2. Test layers\n- unit: `later`\n")
+	if len(doc.Layers) != 1 || doc.Layers[0].Value != "later" {
+		t.Fatalf("recognized title did not win: %+v", doc)
+	}
+}
