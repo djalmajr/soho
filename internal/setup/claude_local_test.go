@@ -258,6 +258,32 @@ func TestSetupClaudeLocalMigration(t *testing.T) {
 	}
 }
 
+func TestTrackedLocalDestinationPreservesSharedHooks(t *testing.T) {
+	for _, mode := range []string{"--plan", "--dry-run", ""} {
+		t.Run(mode, func(t *testing.T) {
+			root, env, ctx := tm5LocalFixture(t)
+			shared := *setuptext.SettingsHooksResult(nil)
+			writeLocalSetupFixtureFile(t, root, ".claude/settings.json", shared)
+			writeLocalSetupFixtureFile(t, root, claudeLocalHookRel, "{}")
+			cmd := exec.Command("git", "-C", root, "add", claudeLocalHookRel)
+			cmd.Env = env.List()
+			if b, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git add: %s %v", b, err)
+			}
+			args := []string{"--local"}
+			if mode != "" {
+				args = append(args, mode)
+			}
+			code, out, msg := runSetupWrite(args, ctx, env, root)
+			got := mustReadFile(t, filepath.Join(root, ".claude/settings.json"))
+			local := mustReadFile(t, filepath.Join(root, claudeLocalHookRel))
+			if code != 0 || got != shared || local != "{}" || !strings.Contains(got, setuptext.SetupHookReminder()) || !strings.Contains(got, setuptext.SetupHookDoctor()) || !strings.Contains(out, "shared .claude/settings.json keeps its soho hooks because the local destination was left untouched: it is tracked") || strings.Contains(out, "would remove "+filepath.Join(root, ".claude/settings.json")) {
+				t.Fatalf("mode=%s code=%d out=%s msg=%s shared=%q local=%q", mode, code, out, msg, got, local)
+			}
+		})
+	}
+}
+
 func TestSetupClaudeLocalPreviewAndValidation(t *testing.T) {
 	for _, mode := range []string{"--plan", "--dry-run"} {
 		t.Run(mode, func(t *testing.T) {

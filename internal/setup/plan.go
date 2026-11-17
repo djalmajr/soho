@@ -242,6 +242,10 @@ func writePair(raw, key, value string) string {
 
 // CmdPlan simulates config/session writes in memory and emits the instruction/hook diffs; it never mutates the checkout.
 func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
+	cmdPlan(args, ctx, env, cwd, &setupTracking{})
+}
+
+func cmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string, cache *setupTracking) {
 	// The plan shows what the migration would move, without moving it.
 	// Inside the skill the previews never run: they would call herdr, and
 	// the plan's own writes keep the refusal that follows.
@@ -320,7 +324,7 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	var localPlan *localExcludePlan
 	if modeLocal {
 		refuseUnignorableStateDir(root, ctx, env, cwd, "setup --plan", false)
-		refuseTrackedLocal(root, env, "setup --plan")
+		refuseTrackedLocal(root, env, "setup --plan", cache)
 		localPlan = planLocalExcludes(root, ctx, env, cwd, "setup --plan")
 	}
 	if target == "" && modeLocal {
@@ -395,7 +399,7 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	var instrBefore *string
 	instrBefore = readOrRefuse(target, true)
 	instrAfter := setuptext.SetupBlockResult(instrBefore)
-	if instrAfter == nil {
+	if instrAfter == nil && !(modeLocal && protectedLocalFile(root, localInstructionFile, env, cache)) {
 		platform.DieFriction(fmt.Sprintf("setup --plan: %s has an unpaired soho marker (setup would refuse it and leave the file untouched)", target), 4)
 	}
 	settingsFile := claudeSettingsPath(root, modeLocal)
@@ -411,7 +415,7 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		if guard {
 			settingsAfter = setuptext.SettingsHooksGuardedResult(settingsBefore)
 		}
-		if settingsAfter == nil {
+		if settingsAfter == nil && !(modeLocal && protectedLocalFile(root, claudeLocalHookRel, env, cache)) {
 			settingsFailed = true
 		} else if !modeLocal {
 			settingsAfter, settingsNote = canonicalClaudeHooks(root, settingsBefore, true, guard)
@@ -424,10 +428,20 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 		_, _ = io.WriteString(platform.Stdout, section.file+"\n"+planConfigDiff(readOrEmpty(section.file), sectionAfter[i])+"\n")
 	}
-	if instrBefore != nil && *instrBefore == *instrAfter {
+	if !modeLocal {
+		warnTrackedCanonical(root, target, env, instrBefore, instrAfter, cache)
+	}
+	_, trackedNote := trackedClaudeBlock(root, env, cache)
+	if modeLocal && trackedNote != "" {
+		fmt.Fprintln(platform.Stdout, trackedNote)
+	} else if modeLocal && trackedLocalChange(root, localInstructionFile, env, instrBefore, instrAfter, cache) {
+	} else if instrBefore != nil && *instrBefore == *instrAfter {
 		fmt.Fprintf(platform.Stdout, "# no change: %s\n", target)
 	} else {
 		_, _ = io.WriteString(platform.Stdout, planFileDiff(target, stringValue(instrBefore), *instrAfter))
+	}
+	if hooks && !modeLocal {
+		warnTrackedCanonical(root, settingsFile, env, settingsBefore, settingsAfter, cache)
 	}
 	if settingsFailed {
 		platform.DieFriction("setup --plan: could not merge hooks into "+settingsFile+" (setup would refuse it and leave the file untouched)", 4)
@@ -436,17 +450,22 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		if settingsNote != "" {
 			_, _ = fmt.Fprintln(platform.Stdout, settingsNote)
 		}
+		skippedLocalHooks := false
 		if settingsNote == "" || (settingsAfter != nil && (settingsBefore == nil || *settingsAfter != *settingsBefore)) {
-			if settingsBefore != nil && *settingsBefore == *settingsAfter {
+			if modeLocal && trackedLocalChange(root, claudeLocalHookRel, env, settingsBefore, settingsAfter, cache) {
+				skippedLocalHooks = true
+			} else if settingsBefore != nil && *settingsBefore == *settingsAfter {
 				fmt.Fprintf(platform.Stdout, "# no change: %s\n", settingsFile)
 			} else {
 				_, _ = io.WriteString(platform.Stdout, planFileDiff(settingsFile, stringValue(settingsBefore), *settingsAfter))
 			}
 		}
-		if modeLocal {
+		if modeLocal && skippedLocalHooks {
+			printSharedHooksDestinationSkipped(root, env, cache)
+		} else if modeLocal {
 			shared, after := sharedHooksMigration(root)
 			if after != nil {
-				if warning := sharedHooksTrackingWarning(trackingStatus(root, ".claude/settings.json", env)); warning != "" {
+				if warning := sharedHooksTrackingWarning(cache.status(root, ".claude/settings.json", env)); warning != "" {
 					_, _ = io.WriteString(platform.Stdout, "# "+warning+"\n")
 				} else if sharedHooksMigrationEmpties(after) {
 					_, _ = io.WriteString(platform.Stdout, "# would remove "+shared+" (it holds only soho-managed hooks)\n")
@@ -479,7 +498,9 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 					return
 				}
 				before := readOrEmpty(file)
-				_, _ = io.WriteString(platform.Stdout, planFileDiff(file, before, core.GitignoreAfter(before, rel)))
+				after := core.GitignoreAfter(before, rel)
+				warnTrackedCanonical(root, file, env, &before, &after, cache)
+				_, _ = io.WriteString(platform.Stdout, planFileDiff(file, before, after))
 			}
 		}
 	}

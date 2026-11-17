@@ -502,6 +502,8 @@ soho setup --no-hooks           # instruction block only
 
 ### What each assistant gets
 
+`setup --local` leaves tracked managed files unchanged; refresh them with `soho setup` on a work branch.
+
 `setup` generates exactly this. Do not add other soho hooks by hand.
 
 | Assistant | File | Event | Command | What it does |
