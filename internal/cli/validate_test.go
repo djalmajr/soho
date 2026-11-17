@@ -1573,6 +1573,62 @@ func TestValidateManualSelectionAndCovered(t *testing.T) {
 	}
 }
 
+func TestValidatePlanMatchesCoveredExecution(t *testing.T) {
+	requireSh(t)
+	env, cwd := commandFixture(t)
+	writeValidationMD(t, cwd, "## Test layers\n- integration: covered: unit\n- unit: `echo unit >> ran`\n- contract: `echo contract >> ran`\n- e2e: covered: contract\n- mutation: n/a: none\n")
+	args := []string{"validate", "--layer", "integration"}
+	code, textPlan, errOut := runIn(t, append(append([]string{}, args...), "--plan"), env, cwd)
+	if code != 0 || errOut != "" || !strings.Contains(textPlan, "unit: run echo unit >> ran (runs for integration)") || !strings.Contains(textPlan, "e2e: not selected") {
+		t.Fatalf("text plan code=%d stderr=%q out=%s", code, errOut, textPlan)
+	}
+	code, jsonPlan, errOut := runIn(t, append(append([]string{}, args...), "--plan", "--json"), env, cwd)
+	if code != 0 || errOut != "" {
+		t.Fatalf("json plan code=%d stderr=%q out=%s", code, errOut, jsonPlan)
+	}
+	var plan struct {
+		Layers []struct {
+			Name    string   `json:"name"`
+			Kind    string   `json:"kind"`
+			Reason  string   `json:"reason"`
+			RunsFor []string `json:"runs_for"`
+		} `json:"layers"`
+	}
+	if err := json.Unmarshal([]byte(jsonPlan), &plan); err != nil {
+		t.Fatal(err)
+	}
+	planned := map[string]bool{}
+	for _, l := range plan.Layers {
+		if l.Kind == "command" && l.Reason != "not selected" {
+			planned[l.Name] = true
+		}
+		if l.Name == "unit" && (l.Reason != "echo unit >> ran" || len(l.RunsFor) != 1 || l.RunsFor[0] != "integration") {
+			t.Fatalf("unit plan: %+v", l)
+		}
+		if l.Name == "e2e" && l.Reason != "not selected" {
+			t.Fatalf("unselected coverage: %+v", l)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(cwd, "ran")); !os.IsNotExist(err) {
+		t.Fatalf("plan ran command: %v", err)
+	}
+	code, out, errOut := runIn(t, args, env, cwd)
+	if code != 0 || errOut != "" {
+		t.Fatalf("run code=%d stderr=%q out=%s", code, errOut, out)
+	}
+	raw, err := os.ReadFile(filepath.Join(cwd, "ran"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := map[string]bool{}
+	for _, name := range strings.Fields(string(raw)) {
+		ran[name] = true
+	}
+	if len(planned) != len(ran) || !planned["unit"] || !ran["unit"] || planned["contract"] || ran["contract"] {
+		t.Fatalf("planned=%v ran=%v", planned, ran)
+	}
+}
+
 func TestValidateManualWithCommand(t *testing.T) {
 	requireSh(t)
 	for _, tc := range []struct {

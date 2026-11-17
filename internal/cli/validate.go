@@ -91,13 +91,14 @@ type validateJSON struct {
 }
 
 type validateLayer struct {
-	Name       string  `json:"name"`
-	Kind       string  `json:"kind"`
-	Result     string  `json:"result"`
-	Reason     string  `json:"reason"`
-	Exit       *int    `json:"exit"`
-	DurationMs int64   `json:"duration_ms"`
-	Log        *string `json:"log"`
+	Name       string   `json:"name"`
+	Kind       string   `json:"kind"`
+	Result     string   `json:"result"`
+	Reason     string   `json:"reason"`
+	Exit       *int     `json:"exit"`
+	DurationMs int64    `json:"duration_ms"`
+	Log        *string  `json:"log"`
+	RunsFor    []string `json:"runs_for,omitempty"`
 }
 
 // validateLayerResult is one layer's outcome of a run.
@@ -171,11 +172,6 @@ func doValidate(args []string, ctx *core.Config, env platform.Env, cwd string, w
 			selected[name] = true
 		}
 	}
-	if plan {
-		// --plan prints what each layer would do and runs nothing: no
-		// evidence directory, no git, no command.
-		return emitValidatePlan(w, asJSON, check.Doc.Layers, selected)
-	}
 	// Selecting an alias runs its covering command, without selecting the
 	// covering layer for the overall calculation.
 	runSelected := make(map[string]bool, len(selected))
@@ -186,6 +182,7 @@ func doValidate(args []string, ctx *core.Config, env platform.Env, cwd string, w
 	for _, l := range check.Doc.Layers {
 		byName[l.Name] = l
 	}
+	runsFor := make(map[string][]string)
 	for _, l := range check.Doc.Layers {
 		if selected[l.Name] && l.Kind == "covered" {
 			target := byName[l.Value]
@@ -193,7 +190,13 @@ func doValidate(args []string, ctx *core.Config, env platform.Env, cwd string, w
 				target = byName[target.Value]
 			}
 			runSelected[target.Name] = true
+			if !selected[target.Name] {
+				runsFor[target.Name] = append(runsFor[target.Name], l.Name)
+			}
 		}
+	}
+	if plan {
+		return emitValidatePlan(w, asJSON, check.Doc.Layers, selected, runSelected, runsFor)
 	}
 	evidenceDir, reason := createValidateEvidenceDir(ctx, env, cwd)
 	if reason != "" {
@@ -683,14 +686,14 @@ func emitValidateBlocked(w io.Writer, asJSON bool, problems []string) int {
 // emitValidatePlan prints the plan (decision 12): validation: plan and,
 // per layer, what it would do, with the command. It runs nothing and
 // writes nothing.
-func emitValidatePlan(w io.Writer, asJSON bool, layers []validation.Layer, selected map[string]bool) int {
+func emitValidatePlan(w io.Writer, asJSON bool, layers []validation.Layer, selected, runSelected map[string]bool, runsFor map[string][]string) int {
 	if asJSON {
 		doc := validateJSON{Overall: validateResultPlan, Problems: []string{}, Layers: make([]validateLayer, 0, len(layers))}
 		for _, l := range layers {
 			reason := ""
 			switch l.Kind {
 			case "command":
-				if selected[l.Name] {
+				if runSelected[l.Name] {
 					reason = printable(l.Value)
 					if l.Note != "" {
 						reason += " — " + printable(l.Note)
@@ -701,9 +704,13 @@ func emitValidatePlan(w io.Writer, asJSON bool, layers []validation.Layer, selec
 			case "manual":
 				reason = "manual"
 			case "covered":
-				reason = "covered by " + printable(l.Value)
+				if selected[l.Name] {
+					reason = "covered by " + printable(l.Value)
+				} else {
+					reason = "not selected"
+				}
 			}
-			doc.Layers = append(doc.Layers, validateLayer{Name: printable(l.Name), Kind: l.Kind, Result: validateResultPlan, Reason: reason})
+			doc.Layers = append(doc.Layers, validateLayer{Name: printable(l.Name), Kind: l.Kind, Result: validateResultPlan, Reason: reason, RunsFor: runsFor[l.Name]})
 		}
 		_, _ = w.Write(marshalValidate(doc))
 	} else {
@@ -715,10 +722,17 @@ func emitValidatePlan(w io.Writer, asJSON bool, layers []validation.Layer, selec
 			case "manual":
 				fmt.Fprintf(w, "%s: manual: %s\n", printable(l.Name), printable(l.Value))
 			case "covered":
-				fmt.Fprintf(w, "%s: covered by %s\n", printable(l.Name), printable(l.Value))
-			case "command":
 				if selected[l.Name] {
+					fmt.Fprintf(w, "%s: covered by %s\n", printable(l.Name), printable(l.Value))
+				} else {
+					fmt.Fprintf(w, "%s: not selected\n", printable(l.Name))
+				}
+			case "command":
+				if runSelected[l.Name] {
 					fmt.Fprintf(w, "%s: run %s", printable(l.Name), printable(l.Value))
+					if names := runsFor[l.Name]; len(names) > 0 {
+						fmt.Fprintf(w, " (runs for %s)", printable(strings.Join(names, ", ")))
+					}
 					if l.Note != "" {
 						fmt.Fprintf(w, " — %s", printable(l.Note))
 					}
