@@ -299,10 +299,10 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 		}
 		fixed = selected
 	}
-	capacityEnv := env
-	if where == "user" {
-		capacityEnv = platform.Env{}
-	}
+	// The repaired limit describes the destination file alone: transient
+	// overrides (SOHO_PANES, SOHO_LANE_*_PANES) never leak into it, for the
+	// user, project and session destinations alike.
+	capacityEnv := platform.Env{}
 	sum := core.AlwaysOpenLaneCapacitySum(&fixed, capacityEnv)
 	if core.PaneMode(&fixed, capacityEnv) == "flex" {
 		sum += core.FlexExtra(&fixed, capacityEnv)

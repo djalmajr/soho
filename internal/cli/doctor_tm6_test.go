@@ -176,6 +176,19 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 			t.Fatalf("code=%d out=%q stderr=%q user=%q err=%v", code, out, stderr, data, err)
 		}
 	})
+	t.Run("project fix ignores transient pane overrides", func(t *testing.T) {
+		// R492: SOHO_PANES=2 must not cap a four-pane project file at one worker.
+		env, cwd := tm6CLIEnv(t)
+		conf := filepath.Join(cwd, ".agents", "soho.conf")
+		tm6Write(t, conf, "panes=4\nmax_workers=9\n")
+		env["SOHO_PANES"] = "2"
+		env["SOHO_LANE_BUILD_PANES"] = "1"
+		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--panes", "4"}, env, cwd)
+		data, err := os.ReadFile(conf)
+		if err != nil || code != 0 || !strings.Contains(string(data), "max_workers=3\n") {
+			t.Fatalf("code=%d out=%q stderr=%q conf=%q err=%v", code, out, stderr, data, err)
+		}
+	})
 	t.Run("new user layout removes frozen cap", func(t *testing.T) {
 		env, cwd := tm6CLIEnv(t)
 		user := filepath.Join(env.Get("XDG_CONFIG_HOME"), "soho", "config")
