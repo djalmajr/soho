@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -280,12 +281,13 @@ func TestGcStopsOrphansOnlyWithTheFlag(t *testing.T) {
 			t.Fatalf("process %d (%s) was stopped; a young orphan, the scratch, the root and a worktree are never stopped", proc.Pid, proc.Cwd)
 		}
 	}
+	// A PID is matched as a whole number: 728 must not match inside 8728.
 	for _, proc := range []platform.OrphanProc{inScratch, inRoot, inTree} {
-		if strings.Contains(out, strconv.Itoa(proc.Pid)) {
+		if printsPid(out, proc.Pid) {
 			t.Fatalf("output = %q; non-stoppable process %d must not be printed", out, proc.Pid)
 		}
 	}
-	if strings.Contains(out, "listed only") || strings.Contains(out, "nothing to remove") || strings.Contains(out, strconv.Itoa(young.Pid)) {
+	if strings.Contains(out, "listed only") || strings.Contains(out, "nothing to remove") || printsPid(out, young.Pid) {
 		t.Fatalf("output = %q; the young orphan is not listed and the stops are not nothing", out)
 	}
 }
@@ -480,5 +482,30 @@ func TestGcDashRowOrphanByPane(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// printsPid reports whether out names pid as a whole number, not as part of
+// a longer one.
+func printsPid(out string, pid int) bool {
+	return regexp.MustCompile(`(^|[^0-9])` + strconv.Itoa(pid) + `([^0-9]|$)`).MatchString(out)
+}
+
+// TestPrintsPidWholeNumber pins the Windows CI flake of 17/11: PID 728 was
+// "found" inside "stopped process 8728".
+func TestPrintsPidWholeNumber(t *testing.T) {
+	for _, c := range []struct {
+		out  string
+		pid  int
+		want bool
+	}{
+		{"stopped process 8728 (sleep.exe)\n", 728, false},
+		{"stopped process 7280 (sleep.exe)\n", 728, false},
+		{"stopped process 728 (sleep.exe)\n", 728, true},
+		{"728", 728, true},
+	} {
+		if got := printsPid(c.out, c.pid); got != c.want {
+			t.Fatalf("printsPid(%q, %d) = %v, want %v", c.out, c.pid, got, c.want)
+		}
 	}
 }
