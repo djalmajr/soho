@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/gittree"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -151,6 +152,51 @@ func TestBaselineDirtyGitlinkChangesCommit(t *testing.T) {
 	value, _, _ := f.wait(t)
 	if !reflect.DeepEqual(value["outside_owned"], []any{"module"}) {
 		t.Fatalf("gitlink change missing: %v", value)
+	}
+}
+
+func TestBaselineDirtyGitlinkRootMtime(t *testing.T) {
+	for _, touch := range []bool{false, true} {
+		name := "untouched"
+		if touch {
+			name = "new root file"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newDiffFixture(t, "# Owned files\n- src/\n", "## Files changed\n- `src/b.go`\n", "implementer")
+			sub := filepath.Join(filepath.Dir(f.tree), "sub source")
+			if err := os.MkdirAll(sub, 0700); err != nil {
+				t.Fatal(err)
+			}
+			diffFixtureGit(t, f, "init", sub)
+			diffWrite(t, filepath.Join(sub, "file"), "one\n")
+			diffFixtureGit(t, f, "-C", sub, "add", "file")
+			diffFixtureGit(t, f, "-C", sub, "commit", "-m", "one")
+			diffWrite(t, filepath.Join(sub, "file"), "two\n")
+			diffFixtureGit(t, f, "-C", sub, "commit", "-am", "two")
+			a := diffFixtureGit(t, f, "-C", sub, "rev-parse", "HEAD")
+			diffFixtureGit(t, f, "-C", sub, "checkout", "--detach", "HEAD~1")
+			diffFixtureGit(t, f, "-c", "protocol.file.allow=always", "submodule", "add", sub, "module")
+			diffFixtureGit(t, f, "commit", "-am", "add module")
+			module := filepath.Join(f.tree, "module")
+			diffFixtureGit(t, f, "-C", module, "checkout", "--detach", a)
+			diffWrite(t, filepath.Join(module, "file"), "already dirty\n")
+			old := time.Unix(1700000000, 0)
+			if err := os.Chtimes(module, old, old); err != nil {
+				t.Fatal(err)
+			}
+			gittree.Preserve(f.sidecar, gittree.Snapshot(f.env, f.tree))
+			if touch {
+				diffWrite(t, filepath.Join(module, "new"), "worker\n")
+			}
+			diffWrite(t, filepath.Join(f.tree, "src/b.go"), "worker\n")
+			value, _, _ := f.wait(t)
+			if touch && !reflect.DeepEqual(value["outside_owned"], []any{"module"}) {
+				t.Fatalf("new root file missing: %v", value)
+			}
+			if !touch && value["outside_owned"] != nil {
+				t.Fatalf("untouched gitlink reported: %v", value)
+			}
+		})
 	}
 }
 

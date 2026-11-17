@@ -126,7 +126,7 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 			return true
 		}
 		now, ok := contentHashForGit(env, tree, root, name)
-		return !ok || !sameFingerprint(before, now)
+		return !ok || !sameFingerprint(before, now) || strings.HasPrefix(now, "gitlink:") && diffModifiedAfter(root, name, dispatched)
 	}
 	tracked, fresh := []string{}, []string{}
 	for _, record := range strings.Split(names, "\x00") {
@@ -155,7 +155,7 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 			}
 			before, _ := snapshot.Get(name)
 			now, ok := contentHashForGit(env, tree, root, name)
-			if !ok || !sameFingerprint(before, now) {
+			if !ok || !sameFingerprint(before, now) || strings.HasPrefix(now, "gitlink:") && diffModifiedAfter(root, name, dispatched) {
 				changed[name] = true
 				snapshotOnly = append(snapshotOnly, name)
 			}
