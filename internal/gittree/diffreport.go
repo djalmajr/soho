@@ -42,6 +42,8 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 	if !scopeOK {
 		return nil
 	}
+	// An unreadable optional scope cannot suppress the existing Owned audit.
+	orchestrator, _, _ := diffEffectiveSectionRead(sidecar, agent, o, commandOwnedSeams(), "orchestrator files")
 	marker, err := os.OpenFile(sidecar+".diff-checked", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil
@@ -149,6 +151,14 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 				}
 			}
 			if !covered {
+				for _, pattern := range orchestrator {
+					if diffOwnedCover(pattern, file, freshSet) {
+						covered = true
+						break
+					}
+				}
+			}
+			if !covered {
 				outside = append(outside, file)
 			}
 		}
@@ -223,13 +233,17 @@ func diffEffectiveOwned(sidecar, agent string, o *jsonjs.Object) ([]string, bool
 // identity, the history order and the owned-files decision are one
 // algorithm.
 func diffEffectiveOwnedRead(sidecar, agent string, o *jsonjs.Object, seams ownedReadSeams) ([]string, bool, bool) {
+	return diffEffectiveSectionRead(sidecar, agent, o, seams, "owned files")
+}
+
+func diffEffectiveSectionRead(sidecar, agent string, o *jsonjs.Object, seams ownedReadSeams, section string) ([]string, bool, bool) {
 	tree, _ := stringField(o, "git_tree")
 	goos := platform.Current()
 	text, err := diffComposedBriefRead(sidecar, seams.brief)
 	if err != nil {
 		return nil, false, false
 	}
-	if owned, found := diffOwned(text, tree, goos); found {
+	if owned, found := diffSection(text, tree, goos, section); found {
 		return owned, true, true
 	}
 	task, _ := stringField(o, "task_report")
@@ -323,7 +337,7 @@ func diffEffectiveOwnedRead(sidecar, agent string, o *jsonjs.Object, seams owned
 						if budgetExceeded {
 							return nil, false, false
 						}
-						if owned, found := diffOwned(text, tree, goos); found {
+						if owned, found := diffSection(text, tree, goos, section); found {
 							return owned, true, true
 						}
 					}
@@ -341,7 +355,7 @@ func diffEffectiveOwnedRead(sidecar, agent string, o *jsonjs.Object, seams owned
 			}
 			return nil, false, false
 		}
-		if owned, found := diffOwned(text, tree, goos); found {
+		if owned, found := diffSection(text, tree, goos, section); found {
 			return owned, true, true
 		}
 	}
@@ -740,6 +754,10 @@ func OwnedEntryIsFolder(entry, goos string) bool {
 const diffOwnedRootPattern = "."
 
 func diffOwned(text, tree, goos string) ([]string, bool) {
+	return diffSection(text, tree, goos, "owned files")
+}
+
+func diffSection(text, tree, goos, section string) ([]string, bool) {
 	lines := diffMarkdown(text)
 	// A composed role may itself contain headings. Only its brief is scope.
 	for i, line := range lines {
@@ -757,7 +775,7 @@ func diffOwned(text, tree, goos string) ([]string, bool) {
 			if ownedLevel > 0 && level <= ownedLevel {
 				ownedLevel = 0
 			}
-			if title == "owned files" {
+			if title == section {
 				found, ownedLevel = true, level
 			}
 			continue
