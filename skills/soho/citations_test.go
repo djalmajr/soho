@@ -132,7 +132,7 @@ func checkCitations(root, doc string, report func(string, ...any)) {
 				}
 			}
 			if len(symbols) == 0 {
-				if doc == "docs/formal/README.md" {
+				if doc == "docs/formal/README.md" || doc == "skills/soho/references/feature-map.md" {
 					report("%s: %s:%s: missing symbol", doc, path, ranges)
 				}
 				continue
