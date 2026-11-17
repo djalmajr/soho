@@ -549,8 +549,13 @@ func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []s
 	// An ordinary setup keeps an existing guarded line: when any synchronous
 	// entry of the event already holds the guarded form, that form is the
 	// line, wherever it sits among the recognized entries (SOH-337).
-	if !guard && codexRowsHold(rows, guardHook(newCommand)) {
-		newCommand, guard = guardHook(newCommand), true
+	guardedCommand := newCommand
+	if !guard {
+		guardedCommand = guardHook(newCommand)
+	}
+	preferGuard := codexRowsHold(rows, guardedCommand)
+	if preferGuard {
+		newCommand, guard = guardedCommand, true
 	}
 	recognized := append([]string{newCommand}, recognizedOld...)
 	kept, placed := make([]json.RawMessage, 0, len(rows)+1), false
@@ -580,7 +585,7 @@ func codexMergeRows(rows []json.RawMessage, newCommand string, recognizedOld []s
 				filtered = append(filtered, entry)
 				continue
 			}
-			if placed {
+			if placed || (preferGuard && !codexSohoEntry(entry, []string{newCommand})) {
 				changed = true
 				continue
 			}
@@ -961,6 +966,7 @@ func putHook(hooks *jsonjs.Object, event, command string, recognized []string, g
 	}
 	// Keep the existing placement and metadata of a native or guarded hook.
 	preserve := false
+	guardedPresent := false
 	for _, entry := range entries {
 		row, ok := entry.(*jsonjs.Object)
 		if !ok {
@@ -974,6 +980,9 @@ func putHook(hooks *jsonjs.Object, event, command string, recognized []string, g
 				continue
 			}
 			c, _ := h.Get("command")
+			if c == GuardedHookReminder() || c == GuardedHookDoctor() {
+				guardedPresent = true
+			}
 			if c == GuardedHookReminder() || c == GuardedHookDoctor() || c == SetupHookReminder() || c == SetupHookDoctor() {
 				preserve = true
 			}
@@ -1027,7 +1036,7 @@ func putHook(hooks *jsonjs.Object, event, command string, recognized []string, g
 				continue
 			}
 			changed = true
-			if !placed && ((preserve && (text == GuardedHookReminder() || text == GuardedHookDoctor() || (text == SetupHookReminder() || text == SetupHookDoctor()))) || (text != SetupHookReminder() && text != SetupHookDoctor() && (HookCommandMatches(text, SetupHookReminder()) || HookCommandMatches(text, SetupHookDoctor())))) {
+			if !placed && (!guardedPresent || (text == GuardedHookReminder() || text == GuardedHookDoctor())) && ((preserve && (text == GuardedHookReminder() || text == GuardedHookDoctor() || (text == SetupHookReminder() || text == SetupHookDoctor()))) || (text != SetupHookReminder() && text != SetupHookDoctor() && (HookCommandMatches(text, SetupHookReminder()) || HookCommandMatches(text, SetupHookDoctor())))) {
 				if guard || (text != GuardedHookReminder() && text != GuardedHookDoctor()) {
 					h.Set("command", command)
 				}

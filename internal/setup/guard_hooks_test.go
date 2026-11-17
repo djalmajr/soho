@@ -512,3 +512,80 @@ func TestR470GuardedMetadataIdempotence(t *testing.T) {
 		}
 	}
 }
+
+func TestMixedHooksRetainGuardAndMetadata(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		for _, event := range []string{"UserPromptSubmit", "SessionStart"} {
+			for _, guardFirst := range []bool{false, true} {
+				t.Run(provider+"/"+event+map[bool]string{false: "/plain-first", true: "/guard-first"}[guardFirst], func(t *testing.T) {
+					root, env, ctx := setupWriteFixture(t)
+					plain, guarded := setuptext.SetupHookReminder(), setuptext.GuardedHookReminder()
+					if event == "SessionStart" {
+						plain, guarded = setuptext.SetupHookDoctor(), setuptext.GuardedHookDoctor()
+					}
+					path := ".claude/settings.json"
+					if provider == "codex" {
+						path = ".codex/hooks.json"
+						plain, guarded = setuptext.SetupHookCodexReminder(), setuptext.GuardedHookCodexReminder()
+						if event == "SessionStart" {
+							plain, guarded = setuptext.SetupHookCodexDoctor(), setuptext.GuardedHookCodexDoctor()
+						}
+					}
+					rows := []any{map[string]any{"matcher": "plain-row", "hooks": []any{map[string]any{"type": "command", "command": plain, "marker": "plain"}}}, map[string]any{"matcher": "guard-row", "hooks": []any{map[string]any{"type": "command", "command": guarded, "marker": "guard"}}}}
+					if guardFirst {
+						rows[0], rows[1] = rows[1], rows[0]
+					}
+					body, err := json.Marshal(map[string]any{"hooks": map[string]any{event: rows}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					file := filepath.Join(root, path)
+					if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(file, body, 0600); err != nil {
+						t.Fatal(err)
+					}
+					if rc, out, msg := runSetupWrite(nil, ctx, env, root); rc != 0 {
+						t.Fatalf("setup=%d %s %s", rc, out, msg)
+					}
+					raw, err := os.ReadFile(file)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var doc struct {
+						Hooks map[string][]struct {
+							Matcher string           `json:"matcher"`
+							Hooks   []map[string]any `json:"hooks"`
+						} `json:"hooks"`
+					}
+					if err := json.Unmarshal(raw, &doc); err != nil {
+						t.Fatal(err)
+					}
+					got := doc.Hooks[event]
+					if len(got) != 1 || got[0].Matcher != "guard-row" || len(got[0].Hooks) != 1 || got[0].Hooks[0]["command"] != guarded || got[0].Hooks[0]["marker"] != "guard" {
+						t.Fatalf("retained rows: %s", raw)
+					}
+					if runtime.GOOS != "windows" {
+						bin := t.TempDir()
+						if err := os.Symlink("/bin/sh", filepath.Join(bin, "sh")); err != nil {
+							t.Fatal(err)
+						}
+						cmd := exec.Command("/bin/sh", "-c", guarded)
+						cmd.Env = []string{"PATH=" + bin}
+						if out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {
+							t.Fatalf("without soho: %v %q", err, out)
+						}
+					}
+					if rc, out, msg := runSetupWrite(nil, ctx, env, root); rc != 0 {
+						t.Fatalf("repeat=%d %s %s", rc, out, msg)
+					}
+					again, err := os.ReadFile(file)
+					if err != nil || string(again) != string(raw) {
+						t.Fatalf("rerun changed %s: %v", path, err)
+					}
+				})
+			}
+		}
+	}
+}
