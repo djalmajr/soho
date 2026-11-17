@@ -8,6 +8,8 @@ func TestDeclaresOrchestratorAuthor(t *testing.T) {
 		"# Brief\nAuthor: orchestrator\n":    true,
 		"Author: `Orchestrator`\n":           true,
 		"Author:   orchestrator  \n":         true,
+		"Author: external\n":                 true,
+		"Author: `External`\n":               true,
 		"Author: implementer\n":              false,
 		"Author: orchestrator-2\n":           false,
 		"```\nAuthor: orchestrator\n```\n":   false,

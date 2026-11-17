@@ -14,3 +14,23 @@ func TestTestLayersFirstUnmarked(t *testing.T) {
 		t.Fatalf("clean section: %+v", clean)
 	}
 }
+
+func TestLayersPeriodAndRefusalReasons(t *testing.T) {
+	for _, tc := range []struct {
+		line, reason string
+		pass         int
+	}{
+		{"- gravito/go-vet: PASS.", "", 1},
+		{"- gravito/go-vet: PASS. [done]", "an item state does not belong on a layer line", 0},
+		{"- unit: PASSED", "unknown result word", 0},
+		{"- unit: PASS!", "unknown result word", 0},
+		{"- unit: FAIL:", "no reason after FAIL/NOT RUN/BLOCKED", 0},
+		{"- unit: NOT RUN", "no reason after FAIL/NOT RUN/BLOCKED", 0},
+		{"- unit: BLOCKED: ...", "no reason after FAIL/NOT RUN/BLOCKED", 0},
+	} {
+		got := TestLayers("## Test layers\n" + tc.line + "\n")
+		if got.Pass != tc.pass || got.FirstUnmarkedReason != tc.reason || (tc.pass == 0 && (got.Unmarked != 1 || got.FirstUnmarked != tc.line)) {
+			t.Errorf("%q: %+v", tc.line, got)
+		}
+	}
+}

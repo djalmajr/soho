@@ -82,7 +82,7 @@ func sameAuthorWorktree(left, right string) bool {
 // Worktree: line: it names the measurement the review would be lost from,
 // never a refusal.
 func reviewWorktreeMessage(briefPath string) string {
-	return fmt.Sprintf("brief %s has no Worktree: line: this review cannot be tied to its author, so 'soho stats --by author-model' will not count it; add 'Worktree: <absolute path>' here and in the implementer's brief, or 'Author: orchestrator' when the orchestrator wrote the code", briefPath)
+	return fmt.Sprintf("brief %s has no Worktree: line: this review cannot be tied to its author, so 'soho stats --by author-model' will not count it; add 'Worktree: <absolute path>' here and in the implementer's brief, or 'Author: orchestrator' when the orchestrator wrote the code or 'Author: external' for code from outside the team", briefPath)
 }
 
 // reviewAuthorWarning returns the once-per-dispatch advisory for a review
@@ -112,7 +112,7 @@ func reviewAuthorWarning(briefPath, role, sidecar string, ctx dispatchAuthorCont
 	if dispatch.SameRepository(ctx.env, tree, platform.ProjectRoot(ctx.env, ctx.cwd)) == dispatch.RepositoryDifferent {
 		return ""
 	}
-	return fmt.Sprintf("no author found for this review: no accepted edit-role brief declares Worktree: %s, so 'soho stats --by author-model' will not count it; when the orchestrator wrote the code, add 'Author: orchestrator' to the review brief", tree)
+	return fmt.Sprintf("no author found for this review: no accepted edit-role brief declares Worktree: %s, so 'soho stats --by author-model' will not count it; add 'Author: orchestrator' when the orchestrator wrote the code or 'Author: external' for code from outside the team to the review brief", tree)
 }
 
 // amendmentOriginalBriefLimit bounds the read of the original brief. A composed

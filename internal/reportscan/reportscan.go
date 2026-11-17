@@ -136,8 +136,9 @@ type TestLayersResult struct {
 	Unmarked int
 	// FirstUnmarked is the first list line of the section that has no
 	// result in the exact form, as written (trimmed), for the warning.
-	FirstUnmarked string
-	NonPass       []LayerResult
+	FirstUnmarked       string
+	FirstUnmarkedReason string
+	NonPass             []LayerResult
 }
 
 // TestLayers parses the report's ## Test layers section, outside fenced code
@@ -180,6 +181,7 @@ func TestLayers(text string) TestLayersResult {
 		if !parseLayerLine(trim, &out) {
 			if out.Unmarked == 0 {
 				out.FirstUnmarked = trim
+				out.FirstUnmarkedReason = layerRefusalReason(trim)
 			}
 			out.Unmarked++
 		}
@@ -207,6 +209,9 @@ func layerIsStructuralRow(trim string) bool {
 // numbered or table row is a list line without the form, and so is a layer
 // line whose result does not match the exact grammar.
 func parseLayerLine(trim string, out *TestLayersResult) bool {
+	if anyItemState.MatchString(lowerASCII(trim)) {
+		return false
+	}
 	m := layerBulletRE.FindStringIndex(trim)
 	if m == nil {
 		return false
@@ -251,7 +256,7 @@ func parseLayerLine(trim string, out *TestLayersResult) bool {
 // without a separator is not the form.
 func matchLayerResult(rest string) (result, reason string, ok bool) {
 	for _, candidate := range []string{"NOT RUN", "PASS", "FAIL", "BLOCKED", "n/a"} {
-		if rest == candidate {
+		if rest == candidate || rest == candidate+"." {
 			return candidate, "", true
 		}
 		for _, separator := range []string{": ", " — ", " – "} {
@@ -261,6 +266,36 @@ func matchLayerResult(rest string) (result, reason string, ok bool) {
 		}
 	}
 	return "", "", false
+}
+
+// layerRefusalReason diagnoses only recognizable invalid layer lines.
+func layerRefusalReason(line string) string {
+	if anyItemState.MatchString(lowerASCII(line)) {
+		return "an item state does not belong on a layer line"
+	}
+	m := layerBulletRE.FindStringIndex(line)
+	if m == nil {
+		return ""
+	}
+	body := strings.TrimSpace(line[m[1]:])
+	idx := strings.Index(body, ": ")
+	if idx <= 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(body[idx+2:])
+	result, reason, ok := matchLayerResult(rest)
+	if ok && (result == "FAIL" || result == "NOT RUN" || result == "BLOCKED") && !layerReasonOK(reason) {
+		return "no reason after FAIL/NOT RUN/BLOCKED"
+	}
+	if !ok {
+		for _, result := range []string{"FAIL", "NOT RUN", "BLOCKED"} {
+			if rest == result+":" {
+				return "no reason after FAIL/NOT RUN/BLOCKED"
+			}
+		}
+		return "unknown result word"
+	}
+	return ""
 }
 
 // layerReasonOK holds when the reason names something: at least one letter
