@@ -106,7 +106,10 @@ func TestDJA651ReviewStalledQueueRefusal(t *testing.T) {
 					rules = append(rules, fakecli.Rule{Argv: dja651ReviewVisible, Stdout: queue})
 					f := newFixture(t, rules)
 					dja651Isolate(f)
-					code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "1s", "hello"})
+					// Each route ends on its own once the queue or the refusal is
+					// read; the deadline only has to outlast a slow host (Windows
+					// CI missed the third screen read inside 1s, SOH-345).
+					code, out, stderr := f.run([]string{"send", "w0test:p0a", "--now", "--timeout", "15s", "hello"})
 					calls := dja651ReviewCalls(t, f)
 					pAt := dja651ReviewIndex(calls, []string{"agent", "prompt"}, 1)
 					qAt := dja651ReviewIndex(calls, dja651ReviewVisible, queueRead)
