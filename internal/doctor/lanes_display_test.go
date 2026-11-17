@@ -45,9 +45,9 @@ func TestDoctorUnlimitedOnDemandLane(t *testing.T) {
 
 func TestDoctorCapacityWarningNamesLayer(t *testing.T) {
 	for _, tc := range []struct{ source, fix string }{
-		{"user", "doctor --fix --user"},
-		{"project", "doctor --fix"},
-		{"session", "doctor --fix --session"},
+		{"user", "soho config set max_workers 4 --user"},
+		{"project", "soho config set max_workers 4"},
+		{"session", "soho session set max_workers 4"},
 	} {
 		t.Run(tc.source, func(t *testing.T) {
 			env, root := tm6DoctorEnv(t)

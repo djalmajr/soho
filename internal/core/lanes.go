@@ -941,7 +941,7 @@ func fileKeyPresent(file, key string) bool {
 	}
 	return false
 }
-func dropPresetFileExtras(file, panes string, lines *[]string, mode string) {
+func dropPresetFileExtras(file, panes string, lines *[]string, mode string, preserveUnlimited bool) {
 	raw, e := platform.ReadTextFile(file)
 	if e != nil {
 		platform.Die(fmt.Sprintf("could not rewrite %s (file left untouched)", file), 4)
@@ -969,6 +969,10 @@ func dropPresetFileExtras(file, panes string, lines *[]string, mode string) {
 			continue
 		}
 		if key == "max_workers" {
+			if preserveUnlimited && value != "" && strings.TrimLeft(value, "0") == "" {
+				out = append(out, rawLine)
+				continue
+			}
 			*lines = append(*lines, "removed max_workers="+value+" (derived from the lanes)")
 			continue
 		}
@@ -1009,6 +1013,15 @@ func dropPresetFileExtras(file, panes string, lines *[]string, mode string) {
 	}
 }
 func ApplyLaneFile(file, panes string, env platform.Env, cwd string, lanes ...LaneSpec) []string {
+	return applyLaneFile(file, panes, env, cwd, false, lanes...)
+}
+
+// ApplyLaneFilePreservingUnlimited keeps an effective unlimited worker cap.
+func ApplyLaneFilePreservingUnlimited(file, panes string, env platform.Env, cwd string) []string {
+	return applyLaneFile(file, panes, env, cwd, true)
+}
+
+func applyLaneFile(file, panes string, env platform.Env, cwd string, preserveUnlimited bool, lanes ...LaneSpec) []string {
 	if _, e := os.Stat(file); os.IsNotExist(e) {
 		if e = os.MkdirAll(filepath.Dir(file), 0o755); e != nil {
 			platform.Die(fmt.Sprintf("config set: could not rewrite %s (file left untouched)", file), 4)
@@ -1035,7 +1048,7 @@ func ApplyLaneFile(file, panes string, env platform.Env, cwd string, lanes ...La
 	if !isPreset {
 		_, _ = fmt.Fprintf(platform.Stderr, "soho: warning: lane roles in %s are custom; left in place. Remove them to restore the panes=%s preset.\n", file, panes)
 	} else {
-		dropPresetFileExtras(file, panes, &lines, mode)
+		dropPresetFileExtras(file, panes, &lines, mode, preserveUnlimited)
 	}
 	acc := laneMigration{Lines: lines}
 	pairs := [][2]string{}
@@ -1075,8 +1088,10 @@ func ApplyLaneFile(file, panes string, env platform.Env, cwd string, lanes ...La
 		if mode == "flex" {
 			sum += FlexExtra(&ctx, env)
 		}
-		ConfigWritePair(file, "max_workers", strconv.Itoa(sum), env, cwd)
-		lines = append(lines, "set max_workers="+strconv.Itoa(sum))
+		if !preserveUnlimited {
+			ConfigWritePair(file, "max_workers", strconv.Itoa(sum), env, cwd)
+			lines = append(lines, "set max_workers="+strconv.Itoa(sum))
+		}
 		// The caller plus the whole team, as layout.SplitCap and the doctor
 		// measure it; with no team cap, panes (plus flex_extra).
 		splitCap := 1 + sum
