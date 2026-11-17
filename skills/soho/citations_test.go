@@ -15,6 +15,13 @@ import (
 
 var citationPattern = regexp.MustCompile("(internal/[A-Za-z0-9_/-]+\\.go):([0-9][A-Za-z0-9_-]*(?:,[ \t]*[A-Za-z0-9_-]*)*)`?")
 var rangePattern = regexp.MustCompile(`^[0-9]+(?:-[0-9]+)?(?:,[ \t]*[0-9]+(?:-[0-9]+)?)*$`)
+var unquotedRangePrefix = regexp.MustCompile(`^[0-9]+(?:-[0-9]+)?(?:,[ \t]*[0-9]+(?:-[0-9]+)?)*`)
+
+// isRangeWordByte reports a byte that cannot follow a line number directly
+// in an unquoted citation (a letter, an underscore or a dangling dash).
+func isRangeWordByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b == '_' || b == '-'
+}
 
 const symbolPattern = `([A-Za-z_][A-Za-z0-9_]*|\(\*[A-Za-z_][A-Za-z0-9_]*\)\.[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)`
 
@@ -41,11 +48,29 @@ func checkCitations(root, doc string, report func(string, ...any)) {
 		for _, at := range citationPattern.FindAllStringSubmatchIndex(text, -1) {
 			path, ranges := text[at[2]:at[3]], text[at[4]:at[5]]
 			tailStart := at[1]
+			quoted := false
 			if at[0] > 0 && text[at[0]-1] == '`' {
 				if end := strings.IndexByte(text[at[4]:], '`'); end >= 0 {
 					ranges = text[at[4] : at[4]+end]
 					tailStart = at[4] + end + 1
+					quoted = true
 				}
+			}
+			if !quoted {
+				// Unquoted, the line list ends where the numbers end: a comma
+				// followed by prose or by another citation is punctuation, not
+				// part of the list. A letter glued to the number is malformed.
+				rest := text[at[4]:]
+				n := len(unquotedRangePrefix.FindString(rest))
+				if n < len(rest) && isRangeWordByte(rest[n]) {
+					end := n
+					for end < len(rest) && (isRangeWordByte(rest[end]) || rest[end] >= '0' && rest[end] <= '9') {
+						end++
+					}
+					report("%s: %s:%s: malformed range", doc, path, rest[:end])
+					continue
+				}
+				ranges, tailStart = rest[:n], at[4]+n
 			}
 			if !rangePattern.MatchString(ranges) {
 				report("%s: %s:%s: malformed range", doc, path, ranges)
@@ -197,6 +222,12 @@ func TestCitationFixtures(t *testing.T) {
 		{"malformed punctuation", "`internal/probe.go:3.4` `(*Box).Foo`", "malformed range"},
 		{"generic pointer", "`internal/probe.go:3` `Box.Foo`", ""},
 		{"generic pair", "`internal/probe.go:5` `Pair.Bar`", ""},
+		{"unquoted then prose", "See internal/probe.go:3, where the method is declared.", ""},
+		{"unquoted pair", "See internal/probe.go:3, internal/probe.go:6.", ""},
+		{"unquoted list", "<!-- internal/probe.go:3, 5 -->", ""},
+		{"unquoted list out of file", "<!-- internal/probe.go:3, 999 -->", "range outside file"},
+		{"unquoted glued letter", "<!-- internal/probe.go:3x -->", "malformed range"},
+		{"unquoted symbol checked", "<!-- internal/probe.go:3 (`Other`) -->", "outside symbol extent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			doc := "fixture.md"
