@@ -1,6 +1,8 @@
 package core
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -63,6 +65,30 @@ func frictionLog(file, fallbackCommand, level, message string) {
 	}
 	_, _ = f.WriteString(line)
 	_ = f.Close()
+}
+
+// WarnOnce invokes warn once per session state directory and key. If the
+// directory cannot be marked, it invokes warn each time. Admission-only
+// checks never resolve the state directory or invoke warn.
+func WarnOnce(key string, stateDir func() string, env platform.Env, admissionOnly bool, warn func()) {
+	if admissionOnly {
+		return
+	}
+	sd := stateDir()
+	if info, err := os.Stat(sd); err == nil && info.IsDir() && !Nowrite(env) {
+		dir := filepath.Join(sd, "warned")
+		if os.MkdirAll(dir, 0o700) == nil {
+			sum := sha256.Sum256([]byte(key))
+			f, err := os.OpenFile(filepath.Join(dir, hex.EncodeToString(sum[:8])), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+			if err != nil && os.IsExist(err) {
+				return
+			}
+			if err == nil {
+				_ = f.Close()
+			}
+		}
+	}
+	warn()
 }
 
 func Warn(message, logFile string, fallbackCommand ...string) {
