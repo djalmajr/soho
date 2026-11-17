@@ -5,6 +5,9 @@ import (
 	"strings"
 )
 
+// HasIncludeFilter reports whether include_only restricts the environment.
+func HasIncludeFilter(patterns []string) bool { return len(patterns) > 0 }
+
 // registryIncludeOnly validates only shell_environment_policy/include_only.
 // Unrelated syntax is ignored unless it prevents safe statement boundaries
 // (such as an unclosed multiline string). Ambiguous target tables/keys and

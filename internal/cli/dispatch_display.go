@@ -9,6 +9,7 @@ import (
 	"github.com/djalmajr/soho/internal/codexenv"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
+	"github.com/djalmajr/soho/internal/doctor"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -57,7 +58,7 @@ func warnDispatchDisplay(body, kind, agent, args, sd string, env platform.Env) {
 		return
 	}
 	var names []string
-	for _, name := range []string{"DISPLAY", "WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE"} {
+	for _, name := range doctor.DisplayVariables {
 		if env.Get(name) != "" {
 			names = append(names, name)
 		}

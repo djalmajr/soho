@@ -22,7 +22,7 @@ func TestDoctorCodexRegistryPolicy(t *testing.T) {
 		{name: "exact", config: "[shell_environment_policy]\ninclude_only = ['SOHO_REGISTRY_DIR']"},
 		{name: "all", config: "[shell_environment_policy]\ninclude_only = ['*']"},
 		{name: "multiline", config: "[shell_environment_policy]\ninclude_only = [\n 'HERDR_*', # comment\n \"SOHO_*\",\n]"},
-		{name: "empty", config: "[shell_environment_policy]\ninclude_only = []", warn: true},
+		{name: "empty", config: "[shell_environment_policy]\ninclude_only = []"},
 		{name: "no-table", config: "model = 'unrelated'"},
 		{name: "no-key", config: "[shell_environment_policy]\ninherit = 'all'"},
 		{name: "missing", mode: "missing"},

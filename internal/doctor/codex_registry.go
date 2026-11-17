@@ -8,10 +8,14 @@ import (
 	"strings"
 
 	"github.com/djalmajr/soho/internal/codexenv"
+	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
-func doctorCodexRegistryPolicy(env platform.Env, s *Say) {
+// DisplayVariables are the graphical session variables examined by doctor and dispatch.
+var DisplayVariables = []string{"DISPLAY", "WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE"}
+
+func doctorCodexRegistryPolicy(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 	home := env.Get("CODEX_HOME")
 	if home == "" {
 		home = filepath.Join(platform.HomeDir(platform.Current(), env), ".codex")
@@ -26,8 +30,20 @@ func doctorCodexRegistryPolicy(env platform.Env, s *Say) {
 		s.Warning("codex: invalid TOML in " + path + "; cannot check shell_environment_policy include_only")
 		return
 	}
-	if !present {
+	if !present || !codexenv.HasIncludeFilter(patterns) {
 		return
+	}
+
+	if codexenv.HasIncludeFilter(patterns) && uiRoleUsesCodex(ctx, env, cwd) {
+		var dropped []string
+		for _, name := range DisplayVariables {
+			if env.Get(name) != "" && !includeOnlyAdmits(patterns, name) {
+				dropped = append(dropped, name)
+			}
+		}
+		if len(dropped) > 0 {
+			s.Warning(fmt.Sprintf("codex: [shell_environment_policy] include_only in %s drops display variables needed by UI roles: %s", path, strings.Join(dropped, ", ")))
+		}
 	}
 	if !includeOnlyAdmits(patterns, "SOHO_REGISTRY_DIR") {
 		s.Warning(fmt.Sprintf(`codex: [shell_environment_policy] include_only in %s drops SOHO_* variables, so codex workers do not see SOHO_REGISTRY_DIR and register copies and processes in the wrong state dir; add "SOHO_*" to include_only`, path))
@@ -51,6 +67,19 @@ func doctorCodexRegistryPolicy(env platform.Env, s *Say) {
 			s.Warning(line)
 		}
 	}
+}
+
+func uiRoleUsesCodex(ctx *core.Config, env platform.Env, cwd string) bool {
+	for _, role := range []string{"designer", "inspector", "ui-reviewer"} {
+		key := "role_" + strings.ReplaceAll(role, "-", "_") + "_kind"
+		if core.LanesEnabled(ctx, env) && core.LaneOfRole(ctx, role, env) == "" && core.Cfg(ctx, key, "", env) == "" {
+			continue
+		}
+		if core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{}).Kind == "codex" {
+			return true
+		}
+	}
+	return false
 }
 
 // broadHcPattern returns the first include_only pattern that is specific to

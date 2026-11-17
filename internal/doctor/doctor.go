@@ -279,7 +279,53 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 	}
 	before, _ := platform.ReadTextFile(dest)
 	before = strings.TrimRight(before, "\n")
-	for _, line := range core.ApplyLaneFile(dest, panes, env, cwd) {
+	hadOwnLayout := core.FileKeyValue(dest, "panes") != "" || core.FileLaneSignature(dest) != ""
+	repairEnv := platform.Env{}
+	for key, value := range env {
+		if !core.LayoutCapacityOverride(key) {
+			repairEnv[key] = value
+		}
+	}
+	lines := core.ApplyLaneFile(dest, panes, repairEnv, cwd)
+	fixed := core.LoadConfig(repairEnv, cwd)
+	if where != "session" {
+		selected := core.Config{Entries: make(map[string]core.ConfigEntry)}
+		for _, layer := range fixed.Layers {
+			if layer.Source == "session" || (where == "user" && layer.Source == "project") {
+				continue
+			}
+			for key, entry := range layer.Entries {
+				selected.Entries[key] = entry
+			}
+		}
+		for _, key := range fixed.Order {
+			if _, ok := selected.Entries[key]; ok {
+				selected.Order = append(selected.Order, key)
+			}
+		}
+		fixed = selected
+	}
+	// The repaired limit describes the destination file alone: transient
+	// overrides (SOHO_PANES, SOHO_LANE_*_PANES) never leak into it, for the
+	// user, project and session destinations alike.
+	capacityEnv := repairEnv
+	sum := core.LaneCapacitySum(&fixed, capacityEnv)
+	if core.PaneMode(&fixed, capacityEnv) == "flex" {
+		sum += core.FlexExtra(&fixed, capacityEnv)
+	}
+	if hadOwnLayout {
+		core.ConfigWritePair(dest, "max_workers", strconv.Itoa(sum), env, cwd)
+	}
+	hasSplit := hadOwnLayout && core.FileKeyValue(dest, "split_max_panes") != ""
+	if hasSplit {
+		core.ConfigWritePair(dest, "split_max_panes", strconv.Itoa(1+sum), env, cwd)
+	}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "set max_workers=") {
+			line = "set max_workers=" + strconv.Itoa(sum)
+		} else if strings.HasPrefix(line, "set split_max_panes=") && hasSplit {
+			line = "set split_max_panes=" + strconv.Itoa(1+sum)
+		}
 		fmt.Fprintln(platform.Stdout, line)
 	}
 	after, _ := platform.ReadTextFile(dest)
@@ -404,11 +450,15 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 		}
 	}
 	used := usedKinds(ctx, env, cwd)
+	checkCodex := uiRoleUsesCodex(ctx, env, cwd)
 	for _, kind := range used {
 		if kind == "codex" {
-			doctorCodexRegistryPolicy(env, s)
+			checkCodex = true
 			break
 		}
+	}
+	if checkCodex {
+		doctorCodexRegistryPolicy(ctx, env, cwd, s)
 	}
 	var missing []string
 	for _, k := range used {
@@ -1044,17 +1094,45 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 	lanes := core.LaneNames(ctx, env)
 	caps := []string{}
 	sum := 0
+	full := 0
 	for _, l := range lanes {
 		c := core.LaneCapacity(ctx, l, env)
-		sum += c
+		full += c
 		caps = append(caps, fmt.Sprintf("%s=%d", l, c))
+		if !core.LaneOnDemand(ctx, l, env) {
+			sum += c
+		}
 	}
 	if mode == "flex" {
-		sum += core.FlexExtra(ctx, env)
+		full += core.FlexExtra(ctx, env)
 	}
 	mw := core.Cfg(ctx, "max_workers", "3", env)
-	if core.ConfigExplicit(ctx, "max_workers", env) && mw != strconv.Itoa(sum) {
-		s.Warning(fmt.Sprintf("config: max_workers=%s but the lanes hold %d workers (%s). Set max_workers=%d (doctor --fix aligns it).", mw, sum, strings.Join(caps, " "), sum))
+	limit, err := strconv.Atoi(core.MaxWorkers(ctx, env))
+	if err == nil && limit == 0 {
+		s.Ok("config: max_workers=0 (no cap on live workers)")
+	} else if core.ConfigExplicit(ctx, "max_workers", env) && (err != nil || limit < sum || limit > full) {
+		source := core.CfgSource(ctx, "max_workers", env)
+		advice := fmt.Sprintf("Set max_workers=%d in the %s layer (soho config set max_workers %d).", full, source, full)
+		switch source {
+		case "user":
+			advice = fmt.Sprintf("Set max_workers=%d in the user layer (soho config set max_workers %d --user).", full, full)
+		case "session":
+			for _, layer := range ctx.Layers {
+				if layer.Source == "session" {
+					advice = fmt.Sprintf("set max_workers=%d in %s.", full, layer.File)
+					break
+				}
+			}
+		case "env":
+			advice = fmt.Sprintf("SOHO_MAX_WORKERS=%s overrides the files: set it to %d.", mw, full)
+		}
+		s.Warning(fmt.Sprintf("config: max_workers=%s but the lanes hold %d always-open to %d total workers (%s). %s", mw, sum, full, strings.Join(caps, " "), advice))
+	} else if limit < full {
+		if mode == "flex" && core.FlexExtra(ctx, env) > 0 {
+			fmt.Fprintf(s.Out, "note   config: max_workers=%d allows creating a new worker in an on-demand lane or a temporary flex worker only when a slot is free; spawn refuses creation when the limit is reached\n", limit)
+		} else {
+			fmt.Fprintf(s.Out, "note   config: max_workers=%d allows creating a new worker in an on-demand lane only when a slot is free; spawn refuses creation when the limit is reached\n", limit)
+		}
 	} else {
 		s.Ok(fmt.Sprintf("config: max_workers=%s matches the lanes (%s)", core.MaxWorkers(ctx, env), strings.Join(caps, " ")))
 	}

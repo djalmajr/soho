@@ -115,7 +115,7 @@ func EvaluateCodexPolicy(p *Policy) Evaluation {
 			present = true
 			reason = ""
 		}
-		if len(p.IncludeOnly) > 0 {
+		if HasIncludeFilter(p.IncludeOnly) {
 			match := false
 			for _, pat := range p.IncludeOnly {
 				match = match || GlobMatch(pat, name)
