@@ -711,7 +711,13 @@ func TestSetupWriteRejectsSetFlagsLikeJavaScript(t *testing.T) {
 			beforeRepo := setupFilesystemSnapshot(t, root)
 			beforeHome := setupFilesystemSnapshot(t, env.Get("HOME"))
 			code, out, msg := runSetupWrite(tc.args, ctx, env, root)
-			want := "setup: unknown option '" + tc.flag + "'"
+			hint := "soho config set <key> <value>"
+			if tc.flag == "--user-set" {
+				hint += " --user"
+			} else if tc.flag == "--session-set" {
+				hint = "soho session set <key> <value>"
+			}
+			want := "setup: " + tc.flag + " is a --plan option (it previews a value without writing); to write it, run '" + hint + "'"
 			if code != 2 || out != "" || msg != want {
 				t.Fatalf("code=%d stdout=%q stderr=%q, want code=2 empty stdout and %q", code, out, msg, want)
 			}

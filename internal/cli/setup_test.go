@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
 )
 
@@ -88,7 +89,7 @@ func TestSetupWriteRejectsSetBeforeAnyWrites(t *testing.T) {
 	platform.Stdout, platform.Stderr = &out, &errOut
 	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
 	code := Run([]string{"setup", "--target", "GUIDE.md", "--no-hooks", "--panes", "3", "--lane", "build=pi", "--set", "max_workers", "5"}, env)
-	if code != 2 || out.Len() != 0 || errOut.String() != "soho: setup: unknown option '--set'\n" {
+	if code != 2 || out.Len() != 0 || errOut.String() != "soho: setup: --set is a --plan option (it previews a value without writing); to write it, run 'soho config set <key> <value>'\n" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 	for _, file := range []string{"GUIDE.md", ".agents/herdr-soho.conf", ".gitignore", ".claude/settings.json"} {
@@ -101,4 +102,84 @@ func TestSetupWriteRejectsSetBeforeAnyWrites(t *testing.T) {
 func setupReadFlagEnv(t *testing.T) platform.Env {
 	t.Helper()
 	return isolatedUserEnv(platform.Env{"PATH": t.TempDir(), "HOME": t.TempDir(), "SOHO_SKILL_DIR": t.TempDir()})
+}
+
+func TestSetupLaneDecisionSuppressesMigrationWarning(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		user    bool
+		lane    bool
+		warning bool
+	}{
+		{name: "user", user: true}, {name: "argument", lane: true}, {name: "undecided", warning: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, cwd := tm6CLIEnv(t)
+			conf := filepath.Join(cwd, ".agents", "soho.conf")
+			roles := "role.implementer.kind=grok\nrole.designer.kind=agy\n"
+			tm6Write(t, conf, roles)
+			if tc.user {
+				tm6Write(t, core.ConfigFileFor("user", env, cwd), "lane.build.kind=codex\n")
+			}
+			args := []string{"setup", "--target", "AGENTS.md", "--no-hooks", "--panes", "4"}
+			if tc.lane {
+				args = append(args, "--lane", "build=codex")
+			}
+			code, out, stderr := runIn(t, args, env, cwd)
+			data, err := os.ReadFile(conf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code != 0 || strings.Contains(stderr, "lane 'build' kinds differ") != tc.warning || !strings.Contains(string(data), "role.implementer.kind=grok") || !strings.Contains(string(data), "role.designer.kind=agy") || (tc.user && strings.Contains(string(data), "lane.build.kind=")) || (tc.lane && !strings.Contains(string(data), "lane.build.kind=codex")) {
+				t.Fatalf("code=%d out=%q stderr=%q config=%q", code, out, stderr, data)
+			}
+		})
+	}
+}
+
+func TestSetupPlanLaneMigrationMatchesWrite(t *testing.T) {
+	env, cwd := tm6CLIEnv(t)
+	conf := filepath.Join(cwd, ".agents", "soho.conf")
+	roles := []string{"implementer", "designer", "tasker"}
+	tm6Write(t, conf, "role.implementer.kind=grok\nrole.designer.kind=grok\nrole.tasker.kind=grok\n")
+	args := []string{"setup", "--target", "AGENTS.md", "--no-hooks", "--panes", "4", "--lane", "build=codex"}
+	code, plan, stderr := runIn(t, append(append([]string{}, args...), "--plan"), env, cwd)
+	if code != 0 {
+		t.Fatalf("plan code=%d stderr=%s", code, stderr)
+	}
+	code, _, stderr = runIn(t, args, env, cwd)
+	data, err := os.ReadFile(conf)
+	if code != 0 || err != nil {
+		t.Fatalf("write code=%d stderr=%s read=%v", code, stderr, err)
+	}
+	for _, role := range roles {
+		key := "role." + role + ".kind"
+		removed := strings.Contains(plan, key+" grok → (removed)")
+		present := strings.Contains(string(data), key+"=grok")
+		if removed == present || !present {
+			t.Errorf("%s: plan removed=%v write present=%v\nplan=%s\nconfig=%s", key, removed, present, plan, data)
+		}
+	}
+	if !strings.Contains(string(data), "lane.build.kind=codex") || !strings.Contains(plan, "lane.build.kind") {
+		t.Fatalf("lane missing: plan=%s config=%s", plan, data)
+	}
+}
+
+func TestSetupIgnoredLowerLayerLaneModelWarns(t *testing.T) {
+	env, cwd := tm6CLIEnv(t)
+	conf := filepath.Join(cwd, ".agents", "soho.conf")
+	tm6Write(t, conf, "lane.build.kind=codex\nrole.implementer.model=legacy-one\nrole.designer.model=legacy-two\n")
+	tm6Write(t, core.ConfigFileFor("user", env, cwd), "lane.build.model=user-model\n")
+	ctx := core.LoadConfig(env, cwd)
+	if got := core.LaneAttr(&ctx, "build", "model", nil, env); got != "" {
+		t.Fatalf("effective model=%q, want empty", got)
+	}
+	code, _, stderr := runIn(t, []string{"setup", "--target", "AGENTS.md", "--no-hooks", "--panes", "4"}, env, cwd)
+	if code != 0 || !strings.Contains(stderr, "lane 'build' models differ") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	data, err := os.ReadFile(conf)
+	if err != nil || !strings.Contains(string(data), "role.implementer.model=legacy-one") || !strings.Contains(string(data), "role.designer.model=legacy-two") {
+		t.Fatalf("config=%s err=%v", data, err)
+	}
 }

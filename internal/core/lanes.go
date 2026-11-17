@@ -837,21 +837,22 @@ func FileRoleResolved(file, role, attr string, env platform.Env, cwd string) str
 
 type laneMigration struct{ DropKind, DropModel, Lines []string }
 
-func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env platform.Env, cwd string) {
-	existing := FileKeyValue(file, "lane."+lane+"."+attr)
+func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env platform.Env, cwd string, decided, explicitKind bool) {
+	ctx := LoadConfig(env, cwd)
+	key := "lane." + lane + "." + attr
+	kindLayer := LaneKindLayer(&ctx, lane, env)
+	if (explicitKind || FileKeyValue(file, "lane."+lane+".kind") != "") && kindLayer < 2 {
+		kindLayer = 2 // The migration file is the project layer.
+	}
+	// A decided lane wins over roles; preserve the role keys without migrating them.
+	if decided || LaneAttr(&ctx, lane, attr, &kindLayer, env) != "" || (FileKeyValue(file, key) != "" && (attr != "model" || kindLayer <= 2)) {
+		return
+	}
 	laneKind := FileKeyValue(file, "lane."+lane+".kind")
 	first, have, agree := "", false, true
 	vals := []string{}
 	for _, role := range SplitRoles(rolesCSV) {
 		if role == "planner" || role == "documenter" || role == "critical-implementer" {
-			continue
-		}
-		if existing != "" {
-			if attr == "kind" {
-				acc.DropKind = append(acc.DropKind, role)
-			} else {
-				acc.DropModel = append(acc.DropModel, role)
-			}
 			continue
 		}
 		value := ""
@@ -879,7 +880,7 @@ func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env 
 			agree = false
 		}
 	}
-	if existing != "" || !have {
+	if !have {
 		return
 	}
 	if agree && first != "" {
@@ -991,7 +992,7 @@ func dropPresetFileExtras(file, panes string, lines *[]string, mode string) {
 		platform.Die(fmt.Sprintf("could not rewrite %s (file left untouched)", file), 4)
 	}
 }
-func ApplyLaneFile(file, panes string, env platform.Env, cwd string) []string {
+func ApplyLaneFile(file, panes string, env platform.Env, cwd string, lanes ...LaneSpec) []string {
 	if _, e := os.Stat(file); os.IsNotExist(e) {
 		if e = os.MkdirAll(filepath.Dir(file), 0o755); e != nil {
 			platform.Die(fmt.Sprintf("config set: could not rewrite %s (file left untouched)", file), 4)
@@ -1038,8 +1039,15 @@ func ApplyLaneFile(file, panes string, env platform.Env, cwd string) []string {
 		}
 	}
 	for _, pair := range pairs {
-		MigrateLaneAttr(file, pair[0], pair[1], "kind", &acc, env, cwd)
-		MigrateLaneAttr(file, pair[0], pair[1], "model", &acc, env, cwd)
+		kindDecided, modelDecided := false, false
+		for _, lane := range lanes {
+			if lane.Name == pair[0] {
+				kindDecided = lane.Kind != ""
+				modelDecided = lane.Model != ""
+			}
+		}
+		MigrateLaneAttr(file, pair[0], pair[1], "kind", &acc, env, cwd, kindDecided, kindDecided)
+		MigrateLaneAttr(file, pair[0], pair[1], "model", &acc, env, cwd, modelDecided, kindDecided)
 	}
 	if err := ConfigDropLegacy(file, DropLegacyOptions{acc.DropKind, acc.DropModel, isPreset}); err != nil {
 		panic(err)

@@ -372,7 +372,7 @@ func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			platform.DieFriction("setup --plan: could not seed simulation file", 4)
 		}
 		if i == 0 && panes != "" {
-			core.ApplyLaneFile(tmp, panes, env, cwd)
+			core.ApplyLaneFile(tmp, panes, env, cwd, laneSpecs...)
 		}
 		if i == 0 {
 			for _, s := range laneSpecs {
