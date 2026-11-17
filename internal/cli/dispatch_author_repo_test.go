@@ -52,11 +52,11 @@ func TestReviewAuthorWarningRepository(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := reviewAuthorWarning("source.md", "reviewer", sidecar, dispatchAuthorContext{env: env, cwd: main})
-			want := "no author found for this review: no accepted edit-role brief declares Worktree: " + tc.tree + ", so 'soho stats --by author-model' will not count it; when the orchestrator wrote the code, add 'Author: orchestrator' to the review brief"
+			want := "no author found for this review: no accepted edit-role brief declares Worktree: " + tc.tree + ", so 'soho stats --by author-model' will not count it; add 'Author: orchestrator' when the orchestrator wrote the code or 'Author: external' for code from outside the team to the review brief"
 			if tc.silent {
 				want = ""
 			} else if tc.noLine {
-				want = "brief source.md has no Worktree: line: this review cannot be tied to its author, so 'soho stats --by author-model' will not count it; add 'Worktree: <absolute path>' here and in the implementer's brief, or 'Author: orchestrator' when the orchestrator wrote the code"
+				want = "brief source.md has no Worktree: line: this review cannot be tied to its author, so 'soho stats --by author-model' will not count it; add 'Worktree: <absolute path>' here and in the implementer's brief, or 'Author: orchestrator' when the orchestrator wrote the code or 'Author: external' for code from outside the team"
 			}
 			if got != want {
 				t.Fatalf("got %q, want %q", got, want)

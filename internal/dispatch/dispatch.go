@@ -244,10 +244,9 @@ func DeclaredWorktree(body string) string {
 }
 
 // DeclaresOrchestratorAuthor reports whether the first Author: line outside
-// fenced code blocks says the orchestrator wrote the reviewed code (the
-// value is "orchestrator", case-insensitive, optionally between backticks).
-// A review brief for the orchestrator's own code has no implementer brief to
-// tie it to (SOH-317).
+// fenced code blocks declares code written by the orchestrator or outside the
+// team. Values are case-insensitive and optionally between backticks; neither
+// is tied to an implementer brief.
 func DeclaresOrchestratorAuthor(body string) bool {
 	lines := strings.Split(body, "\n")
 	fenced := briefFenceMask(lines)
@@ -256,7 +255,7 @@ func DeclaresOrchestratorAuthor(body string) bool {
 			continue
 		}
 		value := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "Author:")), "`")
-		return strings.EqualFold(strings.TrimSpace(value), "orchestrator")
+		return strings.EqualFold(strings.TrimSpace(value), "orchestrator") || strings.EqualFold(strings.TrimSpace(value), "external")
 	}
 	return false
 }
