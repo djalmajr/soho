@@ -11,6 +11,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/text"
 )
 
 // Review-response coverage of settled correction reports (DJA-684 slice C).
@@ -266,7 +267,7 @@ func TestWaitReviewResponsesUnreadableReview(t *testing.T) { // scenario 10
 		if strings.Contains(out, "review_responses") {
 			t.Fatalf("a key for an absent review: %q", out)
 		}
-		if !strings.Contains(errText, "brief of 'worker' names a review that cannot be read: "+reviewPath) {
+		if !strings.Contains(errText, "brief of 'worker' names a review that cannot be read: "+text.SanitizeCause(reviewPath)) {
 			t.Fatalf("missing the cannot-be-read warning: %q", errText)
 		}
 	})
@@ -294,7 +295,7 @@ func TestWaitReviewResponsesUnreadableReview(t *testing.T) { // scenario 10
 		if strings.Contains(out, "review_responses") {
 			t.Fatalf("a key for a linked review: %q", out)
 		}
-		if !strings.Contains(errText, "brief of 'worker' names a review that cannot be read: "+link) {
+		if !strings.Contains(errText, "brief of 'worker' names a review that cannot be read: "+text.SanitizeCause(link)) {
 			t.Fatalf("missing the cannot-be-read warning: %q", errText)
 		}
 	})
@@ -312,7 +313,7 @@ func TestWaitReviewResponsesUnreadableReview(t *testing.T) { // scenario 10
 		if strings.Contains(out, "review_responses") {
 			t.Fatalf("a key for a directory review: %q", out)
 		}
-		if !strings.Contains(errText, "brief of 'worker' names a review that cannot be read: "+reviewPath) {
+		if !strings.Contains(errText, "brief of 'worker' names a review that cannot be read: "+text.SanitizeCause(reviewPath)) {
 			t.Fatalf("missing the cannot-be-read warning: %q", errText)
 		}
 	})
@@ -330,7 +331,7 @@ func TestWaitReviewResponsesUnreadableReview(t *testing.T) { // scenario 10
 		if strings.Contains(out, "review_responses") {
 			t.Fatalf("a key for an oversized review: %q", out)
 		}
-		if !strings.Contains(errText, "brief of 'worker' names a review that cannot be read: "+reviewPath) {
+		if !strings.Contains(errText, "brief of 'worker' names a review that cannot be read: "+text.SanitizeCause(reviewPath)) {
 			t.Fatalf("missing the cannot-be-read warning: %q", errText)
 		}
 	})
