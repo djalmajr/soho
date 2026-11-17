@@ -2762,3 +2762,24 @@ func TestCopiesAddWarningIgnoresMissingAndMarksUnknown(t *testing.T) {
 		}
 	}
 }
+
+func TestCopiesAddWarningSkipsSymlinkedRows(t *testing.T) {
+	f := newCopiesFixture(t, nil)
+	f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
+	f.env["SOHO_AGENT"] = "worker"
+	real1, real2 := filepath.Join(f.tmp, "real-1"), filepath.Join(f.tmp, "real-2")
+	target, link := filepath.Join(f.tmp, "elsewhere"), filepath.Join(f.tmp, "replaced")
+	for _, dir := range []string{real1, real2, target} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	f.writeCopies(t, []core.CopyRow{{Path: real1, Owner: "worker"}, {Path: link, Owner: "worker"}})
+	code, _, stderr := f.run(t, f.env, "copies", "add", real2)
+	if code != 0 || strings.Contains(stderr, "warning:") {
+		t.Fatalf("a symlinked row counted as a live copy: code=%d stderr=%q", code, stderr)
+	}
+}

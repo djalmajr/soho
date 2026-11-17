@@ -1003,7 +1003,7 @@ func warnLiveCopies(sd, owner, caller string, env platform.Env) {
 	pending := core.PendingCopiesFor(sd, filepath.Base(sd), env)
 	paths := map[string]bool{}
 	for _, row := range append(rows, pending...) {
-		if row.Owner == owner && isExistingDir(row.Path) {
+		if row.Owner == owner && isRealDir(row.Path) {
 			paths[row.Path] = true
 		}
 	}
@@ -1025,6 +1025,13 @@ func warnLiveCopies(sd, owner, caller string, env platform.Env) {
 		_, _ = fmt.Fprintf(platform.Stderr, "  %s  %s\n", path, label)
 	}
 	_, _ = fmt.Fprintln(platform.Stderr, "release superseded copies from outside them: soho copies release <path>")
+}
+
+// isRealDir is true for a directory that is not reached through a final
+// symlink: a registered path replaced by a link is not a live copy.
+func isRealDir(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.IsDir()
 }
 
 // copiesAddNestedWarning uses one registry snapshot for this advisory check;
