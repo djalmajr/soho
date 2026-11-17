@@ -208,21 +208,6 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 			t.Fatalf("after code=%d out=%q stderr=%q", code, out, stderr)
 		}
 	})
-	t.Run("new project layout preserves inherited unlimited cap", func(t *testing.T) {
-		env, cwd := tm6CLIEnv(t)
-		user := filepath.Join(env.Get("XDG_CONFIG_HOME"), "soho", "config")
-		conf := filepath.Join(cwd, ".agents", "soho.conf")
-		tm6Write(t, user, "max_workers=0\n")
-		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--panes", "4"}, env, cwd)
-		data, err := os.ReadFile(conf)
-		if err != nil || code != 0 || strings.Contains(string(data), "max_workers=") {
-			t.Fatalf("code=%d out=%q stderr=%q conf=%q err=%v", code, out, stderr, data, err)
-		}
-		code, out, stderr = runIn(t, []string{"doctor"}, env, cwd)
-		if code != 0 || !strings.Contains(out, "max_workers=0 (no cap on live workers)") || strings.Contains(out, "but the lanes hold") {
-			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
-		}
-	})
 	t.Run("new user layout removes frozen cap", func(t *testing.T) {
 		env, cwd := tm6CLIEnv(t)
 		user := filepath.Join(env.Get("XDG_CONFIG_HOME"), "soho", "config")
@@ -396,26 +381,31 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 	})
 }
 
-func TestDoctorFixPreservesUnlimited(t *testing.T) {
-	for _, tc := range []struct{ name, user, project, want string }{
-		{"inherited preset", "max_workers=0\n", "panes=4\n", ""},
-		{"inherited custom", "max_workers=0\n", "panes=4\nlane.build.roles=implementer\nlane.build.panes=2\n", ""},
-		{"local preset", "", "panes=4\nmax_workers=0\n", "max_workers=0\n"},
-		{"local custom", "", "panes=4\nmax_workers=0\nlane.build.roles=implementer\nlane.build.panes=2\n", "max_workers=0\n"},
-		{"inherited leading zeros", "max_workers=00\n", "panes=4\n", ""},
-		{"local leading zeros", "", "panes=4\nmax_workers=00\n", "max_workers=00\n"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			env, cwd := tm6CLIEnv(t)
-			user := filepath.Join(env.Get("XDG_CONFIG_HOME"), "soho", "config")
-			conf := filepath.Join(cwd, ".agents", "soho.conf")
-			tm6Write(t, user, tc.user)
-			tm6Write(t, conf, tc.project)
-			code, out, stderr := runIn(t, []string{"doctor", "--fix", "--panes", "4"}, env, cwd)
-			data, err := os.ReadFile(conf)
-			if err != nil || code != 0 || (tc.want == "" && strings.Contains(string(data), "max_workers=")) || (tc.want != "" && !strings.Contains(string(data), tc.want)) {
-				t.Fatalf("code=%d out=%q stderr=%q conf=%q err=%v", code, out, stderr, data, err)
-			}
-		})
-	}
+func TestDoctorCapacityAdviceSessionAndEnvironment(t *testing.T) {
+	t.Run("session file read before state redirect", func(t *testing.T) {
+		env, cwd := tm6CLIEnv(t)
+		env["SOHO_DIR"] = ""
+		base := filepath.Join(cwd, "base-state")
+		tm6Write(t, filepath.Join(cwd, ".agents", "soho.conf"), "panes=4\nstate_dir="+base+"\n")
+		file := filepath.Join(base, env.Get("HERDR_WORKSPACE_ID"), "session.conf")
+		tm6Write(t, file, "max_workers=1\nstate_dir=.other-state\n")
+		code, out, stderr := runIn(t, []string{"doctor"}, env, cwd)
+		if code != 0 || !strings.Contains(out, "set max_workers=4 in "+file) || strings.Contains(out, "soho session set max_workers") {
+			t.Fatalf("code=%d out=%q stderr=%q file=%q", code, out, stderr, file)
+		}
+	})
+	t.Run("environment overrides lower file", func(t *testing.T) {
+		env, cwd := tm6CLIEnv(t)
+		tm6Write(t, filepath.Join(cwd, ".agents", "soho.conf"), "panes=4\nmax_workers=1\n")
+		env["SOHO_MAX_WORKERS"] = "2"
+		code, out, stderr := runIn(t, []string{"doctor"}, env, cwd)
+		if code != 0 || !strings.Contains(out, "SOHO_MAX_WORKERS=2 overrides the files: set it to 4") || strings.Contains(out, "unset SOHO_MAX_WORKERS") {
+			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+		}
+		env["SOHO_MAX_WORKERS"] = "4"
+		code, out, stderr = runIn(t, []string{"doctor"}, env, cwd)
+		if code != 0 || strings.Contains(out, "but the lanes hold") {
+			t.Fatalf("after code=%d out=%q stderr=%q", code, out, stderr)
+		}
+	})
 }

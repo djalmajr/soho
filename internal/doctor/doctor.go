@@ -280,24 +280,7 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 	before, _ := platform.ReadTextFile(dest)
 	before = strings.TrimRight(before, "\n")
 	hadOwnLayout := core.FileKeyValue(dest, "panes") != "" || core.FileLaneSignature(dest) != ""
-	prior := core.LoadConfig(env, cwd)
-	cap := ""
-	for _, layer := range prior.Layers {
-		if (where != "session" && layer.Source == "session") || (where == "user" && layer.Source == "project") {
-			continue
-		}
-		if entry, ok := layer.Entries["max_workers"]; ok {
-			cap = entry.Value
-		}
-	}
-	capValue, capErr := strconv.Atoi(cap)
-	unlimited := capErr == nil && capValue == 0
-	var lines []string
-	if unlimited {
-		lines = core.ApplyLaneFilePreservingUnlimited(dest, panes, env, cwd)
-	} else {
-		lines = core.ApplyLaneFile(dest, panes, env, cwd)
-	}
+	lines := core.ApplyLaneFile(dest, panes, env, cwd)
 	fixed := core.LoadConfig(env, cwd)
 	if where != "session" {
 		selected := core.Config{Entries: make(map[string]core.ConfigEntry)}
@@ -324,7 +307,7 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 	if core.PaneMode(&fixed, capacityEnv) == "flex" {
 		sum += core.FlexExtra(&fixed, capacityEnv)
 	}
-	if hadOwnLayout && !unlimited {
+	if hadOwnLayout {
 		core.ConfigWritePair(dest, "max_workers", strconv.Itoa(sum), env, cwd)
 	}
 	hasSplit := hadOwnLayout && core.FileKeyValue(dest, "split_max_panes") != ""
@@ -1124,16 +1107,21 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 		s.Ok("config: max_workers=0 (no cap on live workers)")
 	} else if core.ConfigExplicit(ctx, "max_workers", env) && (err != nil || limit < sum || limit > full) {
 		source := core.CfgSource(ctx, "max_workers", env)
-		fix := fmt.Sprintf("soho config set max_workers %d", full)
+		advice := fmt.Sprintf("Set max_workers=%d in the %s layer (soho config set max_workers %d).", full, source, full)
 		switch source {
 		case "user":
-			fix += " --user"
+			advice = fmt.Sprintf("Set max_workers=%d in the user layer (soho config set max_workers %d --user).", full, full)
 		case "session":
-			fix = fmt.Sprintf("soho session set max_workers %d", full)
+			for _, layer := range ctx.Layers {
+				if layer.Source == "session" {
+					advice = fmt.Sprintf("set max_workers=%d in %s.", full, layer.File)
+					break
+				}
+			}
 		case "env":
-			fix = "unset SOHO_MAX_WORKERS"
+			advice = fmt.Sprintf("SOHO_MAX_WORKERS=%s overrides the files: set it to %d.", mw, full)
 		}
-		s.Warning(fmt.Sprintf("config: max_workers=%s but the lanes hold %d always-open to %d total workers (%s). Set max_workers=%d in the %s layer (%s).", mw, sum, full, strings.Join(caps, " "), full, source, fix))
+		s.Warning(fmt.Sprintf("config: max_workers=%s but the lanes hold %d always-open to %d total workers (%s). %s", mw, sum, full, strings.Join(caps, " "), advice))
 	} else if limit < full {
 		fmt.Fprintf(s.Out, "note   config: max_workers=%d allows creating a new worker in an on-demand lane only when a slot is free; spawn refuses creation when the limit is reached\n", limit)
 	} else {
