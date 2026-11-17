@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,8 @@ func TestDoctorSohoSkill(t *testing.T) {
 		warning string
 	}{
 		{"identical", ""},
+		{"crlf", ""},
+		{"crlf-changed", "differs from the skill of this build"},
 		{"changed-role", "differs from the skill of this build"},
 		{"extra", ""},
 		{"override", ""},
@@ -36,6 +39,25 @@ func TestDoctorSohoSkill(t *testing.T) {
 				t.Skipf("symlink unavailable: %v", err)
 			}
 			env := platform.Env{"HOME": home, "USERPROFILE": home, "XDG_CONFIG_HOME": home, "TMPDIR": home, "PATH": ""}
+			if strings.HasPrefix(tc.name, "crlf") {
+				err = filepath.WalkDir(dir, func(path string, entry fs.DirEntry, walkErr error) error {
+					if walkErr != nil || entry.IsDir() {
+						return walkErr
+					}
+					data, err := os.ReadFile(path)
+					if err != nil {
+						return err
+					}
+					data = bytes.ReplaceAll(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")), []byte("\n"), []byte("\r\n"))
+					if tc.name == "crlf-changed" && path == filepath.Join(dir, "SKILL.md") {
+						data = append(data, []byte("changed line\r\n")...)
+					}
+					return os.WriteFile(path, data, 0o600)
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			switch tc.name {
 			case "changed-role", "override":
 				err = os.WriteFile(filepath.Join(dir, "roles", "implementer.md"), []byte("stale"), 0o600)

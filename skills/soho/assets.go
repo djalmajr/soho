@@ -2,6 +2,7 @@
 package skill
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"embed"
@@ -51,11 +52,12 @@ func bundledFiles() ([]resource, string, error) {
 // MatchesEmbedded compares only files shipped in the embedded skill. Extra
 // files in dir are ignored; missing files differ and other read errors surface.
 func MatchesEmbedded(dir string) (bool, error) {
-	files, expected, err := bundledFiles()
+	files, _, err := bundledFiles()
 	if err != nil {
 		return false, err
 	}
 	hash := sha256.New()
+	expected := sha256.New()
 	for _, file := range files {
 		name := filepath.Join(dir, filepath.FromSlash(file.name))
 		info, err := os.Stat(name)
@@ -72,10 +74,17 @@ func MatchesEmbedded(dir string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		digest := sha256.Sum256(data)
+		body, embedded := data, file.data
+		if !bytes.ContainsRune(body, 0) && !bytes.ContainsRune(embedded, 0) {
+			body = bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
+			embedded = bytes.ReplaceAll(embedded, []byte("\r\n"), []byte("\n"))
+		}
+		digest := sha256.Sum256(body)
+		expectedDigest := sha256.Sum256(embedded)
 		fmt.Fprintf(hash, "%s\x00%x\n", file.name, digest)
+		fmt.Fprintf(expected, "%s\x00%x\n", file.name, expectedDigest)
 	}
-	return hex.EncodeToString(hash.Sum(nil)) == expected, nil
+	return bytes.Equal(hash.Sum(nil), expected.Sum(nil)), nil
 }
 
 // Materialize publishes immutable, verified bundled resources into a cache.
