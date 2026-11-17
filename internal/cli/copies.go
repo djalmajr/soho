@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1656,27 +1655,7 @@ func originMarkerPath(copyPath string) string {
 // source values; anything else — missing, unreadable or malformed — reads
 // as no origin marker.
 func readOriginMarker(markerPath string) (project, source string, ok bool) {
-	info, err := os.Lstat(markerPath)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return "", "", false
-	}
-	data, err := os.ReadFile(markerPath)
-	if err != nil {
-		return "", "", false
-	}
-	// Exactly three lines: only the third line's own terminator is dropped,
-	// so a blank fourth line (or any extra line) is malformed.
-	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
-	if len(lines) != 3 {
-		return "", "", false
-	}
-	project, foundProject := strings.CutPrefix(lines[0], "project=")
-	source, foundSource := strings.CutPrefix(lines[1], "source=")
-	_, foundCreated := strings.CutPrefix(lines[2], "created=")
-	if !foundProject || !foundSource || !foundCreated || project == "" || source == "" {
-		return "", "", false
-	}
-	return project, source, true
+	return core.ReadCopyOriginMarker(markerPath)
 }
 
 // copyOrigin classifies the marker beside an unregistered copy against the
@@ -1712,72 +1691,21 @@ func sameOriginProject(marker, current string) bool {
 // common dir of cwd (the current project's identity; "" when cwd is not in
 // a git repository).
 func gcUnregistered(env platform.Env, rows []core.CopyRow, now time.Time, threshold time.Duration, cwd string) []gcUnregisteredCopy {
-	registered := map[string]bool{}
-	for _, row := range rows {
-		registered[row.Path] = true
-		if resolved, err := filepath.EvalSymlinks(row.Path); err == nil {
-			registered[resolved] = true
-		}
-	}
 	current := ""
 	if project, err := gitCommonDirResolved(cwd, env); err == nil {
 		current = project
 	}
-	out := []gcUnregisteredCopy{}
-	for _, scanDir := range mutationCopyScanDirs(env, cwd) {
-		entries, err := os.ReadDir(scanDir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			path := filepath.Join(scanDir, entry.Name())
-			if !strings.HasPrefix(entry.Name(), "soho-mutation-") {
-				continue
-			}
-			info, statErr := os.Stat(path)
-			if statErr != nil || !info.IsDir() {
-				continue
-			}
-			resolved, resolveErr := filepath.EvalSymlinks(path)
-			if resolveErr != nil || registered[resolved] {
-				continue
-			}
-			age := now.Sub(info.ModTime())
-			if age <= threshold {
-				continue
-			}
-			out = append(out, gcUnregisteredCopy{path: path, age: age, origin: copyOrigin(path, current)})
-		}
+	entries := core.UnregisteredCopies(mutationCopyScanDirs(env, cwd), rows, now, threshold)
+	out := make([]gcUnregisteredCopy, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, gcUnregisteredCopy{path: entry.Path, age: entry.Age, origin: copyOrigin(entry.Path, current)})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
 	return out
 }
 
 // mutationCopyScanDirs deduplicates aliases so a copy is offered only once.
 func mutationCopyScanDirs(env platform.Env, cwd string) []string {
-	tmp := env.Get("TMPDIR")
-	if tmp == "" {
-		tmp = os.TempDir()
-	}
-	dirs := []string{filepath.Clean(tmp)}
-	ctx := core.LoadConfig(env, cwd)
-	configured, err := configuredCopiesDir(&ctx, env, cwd)
-	if err != nil || configured == "" {
-		return dirs
-	}
-	configured = filepath.Clean(configured)
-	if configured == dirs[0] {
-		return dirs
-	}
-	// The same directory under two spellings (a symlink, or a case-folded
-	// name on a case-insensitive filesystem) is scanned once: compare the
-	// directories' identities, not their names (R431).
-	if a, errA := os.Stat(dirs[0]); errA == nil {
-		if b, errB := os.Stat(configured); errB == nil && os.SameFile(a, b) {
-			return dirs
-		}
-	}
-	return append(dirs, configured)
+	return core.CopiesScanDirs(env, cwd)
 }
 
 func gcUsageError() int {
@@ -1852,7 +1780,10 @@ func humanSize(n int64) string { return core.HumanSize(n) }
 // copyDirSize sums the sizes of the regular files under root without
 // following symlinks: the shared walk moved to core (DirSize) so the
 // footprint measure and the copy measure cannot drift apart.
-func copyDirSize(root string) int64 { return core.DirSize(root) }
+func copyDirSize(root string) int64 {
+	size, _ := core.CopiesDirSize(context.Background(), root)
+	return size
+}
 
 // gcCopyDirSize is the measurement seam; other copy consumers keep using
 // copyDirSize directly.
