@@ -25,7 +25,7 @@ func ownedLabel(line string) (negative, positive bool, remainder string) {
 	}
 	name := normalizeBriefHeading(strings.TrimSpace(strings.TrimRight(line[:colon], "*_ \t")))
 	switch name {
-	case "proibido", "forbidden", "nao tocar", "do not touch", "fora do escopo", "out of scope":
+	case "proibido", "proibidos", "forbidden", "nao tocar", "do not touch", "fora do escopo", "out of scope":
 		return true, false, ""
 	case "pode tocar", "owned", "may edit", "arquivos proprios", "arquivos de posse":
 		return false, true, ownedLabelValue(line[colon+1:], strings.TrimSpace(labelEmphasis))

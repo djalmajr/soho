@@ -31,7 +31,7 @@ var briefSectionPortugueseHeadings = map[string][]string{
 	"Goal":            {"Objetivo", "Meta"},
 	"Expected result": {"Resultado esperado", "Critérios de aceitação", "Critérios de aceite", "Pronto quando"},
 	"Owned files":     {"Arquivos"},
-	"Forbidden":       {"Proibido", "Fora do escopo", "Restrições"},
+	"Forbidden":       {"Proibido", "Proibidos", "Fora do escopo", "Restrições"},
 	"Report":          {"Relatório"},
 }
 
@@ -95,6 +95,13 @@ func ParseBriefLintAliases(value string) (map[string][]string, []string) {
 		if eq >= 0 {
 			name = item[:eq]
 			for _, heading := range strings.Split(item[eq+1:], "|") {
+				// A heading title never starts with the spaces after the
+				// ATX marker (briefHeadingTitle skips them), so leading
+				// spaces could never match and are dropped: the spelling the
+				// warning lists is the one a pasted heading matches. A
+				// trailing space stays: it is a word delimiter ("Edit "
+				// accepts "Edit scope", not "Editorial notes"; R568).
+				heading = strings.TrimLeft(heading, " ")
 				if heading != "" {
 					heads = append(heads, heading)
 				}
@@ -223,6 +230,34 @@ func MissingSectionsReasons(missing string) string {
 		}
 	}
 	return strings.Join(reasons, "; ")
+}
+
+// missingAcceptedHeadings renders only standard missing sections, deduplicated
+// using the same normalization as heading matching.
+func missingAcceptedHeadings(missing string, aliases map[string][]string) string {
+	var sections []string
+	for _, match := range missingSectionPattern.FindAllStringSubmatch(missing, -1) {
+		label := match[1]
+		if _, ok := briefSectionHeadings[label]; !ok {
+			continue
+		}
+		seen := map[string]bool{}
+		var headings []string
+		for _, group := range [][]string{briefSectionHeadings[label], briefSectionPortugueseHeadings[label], aliases[label]} {
+			for _, heading := range group {
+				key := normalizeBriefHeading(heading)
+				if key != "" && !seen[key] {
+					seen[key] = true
+					headings = append(headings, heading)
+				}
+			}
+		}
+		sections = append(sections, label+": "+strings.Join(headings, ", "))
+	}
+	if len(sections) == 0 {
+		return ""
+	}
+	return "accepted headings: " + strings.Join(sections, "; ") + "; add your own with brief_lint_aliases=<Section>=<Heading>|<Heading>"
 }
 
 // FailureMatrixMissing checks only a level 1-3 Failure matrix section.
@@ -527,6 +562,9 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 	message := fmt.Sprintf("brief %s is missing sections:%s", brief, missingList)
 	if reasons := MissingSectionsReasons(missingList); reasons != "" {
 		message += " — " + reasons
+	}
+	if accepted := missingAcceptedHeadings(missing, aliases); accepted != "" {
+		message += " — " + accepted
 	}
 	if result.MissingMessage != "" {
 		result.MissingMessage += "; "

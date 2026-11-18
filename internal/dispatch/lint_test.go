@@ -308,6 +308,9 @@ func stripUnfilledPlaceholderMarks(message string) string {
 		return message
 	}
 	rest := unfilledPlaceholderBracket.ReplaceAllString(message[idx+len(separator):], "")
+	if suffix := strings.Index(rest, " — accepted headings:"); suffix >= 0 {
+		rest = rest[:suffix]
+	}
 	if strings.TrimSpace(rest) == "" {
 		return ""
 	}
