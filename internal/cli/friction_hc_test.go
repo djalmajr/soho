@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/djalmajr/soho/internal/platform"
 )
 
 // SOH-291: the CLI entry supplies the same existing session log to each
@@ -172,5 +174,149 @@ func TestHcFrictionPathUsesStateDirOverride(t *testing.T) {
 	log, err := os.ReadFile(filepath.Join(sd, "friction.log"))
 	if err != nil || !strings.Contains(string(log), "warning\tdispatch\t") {
 		t.Fatalf("override log=%q err=%v", log, err)
+	}
+}
+
+func TestHcReadCommandsDoNotInitializeState(t *testing.T) {
+	for _, args := range [][]string{{"status"}, {"roster"}, {"friction"}, {"collect", "missing"}, {"wait", "missing", "--observe"}} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			env, repo := commandFixture(t)
+			env, _ = hcFixture(t, env, repo, "t1")
+			delete(env, "SOHO_DIR")
+			sd := filepath.Join(repo, ".soho", "ws")
+			code, out, stderr := runIn(t, args, env, repo)
+			if _, err := os.Stat(sd); !os.IsNotExist(err) {
+				t.Fatalf("%v created state %s: %v", args, sd, err)
+			}
+			if _, err := os.Stat(filepath.Join(repo, ".gitignore")); !os.IsNotExist(err) {
+				t.Fatalf("unexpected gitignore: %v", err)
+			}
+			for _, name := range []string{"briefs", "reports", "wait"} {
+				if err := os.MkdirAll(filepath.Join(sd, name), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte("# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			baselineCode, baselineOut, baselineErr := runIn(t, args, env, repo)
+			if code != baselineCode || out != baselineOut || stderr != baselineErr {
+				t.Fatalf("%v absent=(%d,%q), existing=(%d,%q)", args, code, out, baselineCode, baselineOut)
+			}
+		})
+	}
+}
+
+func TestHcFrictionReadsExistingState(t *testing.T) {
+	env, repo := commandFixture(t)
+	env, _ = hcFixture(t, env, repo, "t1")
+	sd := filepath.Join(env["SOHO_DIR"], "ws")
+	if err := os.MkdirAll(sd, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sd, "friction.log"), []byte("existing-entry\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, stderr := runIn(t, []string{"friction"}, env, repo)
+	if code != 0 || !strings.Contains(out, "existing-entry\n") {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+	}
+}
+
+func TestHcReadRejectsStateFile(t *testing.T) {
+	env, repo := commandFixture(t)
+	env, _ = hcFixture(t, env, repo, "t1")
+	sd := filepath.Join(env["SOHO_DIR"], "ws")
+	if err := os.WriteFile(sd, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runIn(t, []string{"status"}, env, repo)
+	if code != 4 || strings.Count(stderr, "\n") != 1 || !strings.Contains(stderr, sd) {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+// R553: a dangling symlink at the session path is not an absent state.
+func TestHcReadRejectsDanglingStateLink(t *testing.T) {
+	env, repo := commandFixture(t)
+	env, _ = hcFixture(t, env, repo, "t1")
+	sd := filepath.Join(env["SOHO_DIR"], "ws")
+	if err := os.Symlink(filepath.Join(env["SOHO_DIR"], "missing-volume"), sd); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runIn(t, []string{"status"}, env, repo)
+	if code != 4 || strings.Count(stderr, "\n") != 1 || !strings.Contains(stderr, sd) {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(env["SOHO_DIR"], "missing-volume")); !os.IsNotExist(err) {
+		t.Fatalf("the link target was created: %v", err)
+	}
+}
+
+func TestHcExistingStateUnwritableGitignore(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses file permissions")
+	}
+	env, repo := commandFixture(t)
+	env, _ = hcFixture(t, env, repo, "t1")
+	env["SOHO_DIR"] = ".soho"
+	if err := os.MkdirAll(filepath.Join(repo, ".soho", "ws"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("sentinel\n"), 0444); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runIn(t, []string{"status"}, env, repo)
+	if code != 4 || strings.Count(stderr, "\n") != 1 || !strings.Contains(stderr, ".gitignore") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestLegacyCollectMissingInitializesFriction(t *testing.T) {
+	env, repo := fakeHerdrCodexFixture(t)
+	env["HERDR_ENV"] = "1"
+	code, _, stderr := runIn(t, []string{"collect", "missing"}, env, repo)
+	log, err := os.ReadFile(filepath.Join(env["SOHO_DIR"], "ws", "friction.log"))
+	if err != nil || !strings.Contains(string(log), "no report file yet") {
+		t.Fatalf("code=%d stderr=%q log=%q err=%v", code, stderr, log, err)
+	}
+}
+
+func TestHcFreshStatusPressure(t *testing.T) {
+	env, repo := commandFixture(t)
+	env, _ = hcFixture(t, env, repo, "t1")
+	delete(env, "SOHO_DIR")
+	env["SOHO_PRESSURE_DISK_FREE_PERCENT"] = "15"
+	env["SOHO_PRESSURE_DISK_FREE_MIN_GB"] = "0"
+	env["SOHO_PRESSURE_SWAP_PERCENT"] = "0"
+	oldDisk, oldSwap := platform.DiskFree, platform.SwapUsage
+	platform.DiskFree = func(string) (int64, int64, bool) { return 9, 100, true }
+	platform.SwapUsage = func(platform.Env) (int64, int64, bool) { return 0, 0, false }
+	t.Cleanup(func() { platform.DiskFree, platform.SwapUsage = oldDisk, oldSwap })
+	sd := filepath.Join(repo, ".soho", "ws")
+	marker := filepath.Join(sd, "wait", "pressure-warned")
+	code, _, stderr := runIn(t, []string{"status"}, env, repo)
+	if code != 0 || !strings.Contains(stderr, "resource pressure") {
+		t.Fatalf("absent code=%d stderr=%q", code, stderr)
+	}
+	if _, err := os.Stat(sd); !os.IsNotExist(err) {
+		t.Fatalf("state created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".gitignore")); !os.IsNotExist(err) {
+		t.Fatalf("gitignore created: %v", err)
+	}
+	if err := os.MkdirAll(sd, 0700); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr = runIn(t, []string{"status"}, env, repo)
+	if code != 0 || !strings.Contains(stderr, "resource pressure") {
+		t.Fatalf("existing code=%d stderr=%q", code, stderr)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("marker: %v", err)
+	}
+	code, _, stderr = runIn(t, []string{"status"}, env, repo)
+	if code != 0 || strings.Contains(stderr, "resource pressure") {
+		t.Fatalf("throttle code=%d stderr=%q", code, stderr)
 	}
 }

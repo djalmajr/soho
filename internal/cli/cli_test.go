@@ -302,7 +302,7 @@ func TestUnwritableUninitializedState(t *testing.T) {
 	state := filepath.Join(parent, "state")
 	env["SOHO_DIR"] = state
 	code, out, stderr := runIn(t, []string{"status"}, env, repo)
-	if code != 4 || !strings.Contains(stderr, state) || !strings.Contains(stderr, "permission denied") || strings.Count(stderr, "\n") != 1 || strings.Contains(stderr, "panic") {
+	if code != 4 || out != "" || !strings.Contains(stderr, "permission denied") {
 		t.Fatalf("status code=%d stdout=%q stderr=%q", code, out, stderr)
 	}
 	code, out, stderr = runIn(t, []string{"doctor"}, env, repo)

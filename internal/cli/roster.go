@@ -143,7 +143,10 @@ func cmdRoster(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 	if !ok {
 		platform.Die("usage: roster [--scope workspace|server] [--json]", 2)
 	}
-	sd := core.StateDir(ctx, env, cwd)
+	sd, exists := core.StateDirExisting(ctx, env, cwd)
+	if exists {
+		sd = core.StateDirInitExisting(ctx, env, cwd, sd)
+	}
 	svc := backend.New(env)
 	ws := core.WorkspaceID(ctx, env, cwd)
 	var live, panes, tabs []any

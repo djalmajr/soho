@@ -1864,7 +1864,16 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	if wake && observe {
 		core.DieFriction("wait: --wake and --observe do not combine: --observe is the probe the --wake child runs", 2, "", "wait")
 	}
-	sd := core.StateDir(ctx, env, cwd)
+	var sd string
+	if observe {
+		var exists bool
+		sd, exists = core.StateDirExisting(ctx, env, cwd)
+		if exists {
+			sd = core.StateDirInitExisting(ctx, env, cwd, sd)
+		}
+	} else {
+		sd = core.StateDir(ctx, env, cwd)
+	}
 	for _, agent := range agents {
 		if core.RosterLine(sd, agent) == "" {
 			message := "agent '" + agent + "' is not in the roster (state dir: " + sd + ")"

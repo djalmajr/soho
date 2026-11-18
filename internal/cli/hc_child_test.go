@@ -87,8 +87,8 @@ func TestHcChildGuard(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("status: code=%d stderr=%q", code, stderr)
 			}
-			if _, err := os.Stat(filepath.Join(state, "hc-tchild", "agents.tsv")); err != nil {
-				t.Fatalf("own state not initialized: %v; stderr=%q", err, stderr)
+			if _, err := os.Stat(filepath.Join(state, "hc-tchild")); !os.IsNotExist(err) {
+				t.Fatalf("status created own state: %v; stderr=%q", err, stderr)
 			}
 		})
 	}

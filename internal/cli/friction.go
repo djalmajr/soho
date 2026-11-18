@@ -135,7 +135,16 @@ func cmdFriction(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	if sub != "" && (sinceRaw != "" || level != "" || command != "" || agent != "" || summary || patterns || jsonOut) {
 		platform.DieFriction("friction: unknown option "+filterFlag, 2)
 	}
-	sd := core.StateDir(ctx, env, cwd)
+	var sd string
+	if sub == "" {
+		var exists bool
+		sd, exists = core.StateDirExisting(ctx, env, cwd)
+		if exists {
+			sd = core.StateDirInitExisting(ctx, env, cwd, sd)
+		}
+	} else {
+		sd = core.StateDir(ctx, env, cwd)
+	}
 	logPath := filepath.Join(sd, "friction.log")
 	if sub == "" {
 		filtered := sinceRaw != "" || level != "" || command != "" || agent != "" || summary || patterns || jsonOut

@@ -78,7 +78,9 @@ func pressureCheck(ctx *Config, env platform.Env, cwd string, throttle bool) {
 	}
 	_, _ = fmt.Fprintf(platform.Stderr, "soho: resource pressure: %s; run 'soho gc' and close idle panes before opening more\n", strings.Join(parts, "; "))
 	if throttle {
-		stampPressure(stateDir)
+		if info, err := os.Stat(stateDir); err == nil && info.IsDir() {
+			stampPressure(stateDir)
+		}
 	}
 }
 
