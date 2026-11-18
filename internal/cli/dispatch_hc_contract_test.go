@@ -820,6 +820,10 @@ func TestDispatchR560Review(t *testing.T) {
 			}
 			f := newDispatchHcFixture(t, nil)
 			f.env["SOHO_PROMPT_SETTLE_SECONDS"] = "0"
+			if scenario == "claude-unrelated-queue" {
+				// The guarded send shares this budget with its capability probes.
+				f.env["SOHO_PROMPT_CHECK_SECONDS"] = "30"
+			}
 			rosterPath := filepath.Join(f.sd, "agents.tsv")
 			roster, err := os.ReadFile(rosterPath)
 			if err != nil {
@@ -917,8 +921,12 @@ func TestDispatchR560Review(t *testing.T) {
 			if code != 0 || status != "queued" || strings.Contains(stderr, "queued text not seen") {
 				t.Errorf("expected accepted queued dispatch without a screen warning")
 			}
-			if scenario == "slow-screen" && elapsed >= 3*time.Second {
-				t.Errorf("slow screen read exceeded one-second prompt-check budget plus process overhead")
+			if scenario == "slow-screen" {
+				for _, call := range f.hcCalls(t) {
+					if len(call.Argv) > 0 && call.Argv[0] == "read" {
+						t.Errorf("HC dispatch read the slow screen: %v", call.Argv)
+					}
+				}
 			}
 		})
 	}
