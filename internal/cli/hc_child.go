@@ -13,7 +13,7 @@ import (
 
 // refuseOrchestratorChild runs before command dispatch and does not initialize state.
 func refuseOrchestratorChild(args []string, env platform.Env) {
-	if len(args) == 0 || args[0] == "help" || args[0] == "version" || args[0] == "--version" || args[0] == "--help" || args[0] == "-h" || (len(args) > 1 && (args[1] == "--help" || args[1] == "-h")) {
+	if len(args) == 0 || (args[0] != "spawn" && args[0] != "init") || (len(args) > 1 && (args[1] == "--help" || args[1] == "-h")) {
 		return
 	}
 	child := env.Get("HC_TERMINAL_ID")
@@ -32,14 +32,27 @@ func refuseOrchestratorChild(args []string, env platform.Env) {
 		return
 	}
 	root := core.StateRootPath(&cfg, env, cwd)
-	if _, err := os.Lstat(filepath.Join(root, "hc-"+child)); !os.IsNotExist(err) {
+	ownSession, err := hcbackend.Session(env)
+	if err != nil || !sessionmeta.ValidSessionID(ownSession) {
+		return
+	}
+	if _, err := os.Lstat(filepath.Join(root, ownSession)); !os.IsNotExist(err) {
 		return
 	}
 	parent, err := hcbackend.Parent(env)
 	if err != nil || parent == "" || parent == child || !sessionmeta.ValidSessionID("hc-"+parent) {
 		return
 	}
-	record, found, err := (sessionmeta.Store{StateBase: root, SessionID: "hc-" + parent}).Read()
+	parentEnv := make(platform.Env, len(env))
+	for k, v := range env {
+		parentEnv[k] = v
+	}
+	parentEnv["HC_TERMINAL_ID"] = parent
+	parentSession, err := hcbackend.Session(parentEnv)
+	if err != nil || !sessionmeta.ValidSessionID(parentSession) {
+		return
+	}
+	record, found, err := (sessionmeta.Store{StateBase: root, SessionID: parentSession}).Read()
 	if err != nil || !found || record.Terminal != parent {
 		return
 	}
