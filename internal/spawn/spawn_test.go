@@ -15,6 +15,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	SetCodexNoDaemonForTest(false)
 	testutil.CalmPressure()
 	fakecli.RunTests(m)
 }

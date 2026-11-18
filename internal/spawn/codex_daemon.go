@@ -14,6 +14,11 @@ var codexHelp = func(env platform.Env, cwd string) platform.RunResult {
 var codexNoDaemonOnce sync.Once
 var codexNoDaemonSupported bool
 
+// SetCodexNoDaemonForTest fixes the cached answer before tests run.
+func SetCodexNoDaemonForTest(supported bool) {
+	codexNoDaemonOnce.Do(func() { codexNoDaemonSupported = supported })
+}
+
 // CodexSupportsNoDaemon checks only CLI help, at most once per soho process.
 func CodexSupportsNoDaemon(env platform.Env, cwd string) bool {
 	codexNoDaemonOnce.Do(func() {

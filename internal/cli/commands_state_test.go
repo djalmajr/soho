@@ -13,6 +13,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/spawn"
 	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
@@ -22,6 +23,7 @@ var packageDir string
 var packageDirErr error
 
 func TestMain(m *testing.M) {
+	spawn.SetCodexNoDaemonForTest(false)
 	testutil.CalmPressure()
 
 	managedCLIHelperMain()
