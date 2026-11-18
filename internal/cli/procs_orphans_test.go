@@ -178,7 +178,7 @@ func TestProcsOrphanBlockAbsentAndWindowsLine(t *testing.T) {
 			t.Fatalf("procs: code=%d err=%q out=%q; want %q", code, errOut, out, want)
 		}
 		code, out, errOut = o.run(t, "gc")
-		if code != 0 || errOut != "" || strings.Contains(out, "unregistered orphan") || strings.Contains(out, "not detected") {
+		if code != 0 || errOut != "" || strings.Contains(out, "unregistered orphan") || strings.Contains(out, "unregistered processes: not detected") {
 			t.Fatalf("gc: code=%d err=%q out=%q; gc shows no orphan block on Windows", code, errOut, out)
 		}
 	})
@@ -197,7 +197,7 @@ func TestGcOrphanDryRun(t *testing.T) {
 		fakeOrphan(4000006, "other", o.outside, 3*time.Hour),
 		fakeOrphan(4000008, "tsc", filepath.Join(o.copy, "young"), 30*time.Minute),
 	}, nil)
-	pressure := "resource pressure: none (disk 60% free, swap 30% used)\n"
+	pressure := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\n"
 	t.Run("default --older-than", func(t *testing.T) {
 		code, out, errOut := o.run(t, "gc")
 		want := pressure + "unregistered orphan processes in this project:\n" +
@@ -447,7 +447,7 @@ func TestGcDashRowOrphanByPane(t *testing.T) {
 			row := procsStopRow(t, f, f.sleeper(t), "-")
 			row.Pane = "p-orch"
 			f.writeProcs(t, row)
-			pressure := "resource pressure: none (disk 60% free, swap 30% used)\n"
+			pressure := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\n"
 			alive := mode == "pane-alive"
 			code, out, errOut := f.run(t, "gc")
 			if code != 0 || errOut != "" {

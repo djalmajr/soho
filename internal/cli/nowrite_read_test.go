@@ -44,7 +44,7 @@ const nowriteExplainRunning = "Panels: 4 (+1 for risky code).\nbuild: implemente
 // of the footprint line with the placeholders nowriteExplainRunning uses.
 var nowriteFootprintSizes = regexp.MustCompile(`Footprint: [0-9.]+ (?:B|KB|MB) logical size \(copies 3\.0 KB in 2, state [0-9.]+ (?:B|KB|MB),`)
 
-const nowriteGcNoneLine = "resource pressure: none (disk 60% free, swap 30% used)\n"
+const nowriteGcNoneLine = "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\n"
 
 type nowriteTreeEntry struct {
 	size int64
@@ -456,28 +456,42 @@ func TestGcShowsThePressureLine(t *testing.T) {
 		{
 			name: "below percent but above floor", diskFreeGB: 10, diskOK: true, swapUsedGB: 30, swapOK: true,
 			env:  platform.Env{"SOHO_PRESSURE_DISK_FREE_MIN_GB": "5"},
-			want: "resource pressure: none (disk 10% free, swap 30% used)",
+			want: "resource pressure: not detected (disk 10% free, limit 15% / 5 GiB; swap 30% used, limit 80%)",
 		},
 		{
 			name: "floor equality", diskFreeGB: 10, diskOK: true, swapUsedGB: 30, swapOK: true,
 			env:  platform.Env{"SOHO_PRESSURE_DISK_FREE_MIN_GB": "10"},
-			want: "resource pressure: none (disk 10% free, swap 30% used)",
+			want: "resource pressure: not detected (disk 10% free, limit 15% / 10 GiB; swap 30% used, limit 80%)",
+		},
+		{
+			name: "exact large floor", diskFreeGB: 60, diskOK: true, swapUsedGB: 30, swapOK: true,
+			env:  platform.Env{"SOHO_PRESSURE_DISK_FREE_MIN_GB": "1025"},
+			want: "resource pressure: not detected (disk 60% free, limit 15% / 1025 GiB; swap 30% used, limit 80%)",
+		},
+		{
+			name: "percent equality", diskFreeGB: 15, diskOK: true, swapUsedGB: 80, swapOK: true,
+			want: "resource pressure: not detected (disk 15% free, limit 15% / 20 GiB; swap 80% used, limit 80%)",
+		},
+		{
+			name: "disabled limits", diskFreeGB: 10, diskOK: true, swapUsedGB: 90, swapOK: true,
+			env:  platform.Env{"SOHO_PRESSURE_DISK_FREE_PERCENT": "0", "SOHO_PRESSURE_DISK_FREE_MIN_GB": "1025", "SOHO_PRESSURE_SWAP_PERCENT": "0"},
+			want: "resource pressure: not detected (disk 10% free, limit off; swap 90% used, limit off)",
 		},
 		{
 			name: "none", diskFreeGB: 60, diskOK: true, swapUsedGB: 30, swapOK: true,
-			want: "resource pressure: none (disk 60% free, swap 30% used)",
+			want: "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)",
 		},
 		{
 			name: "disk not measured", diskFreeGB: 0, diskOK: false, swapUsedGB: 30, swapOK: true,
-			want: "resource pressure: none (disk not measured, swap 30% used)",
+			want: "resource pressure: not detected (disk not measured; swap 30% used, limit 80%)",
 		},
 		{
 			name: "swap not measured", diskFreeGB: 60, diskOK: true, swapUsedGB: 0, swapOK: false,
-			want: "resource pressure: none (disk 60% free, swap not measured)",
+			want: "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap not measured)",
 		},
 		{
 			name: "nothing measured", diskFreeGB: 0, diskOK: false, swapUsedGB: 0, swapOK: false,
-			want: "resource pressure: none (disk not measured, swap not measured)",
+			want: "resource pressure: not measured (disk not measured, swap not measured)",
 		},
 		{
 			name: "pressure with swap not measured", diskFreeGB: 3, diskOK: true, swapUsedGB: 0, swapOK: false,

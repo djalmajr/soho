@@ -219,7 +219,7 @@ func TestGcUnregisteredOrigin(t *testing.T) {
 		if code != 0 || errOut != "" {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
-		want := "resource pressure: none (disk 60% free, swap 30% used)\n" +
+		want := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\n" +
 			gcUnregisteredHeader + "\n" +
 			bare + "  40 B  3h  no origin marker\n" +
 			own + "  40 B  3h  this project\n" +
@@ -245,7 +245,7 @@ func TestGcUnregisteredOrigin(t *testing.T) {
 		if code != 0 || errOut != "" {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
-		want := "resource pressure: none (disk 60% free, swap 30% used)\n" +
+		want := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\n" +
 			gcUnregisteredHeader + "\n" +
 			bare + "  40 B  3h  no origin marker\n" +
 			"1 unregistered copy of other projects (40 B) is not listed; 'soho gc --verbose' lists them\n" +
@@ -265,11 +265,12 @@ func TestGcUnregisteredOrigin(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
-		want := "resource pressure: none (disk 60% free, swap 30% used)\n" +
+		want := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\n" +
 			gcUnregisteredHeader + "\n" +
 			"kept " + bare + " (no origin marker)\n" +
 			"kept " + other + " (another project: /nonexistent/other)\n" +
 			"removed " + own + "  40 B\n" +
+			"kept: 2 copies not removed (listed above)\n" +
 			"freed: 40 B (logical size; see volume free below)\n" + gcUnchangedVolume(own) + "\n"
 		if out != want {
 			t.Fatalf("stdout:\n got:  %q\nwant: %q", out, want)

@@ -678,7 +678,7 @@ func TestGc(t *testing.T) {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
 		want := strings.Join([]string{
-			"resource pressure: none (disk 60% free, swap 30% used)",
+			"resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)",
 			"would remove " + l.oldOrphan + "  25 B  ghost  3h",
 			"would remove " + l.missing + "  0 B  worker  3h",
 			"total: 25 B",
@@ -707,7 +707,7 @@ func TestGc(t *testing.T) {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
 		want := strings.Join([]string{
-			"resource pressure: none (disk 60% free, swap 30% used)",
+			"resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)",
 			"removed " + l.oldOrphan + "  25 B",
 			"removed " + l.missing + "  0 B",
 			gcUnregisteredHeader,
@@ -771,10 +771,11 @@ func TestGc(t *testing.T) {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
 		want := strings.Join([]string{
-			"resource pressure: none (disk 60% free, swap 30% used)",
+			"resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)",
 			gcUnregisteredHeader,
 			"removed " + l.unreg + "  40 B",
 			"kept " + link + " (is a symlink" + gcKeptGuardSuffixText + ")",
+			"kept: 1 copy not removed (listed above)",
 			"freed: 40 B (logical size; see volume free below)", gcUnchangedVolume(l.unreg),
 		}, "\n") + "\n"
 		if out != want {
@@ -839,7 +840,7 @@ func TestGc(t *testing.T) {
 		if code != 0 || errOut != "" {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
-		want := "resource pressure: none (disk 60% free, swap 30% used)\nnothing to remove\n"
+		want := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\nnothing to remove\n"
 		if out != want {
 			t.Fatalf("stdout=%q; want %q", out, want)
 		}
@@ -865,7 +866,7 @@ func TestGc(t *testing.T) {
 		if code != 0 || errOut != "" {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
-		want := "resource pressure: none (disk 60% free, swap 30% used)\n" +
+		want := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\n" +
 			gcUnregisteredHeader + "\n" +
 			unreg + "  40 B  3h  this project\n" +
 			"run 'soho gc --yes --include-unregistered' to remove the unregistered ones\n"
@@ -884,7 +885,7 @@ func TestGc(t *testing.T) {
 		if code != 0 || errOut != "" {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
-		want := "resource pressure: none (disk 60% free, swap 30% used)\nnothing to remove\n"
+		want := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\nnothing to remove\n"
 		if out != want {
 			t.Fatalf("stdout=%q; want %q", out, want)
 		}
@@ -1231,7 +1232,7 @@ func idleRules(state string) []fakecli.Rule {
 	return []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentStatusJSON(state)}}
 }
 
-const gcPressureNone = "resource pressure: none (disk 60% free, swap 30% used)"
+const gcPressureNone = "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)"
 
 func (g *idleGc) wantOffered(t *testing.T) {
 	t.Helper()
@@ -1420,7 +1421,7 @@ func TestGcIdleOwnerCopies(t *testing.T) {
 		})
 		g.register(t)
 		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
-		want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "nothing to remove"}, "\n") + "\n"
+		want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "kept: 1 copy not removed (listed above)", "nothing to remove"}, "\n") + "\n"
 		if code != 0 || out != want {
 			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
 		}
@@ -1601,7 +1602,7 @@ func TestGcIdleOwnerCopyReadsTheCurrentLine(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-		want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "nothing to remove"}, "\n") + "\n"
+		want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "kept: 1 copy not removed (listed above)", "nothing to remove"}, "\n") + "\n"
 		if code != 0 || out != want {
 			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
 		}
@@ -1640,7 +1641,7 @@ func TestGcIdleOwnerCopyReadsTheCurrentLine(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-		want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "nothing to remove"}, "\n") + "\n"
+		want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "kept: 1 copy not removed (listed above)", "nothing to remove"}, "\n") + "\n"
 		if code != 0 || out != want {
 			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
 		}
@@ -1813,7 +1814,7 @@ func TestGcIdleOwnerLongPauseStaysOutsideTheLock(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-		want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "nothing to remove"}, "\n") + "\n"
+		want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "kept: 1 copy not removed (listed above)", "nothing to remove"}, "\n") + "\n"
 		if code != 0 || out != want {
 			t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
 		}
@@ -1939,7 +1940,7 @@ func TestGcIdleOwnerLockedSectionRunsFileOperationsOnly(t *testing.T) {
 func (g *idleGc) wantKeptBySection(t *testing.T) {
 	t.Helper()
 	code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
-	want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "nothing to remove"}, "\n") + "\n"
+	want := strings.Join([]string{gcPressureNone, "kept " + g.copy + " (the owner's state or task changed)", "kept: 1 copy not removed (listed above)", "nothing to remove"}, "\n") + "\n"
 	if code != 0 || out != want {
 		t.Fatalf("code=%d out=%q err=%q; want\n%s", code, out, errOut, want)
 	}
@@ -2024,7 +2025,7 @@ func TestGcIdleOwnerFailedRemovalLeavesTheDiscard(t *testing.T) {
 		writeTestOriginMarker(t, g.copy, gitCommonDirOf(t, g.f.repo, g.f.env), g.f.repo)
 		succeed := g.failRemoval(t)
 		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
-		if code != 0 || !strings.HasPrefix(out, gcPressureNone+"\nkept "+g.discard()+" (") || !strings.HasSuffix(out, "; not offered again; remove it by hand)\nnothing to remove\n") || strings.Contains(out, "removed ") {
+		if code != 0 || !strings.HasPrefix(out, gcPressureNone+"\nkept "+g.discard()+" (") || !strings.HasSuffix(out, "; not offered again; remove it by hand)\nkept: 1 copy not removed (listed above)\nnothing to remove\n") || strings.Contains(out, "\nremoved ") {
 			t.Fatalf("code=%d out=%q err=%q; want the discard kept, to remove by hand", code, out, errOut)
 		}
 		if rows := g.f.copiesRows(t); len(rows) != 0 {
@@ -2053,7 +2054,7 @@ func TestGcIdleOwnerFailedRemovalLeavesTheDiscard(t *testing.T) {
 		writeTestOriginMarker(t, g.copy, gitCommonDirOf(t, g.f.repo, g.f.env), g.f.repo)
 		succeed := g.failRemoval(t)
 		code, out, errOut := g.f.run(t, g.f.env, "gc", "--yes")
-		if code != 0 || !strings.HasPrefix(out, gcPressureNone+"\nkept "+g.discard()+" (") || !strings.HasSuffix(out, "; gc --include-unregistered removes it once older than --older-than)\nnothing to remove\n") || strings.Contains(out, "removed ") {
+		if code != 0 || !strings.HasPrefix(out, gcPressureNone+"\nkept "+g.discard()+" (") || !strings.HasSuffix(out, "; gc --include-unregistered removes it once older than --older-than)\nkept: 1 copy not removed (listed above)\nnothing to remove\n") || strings.Contains(out, "\nremoved ") {
 			t.Fatalf("code=%d out=%q err=%q; want the discard kept, for gc --include-unregistered", code, out, errOut)
 		}
 		if rows := g.f.copiesRows(t); len(rows) != 0 {

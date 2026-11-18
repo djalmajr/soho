@@ -53,3 +53,5 @@ When the brief names a review with a `Review:` line, the report carries a `## Re
 </report>
 
 When you replace a mutation copy with a newer one, release the old one with `soho copies release <path>` from outside the copy; keep the copy whose files your report cites for the worker’s release.
+
+Never create Git metadata inside a mutation copy (no git init, no clone into it): gc refuses to remove a copy that has a .git at its top level, as if it were another repository; compare with the source by diff or by the recorded sha256 instead.

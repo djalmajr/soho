@@ -729,6 +729,22 @@ func TestReviewRolesRegisterTheirCopies(t *testing.T) {
 	}
 }
 
+func TestMutationCopyRolesForbidGit(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("soho", "roles"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		body := roleBody(t, entry.Name())
+		if strings.Contains(body, "mutation-copy") && !strings.Contains(body, "Never create Git metadata inside a mutation copy (no git init, no clone into it): gc refuses to remove a copy that has a .git at its top level, as if it were another repository; compare with the source by diff or by the recorded sha256 instead.") {
+			t.Errorf("%s: missing mutation copy rule", entry.Name())
+		}
+	}
+}
+
 // The pre-move embedded tree contained these 35 files; the count and two
 // representative paths guard the package boundary and embed patterns.
 func TestEmbeddedTreeBeforePackageMove(t *testing.T) {

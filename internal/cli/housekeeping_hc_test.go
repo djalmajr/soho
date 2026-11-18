@@ -235,7 +235,7 @@ func TestHcGcCopies(t *testing.T) {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
 		want := strings.Join([]string{
-			"resource pressure: none (disk 60% free, swap 30% used)",
+			"resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)",
 			"would remove " + l.oldOrphan + "  25 B  ghost  3h",
 			"would remove " + l.missing + "  0 B  worker  3h",
 			"total: 25 B",
@@ -264,7 +264,7 @@ func TestHcGcCopies(t *testing.T) {
 			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 		}
 		want := strings.Join([]string{
-			"resource pressure: none (disk 60% free, swap 30% used)",
+			"resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)",
 			"removed " + l.oldOrphan + "  25 B",
 			"removed " + l.missing + "  0 B",
 			gcUnregisteredHeader,
@@ -297,7 +297,7 @@ func TestHcGcCopies(t *testing.T) {
 // while the listing fails it is unverified: listed, never offered, never
 // removed by --yes.
 func TestHcGcUnrosteredCallerCopy(t *testing.T) {
-	pressure := "resource pressure: none (disk 60% free, swap 30% used)\n"
+	pressure := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\n"
 	for _, mode := range []string{"terminal-live", "terminal-unverifiable", "terminal-absent", "listing-record-without-address", "listing-record-with-a-numeric-address"} {
 		t.Run(mode, func(t *testing.T) {
 			oldDisk, oldSwap := platform.DiskFree, platform.SwapUsage
@@ -586,7 +586,7 @@ func TestHcGcProcesses(t *testing.T) {
 		core.ProcRow{Pid: gone, Started: "Sun Oct  3 00:00:00 2026", Name: "sleep", Owner: "ghost", Pane: "-", Created: core.FrictionISO(platform.Now())},
 	)
 	code, out, errOut := f.run(t, "gc")
-	want := "resource pressure: none (disk 60% free, swap 30% used)\norphan processes:\n" +
+	want := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\norphan processes:\n" +
 		strconv.Itoa(orphan) + "  " + orphanName + "  ghost  0m\n" +
 		"run 'soho gc --yes' to stop them\n"
 	if code != 0 || errOut != "" || out != want {
@@ -643,7 +643,7 @@ func TestHcGcDashRowOrphanByTerminal(t *testing.T) {
 			row := procsStopRow(t, f, f.sleeper(t), "-")
 			row.Pane = "p-orch"
 			f.writeProcs(t, row)
-			pressure := "resource pressure: none (disk 60% free, swap 30% used)\n"
+			pressure := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\n"
 			alive := strings.HasPrefix(mode, "terminal-alive")
 			unverified := mode == "terminal-unverifiable"
 			kept := alive || unverified
