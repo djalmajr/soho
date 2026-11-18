@@ -44,9 +44,10 @@ func ConfigNativeArgs(kind, lane, role string, ctx *core.Config, env platform.En
 }
 
 // isCodexUpdateSetting is true for a "key=value" config override of
-// check_for_update_on_startup, quotes around the pair allowed.
+// check_for_update_on_startup as codex reads it: a token whose literal
+// quotes survived the shell is a different key to codex, so it is not one.
 func isCodexUpdateSetting(pair string) bool {
-	key, _, ok := strings.Cut(strings.Trim(pair, `"'`), "=")
+	key, _, ok := strings.Cut(pair, "=")
 	return ok && strings.TrimSpace(key) == "check_for_update_on_startup"
 }
 

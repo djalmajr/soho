@@ -78,7 +78,6 @@ func TestHasCodexUpdateConfigAttachedForms(t *testing.T) {
 		{"-c=check_for_update_on_startup=true"},
 		{"--config=check_for_update_on_startup=true"},
 		{"-ccheck_for_update_on_startup=true"},
-		{"-c", `"check_for_update_on_startup=true"`},
 	} {
 		if !hasCodexUpdateConfig(tokens) {
 			t.Errorf("%q not recognized as an explicit update setting", tokens)
@@ -89,6 +88,7 @@ func TestHasCodexUpdateConfigAttachedForms(t *testing.T) {
 		{"--config=model=o3"},
 		{"--cd", "check_for_update_on_startup=true"},
 		{"prompt", "-c", "check_for_update_on_startup=true"},
+		{"-c", `"check_for_update_on_startup=false"`},
 	} {
 		if hasCodexUpdateConfig(tokens) {
 			t.Errorf("%q wrongly recognized", tokens)
