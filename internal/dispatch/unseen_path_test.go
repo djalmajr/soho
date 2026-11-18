@@ -403,3 +403,41 @@ func TestUnseenPathWarningsMalformedClosingBacktickRun(t *testing.T) {
 		}
 	})
 }
+
+// SOH-392: a path the brief forbids is not a citation the worker must find.
+func TestUnseenPathWarningsSkipForbiddenPaths(t *testing.T) {
+	root := t.TempDir()
+	worker := t.TempDir()
+	p := filepath.Join(root, "scripts", "preview.sh")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, body string
+		warns      bool
+	}{
+		{"under a Forbidden heading", "## Goal\nFix it.\n\n## Forbidden\n- `scripts/preview.sh` (local helper)\n", false},
+		{"under a Portuguese heading", "## Objetivo\nX.\n\n## Proibido\n- scripts/preview.sh (ajudante local)\n", false},
+		{"on a Forbidden label line", "Forbidden: scripts/preview.sh\n", false},
+		{"after Forbidden ends", "## Forbidden\nNothing.\n\n## Report\nRead `scripts/preview.sh`.\n", true},
+		{"outside Forbidden", "## Goal\nRead `scripts/preview.sh`.\n", true},
+		{"a fenced Forbidden example", "## Report\n```\n## Forbidden\n```\nRead `scripts/preview.sh`.\n", true},
+		{"on the Forbidden heading itself", "## Forbidden (`scripts/preview.sh`)\n- nothing else\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := unseenPathWarnings("brief.md", tc.body, worker, []string{root})
+			warned := false
+			for _, w := range got {
+				if strings.Contains(w, "cites 'scripts/preview.sh'") {
+					warned = true
+				}
+			}
+			if warned != tc.warns {
+				t.Fatalf("warned=%v want %v: %q", warned, tc.warns, got)
+			}
+		})
+	}
+}

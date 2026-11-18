@@ -734,7 +734,26 @@ func unseenPathWarnings(brief, body, workerCwd string, roots []string) []string 
 		seen[key] = true
 		out = append(out, fmt.Sprintf("brief %s line %d cites '%s', which the worker in %s does not find at that relative path; a matching path exists at %s under checkout %s, outside the worker tree; use it only if this brief intends that file", brief, line, candidate, workerCwd, absolute, matchedRoot))
 	}
+	// A path the brief forbids is not one the worker must find: lines under
+	// a Forbidden heading (until the next heading) and Forbidden label lines
+	// are not checked.
+	// Fenced lines (examples) never open or close a section, and a heading
+	// line itself is always checked: the state applies from the next line.
+	inForbidden := false
+	fenced := briefFenceMask(lines)
 	for i, line := range lines {
+		heading := false
+		if !fenced[i] {
+			if title, ok := briefHeadingTitle(line); ok {
+				heading = true
+				inForbidden = BriefSectionTitleMatches(title, "Forbidden", nil)
+			}
+		}
+		if !heading {
+			if negative, _, _ := ownedLabel(line); inForbidden || (negative && !fenced[i]) {
+				continue
+			}
+		}
 		// A span marked `example:` is an explicit citation, not a path the
 		// worker must find. Mask it before both the candidate extraction
 		// and the same-line absolute-path suppression, so a marked absolute
