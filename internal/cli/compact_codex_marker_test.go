@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"reflect"
 	"strconv"
 	"strings"
@@ -12,6 +13,17 @@ import (
 
 const codexRunningMarker = "  • Compacting context (21s • esc to interrupt)"
 
+// These fixture-driven cases terminate on screen evidence, not wall time.
+func compactFixtureBudget(t *testing.T) {
+	t.Helper()
+	oldContext, oldSleep := compactContext, compactSleep
+	compactContext = func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		return context.WithCancel(ctx)
+	}
+	compactSleep = func(context.Context, time.Duration) {}
+	t.Cleanup(func() { compactContext, compactSleep = oldContext, oldSleep })
+}
+
 func codexIncidentScreen(composer string) string {
 	return "earlier reply\n› /compact\n" + codexRunningMarker + "\n" + composer + "\nContext 0% used\n"
 }
@@ -20,6 +32,7 @@ func TestCompactCodexRunningMarkerIncident(t *testing.T) {
 	for _, composer := range []string{"›", "", "› /compact"} {
 		for _, markerRead := range []int{2, 3, 4} {
 			t.Run(composer+"/read="+strconv.Itoa(markerRead), func(t *testing.T) {
+				compactFixtureBudget(t)
 				fakeFastClock(t, 6*time.Second)
 				screen := codexIncidentScreen(composer)
 				line, ok := compactCodexComposerLine(screen)

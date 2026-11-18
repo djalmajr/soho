@@ -75,6 +75,7 @@ func TestCompactCodexScrolledSavedScreen(t *testing.T) {
 		{"clipped_base", strings.Replace(codex531SyntheticBefore(), "Context 49% used · 475K window · weekly 88% l…", "Context 49% used · …", 1), codex531SavedAfter, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			compactFixtureBudget(t)
 			fakeFastClock(t, 6*time.Second)
 			f := newCompactFixture(t, "codex", []fakecli.Rule{
 				{Argv: []string{"agent", "get", "worker"}, Stdout: compactStateJSON("idle", 1)},

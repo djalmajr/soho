@@ -80,7 +80,23 @@ type backend struct {
 	sessionValue string
 	sessionErr   error
 
-	abs func(string) (string, error)
+	abs            func(string) (string, error)
+	readyRemaining func(time.Time) time.Duration
+	readyContext   func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+}
+
+func (b *backend) readinessRemaining(deadline time.Time) time.Duration {
+	if b.readyRemaining != nil {
+		return b.readyRemaining(deadline)
+	}
+	return time.Until(deadline)
+}
+
+func (b *backend) readinessContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if b.readyContext != nil {
+		return b.readyContext(ctx, timeout)
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 func (b *backend) absPath(path string) (string, error) {
@@ -1603,10 +1619,10 @@ func (b *backend) waitReady(ctx context.Context, call transport.Call, name, addr
 		if err := ctx.Err(); err != nil {
 			return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCancelled, Message: err.Error(), Cause: err}}
 		}
-		if time.Until(deadlineAt) <= 0 {
+		if b.readinessRemaining(deadlineAt) <= 0 {
 			return b.timeoutReply(ctx, call, name, address, deadline, lastErr)
 		}
-		getCtx, cancel := context.WithTimeout(ctx, time.Until(deadlineAt))
+		getCtx, cancel := b.readinessContext(ctx, b.readinessRemaining(deadlineAt))
 		out, err := b.run(getCtx, call, "get", address)
 		getCtxErr := getCtx.Err()
 		cancel()
@@ -1640,7 +1656,7 @@ func (b *backend) waitReady(ctx context.Context, call transport.Call, name, addr
 			}
 			lastErr = perr
 		}
-		if dialog != nil && time.Since(lastDialogRead) >= time.Second && time.Until(deadlineAt) > 0 {
+		if dialog != nil && time.Since(lastDialogRead) >= time.Second && b.readinessRemaining(deadlineAt) > 0 {
 			lastDialogRead = time.Now()
 			readCall := call
 			if readCall.Timeout <= 0 || readCall.Timeout > timeoutScreenReadCap {
@@ -1656,7 +1672,7 @@ func (b *backend) waitReady(ctx context.Context, call transport.Call, name, addr
 			if err := ctx.Err(); err != nil {
 				return transport.Reply[string]{Value: address, Err: &transport.Failure{Kind: transport.FailureCancelled, Message: err.Error(), Cause: err}}
 			}
-			if time.Until(deadlineAt) <= 0 {
+			if b.readinessRemaining(deadlineAt) <= 0 {
 				return b.timeoutReply(ctx, call, name, address, deadline, lastErr)
 			}
 			if action == transport.StartupDialogBlocked {
@@ -1664,7 +1680,7 @@ func (b *backend) waitReady(ctx context.Context, call transport.Call, name, addr
 			}
 		}
 		wait := startPollInterval
-		if remaining := time.Until(deadlineAt); wait > remaining {
+		if remaining := b.readinessRemaining(deadlineAt); wait > remaining {
 			wait = remaining
 		}
 		if wait <= 0 {

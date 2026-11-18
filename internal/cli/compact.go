@@ -41,6 +41,16 @@ type compactBudget struct {
 
 type compactDeadlineExceeded struct{}
 
+var compactContext = context.WithTimeout
+var compactSleep = func(ctx context.Context, d time.Duration) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
+
 func (b *compactBudget) check() {
 	if b.ctx.Err() != nil {
 		panic(compactDeadlineExceeded{})
@@ -49,12 +59,7 @@ func (b *compactBudget) check() {
 
 func (b *compactBudget) sleep(d time.Duration) {
 	b.check()
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-	case <-b.ctx.Done():
-	}
+	compactSleep(b.ctx, d)
 	b.check()
 }
 
@@ -501,7 +506,7 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 	// phaseStart is taken before the deadline starts, so the elapsed_ms a
 	// timeout reports is never below the limit (a coarse clock included).
 	phaseStart := time.Now()
-	budgetCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
+	budgetCtx, cancel := compactContext(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
 	defer cancel()
 	budget := &compactBudget{ctx: budgetCtx, svc: backend.New(env), transcriptState: "missing"}
 	before := ""
