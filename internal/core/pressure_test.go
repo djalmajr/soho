@@ -379,3 +379,33 @@ func TestPressureSpawnWarnsAndKeepsTheStdoutJSON(t *testing.T) {
 		t.Fatalf("the calm spawn warned: %q", errCalm)
 	}
 }
+
+func TestPressureWarnAbsentThenExistingState(t *testing.T) {
+	ctx, env, stateDir := pressureFixture(t)
+	missing := filepath.Join(filepath.Dir(stateDir), "fresh")
+	env["HERDR_WORKSPACE_ID"] = "fresh"
+	free, total := diskPressure()
+	fakeMachine(t, free, total, true, 0, 0, false)
+	marker := filepath.Join(missing, "wait", "pressure-warned")
+	first := captureStderr(t, func() { core.PressureWarnThrottled(ctx, env, "") })
+	if !strings.Contains(first, "resource pressure") {
+		t.Fatalf("first=%q", first)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("absent state changed: %v", err)
+	}
+	if err := os.MkdirAll(missing, 0700); err != nil {
+		t.Fatal(err)
+	}
+	second := captureStderr(t, func() { core.PressureWarnThrottled(ctx, env, "") })
+	if !strings.Contains(second, "resource pressure") {
+		t.Fatalf("second=%q", second)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("marker: %v", err)
+	}
+	third := captureStderr(t, func() { core.PressureWarnThrottled(ctx, env, "") })
+	if third != "" {
+		t.Fatalf("throttle=%q", third)
+	}
+}

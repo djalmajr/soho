@@ -11,14 +11,14 @@ The transport is the configuration key `transport`; the environment variable `SO
 | Noun | Definition |
 |---|---|
 | orchestrator | The calling agent. It spawns one CLI agent per role, dispatches briefs, collects reports and owns integration, gates and git (`skills/soho/SKILL.md:3-8`). |
-| worker | A CLI agent that `soho spawn` starts for one role, recorded as one row of the roster (`internal/core/state.go:19` `rosterHeader`). |
+| worker | A CLI agent that `soho spawn` starts for one role, recorded as one row of the roster (`internal/core/state.go:20` `rosterHeader`). |
 | role | A markdown file with frontmatter (`roles/<role>.md`, overridable per project in `.agents/soho-roles/<role>.md`) that gives a worker its instructions (`internal/cli/usage.go:3` `usage`). |
 | lane | A named capacity group that workers are named after (`build`, `review`, `docs`); `lanes=on` is the default (`skills/soho/config.defaults:108`, `skills/soho/SKILL.md:102`). |
 | kind | The CLI agent a worker runs: `claude`, `codex`, `grok`, `agy`, `gemini`, `cursor`, `pi`, `opencode` (`internal/kinds/kinds.go:11` `KnownKinds`). |
 | brief | The markdown file the orchestrator writes and `soho dispatch <agent> <brief.md>` composes with the role body into the prompt (`skills/soho/templates/brief.md`, `internal/cli/usage.go:3` `usage`). |
 | report | The file a worker writes when it finishes. Without an assignment, a worker is done when its report exists (`internal/cli/usage.go:3` `usage`, "Completion contract"). |
-| roster | `agents.tsv` in the state directory: one tab-separated row per worker with name, pane, kind, role, family, created_pane, cwd, started, model, approvals, roles and lane (`internal/core/state.go:19` `rosterHeader`). |
-| state directory | `<state root>/<workspace id>`; the state root defaults to `.soho` (`skills/soho/config.defaults:299`). It holds `briefs/`, `reports/`, `wait/` and the roster (`internal/core/state.go:224-231` `StateDir`). |
+| roster | `agents.tsv` in the state directory: one tab-separated row per worker with name, pane, kind, role, family, created_pane, cwd, started, model, approvals, roles and lane (`internal/core/state.go:20` `rosterHeader`). |
+| state directory | `<state root>/<workspace id>`; the state root defaults to `.soho` (`skills/soho/config.defaults:299`). It holds `briefs/`, `reports/`, `wait/` and the roster (`internal/core/state.go:268-272` `StateDir`). |
 | terminal | The unit of `hc`: a persistent program with an address such as `t7` (`skills/soho/references/herdr-ui.md:13`). In the transport contracts it is "one registered agent" (`internal/transport/contracts.go:148` `Terminal`). |
 | pane / panel | A split of a Herdr TUI tab that hosts one agent; its id comes from `HERDR_PANE_ID` (`internal/herdr/backend.go:188-195` `Caller`). The skill says "panel" when it talks to the user about a pane (`skills/soho/SKILL.md:71-76`). On hc the pane id field carries the terminal address (`internal/hcbackend/backend.go:608-611` `Caller`). |
 | tab | A Herdr TUI tab holding panes. A herd tab is the overflow tab labelled by `herd_label` (`skills/soho/config.defaults:74-84`). The hc backend has no tabs (`internal/hcbackend/backend.go:1082-1084` `ListTabs`). |
@@ -93,7 +93,7 @@ These are not in `knownCommands`, so they are not among the 50 rows.
 
 | Invocation | What the user gets | Status on `hc` |
 |---|---|---|
-| no arguments, `help`, `-h`, `--help` | The usage text, exit 0. | same <!-- internal/cli/cli.go:286-289 `Run`; internal/cli/cli.go:578-579 `hcCommandAllowed` (allowed) --> |
+| no arguments, `help`, `-h`, `--help` | The usage text, exit 0. | same <!-- internal/cli/cli.go:286-289 `Run`; internal/cli/cli.go:580-581 `hcCommandAllowed` (allowed) --> |
 | `--version` | `soho <version>`. | same <!-- internal/cli/cli.go:143-146 `Run` --> |
 | `<command> --help` | That command's usage lines, when the command is known. | runs for every known command: exactly one `--help` or `-h` after it prints its lines before configuration, state or the transport, so the hc guard never sees it; under `SOHO_NOWRITE` the existing policy applies <!-- internal/cli/cli.go:132-137 `Run` --> |
 | `plugin` | The Herdr plugin entry points (`bridge`, `board`, `clipboard`, `picker`, `team`; other arguments go to the plugin command handler). | refused with `plugin does not support transport=hc yet; set transport=herdr or see DJA-604` <!-- internal/cli/cli.go:262-263 `Run` (the guard names plugin); internal/cli/cli.go:290-308 `Run` --> |

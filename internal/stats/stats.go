@@ -1029,7 +1029,10 @@ func CmdCollect(args []string, command CommandContext) int {
 			core.DieFriction("collect: unknown option "+args[i], 2, logFile, "collect")
 		}
 	}
-	sd := core.StateDir(ctx, env, cwd)
+	sd, exists := core.StateDirExisting(ctx, env, cwd)
+	if exists {
+		sd = core.StateDirInitExisting(ctx, env, cwd, sd)
+	}
 	svc := backend.New(env)
 	hcMode := env.Get("SOHO_TRANSPORT") == "hc"
 	// An active collaboration outranks the report: while its assignment is

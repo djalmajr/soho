@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/djalmajr/soho/internal/backend"
@@ -200,15 +201,17 @@ func jsString(value any) string {
 }
 
 func StateDirPath(ctx *Config, env platform.Env, cwd string) string {
-	defer func() {
-		if value := recover(); value != nil {
-			if err, ok := value.(*os.PathError); ok {
-				platform.DieFriction(err.Error(), 4)
-			}
-			panic(value)
-		}
-	}()
+	defer statePathRecover()
 	return filepath.Join(StateRoot(ctx, env, cwd), WorkspaceID(ctx, env, cwd))
+}
+
+func statePathRecover() {
+	if value := recover(); value != nil {
+		if err, ok := value.(*os.PathError); ok {
+			platform.DieFriction(err.Error(), 4)
+		}
+		panic(value)
+	}
 }
 
 // StateDir decides with StateInSkill and FormerStateWaiting — both use only
@@ -216,7 +219,7 @@ func StateDirPath(ctx *Config, env platform.Env, cwd string) string {
 // refusal leaves no side effect (no .gitignore append, no pane current, no
 // mkdir). The paths named in the messages are the state root and the
 // former/target dirs, not the full state dir.
-func StateDir(ctx *Config, env platform.Env, cwd string) string {
+func stateDirRefuse(ctx *Config, env platform.Env, cwd string) {
 	if !Nowrite(env) {
 		if skill := StateInSkill(ctx, env, cwd); skill != "" {
 			platform.Die(fmt.Sprintf("the state dir '%s' would be inside the soho skill ('%s'); run soho from the project's directory (nothing was written)", StateRootPath(ctx, env, cwd), skill), 2)
@@ -229,7 +232,58 @@ func StateDir(ctx *Config, env platform.Env, cwd string) string {
 			platform.Die(fmt.Sprintf("the former state dir '%s' is waiting for 'soho setup': run 'soho setup' first; it moves it to '%s' (nothing was written)", former, target), 2)
 		}
 	}
+}
+
+// StateDirExisting resolves hc state without creating it; legacy initializes it.
+func StateDirExisting(ctx *Config, env platform.Env, cwd string) (string, bool) {
+	if env.Get("SOHO_TRANSPORT") != "hc" {
+		return StateDir(ctx, env, cwd), true
+	}
+	stateDirRefuse(ctx, env, cwd)
+	readEnv := env.Clone()
+	readEnv["SOHO_NOWRITE"] = "1"
+	dir := StateDirPath(ctx, readEnv, cwd)
+	info, err := os.Stat(dir)
+	if err != nil && !os.IsNotExist(err) {
+		platform.DieFriction(err.Error(), 4)
+	}
+	// Something at the path that Stat did not see: either a directory
+	// another soho command created since (state exists now), or an entry
+	// Stat cannot follow (a dangling symlink), where StateDir's mkdir fails
+	// with EEXIST, so this does too.
+	if os.IsNotExist(err) {
+		if _, lerr := os.Lstat(dir); lerr == nil {
+			if again, serr := os.Stat(dir); serr == nil && again.IsDir() {
+				return dir, true
+			}
+			platform.DieFriction((&os.PathError{Op: "mkdir", Path: dir, Err: syscall.EEXIST}).Error(), 4)
+		}
+	}
+	if err == nil && !info.IsDir() {
+		platform.DieFriction((&os.PathError{Op: "mkdir", Path: filepath.Join(dir, "briefs"), Err: syscall.ENOTDIR}).Error(), 4)
+	}
+	return dir, err == nil
+}
+
+func StateDir(ctx *Config, env platform.Env, cwd string) string {
+	stateDirRefuse(ctx, env, cwd)
 	dir := StateDirPath(ctx, env, cwd)
+	return initializeStateDir(dir, env)
+}
+
+// StateDirInitExisting preserves initialization for an already resolved directory.
+func StateDirInitExisting(ctx *Config, env platform.Env, cwd, dir string) string {
+	if env.Get("SOHO_TRANSPORT") != "hc" {
+		return dir
+	}
+	defer statePathRecover()
+	if !Nowrite(env) {
+		StateRoot(ctx, env, cwd)
+	}
+	return initializeStateDir(dir, env)
+}
+
+func initializeStateDir(dir string, env platform.Env) string {
 	if Nowrite(env) {
 		return dir
 	}

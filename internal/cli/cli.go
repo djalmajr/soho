@@ -737,3 +737,28 @@ func withoutArg(args []string, target string) []string {
 	}
 	return out
 }
+
+// hasObserve identifies the non-mutating wait mode before friction setup.
+func hasObserve(args []string) bool {
+	for _, arg := range args {
+		if arg == "--observe" {
+			return true
+		}
+	}
+	return false
+}
+
+// frictionReadOnly follows the friction parser's value-bearing options.
+func frictionReadOnly(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--since", "--level", "--command", "--agent", "--brief", "--key":
+			i++
+		default:
+			if !strings.HasPrefix(args[i], "--") {
+				return false
+			}
+		}
+	}
+	return true
+}

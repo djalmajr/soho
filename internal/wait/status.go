@@ -96,7 +96,10 @@ func rosterNames(sd string) []string {
 }
 
 func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
-	sd := core.StateDir(ctx, env, cwd)
+	sd, exists := core.StateDirExisting(ctx, env, cwd)
+	if exists {
+		sd = core.StateDirInitExisting(ctx, env, cwd, sd)
+	}
 	svc := backend.New(env)
 	restartStates := map[string]stateProbe{}
 	if len(argv) == 0 {
