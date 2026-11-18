@@ -93,6 +93,42 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 		}
 	}
 
+	// A registry held by another soho never fails the release (as on main):
+	// the worker is released and its copies stay, with a warning, for gc.
+	// An unreadable queue or registry still refuses before any side effect.
+	copiesBusy := false
+	if err := incorporatePendingCopies("release", sd, env, cwd); err != nil && !keepCopies {
+		var locked *core.RegistryLockedError
+		if !errors.As(err, &locked) {
+			_, _ = fmt.Fprintf(platform.Stderr, "release: cannot incorporate queued copies (%v); retry before releasing\n", err)
+			return 4
+		}
+		copiesBusy = true
+		core.Warn(fmt.Sprintf("release: the copies of '%s' were not removed (%v); run 'soho gc' later", agent, err), frictionLogPath, "release")
+	}
+
+	// The read-only preflight runs on contention too: only the cleanup
+	// waits for gc, never the validation.
+	if !keepCopies {
+		rows, err := core.ReadCopies(sd)
+		if err != nil {
+			_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: cannot read copy registry %s (%v); fix it and retry\n", sd, core.CopiesFile(sd), err)
+			return 4
+		}
+		for _, row := range rows {
+			if row.Owner != agent {
+				continue
+			}
+			if _, _, cause := checkedCopy(row.Path, env, cwd); cause != "" {
+				continue
+			}
+			if _, err := copyDeletionGuard(row.Path, agent, sd, env, cwd); err != nil {
+				_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %v\n", row.Path, err)
+				return 4
+			}
+		}
+	}
+
 	if closes {
 		if created == "1" {
 			closed := svc.Runtime.Close(context.Background(), transport.Target{ID: pane}, transport.Call{}).Value
@@ -129,8 +165,11 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 	if err := taskreport.RetireTaskReportPointer(sd, agent); err != nil {
 		core.DieFriction("release: could not retire task pointer: "+err.Error(), 4, frictionLogPath, "release")
 	}
+	if err := releaseCopies(sd, agent, keepCopies || copiesBusy, env, cwd); err != nil {
+		_, _ = fmt.Fprintln(platform.Stderr, err)
+		return 4
+	}
 	core.RosterRemove(sd, agent)
-	releaseCopies(sd, agent, keepCopies, env, cwd)
 	releaseReviewSnapshots(sd, agent, keepCopies, env, cwd)
 	releaseProcs(sd, agent, keepProcs, env)
 	_ = os.Remove(core.LastReportPath(sd, agent))
@@ -338,19 +377,17 @@ func collaborationReleaseRefusal(sd, agent, pane string, ctx *core.Config, env p
 // removals. The roster is already cleaned when this runs, so a registry held
 // by another soho never fails the release: the copies stay registered,
 // with a warning, and become orphans for gc.
-func releaseCopies(sd, agent string, keepCopies bool, env platform.Env, cwd string) {
-	incorporatePendingCopies("release", sd, env, cwd)
+func releaseCopies(sd, agent string, keepCopies bool, env platform.Env, cwd string) error {
 	if keepCopies {
-		return
+		return nil
 	}
 	rows, err := core.ReadCopies(sd)
 	if err != nil {
-		_, _ = fmt.Fprintf(platform.Stderr, "release: kept copies registry (%v)\n", err)
-		return
+		return fmt.Errorf("%s: kept: cannot read copy registry %s (%v); fix it and retry", sd, core.CopiesFile(sd), err)
 	}
 	if unlock, lockErr := core.LockCopies(sd); lockErr != nil {
 		core.Warn(fmt.Sprintf("release: the copies of '%s' were not removed (%v); run 'soho gc' later", agent, lockErr), frictionLogPath, "release")
-		return
+		return nil
 	} else {
 		unlock()
 	}
@@ -371,6 +408,14 @@ func releaseCopies(sd, agent string, keepCopies bool, env platform.Env, cwd stri
 			_, _ = fmt.Fprintf(platform.Stderr, "release: kept copy %s (%s)\n", row.Path, cause)
 			continue
 		}
+		held, guardErr := copyDeletionGuard(row.Path, row.Owner, sd, env, cwd)
+		if guardErr != nil {
+			return fmt.Errorf("%s: kept: %v", row.Path, guardErr)
+		}
+		if held != "" {
+			_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %s\n", row.Path, held)
+			continue
+		}
 		if err := removeCopy(resolved, parentInfo); err != nil {
 			if errors.Is(err, errCopyChanged) {
 				_, _ = fmt.Fprintf(platform.Stderr, "release: kept copy %s (changed after the check)\n", row.Path)
@@ -383,10 +428,11 @@ func releaseCopies(sd, agent string, keepCopies bool, env platform.Env, cwd stri
 		_, _ = fmt.Fprintf(platform.Stdout, "removed copy %s\n", row.Path)
 	}
 	if len(removed) == 0 {
-		return
+		return nil
 	}
 	if err := core.DropCopiesLines(sd, removed); err != nil {
 		// The removed copies' lines read as missing and gc drops them.
 		_, _ = fmt.Fprintf(platform.Stderr, "release: could not update the copy registry (%v); 'soho gc' drops the removed lines\n", err)
 	}
+	return nil
 }

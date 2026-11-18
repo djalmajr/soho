@@ -142,6 +142,21 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 			_, _ = fmt.Fprintf(platform.Stderr, "copies release: refusing '%s': %s; nothing removed\n", path, reason)
 			return 2
 		}
+		if _, err := os.Lstat(path); err == nil {
+			if _, _, cause := checkedCopy(path, env, cwd); cause == "" {
+				held, guardErr := copyDeletionGuard(path, row.Owner, sd, env, cwd)
+				if guardErr != nil {
+					unlock()
+					_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %v\n", path, guardErr)
+					return 4
+				}
+				if held != "" {
+					unlock()
+					_, _ = fmt.Fprintf(platform.Stderr, "copies release: refusing '%s': %s; nothing removed\n", path, held)
+					return 2
+				}
+			}
+		}
 		seen[path] = true
 	}
 	outer := make([]string, 0, len(seen))
@@ -186,6 +201,17 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 			failed = true
 			continue
 		}
+		held, guardErr := copyDeletionGuard(path, byPath[path].Owner, sd, env, cwd)
+		if guardErr != nil {
+			unlock()
+			_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %v\n", path, guardErr)
+			return 4
+		}
+		if held != "" {
+			_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %s\n", path, held)
+			failed = true
+			continue
+		}
 		discard, err := renameToDiscard(resolved, parent)
 		if err != nil {
 			keptCopyError(path, err)
@@ -225,6 +251,17 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 			resolved, parent, cause := checkedCopy(r.discard, env, cwd)
 			if cause != "" {
 				gcDiscardLeft(r.discard, cause, env, cwd)
+				failed = true
+				continue
+			}
+			held, guardErr := copyDeletionGuard(r.discard, byPath[r.path].Owner, sd, env, cwd)
+			if guardErr != nil {
+				_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %v\n", r.discard, guardErr)
+				failed = true
+				continue
+			}
+			if held != "" {
+				_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %s\n", r.discard, held)
 				failed = true
 				continue
 			}
