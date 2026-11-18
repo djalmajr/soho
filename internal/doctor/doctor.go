@@ -286,7 +286,8 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 			repairEnv[key] = value
 		}
 	}
-	lines := core.ApplyLaneFile(dest, panes, repairEnv, cwd)
+	keepZero := core.LocalUnlimitedWorkers(dest)
+	lines := core.ApplyLaneFileThrough(dest, panes, repairEnv, cwd, where)
 	fixed := core.LoadConfig(repairEnv, cwd)
 	if where != "session" {
 		selected := core.Config{Entries: make(map[string]core.ConfigEntry)}
@@ -313,18 +314,25 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 	if core.PaneMode(&fixed, capacityEnv) == "flex" {
 		sum += core.FlexExtra(&fixed, capacityEnv)
 	}
-	if hadOwnLayout {
+	if hadOwnLayout && !keepZero {
 		core.ConfigWritePair(dest, "max_workers", strconv.Itoa(sum), env, cwd)
 	}
 	hasSplit := hadOwnLayout && core.FileKeyValue(dest, "split_max_panes") != ""
-	if hasSplit {
-		core.ConfigWritePair(dest, "split_max_panes", strconv.Itoa(1+sum), env, cwd)
+	splitCap := 1 + sum
+	if keepZero || sum == 0 {
+		splitCap, _ = strconv.Atoi(panes)
+		if core.PaneMode(&fixed, capacityEnv) == "flex" {
+			splitCap += core.FlexExtra(&fixed, capacityEnv)
+		}
+	}
+	if hasSplit || keepZero {
+		core.ConfigWritePair(dest, "split_max_panes", strconv.Itoa(splitCap), env, cwd)
 	}
 	for _, line := range lines {
 		if strings.HasPrefix(line, "set max_workers=") {
 			line = "set max_workers=" + strconv.Itoa(sum)
 		} else if strings.HasPrefix(line, "set split_max_panes=") && hasSplit {
-			line = "set split_max_panes=" + strconv.Itoa(1+sum)
+			line = "set split_max_panes=" + strconv.Itoa(splitCap)
 		}
 		fmt.Fprintln(platform.Stdout, line)
 	}

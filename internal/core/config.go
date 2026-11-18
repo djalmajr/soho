@@ -147,6 +147,24 @@ func LoadConfig(env platform.Env, cwd string) Config {
 	return LoadConfigFor(env, cwd, UserSelection{})
 }
 
+// LoadConfigThrough loads only the layers at or below the named destination.
+func LoadConfigThrough(env platform.Env, cwd, through string) Config {
+	if through == "session" {
+		return LoadConfig(env, cwd)
+	}
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	ctx := Config{Entries: make(map[string]ConfigEntry)}
+	for _, layer := range baseConfigLayerPaths(env, cwd, UserSelection{}) {
+		if through == "user" && layer.Source == "project" {
+			break
+		}
+		loadConfigFile(layer.File, layer.Source, &ctx)
+	}
+	return ctx
+}
+
 // LoadConfigFor is LoadConfig with an explicit user configuration
 // selection: only the user layer's file comes from sel (UserConfigFiles);
 // every other layer, and every git or herdr call the load makes, uses env
