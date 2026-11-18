@@ -15,9 +15,14 @@ func TestHcChildGuard(t *testing.T) {
 	for _, tc := range []struct {
 		name                       string
 		parentRecord, worker, fail bool
+		command                    string
 	}{
 		{name: "child", parentRecord: true}, {name: "worker", parentRecord: true, worker: true},
 		{name: "fresh"}, {name: "get-failure", parentRecord: true, fail: true},
+		// The exemptions reach the guard only through a guarded command.
+		{name: "worker-init", parentRecord: true, worker: true, command: "init"},
+		{name: "fresh-init", command: "init"},
+		{name: "get-failure-init", parentRecord: true, fail: true, command: "init"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newHcGuardFixture(t)
@@ -63,6 +68,12 @@ func TestHcChildGuard(t *testing.T) {
 				}
 				if _, err := os.Stat(filepath.Join(state, "hc-tchild")); !os.IsNotExist(err) {
 					t.Fatalf("child state exists: %v", err)
+				}
+				return
+			}
+			if tc.command == "init" {
+				if _, _, stderr := f.run(t, "init"); strings.Contains(stderr, "child of the orchestrator") {
+					t.Fatalf("init refused: %q", stderr)
 				}
 				return
 			}
