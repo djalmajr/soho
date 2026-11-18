@@ -287,6 +287,7 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 		}
 	}
 	keepZero := core.LocalUnlimitedWorkers(dest)
+	oldSplit := core.FileKeyValue(dest, "split_max_panes")
 	lines := core.ApplyLaneFileThrough(dest, panes, repairEnv, cwd, where)
 	fixed := core.LoadConfig(repairEnv, cwd)
 	if where != "session" {
@@ -329,12 +330,18 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 		core.ConfigWritePair(dest, "split_max_panes", strconv.Itoa(splitCap), env, cwd)
 	}
 	for _, line := range lines {
+		if keepZero && (strings.HasPrefix(line, "removed split_max_panes=") || strings.HasPrefix(line, "set split_max_panes=")) {
+			continue
+		}
 		if strings.HasPrefix(line, "set max_workers=") {
 			line = "set max_workers=" + strconv.Itoa(sum)
 		} else if strings.HasPrefix(line, "set split_max_panes=") && hasSplit {
 			line = "set split_max_panes=" + strconv.Itoa(splitCap)
 		}
 		fmt.Fprintln(platform.Stdout, line)
+	}
+	if keepZero && oldSplit != strconv.Itoa(splitCap) {
+		fmt.Fprintln(platform.Stdout, "set split_max_panes="+strconv.Itoa(splitCap))
 	}
 	after, _ := platform.ReadTextFile(dest)
 	if before == strings.TrimRight(after, "\n") {

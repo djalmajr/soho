@@ -853,8 +853,8 @@ func FileRoleResolved(file, role, attr string, env platform.Env, cwd string) str
 
 type laneMigration struct{ DropKind, DropModel, Lines []string }
 
-func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env platform.Env, cwd string, decided, explicitKind bool) {
-	ctx := LoadConfig(env, cwd)
+func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env platform.Env, cwd, through string, decided, explicitKind bool) {
+	ctx := LoadConfigThrough(env, cwd, through)
 	key := "lane." + lane + "." + attr
 	kindLayer := LaneKindLayer(&ctx, lane, env)
 	if (explicitKind || FileKeyValue(file, "lane."+lane+".kind") != "") && kindLayer < 2 {
@@ -1088,8 +1088,8 @@ func ApplyLaneFileThrough(file, panes string, env platform.Env, cwd, through str
 				modelDecided = lane.Model != ""
 			}
 		}
-		MigrateLaneAttr(file, pair[0], pair[1], "kind", &acc, env, cwd, kindDecided, kindDecided)
-		MigrateLaneAttr(file, pair[0], pair[1], "model", &acc, env, cwd, modelDecided, kindDecided)
+		MigrateLaneAttr(file, pair[0], pair[1], "kind", &acc, env, cwd, through, kindDecided, kindDecided)
+		MigrateLaneAttr(file, pair[0], pair[1], "model", &acc, env, cwd, through, modelDecided, kindDecided)
 	}
 	if err := ConfigDropLegacy(file, DropLegacyOptions{acc.DropKind, acc.DropModel, isPreset}); err != nil {
 		panic(err)
