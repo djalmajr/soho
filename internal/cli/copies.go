@@ -173,6 +173,8 @@ var errCopyChanged = errors.New("changed after the check")
 // validated directory.
 var removeCopyHook func(path string)
 
+var gcBeforeBatchHook func()
+
 // removeMarkerHook runs between the copy's removal and its marker's; tests
 // swap the parent there to prove the marker's removal stays bound to the
 // verified directory too.
@@ -1296,7 +1298,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		case "orphan":
 			age := copyAge(row, now)
 			if age >= threshold {
-				candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: age})
+				candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: age, row: row})
 			}
 		case "owned":
 			// A live owner's copy is offered only when the owner is idle
@@ -1474,6 +1476,33 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	}
 
 	removedLines := map[string]bool{}
+	removedWith := map[string]string{}
+	stagedDescendants := map[string]core.CopyRow{}
+	// Record containment while both paths still exist; a later missing path
+	// alone cannot distinguish this run's removal from an external change.
+	descendants := func(parent string) []string {
+		info, err := os.Stat(parent)
+		if err != nil {
+			return nil
+		}
+		var paths []string
+		for _, other := range candidates {
+			if other.missing || other.path == parent || !inside(parent, other.path) || copyAncestorGuard(other.path, env, cwd) != "" {
+				continue
+			}
+			leaf, err := os.Lstat(other.path)
+			resolved, resolveErr := filepath.EvalSymlinks(other.path)
+			if err == nil && leaf.IsDir() && leaf.Mode()&os.ModeSymlink == 0 && resolveErr == nil && copyIdentityInside(info, filepath.Dir(resolved)) {
+				paths = append(paths, other.path)
+			}
+		}
+		return paths
+	}
+	markDescendants := func(parent string, paths []string) {
+		for _, path := range paths {
+			removedWith[path] = parent
+		}
+	}
 	volumePaths := append([]string{}, candidatePaths...)
 	if includeUnregistered {
 		for _, entry := range unregistered {
@@ -1496,10 +1525,20 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", cand.path, humanSize(0))
 			continue
 		}
+		if ancestor := removedWith[cand.path]; ancestor != "" {
+			if _, err := os.Lstat(cand.path); os.IsNotExist(err) {
+				stagedDescendants[cand.path] = cand.row
+				removedAny = true
+				_, _ = fmt.Fprintf(platform.Stdout, "removed %s (with %s)\n", cand.path, ancestor)
+				continue
+			}
+		}
 		if cand.idle != nil {
+			children := descendants(cand.path)
 			// The line's drop runs in a short section under the registry
 			// lock, apart from the batch below.
 			if gcRemoveIdleOwnerCopy(cand, sd, env, svc, cwd, threshold) {
+				markDescendants(cand.path, children)
 				volumes.removed(cand.path)
 				removedAny = true
 				removedOnDisk = true
@@ -1524,20 +1563,25 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %s\n", cand.path, held)
 			continue
 		}
+		children := descendants(cand.path)
 		if err := removeCopy(resolved, parentInfo); err != nil {
 			keptCopyError(cand.path, err)
 			keptCount++
 			continue
 		}
 		removedLines[cand.path] = true
+		markDescendants(cand.path, children)
 		volumes.removed(cand.path)
 		removedAny = true
 		removedOnDisk = true
 		freed += cand.size
 		_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", cand.path, humanSize(cand.size))
 	}
-	if len(removedLines) > 0 {
-		if err := core.DropCopiesLines(sd, removedLines); err != nil {
+	if len(removedLines) > 0 || len(stagedDescendants) > 0 {
+		if gcBeforeBatchHook != nil {
+			gcBeforeBatchHook()
+		}
+		if err := core.DropCopiesLinesConditional(sd, removedLines, stagedDescendants); err != nil {
 			var locked *core.CopiesLockedError
 			if errors.As(err, &locked) {
 				core.DieFriction(err.Error(), 4, frictionLogPath, "gc")

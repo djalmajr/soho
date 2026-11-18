@@ -214,6 +214,32 @@ func DropCopiesLines(stateDir string, removed map[string]bool) error {
 	return DropCopiesLinesHeld(stateDir, removed)
 }
 
+// DropCopiesLinesConditional drops ordinary paths and only unchanged, absent staged descendants under the registry lock.
+func DropCopiesLinesConditional(stateDir string, removed map[string]bool, staged map[string]CopyRow) error {
+	unlock, err := LockCopies(stateDir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	rows, err := ReadCopies(stateDir)
+	if err != nil {
+		return err
+	}
+	out := make([]CopyRow, 0, len(rows))
+	for _, row := range rows {
+		if removed[row.Path] {
+			continue
+		}
+		if old, ok := staged[row.Path]; ok && row.Owner == old.Owner && row.Created == old.Created {
+			if _, err := os.Lstat(row.Path); os.IsNotExist(err) {
+				continue
+			}
+		}
+		out = append(out, row)
+	}
+	return WriteCopies(stateDir, out)
+}
+
 // DropCopiesLinesHeld is DropCopiesLines for a caller that already holds
 // the registry lock (LockCopies): it re-reads and rewrites the registry
 // without taking the lock again.

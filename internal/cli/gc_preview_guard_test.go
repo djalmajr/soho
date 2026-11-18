@@ -17,6 +17,31 @@ import (
 // cause is the path guard's, in the dry run and in --yes alike.
 const gcKeptGuardSuffixText = "; gc never removes it: delete it by hand if it is yours"
 
+func TestGcNestedRegisteredRemovedWithAncestor(t *testing.T) {
+	f := gcGuardFixture(t)
+	outer := filepath.Join(f.tmp, "outer")
+	inner := filepath.Join(outer, "inner")
+	if err := os.MkdirAll(inner, 0700); err != nil {
+		t.Fatal(err)
+	}
+	created := core.FrictionISO(platform.Now().Add(-3 * time.Hour))
+	f.writeCopies(t, []core.CopyRow{
+		{Path: outer, Owner: "ghost", Pane: "-", Created: created, Source: "-", Origin: "add"},
+		{Path: inner, Owner: "ghost", Pane: "-", Created: created, Source: "-", Origin: "add"},
+	})
+	code, out, stderr := f.run(t, f.env, "gc")
+	if code != 0 || stderr != "" || !strings.Contains(out, "would remove "+outer+"  0 B  ghost  3h\n") || !strings.Contains(out, "would remove "+inner+"  0 B  ghost  3h\n") || strings.Contains(out, "kept:") {
+		t.Fatalf("preview code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	code, out, stderr = f.run(t, f.env, "gc", "--yes")
+	if code != 0 || stderr != "" || !strings.Contains(out, "removed "+inner+" (with "+outer+")\n") || strings.Contains(out, "kept:") {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	if rows := f.copiesRows(t); len(rows) != 0 {
+		t.Fatalf("registry rows=%v", rows)
+	}
+}
+
 // gcGuardFixture is a copies fixture without a roster (every registered
 // copy is an orphan), with the s85 measurements faked the same way
 // gcFixture fakes them, so the goldens stay hermetic.
@@ -356,9 +381,8 @@ func TestGcSummarizesNestedGitCopies(t *testing.T) {
 				if !outerGit && !yes && !strings.Contains(out, "kept: 1 copy not removed (listed above)\n") {
 					t.Fatalf("stdout=%q", out)
 				}
-				// Parent first: the outer copy is removed with its child, and
-				// the child's row that follows is the one counted line.
-				if !outerGit && yes && (!strings.Contains(out, "\nremoved "+outer+" ") || strings.Count(out, "\nkept ") != 1 || !strings.Contains(out, "\nkept "+inner+" (") || !strings.Contains(out, "kept: 1 copy not removed (listed above)\n") || strings.Contains(out, "already gone")) {
+				// Parent first: the child and its registry row leave with it.
+				if !outerGit && yes && (!strings.Contains(out, "\nremoved "+outer+" ") || !strings.Contains(out, "\nremoved "+inner+" (with "+outer+")\n") || strings.Contains(out, "\nkept ") || strings.Contains(out, "kept:") || len(f.copiesRows(t)) != 0) {
 					t.Fatalf("stdout=%q", out)
 				}
 				if yes {
@@ -397,5 +421,107 @@ func TestGcPreviewKeptParentExcludesRemovedChild(t *testing.T) {
 		if code != 0 || errOut != "" || !strings.Contains(out, "kept: 1 copy not removed (listed above)\n") {
 			t.Fatalf("args=%v code=%d stdout=%q stderr=%q", args, code, out, errOut)
 		}
+	}
+}
+
+func TestGcResolvedDescendantSurvivesScanRootSymlink(t *testing.T) {
+	f := gcGuardFixture(t)
+	outer := filepath.Join(f.tmp, "outer")
+	scan := filepath.Join(outer, "scan")
+	inner := filepath.Join(scan, "inner")
+	moved := filepath.Join(f.tmp, "moved")
+	if err := os.MkdirAll(inner, 0700); err != nil {
+		t.Fatal(err)
+	}
+	created := core.FrictionISO(platform.Now().Add(-3 * time.Hour))
+	f.writeCopies(t, []core.CopyRow{{Path: outer, Owner: "ghost", Created: created}, {Path: inner, Owner: "ghost", Created: created}})
+	if err := os.Rename(scan, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, scan); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	f.env["SOHO_COPIES_DIR"] = scan
+	code, out, stderr := f.run(t, f.env, "gc", "--yes")
+	if code != 0 || strings.Contains(out, "removed "+inner+" (with ") {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(moved, "inner")); err != nil {
+		t.Fatal(err)
+	}
+	rows := f.copiesRows(t)
+	if len(rows) != 1 || rows[0].Path != inner {
+		t.Fatalf("rows=%#v out=%q stderr=%q", rows, out, stderr)
+	}
+}
+
+func TestGcStagedDescendantReregisteredBeforeBatch(t *testing.T) {
+	for _, scenario := range []string{"new-row", "new-owner", "recreated", "reregistered"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := gcGuardFixture(t)
+			outer := filepath.Join(f.tmp, "outer")
+			inner := filepath.Join(outer, "inner")
+			if err := os.MkdirAll(inner, 0700); err != nil {
+				t.Fatal(err)
+			}
+			old := core.CopyRow{Path: inner, Owner: "ghost", Created: core.FrictionISO(platform.Now().Add(-3 * time.Hour))}
+			f.writeCopies(t, []core.CopyRow{{Path: outer, Owner: "ghost", Created: old.Created}, old})
+			gcBeforeBatchHook = func() {
+				row := old
+				if scenario == "recreated" || scenario == "reregistered" {
+					if err := os.MkdirAll(inner, 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if scenario == "new-owner" {
+					row.Owner = "replacement"
+				}
+				if scenario == "new-row" || scenario == "reregistered" {
+					row.Created = core.FrictionISO(platform.Now())
+				}
+				if err := core.UpsertCopies(f.stateDir(t), row); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(func() { gcBeforeBatchHook = nil })
+			code, out, stderr := f.run(t, f.env, "gc", "--yes")
+			if code != 0 || !strings.Contains(out, "removed "+inner+" (with "+outer+")") {
+				t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+			}
+			rows := f.copiesRows(t)
+			if len(rows) != 1 || rows[0].Path != inner {
+				t.Fatalf("rows=%#v", rows)
+			}
+			if (scenario == "new-row" || scenario == "reregistered") && rows[0].Created == old.Created {
+				t.Fatalf("replacement row lost: %#v", rows[0])
+			}
+			if scenario == "new-owner" && rows[0].Owner != "replacement" {
+				t.Fatalf("replacement owner lost: %#v", rows[0])
+			}
+			if scenario == "recreated" || scenario == "reregistered" {
+				if _, err := os.Stat(inner); err != nil {
+					t.Fatalf("recreated child missing: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestGcIdleNestedAttribution(t *testing.T) {
+	g := newIdleGc(t, idleRules("idle"))
+	child := g.row
+	child.Path = filepath.Join(g.copy, "sub")
+	g.f.writeCopies(t, []core.CopyRow{g.row, child})
+	code, out, stderr := g.f.run(t, g.f.env, "gc", "--yes")
+	if code != 0 || stderr != "" || !strings.Contains(out, "removed "+child.Path+" (with "+g.copy+")\n") || strings.Contains(out, "kept:") || strings.Count(out, "freed: 10 B") != 1 {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	for _, path := range []string{g.copy, child.Path} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("path=%s err=%v", path, err)
+		}
+	}
+	if rows := g.f.copiesRows(t); len(rows) != 0 {
+		t.Fatalf("rows=%#v", rows)
 	}
 }
