@@ -791,27 +791,41 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	gitFields := dispatchCaptureGit(sidecar, briefRaw, workerCwd, cwd, sd, agent, amend, priorPointer, env)
 	warnSnapshotCap(gitFields)
 	defer func() { gittree.Preserve(sidecar, gitFields) }()
-	promptRep := svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue && !(hcMode && amend)}, sendCall)
-	if hcMode && promptRep.Err != nil && promptRep.Err.Kind == transport.FailureBusy {
-		// DJA-604 2b-3a: the worker went working between the dispatch's idle
-		// check and the send. Poll Get until it settles, within the
-		// dispatch's idle wait (the --when-idle budget), then retry the send
-		// once; still working at the budget, or a failed retry, takes the
-		// submission-failed path below.
+	queuedHC := false
+	busyRefusal := false
+	queueEligible := hcMode && (amend || queue) && (kind == "pi" || kind == "claude")
+	busyMessage := func() string {
 		if amend {
-			promptRep.Err.Message = fmt.Sprintf("worker %s is still working; amendment was not sent. Wait for it to settle, then dispatch again without --amend", agent)
+			return fmt.Sprintf("worker %s is still working; amendment was not sent. Wait for it to settle, then dispatch again without --amend", agent)
+		}
+		return fmt.Sprintf("worker %s is still working; queued dispatch was not sent. Wait for it to settle, then dispatch again without --queue", agent)
+	}
+	var promptRep transport.Reply[string]
+	// Decide at the delivery boundary, even if the earlier sample was working.
+	promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue && !hcMode}, sendCall)
+
+	if hcMode && !queuedHC && !busyRefusal && promptRep.Err != nil && promptRep.Err.Kind == transport.FailureBusy {
+		if amend || queue {
+			if queueEligible {
+				queuedHC = true
+				promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: true}, sendCall)
+			} else {
+				busyRefusal = true
+				promptRep.Err.Message = busyMessage()
+			}
 		} else if hcSettled(svc, agent, timeoutRaw, timeoutGiven, sd, ctx, env, cwd) {
 			gitFields = dispatchGitFields(briefRaw, workerCwd, cwd, sd, agent, false, priorPointer, env)
 			warnSnapshotCap(gitFields)
 			if err := gittree.ReplaceBaseline(sidecar, gitFields); err != nil {
 				promptRep.Err = &transport.Failure{Kind: transport.FailureBusy, Message: "could not persist refreshed Git baseline; the send was not retried"}
 			} else {
-				promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue}, transport.Call{})
+				promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text}, transport.Call{})
 			}
 		} else {
 			promptRep.Err = &transport.Failure{Kind: transport.FailureBusy, Message: fmt.Sprintf("worker %s is still working after the idle wait; the send was not retried", agent)}
 		}
 	}
+
 	markSubmitFailed := func() string {
 		restoredReport := ""
 		if restored := taskreport.ReadTaskReportPointer(sd, agent); restored != nil {
@@ -850,8 +864,11 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		if hcMode {
 			probe = "hc get " + agent + " && hc read " + agent
 		}
-		return writeDispatchError(agent, role, kind, composed, report, taskReport, sd, promptRep.Err.Message, 4,
-			"prompt submission failed; inspect with: "+probe+". Do not resend blindly.")
+		warning := "prompt submission failed; inspect with: " + probe + ". Do not resend blindly."
+		if busyRefusal {
+			warning = promptRep.Err.Message
+		}
+		return writeDispatchError(agent, role, kind, composed, report, taskReport, sd, promptRep.Err.Message, 4, warning)
 	}
 	if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session, role); err != nil {
 		core.Warn(fmt.Sprintf("could not record the accepted submission in the attempt sidecar %s: %s; the prompt went out", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
@@ -869,7 +886,19 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// Arrival updates rewrite the sidecar. Preserve the first identity on
 	// early returns too, without replacing a check made by blocking wait.
 	status, resent, enterSent := "submitted", false, false
-	if hcMode {
+	startedHC, _, _ := hcSendResult(promptRep.Value)
+	if hcMode && queuedHC && !startedHC {
+		status = "queued"
+		if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "queued", session, role); err != nil {
+			core.Warn(fmt.Sprintf("could not record the queued arrival in the attempt sidecar %s: %s; the dispatch result stands", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
+		}
+		seq := before.Seq
+		if seq == "" {
+			seq = "-"
+		}
+		_ = writeQueuedMarker(filepath.Join(sd, "wait", agent+".queued"), fmt.Sprintf("%d %s %s\n", platform.Now().Unix(), seq, composed))
+
+	} else if hcMode {
 		// DJA-604 2b-3a: hc's arrival is the send's own proof — its started
 		// flag, or a turn rise or a working state read within the
 		// dispatch's existing arrival window. No screen read, no key, no
