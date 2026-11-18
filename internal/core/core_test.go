@@ -360,7 +360,7 @@ func TestConfigReadAndClearJavaScriptLineTerminatorsInComments(t *testing.T) {
 			_, cwd := fixture(t)
 			file := filepath.Join(cwd, "session.conf")
 			write(t, file, "panes=2"+tc.comment+"\nlayout=tab\n")
-			if got := FileKeyValue(file, "panes"); got != "2"+tc.comment {
+			if got := FileKeyValue(file, "panes"); got != "2" {
 				t.Fatalf("parsed value=%q", got)
 			}
 			ConfigClearKey(file, "panes")
@@ -541,4 +541,49 @@ func TestStateRootGitignoreSideEffect(t *testing.T) {
 			t.Fatalf("NOWRITE=0 ignore entry=%q err=%v", got, err)
 		}
 	})
+}
+
+func isolateConfigAliasTestEnv(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	bin := gitOnlyDir(t)
+	for _, key := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "TMPDIR"} {
+		t.Setenv(key, root)
+	}
+	t.Setenv("PATH", bin)
+}
+
+func TestConfigAliasesShareOneKey(t *testing.T) {
+	for _, tc := range []struct{ key, alias string }{
+		{"split_max_panes", "split-max-panes"},
+		{"lane.review.kind", "lane_review_kind"},
+		{"max_workers", "max-workers"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			isolateConfigAliasTestEnv(t)
+			env, cwd := fixture(t)
+			file := filepath.Join(cwd, ".agents", "soho.conf")
+			initial := tc.key + "=first # retained\n" + tc.alias + "=\"last\"#comment\nother=keep\n"
+			write(t, file, initial)
+			if got := FileKeyValue(file, tc.key); got != "last" {
+				t.Fatalf("FileKeyValue(%q) = %q, want last", tc.key, got)
+			}
+			ConfigWritePair(file, tc.key, "written", env, cwd)
+			data, err := os.ReadFile(file)
+			want := tc.key + "=written # retained\nother=keep\n"
+			if err != nil || string(data) != want {
+				t.Fatalf("write = %q, err=%v, want %q", data, err, want)
+			}
+			ctx := LoadConfig(env, cwd)
+			if got := ctx.Entries[NormalizeKey(tc.key)].Value; got != "written" {
+				t.Fatalf("loader value = %q, want written", got)
+			}
+			write(t, file, initial)
+			ConfigClearKey(file, tc.alias)
+			data, err = os.ReadFile(file)
+			if err != nil || string(data) != "other=keep\n" {
+				t.Fatalf("clear = %q, err=%v", data, err)
+			}
+		})
+	}
 }

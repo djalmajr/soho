@@ -913,7 +913,8 @@ func configWritePair(dest, key, value string, env platform.Env, cwd, command str
 	out := make([]string, 0)
 	found := false
 	for _, rawLine := range splitLines(raw) {
-		body, comment := splitTrailingComment(rawLine)
+		_, comment := splitTrailingComment(rawLine)
+		body, _, _ := strings.Cut(rawLine, "#")
 		stripped := trimJSWhitespace(body)
 		if stripped == "" || strings.HasPrefix(stripped, "#") {
 			out = append(out, rawLine)
@@ -925,7 +926,7 @@ func configWritePair(dest, key, value string, env platform.Env, cwd, command str
 			continue
 		}
 		k := trimJSWhitespace(stripped[:eq])
-		if k == key {
+		if NormalizeKey(k) == NormalizeKey(key) {
 			if !found {
 				out = append(out, key+"="+value+comment)
 			}
@@ -961,26 +962,16 @@ func splitTrailingComment(line string) (string, string) {
 }
 
 func FileKeyValue(file, key string) string {
-	raw, err := platform.ReadTextFile(file)
+	pairs, err := ReadConfigFilePairs(file)
 	if err != nil {
 		return ""
 	}
-	value := ""
-	for _, rawLine := range splitLines(raw) {
-		body, _ := splitTrailingComment(rawLine)
-		stripped := trimJSWhitespace(body)
-		if stripped == "" || strings.HasPrefix(stripped, "#") {
-			continue
-		}
-		eq := strings.IndexByte(stripped, '=')
-		if eq < 0 {
-			continue
-		}
-		if trimJSWhitespace(stripped[:eq]) == key {
-			value = trimJSWhitespace(stripped[eq+1:])
+	for _, pair := range pairs {
+		if pair.Key == NormalizeKey(key) {
+			return pair.Value
 		}
 	}
-	return value
+	return ""
 }
 
 func ConfigClearKey(file, key string) {
@@ -990,10 +981,10 @@ func ConfigClearKey(file, key string) {
 	}
 	out := make([]string, 0)
 	for _, rawLine := range splitLines(raw) {
-		body, _ := splitTrailingComment(rawLine)
+		body, _, _ := strings.Cut(rawLine, "#")
 		stripped := trimJSWhitespace(body)
 		if stripped != "" && !strings.HasPrefix(stripped, "#") {
-			if eq := strings.IndexByte(stripped, '='); eq >= 0 && trimJSWhitespace(stripped[:eq]) == key {
+			if eq := strings.IndexByte(stripped, '='); eq >= 0 && NormalizeKey(trimJSWhitespace(stripped[:eq])) == NormalizeKey(key) {
 				continue
 			}
 		}
