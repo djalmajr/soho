@@ -2,6 +2,8 @@ package skill
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
@@ -749,5 +751,54 @@ func TestEmbeddedTreeBeforePackageMove(t *testing.T) {
 		if !ok {
 			t.Errorf("missing pre-move resource %s", name)
 		}
+	}
+}
+
+// SOH-387: the cache key is the digest of the skill tree with names relative
+// to the skill root (SKILL.md, roles/implementer.md), as before the package
+// moved to skills/. Recompute it from the files on disk, independently of
+// bundledFiles, so a prefix leaking into the hashed names (soho/SKILL.md)
+// fails here instead of making Cached miss every existing cache.
+func TestEmbeddedDigestUsesSkillRelativeNames(t *testing.T) {
+	_, digest, err := bundledFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := os.DirFS("soho")
+	hash := sha256.New()
+	for _, top := range []string{"README.md", "SKILL.md", "agents", "config.defaults", "references", "roles", "templates"} {
+		err := fs.WalkDir(root, top, func(name string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			base := filepath.Base(name)
+			if name != top && (strings.HasPrefix(base, ".") || strings.HasPrefix(base, "_")) {
+				if entry.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			// go:embed skips a symlink or other non-regular file found
+			// inside an embedded directory.
+			if name != top && !entry.Type().IsRegular() {
+				return nil
+			}
+			data, err := fs.ReadFile(root, name)
+			if err != nil {
+				return err
+			}
+			sum := sha256.Sum256(data)
+			fmt.Fprintf(hash, "%s\x00%x\n", name, sum)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := hex.EncodeToString(hash.Sum(nil)); digest != want {
+		t.Fatalf("bundled digest = %s, want %s (names relative to the skill root)", digest, want)
 	}
 }
