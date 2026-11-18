@@ -23,7 +23,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/djalmajr/soho/skills/soho"
+	"github.com/djalmajr/soho/skills"
 )
 
 // Env is an explicit environment passed to platform helpers and commands.

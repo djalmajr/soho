@@ -30,7 +30,7 @@ import (
 	textutil "github.com/djalmajr/soho/internal/text"
 	"github.com/djalmajr/soho/internal/transport"
 	waitpkg "github.com/djalmajr/soho/internal/wait"
-	skillassets "github.com/djalmajr/soho/skills/soho"
+	skillassets "github.com/djalmajr/soho/skills"
 )
 
 type Say struct {

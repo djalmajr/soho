@@ -17,7 +17,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/inventory"
-	skill "github.com/djalmajr/soho/skills/soho"
+	skill "github.com/djalmajr/soho/skills"
 )
 
 // TestReadOnlyReplacedSessionDirectoryRefused: the session directory w1

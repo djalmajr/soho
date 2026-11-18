@@ -118,6 +118,7 @@ WORKDIR /src
 COPY go.mod ./
 COPY cmd/soho cmd/soho
 COPY internal internal
+COPY skills/*.go skills/
 COPY skills/soho skills/soho
 RUN set -eu; \
     go build -trimpath -buildvcs=false \

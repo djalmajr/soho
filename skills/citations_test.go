@@ -31,7 +31,7 @@ var nextSymbol = regexp.MustCompile("^,[ \t]+\x60" + symbolPattern + "\x60")
 type citationSpan struct{ start, end int }
 
 func TestDocumentationCodeCitations(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := ".."
 	for _, doc := range []string{"skills/soho/references/feature-map.md", "docs/formal/README.md"} {
 		checkCitations(root, doc, t.Errorf)
 	}

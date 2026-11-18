@@ -11,7 +11,7 @@ import (
 
 // readOnlyNonBlocking is the open mode of a published-bundle read that must
 // never block on a planted FIFO: read-only and non-blocking. On a regular
-// file the flag changes nothing. skills/soho cannot import internal/platform
+// file the flag changes nothing. skills cannot import internal/platform
 // (import cycle), so the flag is mirrored here from the standard library
 // only, matching platform.ReadOnlyNonBlocking.
 const readOnlyNonBlocking = syscall.O_RDONLY | syscall.O_NONBLOCK

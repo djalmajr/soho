@@ -6,6 +6,7 @@
 !go.mod
 !cmd/soho
 !internal
+!skills/*.go
 !skills/soho
 !container/runners/package.json
 !container/runners/package-lock.json
