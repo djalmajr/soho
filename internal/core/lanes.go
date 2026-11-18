@@ -853,15 +853,31 @@ func FileRoleResolved(file, role, attr string, env platform.Env, cwd string) str
 
 type laneMigration struct{ DropKind, DropModel, Lines []string }
 
-func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env platform.Env, cwd string, decided, explicitKind bool) {
-	ctx := LoadConfig(env, cwd)
+func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env platform.Env, cwd, through string, decided, explicitKind bool) {
+	ctx := LoadConfigThrough(env, cwd, through)
 	key := "lane." + lane + "." + attr
 	kindLayer := LaneKindLayer(&ctx, lane, env)
-	if (explicitKind || FileKeyValue(file, "lane."+lane+".kind") != "") && kindLayer < 2 {
-		kindLayer = 2 // The migration file is the project layer.
+	destinationRank := 2
+	switch through {
+	case "user":
+		destinationRank = 1
+	case "session":
+		destinationRank = 3
+	}
+	localValue := func(key string) string {
+		pairs, _ := ReadConfigFilePairs(file)
+		for _, pair := range pairs {
+			if pair.Key == NormalizeKey(key) {
+				return pair.Value
+			}
+		}
+		return ""
+	}
+	if (explicitKind || localValue("lane."+lane+".kind") != "") && kindLayer < destinationRank {
+		kindLayer = destinationRank
 	}
 	// A decided lane wins over roles; preserve the role keys without migrating them.
-	if decided || LaneAttr(&ctx, lane, attr, &kindLayer, env) != "" || (FileKeyValue(file, key) != "" && (attr != "model" || kindLayer <= 2)) {
+	if decided || LaneAttr(&ctx, lane, attr, &kindLayer, env) != "" || (localValue(key) != "" && (attr != "model" || kindLayer <= destinationRank)) {
 		return
 	}
 	laneKind := FileKeyValue(file, "lane."+lane+".kind")
@@ -941,7 +957,7 @@ func fileKeyPresent(file, key string) bool {
 	}
 	return false
 }
-func dropPresetFileExtras(file, panes string, lines *[]string, mode string) {
+func dropPresetFileExtras(file, panes string, lines *[]string, mode string, keepZero bool) {
 	raw, e := platform.ReadTextFile(file)
 	if e != nil {
 		platform.Die(fmt.Sprintf("could not rewrite %s (file left untouched)", file), 4)
@@ -969,6 +985,10 @@ func dropPresetFileExtras(file, panes string, lines *[]string, mode string) {
 			continue
 		}
 		if key == "max_workers" {
+			if keepZero {
+				out = append(out, rawLine)
+				continue
+			}
 			*lines = append(*lines, "removed max_workers="+value+" (derived from the lanes)")
 			continue
 		}
@@ -1009,6 +1029,27 @@ func dropPresetFileExtras(file, panes string, lines *[]string, mode string) {
 	}
 }
 func ApplyLaneFile(file, panes string, env platform.Env, cwd string, lanes ...LaneSpec) []string {
+	return ApplyLaneFileThrough(file, panes, env, cwd, "project", lanes...)
+}
+
+// LocalUnlimitedWorkers identifies the destination's own decoded zero cap.
+func LocalUnlimitedWorkers(file string) bool {
+	pairs, err := ReadConfigFilePairs(file)
+	if err != nil {
+		return false
+	}
+	// The loader keeps the last assignment and decodes double quotes only;
+	// '0' is not a number to it, so it is not unlimited here either.
+	unlimited := false
+	for _, pair := range pairs {
+		if pair.Key == "max_workers" {
+			unlimited = pair.Value == "0"
+		}
+	}
+	return unlimited
+}
+
+func ApplyLaneFileThrough(file, panes string, env platform.Env, cwd, through string, lanes ...LaneSpec) []string {
 	if _, e := os.Stat(file); os.IsNotExist(e) {
 		if e = os.MkdirAll(filepath.Dir(file), 0o755); e != nil {
 			platform.Die(fmt.Sprintf("config set: could not rewrite %s (file left untouched)", file), 4)
@@ -1028,14 +1069,15 @@ func ApplyLaneFile(file, panes string, env platform.Env, cwd string, lanes ...La
 			presetSigs[PresetSignature(p, mode)] = true
 		}
 	}
-	ctx := LoadConfig(env, cwd)
+	ctx := LoadConfigThrough(env, cwd, through)
+	keepZero := LocalUnlimitedWorkers(file)
 	mode := PaneMode(&ctx, env)
 	isPreset := sig == "" || presetSigs[sig] || IsLegacyPresetSignature(sig, mode) || sig == LegacyPresetSignature("3") || sig == LegacyPresetSignature("4")
 	lines := []string{}
 	if !isPreset {
 		_, _ = fmt.Fprintf(platform.Stderr, "soho: warning: lane roles in %s are custom; left in place. Remove them to restore the panes=%s preset.\n", file, panes)
 	} else {
-		dropPresetFileExtras(file, panes, &lines, mode)
+		dropPresetFileExtras(file, panes, &lines, mode, keepZero)
 	}
 	acc := laneMigration{Lines: lines}
 	pairs := [][2]string{}
@@ -1062,8 +1104,8 @@ func ApplyLaneFile(file, panes string, env platform.Env, cwd string, lanes ...La
 				modelDecided = lane.Model != ""
 			}
 		}
-		MigrateLaneAttr(file, pair[0], pair[1], "kind", &acc, env, cwd, kindDecided, kindDecided)
-		MigrateLaneAttr(file, pair[0], pair[1], "model", &acc, env, cwd, modelDecided, kindDecided)
+		MigrateLaneAttr(file, pair[0], pair[1], "kind", &acc, env, cwd, through, kindDecided, kindDecided)
+		MigrateLaneAttr(file, pair[0], pair[1], "model", &acc, env, cwd, through, modelDecided, kindDecided)
 	}
 	if err := ConfigDropLegacy(file, DropLegacyOptions{acc.DropKind, acc.DropModel, isPreset}); err != nil {
 		panic(err)
@@ -1075,12 +1117,14 @@ func ApplyLaneFile(file, panes string, env platform.Env, cwd string, lanes ...La
 		if mode == "flex" {
 			sum += FlexExtra(&ctx, env)
 		}
-		ConfigWritePair(file, "max_workers", strconv.Itoa(sum), env, cwd)
-		lines = append(lines, "set max_workers="+strconv.Itoa(sum))
+		if !keepZero {
+			ConfigWritePair(file, "max_workers", strconv.Itoa(sum), env, cwd)
+			lines = append(lines, "set max_workers="+strconv.Itoa(sum))
+		}
 		// The caller plus the whole team, as layout.SplitCap and the doctor
 		// measure it; with no team cap, panes (plus flex_extra).
 		splitCap := 1 + sum
-		if sum == 0 {
+		if sum == 0 || keepZero {
 			splitCap, _ = strconv.Atoi(panes)
 			if mode == "flex" {
 				splitCap += FlexExtra(&ctx, env)
