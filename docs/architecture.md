@@ -24,7 +24,7 @@ The report file remains the completion signal for a delegated task. Herdr agent 
 
 ## Native distribution and tests
 
-`cmd/soho` is the shared executable. `skills/soho/assets.go` embeds only resources and publishes an exact digest bundle in an explicit env-derived cache when no installed resource tree exists. Cache publication uses owned staging, verified contents and a filesystem boundary; corrupt or foreign published data is refused. NOWRITE and read-only lookup never materialize resources. `SOHO_BIN` may select an absolute native executable for worker dispatch; invalid overrides are refused before worker compact or prompt effects.
+`cmd/soho` is the shared executable. `skills/assets.go` embeds only resources and publishes an exact digest bundle in an explicit env-derived cache when no installed resource tree exists. Cache publication uses owned staging, verified contents and a filesystem boundary; corrupt or foreign published data is refused. NOWRITE and read-only lookup never materialize resources. `SOHO_BIN` may select an absolute native executable for worker dispatch; invalid overrides are refused before worker compact or prompt effects.
 
 `internal/install` owns bounded downloads, checksum verification and safe file replacement. The CLI owns explicit-env destination defaults and PATH advice. `cmd/soho-release` builds six targets and generates or validates checksums; its explicit publish operation invokes the native GitHub CLI with argument arrays. The workflow uses thin native PowerShell bootstrap around git/go/gh, without Node actions or Bash logic. External agent CLIs remain separate products with their own dependencies.
 

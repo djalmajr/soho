@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	skill "github.com/djalmajr/soho/skills/soho"
+	skill "github.com/djalmajr/soho/skills"
 )
 
 // TestBundleValidationTemplateParsesAsFivePlaceholderLayers checks that the

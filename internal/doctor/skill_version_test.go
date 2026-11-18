@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
-	skill "github.com/djalmajr/soho/skills/soho"
+	skill "github.com/djalmajr/soho/skills"
 )
 
 func TestDoctorSohoSkill(t *testing.T) {

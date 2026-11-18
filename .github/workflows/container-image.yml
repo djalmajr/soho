@@ -8,7 +8,7 @@ on:
       - go.mod
       - cmd/soho/**
       - internal/**
-      - skills/soho/**
+      - skills/**
       - container/**
       - .github/workflows/container-image.yml
   push:
@@ -19,7 +19,7 @@ on:
       - go.mod
       - cmd/soho/**
       - internal/**
-      - skills/soho/**
+      - skills/**
       - container/**
       - .github/workflows/container-image.yml
 
@@ -282,7 +282,7 @@ jobs:
             --output "type=local,dest=${RUNNER_TEMP}/context" .
           set +e
           go run ./container/imagecheck context "$RUNNER_TEMP/context" \
-            --allow go.mod --allow cmd/soho --allow internal --allow skills/soho \
+            --allow go.mod --allow cmd/soho --allow internal --allow skills \
             --allow container/runners/package.json --allow container/runners/package-lock.json \
             2>&1 | tee "$RUNNER_TEMP/context-scan.log"
           statuses=("${PIPESTATUS[@]}")

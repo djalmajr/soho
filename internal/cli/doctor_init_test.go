@@ -11,7 +11,7 @@ import (
 	"github.com/djalmajr/soho/internal/doctor"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
-	skill "github.com/djalmajr/soho/skills/soho"
+	skill "github.com/djalmajr/soho/skills"
 )
 
 func TestDoctorHomeSkillVersion(t *testing.T) {

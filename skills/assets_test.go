@@ -3,6 +3,7 @@ package skill
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,7 +123,7 @@ func TestBundleRefusesSymlinkedCacheChild(t *testing.T) {
 func TestBundleShipsTheValidationTemplateWithItsHeadings(t *testing.T) {
 	// DJA-695: templates/VALIDATION.md is part of the bundle and keeps the
 	// section order and the exact headings the delivery contract defines.
-	data, err := resources.ReadFile("templates/VALIDATION.md")
+	data, err := fs.ReadFile(resources, "templates/VALIDATION.md")
 	if err != nil {
 		t.Fatalf("bundle is missing templates/VALIDATION.md: %v", err)
 	}
@@ -178,7 +179,7 @@ func TestBundleShipsTheDesignTemplateWithItsContract(t *testing.T) {
 	// the DESIGN.md specification: the delimited front matter with the
 	// required keys, the prose sections in the specification's order, and
 	// the token layers and specs sections after them.
-	data, err := resources.ReadFile("templates/DESIGN.md")
+	data, err := fs.ReadFile(resources, "templates/DESIGN.md")
 	if err != nil {
 		t.Fatalf("bundle is missing templates/DESIGN.md: %v", err)
 	}
@@ -241,7 +242,7 @@ func TestDesignModelAndLintReferenceNameNoProjectOrMachine(t *testing.T) {
 	// DJA-695: the model and the lint reference ship generic English text:
 	// no project name, no machine path, no number of the sources.
 	for _, path := range []string{"templates/DESIGN.md", "references/design-lint.md"} {
-		data, err := resources.ReadFile(path)
+		data, err := fs.ReadFile(resources, path)
 		if err != nil {
 			t.Fatalf("bundle is missing %s: %v", path, err)
 		}
@@ -338,7 +339,7 @@ func TestEditRolesListChangedFilesUnderFilesChanged(t *testing.T) {
 // after its closing frontmatter ---).
 func roleBody(t *testing.T, name string) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("roles", name))
+	data, err := os.ReadFile(filepath.Join("soho", "roles", name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +549,7 @@ func TestShippedRolesCarryTheMcpChoice(t *testing.T) {
 // roleFm returns one frontmatter key of a shipped role file ("" when absent).
 func roleFm(t *testing.T, file, key string) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("roles", file))
+	data, err := os.ReadFile(filepath.Join("soho", "roles", file))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +573,7 @@ func TestBundleBriefTemplateCitesTheAuthorMeasurement(t *testing.T) {
 	// DJA-684: the template's Worktree: line says the line feeds the review
 	// author measurement and belongs in both briefs, the project root when
 	// the slice has no worktree of its own.
-	data, err := resources.ReadFile("templates/brief.md")
+	data, err := fs.ReadFile(resources, "templates/brief.md")
 	if err != nil {
 		t.Fatalf("bundle is missing templates/brief.md: %v", err)
 	}
@@ -599,7 +600,7 @@ func TestBundleBriefTemplateCarriesTheTypeSections(t *testing.T) {
 	// section, each with its deletion comment and the marker meanings; a
 	// filled brief generated from it (every section kept, a Type: line
 	// added) produces no warning from this slice.
-	data, err := resources.ReadFile("templates/brief.md")
+	data, err := fs.ReadFile(resources, "templates/brief.md")
 	if err != nil {
 		t.Fatalf("bundle is missing templates/brief.md: %v", err)
 	}
@@ -647,7 +648,7 @@ func TestSkillAssetsDropTheSoHoIssueLabelAndRepoLeftovers(t *testing.T) {
 		{"references/orchestration.md", []string{"different model families"}},
 	}
 	for _, tc := range cases {
-		data, err := resources.ReadFile(tc.path)
+		data, err := fs.ReadFile(resources, tc.path)
 		if err != nil {
 			t.Fatalf("bundle is missing %s: %v", tc.path, err)
 		}
@@ -672,7 +673,7 @@ func firstLineContaining(body, needle string) string {
 // the push as its own item and marked it partial failed a job that had done
 // everything right (DJA-712).
 func TestJobOrchestratorLeavesThePushToTheSupervisor(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("roles", "job-orchestrator.md"))
+	data, err := os.ReadFile(filepath.Join("soho", "roles", "job-orchestrator.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,5 +713,28 @@ func TestReviewRolesCarryTheStopCriterion(t *testing.T) {
 	// stop criterion keeps as a finding.
 	if body := roleBody(t, "reviewer.md"); !strings.Contains(body, "`test-gap` where the code is right but a test does not prove it") {
 		t.Fatal("reviewer.md lost the test-gap kind that the stop criterion points to")
+	}
+}
+
+// The pre-move embedded tree contained these 35 files; the count and two
+// representative paths guard the package boundary and embed patterns.
+func TestEmbeddedTreeBeforePackageMove(t *testing.T) {
+	files, _, err := bundledFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 35 {
+		t.Fatalf("embedded file count = %d, want 35", len(files))
+	}
+	found := map[string]bool{"SKILL.md": false, "roles/implementer.md": false}
+	for _, file := range files {
+		if _, ok := found[file.name]; ok {
+			found[file.name] = true
+		}
+	}
+	for name, ok := range found {
+		if !ok {
+			t.Errorf("missing pre-move resource %s", name)
+		}
 	}
 }

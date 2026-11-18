@@ -17,7 +17,7 @@ import (
 	"strings"
 
 	"github.com/djalmajr/soho/internal/platform"
-	skill "github.com/djalmajr/soho/skills/soho"
+	skill "github.com/djalmajr/soho/skills"
 )
 
 // The read bounds of the read-only seam. Every layer read is confined to

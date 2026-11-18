@@ -17,12 +17,22 @@ import (
 
 // Scripts are deliberately excluded: the executable contains the only engine.
 //
-//go:embed SKILL.md README.md config.defaults roles references templates agents
-var resources embed.FS
+//go:embed soho/SKILL.md soho/README.md soho/config.defaults soho/roles soho/references soho/templates soho/agents
+var embeddedResources embed.FS
+
+var resources = skillResources()
+
+func skillResources() fs.FS {
+	sub, err := fs.Sub(embeddedResources, "soho")
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}
 
 // ReadConfigDefaults reads the bundled defaults without materializing a skill cache.
 func ReadConfigDefaults() ([]byte, error) {
-	return resources.ReadFile("config.defaults")
+	return fs.ReadFile(resources, "config.defaults")
 }
 
 type resource struct {
@@ -37,7 +47,7 @@ func bundledFiles() ([]resource, string, error) {
 		if err != nil || entry.IsDir() {
 			return err
 		}
-		data, err := resources.ReadFile(name)
+		data, err := fs.ReadFile(resources, name)
 		if err != nil {
 			return err
 		}

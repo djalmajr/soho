@@ -22,7 +22,7 @@ import (
 	"github.com/djalmajr/soho/internal/inventory"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
-	skill "github.com/djalmajr/soho/skills/soho"
+	skill "github.com/djalmajr/soho/skills"
 )
 
 // roFixture returns a fresh fixture with HOME and USERPROFILE pinned at a
