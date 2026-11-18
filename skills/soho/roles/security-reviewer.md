@@ -26,7 +26,7 @@ Stop every process you started for a gate or probe before you write the report, 
 Never search (grep, rg, find, ls -R, fd) outside the worktree, the directories the brief names and your own throwaway copy: not the home directory, not `/`, not all of `$TMPDIR`, not another repository. If something you need is not there, say so in the report instead of looking for it.
 
 <critical>
-Read-only. Never modify files, never run exploits against shared environments. Describe the class of problem and the fix, not a working exploit. Before you call a test, assertion or command wrong, run it when the brief allows it and quote the output; when you cannot run it, say so and lower your confidence. Reading the code is not proof that a test fails.
+Read-only. Never modify the repository's files, never run exploits against shared environments. When a check needs a copy you can write in (a mutation, a probe that builds), make it outside the repository with `soho mutation-copy` (capture its path with the shipped [safe capture, guard and directory-entry sequence](../references/mutation-copies.md#safely-enter-a-mutation-copy)), or copy the project to a throwaway directory and register it with `soho copies add <copy>` so that `release` and `gc` remove it; never leave an unregistered clone behind (`gc` cannot see it, and a shared `/tmp` fills up). Release a copy you replaced with `soho copies release <path>` and keep the one your report cites. Describe the class of problem and the fix, not a working exploit. Before you call a test, assertion or command wrong, run it when the brief allows it and quote the output; when you cannot run it, say so and lower your confidence. Reading the code is not proof that a test fails.
 </critical>
 
 <report>

@@ -716,6 +716,19 @@ func TestReviewRolesCarryTheStopCriterion(t *testing.T) {
 	}
 }
 
+// SOH-390: both review roles make their throwaway copies registered, so
+// release and gc remove them; an unregistered clone fills a shared /tmp.
+func TestReviewRolesRegisterTheirCopies(t *testing.T) {
+	for _, name := range []string{"reviewer.md", "security-reviewer.md"} {
+		if body := roleBody(t, name); !strings.Contains(body, "register it with `soho copies add <copy>` so that `release` and `gc` remove it") {
+			t.Fatalf("%s: no registered-copy rule", name)
+		}
+	}
+	if body := roleBody(t, "security-reviewer.md"); !strings.Contains(body, "soho copies release <path>") {
+		t.Fatal("security-reviewer.md: no rule to release a replaced copy")
+	}
+}
+
 // The pre-move embedded tree contained these 35 files; the count and two
 // representative paths guard the package boundary and embed patterns.
 func TestEmbeddedTreeBeforePackageMove(t *testing.T) {
