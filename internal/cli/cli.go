@@ -129,6 +129,7 @@ func Run(args []string, env platform.Env) (code int) {
 		}
 		code = exitErr.Code
 	}()
+	refuseOrchestratorChild(args, env)
 	// Exact command help does not load configuration, state, or transport.
 	// Keep the existing NOWRITE policy for every invocation.
 	if len(args) == 2 && knownCommands[args[0]] && (args[1] == "--help" || args[1] == "-h") && env.Get("SOHO_NOWRITE") != "1" {
