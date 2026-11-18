@@ -4,14 +4,37 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/text"
 	"github.com/djalmajr/soho/internal/transport"
 )
+
+var nativeConfigAssignment = regexp.MustCompile(`^[A-Za-z0-9_.-]+=`)
+
+func continueArgsError(kind string, fresh bool, args []string) string {
+	for i, arg := range args {
+		// The worker's own end-of-options marker: what follows is prompt
+		// text for it (pi, claude), not options, so nothing after it is
+		// a continue flag or codex config (R567).
+		if arg == "--" {
+			break
+		}
+		if (arg == "-c" || arg == "--config") && i+1 < len(args) && nativeConfigAssignment.MatchString(args[i+1]) {
+			return fmt.Sprintf("spawn: %s reads %s as --continue or an incompatible option; %s key=value is codex config, pass it only to a codex worker", text.SanitizeCause(kind), arg, arg)
+		}
+		flag, _, _ := strings.Cut(arg, "=")
+		if fresh && (flag == "-c" || flag == "--continue") {
+			return fmt.Sprintf("spawn: --fresh starts a new session, but %s reads %s as --continue and would resume the last one; drop one of them", text.SanitizeCause(kind), text.SanitizeCause(arg))
+		}
+	}
+	return ""
+}
 
 // ConfigNativeArgs returns configured args for the CLI the worker will run.
 func ConfigNativeArgs(kind, lane, role string, ctx *core.Config, env platform.Env, cwd string, onDrop func(key, own string)) string {

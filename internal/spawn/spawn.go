@@ -1152,13 +1152,21 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		Warn(o.outputText(message), ctx, env, command)
 	}
 	svc := backend.New(env)
-	// Machine under pressure: warn before opening more work (stderr only;
-	// the spawn proceeds as usual).
+	// Preserve the warning before ordinary argument parsing and usage errors.
 	if !admissionOnly {
 		core.PressureWarn(ctx, env, cwd)
 	}
 	if !explicitEnv {
 		o = parseArgs(argv, cwd)
+	}
+	// Refuse invalid native arguments before starting a worker or writing its state.
+	early := core.ResolveRoleSettings(o.role, ctx, env, cwd, core.RoleFlags{Kind: o.kind, Model: o.model, Effort: o.effort, Approvals: o.approvals})
+	if early.Kind != "" && early.Kind != "codex" {
+		native := strings.Fields(ConfigNativeArgs(early.Kind, early.Lane, o.role, ctx, env, cwd, nil))
+		native = append(native, o.native...)
+		if message := continueArgsError(early.Kind, o.reuse == "off", native); message != "" {
+			platform.Die(message, 2)
+		}
 	}
 	warn := func(message string, ctx *core.Config, env platform.Env, command string) {
 		if !admissionOnly {
