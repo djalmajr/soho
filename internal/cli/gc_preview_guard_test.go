@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,7 +55,7 @@ func TestGcPreviewKeepsAProjectInsideCopyLikeYes(t *testing.T) {
 	if code != 0 || errOut != "" {
 		t.Fatalf("dry run code=%d out=%q err=%q", code, out, errOut)
 	}
-	want := strings.Join([]string{gcPressureNone, kept}, "\n") + "\n"
+	want := strings.Join([]string{gcPressureNone, kept, "kept: 1 copy not removed (listed above)"}, "\n") + "\n"
 	if out != want {
 		t.Fatalf("dry run stdout=%q; want\n%s", out, want)
 	}
@@ -160,6 +161,7 @@ func TestGcPreviewTotalCountsOnlyWhatYesRemoves(t *testing.T) {
 		kept,
 		"total: 40 B",
 		"run 'soho gc --yes' to remove them",
+		"kept: 1 copy not removed (listed above)",
 	}, "\n") + "\n"
 	if out != want {
 		t.Fatalf("dry run stdout=%q; want\n%s", out, want)
@@ -173,6 +175,7 @@ func TestGcPreviewTotalCountsOnlyWhatYesRemoves(t *testing.T) {
 		gcPressureNone,
 		"removed " + outside + "  40 B",
 		kept,
+		"kept: 1 copy not removed (listed above)",
 		"freed: 40 B (logical size; see volume free below)",
 		gcUnchangedVolume(outside),
 	}, "\n") + "\n"
@@ -206,7 +209,7 @@ func TestGcKeptLineCarriesTheOwnReason(t *testing.T) {
 	if code != 0 || errOut != "" {
 		t.Fatalf("dry run code=%d out=%q err=%q", code, out, errOut)
 	}
-	want := strings.Join([]string{gcPressureNone, kept}, "\n") + "\n"
+	want := strings.Join([]string{gcPressureNone, kept, "kept: 1 copy not removed (listed above)"}, "\n") + "\n"
 	if out != want {
 		t.Fatalf("dry run stdout=%q; want\n%s", out, want)
 	}
@@ -285,4 +288,114 @@ func TestGcPreviewKeepsARefusedSnapshotLikeYes(t *testing.T) {
 			t.Fatalf("--yes touched the refused snapshot's patch: %q %v", data, err)
 		}
 	})
+}
+
+func TestGcSummarizesTwoGitCopies(t *testing.T) {
+	f := gcGuardFixture(t)
+	rows := []core.CopyRow{}
+	for _, name := range []string{"git-one", "git-two"} {
+		path := filepath.Join(f.tmp, name)
+		if err := os.MkdirAll(filepath.Join(path, ".git"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "data"), bytes.Repeat([]byte("x"), 40), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		rows = append(rows, core.CopyRow{Path: path, Owner: "ghost", Pane: "-", Created: core.FrictionISO(platform.Now().Add(-3 * time.Hour)), Source: "-", Origin: "mutation-copy"})
+	}
+	f.writeCopies(t, rows)
+	for _, args := range [][]string{{"gc"}, {"gc", "--yes"}} {
+		code, out, errOut := f.run(t, f.env, args...)
+		if code != 0 || errOut != "" || !strings.Contains(out, "kept: 2 copies not removed (listed above)\n") || strings.Count(out, "\nkept ") != 2 || strings.Contains(out, "run 'soho gc --yes' to remove them") || strings.Contains(out, "already gone") {
+			t.Fatalf("%v: code=%d stdout=%q stderr=%q", args, code, out, errOut)
+		}
+		for _, row := range rows {
+			if _, err := os.Stat(filepath.Join(row.Path, ".git")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestGcSummarizesNestedGitCopies(t *testing.T) {
+	for _, outerGit := range []bool{false, true} {
+		for _, yes := range []bool{false, true} {
+			t.Run(fmt.Sprintf("outerGit=%t/yes=%t", outerGit, yes), func(t *testing.T) {
+				f := gcGuardFixture(t)
+				outer := filepath.Join(f.tmp, "outer")
+				inner := filepath.Join(outer, "inner")
+				if err := os.MkdirAll(filepath.Join(inner, ".git"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if outerGit {
+					if err := os.MkdirAll(filepath.Join(outer, ".git"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for _, path := range []string{outer, inner} {
+					if err := os.WriteFile(filepath.Join(path, "data"), bytes.Repeat([]byte("x"), 40), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				rows := []core.CopyRow{}
+				for _, path := range []string{outer, inner} {
+					rows = append(rows, core.CopyRow{Path: path, Owner: "ghost", Pane: "-", Created: core.FrictionISO(platform.Now().Add(-3 * time.Hour)), Source: "-", Origin: "mutation-copy"})
+				}
+				f.writeCopies(t, rows)
+				args := []string{"gc"}
+				if yes {
+					args = append(args, "--yes")
+				}
+				code, out, errOut := f.run(t, f.env, args...)
+				if code != 0 || errOut != "" {
+					t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errOut)
+				}
+				if outerGit && (!strings.Contains(out, "kept: 2 copies not removed (listed above)\n") || strings.Count(out, "\nkept ") != 2) {
+					t.Fatalf("stdout=%q", out)
+				}
+				if !outerGit && !yes && !strings.Contains(out, "kept: 1 copy not removed (listed above)\n") {
+					t.Fatalf("stdout=%q", out)
+				}
+				// Parent first: the outer copy is removed with its child, and
+				// the child's row that follows is the one counted line.
+				if !outerGit && yes && (!strings.Contains(out, "\nremoved "+outer+" ") || strings.Count(out, "\nkept ") != 1 || !strings.Contains(out, "\nkept "+inner+" (") || !strings.Contains(out, "kept: 1 copy not removed (listed above)\n") || strings.Contains(out, "already gone")) {
+					t.Fatalf("stdout=%q", out)
+				}
+				if yes {
+					_, err := os.Stat(inner)
+					if outerGit && err != nil || !outerGit && !os.IsNotExist(err) {
+						t.Fatalf("inner stat: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestGcPreviewKeptParentExcludesRemovedChild(t *testing.T) {
+	f := gcGuardFixture(t)
+	outer := filepath.Join(f.tmp, "outer")
+	inner := filepath.Join(outer, "inner")
+	if err := os.MkdirAll(filepath.Join(outer, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(inner, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{outer, inner} {
+		if err := os.WriteFile(filepath.Join(path, "data"), bytes.Repeat([]byte("x"), 40), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows := []core.CopyRow{}
+	for _, path := range []string{outer, inner} {
+		rows = append(rows, core.CopyRow{Path: path, Owner: "ghost", Pane: "-", Created: core.FrictionISO(platform.Now().Add(-3 * time.Hour)), Source: "-", Origin: "mutation-copy"})
+	}
+	f.writeCopies(t, rows)
+	for _, args := range [][]string{{"gc"}, {"gc", "--yes"}} {
+		code, out, errOut := f.run(t, f.env, args...)
+		if code != 0 || errOut != "" || !strings.Contains(out, "kept: 1 copy not removed (listed above)\n") {
+			t.Fatalf("args=%v code=%d stdout=%q stderr=%q", args, code, out, errOut)
+		}
+	}
 }

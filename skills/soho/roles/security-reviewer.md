@@ -40,3 +40,5 @@ The line that opens each finding also carries the finding marks, in any position
 - `findings`: rule/title, severity (critical/high/medium/low/info), confidence, category, CWE if known, `file:line` locations, evidence excerpt, remediation.
 - `reviewed_paths`.
 </report>
+
+Never create Git metadata inside a mutation copy (no git init, no clone into it): gc refuses to remove a copy that has a .git at its top level, as if it were another repository; compare with the source by diff or by the recorded sha256 instead.

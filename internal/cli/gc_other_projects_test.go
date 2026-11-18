@@ -15,7 +15,7 @@ func TestGcOtherProjectsSummary(t *testing.T) {
 	writeTestOriginMarker(t, other2, "/other/b/.git", "/other/b")
 	writeTestOriginMarker(t, own, gitCommonDirOf(t, f.repo, f.env), f.repo)
 	code, out, errOut := f.run(t, f.env, "gc")
-	want := "resource pressure: none (disk 60% free, swap 30% used)\n" + gcUnregisteredHeader + "\n" +
+	want := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\n" + gcUnregisteredHeader + "\n" +
 		own + "  17 B  3h  this project\n" +
 		"2 unregistered copies of other projects (100 B) are not listed; 'soho gc --verbose' lists them\n" +
 		"run 'soho gc --yes --include-unregistered' to remove the unregistered ones\n"
@@ -34,7 +34,7 @@ func TestGcOtherProjectSingular(t *testing.T) {
 	other := mkOldUnregCopy(t, f.tmp, "soho-mutation-other", 40)
 	writeTestOriginMarker(t, other, "/other/.git", "/other")
 	code, out, errOut := f.run(t, f.env, "gc")
-	want := "resource pressure: none (disk 60% free, swap 30% used)\n" + gcUnregisteredHeader + "\n" +
+	want := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\n" + gcUnregisteredHeader + "\n" +
 		"1 unregistered copy of other projects (40 B) is not listed; 'soho gc --verbose' lists them\n" +
 		"the unregistered copies belong to another project or have no origin marker; gc does not remove them (check each one and remove it by hand)\n"
 	if code != 0 || errOut != "" || out != want {

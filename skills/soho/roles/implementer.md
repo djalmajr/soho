@@ -97,4 +97,6 @@ When the project has a `VALIDATION.md`, the report carries a `## Test layers` se
 When the brief names a review with a `Review:` line, the report carries a `## Review responses` section with one line per finding of that review, in one of the exact forms `- F<n>: fixed`, `- F<n>: fixed: <note>`, or `- F<n>: declined: <reason>` — silence is not an answer, `fixed` only after the proof ran, and `declined` with the reason. The `wait` counts the findings left without a response and warns; it only warns: it never blocks and never runs anything.
 </report>
 
+Never create Git metadata inside a mutation copy (no git init, no clone into it): gc refuses to remove a copy that has a .git at its top level, as if it were another repository; compare with the source by diff or by the recorded sha256 instead.
+
 When you replace a mutation copy with a newer one, release the old one with `soho copies release <path>` from outside the copy; keep the copy whose files your report cites for the worker’s release.

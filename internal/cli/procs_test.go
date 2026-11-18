@@ -738,7 +738,7 @@ func TestGcListAndStopOrphanProcesses(t *testing.T) {
 		if code != 0 || errOut != "" {
 			t.Fatalf("gc: code=%d err=%q out=%q", code, errOut, out)
 		}
-		want := "resource pressure: none (disk 60% free, swap 30% used)\norphan processes:\n" +
+		want := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\norphan processes:\n" +
 			strconv.Itoa(orphan) + "  " + orphanName + "  ghost  0m\n" +
 			"run 'soho gc --yes' to stop them\n"
 		if out != want {

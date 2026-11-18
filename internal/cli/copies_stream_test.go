@@ -142,7 +142,7 @@ func TestGcMeasurementOrderAndFormat(t *testing.T) {
 		return 0
 	})
 	code, out, errOut := f.run(t, f.env, "gc")
-	want := "resource pressure: none (disk 60% free, swap 30% used)\n"
+	want := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\n"
 	for i, path := range paths {
 		want += fmt.Sprintf("would remove %s  %d B  ghost  3h\n", path, i+1)
 	}
@@ -183,7 +183,7 @@ func TestGcMeasurementStreamsInOrder(t *testing.T) {
 				line = func(path string) string { return path + "  7 B  3h  no origin marker\n" }
 			}
 			out.wait(t, line(paths[1]))
-			prefix := "resource pressure: none (disk 60% free, swap 30% used)\n"
+			prefix := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\n"
 			if unregistered {
 				prefix += gcUnregisteredHeader + "\n"
 			}
@@ -287,7 +287,7 @@ func TestGcMeasurementWarningThreshold(t *testing.T) {
 						if got := platform.Stderr.(*bytes.Buffer).String(); got != want {
 							t.Errorf("before first measurement stderr=%q; want %q", got, want)
 						}
-						if got := platform.Stdout.(*bytes.Buffer).String(); got != "resource pressure: none (disk 60% free, swap 30% used)\n" {
+						if got := platform.Stdout.(*bytes.Buffer).String(); got != "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\n" {
 							t.Errorf("before first measurement stdout=%q", got)
 						}
 					})
@@ -327,7 +327,7 @@ func TestGcYesStreamsAfterEachRemoval(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("second removal never started")
 	}
-	want := "resource pressure: none (disk 60% free, swap 30% used)\nremoved " + paths[0] + "  7 B\n"
+	want := "resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)\nremoved " + paths[0] + "  7 B\n"
 	if got := out.text(); got != want {
 		t.Fatalf("before second removal stdout=%q; want %q", got, want)
 	}

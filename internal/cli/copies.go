@@ -1342,6 +1342,18 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	}
 
 	total := int64(0)
+	keptCount := 0
+	printKept := func() {
+		if keptCount > 0 {
+			// Copy candidates only: a refused snapshot row has its own line
+			// above and is not counted here.
+			noun := "copies"
+			if keptCount == 1 {
+				noun = "copy"
+			}
+			_, _ = fmt.Fprintf(platform.Stdout, "kept: %d %s not removed (listed above)\n", keptCount, noun)
+		}
+	}
 	if !yes {
 		// Orphan processes: the running lines whose owner is not a live
 		// roster agent (the copies' rule). Gone and reused lines are not
@@ -1371,6 +1383,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 				if !cand.missing {
 					if _, _, cause := checkedCopy(cand.path, env, cwd); cause != "" {
 						gcKeptGuardLine(cand.path, cause)
+						keptCount++
 						return
 					}
 				}
@@ -1389,6 +1402,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 				_, _ = fmt.Fprintln(platform.Stdout, "run 'soho gc --yes' to remove them")
 			}
 		}
+		printKept()
 		if len(unregistered) > 0 {
 			_, _ = fmt.Fprintln(platform.Stdout, gcUnregisteredHeader)
 			listing := gcUnregisteredListing{verbose: verbose}
@@ -1471,6 +1485,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	volumes := gcMeasureVolumes(volumePaths)
 	freed := int64(0)
 	removedAny := false
+	removedOnDisk := false
 	procsHandled := 0
 	unverifiedProcs := []core.ProcRow{}
 	for _, cand := range candidates {
@@ -1487,13 +1502,17 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			if gcRemoveIdleOwnerCopy(cand, sd, env, svc, cwd, threshold) {
 				volumes.removed(cand.path)
 				removedAny = true
+				removedOnDisk = true
 				freed += cand.size
+			} else {
+				keptCount++
 			}
 			continue
 		}
 		resolved, parentInfo, cause := checkedCopy(cand.path, env, cwd)
 		if cause != "" {
 			gcKeptGuardLine(cand.path, cause)
+			keptCount++
 			continue
 		}
 		held, guardErr := copyDeletionGuard(cand.path, cand.owner, sd, env, cwd)
@@ -1507,11 +1526,13 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		}
 		if err := removeCopy(resolved, parentInfo); err != nil {
 			keptCopyError(cand.path, err)
+			keptCount++
 			continue
 		}
 		removedLines[cand.path] = true
 		volumes.removed(cand.path)
 		removedAny = true
+		removedOnDisk = true
 		freed += cand.size
 		_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", cand.path, humanSize(cand.size))
 	}
@@ -1532,11 +1553,13 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 				// candidates; the others stay, with the reason in the line.
 				if entry.origin != originThisProject {
 					_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", entry.path, entry.origin)
+					keptCount++
 					continue
 				}
 				resolved, parentInfo, cause := checkedCopy(entry.path, env, cwd)
 				if cause != "" {
 					gcKeptGuardLine(entry.path, cause)
+					keptCount++
 					continue
 				}
 				held, guardErr := copyDeletionGuard(entry.path, "", sd, env, cwd)
@@ -1550,9 +1573,11 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 				}
 				if err := removeCopy(resolved, parentInfo); err != nil {
 					keptCopyError(entry.path, err)
+					keptCount++
 					continue
 				}
 				removedAny = true
+				removedOnDisk = true
 				volumes.removed(entry.path)
 				freed += entry.size
 				_, _ = fmt.Fprintf(platform.Stdout, "removed %s  %s\n", entry.path, humanSize(entry.size))
@@ -1565,6 +1590,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			listing.summary()
 		}
 	}
+	printKept()
 	volumes.finish()
 	// Processes: stop the running orphan lines (no age limit) and drop the
 	// gone/reused ones, whatever their owner. The lock gates the phase: a
@@ -1618,10 +1644,12 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		if volumes.printsAny() {
 			_, _ = fmt.Fprintf(platform.Stdout, "freed: %s (logical size; see volume free below)\n", humanSize(freed))
 			volumes.print()
-		} else {
+		} else if !removedOnDisk {
 			// Only registry lines whose copies were already gone: no
 			// volume line follows, so none is promised.
 			_, _ = fmt.Fprintf(platform.Stdout, "freed: %s (the copies were already gone from disk)\n", humanSize(freed))
+		} else {
+			_, _ = fmt.Fprintf(platform.Stdout, "freed: %s\n", humanSize(freed))
 		}
 	}
 	if procsHandled > 0 {
@@ -1697,14 +1725,27 @@ func gcPressureLine(ctx *core.Config, env platform.Env, stateDir string) string 
 		}
 		return "resource pressure: " + strings.Join(parts, "; ") + "; run 'soho gc' and close idle panes before opening more"
 	}
+	if !diskMeasured && !swapMeasured {
+		return "resource pressure: not measured (disk not measured, swap not measured)"
+	}
 	diskText, swapText := "disk not measured", "swap not measured"
 	if diskMeasured {
-		diskText = fmt.Sprintf("disk %d%% free", diskPct)
+		diskText = fmt.Sprintf("disk %d%% free, limit off", diskPct)
+		if diskLimit > 0 {
+			floorText := "off"
+			if diskFloor > 0 {
+				floorText = fmt.Sprintf("%d GiB", diskFloor/(1024*1024*1024))
+			}
+			diskText = fmt.Sprintf("disk %d%% free, limit %d%% / %s", diskPct, diskLimit, floorText)
+		}
 	}
 	if swapMeasured {
-		swapText = fmt.Sprintf("swap %d%% used", swapPct)
+		swapText = fmt.Sprintf("swap %d%% used, limit off", swapPct)
+		if swapLimit > 0 {
+			swapText = fmt.Sprintf("swap %d%% used, limit %d%%", swapPct, swapLimit)
+		}
 	}
-	return fmt.Sprintf("resource pressure: none (%s, %s)", diskText, swapText)
+	return fmt.Sprintf("resource pressure: not detected (%s; %s)", diskText, swapText)
 }
 
 // gcPressureThreshold reads the key through the usual layers (env override
