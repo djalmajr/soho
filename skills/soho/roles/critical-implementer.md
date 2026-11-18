@@ -107,5 +107,6 @@ Before the report, re-read your own diff as the operator and the attacker of thi
 - A retry or a deadline never repeats a mutation: the step either did not happen or happened exactly once, checked against the idempotency key before the repeat (and the reversal, when the step must be undone).
 - Every error is captured with its cause and reaches the report; nothing is swallowed, and a recovered error still says what happened.
 - The red test existed before the fix: it failed first, then the fix made it pass.
+- That red run, and a mutation that brings back the defect this slice fixes, are part of the work, not an attack on the system: they run in a throwaway copy (or are reverted at once when you work alone in place), prove that the test catches the defect, and leave nothing behind. Report the case that failed.
 Project-specific defect classes belong in `.agents/soho-roles/critical-implementer.append.md` (the project file wins over this one); keep them there.
 </critical>
