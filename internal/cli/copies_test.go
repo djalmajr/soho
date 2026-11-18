@@ -2682,8 +2682,8 @@ func TestAQueueOpenToOthersIsNeverTrusted(t *testing.T) {
 		valuable, queue, before := setup(t, f)
 		addReleaseReport(t, filepath.Join(f.state, "ws"), "worker", false)
 		code, out, errOut := f.run(t, f.env, "release", "worker")
-		if code != 0 || strings.Contains(out, "removed copy") || !strings.Contains(errOut, refusal(queue)) {
-			t.Fatalf("release: code=%d out=%q err=%q; want the warning and no removal", code, out, errOut)
+		if code != 4 || strings.Contains(out, "removed copy") || !strings.Contains(errOut, refusal(queue)) || core.RosterLine(f.stateDir(t), "worker") == "" {
+			t.Fatalf("release: code=%d out=%q err=%q; want refusal and retained roster", code, out, errOut)
 		}
 		if raw, err := os.ReadFile(filepath.Join(valuable, "user-data")); err != nil || string(raw) != "keep me\n" {
 			t.Fatalf("the copy the queue names was touched: %q %v", raw, err)

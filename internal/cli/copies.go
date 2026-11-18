@@ -336,7 +336,7 @@ var (
 // fails the command goes on with the registry as it is and the queue
 // stays, with a stderr line, except for a permission error: that is a
 // sandboxed worker that cannot write the state dir, and it says nothing.
-func incorporatePendingCopies(cmd, sd string, env platform.Env, cwd string) {
+func incorporatePendingCopies(cmd, sd string, env platform.Env, cwd string) error {
 	res, err := incorporateCopies(sd, filepath.Base(sd), env, func(row core.CopyRow) (core.CopyRow, string) {
 		resolved, cause := checkCopyPath(row.Path, env, cwd)
 		if cause != "" {
@@ -349,6 +349,7 @@ func incorporatePendingCopies(cmd, sd string, env platform.Env, cwd string) {
 		return row, ""
 	})
 	pendingResultLines(cmd, "copy", res, err)
+	return err
 }
 
 // incorporatePendingProcs is incorporatePendingCopies for the process
@@ -774,6 +775,14 @@ func gcRemoveIdleOwnerCopy(cand gcCandidate, sd string, env platform.Env, svc tr
 		gcDiscardLeft(discard, cause, env, cwd)
 		return false
 	}
+	held, guardErr := copyDeletionGuard(discard, cand.owner, sd, env, cwd)
+	if guardErr != nil {
+		core.DieFriction(fmt.Sprintf("%s: kept: %v", discard, guardErr), 4, frictionLogPath, "gc")
+	}
+	if held != "" {
+		_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %s\n", discard, held)
+		return false
+	}
 	if err := removeCopy(resolved, parentInfo); err != nil {
 		gcDiscardLeft(discard, copyErrorCause(err), env, cwd)
 		return false
@@ -817,6 +826,14 @@ func gcDiscardIdleOwnerCopy(cand gcCandidate, sd string, env platform.Env, cwd s
 	resolved, parentInfo, cause := checkedCopy(cand.path, env, cwd)
 	if cause != "" {
 		gcKeptGuardLine(cand.path, cause)
+		return ""
+	}
+	held, guardErr := copyDeletionGuard(cand.path, cand.owner, sd, env, cwd)
+	if guardErr != nil {
+		core.DieFriction(fmt.Sprintf("%s: kept: %v", cand.path, guardErr), 4, frictionLogPath, "gc")
+	}
+	if held != "" {
+		_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %s\n", cand.path, held)
 		return ""
 	}
 	discard, err := renameToDiscard(resolved, parentInfo)
@@ -1290,6 +1307,21 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		}
 		// the other owned lines are never touched
 	}
+	guarded := map[string]string{}
+	for _, cand := range candidates {
+		if cand.missing {
+			continue
+		}
+		if _, _, cause := checkedCopy(cand.path, env, cwd); cause != "" {
+			continue
+		}
+		held, guardErr := copyDeletionGuard(cand.path, cand.owner, sd, env, cwd)
+		if guardErr != nil {
+			_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %v\n", cand.path, guardErr)
+			return 4
+		}
+		guarded[cand.path] = held
+	}
 	unregistered := gcUnregistered(env, rows, now, threshold, cwd)
 	orphanProcs := gcProjectOrphans(sd, procRows, env, cwd)
 
@@ -1330,6 +1362,10 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			gcMeasureCopies(candidatePaths, func(i int, size int64) {
 				cand := candidates[i]
 				cand.size = size
+				if held := guarded[cand.path]; held != "" {
+					_, _ = fmt.Fprintf(platform.Stdout, "%s: kept: %s\n", cand.path, held)
+					return
+				}
 				// The same guard the removal phase runs (checkedCopy): a
 				// copy it refuses is a kept line, not a promise.
 				if !cand.missing {
@@ -1356,17 +1392,35 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		if len(unregistered) > 0 {
 			_, _ = fmt.Fprintln(platform.Stdout, gcUnregisteredHeader)
 			listing := gcUnregisteredListing{verbose: verbose}
+			eligible := false
 			gcMeasureCopies(unregisteredPaths, func(i int, size int64) {
-				listing.print(unregistered[i], size)
+				entry := unregistered[i]
+				if entry.origin == originThisProject {
+					if _, _, cause := checkedCopy(entry.path, env, cwd); cause != "" {
+						gcKeptGuardLine(entry.path, cause)
+						return
+					}
+					held, err := copyDeletionGuard(entry.path, "", sd, env, cwd)
+					if err != nil {
+						_, _ = fmt.Fprintf(platform.Stdout, "%s: kept: %v\n", entry.path, err)
+						return
+					}
+					if held != "" {
+						_, _ = fmt.Fprintf(platform.Stdout, "%s: kept: %s\n", entry.path, held)
+						return
+					}
+					eligible = true
+				}
+				listing.print(entry, size)
 			})
 			listing.summary()
 			if len(candidates) == 0 {
 				// Only unregistered copies: name the flag that actually removes
 				// them, but only when gc may remove at least one of them (this
 				// project's); otherwise say what gc will not touch.
-				if unregisteredHasThisProject(unregistered) {
+				if eligible {
 					_, _ = fmt.Fprintln(platform.Stdout, "run 'soho gc --yes --include-unregistered' to remove the unregistered ones")
-				} else {
+				} else if !unregisteredHasThisProject(unregistered) {
 					_, _ = fmt.Fprintln(platform.Stdout, "the unregistered copies belong to another project or have no origin marker; gc does not remove them (check each one and remove it by hand)")
 				}
 			}
@@ -1442,6 +1496,15 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			gcKeptGuardLine(cand.path, cause)
 			continue
 		}
+		held, guardErr := copyDeletionGuard(cand.path, cand.owner, sd, env, cwd)
+		if guardErr != nil {
+			_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %v\n", cand.path, guardErr)
+			return 4
+		}
+		if held != "" {
+			_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %s\n", cand.path, held)
+			continue
+		}
 		if err := removeCopy(resolved, parentInfo); err != nil {
 			keptCopyError(cand.path, err)
 			continue
@@ -1474,6 +1537,15 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 				resolved, parentInfo, cause := checkedCopy(entry.path, env, cwd)
 				if cause != "" {
 					gcKeptGuardLine(entry.path, cause)
+					continue
+				}
+				held, guardErr := copyDeletionGuard(entry.path, "", sd, env, cwd)
+				if guardErr != nil {
+					_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %v\n", entry.path, guardErr)
+					return 4
+				}
+				if held != "" {
+					_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %s\n", entry.path, held)
 					continue
 				}
 				if err := removeCopy(resolved, parentInfo); err != nil {

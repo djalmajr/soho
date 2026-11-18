@@ -427,3 +427,113 @@ func TestReleaseGoneAgentRemovesRosterEntry(t *testing.T) {
 		}
 	}
 }
+
+func TestReleasePreflightBeforeWorkerEffects(t *testing.T) {
+	for _, mode := range []string{"registered-close", "queued-close", "queued-title"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"pane", "close", "p-worker"}}, {Argv: []string{"pane", "report-metadata", "p-worker", "--source", "soho", "--clear-title"}}})
+			path := filepath.Join(f.tmp, "copy")
+			if err := os.Mkdir(path, 0700); err != nil {
+				t.Fatal(err)
+			}
+			sd := f.stateDir(t)
+			f.writeRoster(t, releaseRow("worker", "p-worker", "1", "implementer", false, f.cwd))
+			row := core.CopyRow{Path: path, Owner: "worker", Pane: "p-worker", Created: "2020-01-01T00:00:00Z", Source: "-", Origin: "add"}
+			if mode == "registered-close" {
+				f.writeCopies(t, []core.CopyRow{row})
+			} else if _, err := core.QueueCopy(f.env, "ws", sd, row); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(sd, "snapshots.tsv"), []byte("invalid\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			pointer := filepath.Join(sd, "task-report-worker.json")
+			raw := []byte(`{"version":1,"task_report":"report","current":"current","history":[]}`)
+			if err := os.WriteFile(pointer, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"release", "worker", "--force"}
+			if mode != "queued-title" {
+				args = append(args, "--close")
+			}
+			code, out, stderr := f.run(t, f.env, args...)
+			calls, err := fakecli.ReadCallsForConfig(filepath.Join(f.env.Get("SOHO_FAKECLI_CONFIG"), "herdr.json"))
+			if os.IsNotExist(err) {
+				calls = nil
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(pointer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code != 4 || !strings.Contains(stderr, "cannot read snapshot registry") || len(callsTo(calls, "pane", "close", "p-worker")) != 0 || len(callsTo(calls, "pane", "report-metadata", "p-worker", "--source", "soho", "--clear-title")) != 0 || !bytes.Equal(got, raw) || core.RosterLine(sd, "worker") == "" || len(f.copiesRows(t)) != 1 {
+				t.Fatalf("mode=%s code=%d out=%q stderr=%q calls=%v pointer=%q rows=%v", mode, code, out, stderr, calls, got, f.copiesRows(t))
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// R534 F1: a copy registry held by another soho while a queued row waits
+// releases the worker and keeps its copies, as on main.
+func TestReleaseKeepsCopiesWhenRegistryBusy(t *testing.T) {
+	old := core.CopiesLockTimeout
+	core.CopiesLockTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { core.CopiesLockTimeout = old })
+	f := newCopiesFixture(t, nil)
+	path := filepath.Join(f.tmp, "copy")
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	sd := f.stateDir(t)
+	f.writeRoster(t, releaseRow("worker", "p-worker", "1", "implementer", false, f.cwd))
+	row := core.CopyRow{Path: path, Owner: "worker", Pane: "p-worker", Created: "2020-01-01T00:00:00Z", Source: "-", Origin: "add"}
+	if _, err := core.QueueCopy(f.env, "ws", sd, row); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sd, "copies.tsv.lock"), []byte("other soho\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, stderr := f.run(t, f.env, "release", "worker", "--force")
+	if code != 0 || !strings.Contains(stderr, "were not removed") || core.RosterLine(sd, "worker") != "" {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("copy removed under a busy registry: %v", err)
+	}
+}
+
+// R535 F1: contention does not skip the read-only preflight; a malformed
+// registry still refuses before the worker is released.
+func TestReleaseBusyRegistryStillValidates(t *testing.T) {
+	old := core.CopiesLockTimeout
+	core.CopiesLockTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { core.CopiesLockTimeout = old })
+	f := newCopiesFixture(t, nil)
+	path := filepath.Join(f.tmp, "copy")
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	sd := f.stateDir(t)
+	f.writeRoster(t, releaseRow("worker", "p-worker", "1", "implementer", false, f.cwd))
+	row := core.CopyRow{Path: path, Owner: "worker", Pane: "p-worker", Created: "2020-01-01T00:00:00Z", Source: "-", Origin: "add"}
+	if _, err := core.QueueCopy(f.env, "ws", sd, row); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(core.CopiesFile(sd), []byte("not a registry\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sd, "copies.tsv.lock"), []byte("other soho\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, stderr := f.run(t, f.env, "release", "worker", "--force")
+	if code != 4 || core.RosterLine(sd, "worker") == "" {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("copy removed: %v", err)
+	}
+}
