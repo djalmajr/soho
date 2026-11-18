@@ -232,7 +232,7 @@ func nowriteRoutingEnv() platform.Env {
 }
 
 func TestStatePathFileComponent(t *testing.T) {
-	env, repo := commandFixture(t)
+	env, repo := fakeHerdrCodexFixture(t)
 	env["HERDR_ENV"] = "1"
 	blocked := filepath.Join(repo, "blocked")
 	if err := os.WriteFile(blocked, []byte("file"), 0o600); err != nil {
@@ -246,23 +246,7 @@ func TestStatePathFileComponent(t *testing.T) {
 }
 
 func TestReadOnlyGitignoreStateRecovery(t *testing.T) {
-	env, repo := commandFixture(t)
-	// doctor probes codex once per process (spawn.CodexSupportsNoDaemon): a
-	// fake codex keeps the host's real one from deciding it for later tests.
-	bin := t.TempDir()
-	for _, name := range []string{"herdr", "codex"} {
-		if _, err := fakecli.Install(t, bin, name, nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// Keep the host PATH after the fakes: the ignore update needs git.
-	faked := platform.Env{}
-	for _, item := range fakecli.Env(env.List(), bin, fakecli.EnvOptions{IncludeBasePath: true}) {
-		if key, value, ok := strings.Cut(item, "="); ok {
-			faked[key] = value
-		}
-	}
-	env = faked
+	env, repo := fakeHerdrCodexFixture(t)
 	env["HERDR_ENV"] = "1"
 	ignore := filepath.Join(repo, ".gitignore")
 	if err := os.WriteFile(ignore, []byte("# fixture\n"), 0o400); err != nil {
@@ -329,4 +313,27 @@ func TestUnwritableUninitializedState(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("help code=%d stdout=%q stderr=%q", code, out, stderr)
 	}
+}
+
+// fakeHerdrCodexFixture is commandFixture with fake herdr and codex first on
+// PATH: commands that need herdr do not depend on the host having it, and
+// spawn.CodexSupportsNoDaemon (probed once per process) never caches the
+// host codex's answer for later tests. The host PATH stays after the fakes
+// because the Git ignore update needs git.
+func fakeHerdrCodexFixture(t *testing.T) (platform.Env, string) {
+	t.Helper()
+	env, repo := commandFixture(t)
+	bin := t.TempDir()
+	for _, name := range []string{"herdr", "codex"} {
+		if _, err := fakecli.Install(t, bin, name, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	faked := platform.Env{}
+	for _, item := range fakecli.Env(env.List(), bin, fakecli.EnvOptions{IncludeBasePath: true}) {
+		if key, value, ok := strings.Cut(item, "="); ok {
+			faked[key] = value
+		}
+	}
+	return faked, repo
 }
