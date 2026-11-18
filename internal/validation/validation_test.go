@@ -486,3 +486,18 @@ func TestCommandNotesRequireSeparator(t *testing.T) {
 		}
 	}
 }
+
+func TestCoveredNotesRequireSeparator(t *testing.T) {
+	for _, sep := range []string{" — ", " – "} {
+		doc := Parse("## Test layers\n- integration: covered: unit" + sep + "CI checks\n")
+		if len(doc.Layers) != 1 || doc.Layers[0].Value != "unit" || doc.Layers[0].Note != "CI checks" {
+			t.Fatalf("separator %q: %#v", sep, doc)
+		}
+	}
+	for _, suffix := range []string{" — ", " – ", "— note", " —note"} {
+		doc := Parse("## Test layers\n- integration: covered: unit" + suffix + "\n")
+		if len(doc.Layers) != 0 || len(doc.Malformed) != 1 {
+			t.Fatalf("suffix %q: %#v", suffix, doc)
+		}
+	}
+}

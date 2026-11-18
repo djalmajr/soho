@@ -201,7 +201,7 @@ func fenceDelimiter(line string) (byte, int, string) {
 }
 
 // parseLayerLine parses one list item of the section. The name must match
-// the layer grammar; the value must be one of the three forms. A command is
+// the layer grammar; the value must be one of the four forms. A command is
 // one nonempty backticked span, optionally followed by a separated note.
 func parseLayerLine(line string) (Layer, bool) {
 	rest := line[2:]
@@ -229,10 +229,21 @@ func parseLayerLine(line string) (Layer, bool) {
 		return Layer{Name: name, Kind: "manual", Value: desc}, true
 	case strings.HasPrefix(value, "covered:"):
 		target := strings.TrimSpace(strings.TrimPrefix(value, "covered:"))
+		note := ""
+		if i := strings.IndexAny(target, "—–"); i >= 0 {
+			if i == 0 || target[i-1] != ' ' || len(target) <= i+len("—") || target[i+len("—")] != ' ' {
+				return Layer{}, false
+			}
+			note = strings.TrimSpace(target[i+len("—"):])
+			target = strings.TrimSpace(target[:i])
+			if note == "" {
+				return Layer{}, false
+			}
+		}
 		if !layerNameRe.MatchString(target) {
 			return Layer{}, false
 		}
-		return Layer{Name: name, Kind: "covered", Value: target}, true
+		return Layer{Name: name, Kind: "covered", Value: target, Note: note}, true
 	case strings.HasPrefix(value, "`"):
 		end := strings.IndexByte(value[1:], '`')
 		if end < 0 {

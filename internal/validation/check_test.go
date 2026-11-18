@@ -179,7 +179,7 @@ func TestCheckProblemTexts(t *testing.T) {
 		}
 		got := Check(p)
 		want := []string{
-			"VALIDATION.md:3: malformed layer line (use \"- <layer>: `<command>`\", \"- <layer>: n/a: <reason>\" or \"- <layer>: manual: <what runs it>\")",
+			"VALIDATION.md:3: malformed layer line (use \"- <layer>: `<command>`\", \"- <layer>: n/a: <reason>\", \"- <layer>: manual: <what runs it>\" or \"- <layer>: covered: <layer>\"; an optional \" — <note>\" may follow a command or covered)",
 			"VALIDATION.md: layer integration is not declared (give its command, n/a with the reason, or manual)",
 			"VALIDATION.md: layer contract is not declared (give its command, n/a with the reason, or manual)",
 			"VALIDATION.md: layer e2e is not declared (give its command, n/a with the reason, or manual)",
