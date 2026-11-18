@@ -365,12 +365,12 @@ func TestValidatePlanAcceptsThePTBRTitle(t *testing.T) {
 	if code != 0 || errOut != "" {
 		t.Fatalf("pt-BR title: code=%d err=%q out=%s", code, errOut, out)
 	}
-	if !hasLinePrefix(out, "unit: run touch sentinel") {
+	if !hasLinePrefix(out, "unit: run `touch sentinel`") {
 		t.Fatalf("pt-BR title: the plan does not name the unit command in:\n%s", out)
 	}
 	writeValidationMD(t, cwd, strings.Replace(validateSentinelMD, "## Test layers", "## Camadas", 1))
 	code, out, errOut = runIn(t, []string{"validate", "--plan"}, env, cwd)
-	if code != 0 || errOut != "" || !hasLinePrefix(out, "unit: run touch sentinel") {
+	if code != 0 || errOut != "" || !hasLinePrefix(out, "unit: run `touch sentinel`") {
 		t.Fatalf("fallback title: code=%d err=%q out=%s", code, errOut, out)
 	}
 	if _, err := os.Stat(filepath.Join(cwd, "sentinel")); !os.IsNotExist(err) {
@@ -397,7 +397,7 @@ func TestValidatePlanRunsNothingAndWritesNothing(t *testing.T) {
 	if lines[0] != "validation: plan" {
 		t.Fatalf("first line = %q, want validation: plan", lines[0])
 	}
-	if !hasLinePrefix(out, "unit: run touch sentinel") {
+	if !hasLinePrefix(out, "unit: run `touch sentinel`") {
 		t.Fatalf("the plan does not name the unit command in:\n%s", out)
 	}
 	if !hasLinePrefix(out, "integration: n/a") {
@@ -903,10 +903,10 @@ func TestValidateControlCharactersNeverReachTheOutput(t *testing.T) {
 	if strings.ContainsRune(out, '\x01') || strings.ContainsRune(out, '\x02') || strings.ContainsRune(out, '\x1b') {
 		t.Fatalf("a control character reached the output:\n%s", out)
 	}
-	if !hasLinePrefix(out, "unit: run echo badchar") || !hasLinePrefix(out, "e2e: manual: texthere") {
+	if !hasLinePrefix(out, "unit: run `echo badchar`") || !hasLinePrefix(out, "e2e: manual: texthere") {
 		t.Fatalf("the sanitized plan lines are wrong in:\n%s", out)
 	}
-	if !hasLinePrefix(out, "contract: run printf 'ESC[31mred\\n'") {
+	if !hasLinePrefix(out, "contract: run `printf 'ESC[31mred\\n'`") {
 		t.Fatalf("the escape was stripped from the plan line (only the control byte may go):\n%s", out)
 	}
 	code, out, errOut = runIn(t, []string{"validate", "--plan", "--json"}, env, cwd)
@@ -1566,7 +1566,7 @@ func TestValidateManualSelectionAndCovered(t *testing.T) {
 				t.Fatalf("code=%d stderr=%q output=%s", code, errOut, out)
 			}
 			code, out, _ = runIn(t, []string{"validate", "--plan"}, env, cwd)
-			if code != 0 || !strings.Contains(out, "unit: run "+tc.command+" — CI checks") {
+			if code != 0 || !strings.Contains(out, "unit: run `"+tc.command+"` (CI checks)") {
 				t.Fatalf("plan code=%d out=%s", code, out)
 			}
 		})
@@ -1579,7 +1579,7 @@ func TestValidatePlanMatchesCoveredExecution(t *testing.T) {
 	writeValidationMD(t, cwd, "## Test layers\n- integration: covered: unit\n- unit: `echo unit >> ran`\n- contract: `echo contract >> ran`\n- e2e: covered: contract\n- mutation: n/a: none\n")
 	args := []string{"validate", "--layer", "integration"}
 	code, textPlan, errOut := runIn(t, append(append([]string{}, args...), "--plan"), env, cwd)
-	if code != 0 || errOut != "" || !strings.Contains(textPlan, "unit: run echo unit >> ran (runs for integration)") || !strings.Contains(textPlan, "e2e: not selected") {
+	if code != 0 || errOut != "" || !strings.Contains(textPlan, "unit: run `echo unit >> ran` (runs for integration)") || !strings.Contains(textPlan, "e2e: not selected") {
 		t.Fatalf("text plan code=%d stderr=%q out=%s", code, errOut, textPlan)
 	}
 	code, jsonPlan, errOut := runIn(t, append(append([]string{}, args...), "--plan", "--json"), env, cwd)
@@ -1642,5 +1642,56 @@ func TestValidateManualWithCommand(t *testing.T) {
 		if code != tc.code || !strings.Contains(out, "validation: "+tc.result) || !strings.Contains(out, "manual: e2e (not run by validate)") {
 			t.Fatalf("code=%d out=%s", code, out)
 		}
+	}
+}
+
+func TestValidateNotesInPlanAndSummary(t *testing.T) {
+	requireSh(t)
+	env, cwd := commandFixture(t)
+	writeValidationMD(t, cwd, "## Test layers\n- unit: `bun run test` — CI checks\n- integration: covered: unit – shared checks\n- contract: n/a: none\n- e2e: n/a: none\n- mutation: n/a: none\n")
+	code, out, errOut := runIn(t, []string{"validate", "--plan"}, env, cwd)
+	if code != 0 || errOut != "" || !strings.Contains(out, "unit: run `bun run test` (CI checks)") || !strings.Contains(out, "integration: covered by unit (shared checks)") {
+		t.Fatalf("plan code=%d stderr=%q out=%s", code, errOut, out)
+	}
+	code, out, errOut = runIn(t, []string{"validate", "--plan", "--json"}, env, cwd)
+	if code != 0 || errOut != "" {
+		t.Fatalf("plan code=%d stderr=%q out=%s", code, errOut, out)
+	}
+	// A test-local type with fixed tags: a renamed production key fails here.
+	type publishedLayers struct {
+		Layers []struct {
+			Command string `json:"command"`
+			Note    string `json:"note"`
+		} `json:"layers"`
+	}
+	var plan publishedLayers
+	if err := json.Unmarshal([]byte(out), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.Layers[0].Command != "bun run test" || plan.Layers[0].Note != "CI checks" || plan.Layers[1].Note != "shared checks" || plan.Layers[1].Command != "" {
+		t.Fatalf("plan layers: %+v", plan.Layers)
+	}
+	writeValidationMD(t, cwd, "## Test layers\n- unit: `true` — CI checks\n- integration: covered: unit – shared checks\n- contract: n/a: none\n- e2e: n/a: none\n- mutation: n/a: none\n")
+	code, out, errOut = runIn(t, []string{"validate", "--json"}, env, cwd)
+	if code != 0 || errOut != "" {
+		t.Fatalf("run code=%d stderr=%q out=%s", code, errOut, out)
+	}
+	var run publishedLayers
+	if err := json.Unmarshal([]byte(out), &run); err != nil {
+		t.Fatal(err)
+	}
+	var runDoc validateJSON
+	if err := json.Unmarshal([]byte(out), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	if run.Layers[0].Command != "true" || run.Layers[0].Note != "CI checks" || run.Layers[1].Note != "shared checks" {
+		t.Fatalf("run layers: %+v", run.Layers)
+	}
+	raw, err := os.ReadFile(filepath.Join(*runDoc.Evidence, "summary.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != out {
+		t.Fatalf("summary differs: %s", raw)
 	}
 }

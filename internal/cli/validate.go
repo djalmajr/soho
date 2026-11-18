@@ -99,6 +99,8 @@ type validateLayer struct {
 	DurationMs int64    `json:"duration_ms"`
 	Log        *string  `json:"log"`
 	RunsFor    []string `json:"runs_for,omitempty"`
+	Command    string   `json:"command,omitempty"`
+	Note       string   `json:"note,omitempty"`
 }
 
 // validateLayerResult is one layer's outcome of a run.
@@ -300,6 +302,10 @@ func doValidate(args []string, ctx *core.Config, env platform.Env, cwd string, w
 	summary.Evidence = &evidenceDir
 	for _, r := range results {
 		lj := validateLayer{Name: printable(r.layer.Name), Kind: r.kind, Result: r.result, Reason: printable(r.reason), DurationMs: r.durMs}
+		if r.layer.Kind == "command" {
+			lj.Command = printable(r.layer.Value)
+		}
+		lj.Note = printable(r.layer.Note)
 		if r.exit != nil {
 			lj.Exit = r.exit
 		}
@@ -710,7 +716,11 @@ func emitValidatePlan(w io.Writer, asJSON bool, layers []validation.Layer, selec
 					reason = "not selected"
 				}
 			}
-			doc.Layers = append(doc.Layers, validateLayer{Name: printable(l.Name), Kind: l.Kind, Result: validateResultPlan, Reason: reason, RunsFor: runsFor[l.Name]})
+			layer := validateLayer{Name: printable(l.Name), Kind: l.Kind, Result: validateResultPlan, Reason: reason, RunsFor: runsFor[l.Name], Note: printable(l.Note)}
+			if l.Kind == "command" {
+				layer.Command = printable(l.Value)
+			}
+			doc.Layers = append(doc.Layers, layer)
 		}
 		_, _ = w.Write(marshalValidate(doc))
 	} else {
@@ -723,18 +733,22 @@ func emitValidatePlan(w io.Writer, asJSON bool, layers []validation.Layer, selec
 				fmt.Fprintf(w, "%s: manual: %s\n", printable(l.Name), printable(l.Value))
 			case "covered":
 				if selected[l.Name] {
-					fmt.Fprintf(w, "%s: covered by %s\n", printable(l.Name), printable(l.Value))
+					fmt.Fprintf(w, "%s: covered by %s", printable(l.Name), printable(l.Value))
+					if l.Note != "" {
+						fmt.Fprintf(w, " (%s)", printable(l.Note))
+					}
+					fmt.Fprintln(w)
 				} else {
 					fmt.Fprintf(w, "%s: not selected\n", printable(l.Name))
 				}
 			case "command":
 				if runSelected[l.Name] {
-					fmt.Fprintf(w, "%s: run %s", printable(l.Name), printable(l.Value))
+					fmt.Fprintf(w, "%s: run `%s`", printable(l.Name), printable(l.Value))
+					if l.Note != "" {
+						fmt.Fprintf(w, " (%s)", printable(l.Note))
+					}
 					if names := runsFor[l.Name]; len(names) > 0 {
 						fmt.Fprintf(w, " (runs for %s)", printable(strings.Join(names, ", ")))
-					}
-					if l.Note != "" {
-						fmt.Fprintf(w, " — %s", printable(l.Note))
 					}
 					fmt.Fprintln(w)
 				} else {

@@ -14,9 +14,9 @@ import (
 // with one byte of slack so an oversized file is detected, not truncated.
 const maxValidationBytes = 1 << 20
 
-// malformedForms is the hint the malformed-line problem carries: the three
+// malformedForms is the hint the malformed-line problem carries: the four
 // accepted forms, in the doctor's exact text.
-const malformedForms = "use \"- <layer>: `<command>`\", \"- <layer>: n/a: <reason>\" or \"- <layer>: manual: <what runs it>\""
+const malformedForms = "use \"- <layer>: `<command>`\", \"- <layer>: n/a: <reason>\", \"- <layer>: manual: <what runs it>\" or \"- <layer>: covered: <layer>\"; an optional \" — <note>\" may follow a command or covered"
 
 // Result is the outcome of one read of a VALIDATION.md, shared by the
 // doctor (which warns) and the validate command (which blocks).

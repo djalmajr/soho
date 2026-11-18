@@ -52,7 +52,7 @@ const (
 )
 
 func malformedLine(n int) string {
-	return fmt.Sprintf("warn   VALIDATION.md:%d: malformed layer line (use \"- <layer>: `<command>`\", \"- <layer>: n/a: <reason>\" or \"- <layer>: manual: <what runs it>\")", n)
+	return fmt.Sprintf("warn   VALIDATION.md:%d: malformed layer line (use \"- <layer>: `<command>`\", \"- <layer>: n/a: <reason>\", \"- <layer>: manual: <what runs it>\" or \"- <layer>: covered: <layer>\"; an optional \" — <note>\" may follow a command or covered)", n)
 }
 
 func placeholderLine(n int, name string) string {
