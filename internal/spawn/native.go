@@ -43,6 +43,13 @@ func ConfigNativeArgs(kind, lane, role string, ctx *core.Config, env platform.En
 	return strings.Join(tokens, " ")
 }
 
+// isCodexUpdateSetting is true for a "key=value" config override of
+// check_for_update_on_startup, quotes around the pair allowed.
+func isCodexUpdateSetting(pair string) bool {
+	key, _, ok := strings.Cut(strings.Trim(pair, `"'`), "=")
+	return ok && strings.TrimSpace(key) == "check_for_update_on_startup"
+}
+
 // hasCodexUpdateConfig recognizes explicit config overrides before the prompt.
 func hasCodexUpdateConfig(tokens []string) bool {
 	for i := 0; i < len(tokens); i++ {
@@ -55,8 +62,21 @@ func hasCodexUpdateConfig(tokens []string) bool {
 				break
 			}
 			i++
-			key, _, ok := strings.Cut(tokens[i], "=")
-			if ok && strings.TrimSpace(key) == "check_for_update_on_startup" {
+			if isCodexUpdateSetting(tokens[i]) {
+				return true
+			}
+			continue
+		}
+		// The attached forms codex also accepts: -c=key=v, --config=key=v
+		// and -ckey=v.
+		if value, ok := strings.CutPrefix(token, "--config="); ok {
+			if isCodexUpdateSetting(value) {
+				return true
+			}
+			continue
+		}
+		if value, ok := strings.CutPrefix(token, "-c"); ok && value != "" && !strings.HasPrefix(token, "--") {
+			if isCodexUpdateSetting(strings.TrimPrefix(value, "=")) {
 				return true
 			}
 			continue

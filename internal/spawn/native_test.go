@@ -70,3 +70,28 @@ func TestEnsureOrchestratorNameGateIsSingleAttempt(t *testing.T) {
 		t.Fatalf("the gate must make one agent get, got %d: %#v", gets, calls)
 	}
 }
+
+func TestHasCodexUpdateConfigAttachedForms(t *testing.T) {
+	for _, tokens := range [][]string{
+		{"-c", "check_for_update_on_startup=true"},
+		{"--config", "check_for_update_on_startup=true"},
+		{"-c=check_for_update_on_startup=true"},
+		{"--config=check_for_update_on_startup=true"},
+		{"-ccheck_for_update_on_startup=true"},
+		{"-c", `"check_for_update_on_startup=true"`},
+	} {
+		if !hasCodexUpdateConfig(tokens) {
+			t.Errorf("%q not recognized as an explicit update setting", tokens)
+		}
+	}
+	for _, tokens := range [][]string{
+		{"-c", "model=o3"},
+		{"--config=model=o3"},
+		{"--cd", "check_for_update_on_startup=true"},
+		{"prompt", "-c", "check_for_update_on_startup=true"},
+	} {
+		if hasCodexUpdateConfig(tokens) {
+			t.Errorf("%q wrongly recognized", tokens)
+		}
+	}
+}
