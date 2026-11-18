@@ -857,11 +857,27 @@ func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env 
 	ctx := LoadConfigThrough(env, cwd, through)
 	key := "lane." + lane + "." + attr
 	kindLayer := LaneKindLayer(&ctx, lane, env)
-	if (explicitKind || FileKeyValue(file, "lane."+lane+".kind") != "") && kindLayer < 2 {
-		kindLayer = 2 // The migration file is the project layer.
+	destinationRank := 2
+	switch through {
+	case "user":
+		destinationRank = 1
+	case "session":
+		destinationRank = 3
+	}
+	localValue := func(key string) string {
+		pairs, _ := ReadConfigFilePairs(file)
+		for _, pair := range pairs {
+			if pair.Key == NormalizeKey(key) {
+				return pair.Value
+			}
+		}
+		return ""
+	}
+	if (explicitKind || localValue("lane."+lane+".kind") != "") && kindLayer < destinationRank {
+		kindLayer = destinationRank
 	}
 	// A decided lane wins over roles; preserve the role keys without migrating them.
-	if decided || LaneAttr(&ctx, lane, attr, &kindLayer, env) != "" || (FileKeyValue(file, key) != "" && (attr != "model" || kindLayer <= 2)) {
+	if decided || LaneAttr(&ctx, lane, attr, &kindLayer, env) != "" || (localValue(key) != "" && (attr != "model" || kindLayer <= destinationRank)) {
 		return
 	}
 	laneKind := FileKeyValue(file, "lane."+lane+".kind")

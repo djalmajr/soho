@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/djalmajr/soho/internal/core"
 )
 
 func TestDoctorFixDestinationLayers(t *testing.T) {
@@ -28,6 +30,22 @@ func TestDoctorFixUserMigratesKindThroughDestination(t *testing.T) {
 	data, err := os.ReadFile(user)
 	if err != nil || code != 0 || !strings.Contains(string(data), "lane.review.kind=claude\n") {
 		t.Fatalf("code=%d out=%q stderr=%q config=%q err=%v", code, out, stderr, data, err)
+	}
+}
+
+func TestDoctorFixUserPreservesNormalizedLaneModel(t *testing.T) {
+	env, cwd := tm6CLIEnv(t)
+	user := filepath.Join(env.Get("XDG_CONFIG_HOME"), "soho", "config")
+	input := "panes=2\npane_mode=flex\nlane-review-model=old\nlane_review_model=opus\n"
+	for _, role := range []string{"reviewer", "security-reviewer", "ui-reviewer", "inspector", "validator"} {
+		input += "role." + role + ".kind=claude\nrole." + role + ".model=sonnet\n"
+	}
+	tm6Write(t, user, input)
+	tm6Write(t, filepath.Join(cwd, ".agents", "soho.conf"), "pane_mode=strict\nlane.review.kind=codex\n")
+	code, out, stderr := runIn(t, []string{"doctor", "--fix", "--user", "--panes", "2"}, env, cwd)
+	ctx := core.LoadConfigThrough(env, cwd, "user")
+	if got := core.LaneAttr(&ctx, "review", "model", nil, env); code != 0 || got != "opus" {
+		t.Fatalf("code=%d out=%q stderr=%q model=%q", code, out, stderr, got)
 	}
 }
 
