@@ -16,10 +16,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/taskreport"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
@@ -154,9 +156,9 @@ func TestDispatchHcAmendUnconfirmedSlowGet(t *testing.T) {
 	for _, reply := range []string{`{"turn":7,"started":false}`, `not-json`} {
 		t.Run(reply, func(t *testing.T) {
 			f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
-				{Argv: []string{"get", "worker", "--json"}, Call: 1, Stdout: hcWorkerGet(7, "working")},
-				{Argv: []string{"get", "worker", "--json"}, Call: 2, Stdout: hcWorkerGet(7, "working")},
-				{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Delay: 4000, Stdout: hcWorkerGet(7, "working")},
+				{Argv: []string{"get", "worker", "--json"}, Call: 1, Stdout: hcWorkerGet(7, "idle")},
+				{Argv: []string{"get", "worker", "--json"}, Call: 2, Stdout: hcWorkerGet(7, "idle")},
+				{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Delay: 4000, Stdout: hcWorkerGet(7, "idle")},
 				{Argv: []string{"send"}, ArgvPrefix: true, Stdout: reply},
 			}...))
 			f.env["SOHO_PROMPT_SETTLE_SECONDS"] = "0"
@@ -259,11 +261,10 @@ func TestDispatchHcNoPreSendScreenWork(t *testing.T) {
 			if path == "busy" {
 				rules = append(rules, fakecli.Rule{Argv: prefix, ArgvPrefix: true, Call: 2, Stdout: `{"turn":7,"started":true}`})
 			}
-			if path != "queue" {
-				// The ordinary guarded send's read-only capability probes,
-				// before the broad send rule (first match wins).
-				rules = append(guardProbeRules(), rules...)
+			if path == "queue" {
+				rules = append([]fakecli.Rule{{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`}}, rules...)
 			}
+			rules = append(guardProbeRules(), rules...)
 			f := newDispatchHcFixture(t, rules)
 			roster := filepath.Join(f.sd, "agents.tsv")
 			raw, err := os.ReadFile(roster)
@@ -672,5 +673,281 @@ func TestDispatchHcFixtureAppliesChildRaceOptions(t *testing.T) {
 	wantOption := "halt_on_error=1 atexit_sleep_ms=0"
 	if got := calls[0].Env["GORACE"]; got != wantOption {
 		t.Fatalf("received GORACE = %q, want %q", got, wantOption)
+	}
+}
+
+func TestDispatchHcBusyQueuedReceipts(t *testing.T) {
+	for _, kind := range []string{"pi", "claude"} {
+		for _, flag := range []string{"--amend", "--queue"} {
+			for _, visible := range []bool{true, false} {
+				t.Run(fmt.Sprintf("%s/%s/visible=%t", kind, flag, visible), func(t *testing.T) {
+					f := newDispatchHcFixture(t, nil)
+					rosterPath := filepath.Join(f.sd, "agents.tsv")
+					roster, err := os.ReadFile(rosterPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(rosterPath, []byte(strings.Replace(string(roster), "\tcodex\t", "\t"+kind+"\t", 1)), 0600); err != nil {
+						t.Fatal(err)
+					}
+					old := filepath.Join(f.sd, "reports", "previous.md")
+					pointer := []byte(fmt.Sprintf(`{"version":1,"task_report":%q,"current":%q,"history":[],"role":"implementer","pane":"t7"}`, old, old) + "\n")
+					if err := os.WriteFile(taskreport.TaskReportPointerPath(f.sd, "worker"), pointer, 0600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(f.sd, "last-report-worker"), []byte(old+"\n"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					path := filepath.Join(f.sd, "briefs", "worker-"+core.NowStamp(platform.Now())+".md")
+					screen := "unrelated"
+					if visible && kind == "pi" {
+						screen = "Steering: Read the file " + path + " in full"
+					}
+					if visible && kind == "claude" {
+						screen = "Read the file " + path + " in full\nPress up to edit queued messages"
+					}
+					readJSON, _ := json.Marshal(map[string]string{"text": screen})
+					rules := []fakecli.Rule{
+						{Argv: []string{"get", "t1", "--json"}, ArgvPrefix: true, Stdout: hcDispatchCaller},
+						{Argv: []string{"ls", "--label", "soho.session=sX", "--json"}, ArgvPrefix: true, Stdout: hcDispatchSessionLS},
+						{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "working")},
+						{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`},
+						{Argv: []string{"send", "--json", "--", "worker"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":false}`},
+						{Argv: []string{"read", "worker", "--lines", "0", "--json"}, Stdout: string(readJSON)},
+					}
+					rules = append(rules, guardProbeRules()...)
+					f.bin = t.TempDir()
+					f.env["PATH"], f.env["SOHO_FAKECLI_CONFIG"] = f.bin, f.bin
+					if _, err := fakecli.Install(t, f.bin, "hc", rules); err != nil {
+						t.Fatal(err)
+					}
+					code, out, stderr := f.run(t, "worker", f.brief, flag, "--no-wait")
+					if code != 0 || !strings.Contains(out, `"wait_status":"queued"`) {
+						t.Fatalf("code=%d out=%s stderr=%s", code, out, stderr)
+					}
+					ptr := taskreport.ReadTaskReportPointer(f.sd, "worker")
+					if ptr == nil {
+						t.Fatal("missing pointer")
+					}
+					current, _ := ptr.Get("current")
+					task, _ := ptr.Get("task_report")
+					if current == old || (flag == "--amend" && task != old) {
+						t.Fatalf("current=%v task=%v old=%s", current, task, old)
+					}
+					if strings.Contains(stderr, "queued text not seen") {
+						t.Fatalf("unexpected queue warning: %s", stderr)
+					}
+					sends := hcSends(f.hcCalls(t))
+					if len(sends) != 2 || !strings.Contains(strings.Join(sends[0].Argv, " "), "--if idle") || strings.Contains(strings.Join(sends[1].Argv, " "), "--if") {
+						t.Fatalf("expected guarded send then queued fallback, got %v", sends)
+					}
+					for _, call := range f.hcCalls(t) {
+						if len(call.Argv) > 0 && call.Argv[0] == "read" {
+							t.Fatalf("unexpected screen read: %v", call.Argv)
+						}
+					}
+					f.assertHcNeverTouchedHerdr(t)
+				})
+			}
+		}
+	}
+}
+
+func TestDispatchHcBusyQueueRefusalAndSendError(t *testing.T) {
+	for _, tc := range []struct {
+		kind, flag string
+		sendError  bool
+	}{{"codex", "--amend", false}, {"codex", "--queue", false}, {"pi", "--amend", true}, {"pi", "--queue", true}} {
+		t.Run(tc.kind+tc.flag, func(t *testing.T) {
+			rules := []fakecli.Rule{{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "working")}, {Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`}, {Argv: []string{"send", "--json", "--", "worker"}, ArgvPrefix: true, Code: 1, Stderr: `{"error":{"kind":"unavailable","message":"failed"}}`}}
+			rules = append(rules, guardProbeRules()...)
+			f := newDispatchHcFixture(t, rules)
+			rosterPath := filepath.Join(f.sd, "agents.tsv")
+			roster, err := os.ReadFile(rosterPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(rosterPath, []byte(strings.Replace(string(roster), "\tcodex\t", "\t"+tc.kind+"\t", 1)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			old := filepath.Join(f.sd, "reports", "previous.md")
+			pointer := []byte(fmt.Sprintf(`{"version":1,"task_report":%q,"current":%q,"history":[],"role":"implementer","pane":"t7"}`, old, old) + "\n")
+			ptr := taskreport.TaskReportPointerPath(f.sd, "worker")
+			if err := os.WriteFile(ptr, pointer, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(f.sd, "last-report-worker"), []byte(old+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, out, stderr := f.run(t, "worker", f.brief, tc.flag, "--no-wait")
+			if code != 4 {
+				t.Fatalf("exit=%d out=%s stderr=%s", code, out, stderr)
+			}
+			after, err := os.ReadFile(ptr)
+			if err != nil || !bytes.Equal(after, pointer) {
+				t.Fatalf("pointer=%s err=%v", after, err)
+			}
+			if _, err := os.Stat(filepath.Join(f.sd, "wait", "worker.submit-failed")); err != nil {
+				t.Fatal(err)
+			}
+			sends := 0
+			for _, c := range f.hcCalls(t) {
+				if len(c.Argv) > 0 && c.Argv[0] == "send" && isRealSend(c.Argv) {
+					sends++
+				}
+			}
+			if tc.sendError {
+				if sends != 2 || !strings.Contains(stderr, "prompt submission failed") {
+					t.Fatalf("sends=%d stderr=%s", sends, stderr)
+				}
+			} else if sends != 1 || !strings.Contains(stderr, "worker worker is still working") || strings.Contains(stderr, "prompt submission failed") {
+				t.Fatalf("sends=%d stderr=%s", sends, stderr)
+			}
+		})
+	}
+}
+
+func TestDispatchR560Review(t *testing.T) {
+	for _, scenario := range []string{"stale-working-started", "guard-race-started", "unsupported-settled-after-sample", "claude-unrelated-queue", "slow-screen"} {
+		t.Run(scenario, func(t *testing.T) {
+			kind := "pi"
+			flag := "--amend"
+			if scenario == "claude-unrelated-queue" {
+				kind = "claude"
+			}
+			if scenario == "unsupported-settled-after-sample" {
+				kind, flag = "codex", "--queue"
+			}
+			f := newDispatchHcFixture(t, nil)
+			f.env["SOHO_PROMPT_SETTLE_SECONDS"] = "0"
+			rosterPath := filepath.Join(f.sd, "agents.tsv")
+			roster, err := os.ReadFile(rosterPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(rosterPath, []byte(strings.Replace(string(roster), "\tcodex\t", "\t"+kind+"\t", 1)), 0600); err != nil {
+				t.Fatal(err)
+			}
+
+			old := filepath.Join(f.sd, "reports", "previous.md")
+			pointer, err := json.Marshal(map[string]any{"version": 1, "task_report": old, "current": old, "history": []string{}, "role": "implementer", "pane": "t7"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(taskreport.TaskReportPointerPath(f.sd, "worker"), pointer, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(f.sd, "last-report-worker"), []byte(old+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			prompt := filepath.Join(f.sd, "briefs", "worker-"+core.NowStamp(platform.Now())+".md")
+			rules := append([]fakecli.Rule{
+				{Argv: []string{"get", "t1", "--json"}, Stdout: hcDispatchCaller},
+				{Argv: []string{"ls", "--label", "soho.session=sX", "--json"}, ArgvPrefix: true, Stdout: hcDispatchSessionLS},
+			}, guardProbeRules()...)
+			worker := []string{"get", "worker", "--json"}
+			guarded := []string{"send", "--if", "idle", "--json", "--", "worker"}
+			if scenario == "guard-race-started" || scenario == "claude-unrelated-queue" || scenario == "slow-screen" {
+				rules = append(rules, fakecli.Rule{Argv: worker, Call: 1, Stdout: hcWorkerGet(7, "idle")})
+				rules = append(rules, fakecli.Rule{Argv: guarded, ArgvPrefix: true, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`})
+			} else {
+				rules = append(rules, fakecli.Rule{Argv: worker, Call: 1, Stdout: hcWorkerGet(7, "working")})
+				rules = append(rules, fakecli.Rule{Argv: guarded, ArgvPrefix: true, Stdout: `{"turn":8,"started":true}`})
+			}
+			settled := scenario == "stale-working-started" || scenario == "guard-race-started" || scenario == "unsupported-settled-after-sample"
+			after := hcWorkerGet(7, "working")
+			receipt := `{"turn":7,"started":false}`
+			if settled {
+				after = hcWorkerGet(8, "idle")
+				receipt = `{"turn":8,"started":true}`
+			}
+			screen := ""
+			if scenario == "claude-unrelated-queue" {
+				screen = "⏺ I will inspect " + prompt + "\n   Read the file /tmp/unrelated-brief.md in full\n   ctrl+enter to send now\n   Press up to edit queued messages\n❯ "
+			}
+			rawScreen, err := json.Marshal(map[string]string{"text": screen})
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := fakecli.Rule{Argv: []string{"read", "worker", "--lines", "0", "--json"}, Stdout: string(rawScreen)}
+			if scenario == "slow-screen" {
+				read.Delay = 4000
+			}
+			rules = append(rules,
+				fakecli.Rule{Argv: worker, Stdout: after},
+				fakecli.Rule{Argv: []string{"send", "--json", "--", "worker"}, ArgvPrefix: true, Stdout: receipt},
+				read,
+				fakecli.Rule{Argv: []string{"read", "worker"}, ArgvPrefix: true, Stdout: `{"text":""}`},
+			)
+			f.bin = t.TempDir()
+			f.env["PATH"], f.env["SOHO_FAKECLI_CONFIG"] = f.bin, f.bin
+			if _, err := fakecli.Install(t, f.bin, "hc", rules); err != nil {
+				t.Fatal(err)
+			}
+
+			start := time.Now()
+			code, out, stderr := f.run(t, "worker", f.brief, flag, "--no-wait")
+			elapsed := time.Since(start)
+			status := dispatchHcOutputStatus(t, out)
+			if scenario == "stale-working-started" || scenario == "unsupported-settled-after-sample" {
+				sends := hcSends(f.hcCalls(t))
+				if len(sends) != 1 || !strings.Contains(strings.Join(sends[0].Argv, " "), "--if idle") {
+					t.Errorf("expected one guarded send, got %v", sends)
+				}
+			}
+			markerPath := filepath.Join(f.sd, "wait", "worker.queued")
+			marker, markerErr := os.ReadFile(markerPath)
+			t.Logf("dispatch exit=%d status=%q sends=%d queued-marker=%t elapsed=%v stderr=%q", code, status, len(hcSends(f.hcCalls(t))), markerErr == nil, elapsed, stderr)
+			if settled {
+				if scenario != "unsupported-settled-after-sample" {
+					var waitOut, waitErr bytes.Buffer
+					prevOut, prevErr := platform.Stdout, platform.Stderr
+					platform.Stdout, platform.Stderr = &waitOut, &waitErr
+					waitCode := func() int {
+						defer func() { platform.Stdout, platform.Stderr = prevOut, prevErr }()
+						return Run([]string{"wait", "worker", "--timeout", "1s"}, f.env)
+					}()
+					t.Logf("wait exit=%d not-received=%t queued-marker-matches-path=%t", waitCode, strings.Contains(waitOut.String(), `"status":"not-received"`), strings.Contains(string(marker), prompt))
+				}
+				if code != 0 || status != "submitted" || !os.IsNotExist(markerErr) {
+					t.Errorf("expected started dispatch to return submitted without a queued marker")
+				}
+				return
+			}
+			if code != 0 || status != "queued" || strings.Contains(stderr, "queued text not seen") {
+				t.Errorf("expected accepted queued dispatch without a screen warning")
+			}
+			if scenario == "slow-screen" && elapsed >= 3*time.Second {
+				t.Errorf("slow screen read exceeded one-second prompt-check budget plus process overhead")
+			}
+		})
+	}
+}
+
+func TestHcDispatchDocumentationRule(t *testing.T) {
+	_, source, _, _ := runtime.Caller(0)
+	root := filepath.Clean(filepath.Join(filepath.Dir(source), "../.."))
+	rule := "a busy pi or Claude worker gets queued input, and another busy kind gets a still-working refusal"
+	for _, tc := range []struct{ path, guard string }{
+		{"skills/soho/SKILL.md", "first tries a guarded send"},
+		{"skills/soho/references/feature-map.md", "first tries a guarded send"},
+	} {
+		data, err := os.ReadFile(filepath.Join(root, tc.path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), tc.guard) || !strings.Contains(string(data), rule) {
+			t.Errorf("%s lacks the HC delivery rule", tc.path)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(root, "skills/soho/SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "prompt_check_seconds=0 turns off the exit-10 preflight and the arrival observation") || !strings.Contains(string(data), "the hc delivery guard still refuses a busy worker of another kind") {
+		t.Error("skill must distinguish the preflight from the hc delivery guard")
+	}
+	if strings.Count(string(data), rule) != 2 || !strings.Contains(string(data), "on the legacy transport, pass --queue") {
+		t.Error("skill must state the rule in both locations and qualify the legacy example")
 	}
 }

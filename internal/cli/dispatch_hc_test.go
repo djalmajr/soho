@@ -524,32 +524,15 @@ func TestDispatchHcBusyRetriesOnceWhenIdle(t *testing.T) {
 	f.assertHcNeverTouchedHerdr(t)
 }
 
-// TestDispatchHcQueueDropsTheIdleGuard is acceptance (f): --queue sends
-// without --if, so the text goes in even while the worker works.
-func TestDispatchHcQueueDropsTheIdleGuard(t *testing.T) {
-	f := newDispatchHcFixture(t, []fakecli.Rule{
+// TestDispatchHcQueueRefusesBusyCodex preserves its task without typing.
+func TestDispatchHcQueueRefusesBusyCodex(t *testing.T) {
+	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "working")},
-		{Argv: []string{"send", "--json", "--", "worker"}, ArgvPrefix: true, Stdout: `{"turn":8,"started":true}`},
-	})
+		{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`},
+	}...))
 	code, out, errText := f.run(t, "worker", f.brief, "--no-wait", "--queue")
-	if code != 0 {
-		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
-	}
-	if status := dispatchHcOutputStatus(t, out); status != "submitted" {
-		t.Fatalf("status=%q, want submitted (out=%s)", status, out)
-	}
-	sends := hcSends(f.hcCalls(t))
-	if len(sends) != 1 {
-		t.Fatalf("sends=%d, want exactly one: %#v", len(sends), sends)
-	}
-	argv := sends[0].Argv
-	if len(argv) < 2 || argv[1] != "--json" {
-		t.Fatalf("argv=%#v, want the --queue send to carry no --if guard", argv)
-	}
-	for _, a := range argv {
-		if a == "--if" || a == "idle" {
-			t.Fatalf("argv=%#v, --queue must drop the --if idle guard", argv)
-		}
+	if code != 4 || !strings.Contains(errText, "queued dispatch was not sent") || len(hcSends(f.hcCalls(t))) != 1 {
+		t.Fatalf("code=%d out=%s stderr=%s sends=%#v", code, out, errText, hcSends(f.hcCalls(t)))
 	}
 	f.assertHcNeverTouchedHerdr(t)
 }
@@ -812,28 +795,16 @@ func TestDispatchHcOpenCodePrimary(t *testing.T) {
 		}
 		f.assertHcNeverTouchedHerdr(t)
 	})
-	t.Run("queue-drops-the-idle-guard", func(t *testing.T) {
+	t.Run("queue-refuses-busy-opencode", func(t *testing.T) {
 		working := hcOpencodeRecord{address: "t7", nativeState: "live", state: "working", reported: true, app: "opencode", profile: kinds.OpenCodePrimaryProfile}
-		f := newDispatchHcOpencodeFixture(t, []fakecli.Rule{
+		f := newDispatchHcOpencodeFixture(t, append(guardProbeRules(), []fakecli.Rule{
 			{Argv: []string{"get", "t7", "--json"}, ArgvPrefix: true, Stdout: hcOpencodeGet(working)},
 			{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcOpencodeGet(working)},
-			{Argv: []string{"send", "--json", "--", "worker"}, ArgvPrefix: true, Stdout: `{"turn":8,"started":true}`},
-		})
+			{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`},
+		}...))
 		code, out, errText := f.run(t, "worker", f.brief, "--no-wait", "--queue")
-		if code != 0 {
-			t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
-		}
-		if status := dispatchHcOutputStatus(t, out); status != "submitted" {
-			t.Fatalf("status=%q, want submitted (out=%s)", status, out)
-		}
-		sends := hcSends(f.hcCalls(t))
-		if len(sends) != 1 {
-			t.Fatalf("sends=%d, want exactly one: %#v", len(sends), sends)
-		}
-		for _, a := range sends[0].Argv {
-			if a == "--if" || a == "idle" {
-				t.Fatalf("argv=%#v, --queue must drop the --if idle guard", sends[0].Argv)
-			}
+		if code != 4 || !strings.Contains(errText, "queued dispatch was not sent") || len(hcSends(f.hcCalls(t))) != 1 {
+			t.Fatalf("code=%d out=%s stderr=%s sends=%#v", code, out, errText, hcSends(f.hcCalls(t)))
 		}
 		f.assertHcNeverTouchedHerdr(t)
 	})
