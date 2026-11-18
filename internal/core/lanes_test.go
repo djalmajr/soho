@@ -576,3 +576,75 @@ func TestRosterRenameChangesOnlyTheNameColumn(t *testing.T) {
 		t.Fatalf("old name still in roster: %q", RosterLine(state, "review-2"))
 	}
 }
+
+func TestMigrateLaneModelUsesLastKindAlias(t *testing.T) {
+	for _, tc := range []struct {
+		name, last string
+		wantModel  bool
+	}{
+		{"overridden", "codex", false},
+		{"control", "agy", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateConfigAliasTestEnv(t)
+			env, cwd := fixture(t)
+			file := filepath.Join(cwd, ".agents", "soho.conf")
+			write(t, file, "lane.review.kind=agy\nlane_review_kind="+tc.last+"\n")
+			write(t, filepath.Join(cwd, ".agents", "soho-roles", "reviewer.md"), "---\nkind: agy\nmodel: sonnet\n---\n")
+			acc := &laneMigration{}
+			MigrateLaneAttr(file, "review", "reviewer", "model", acc, env, cwd, "project", false, false)
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(string(data), "lane.review.model=sonnet"); got != tc.wantModel {
+				t.Fatalf("model present = %v, want %v: %s", got, tc.wantModel, data)
+			}
+		})
+	}
+}
+
+func TestFileKeyPresentNormalizesAndParses(t *testing.T) {
+	isolateConfigAliasTestEnv(t)
+	_, cwd := fixture(t)
+	file := filepath.Join(cwd, "config")
+	write(t, file, "# lane.review.model=ignored\nlane_review_model=\n")
+	if !fileKeyPresent(file, "lane.review.model") || fileKeyPresent(file, "lane.review.kind") {
+		t.Fatal("presence did not follow normalized parsed keys")
+	}
+	write(t, file, "lane.review.model#ignored=value\n")
+	if fileKeyPresent(file, "lane.review.model") {
+		t.Fatal("commented assignment counted as a key")
+	}
+}
+
+// R549: lane.read.<attr> moves to lane.review.<attr> as written, so the
+// reload decodes the value once (quotes) and an attached comment survives.
+func TestReadLaneMoveKeepsTheWinningAssignment(t *testing.T) {
+	for _, tc := range []struct {
+		name, file, wantLine, wantValue string
+	}{
+		{"quoted value", "lane.read.args=\"\"--example value\"\"\n", "lane.review.args=\"\"--example value\"\"", "\"--example value\""},
+		{"attached comment", "lane.read.args=--example# preserve this comment\n", "lane.review.args=--example# preserve this comment", "--example"},
+		{"last assignment wins", "lane.read.args=--old\nlane.read.args=--new # note\n", "lane.review.args=--new # note", "--new"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateConfigAliasTestEnv(t)
+			_, cwd := fixture(t)
+			file := filepath.Join(cwd, "soho.conf")
+			write(t, file, tc.file)
+			lines := []string{}
+			dropPresetFileExtras(file, "4", &lines, "", false)
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != tc.wantLine+"\n" {
+				t.Fatalf("file = %q, want %q", data, tc.wantLine+"\n")
+			}
+			if got := FileKeyValue(file, "lane.review.args"); got != tc.wantValue {
+				t.Fatalf("reloaded value = %q, want %q", got, tc.wantValue)
+			}
+		})
+	}
+}

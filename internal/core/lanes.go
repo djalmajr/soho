@@ -940,23 +940,39 @@ var laneAttrRE = regexp.MustCompile(`^lane\.([A-Za-z0-9_-]+)\.(kind|model|effort
 var laneRolesRE = regexp.MustCompile(`^lane\.[A-Za-z0-9_-]+\.roles$`)
 
 func fileKeyPresent(file, key string) bool {
-	raw, e := platform.ReadTextFile(file)
-	if e != nil {
+	pairs, err := ReadConfigFilePairs(file)
+	if err != nil {
 		return false
 	}
-	for _, line := range splitLines(raw) {
-		body, _ := splitTrailingComment(line)
-		s := trimJSWhitespace(body)
-		if s == "" || strings.HasPrefix(s, "#") {
-			continue
-		}
-		eq := strings.IndexByte(s, '=')
-		if eq >= 0 && trimJSWhitespace(s[:eq]) == key {
+	for _, pair := range pairs {
+		if pair.Key == NormalizeKey(key) {
 			return true
 		}
 	}
 	return false
 }
+
+// fileLastAssignmentTail returns the raw text after the '=' of the last line
+// that assigns key (any spelling NormalizeKey treats as the same key, with
+// the key parsed the way the loader parses it), or "" when none does.
+func fileLastAssignmentTail(file, key string) string {
+	raw, err := platform.ReadTextFile(file)
+	if err != nil {
+		return ""
+	}
+	want := NormalizeKey(key)
+	tail := ""
+	for _, rawLine := range splitLines(raw) {
+		body, _, _ := strings.Cut(rawLine, "#")
+		eq := strings.IndexByte(body, '=')
+		if eq < 0 || NormalizeKey(trimJSWhitespace(body[:eq])) != want {
+			continue
+		}
+		tail = rawLine[strings.IndexByte(rawLine, '=')+1:]
+	}
+	return tail
+}
+
 func dropPresetFileExtras(file, panes string, lines *[]string, mode string, keepZero bool) {
 	raw, e := platform.ReadTextFile(file)
 	if e != nil {
@@ -969,7 +985,7 @@ func dropPresetFileExtras(file, panes string, lines *[]string, mode string, keep
 	out := []string{}
 	moved := map[string]bool{}
 	for _, rawLine := range splitLines(raw) {
-		body, comment := splitTrailingComment(rawLine)
+		body, _ := splitTrailingComment(rawLine)
 		s := trimJSWhitespace(body)
 		if s == "" || strings.HasPrefix(s, "#") {
 			out = append(out, rawLine)
@@ -1005,8 +1021,11 @@ func dropPresetFileExtras(file, panes string, lines *[]string, mode string, keep
 					*lines = append(*lines, fmt.Sprintf("removed lane.read.%s=%s (%s is already set)", attr, value, target))
 					continue
 				}
+				// The winning assignment moves as written (value and any
+				// comment, byte for byte); only its key changes, so the
+				// reload decodes it exactly once, as before the move.
 				effective := FileKeyValue(file, "lane.read."+attr)
-				out = append(out, target+"="+effective+comment)
+				out = append(out, target+"="+fileLastAssignmentTail(file, "lane.read."+attr))
 				moved[attr] = true
 				*lines = append(*lines, fmt.Sprintf("moved lane.read.%s=%s to %s", attr, effective, target))
 				continue
