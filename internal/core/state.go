@@ -504,3 +504,17 @@ func LastReport(dir, agent string) string {
 	}
 	return strings.TrimRight(raw, "\n")
 }
+
+// ChildGuardConfig reads only the configuration layers preceding session state.
+// It neither resolves a session nor initializes state.
+func ChildGuardConfig(env platform.Env, cwd string) Config {
+	ctx := Config{Entries: make(map[string]ConfigEntry)}
+	if dir, _ := platform.SkillDirSourceOrEmpty(env); dir != "" {
+		loadConfigFile(filepath.Join(dir, "config.defaults"), "defaults", &ctx)
+	}
+	loadConfigFile(EffectiveUserConfigFile(platform.Current(), env, UserSelection{}), "user", &ctx)
+	if file := ProjectConfigFileUsed(env, cwd); file != "" {
+		loadConfigFile(file, "project", &ctx)
+	}
+	return ctx
+}

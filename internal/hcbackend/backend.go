@@ -2154,3 +2154,19 @@ func (b *backend) RemoveFinishedChild(ctx context.Context, name string, call tra
 	}
 	return transport.Reply[bool]{Value: true, Valid: true}
 }
+
+// Parent reads only the caller's parent from one hc get, using the normal timeout.
+func Parent(env platform.Env) (string, error) {
+	b := &backend{env: env, client: hc.New(env)}
+	out, err := b.run(context.Background(), transport.Call{}, "get", env.Get("HC_TERMINAL_ID"))
+	if err != nil {
+		return "", err
+	}
+	var record struct {
+		Parent string `json:"parent"`
+	}
+	if err := json.Unmarshal([]byte(out), &record); err != nil {
+		return "", err
+	}
+	return record.Parent, nil
+}
