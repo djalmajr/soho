@@ -39,7 +39,7 @@ The image runs as `agent`, with `tini` as the entrypoint and `sleep infinity` as
 
 ## Build
 
-The build reads only an allowlisted context: `Dockerfile.dockerignore` denies everything and allows `go.mod`, the `soho` command, `internal/`, the skill resources and the runner lockfile, then excludes tests, test data and dot files. Version control data, local state, agent configuration, documentation and anything else in the checkout never reach the builder.
+The build reads only an allowlisted context: `Dockerfile.dockerignore` denies everything and allows `go.mod`, the `soho` command, `internal/`, the Go package that embeds the skill (`skills/*.go`), the skill resources and the runner lockfile, then excludes tests, test data and dot files. Version control data, local state, agent configuration, documentation and anything else in the checkout never reach the builder.
 
 Build with a dedicated BuildKit builder pinned by digest. The builder version is part of the reproducibility boundary, and the exporter of Docker's default `docker` driver on the classic image store does not apply `rewrite-timestamp`, which leaves build-time file timestamps in the layers.
 
@@ -199,7 +199,7 @@ Orchestration therefore stays on the host: the orchestrating agent and `soho` ru
 
 ## Continuous integration
 
-`.github/workflows/container-image.yml` builds and checks the image on pull requests and on pushes to `main` that change a build input: `Dockerfile`, `Dockerfile.dockerignore`, `go.mod`, `cmd/soho/**`, `internal/**`, `skills/soho/**`, `container/**` or the workflow itself.
+`.github/workflows/container-image.yml` builds and checks the image on pull requests and on pushes to `main` that change a build input: `Dockerfile`, `Dockerfile.dockerignore`, `go.mod`, `cmd/soho/**`, `internal/**`, `skills/**`, `container/**` or the workflow itself.
 
 Each platform runs on its own native GitHub-hosted runner, without emulation: `ubuntu-24.04` (x86-64) for `linux/amd64` and `ubuntu-24.04-arm` (aarch64) for `linux/arm64`. The amd64 image needs a native x86-64 host because the native Claude Code binary aborts under QEMU emulation (see [Build](#build)).
 
