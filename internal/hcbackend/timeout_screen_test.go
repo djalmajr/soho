@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 
+	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 	"github.com/djalmajr/soho/internal/transport"
 )
@@ -118,7 +120,31 @@ func TestStartTimeoutNamesTheLastVisibleLine(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			env, conn, calls := startEnv(t, tc.rules)
-			rep := newBackend(env, conn).Start(context.Background(), transport.Start{Name: "w7", Kind: "claude", Timeout: "300"}, transport.Call{})
+			b := newBackend(env, conn)
+			remainingCalls := 0
+			b.readyRemaining = func(time.Time) time.Duration {
+				remainingCalls++
+				if remainingCalls <= 2 {
+					return time.Second
+				}
+				return 0
+			}
+			b.readyContext = func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+				return context.WithCancel(ctx)
+			}
+			launch := b.client.Launch
+			b.client.Launch = func(ctx context.Context, env platform.Env, args ...string) platform.RunResult {
+				// The fake process is fixture IO, not the timeout under test.
+				// Keep get and the diagnostic read from being killed by host load.
+				// It still gets the launcher's 30 s per-process bound.
+				if len(args) > 0 && (args[0] == "get" || args[0] == "read") {
+					bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+					defer cancel()
+					ctx = bounded
+				}
+				return launch(ctx, env, args...)
+			}
+			rep := b.Start(context.Background(), transport.Start{Name: "w7", Kind: "claude", Timeout: "300"}, transport.Call{})
 			if rep.Err == nil || rep.Err.Kind != transport.FailureCommand || rep.Value != "t7" {
 				t.Fatalf("rep: %+v want FailureCommand with address t7", rep)
 			}
