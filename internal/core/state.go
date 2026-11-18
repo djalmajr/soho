@@ -200,6 +200,14 @@ func jsString(value any) string {
 }
 
 func StateDirPath(ctx *Config, env platform.Env, cwd string) string {
+	defer func() {
+		if value := recover(); value != nil {
+			if err, ok := value.(*os.PathError); ok {
+				platform.DieFriction(err.Error(), 4)
+			}
+			panic(value)
+		}
+	}()
 	return filepath.Join(StateRoot(ctx, env, cwd), WorkspaceID(ctx, env, cwd))
 }
 
@@ -227,13 +235,13 @@ func StateDir(ctx *Config, env platform.Env, cwd string) string {
 	}
 	for _, name := range []string{"briefs", "reports", "wait"} {
 		if err := os.MkdirAll(filepath.Join(dir, name), 0o777); err != nil {
-			panic(err)
+			platform.DieFriction(err.Error(), 4)
 		}
 	}
 	roster := filepath.Join(dir, "agents.tsv")
 	if _, err := os.Stat(roster); os.IsNotExist(err) {
 		if err := os.WriteFile(roster, []byte(rosterHeader), 0o666); err != nil {
-			panic(err)
+			platform.DieFriction(err.Error(), 4)
 		}
 	}
 	return dir

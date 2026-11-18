@@ -230,3 +230,110 @@ func TestNowriteAndFormerEnv(t *testing.T) {
 func nowriteRoutingEnv() platform.Env {
 	return isolatedUserEnv(platform.Env{"SOHO_NOWRITE": "1"})
 }
+
+func TestStatePathFileComponent(t *testing.T) {
+	env, repo := fakeHerdrCodexFixture(t)
+	env["HERDR_ENV"] = "1"
+	blocked := filepath.Join(repo, "blocked")
+	if err := os.WriteFile(blocked, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env["SOHO_DIR"] = filepath.Join("blocked", "state")
+	code, out, stderr := runIn(t, []string{"status"}, env, repo)
+	if code != 4 || !strings.Contains(stderr, blocked) || strings.Contains(stderr, "panic") {
+		t.Fatalf("status SOHO_DIR=%q code=%d stdout=%q stderr=%q", env["SOHO_DIR"], code, out, stderr)
+	}
+}
+
+func TestReadOnlyGitignoreStateRecovery(t *testing.T) {
+	env, repo := fakeHerdrCodexFixture(t)
+	env["HERDR_ENV"] = "1"
+	ignore := filepath.Join(repo, ".gitignore")
+	if err := os.WriteFile(ignore, []byte("# fixture\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(ignore, 0o400); err != nil {
+		t.Skipf("cannot make .gitignore read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(ignore, 0o600) })
+	f, err := os.OpenFile(ignore, os.O_WRONLY|os.O_APPEND, 0)
+	if err == nil {
+		_ = f.Close()
+		t.Skip("OS or effective user permits writing read-only .gitignore")
+	}
+	env["SOHO_DIR"] = "local-state"
+	state := filepath.Join(repo, "local-state")
+	if err := os.MkdirAll(filepath.Join(state, "ws"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "ws", "fixture"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, stderr := runIn(t, []string{"status"}, env, repo)
+	if code != 4 || !strings.Contains(stderr, ignore) || strings.Contains(stderr, "panic") {
+		t.Fatalf("status SOHO_DIR=%q code=%d stdout=%q stderr=%q", env["SOHO_DIR"], code, out, stderr)
+	}
+	code, out, stderr = runIn(t, []string{"doctor"}, env, repo)
+	if code != 0 || !strings.Contains(out, "warn   state ignore update failed:") || !strings.Contains(out, ignore) || !strings.Contains(out, "first_run:") || !strings.Contains(out, "state dir writable: "+state) {
+		t.Fatalf("doctor SOHO_DIR=%q code=%d stdout=%q stderr=%q", env["SOHO_DIR"], code, out, stderr)
+	}
+}
+
+func TestUnwritableUninitializedState(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod does not enforce Unix directory permissions on Windows")
+	}
+	env, repo := commandFixture(t)
+	bin := t.TempDir()
+	if _, err := fakecli.Install(t, bin, "herdr", nil); err != nil {
+		t.Fatal(err)
+	}
+	env = withFakeCLI(env, bin)
+	env["HERDR_ENV"] = "1"
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+	if err := os.Mkdir(filepath.Join(parent, "probe"), 0o700); err == nil {
+		_ = os.Remove(filepath.Join(parent, "probe"))
+		t.Skip("effective user can write despite chmod")
+	}
+	state := filepath.Join(parent, "state")
+	env["SOHO_DIR"] = state
+	code, out, stderr := runIn(t, []string{"status"}, env, repo)
+	if code != 4 || !strings.Contains(stderr, state) || !strings.Contains(stderr, "permission denied") || strings.Count(stderr, "\n") != 1 || strings.Contains(stderr, "panic") {
+		t.Fatalf("status code=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	code, out, stderr = runIn(t, []string{"doctor"}, env, repo)
+	if code != 0 || !strings.Contains(out, "warn   state dir not writable: "+state) {
+		t.Fatalf("doctor code=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	code, out, stderr = runIn(t, []string{"help"}, env, repo)
+	if code != 0 {
+		t.Fatalf("help code=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+}
+
+// fakeHerdrCodexFixture is commandFixture with fake herdr and codex first on
+// PATH: commands that need herdr do not depend on the host having it, and
+// spawn.CodexSupportsNoDaemon (probed once per process) never caches the
+// host codex's answer for later tests. The host PATH stays after the fakes
+// because the Git ignore update needs git.
+func fakeHerdrCodexFixture(t *testing.T) (platform.Env, string) {
+	t.Helper()
+	env, repo := commandFixture(t)
+	bin := t.TempDir()
+	for _, name := range []string{"herdr", "codex"} {
+		if _, err := fakecli.Install(t, bin, name, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	faked := platform.Env{}
+	for _, item := range fakecli.Env(env.List(), bin, fakecli.EnvOptions{IncludeBasePath: true}) {
+		if key, value, ok := strings.Cut(item, "="); ok {
+			faked[key] = value
+		}
+	}
+	return faked, repo
+}
