@@ -807,6 +807,13 @@ func AtomicWrite(dest, content string) error {
 	return nil
 }
 
+// RenameReplacing renames tmp over target the way AtomicWrite does, without
+// resolving target: a link at target is replaced, never followed. On
+// Windows it waits a moment while a reader holds target open.
+func RenameReplacing(tmp, target string) error {
+	return renameReplacing(tmp, target, runtime.GOOS)
+}
+
 // renameReplacing renames over target and, on Windows, waits a moment for a
 // reader to let go: Go opens files there without delete sharing, so replacing
 // one that is open fails until it closes. The old file stays until then.

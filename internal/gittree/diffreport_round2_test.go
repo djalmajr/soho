@@ -171,11 +171,14 @@ func TestDiffFreshAndDuplicateDispatchForward(t *testing.T) {
 						select {
 						case <-stop:
 							return
-						case <-time.After(time.Millisecond):
+						case <-time.After(10 * time.Millisecond):
 							b, e := os.ReadFile(filepath.Join(f.state, "last-report-worker"))
 							if e == nil {
 								report := strings.TrimSpace(string(b))
 								if report != "" && report != f.report {
+									if !diffSnapshotReady(f, report) {
+										continue
+									}
 									if err := diffAfterCurrentDispatch(f, report, true); err != nil {
 										return
 									}

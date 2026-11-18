@@ -47,14 +47,15 @@ func writeFiles(t *testing.T, files map[string]string) {
 
 func TestMirrorCopiesThePairFromAPrivateScratch(t *testing.T) {
 	ctx, env, state, _, stem := privateMirror(t)
-	writeFiles(t, map[string]string{stem + ".md": "report\n", stem + ".brief.md": "brief\n", stem + ".dispatch.json": "{\"v\":1}\n"})
+	writeFiles(t, map[string]string{stem + ".md": "report\n", stem + ".brief.md": "brief\n", stem + ".dispatch.json": "{\"v\":1}\n", stem + ".dispatch.json.snapshot": "{\"file\":\"hash\"}\n"})
 	stderr := captureStderr(t)
 	mirrorReport(state, "worker", stem+".md", ctx, env, "")
 	base := filepath.Base(stem)
 	for dst, want := range map[string]string{
-		filepath.Join(state, "reports", base+".md"):           "report\n",
-		filepath.Join(state, "briefs", base+".md"):            "brief\n",
-		filepath.Join(state, "briefs", base+".dispatch.json"): "{\"v\":1}\n",
+		filepath.Join(state, "reports", base+".md"):                    "report\n",
+		filepath.Join(state, "briefs", base+".md"):                     "brief\n",
+		filepath.Join(state, "briefs", base+".dispatch.json"):          "{\"v\":1}\n",
+		filepath.Join(state, "briefs", base+".dispatch.json.snapshot"): "{\"file\":\"hash\"}\n",
 	} {
 		if data, err := os.ReadFile(dst); err != nil || string(data) != want {
 			t.Fatalf("%s=%q err=%v; want %q", dst, data, err, want)
@@ -123,5 +124,26 @@ func TestMirrorReadsNothingWithoutTheScratch(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(root, "tmp", "soho")); !os.IsNotExist(err) {
 		t.Fatalf("the reader created the scratch: %v", err)
+	}
+}
+
+func TestMirrorPublishesSnapshotBeforeSidecar(t *testing.T) {
+	ctx, env, state, _, stem := privateMirror(t)
+	writeFiles(t, map[string]string{stem + ".md": "report\n", stem + ".brief.md": "brief\n", stem + ".dispatch.json": "{\"git_snapshot_file\":true}\n", stem + ".dispatch.json.snapshot": "{}\n"})
+	old := linkMirrorFile
+	t.Cleanup(func() { linkMirrorFile = old })
+	seen := false
+	linkMirrorFile = func(root *os.Root, tmp, dst string) error {
+		if strings.HasSuffix(dst, ".dispatch.json") {
+			seen = true
+			if _, err := root.Stat(dst + ".snapshot"); err != nil {
+				t.Errorf("sidecar published before companion: %v", err)
+			}
+		}
+		return old(root, tmp, dst)
+	}
+	mirrorReport(state, "worker", stem+".md", ctx, env, "")
+	if !seen {
+		t.Fatal("sidecar publication not observed")
 	}
 }

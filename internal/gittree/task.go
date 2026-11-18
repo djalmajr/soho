@@ -2,7 +2,9 @@
 package gittree
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +15,12 @@ import (
 	"github.com/djalmajr/soho/internal/text"
 )
 
-var keys = []string{"git_head", "git_branch", "git_tree", "git_checked", "diff_checked"}
+// SnapshotMaxBytes caps the serialized snapshot; tests may lower it.
+var SnapshotMaxBytes = 16 << 20
+
+const snapshotReadLimit = 16 << 20
+
+var keys = []string{"git_head", "git_branch", "git_tree", "git_snapshot", "git_previous_owned", "git_checked", "diff_checked"}
 
 func git(env platform.Env, tree string, args ...string) (string, bool) {
 	out, ok := gitOutput(env, tree, args...)
@@ -63,7 +70,105 @@ func Snapshot(env platform.Env, tree string) *jsonjs.Object {
 	if !ok {
 		return nil
 	}
-	return jsonjs.O("git_head", head, "git_branch", branch, "git_tree", abs)
+	fields := jsonjs.O("git_head", head, "git_branch", branch, "git_tree", abs)
+	if snapshot, ok := contentSnapshot(env, abs, head); ok {
+		if len(jsonjs.Stringify(snapshot))+1 > SnapshotMaxBytes {
+			fields.Set("git_snapshot_over_limit", true)
+		} else {
+			fields.Set("git_snapshot", snapshot)
+		}
+	}
+	return fields
+}
+
+// contentSnapshot records the worktree content for every path differing from
+// the dispatch HEAD, including deletions and untracked files.
+func contentSnapshot(env platform.Env, tree, head string) (*jsonjs.Object, bool) {
+	names, ok := gitOutput(env, tree, "-c", "diff.autoRefreshIndex=false", "diff", "--numstat", "--no-renames", "-z", head, "--")
+	if !ok {
+		return nil, false
+	}
+	untracked, ok := gitOutput(env, tree, "ls-files", "--others", "--exclude-standard", "-z")
+	if !ok {
+		return nil, false
+	}
+	root, err := os.OpenRoot(tree)
+	if err != nil {
+		return nil, false
+	}
+	defer root.Close()
+	result := jsonjs.O()
+	paths := strings.Split(untracked, "\x00")
+	for _, record := range strings.Split(names, "\x00") {
+		if parts := strings.SplitN(record, "\t", 3); len(parts) == 3 {
+			paths = append(paths, parts[2])
+		}
+	}
+	for _, name := range paths {
+		if name == "" {
+			continue
+		}
+		hash, ok := contentHashForGit(env, tree, root, name)
+		if !ok {
+			return nil, false
+		}
+		result.Set(name, hash)
+	}
+	return result, true
+}
+
+func contentHashForGit(env platform.Env, tree string, root *os.Root, name string) (string, bool) {
+	info, err := root.Lstat(filepath.FromSlash(name))
+	if err != nil || !info.IsDir() {
+		return contentHash(root, name)
+	}
+	entry, ok := gitOutput(env, tree, "--literal-pathspecs", "ls-files", "-s", "--", name)
+	if !ok {
+		return "", false
+	}
+	if strings.HasPrefix(entry, "160000 ") {
+		path := filepath.Join(tree, filepath.FromSlash(name))
+		head, ok := git(env, path, "rev-parse", "--verify", "HEAD")
+		if !ok {
+			return "", false
+		}
+		dirty, ok := gitOutput(env, path, "status", "--porcelain", "-z", "--untracked-files=normal")
+		if !ok {
+			return "", false
+		}
+		return fmt.Sprintf("gitlink:%s:%t", head, dirty != ""), true
+	}
+	return contentHash(root, name)
+}
+
+func contentHash(root *os.Root, name string) (string, bool) {
+	info, err := root.Lstat(filepath.FromSlash(name))
+	if os.IsNotExist(err) {
+		return "missing", true
+	}
+	if err != nil {
+		return "unreadable", true
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := root.Readlink(filepath.FromSlash(name))
+		if err != nil {
+			return "unreadable-link", true
+		}
+		return fmt.Sprintf("link:%x", sha256.Sum256([]byte(target))), true
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Sprintf("special:%s", info.Mode().Type()), true
+	}
+	f, err := root.Open(filepath.FromSlash(name))
+	if err != nil {
+		return "unreadable-file", true
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "unreadable-file", true
+	}
+	return fmt.Sprintf("file:%t:%x", info.Mode()&0100 != 0, h.Sum(nil)), true
 }
 
 func read(path string) *jsonjs.Object {
@@ -100,6 +205,25 @@ func readSidecarInspect(path string) *jsonjs.Object {
 	return o
 }
 
+// snapshotFromSidecar supports both inline version-1 snapshots and the new companion.
+func snapshotFromSidecar(path string, o *jsonjs.Object) (*jsonjs.Object, bool) {
+	if v, ok := o.Get("git_snapshot"); ok {
+		snapshot, ok := v.(*jsonjs.Object)
+		return snapshot, ok
+	}
+	marker, _ := o.Get("git_snapshot_file")
+	if marker != true {
+		return nil, false
+	}
+	raw, err := core.ReadScratchReportLimited(path+".snapshot", snapshotReadLimit)
+	if err != nil {
+		return nil, false
+	}
+	value, err := jsonjs.Parse(raw)
+	snapshot, ok := value.(*jsonjs.Object)
+	return snapshot, err == nil && ok
+}
+
 // Fields reads only the task's Git metadata, retaining a previous once marker.
 func Fields(path string) *jsonjs.Object {
 	o := read(path)
@@ -111,6 +235,9 @@ func Fields(path string) *jsonjs.Object {
 		if v, ok := o.Get(k); ok {
 			fields.Set(k, v)
 		}
+	}
+	if snapshot, ok := snapshotFromSidecar(path, o); ok {
+		fields.Set("git_snapshot", snapshot)
 	}
 	return fields
 }
@@ -145,6 +272,9 @@ func Preserve(path string, fields *jsonjs.Object) {
 	}
 	changed := false
 	for _, k := range keys {
+		if k == "git_snapshot" {
+			continue
+		}
 		if _, exists := o.Get(k); exists {
 			continue
 		}
@@ -153,14 +283,55 @@ func Preserve(path string, fields *jsonjs.Object) {
 			changed = true
 		}
 	}
+	if _, inline := o.Get("git_snapshot"); !inline {
+		if marker, _ := o.Get("git_snapshot_file"); marker != true {
+			if v, ok := fields.Get("git_snapshot"); ok {
+				if err := core.WriteScratchFile(path+".snapshot", jsonjs.Stringify(v)+"\n"); err == nil {
+					o.Set("git_snapshot_file", true)
+					changed = true
+				}
+			}
+		}
+	}
 	if changed {
 		_ = core.WriteScratchFile(path, jsonjs.Stringify(o)+"\n")
 	}
 }
 
+// ReplaceBaseline persists a fresh task baseline after a refused guarded send.
+func ReplaceBaseline(path string, fields *jsonjs.Object) error {
+	o := read(path)
+	if o == nil {
+		return fmt.Errorf("cannot read dispatch sidecar")
+	}
+	o.Delete("git_snapshot_file")
+	for _, k := range []string{"git_head", "git_branch", "git_tree", "git_snapshot"} {
+		o.Delete(k)
+		if k == "git_snapshot" || fields == nil {
+			continue
+		}
+		if v, ok := fields.Get(k); ok {
+			o.Set(k, v)
+		}
+	}
+	if fields != nil {
+		if v, ok := fields.Get("git_snapshot"); ok {
+			if err := core.WriteScratchFile(path+".snapshot", jsonjs.Stringify(v)+"\n"); err != nil {
+				return err
+			}
+			o.Set("git_snapshot_file", true)
+		} else if err := os.Remove(path + ".snapshot"); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	} else if err := os.Remove(path + ".snapshot"); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return core.WriteScratchFile(path, jsonjs.Stringify(o)+"\n")
+}
+
 // Sidecar locates the task's sidecar in state or alongside scratch reports.
 func Sidecar(sd, report string) string {
-	return sidecarLocate(sd, report, read)
+	return sidecarLocateComplete(sd, report)
 }
 
 // SidecarInspect is the inspection's sidecar location: the same two
@@ -264,4 +435,24 @@ func Check(path, agent string, env platform.Env, logFile, command string) *jsonj
 		return jsonjs.O("from", old, "to", head, "branch_from", branch, "branch_to", nextBranch)
 	}
 	return nil
+}
+
+func sidecarLocateComplete(sd, report string) string {
+	base := strings.TrimSuffix(filepath.Base(report), ".md") + ".dispatch.json"
+	paths := []string{filepath.Join(sd, "briefs", base), filepath.Join(filepath.Dir(report), base)}
+	incomplete := ""
+	for _, path := range paths {
+		if o := read(path); o != nil {
+			if marker, _ := o.Get("git_snapshot_file"); marker == true {
+				if _, ok := snapshotFromSidecar(path, o); !ok {
+					if incomplete == "" {
+						incomplete = path
+					}
+					continue
+				}
+			}
+			return path
+		}
+	}
+	return incomplete
 }

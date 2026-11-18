@@ -9,7 +9,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/djalmajr/soho/internal/gittree"
 )
+
+func diffSnapshotReady(f *diffFixture, report string) bool {
+	fields := gittree.Fields(gittree.Sidecar(f.state, report))
+	_, ok := fields.Get("git_snapshot")
+	return ok
+}
 
 // Exercise actual changes after a real fresh/duplicate dispatch has created
 // its composed brief, rather than testing an edit from a previous task.

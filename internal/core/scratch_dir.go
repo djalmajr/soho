@@ -265,7 +265,9 @@ func WriteScratchFile(path, content string) error {
 		_ = os.Remove(name)
 		return err
 	}
-	if err := os.Rename(name, path); err != nil {
+	// A reader holding path open on Windows refuses the rename for a moment
+	// (status and wait read sidecars while dispatch rewrites them).
+	if err := platform.RenameReplacing(name, path); err != nil {
 		_ = os.Remove(name)
 		return err
 	}
