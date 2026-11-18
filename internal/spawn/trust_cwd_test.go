@@ -262,7 +262,7 @@ func TestSpawnTrustCwd(t *testing.T) {
 			enabled := tc.kind == "codex" && tc.mode == "on" && !tc.refused
 			if enabled {
 				wantTrust := `projects={"` + trustTOMLBasic(root) + `"={trust_level='trusted'}}`
-				if index < 1 || tail[index-1] != "-c" || tail[index] != wantTrust || !reflect.DeepEqual(tail[index+1:], []string{"--owner-config", "--owner-role", "--owner-cli"}) {
+				if index < 1 || tail[index-1] != "-c" || tail[index] != wantTrust || !reflect.DeepEqual(tail[index+1:], []string{"-c", "check_for_update_on_startup=false", "--owner-config", "--owner-role", "--owner-cli"}) {
 					t.Fatalf("argv=%q", tail)
 				}
 			} else if index != -1 {

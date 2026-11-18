@@ -54,8 +54,9 @@ func TestConfigNativeArgsCodexNoDaemon(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			stubCodexHelp(t, tc.supported)
 			ctx := &core.Config{Entries: map[string]core.ConfigEntry{"args_" + tc.kind: {Value: tc.args}}}
-			if got := ConfigNativeArgs(tc.kind, "", "worker", ctx, platform.Env{}, t.TempDir(), nil); got != tc.want {
-				t.Fatalf("args=%q want=%q", got, tc.want)
+			want := tc.want
+			if got := ConfigNativeArgs(tc.kind, "", "worker", ctx, platform.Env{}, t.TempDir(), nil); got != want {
+				t.Fatalf("args=%q want=%q", got, want)
 			}
 		})
 	}
@@ -175,6 +176,56 @@ func TestSpawnCodexTrailingNativeArgsDecideNoDaemon(t *testing.T) {
 			}
 			if tc.name != "none" && tc.name != "literal-prompt" && slices.Contains(argv[:len(argv)-len(tc.want)], "--no-daemon") {
 				t.Fatalf("--no-daemon left before the trailing args: %q", argv)
+			}
+		})
+	}
+}
+
+func TestSpawnCodexUpdateCheckLaunch(t *testing.T) {
+	stubCodexHelp(t, false)
+	argv := codexSpawnLaunch(t, "", nil)
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "-c" && argv[i+1] == "check_for_update_on_startup=false" {
+			return
+		}
+	}
+	t.Fatalf("missing update override in launch argv: %q", argv)
+}
+
+func TestSpawnCodexUpdateOverrideSources(t *testing.T) {
+	for _, tc := range []struct {
+		name, configured string
+		tail             []string
+		want             string
+	}{
+		{"tail", "", []string{"-c", "check_for_update_on_startup=false"}, "check_for_update_on_startup=false"},
+		{"config and tail", "--verbose", []string{"--foo"}, "check_for_update_on_startup=false"},
+		{"configured true", "-c check_for_update_on_startup=true", []string{"--foo"}, "check_for_update_on_startup=true"},
+		{"tail long", "--verbose", []string{"--config", "check_for_update_on_startup=true"}, "check_for_update_on_startup=true"},
+		{"prompt", "", []string{"--", "-c", "check_for_update_on_startup=true"}, "check_for_update_on_startup=false"},
+		{"positional prompt", "hello -c check_for_update_on_startup=true", nil, "check_for_update_on_startup=false"},
+		{"configured prompt stops tail", "-- hello", []string{"-c", "check_for_update_on_startup=true"}, "check_for_update_on_startup=false"},
+		{"option value", "-m model -c check_for_update_on_startup=true", nil, "check_for_update_on_startup=true"},
+		{"multiple images", "--image first.png second.png -c check_for_update_on_startup=true", nil, "check_for_update_on_startup=true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubCodexHelp(t, false)
+			argv := codexSpawnLaunch(t, tc.configured, tc.tail)
+			end := optionsEnd(argv)
+			if tc.name == "positional prompt" {
+				end = slices.Index(argv, "hello")
+			}
+			count := 0
+			for i := 0; i+1 < end; i++ {
+				if (argv[i] == "-c" || argv[i] == "--config") && strings.HasPrefix(argv[i+1], "check_for_update_on_startup=") {
+					count++
+					if argv[i+1] != tc.want {
+						t.Fatalf("argv=%q want %s", argv, tc.want)
+					}
+				}
+			}
+			if count != 1 {
+				t.Fatalf("argv=%q has %d settings", argv, count)
 			}
 		})
 	}

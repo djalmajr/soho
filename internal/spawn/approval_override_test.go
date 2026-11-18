@@ -55,6 +55,13 @@ func TestSpawnCodexArgsOverrideApprovals(t *testing.T) {
 					}
 				}
 			}
+			if tc.kind == "codex" {
+				at := 0
+				if len(tc.want) > 0 && tc.want[0] == "--approve-for-me" && tc.flag == "" {
+					at = 1
+				}
+				tc.want = append(append(append([]string{}, tc.want[:at]...), "-c", "check_for_update_on_startup=false"), tc.want[at:]...)
+			}
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("agent argv=%q want=%q stderr=%q", got, tc.want, stderr)
 			}

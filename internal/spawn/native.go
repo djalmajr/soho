@@ -43,6 +43,61 @@ func ConfigNativeArgs(kind, lane, role string, ctx *core.Config, env platform.En
 	return strings.Join(tokens, " ")
 }
 
+// isCodexUpdateSetting is true for a "key=value" config override of
+// check_for_update_on_startup as codex reads it: a token whose literal
+// quotes survived the shell is a different key to codex, so it is not one.
+func isCodexUpdateSetting(pair string) bool {
+	key, _, ok := strings.Cut(pair, "=")
+	return ok && strings.TrimSpace(key) == "check_for_update_on_startup"
+}
+
+// hasCodexUpdateConfig recognizes explicit config overrides before the prompt.
+func hasCodexUpdateConfig(tokens []string) bool {
+	for i := 0; i < len(tokens); i++ {
+		token := tokens[i]
+		if token == "--" || !strings.HasPrefix(token, "-") {
+			break
+		}
+		if token == "-c" || token == "--config" {
+			if i+1 >= len(tokens) {
+				break
+			}
+			i++
+			if isCodexUpdateSetting(tokens[i]) {
+				return true
+			}
+			continue
+		}
+		// The attached forms codex also accepts: -c=key=v, --config=key=v
+		// and -ckey=v.
+		if value, ok := strings.CutPrefix(token, "--config="); ok {
+			if isCodexUpdateSetting(value) {
+				return true
+			}
+			continue
+		}
+		if value, ok := strings.CutPrefix(token, "-c"); ok && value != "" && !strings.HasPrefix(token, "--") {
+			if isCodexUpdateSetting(strings.TrimPrefix(value, "=")) {
+				return true
+			}
+			continue
+		}
+		if token == "-i" || token == "--image" {
+			for i+1 < len(tokens) && !strings.HasPrefix(tokens[i+1], "-") {
+				i++
+			}
+			continue
+		}
+		switch token {
+		case "--enable", "--disable", "--remote", "--remote-auth-token-env", "-m", "--model", "--local-provider", "-p", "--profile", "-s", "--sandbox", "-C", "--cd", "--add-dir", "-a", "--ask-for-approval":
+			if i+1 < len(tokens) {
+				i++
+			}
+		}
+	}
+	return false
+}
+
 // optionsEnd is the index of the first "--" in tokens, or their length.
 func optionsEnd(tokens []string) int {
 	if i := slices.Index(tokens, "--"); i >= 0 {
