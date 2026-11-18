@@ -53,7 +53,7 @@ func TestCmdSpawnMcpCodexAppsOverride(t *testing.T) {
 		f := codexMcpFixture(t)
 		installCodexMcpList(t, f, listing)
 		got, _ := run(t, f, "none")
-		if want := base + " " + codexAppsOff + " -c mcp_servers.alpha.enabled=false -c mcp_servers.beta.enabled=false"; got != want {
+		if want := base + " " + codexAppsOff + " -c mcp_servers.alpha.enabled=false -c mcp_servers.beta.enabled=false -c check_for_update_on_startup=false"; got != want {
 			t.Fatalf("argv=%q, want %q", got, want)
 		}
 	})
@@ -62,7 +62,7 @@ func TestCmdSpawnMcpCodexAppsOverride(t *testing.T) {
 		f := codexMcpFixture(t)
 		installCodexMcpList(t, f, listing)
 		got, _ := run(t, f, "alpha")
-		if want := base + " " + codexAppsOff + " -c mcp_servers.beta.enabled=false"; got != want {
+		if want := base + " " + codexAppsOff + " -c mcp_servers.beta.enabled=false -c check_for_update_on_startup=false"; got != want {
 			t.Fatalf("argv=%q, want %q", got, want)
 		}
 	})
@@ -72,7 +72,7 @@ func TestCmdSpawnMcpCodexAppsOverride(t *testing.T) {
 			f := codexMcpFixture(t)
 			installCodexMcpList(t, f, `[]`)
 			got, _ := run(t, f, mcp)
-			if want := base + " " + codexAppsOff; got != want {
+			if want := base + " " + codexAppsOff + " -c check_for_update_on_startup=false"; got != want {
 				t.Fatalf("mcp=%s argv=%q, want %q", mcp, got, want)
 			}
 		}
@@ -82,7 +82,7 @@ func TestCmdSpawnMcpCodexAppsOverride(t *testing.T) {
 		f := codexMcpFixture(t)
 		installCodexMcpListFailing(t, f, fakecli.Rule{Code: 1})
 		got, stderr := run(t, f, "none")
-		if want := base + " " + codexAppsOff; got != want {
+		if want := base + " " + codexAppsOff + " -c check_for_update_on_startup=false"; got != want {
 			t.Fatalf("argv=%q, want %q", got, want)
 		}
 		if stdErrCount(stderr, codexMcpWarn("exit 1", "worker")) != 1 {
@@ -95,7 +95,7 @@ func TestCmdSpawnMcpCodexAppsOverride(t *testing.T) {
 		f.ctx.Entries["args_codex"] = core.ConfigEntry{Value: "--owner-config -c features.apps=true", Source: "user"}
 		installCodexMcpList(t, f, listing)
 		got, _ := run(t, f, "none", "--user-x")
-		want := base + " " + codexAppsOff + " -c mcp_servers.alpha.enabled=false -c mcp_servers.beta.enabled=false --owner-config -c features.apps=true --user-x"
+		want := base + " " + codexAppsOff + " -c mcp_servers.alpha.enabled=false -c mcp_servers.beta.enabled=false -c check_for_update_on_startup=false --owner-config -c features.apps=true --user-x"
 		if got != want {
 			t.Fatalf("argv=%q, want %q", got, want)
 		}
@@ -105,8 +105,8 @@ func TestCmdSpawnMcpCodexAppsOverride(t *testing.T) {
 		f := codexMcpFixture(t)
 		installCodexMcpList(t, f, listing)
 		got, _ := run(t, f, "inherit")
-		if got != base {
-			t.Fatalf("argv=%q, want %q", got, base)
+		if got != base+" -c check_for_update_on_startup=false" {
+			t.Fatalf("argv=%q, want %q", got, base+" -c check_for_update_on_startup=false")
 		}
 		for _, call := range codexMcpCalls(t, f) {
 			if strings.Contains(strings.Join(call, " "), "features") {

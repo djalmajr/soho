@@ -103,6 +103,7 @@ func spawnCodexNone(t *testing.T, f spawnFixture) (code int, stdout, stderr stri
 
 func wantTail(t *testing.T, f spawnFixture, want string) {
 	t.Helper()
+	want += " -c check_for_update_on_startup=false"
 	if got := strings.Join(startTail(t, f), " "); got != want {
 		t.Fatalf("argv=%q, want %q", got, want)
 	}

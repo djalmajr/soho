@@ -43,6 +43,40 @@ func ConfigNativeArgs(kind, lane, role string, ctx *core.Config, env platform.En
 	return strings.Join(tokens, " ")
 }
 
+// hasCodexUpdateConfig recognizes explicit config overrides before the prompt.
+func hasCodexUpdateConfig(tokens []string) bool {
+	for i := 0; i < len(tokens); i++ {
+		token := tokens[i]
+		if token == "--" || !strings.HasPrefix(token, "-") {
+			break
+		}
+		if token == "-c" || token == "--config" {
+			if i+1 >= len(tokens) {
+				break
+			}
+			i++
+			key, _, ok := strings.Cut(tokens[i], "=")
+			if ok && strings.TrimSpace(key) == "check_for_update_on_startup" {
+				return true
+			}
+			continue
+		}
+		if token == "-i" || token == "--image" {
+			for i+1 < len(tokens) && !strings.HasPrefix(tokens[i+1], "-") {
+				i++
+			}
+			continue
+		}
+		switch token {
+		case "--enable", "--disable", "--remote", "--remote-auth-token-env", "-m", "--model", "--local-provider", "-p", "--profile", "-s", "--sandbox", "-C", "--cd", "--add-dir", "-a", "--ask-for-approval":
+			if i+1 < len(tokens) {
+				i++
+			}
+		}
+	}
+	return false
+}
+
 // optionsEnd is the index of the first "--" in tokens, or their length.
 func optionsEnd(tokens []string) int {
 	if i := slices.Index(tokens, "--"); i >= 0 {

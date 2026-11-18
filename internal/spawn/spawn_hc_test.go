@@ -383,6 +383,9 @@ func TestSpawnHcWorkersRunWithTheHerdrArgv(t *testing.T) {
 			}
 			res := core.ResolveRoleSettings(tc.role, ctx, env, cwd, core.RoleFlags{})
 			agent := hcAgentArgs(t, tc.role, res, ctx, env, cwd)
+			if tc.kind == "codex" {
+				agent = append(agent, "-c", "check_for_update_on_startup=false")
+			}
 			rules := append(hcFixtureRules(),
 				fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
 			)

@@ -2924,6 +2924,9 @@ func freshSpawnArgs(o spawnOptions, lane, kind string, ctx *core.Config, env pla
 			}
 		}
 	}
+	if kind == "codex" && !hasCodexUpdateConfig(append(strings.Fields(native), o.native...)) {
+		args = append(args, "-c", "check_for_update_on_startup=false")
+	}
 	if native != "" {
 		tokens := strings.Fields(native)
 		// Trailing native args win: a --remote there cannot run with
