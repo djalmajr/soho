@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,7 +23,7 @@ import (
 )
 
 const (
-	copiesUsage = "usage: soho copies [add <path> [--agent <name>]]"
+	copiesUsage = "usage: soho copies [add <path> [--agent <name>] | release <path>...]"
 	gcUsage     = "usage: soho gc [--yes] [--verbose] [--older-than HOURS] [--include-unregistered] [--include-unregistered-procs]"
 
 	// copiesTimeLayout is the ISO-8601 UTC format the registry stores in the
@@ -374,6 +375,9 @@ func pendingResultLines(cmd, kind string, res core.PendingResult, err error) {
 func cmdCopies(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	if len(argv) == 0 {
 		return copiesList(ctx, env, cwd)
+	}
+	if argv[0] == "release" {
+		return copiesRelease(argv[1:], ctx, env, cwd)
 	}
 	if argv[0] != "add" {
 		_, _ = fmt.Fprintf(platform.Stderr, "soho: %s\n", copiesUsage)
@@ -948,6 +952,7 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	}
 	incorporatePendingCopies("copies add", sd, env, cwd)
 	pane, lookupFailed := registrantPane(env)
+	caller, _ := registrantFromEnv(sd, env, pane, lookupFailed)
 	owner := "-"
 	if agentSeen {
 		line := core.RosterLine(sd, agent)
@@ -970,6 +975,7 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	if err := upsertCopies(sd, row); err != nil {
 		if err = queueCopy("copies add", sd, row, err, env); err == nil {
 			registrantOwnerlessLine("copies add", owner, pane, "copy", env)
+			warnLiveCopies(sd, owner, caller, env)
 			return 0
 		}
 		var locked *core.CopiesLockedError
@@ -979,7 +985,53 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		core.DieFriction(fmt.Sprintf("copies add: could not register '%s' (%v)", path, err), 4, frictionLogPath, "copies")
 	}
 	registrantOwnerlessLine("copies add", owner, pane, "copy", env)
+	warnLiveCopies(sd, owner, caller, env)
 	return 0
+}
+
+const liveCopyWarningThreshold = 3
+
+// warnLiveCopies is advisory; an unreadable registry does not block registration.
+func warnLiveCopies(sd, owner, caller string, env platform.Env) {
+	if owner == "" || owner == "-" || owner != caller {
+		return
+	}
+	rows, err := core.ReadCopies(sd)
+	if err != nil {
+		return
+	}
+	pending := core.PendingCopiesFor(sd, filepath.Base(sd), env)
+	paths := map[string]bool{}
+	for _, row := range append(rows, pending...) {
+		if row.Owner == owner && isRealDir(row.Path) {
+			paths[row.Path] = true
+		}
+	}
+	if len(paths) < liveCopyWarningThreshold {
+		return
+	}
+	ordered := make([]string, 0, len(paths))
+	for path := range paths {
+		ordered = append(ordered, path)
+	}
+	sort.Strings(ordered)
+	_, _ = fmt.Fprintf(platform.Stderr, "warning: %d registered copies held by %s:\n", len(ordered), owner)
+	for _, path := range ordered {
+		size, known := core.CopiesDirSize(context.Background(), path)
+		label := "size unknown"
+		if known {
+			label = humanSize(size)
+		}
+		_, _ = fmt.Fprintf(platform.Stderr, "  %s  %s\n", path, label)
+	}
+	_, _ = fmt.Fprintln(platform.Stderr, "release superseded copies from outside them: soho copies release <path>")
+}
+
+// isRealDir is true for a directory that is not reached through a final
+// symlink: a registered path replaced by a link is not a live copy.
+func isRealDir(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.IsDir()
 }
 
 // copiesAddNestedWarning uses one registry snapshot for this advisory check;

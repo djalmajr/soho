@@ -245,6 +245,19 @@ func TestMeasureFootprintCountsTheQueueReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	file, err := os.OpenFile(queue, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("malformed\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadPendingCopiesFor(stateDir, "ws", env); err == nil {
+		t.Fatal("strict reader accepted malformed queue")
+	}
 	// The same copy queued for another state dir does not count here.
 	if _, err := QueueCopy(env, "ws", t.TempDir(), pendingCopy(filepath.Join(t.TempDir(), "x"))); err != nil {
 		t.Fatal(err)
