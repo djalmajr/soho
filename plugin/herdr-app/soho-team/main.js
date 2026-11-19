@@ -233,7 +233,9 @@ export default class SohoPanel extends View {
     if (this.undoHolder && !this.boundTo(this.undoHolder.origin ?? this.undoHolder.context, context)) { this.undoHolder = null; dropped = true; }
     if (this.pending && !this.boundTo(this.pending.origin ?? this.pending.context, context)) { this.pending = null; dropped = true; }
     if (this.cleanupConfirm) { this.cleanupConfirm = null; dropped = true; }
-    if (dropped) this.showNotice(M.CONTEXT_CHANGED_MESSAGE, null, cx);
+    // adoptContext also runs during render, whose cx must not start a
+    // timer: the notice is shown from a task context instead.
+    if (dropped) cx.spawn(async (ctx) => { this.showNotice(M.CONTEXT_CHANGED_MESSAGE, null, ctx); ctx.notify(); });
     return true;
   }
 
@@ -1244,8 +1246,8 @@ export default class SohoPanel extends View {
     const undoCapture = this.noticeCapture();
     const header = h_flex().h(28).flex_none().gap(8).items_center().justify_between()
       .child(h_flex().min_w(0).gap(8).items_center()
-        .when(this.tab === "report", (el) => el.child(button("back-now", "‹ Now", () => this.setTab("now", cx), { small: true })))
-        .when(this.tab === "config", (el) => el.child(button("back-team", "‹ Team", () => this.setTab("team", cx), { small: true })))
+        .when(this.tab === "report", (el) => el.child(button("back-now", "‹ Now", (ctx) => this.setTab("now", ctx), { small: true })))
+        .when(this.tab === "config", (el) => el.child(button("back-team", "‹ Team", (ctx) => this.setTab("team", ctx), { small: true })))
         .child(div().min_w(0).truncate().text_size(16).font_semibold().text_color(t.foreground).child(title)))
       .child(h_flex().flex_none().gap(6).items_center()
         .when(this.tab === "assistants" && this.caps.assistantsJson, (el) => el.child(
