@@ -218,8 +218,8 @@ func TestPanelRosterWorkersFieldsAndNoWrites(t *testing.T) {
 		t.Fatalf("done task_s = %#v, want the literal %d", taskS, panelTaskSeconds)
 	}
 	gone := panelAgentRow(t, agents, "gone")
-	if path, _ := gone.Get("report_path"); path != "" {
-		t.Fatalf("gone report_path = %v, want empty", path)
+	if path, ok := gone.Get("report_path"); !ok || path != nil {
+		t.Fatalf("gone report_path = %#v (present %v), want null", path, ok)
 	}
 	if taskS, _ := gone.Get("task_s"); taskS != nil {
 		t.Fatalf("gone task_s = %v, want null", taskS)
@@ -392,10 +392,13 @@ func TestPanelRosterEmptyAndLegacyRows(t *testing.T) {
 		t.Fatalf("legacy agents = %#v", agentsValue)
 	}
 	row := panelObj(t, arr[0], "legacy row")
-	for _, field := range []string{"model", "effort", "report_path"} {
+	for _, field := range []string{"model", "effort"} {
 		if got, _ := row.Get(field); got != "" {
 			t.Fatalf("legacy %s = %v, want empty", field, got)
 		}
+	}
+	if got, ok := row.Get("report_path"); !ok || got != nil {
+		t.Fatalf("legacy report_path = %#v (present %v), want null", got, ok)
 	}
 	if got, _ := row.Get("task_s"); got != nil {
 		t.Fatalf("legacy task_s = %v, want null", got)
@@ -512,9 +515,9 @@ func TestPanelRosterReportPathNeedsARegularFile(t *testing.T) {
 		name           string
 		pointer        string
 		wantReport     string
-		wantReportPath string
+		wantReportPath any
 	}{
-		{"a directory", directory, "ready", ""},
+		{"a directory", directory, "ready", nil},
 		{"an empty regular file", empty, "pending", empty},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -532,8 +535,8 @@ func TestPanelRosterReportPathNeedsARegularFile(t *testing.T) {
 			if value, _ := got.Get("report"); value != tc.wantReport {
 				t.Fatalf("report = %#v, want %#v", value, tc.wantReport)
 			}
-			if value, _ := got.Get("report_path"); value != tc.wantReportPath {
-				t.Fatalf("report_path = %#v, want %#v", value, tc.wantReportPath)
+			if value, ok := got.Get("report_path"); !ok || value != tc.wantReportPath {
+				t.Fatalf("report_path = %#v (present %v), want %#v", value, ok, tc.wantReportPath)
 			}
 		})
 	}
@@ -630,7 +633,7 @@ func TestPanelRosterPendingReportPublishesNoPath(t *testing.T) {
 			}
 			continue
 		}
-		for key, want := range map[string]any{"report": "pending", "status": "no-report-yet", "report_path": ""} {
+		for key, want := range map[string]any{"report": "pending", "status": "no-report-yet", "report_path": nil} {
 			if value, _ := got.Get(key); value != want {
 				t.Fatalf("pending %s = %#v, want %#v", key, value, want)
 			}

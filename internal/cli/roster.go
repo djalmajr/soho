@@ -301,9 +301,16 @@ func cmdRoster(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 				}
 			}
 			tab, _ := tabValue(pane)
+			// No publishable report file is JSON null, never an empty string, so
+			// a consumer's null check covers a missing, pending or directory
+			// pointer alike (review round 3, F1).
+			var reportPathJSON any
+			if reportPath != "" {
+				reportPathJSON = reportPath
+			}
 			agents = append(agents, jsonjs.O(
 				"name", name, "role", role, "previous_role", previousRole, "kind", kind, "pane", pane, "tab", tab, "state", state, "report", report, "cwd", cwdCol, "task", task,
-				"model", col(8), "effort", col(14), "status", view.State, "report_path", reportPath,
+				"model", col(8), "effort", col(14), "status", view.State, "report_path", reportPathJSON,
 				"task_s", panelElapsed(view.TaskS), "activity_s", panelElapsed(view.ActivityS),
 			))
 		}

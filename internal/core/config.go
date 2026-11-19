@@ -1103,13 +1103,9 @@ func CmdConfig(ctx *Config, env platform.Env, cwd string) {
 		lines = append(lines, row(key, value, source))
 	}
 	dotted := configListingKeys(ctx, env, cwd)
-	listedLanes := map[string]bool{}
+	listedLanes := listedLaneKeys(ctx, dotted, env, cwd)
 	for _, item := range dotted {
 		lines = append(lines, row(item.name, Cfg(ctx, item.key, "", env), CfgSource(ctx, item.key, env)))
-		parts := strings.Split(item.name, ".")
-		if len(parts) == 3 && parts[0] == "lane" {
-			listedLanes[NormalizeKey(parts[1])] = true
-		}
 	}
 	if LanesEnabled(ctx, env) {
 		for _, lane := range LaneNames(ctx, env) {
@@ -1205,6 +1201,22 @@ func presetLaneRolesRow(ctx *Config, lane string, env platform.Env) (string, str
 	return PresetLaneRoles(lane, PanesValue(ctx, env), PaneMode(ctx, env)), "skill default"
 }
 
+// listedLaneKeys is the set of lanes (normalized) that have a dotted key of
+// their own among the listing keys, matched by the normalized key's dotted
+// name, so a file that spells it lane_build_roles counts like
+// lane.build.roles. The listing and the dry-run preview share it (review
+// round 3, F2).
+func listedLaneKeys(ctx *Config, keys []configListingKey, env platform.Env, cwd string) map[string]bool {
+	listed := map[string]bool{}
+	for _, item := range keys {
+		parts := strings.Split(DottedKeyName(item.key, ctx, env, cwd), ".")
+		if len(parts) == 3 && parts[0] == "lane" {
+			listed[NormalizeKey(parts[1])] = true
+		}
+	}
+	return listed
+}
+
 // presetLaneRolesValue answers the listing's synthesized row for a
 // lane.<lane>.roles key: the lane must exist, lanes must be on and the lane
 // must have no dotted key of its own (that is the listing's own rule for
@@ -1217,13 +1229,7 @@ func presetLaneRolesValue(ctx *Config, key string, env platform.Env, cwd string)
 	if len(parts) != 3 || parts[0] != "lane" || parts[2] != "roles" {
 		return "", "", false
 	}
-	listed := map[string]bool{}
-	for _, item := range configListingKeys(ctx, env, cwd) {
-		name := strings.Split(item.name, ".")
-		if len(name) == 3 && name[0] == "lane" {
-			listed[NormalizeKey(name[1])] = true
-		}
-	}
+	listed := listedLaneKeys(ctx, configListingKeys(ctx, env, cwd), env, cwd)
 	for _, lane := range LaneNames(ctx, env) {
 		if NormalizeKey(lane) != NormalizeKey(parts[1]) || listed[NormalizeKey(lane)] {
 			continue

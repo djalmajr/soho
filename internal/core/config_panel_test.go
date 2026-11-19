@@ -843,6 +843,26 @@ func TestPanelConfigPreviewPresetLaneRolesUseTheListingRow(t *testing.T) {
 		t.Fatalf("applies_to_roles = %v, want the preset membership", applies)
 	}
 
+	// A lane key spelled with underscores is the lane's own key too: the
+	// configured value wins in the preview and the listing has no preset row
+	// for that lane (review round 3, F2).
+	write(t, file, "lanes=on\nlane_build_roles=tester\n")
+	ctx = LoadConfig(env, repo)
+	out, _ = capture(t, func() {
+		CmdConfigSet([]string{"lane.build.roles=designer", "--project", "--dry-run", "--json"}, &ctx, env, repo)
+	})
+	prev = panelObjectField(t, objValue(panelParseObject(t, out), "previous"), "previous")
+	if got, _ := prev.Get("effective"); got != "tester" {
+		t.Fatalf("underscore lane key: previous.effective = %#v, want the configured tester", got)
+	}
+	if got, _ := prev.Get("effective_source"); got != "project" {
+		t.Fatalf("underscore lane key: previous.effective_source = %#v, want project", got)
+	}
+	listing, _ = capture(t, func() { CmdConfig(&ctx, env, repo) })
+	if strings.Contains(listing, preset) {
+		t.Fatalf("the listing still synthesizes the preset row for a lane with its own key:\n%s", listing)
+	}
+
 	// A lane with a key of its own never gets the synthesized row.
 	write(t, file, "lanes=on\nlane.build.panes=2\n")
 	ctx = LoadConfig(env, repo)
