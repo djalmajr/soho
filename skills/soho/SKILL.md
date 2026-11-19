@@ -201,7 +201,7 @@ soho dispatch a brief-a.md --no-wait   # fan out…
 soho dispatch b brief-b.md --no-wait
 soho wait a b                          # …then block until every report exists
 soho wait a b --any                    # or until the first one lands
-soho wait a b --wake                   # native Core: arm a child that wakes you and end the turn; on the note, soho wait once only for the agents it reports done, and arm --wake again for the rest
+soho wait a b --wake                   # native Core: arm a child that wakes you and end the turn; on the note, soho wait once only for the agents it reports done, arm --wake again only for those still working (checkpoint), and handle gone, blocked, quota and the other ends as their exit says
 soho status [a b]                      # non-blocking (no names = the whole team): done | working | blocked | question | no-report-yet | gone | unavailable | quota | provider-error | capacity | not-received | compacting | compact-interrupted | compact-unknown; a name outside the roster is not-in-roster when Herdr knows it (a remote ref is asked on its machine; stderr names the `herdr agent get` that reads it), else unknown-agent
 ```
 
