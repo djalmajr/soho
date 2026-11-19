@@ -150,7 +150,7 @@ func Run(args []string, env platform.Env) (code int) {
 		// transport is the configured worker transport for this directory
 		// (DJA-603); the other fields are fixed for this binary.
 		cwd, _ := os.Getwd()
-		_, _ = fmt.Fprintf(platform.Stdout, "{\"schema\":1,\"worker_collaboration\":1,\"ephemeral_job\":1,\"job_events\":1,\"inventory\":1,\"report_json\":1,\"transport\":%q}\n", core.TransportModeAt(env, cwd))
+		_, _ = fmt.Fprintf(platform.Stdout, "{\"schema\":1,\"worker_collaboration\":1,\"ephemeral_job\":1,\"job_events\":1,\"inventory\":1,\"report_json\":1,\"team_json\":1,\"config_dry_run\":1,\"config_unset\":1,\"roster_workers\":1,\"transport\":%q}\n", core.TransportModeAt(env, cwd))
 		return 0
 	}
 
@@ -413,6 +413,8 @@ func Run(args []string, env platform.Env) (code int) {
 		if command == "config" {
 			if len(args) > 1 && args[1] == "set" {
 				core.CmdConfigSet(args[2:], configCtx, decisionEnv, commandCwd)
+			} else if len(args) > 1 && args[1] == "unset" {
+				core.CmdConfigUnset(args[2:], decisionEnv, commandCwd)
 			} else if len(args) > 1 && args[1] == "get" {
 				cmdConfigGet(args[2:], configCtx, decisionEnv, commandCwd)
 			} else {
@@ -499,7 +501,18 @@ func Run(args []string, env platform.Env) (code int) {
 	case "run":
 		return cmdRun(args[1:], ctx, decisionEnv, commandCwd)
 	case "roles":
-		cmdRoles(args[1:], decisionEnv, commandCwd)
+		if len(args) == 2 && args[1] == "--json" {
+			// The panel's extended read reuses doctor's first-run predicate:
+			// team_exists is its negation, with no second rule to drift.
+			ctx := configCtx
+			if ctx == nil {
+				loaded := core.LoadConfigFor(decisionEnv, commandCwd, userSel)
+				ctx = &loaded
+			}
+			core.CmdRolesPanelJSON(ctx, decisionEnv, commandCwd, !doctor.ProjectIsFirstRun(ctx, decisionEnv, commandCwd))
+		} else {
+			cmdRoles(args[1:], decisionEnv, commandCwd)
+		}
 		return 0
 	case "role":
 		cmdRole(args[1:], decisionEnv, commandCwd)
@@ -668,7 +681,13 @@ func nowriteReadInvocation(args []string) bool {
 	case "doctor", "explain", "copies", "procs":
 		return len(args) == 1
 	case "config":
-		return len(args) == 1 || (len(args) == 3 && args[1] == "get" && args[2] != "")
+		if len(args) == 1 || (len(args) == 3 && args[1] == "get" && args[2] != "") {
+			return true
+		}
+		// Only the write-free preview runs under the read-only gate; unset
+		// and a real set are refused. --dry-run must be present, every other
+		// token is the set grammar the preview validates itself.
+		return nowriteConfigSetDryRun(args[1:])
 	case "roles":
 		return len(args) == 1 || (len(args) == 2 && args[1] == "--json")
 	case "status":
@@ -686,6 +705,48 @@ func nowriteReadInvocation(args []string) bool {
 		return nowriteFlagOnly(args[1:], []string{"--older-than"}, []string{"--include-unregistered", "--verbose"})
 	}
 	return false
+}
+
+// nowriteConfigSetDryRun is the exact read-only shape of config set: a key,
+// a value, one --dry-run and the preview's optional --json/scope flags. A
+// real set, an unset and any other flag stay behind the write gate.
+func nowriteConfigSetDryRun(argv []string) bool {
+	if len(argv) < 4 || argv[0] != "set" {
+		return false
+	}
+	dry, jsonMode, scoped, keySeen, valueSeen := false, false, false, false, false
+	for _, arg := range argv[1:] {
+		switch {
+		case arg == "--dry-run":
+			if dry {
+				return false
+			}
+			dry = true
+		case arg == "--json":
+			if jsonMode {
+				return false
+			}
+			jsonMode = true
+		case arg == "--project" || arg == "--user":
+			if scoped {
+				return false
+			}
+			scoped = true
+		case strings.HasPrefix(arg, "-"):
+			return false
+		case !keySeen:
+			if eq := strings.IndexByte(arg, '='); eq > 0 {
+				keySeen, valueSeen = true, eq+1 < len(arg)
+			} else {
+				keySeen = true
+			}
+		case !valueSeen:
+			valueSeen = true
+		default:
+			return false
+		}
+	}
+	return dry && keySeen && valueSeen
 }
 
 // nowriteFlagOnly accepts a flag-only invocation: every token is one of the

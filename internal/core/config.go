@@ -10,6 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/launchprofile"
 	"github.com/djalmajr/soho/internal/platform"
 	textutil "github.com/djalmajr/soho/internal/text"
@@ -595,7 +596,7 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return contains(KnownKinds, value)
 	case strings.HasPrefix(key, "lane.") && strings.HasSuffix(key, ".roles"):
 		return ConfigRolesOk(value, env, cwd)
-	case strings.HasPrefix(key, "lane.") && strings.HasSuffix(key, ".effort"):
+	case strings.HasPrefix(key, "lane.") && strings.HasSuffix(key, ".effort"), strings.HasPrefix(key, "role.") && strings.HasSuffix(key, ".effort"):
 		return contains(EffortLadder, value)
 	case strings.HasPrefix(key, "role.") && strings.HasSuffix(key, ".mcp"), strings.HasPrefix(key, "lane.") && strings.HasSuffix(key, ".mcp"):
 		return McpValueError(value) == ""
@@ -1210,24 +1211,63 @@ func SplitPairArg(key, value string, sawValue bool, cmd string) (string, string,
 	return key, value, false
 }
 
-func CmdConfigSet(argv []string, ctx *Config, env platform.Env, cwd string) {
-	key, value, where, sawValue := "", "", "project", false
+// configSetPlan is the parsed, validated shape shared by config set and
+// its dry-run preview. Parsing resolves the destination but never writes it.
+type configSetPlan struct {
+	Key, Value, Where, Dest string
+	DryRun, JSON            bool
+}
+
+// splitPairArgPlan is SplitPairArg's grammar without its Die: the preview
+// needs the same message on stdout as JSON before the caller turns it into
+// the same exit-2 diagnostic set has always printed.
+func splitPairArgPlan(key, value string, sawValue bool) (string, string, bool, string) {
+	if sawValue || key == "" {
+		return key, value, sawValue, ""
+	}
+	if eq := strings.IndexByte(key, '='); eq > 0 {
+		return key[:eq], key[eq+1:], true, ""
+	}
+	if strings.IndexFunc(key, isJSWhitespace) >= 0 {
+		return key, value, false, fmt.Sprintf(`config set: '%s' arrived as one argument; pass the key and the value as two arguments or as key=value (zsh does not split "$var": use ${=var})`, key)
+	}
+	return key, value, false, ""
+}
+
+// parseConfigSet is CmdConfigSet's argument grammar and validation, with no
+// side effects. On failure it returns the partial key and value alongside
+// the exact message the command prints, so text and --json errors agree.
+func parseConfigSet(argv []string, env platform.Env, cwd string) (configSetPlan, string) {
+	plan := configSetPlan{Where: "project"}
+	key, value, sawValue := "", "", false
 	// A value may begin with hyphens (lane.review.args --add-dir /x): only an
 	// argument before the key, or after a value that does not begin with a
 	// hyphen, is an unknown option, and a "--" ends option parsing (--project
 	// and --user included) for what follows.
 	noOptions := false
+	fail := func(message string) (configSetPlan, string) {
+		plan.Key, plan.Value = key, value
+		return plan, message
+	}
 	for _, arg := range argv {
 		if !noOptions && arg == "--" {
 			noOptions = true
 			continue
 		}
 		if !noOptions && (arg == "--project" || arg == "--user") {
-			where = strings.TrimPrefix(arg, "--")
+			plan.Where = strings.TrimPrefix(arg, "--")
+			continue
+		}
+		if !noOptions && (arg == "--dry-run" || arg == "--json") {
+			if arg == "--dry-run" {
+				plan.DryRun = true
+			} else {
+				plan.JSON = true
+			}
 			continue
 		}
 		if !noOptions && strings.HasPrefix(arg, "--") && (key == "" || (sawValue && !strings.HasPrefix(value, "-"))) {
-			platform.Die("config set: unknown option '"+arg+"'", 2)
+			return fail("config set: unknown option '" + arg + "'")
 		}
 		if key == "" {
 			if eq := strings.IndexByte(arg, '='); eq > 0 {
@@ -1243,39 +1283,177 @@ func CmdConfigSet(argv []string, ctx *Config, env platform.Env, cwd string) {
 		} else if strings.HasPrefix(value, "-") {
 			value += " " + arg
 		} else {
-			platform.Die("config set: unexpected argument '"+arg+"'", 2)
+			return fail("config set: unexpected argument '" + arg + "'")
 		}
 	}
-	key, value, sawValue = SplitPairArg(key, value, sawValue, "config set")
+	if plan.JSON && !plan.DryRun {
+		// --json belongs to the preview: without --dry-run this invocation
+		// was and stays an unknown option on the writing command.
+		return fail("config set: unknown option '--json'")
+	}
+	var message string
+	key, value, sawValue, message = splitPairArgPlan(key, value, sawValue)
+	if message != "" {
+		return fail(message)
+	}
 	if key == "" || !sawValue {
-		platform.Die("usage: config set <key> <value> | <key>=<value> [--project|--user] (default --project; for this session only: soho session set)", 2)
+		return fail("usage: config set <key> <value> | <key>=<value> [--project|--user] (default --project; for this session only: soho session set)")
 	}
 	if value == "" {
-		platform.Die("config set: empty value", 2)
+		return fail("config set: empty value")
 	}
 	if !ConfigKeyOk(key) {
-		platform.Die("config set: unknown key '"+key+"'", 2)
+		return fail("config set: unknown key '" + key + "'")
 	}
 	if !ConfigValueOk(key, value, env, cwd) {
 		if key == "opencode_tui_profile" {
-			platform.Die("config set: "+launchprofile.ErrInvalidTUIProfile.Error(), 2)
+			return fail("config set: " + launchprofile.ErrInvalidTUIProfile.Error())
 		}
-		platform.Die("config set: invalid value '"+value+"' for "+key, 2)
+		return fail("config set: invalid value '" + value + "' for " + key)
 	}
-	dest := ConfigFileFor(where, env, cwd)
+	plan.Key, plan.Value = key, value
+	plan.Dest = ConfigFileFor(plan.Where, env, cwd)
 	// The project file lands under the project root; refuse it inside the
 	// skill before MkdirAll/rewrite. The user file stays valid from inside.
-	if where == "project" {
+	if plan.Where == "project" {
 		root := platform.ProjectRoot(env, cwd)
 		if skill := StatePathInSkill(env, root); skill != "" {
-			platform.Die(StateInSkillMessage("config set", root, skill), 2)
+			return fail(StateInSkillMessage("config set", root, skill))
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o777); err != nil {
-		platform.Die(fmt.Sprintf("config set: could not rewrite %s (file left untouched)", dest), 4)
+	return plan, ""
+}
+
+// configSetAppliesToRoles is the panel's "who is affected" projection: the
+// lane's configured roles for a lane key, the named role for a role key.
+func configSetAppliesToRoles(key string, ctx *Config, env platform.Env) []any {
+	parts := strings.Split(key, ".")
+	out := []any{}
+	if len(parts) < 2 {
+		return out
 	}
-	ConfigWritePair(dest, key, value, env, cwd)
-	fmt.Fprintf(platform.Stdout, "set %s=%s in %s\n", key, value, dest)
+	switch parts[0] {
+	case "lane":
+		for _, role := range SplitRoles(LaneRolesCSV(ctx, parts[1], env)) {
+			out = append(out, role)
+		}
+	case "role":
+		out = append(out, parts[1])
+	}
+	return out
+}
+
+// cmdConfigSetDryRun prints the write plan and nothing else: no MkdirAll, no
+// rewrite and no file creation, including when the destination is absent.
+func cmdConfigSetDryRun(plan configSetPlan, ctx *Config, env platform.Env) {
+	if !plan.JSON {
+		fmt.Fprintf(platform.Stdout, "would set %s=%s in %s\n", plan.Key, plan.Value, plan.Dest)
+		return
+	}
+	var inFile any
+	if existing := FileKeyValue(plan.Dest, plan.Key); existing != "" {
+		inFile = existing
+	}
+	normalized := NormalizeKey(plan.Key)
+	effective, source := "", "builtin"
+	if ctx != nil {
+		effective, source = Cfg(ctx, normalized, "", env), CfgSource(ctx, normalized, env)
+	}
+	fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O(
+		"schema", 1,
+		"key", plan.Key,
+		"value", plan.Value,
+		"scope", plan.Where,
+		"file", plan.Dest,
+		"command", "soho config set "+plan.Key+" "+plan.Value+" --"+plan.Where,
+		"valid", true,
+		"previous", jsonjs.O("in_file", inFile, "effective", effective, "effective_source", source),
+		"applies_to_roles", configSetAppliesToRoles(plan.Key, ctx, env),
+	)))
+}
+
+func CmdConfigSet(argv []string, ctx *Config, env platform.Env, cwd string) {
+	plan, message := parseConfigSet(argv, env, cwd)
+	if message != "" {
+		if plan.JSON {
+			fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O("schema", 1, "key", plan.Key, "value", plan.Value, "valid", false, "error", message)))
+		}
+		platform.Die(message, 2)
+	}
+	if plan.DryRun {
+		cmdConfigSetDryRun(plan, ctx, env)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.Dest), 0o777); err != nil {
+		platform.Die(fmt.Sprintf("config set: could not rewrite %s (file left untouched)", plan.Dest), 4)
+	}
+	ConfigWritePair(plan.Dest, plan.Key, plan.Value, env, cwd)
+	fmt.Fprintf(platform.Stdout, "set %s=%s in %s\n", plan.Key, plan.Value, plan.Dest)
+}
+
+// CmdConfigUnset removes exactly the key's assignment lines from the selected
+// file. Every other line — comments, blank lines and trailing whitespace —
+// is copied byte for byte, and the rewrite goes through the same atomic
+// writer config set uses.
+func CmdConfigUnset(argv []string, env platform.Env, cwd string) {
+	key, where := "", "project"
+	noOptions := false
+	for _, arg := range argv {
+		if !noOptions && arg == "--" {
+			noOptions = true
+			continue
+		}
+		if !noOptions && (arg == "--project" || arg == "--user") {
+			where = strings.TrimPrefix(arg, "--")
+			continue
+		}
+		if !noOptions && strings.HasPrefix(arg, "--") {
+			platform.Die("config unset: unknown option '"+arg+"'", 2)
+		}
+		if key == "" {
+			key = arg
+			continue
+		}
+		platform.Die("config unset: unexpected argument '"+arg+"'", 2)
+	}
+	if key == "" {
+		platform.Die("usage: config unset <key> [--project|--user] (default --project)", 2)
+	}
+	if !ConfigKeyOk(key) {
+		platform.Die("config unset: unknown key '"+key+"'", 2)
+	}
+	file := ConfigFileFor(where, env, cwd)
+	raw, err := platform.ReadTextFile(file)
+	if err != nil {
+		fmt.Fprintf(platform.Stdout, "not set in %s\n", file)
+		return
+	}
+	normalized := NormalizeKey(key)
+	out := make([]string, 0)
+	removed := false
+	for _, rawLine := range splitLines(raw) {
+		body, _, _ := strings.Cut(rawLine, "#")
+		stripped := trimJSWhitespace(body)
+		if stripped != "" && !strings.HasPrefix(stripped, "#") {
+			if eq := strings.IndexByte(stripped, '='); eq >= 0 && NormalizeKey(trimJSWhitespace(stripped[:eq])) == normalized {
+				removed = true
+				continue
+			}
+		}
+		out = append(out, rawLine)
+	}
+	if !removed {
+		fmt.Fprintf(platform.Stdout, "not set in %s\n", file)
+		return
+	}
+	content := strings.Join(out, "\n")
+	if len(out) > 0 {
+		content += "\n"
+	}
+	if err := writeConfigAtomic(file, content); err != nil {
+		platform.Die(fmt.Sprintf("config unset: could not rewrite %s (file left untouched)", file), 4)
+	}
+	fmt.Fprintf(platform.Stdout, "unset %s in %s\n", key, file)
 }
 
 // LoadLocalConfigReadOnly loads the configuration a caller resolves its

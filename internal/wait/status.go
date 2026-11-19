@@ -193,6 +193,16 @@ type AgentStatusView struct {
 	ReportReady   bool
 }
 
+// AgentPanelStatus is the panel's read-only projection of one agent: the
+// raw status word plus the elapsed values the resolver already computed.
+// It is a separate type so InspectAgentStatus's compared view stays exactly
+// the three fields its callers and parity tests already use.
+type AgentPanelStatus struct {
+	State     string
+	TaskS     any // nil when the resolver had no task elapsed
+	ActivityS any // nil when the resolver had no activity elapsed
+}
+
 // InspectAgentStatus resolves one agent's status through the exact
 // resolver CmdStatus renders, without printing or writing anything: no
 // stdout or stderr, no friction line, no report mirror, no marker or
@@ -202,7 +212,7 @@ type AgentStatusView struct {
 // scratch-report mirror observation and the collaboration workspace
 // context; no caller, current-pane or session discovery call runs, and
 // the caller's Env is never mutated.
-func InspectAgentStatus(request AgentStatusRequest) AgentStatusView {
+func inspectAgentStatus(request AgentStatusRequest) agentStatusResult {
 	res, _ := resolveAgentStatus(agentStatusRequest{
 		stateDir:       request.StateDir,
 		session:        func() string { return request.SessionID },
@@ -216,7 +226,21 @@ func InspectAgentStatus(request AgentStatusRequest) AgentStatusView {
 		inspect:        true,
 		source:         request.Source,
 	}, 0)
+	return res
+}
+
+func InspectAgentStatus(request AgentStatusRequest) AgentStatusView {
+	res := inspectAgentStatus(request)
 	return AgentStatusView{State: res.state, TerminalState: res.terminal, ReportReady: res.reportReady}
+}
+
+// InspectAgentPanelStatus is the read-only elapsed helper for roster --json:
+// it runs the same silent resolver as InspectAgentStatus and returns only the
+// raw status word and the elapsed values, with no mirror, marker or friction
+// line and no change to InspectAgentStatus's view contract.
+func InspectAgentPanelStatus(request AgentStatusRequest) AgentPanelStatus {
+	res := inspectAgentStatus(request)
+	return AgentPanelStatus{State: res.state, TaskS: res.taskS, ActivityS: res.activityS}
 }
 
 // agentStatusRequest is the per-agent input to the shared status
@@ -262,6 +286,8 @@ type agentStatusResult struct {
 	terminal          string // the underlying probe's state word ("" when none)
 	report            string // the observed report path
 	reportReady       bool   // a nonempty current report was observed
+	taskS             any    // reported task elapsed, nil when unknown
+	activityS         any    // reported activity elapsed, nil when unknown
 	line              string // the exact line the status command prints
 	compactUnreadable bool
 	compactPath       string
@@ -580,6 +606,7 @@ func resolveAgentStatus(req agentStatusRequest, rc int) (agentStatusResult, int)
 			cause += "; " + idle
 		}
 	}
+	res.taskS, res.activityS = taskS, activityS
 	ageFields := []any{}
 	if idleMinutes > 0 {
 		ageFields = append(ageFields, "idle_minutes", idleMinutes)

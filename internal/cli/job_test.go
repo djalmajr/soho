@@ -925,7 +925,7 @@ func TestJobCapabilitiesLine(t *testing.T) {
 	platform.Stdout, platform.Stderr = &out, &errOut
 	code := Run([]string{"capabilities", "--json"}, platform.Env{"HOME": root, "USERPROFILE": root})
 	platform.Stdout, platform.Stderr = oldOut, oldErr
-	want := `{"schema":1,"worker_collaboration":1,"ephemeral_job":1,"job_events":1,"inventory":1,"report_json":1,"transport":"herdr"}` + "\n"
+	want := `{"schema":1,"worker_collaboration":1,"ephemeral_job":1,"job_events":1,"inventory":1,"report_json":1,"team_json":1,"config_dry_run":1,"config_unset":1,"roster_workers":1,"transport":"herdr"}` + "\n"
 	if code != 0 || out.String() != want || errOut.Len() != 0 {
 		t.Fatalf("code=%d out=%q err=%q", code, out.String(), errOut.String())
 	}
