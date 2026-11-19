@@ -695,6 +695,266 @@ func TestPanelConfigSetReservedTokensKeepTheBaseGrammar(t *testing.T) {
 	}
 }
 
+func TestPanelConfigEmptyInlineValueIsRefusedWithoutAWrite(t *testing.T) {
+	env, repo := fixture(t)
+	file := filepath.Join(repo, ".agents", "soho.conf")
+	write(t, file, "role.tester.model=sentinel\n")
+	ctx := LoadConfig(env, repo)
+	const want = "usage: config set <key> <value> | <key>=<value> [--project|--user] (default --project; for this session only: soho session set)"
+	before := panelDigest(t, file)
+	checkSentinel := func(label string) {
+		t.Helper()
+		if got := panelDigest(t, file); got != before {
+			t.Fatalf("%s changed the config: %s -> %s", label, before, got)
+		}
+	}
+
+	// The text preview: the tokens after key= are options, the value is empty.
+	out, _ := capture(t, func() {
+		code, message := panelExit(t, func() { CmdConfigSet([]string{"role.tester.model=", "--project", "--dry-run"}, &ctx, env, repo) })
+		if code != 2 || message != want {
+			t.Fatalf("text preview = (%d, %q), want exit 2 with the empty-value refusal", code, message)
+		}
+	})
+	if out != "" {
+		t.Fatalf("text preview printed %q on stdout, want nothing", out)
+	}
+	checkSentinel("the text preview")
+
+	// The JSON preview: valid:false with that error, still no write.
+	out, _ = capture(t, func() {
+		code, message := panelExit(t, func() {
+			CmdConfigSet([]string{"role.tester.model=", "--project", "--dry-run", "--json"}, &ctx, env, repo)
+		})
+		if code != 2 || message != want {
+			t.Fatalf("JSON preview = (%d, %q)", code, message)
+		}
+	})
+	obj := panelParseObject(t, out)
+	for key, wantValue := range map[string]any{"schema": float64(1), "key": "role.tester.model", "value": "", "valid": false, "error": want} {
+		if got, _ := obj.Get(key); got != wantValue {
+			t.Fatalf("JSON preview %s = %#v, want %#v", key, got, wantValue)
+		}
+	}
+	checkSentinel("the JSON preview")
+
+	// The real set refuses the same way: --project and --dry-run never become
+	// the value.
+	code, message := panelExit(t, func() { CmdConfigSet([]string{"role.tester.model=", "--project"}, &ctx, env, repo) })
+	if code != 2 || message != want {
+		t.Fatalf("set = (%d, %q), want exit 2 with the empty-value refusal", code, message)
+	}
+	checkSentinel("the refused set")
+	if got := FileKeyValue(file, "role.tester.model"); got != "sentinel" {
+		t.Fatalf("saved value = %q, want the sentinel", got)
+	}
+
+	// The control: an explicit empty second argument keeps the base refusal,
+	// so the inline form's message stays tied to the key= spelling.
+	code, message = panelExit(t, func() { CmdConfigSet([]string{"role.tester.model", ""}, &ctx, env, repo) })
+	if code != 2 || message != "config set: empty value" {
+		t.Fatalf("two-argument empty value = (%d, %q), want the base refusal", code, message)
+	}
+	checkSentinel("the two-argument refusal")
+}
+
+func TestPanelConfigResponseModeIsDecidedBeforeParseErrors(t *testing.T) {
+	env, repo := fixture(t)
+	file := filepath.Join(repo, ".agents", "soho.conf")
+	write(t, file, "role.tester.model=sentinel\n")
+	ctx := LoadConfig(env, repo)
+	before := panelDigest(t, file)
+
+	// No preview: --json never puts a JSON error on stdout, wherever it sits.
+	for _, argv := range [][]string{
+		{"role.tester.model=changed", "--project", "--json", "--bogus"},
+		{"role.tester.model=changed", "--project", "--bogus", "--json"},
+	} {
+		out, _ := capture(t, func() {
+			code, message := panelExit(t, func() { CmdConfigSet(argv, &ctx, env, repo) })
+			if code != 2 || message != "config set: unknown option '--bogus'" {
+				t.Fatalf("set %v = (%d, %q)", argv, code, message)
+			}
+		})
+		if out != "" {
+			t.Fatalf("set %v printed %q on stdout, want nothing (no preview)", argv, out)
+		}
+	}
+
+	// A real preview renders the JSON error wherever its two flags sit.
+	for _, argv := range [][]string{
+		{"role.tester.model=changed", "--project", "--dry-run", "--bogus", "--json"},
+		{"role.tester.model=changed", "--project", "--json", "--dry-run", "--bogus"},
+		{"--json", "--dry-run", "--bogus", "role.tester.model=changed", "--project"},
+	} {
+		out, _ := capture(t, func() {
+			code, message := panelExit(t, func() { CmdConfigSet(argv, &ctx, env, repo) })
+			if code != 2 || message != "config set: unknown option '--bogus'" {
+				t.Fatalf("preview %v = (%d, %q)", argv, code, message)
+			}
+		})
+		obj := panelParseObject(t, out)
+		if valid, _ := obj.Get("valid"); valid != false {
+			t.Fatalf("preview %v valid = %#v, want false", argv, valid)
+		}
+		if got, _ := obj.Get("error"); got != "config set: unknown option '--bogus'" {
+			t.Fatalf("preview %v error = %#v", argv, got)
+		}
+	}
+	if got := panelDigest(t, file); got != before {
+		t.Fatalf("a refused invocation changed the config: %s -> %s", before, got)
+	}
+}
+
+func TestPanelConfigPreviewPresetLaneRolesUseTheListingRow(t *testing.T) {
+	env, repo := fixture(t)
+	file := filepath.Join(repo, ".agents", "soho.conf")
+	write(t, file, "lanes=on\n")
+	ctx := LoadConfig(env, repo)
+
+	listing, _ := capture(t, func() { CmdConfig(&ctx, env, repo) })
+	wantValue, wantSource := "", ""
+	for _, line := range strings.Split(listing, "\n") {
+		if fields := strings.Fields(line); len(fields) >= 3 && fields[0] == "lane.build.roles" {
+			wantValue, wantSource = fields[1], strings.Join(fields[2:], " ")
+		}
+	}
+	const preset = "implementer,designer,tasker,scouter,researcher,documenter,tester"
+	if wantValue != preset || wantSource != "skill default" {
+		t.Fatalf("listing lane.build.roles row = (%q, %q), want the skill default's preset", wantValue, wantSource)
+	}
+
+	out, _ := capture(t, func() {
+		CmdConfigSet([]string{"lane.build.roles=tester", "--project", "--dry-run", "--json"}, &ctx, env, repo)
+	})
+	obj := panelParseObject(t, out)
+	prev := panelObjectField(t, objValue(obj, "previous"), "previous")
+	if got, _ := prev.Get("in_file"); got != nil {
+		t.Fatalf("preset lane previous.in_file = %#v, want null", got)
+	}
+	if got, _ := prev.Get("effective"); got != wantValue {
+		t.Fatalf("previous.effective = %#v, want the listing's %q", got, wantValue)
+	}
+	if got, _ := prev.Get("effective_source"); got != wantSource {
+		t.Fatalf("previous.effective_source = %#v, want the listing's %q", got, wantSource)
+	}
+	applies := panelStringArray(t, objValue(obj, "applies_to_roles"), "applies_to_roles")
+	if len(applies) != 7 || applies[0] != "implementer" || applies[6] != "tester" {
+		t.Fatalf("applies_to_roles = %v, want the preset membership", applies)
+	}
+
+	// A lane with a key of its own never gets the synthesized row.
+	write(t, file, "lanes=on\nlane.build.panes=2\n")
+	ctx = LoadConfig(env, repo)
+	out, _ = capture(t, func() {
+		CmdConfigSet([]string{"lane.build.roles=tester", "--project", "--dry-run", "--json"}, &ctx, env, repo)
+	})
+	prev = panelObjectField(t, objValue(panelParseObject(t, out), "previous"), "previous")
+	if got, _ := prev.Get("effective"); got != "" {
+		t.Fatalf("previous.effective = %#v, want empty for a lane with its own key", got)
+	}
+}
+
+func TestPanelConfigSymlinkedDestinationsShareOneLock(t *testing.T) {
+	env, repo := fixture(t)
+	project := filepath.Join(repo, ".agents", "soho.conf")
+	user := ConfigFileFor("user", env, repo)
+	target := filepath.Join(repo, "shared-config")
+	pad := strings.Repeat("# retained padding line for the read-modify-write window\n", 60000)
+	if err := os.MkdirAll(filepath.Dir(project), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(user), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, project); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, user); err != nil {
+		t.Fatal(err)
+	}
+	ctx := LoadConfig(env, repo)
+	oldOut := platform.Stdout
+	platform.Stdout = io.Discard
+	t.Cleanup(func() { platform.Stdout = oldOut })
+	run := func(fn func()) (code int, message string) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				exit, ok := recovered.(*platform.ExitError)
+				if !ok {
+					panic(recovered)
+				}
+				code, message = exit.Code, exit.Msg
+			}
+		}()
+		fn()
+		return 0, ""
+	}
+	pair := func(label string, a, b func(), want map[string]string, absent []string) {
+		t.Helper()
+		start := make(chan struct{})
+		results := make(chan [2]any, 2)
+		for _, fn := range []func(){a, b} {
+			fn := fn
+			go func() {
+				<-start
+				code, message := run(fn)
+				results <- [2]any{code, message}
+			}()
+		}
+		close(start)
+		for i := 0; i < 2; i++ {
+			if result := <-results; result[0] != 0 {
+				t.Fatalf("%s: a command failed: (%v, %v)", label, result[0], result[1])
+			}
+		}
+		pairs, err := ReadConfigFilePairs(target)
+		if err != nil {
+			t.Fatalf("%s: read back: %v", label, err)
+		}
+		got := map[string]string{}
+		for _, p := range pairs {
+			got[p.Key] = p.Value
+		}
+		for key, value := range want {
+			if got[key] != value {
+				t.Fatalf("%s: %s = %q, want %q (both changes must survive)", label, key, got[key], value)
+			}
+		}
+		for _, key := range absent {
+			if value, present := got[key]; present {
+				t.Fatalf("%s: %s is still assigned (%q); the unset was lost", label, key, value)
+			}
+		}
+		if !panelIsSymlink(project) || !panelIsSymlink(user) {
+			t.Fatalf("%s: a config symlink was replaced: project=%v user=%v", label, panelIsSymlink(project), panelIsSymlink(user))
+		}
+	}
+	for round := 0; round < 16; round++ {
+		if err := os.WriteFile(target, []byte("role.tester.model=old\nrole.tester.effort=old\n"+pad), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		pair("set/unset on two names for one file", func() { CmdConfigSet([]string{"role.tester.model=changed", "--project"}, &ctx, env, repo) }, func() {
+			CmdConfigUnset([]string{"role.tester.effort", "--user"}, env, repo)
+		}, map[string]string{"role_tester_model": "changed"}, []string{"role_tester_effort"})
+	}
+	for round := 0; round < 16; round++ {
+		if err := os.WriteFile(target, []byte("role.tester.model=old\nrole.tester.effort=old\n"+pad), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		pair("set/set on two names for one file", func() { CmdConfigSet([]string{"role.tester.model=changed", "--project"}, &ctx, env, repo) }, func() {
+			CmdConfigSet([]string{"role.tester.effort=low", "--user"}, &ctx, env, repo)
+		}, map[string]string{"role_tester_model": "changed", "role_tester_effort": "low"}, nil)
+	}
+}
+
+// panelIsSymlink reports a symlink at path, for the controls that a rewrite
+// through the resolved destination keeps the name the user's config uses.
+func panelIsSymlink(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode()&os.ModeSymlink != 0
+}
+
 func panelFileDigestOrAbsent(t *testing.T, file string) string {
 	t.Helper()
 	raw, err := os.ReadFile(file)

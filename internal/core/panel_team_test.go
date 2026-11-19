@@ -235,7 +235,9 @@ func TestPanelTeamEmptyConfigAndLaneWithNoRoles(t *testing.T) {
 	}
 }
 
-func TestPanelTeamLaneSettingsUseTheResolversKindLayer(t *testing.T) {
+func TestPanelTeamLaneFieldsUseTheMembersResolvedValues(t *testing.T) {
+	// One member whose own project settings outrank a user-layer lane
+	// override: the lane shows the value the member really receives.
 	env, repo := fixture(t)
 	write(t, ConfigFileFor("user", env, repo), "lane.build.model=user-model\nlane.build.effort=high\n")
 	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lanes=on\nlane.build.roles=tester\nrole.tester.kind=codex\nrole.tester.model=project-choice\nrole.tester.effort=low\n")
@@ -247,9 +249,11 @@ func TestPanelTeamLaneSettingsUseTheResolversKindLayer(t *testing.T) {
 		t.Fatalf("lanes = %#v, want the one build lane", objValue(obj, "lanes"))
 	}
 	lane := panelObjectField(t, lanes[0], "lanes[0]")
-	// The project role kind outranks the user-layer lane model/effort: the
-	// lane announces no override its only member would not receive.
-	for key, want := range map[string]any{"model": "", "model_from": "default", "effort": "", "effort_from": "default"} {
+	for key, want := range map[string]any{
+		"kind": "codex", "kind_from": "project",
+		"model": "project-choice", "model_from": "project",
+		"effort": "low", "effort_from": "project",
+	} {
 		if got, _ := lane.Get(key); got != want {
 			t.Fatalf("lanes[0].%s = %#v, want %#v", key, got, want)
 		}
@@ -272,23 +276,38 @@ func TestPanelTeamLaneSettingsUseTheResolversKindLayer(t *testing.T) {
 		}
 	}
 
-	// Members with different kind layers receive different lane values: the
-	// lane field is null and its source "mixed", never one member's value.
-	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lanes=on\nlane.build.roles=tester,designer\nrole.tester.kind=codex\nrole.tester.model=project-choice\nrole.tester.effort=low\n")
+	// No override and members that resolve differently: null with "mixed" for
+	// kind, model and effort alike, never one member's value or a default.
+	write(t, ConfigFileFor("user", env, repo), "")
+	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lanes=on\nlane.build.roles=tester,designer\nrole.tester.kind=codex\nrole.designer.kind=opencode\nrole.tester.model=one\nrole.designer.model=two\nrole.tester.effort=low\nrole.designer.effort=max\n")
 	ctx = LoadConfig(env, repo)
 	out, _ = capture(t, func() { CmdRolesPanelJSON(&ctx, env, repo, true) })
 	lanes, _ = objValue(panelParseObject(t, out), "lanes").([]any)
 	lane = panelObjectField(t, lanes[0], "lanes[0]")
-	if got, _ := lane.Get("model"); got != nil {
-		t.Fatalf("mixed lane model = %#v, want null", got)
+	for _, field := range []string{"kind", "model", "effort"} {
+		if got, _ := lane.Get(field); got != nil {
+			t.Fatalf("mixed lane %s = %#v, want null", field, got)
+		}
+		if got, _ := lane.Get(field + "_from"); got != "mixed" {
+			t.Fatalf("mixed lane %s_from = %#v, want mixed", field, got)
+		}
 	}
-	if got, _ := lane.Get("model_from"); got != "mixed" {
-		t.Fatalf("mixed lane model_from = %#v, want mixed", got)
+
+	// A lane override reaches one member while the other member's own role
+	// settings give the same value: the lane shows the value, not "mixed".
+	write(t, ConfigFileFor("user", env, repo), "lane.build.model=shared-model\nlane.build.effort=high\n")
+	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lanes=on\nlane.build.roles=tester,designer\nrole.tester.kind=codex\nrole.tester.model=shared-model\nrole.tester.effort=high\n")
+	ctx = LoadConfig(env, repo)
+	out, _ = capture(t, func() { CmdRolesPanelJSON(&ctx, env, repo, true) })
+	lanes, _ = objValue(panelParseObject(t, out), "lanes").([]any)
+	lane = panelObjectField(t, lanes[0], "lanes[0]")
+	for key, want := range map[string]any{"model": "shared-model", "model_from": "user", "effort": "high", "effort_from": "user"} {
+		if got, _ := lane.Get(key); got != want {
+			t.Fatalf("agreed lane %s = %#v, want %#v", key, got, want)
+		}
 	}
-	if got, _ := lane.Get("effort"); got != nil {
-		t.Fatalf("mixed lane effort = %#v, want null", got)
-	}
-	if got, _ := lane.Get("effort_from"); got != "mixed" {
-		t.Fatalf("mixed lane effort_from = %#v, want mixed", got)
+	// The kinds still differ (codex against the designer role file's agy).
+	if got, _ := lane.Get("kind"); got != nil {
+		t.Fatalf("lane kind = %#v, want null (the members resolve different kinds)", got)
 	}
 }

@@ -213,6 +213,13 @@ type AgentPanelStatus struct {
 // context; no caller, current-pane or session discovery call runs, and
 // the caller's Env is never mutated.
 func inspectAgentStatus(request AgentStatusRequest) agentStatusResult {
+	return inspectAgentStatusRow(request, "")
+}
+
+// inspectAgentStatusRow is inspectAgentStatus with the caller's exact roster
+// row pane: the row-scoped entry point resolves the row it was given, never the
+// last row that happens to share the name (F3).
+func inspectAgentStatusRow(request AgentStatusRequest, rosterPane string) agentStatusResult {
 	res, _ := resolveAgentStatus(agentStatusRequest{
 		stateDir:       request.StateDir,
 		session:        func() string { return request.SessionID },
@@ -225,6 +232,7 @@ func inspectAgentStatus(request AgentStatusRequest) agentStatusResult {
 		listScope:      transport.Scope{All: true},
 		inspect:        true,
 		source:         request.Source,
+		rosterPane:     rosterPane,
 	}, 0)
 	return res
 }
@@ -249,12 +257,15 @@ func InspectAgentPanelStatus(request AgentStatusRequest) AgentPanelStatus {
 // stale row that shares its name with a live pane keeps its own recorded
 // state (gone) and null elapsed values, and the name lookup never selects
 // another row's pane (F10). pane is the row's own pane; livePane is the pane
-// the caller matched for this name, "" when no live agent carries it.
+// the caller matched for this name, "" when no live agent carries it. The row
+// the caller selected is the row the resolution uses, whatever order the
+// roster stores its rows in (F3).
 func InspectRosterRowPanelStatus(request AgentStatusRequest, pane, livePane string) AgentPanelStatus {
 	if pane != "" && pane != livePane {
 		return AgentPanelStatus{State: "gone"}
 	}
-	return InspectAgentPanelStatus(request)
+	res := inspectAgentStatusRow(request, pane)
+	return AgentPanelStatus{State: res.state, TaskS: res.taskS, ActivityS: res.activityS}
 }
 
 // agentStatusRequest is the per-agent input to the shared status
@@ -286,6 +297,9 @@ type agentStatusRequest struct {
 	listScope      transport.Scope
 	inspect        bool
 	source         *core.SessionSource
+	// rosterPane is the exact row pane the caller selected ("" for the
+	// existing last-row-by-name lookup).
+	rosterPane string
 }
 
 // agentStatusResult is the shared per-agent resolution: the effective
@@ -697,6 +711,17 @@ func markerExists(sd, agent, name string) bool {
 func rosterRow(req agentStatusRequest, agent string) (core.RosterRow, bool) {
 	if req.source != nil {
 		return req.source.Roster().Row(agent)
+	}
+	if req.rosterPane != "" {
+		// The caller named the row: the same name in another pane is a
+		// different worker, so only this exact row counts (F3).
+		for _, line := range core.RosterRows(req.stateDir) {
+			fields := strings.Split(line, "\t")
+			if field(fields, 0) == agent && field(fields, 1) == req.rosterPane {
+				return core.RosterRow{Fields: fields}, true
+			}
+		}
+		return core.RosterRow{}, false
 	}
 	line := core.RosterLine(req.stateDir, agent)
 	if line == "" {

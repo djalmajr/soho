@@ -258,12 +258,19 @@ func cmdRoster(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 			if reportPath != "" {
 				if st, err := os.Stat(reportPath); err == nil && st.Size() > 0 {
 					report = "ready"
+					if !st.Mode().IsRegular() {
+						// The legacy indicator keeps its size rule; the panel's path
+						// is published only for a regular file, so a directory
+						// never looks like a report a panel could open (F5).
+						reportPath = ""
+					}
 				} else {
 					report = "pending"
-					if err != nil {
-						// The pointer names a file that does not exist yet: the
-						// pending indicator stays, the published path does not
-						// (F9), so a panel never offers to open a missing file.
+					if err != nil || !st.Mode().IsRegular() {
+						// The pointer names a file that does not exist yet (or is not
+						// a regular file): the pending indicator stays, the published
+						// path does not (F9), so a panel never offers to open a
+						// missing file.
 						reportPath = ""
 					}
 				}

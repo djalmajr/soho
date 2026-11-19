@@ -411,9 +411,8 @@ func TestPanelRosterReusedNameUsesItsOwnRow(t *testing.T) {
 		{Argv: []string{"agent", "read", "reused", "--source", "visible"}, Stdout: panelSteadyScreen},
 	})
 	row := func(pane, model, effort string) string {
-		return strings.Join([]string{"reused", pane, "pi", "implementer", "xai", "0", "/tmp/work", "now", model, "ask", "", "build", "", "", effort}, "	")
+		return strings.Join([]string{"reused", pane, "pi", "implementer", "xai", "0", "/tmp/work", "now", model, "ask", "", "build", "", "", effort}, "\t")
 	}
-	f.writeRoster(t, row("ws:old", "old-model", "low"), row("ws:live", "live-model", "max"))
 	sd := f.stateDir(t)
 	pointer := filepath.Join(sd, "last-report-reused")
 	panelWrite(t, pointer, filepath.Join(sd, "reports", "reused-report.md")+"\n")
@@ -423,45 +422,172 @@ func TestPanelRosterReusedNameUsesItsOwnRow(t *testing.T) {
 	}
 	panelWriteActivityMarker(t, sd, "reused", panelActivitySeconds)
 	panelPinClock(t)
-	code, out, stderr := f.run(t, f.env, "roster", "--json")
-	if code != 0 || stderr != "" {
-		t.Fatalf("reused-name roster code=%d stderr=%q out=%q", code, stderr, out)
+	// The row the caller selects is the row the status resolution uses: the
+	// live pane reads working with its elapsed values and the stale pane stays
+	// gone with nulls, whatever order the roster stores them in (F3).
+	for _, tc := range []struct {
+		name string
+		rows []string
+	}{
+		{"stale row first", []string{row("ws:old", "old-model", "low"), row("ws:live", "live-model", "max")}},
+		{"live row first", []string{row("ws:live", "live-model", "max"), row("ws:old", "old-model", "low")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f.writeRoster(t, tc.rows...)
+			code, out, stderr := f.run(t, f.env, "roster", "--json")
+			if code != 0 || stderr != "" {
+				t.Fatalf("reused-name roster code=%d stderr=%q out=%q", code, stderr, out)
+			}
+			obj := rosterJSONParse(t, out)
+			agentsValue, _ := obj.Get("agents")
+			arr, ok := agentsValue.([]any)
+			if !ok || len(arr) != 2 {
+				t.Fatalf("reused-name agents = %#v", agentsValue)
+			}
+			byPane := map[string]*jsonjs.Object{}
+			for _, value := range arr {
+				row := panelObj(t, value, "row")
+				pane, _ := row.Get("pane")
+				text, _ := pane.(string)
+				byPane[text] = row
+			}
+			first, second := byPane["ws:old"], byPane["ws:live"]
+			if first == nil || second == nil {
+				t.Fatalf("rows by pane = %v", byPane)
+			}
+			if model, _ := first.Get("model"); model != "old-model" {
+				t.Fatalf("stale row model = %v, want old-model", model)
+			}
+			if effort, _ := first.Get("effort"); effort != "low" {
+				t.Fatalf("stale row effort = %v, want low", effort)
+			}
+			if model, _ := second.Get("model"); model != "live-model" {
+				t.Fatalf("live row model = %v, want live-model", model)
+			}
+			if effort, _ := second.Get("effort"); effort != "max" {
+				t.Fatalf("live row effort = %v, want max", effort)
+			}
+			// The stale pane keeps its own recorded state and never borrows the
+			// live pane's status or elapsed values (F10, literal values from F13).
+			for key, want := range map[string]any{"pane": "ws:old", "state": "gone", "status": "gone", "task_s": nil, "activity_s": nil} {
+				if got, _ := first.Get(key); got != want {
+					t.Fatalf("stale row %s = %#v, want %#v", key, got, want)
+				}
+			}
+			if got, _ := second.Get("pane"); got != "ws:live" {
+				t.Fatalf("live row pane = %v, want ws:live", got)
+			}
+			if got, _ := second.Get("status"); got != "working" {
+				t.Fatalf("live row status = %#v, want working", got)
+			}
+			if got, _ := second.Get("task_s"); got != float64(120) {
+				t.Fatalf("live row task_s = %#v, want 120", got)
+			}
+			if got, _ := second.Get("activity_s"); got != float64(panelActivitySeconds) {
+				t.Fatalf("live row activity_s = %#v, want %d", got, panelActivitySeconds)
+			}
+		})
 	}
-	obj := rosterJSONParse(t, out)
-	agentsValue, _ := obj.Get("agents")
-	arr, ok := agentsValue.([]any)
-	if !ok || len(arr) != 2 {
-		t.Fatalf("reused-name agents = %#v", agentsValue)
+}
+
+// TestPanelRosterReportPathNeedsARegularFile pins F5: the panel's path is
+// published only for a regular file, while the legacy report indicator keeps
+// its own size rule.
+func TestPanelRosterReportPathNeedsARegularFile(t *testing.T) {
+	f := newCopiesFixture(t, []fakecli.Rule{
+		{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"tester","pane_id":"ws:p1","agent":"codex","agent_status":"idle"}]}}`},
+		{Argv: []string{"pane", "list", "--workspace", "ws"}, Stdout: `{"result":{"panes":[]}}`},
+		{Argv: []string{"tab", "list", "--workspace", "ws"}, Stdout: `{"result":{"tabs":[]}}`},
+		{Argv: []string{"agent", "get", "tester"}, Stdout: panelStateJSON("idle")},
+	})
+	f.writeRoster(t, strings.Join([]string{"tester", "ws:p1", "codex", "tester", "xai", "0", "/tmp/work", "now", "test-model", "ask", "", "build", "", "", "high"}, "\t"))
+	sd := f.stateDir(t)
+	directory := filepath.Join(sd, "reports", "a-directory")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	first := panelObj(t, arr[0], "first row")
-	second := panelObj(t, arr[1], "second row")
-	if model, _ := first.Get("model"); model != "old-model" {
-		t.Fatalf("first row model = %v, want old-model", model)
+	empty := filepath.Join(sd, "reports", "empty.md")
+	panelWrite(t, empty, "")
+	for _, tc := range []struct {
+		name           string
+		pointer        string
+		wantReport     string
+		wantReportPath string
+	}{
+		{"a directory", directory, "ready", ""},
+		{"an empty regular file", empty, "pending", empty},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			panelWrite(t, filepath.Join(sd, "last-report-tester"), tc.pointer+"\n")
+			code, out, stderr := f.run(t, f.env, "roster", "--json")
+			if code != 0 || stderr != "" {
+				t.Fatalf("roster code=%d stderr=%q out=%q", code, stderr, out)
+			}
+			agents, _ := rosterJSONParse(t, out).Get("agents")
+			arr, _ := agents.([]any)
+			if len(arr) != 1 {
+				t.Fatalf("agents = %#v", agents)
+			}
+			got := panelObj(t, arr[0], "tester row")
+			if value, _ := got.Get("report"); value != tc.wantReport {
+				t.Fatalf("report = %#v, want %#v", value, tc.wantReport)
+			}
+			if value, _ := got.Get("report_path"); value != tc.wantReportPath {
+				t.Fatalf("report_path = %#v, want %#v", value, tc.wantReportPath)
+			}
+		})
 	}
-	if effort, _ := first.Get("effort"); effort != "low" {
-		t.Fatalf("first row effort = %v, want low", effort)
+}
+
+// TestPanelConfigEmptyInlineValueAtTheCLIBoundary pins F1 through Run: an
+// inline key= supplies the value even when empty, so --project and --dry-run
+// stay options, both preview modes refuse with exit 2 and the sentinel bytes
+// never change, under SOHO_NOWRITE too.
+func TestPanelConfigEmptyInlineValueAtTheCLIBoundary(t *testing.T) {
+	f := newCopiesFixture(t, nil)
+	file := filepath.Join(f.repo, ".agents", "soho.conf")
+	const sentinel = "role.tester.model=sentinel\n"
+	panelWrite(t, file, sentinel)
+	const want = "soho: usage: config set <key> <value> | <key>=<value> [--project|--user] (default --project; for this session only: soho session set)\n"
+	cases := []struct {
+		name     string
+		argv     []string
+		nowrite  bool
+		wantJSON bool
+	}{
+		{"text preview", []string{"config", "set", "role.tester.model=", "--project", "--dry-run"}, false, false},
+		{"json preview", []string{"config", "set", "role.tester.model=", "--project", "--dry-run", "--json"}, false, true},
+		{"text preview under NOWRITE", []string{"config", "set", "role.tester.model=", "--project", "--dry-run"}, true, false},
+		{"json preview under NOWRITE", []string{"config", "set", "role.tester.model=", "--project", "--dry-run", "--json"}, true, true},
+		{"real set", []string{"config", "set", "role.tester.model=", "--project"}, false, false},
 	}
-	if model, _ := second.Get("model"); model != "live-model" {
-		t.Fatalf("second row model = %v, want live-model", model)
-	}
-	if effort, _ := second.Get("effort"); effort != "max" {
-		t.Fatalf("second row effort = %v, want max", effort)
-	}
-	// The stale pane keeps its own recorded state and never borrows the live
-	// pane's status or elapsed values (F10, literal values from F13).
-	for key, want := range map[string]any{"pane": "ws:old", "state": "gone", "status": "gone", "task_s": nil, "activity_s": nil} {
-		if got, _ := first.Get(key); got != want {
-			t.Fatalf("first row %s = %#v, want %#v", key, got, want)
-		}
-	}
-	if got, _ := second.Get("status"); got != "working" {
-		t.Fatalf("second row status = %#v, want working", got)
-	}
-	if got, _ := second.Get("task_s"); got != float64(120) {
-		t.Fatalf("second row task_s = %#v, want 120", got)
-	}
-	if got, _ := second.Get("activity_s"); got != float64(panelActivitySeconds) {
-		t.Fatalf("second row activity_s = %#v, want %d", got, panelActivitySeconds)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := f.env.Clone()
+			if tc.nowrite {
+				env["SOHO_NOWRITE"] = "1"
+			}
+			code, out, errOut := f.run(t, env, tc.argv...)
+			if code != 2 || errOut != want {
+				t.Fatalf("%v code=%d stderr=%q, want exit 2 with the empty-value refusal", tc.argv, code, errOut)
+			}
+			if raw, err := os.ReadFile(file); err != nil || string(raw) != sentinel {
+				t.Fatalf("%v changed the config: %q (err=%v)", tc.argv, raw, err)
+			}
+			if !tc.wantJSON {
+				if out != "" {
+					t.Fatalf("%v printed %q on stdout, want nothing", tc.argv, out)
+				}
+				return
+			}
+			obj := panelObj(t, rosterJSONParse(t, out), "empty-value preview")
+			if valid, _ := obj.Get("valid"); valid != false {
+				t.Fatalf("%v valid = %#v, want false", tc.argv, valid)
+			}
+			if got, _ := obj.Get("error"); got != strings.TrimSuffix(strings.TrimPrefix(want, "soho: "), "\n") {
+				t.Fatalf("%v error = %#v", tc.argv, got)
+			}
+		})
 	}
 }
 
