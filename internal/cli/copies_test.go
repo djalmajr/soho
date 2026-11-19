@@ -1266,6 +1266,26 @@ func (g *idleGc) wantKept(t *testing.T) {
 	}
 }
 
+// wantKeptInUse is wantKept for a working owner: the copy is kept, and the
+// in-use line (SOH-416) follows where the kept line goes in each mode.
+func (g *idleGc) wantKeptInUse(t *testing.T) {
+	t.Helper()
+	code, out, errOut := g.f.run(t, g.f.env, "gc")
+	if want := gcPressureNone + "\nnothing to remove\n" + gcInUseOne + "\n"; code != 0 || errOut != "" || out != want {
+		t.Fatalf("code=%d out=%q err=%q; want the copy not offered and named in use", code, out, errOut)
+	}
+	code, out, errOut = g.f.run(t, g.f.env, "gc", "--yes")
+	if want := gcPressureNone + "\n" + gcInUseOne + "\nnothing to remove\n"; code != 0 || out != want {
+		t.Fatalf("--yes code=%d out=%q err=%q; want nothing removed and the copy named in use", code, out, errOut)
+	}
+	if _, err := os.Stat(filepath.Join(g.copy, "sub", "a.txt")); err != nil {
+		t.Fatalf("the copy was touched: %v", err)
+	}
+	if rows := g.f.copiesRows(t); len(rows) != 1 || rows[0].Path != g.copy {
+		t.Fatalf("registry rows=%#v; want the line kept", rows)
+	}
+}
+
 func TestGcIdleOwnerCopies(t *testing.T) {
 	// Condition 1: the owner is live in the roster and idle or done.
 	t.Run("idle owner with closed tasks: offered, then removed with --yes", func(t *testing.T) {
@@ -1289,13 +1309,16 @@ func TestGcIdleOwnerCopies(t *testing.T) {
 		g.register(t)
 		g.wantOffered(t)
 	})
-	for _, state := range []string{"working", "blocked"} {
-		t.Run(state+" owner: kept", func(t *testing.T) {
-			g := newIdleGc(t, idleRules(state))
-			g.register(t)
-			g.wantKept(t)
-		})
-	}
+	t.Run("working owner: kept and named in use", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("working"))
+		g.register(t)
+		g.wantKeptInUse(t)
+	})
+	t.Run("blocked owner: kept", func(t *testing.T) {
+		g := newIdleGc(t, idleRules("blocked"))
+		g.register(t)
+		g.wantKept(t)
+	})
 	t.Run("unavailable owner: kept", func(t *testing.T) {
 		g := newIdleGc(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Code: 1, Stderr: "herdr is not answering"}})
 		g.register(t)

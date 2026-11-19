@@ -447,21 +447,31 @@ const (
 // only when the listing proves the terminal absent; its age decides
 // nothing. The legacy transport does not read the recorded terminal.
 func copyRowState(row core.CopyRow, sd string, env platform.Env, svc transport.Services) string {
+	state, _ := copyRowOwnerState(row, sd, env, svc)
+	return state
+}
+
+// copyRowOwnerState is copyRowState plus the roster owner's state from the
+// same single read ("" when the owner was not read): gc's in-use line uses
+// it without a second liveness read (SOH-416, R575).
+func copyRowOwnerState(row core.CopyRow, sd string, env platform.Env, svc transport.Services) (string, string) {
 	if _, err := os.Stat(row.Path); err != nil {
-		return "missing"
+		return "missing", ""
 	}
-	if row.Owner != "-" && core.RosterLine(sd, row.Owner) != "" && readState(svc, row.Owner, transport.Call{Timeout: herdr.Timeout}).State != "gone" {
-		return "owned"
+	if row.Owner != "-" && core.RosterLine(sd, row.Owner) != "" {
+		if owner := readState(svc, row.Owner, transport.Call{Timeout: herdr.Timeout}).State; owner != "gone" {
+			return "owned", owner
+		}
 	}
 	if row.Owner == "-" && env.Get("SOHO_TRANSPORT") == "hc" {
 		switch terminalOwnership(svc, row.Pane) {
 		case terminalLive:
-			return "owned"
+			return "owned", ""
 		case terminalUnknown:
-			return stateUnverified
+			return stateUnverified, ""
 		}
 	}
-	return "orphan"
+	return "orphan", ""
 }
 
 // gcProcState classifies one process line for gc: owned (running, the
@@ -1287,8 +1297,10 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 
 	candidates := []gcCandidate{}
 	unverifiedCopies := []gcCandidate{}
+	inUseCount := 0
 	for _, row := range rows {
-		switch copyRowState(row, sd, env, svc) {
+		rowState, ownerState := copyRowOwnerState(row, sd, env, svc)
+		switch rowState {
 		case stateUnverified:
 			// Its owning terminal could not be checked: never a candidate,
 			// whatever its age; listed apart.
@@ -1305,6 +1317,12 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			// and the copy's task and its current one are closed.
 			if seen, ok := gcIdleOwnerCopy(row, sd, svc, now, threshold); ok {
 				candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: copyAge(row, now), row: row, idle: &seen})
+			} else if ownerState == "working" {
+				// The in-use line names the copies of working owners, from
+				// the classification read above: no second liveness read,
+				// so the reads that decide removal stay as on main (R575).
+				// No size measure.
+				inUseCount++
 			}
 		}
 		// the other owned lines are never touched
@@ -1356,6 +1374,19 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			_, _ = fmt.Fprintf(platform.Stdout, "kept: %d %s not removed (listed above)\n", keptCount, noun)
 		}
 	}
+	// The in-use line follows the kept line in both modes: it names the
+	// owned rows the liveness rule kept out of the candidate list, without
+	// measuring them or changing which rows gc removes.
+	printInUse := func() {
+		if inUseCount == 0 {
+			return
+		}
+		noun := "copies"
+		if inUseCount == 1 {
+			noun = "copy"
+		}
+		_, _ = fmt.Fprintf(platform.Stdout, "in use: %d %s held by working agents (soho copies lists them)\n", inUseCount, noun)
+	}
 	if !yes {
 		// Orphan processes: the running lines whose owner is not a live
 		// roster agent (the copies' rule). Gone and reused lines are not
@@ -1367,6 +1398,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		// hint (G1).
 		if !snapshotActivity && len(candidates) == 0 && len(unregistered) == 0 && len(orphan) == 0 && !gcOrphansWouldStop(orphanProcs, threshold, now) {
 			_, _ = fmt.Fprintln(platform.Stdout, "nothing to remove")
+			printInUse()
 			gcPrintOrphanProcs(orphanProcs, threshold, now)
 			gcPrintUnverified(unverifiedCopies, unverifiedProcs)
 			return 0
@@ -1405,6 +1437,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			}
 		}
 		printKept()
+		printInUse()
 		if len(unregistered) > 0 {
 			_, _ = fmt.Fprintln(platform.Stdout, gcUnregisteredHeader)
 			listing := gcUnregisteredListing{verbose: verbose}
@@ -1635,6 +1668,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		}
 	}
 	printKept()
+	printInUse()
 	volumes.finish()
 	// Processes: stop the running orphan lines (no age limit) and drop the
 	// gone/reused ones, whatever their owner. The lock gates the phase: a
