@@ -36,9 +36,8 @@ const (
 	gcMeasureWorkers     = 4
 )
 
-// copyRefusal is the single safety check (decision 7) that release, gc and
-// copies add run before removing or registering a copy path. It returns the
-// refusal cause, or "" when the path passes.
+// copyRefusal is the single decision-7 safety check release, gc and copies
+// add run before removing or registering a path; it returns the cause or "".
 func copyRefusal(path string, env platform.Env, cwd string) string {
 	_, cause := checkCopyPath(path, env, cwd)
 	return cause
@@ -46,7 +45,8 @@ func copyRefusal(path string, env platform.Env, cwd string) string {
 
 // checkCopyPath is copyRefusal with the resolved path on success. The
 // identity comparison runs before the textual checks, which stay as the
-// second barrier.
+// second barrier. The .git refusal is delegated to gitRefusal so the gc
+// variant can reuse it without changing this guard.
 func checkCopyPath(path string, env platform.Env, cwd string) (string, string) {
 	if !filepath.IsAbs(path) {
 		return "", "not an absolute path"
@@ -70,20 +70,20 @@ func checkCopyPath(path string, env platform.Env, cwd string) (string, string) {
 	if root := platform.StateProjectRoot(env, cwd); root != "" && (inside(root, resolved) || inside(resolved, root)) {
 		return "", "is the project root or inside it"
 	}
-	if _, gitErr := os.Lstat(filepath.Join(resolved, ".git")); gitErr == nil {
-		return "", "contains a .git (another repository or a worktree)"
+	if gitInfo, gitErr := os.Lstat(filepath.Join(resolved, ".git")); gitErr == nil {
+		if gitRefusal(gitInfo, filepath.Join(resolved, ".git"), false) != "" {
+			return "", gitRepositoryCause
+		}
 	}
 	return resolved, ""
 }
 
-// protectedIdentityRefusal compares the identity of the protected
-// directories (os.SameFile), not their text: EvalSymlinks does not normalize
-// the case of the components on the current macOS volume, so a textual path
-// can be the same directory as the HOME or the project root. It refuses
-// when the path is the same file as the HOME or any of the HOME's ancestors
-// (up to the root), or as the project root, one of its ancestors, or an
-// ancestor of the path (it is inside it). A HOME or a root that cannot be
-// read with Stat refuses: when in doubt, nothing is deleted.
+// protectedIdentityRefusal compares protected directories by os.SameFile,
+// not by text: EvalSymlinks does not normalize case on the current macOS
+// volume, so a textual path can still be the HOME or the project root. It
+// refuses when the path is the same file as the HOME or any of its
+// ancestors, or as the project root, one of its ancestors, or an ancestor
+// of the path. A HOME or root that cannot be Stat'd also refuses.
 func protectedIdentityRefusal(resolved string, env platform.Env, cwd string) string {
 	resolvedInfo, err := os.Stat(resolved)
 	if err != nil {
@@ -141,7 +141,7 @@ func sameDirChain(dir string, target fs.FileInfo) (found bool, verified bool) {
 // proves the directory it opens is still that parent, so the removal stays
 // bound to the validated directory.
 func checkedCopy(path string, env platform.Env, cwd string) (resolved string, parentInfo fs.FileInfo, cause string) {
-	resolved, cause = checkCopyPath(path, env, cwd)
+	resolved, cause = checkCopyPathFor(path, env, cwd, false)
 	if cause != "" {
 		return "", nil, cause
 	}
@@ -782,12 +782,12 @@ func gcRemoveIdleOwnerCopy(cand gcCandidate, sd string, env platform.Env, svc tr
 	if discard == "" {
 		return false
 	}
-	resolved, parentInfo, cause := checkedCopy(discard, env, cwd)
+	resolved, parentInfo, cause := checkedCopyFor(discard, env, cwd, cand.allowEmptyGit)
 	if cause != "" {
 		gcDiscardLeft(discard, cause, env, cwd)
 		return false
 	}
-	held, guardErr := copyDeletionGuard(discard, cand.owner, sd, env, cwd)
+	held, guardErr := copyDeletionGuardFor(discard, cand.owner, sd, env, cwd, cand.allowEmptyGit)
 	if guardErr != nil {
 		core.DieFriction(fmt.Sprintf("%s: kept: %v", discard, guardErr), 4, frictionLogPath, "gc")
 	}
@@ -835,12 +835,12 @@ func gcDiscardIdleOwnerCopy(cand gcCandidate, sd string, env platform.Env, cwd s
 		_, _ = fmt.Fprintf(platform.Stdout, "kept %s (%s)\n", cand.path, gcIdleOwnerChanged)
 		return ""
 	}
-	resolved, parentInfo, cause := checkedCopy(cand.path, env, cwd)
+	resolved, parentInfo, cause := checkedCopyFor(cand.path, env, cwd, cand.allowEmptyGit)
 	if cause != "" {
 		gcKeptGuardLine(cand.path, cause)
 		return ""
 	}
-	held, guardErr := copyDeletionGuard(cand.path, cand.owner, sd, env, cwd)
+	held, guardErr := copyDeletionGuardFor(cand.path, cand.owner, sd, env, cwd, cand.allowEmptyGit)
 	if guardErr != nil {
 		core.DieFriction(fmt.Sprintf("%s: kept: %v", cand.path, guardErr), 4, frictionLogPath, "gc")
 	}
@@ -1147,6 +1147,9 @@ type gcCandidate struct {
 	missing bool
 	row     core.CopyRow
 	idle    *gcIdleClosed
+	// allowEmptyGit lets the guard pass an empty .git (gcAllowEmptyGit);
+	// every gc site that decides on this candidate reads it.
+	allowEmptyGit bool
 }
 
 // gcUnregisteredCopy is a soho-mutation-* directory below TMPDIR that
@@ -1310,13 +1313,13 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		case "orphan":
 			age := copyAge(row, now)
 			if age >= threshold {
-				candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: age, row: row})
+				candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: age, row: row, allowEmptyGit: gcAllowEmptyGit(row, rows)})
 			}
 		case "owned":
 			// A live owner's copy is offered only when the owner is idle
 			// and the copy's task and its current one are closed.
 			if seen, ok := gcIdleOwnerCopy(row, sd, svc, now, threshold); ok {
-				candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: copyAge(row, now), row: row, idle: &seen})
+				candidates = append(candidates, gcCandidate{path: row.Path, owner: row.Owner, age: copyAge(row, now), row: row, idle: &seen, allowEmptyGit: gcAllowEmptyGit(row, rows)})
 			} else if ownerState == "working" {
 				// The in-use line names the copies of working owners, from
 				// the classification read above: no second liveness read,
@@ -1332,10 +1335,10 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		if cand.missing {
 			continue
 		}
-		if _, _, cause := checkedCopy(cand.path, env, cwd); cause != "" {
+		if _, _, cause := checkedCopyFor(cand.path, env, cwd, cand.allowEmptyGit); cause != "" {
 			continue
 		}
-		held, guardErr := copyDeletionGuard(cand.path, cand.owner, sd, env, cwd)
+		held, guardErr := copyDeletionGuardFor(cand.path, cand.owner, sd, env, cwd, cand.allowEmptyGit)
 		if guardErr != nil {
 			_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %v\n", cand.path, guardErr)
 			return 4
@@ -1405,6 +1408,7 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		}
 		if len(candidates) > 0 {
 			removable := 0
+			dropLines := 0
 			gcMeasureCopies(candidatePaths, func(i int, size int64) {
 				cand := candidates[i]
 				cand.size = size
@@ -1412,14 +1416,18 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 					_, _ = fmt.Fprintf(platform.Stdout, "%s: kept: %s\n", cand.path, held)
 					return
 				}
-				// The same guard the removal phase runs (checkedCopy): a
+				// The same guard the removal phase runs (checkedCopyFor): a
 				// copy it refuses is a kept line, not a promise.
 				if !cand.missing {
-					if _, _, cause := checkedCopy(cand.path, env, cwd); cause != "" {
+					if _, _, cause := checkedCopyFor(cand.path, env, cwd, cand.allowEmptyGit); cause != "" {
 						gcKeptGuardLine(cand.path, cause)
 						keptCount++
 						return
 					}
+				} else {
+					dropLines++
+					_, _ = fmt.Fprintf(platform.Stdout, "would drop the line of %s (already gone from disk)\n", cand.path)
+					return
 				}
 				removable++
 				total += size
@@ -1430,9 +1438,11 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 				_, _ = fmt.Fprintf(platform.Stdout, "would remove %s  %s  %s  %s\n", cand.path, humanSize(cand.size), cand.owner, humanAge(cand.age))
 			})
 			if removable > 0 {
-				// The total counts only what --yes would remove; the hint
-				// names the flag that removes them, so it goes out with it.
+				// The total counts only what --yes removes from disk. The
+				// hint goes out for removals and for lines to drop.
 				_, _ = fmt.Fprintf(platform.Stdout, "total: %s\n", humanSize(total))
+			}
+			if removable > 0 || dropLines > 0 {
 				_, _ = fmt.Fprintln(platform.Stdout, "run 'soho gc --yes' to remove them")
 			}
 		}
@@ -1581,13 +1591,13 @@ func cmdGc(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 			}
 			continue
 		}
-		resolved, parentInfo, cause := checkedCopy(cand.path, env, cwd)
+		resolved, parentInfo, cause := checkedCopyFor(cand.path, env, cwd, cand.allowEmptyGit)
 		if cause != "" {
 			gcKeptGuardLine(cand.path, cause)
 			keptCount++
 			continue
 		}
-		held, guardErr := copyDeletionGuard(cand.path, cand.owner, sd, env, cwd)
+		held, guardErr := copyDeletionGuardFor(cand.path, cand.owner, sd, env, cwd, cand.allowEmptyGit)
 		if guardErr != nil {
 			_, _ = fmt.Fprintf(platform.Stderr, "%s: kept: %v\n", cand.path, guardErr)
 			return 4
@@ -2060,4 +2070,138 @@ func gcMeasureCopies(paths []string, consume func(int, int64)) {
 	for i := range paths {
 		consume(i, <-results[i])
 	}
+}
+
+const gitRepositoryCause = "contains a .git (another repository or a worktree)"
+
+// gitRefusal is the .git part of the decision-7 guard. The gc variant passes
+// allowEmptyGit only for a registered mutation-copy line; every other caller
+// passes false and keeps the main refusal.
+func gitRefusal(info os.FileInfo, gitDir string, allowEmptyGit bool) string {
+	if allowEmptyGit && info.IsDir() && emptyGitRepository(gitDir) {
+		return ""
+	}
+	return gitRepositoryCause
+}
+
+// checkCopyPathFor is checkCopyPath with one gc-only exception: an empty git
+// repository does not refuse a registered mutation copy. The body mirrors
+// checkCopyPath in one pass; the .git refusal is the only difference, and it
+// is shared through gitRefusal. Unregistered copies do not use this variant.
+func checkCopyPathFor(path string, env platform.Env, cwd string, allowEmptyGit bool) (string, string) {
+	if !filepath.IsAbs(path) {
+		return "", "not an absolute path"
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", "does not exist"
+	}
+	if info, lstatErr := os.Lstat(path); lstatErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", "is a symlink"
+	}
+	if isFilesystemRoot(resolved) {
+		return "", "is the filesystem root"
+	}
+	if cause := protectedIdentityRefusal(resolved, env, cwd); cause != "" {
+		return "", cause
+	}
+	if home := mutationCopyHome(env); home != "" && (resolved == home || inside(resolved, home)) {
+		return "", "is HOME or above it"
+	}
+	if root := platform.StateProjectRoot(env, cwd); root != "" && (inside(root, resolved) || inside(resolved, root)) {
+		return "", "is the project root or inside it"
+	}
+	if gitInfo, gitErr := os.Lstat(filepath.Join(resolved, ".git")); gitErr == nil {
+		if gitRefusal(gitInfo, filepath.Join(resolved, ".git"), allowEmptyGit) != "" {
+			return "", gitRepositoryCause
+		}
+	}
+	return resolved, ""
+}
+
+// emptyGitRepository reports whether gitDir is the layout git init leaves
+// before the first commit: directories only under objects and refs, no
+// packed-refs entries, and no symlinks or other files there. Any read error
+// refuses. A .git file or symlink never reaches this check.
+func emptyGitRepository(gitDir string) bool {
+	for _, name := range []string{"objects", "refs"} {
+		empty := true
+		err := filepath.WalkDir(filepath.Join(gitDir, name), func(_ string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if !entry.IsDir() {
+				empty = false
+			}
+			return nil
+		})
+		if err != nil || !empty {
+			return false
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(gitDir, "packed-refs"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// gcAllowEmptyGit says whether gc may pass a registry line whose copy holds
+// an empty .git (SOH-428): only a mutation-copy line whose copy has a .git
+// entry at all (a copy without one never needs the exception, so the live
+// guard keeps main's owner rule for it, R594), and only when no other
+// registry line lies inside it. gc removes a copy recursively, so a copy
+// that contains another registered copy keeps main's guard: the inner copy
+// may have history its own guard would keep (R591). Containment is the
+// registry text or filesystem identity (copyIdentityInside on the inner
+// copy's resolved parent), so a symlink or a different case spelling of the
+// same directory is still inside; a copy that cannot be read keeps the guard.
+func gcAllowEmptyGit(row core.CopyRow, rows []core.CopyRow) bool {
+	if row.Origin != "mutation-copy" {
+		return false
+	}
+	if _, err := os.Lstat(filepath.Join(row.Path, ".git")); err != nil {
+		return false
+	}
+	info, err := os.Stat(row.Path)
+	if err != nil {
+		return false
+	}
+	for _, other := range rows {
+		if other.Path == row.Path {
+			continue
+		}
+		if inside(row.Path, other.Path) {
+			return false
+		}
+		if resolved, err := filepath.EvalSymlinks(other.Path); err == nil && copyIdentityInside(info, filepath.Dir(resolved)) {
+			return false
+		}
+	}
+	return true
+}
+
+// checkedCopyFor is checkedCopy with the gc-only empty-git exception. Only
+// registry candidates call it (the idle-owner discard included), with
+// allowEmptyGit from gcAllowEmptyGit; release and its discard path, copies
+// add and the unregistered copies keep using checkedCopy.
+func checkedCopyFor(path string, env platform.Env, cwd string, allowEmptyGit bool) (resolved string, parentInfo fs.FileInfo, cause string) {
+	resolved, cause = checkCopyPathFor(path, env, cwd, allowEmptyGit)
+	if cause != "" {
+		return "", nil, cause
+	}
+	parentInfo, err := statByHandle(filepath.Dir(resolved))
+	if err != nil {
+		return "", nil, "cannot verify the copy path"
+	}
+	return resolved, parentInfo, ""
 }
