@@ -1999,6 +1999,9 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 				}
 			} else {
 				screen = o.outputText(reply.Value)
+				if kind == "agy" && o.pane != "" && isAgyPromoBanner(reply.Value) {
+					Warn(fmt.Sprintf("agy '%s' is showing a promotional banner (esc to dismiss); dismiss it with 'hc keys %s esc', then dispatch", o.name, o.pane), ctx, env, "spawn")
+				}
 			}
 		} else {
 			screen = agentReadText(svc.Runtime, o.name, "visible", lines)
