@@ -383,10 +383,19 @@ func installDesignBullet(content string) string {
 	return content[:start] + block + content[end:]
 }
 
+// continuedItem reports whether rest, the text right after a matched
+// previous bullet, opens with a continuation line of that item: any leading
+// whitespace (a space or a tab) on the next line indents text the project
+// appended to the item, so the item is an edited one.
+func continuedItem(rest string) bool {
+	return rest != "" && (rest[0] == ' ' || rest[0] == '\t')
+}
+
 // upgradeNativeBullet replaces the exact bullet of a recognized previous
 // generation with the current one, in place, in a migrated legacy block. The
 // whole item must be the previous text: a bullet the project edited (a
-// changed or extra line) does not match and stays as written.
+// changed or extra line, a continuation indented with spaces or a tab) does
+// not match and stays as written.
 func upgradeNativeBullet(content string) string {
 	start, end := strings.Index(content, SetupStart), strings.Index(content, SetupEnd)
 	if start < 0 || end < start {
@@ -400,7 +409,7 @@ func upgradeNativeBullet(content string) string {
 		}
 		at++
 		after := at + len(previous)
-		if strings.HasPrefix(block[after:], "  ") {
+		if continuedItem(block[after:]) {
 			return content
 		}
 		block = block[:at] + nativeBullet + block[after:]

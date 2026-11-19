@@ -31,6 +31,16 @@ func TestSetupWriteBlockMigratesTheNativeBullet(t *testing.T) {
 		t.Fatalf("fixtures: current bullet %q", bullet)
 	}
 	legacy := func(block string) string { return strings.ReplaceAll(block, "soho", "herdr-soho") }
+	// A continuation line the project appended to the item, indented with a
+	// tab, is part of the edited item: it must survive the in-place
+	// migration the same way a two-space continuation does.
+	tabContinuation := "\tOur house rule applies.\n"
+	withTab := func(previous string) string {
+		return legacy(strings.Replace(current, bullet, previous+tabContinuation, 1))
+	}
+	keptTab := func(c string) bool {
+		return strings.Contains(c, tabContinuation) && strings.Count(c, "- **Native Core**") == 1 && !strings.Contains(c, "prompt never\n  blocks")
+	}
 	cases := []struct {
 		name       string
 		block      string
@@ -39,6 +49,8 @@ func TestSetupWriteBlockMigratesTheNativeBullet(t *testing.T) {
 	}{
 		{"v6 bullet is replaced", legacy(strings.Replace(current, bullet, v6NativeBullet, 1)), func(c string) bool { return c == "before\n"+current+"after\n" }, "unchanged"},
 		{"pre-wake bullet is replaced", legacy(strings.Replace(current, bullet, preWakeNativeBullet, 1)), func(c string) bool { return c == "before\n"+current+"after\n" }, "unchanged"},
+		{"v6 bullet with a tab continuation is kept", withTab(v6NativeBullet), keptTab, "updated"},
+		{"pre-wake bullet with a tab continuation is kept", withTab(preWakeNativeBullet), keptTab, "updated"},
 		{"absent bullet is added", legacy(strings.Replace(current, bullet, "", 1)), func(c string) bool { return c == "before\n"+current+"after\n" }, "unchanged"},
 		// A current-marker block is managed text: the edit survives the
 		// migration and the next setup replaces the block as usual.

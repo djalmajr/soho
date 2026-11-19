@@ -107,8 +107,10 @@ func TestNativeBulletMigration(t *testing.T) {
 		}{
 			{"v6 changed word", edit(withV6, "keeps its turn open and", "keeps its turn open, always, and"), "keeps its turn open, always, and", false},
 			{"v6 extra continuation line", edit(withV6, "once.\n", "once.\n  Our house rule applies.\n"), "Our house rule applies.", false},
+			{"v6 tab continuation line", edit(withV6, "runs `soho wait <agent>` once.\n", "runs `soho wait <agent>` once.\n\tOur house rule applies.\n"), "\tOur house rule applies.", false},
 			{"pre-wake changed word", edit(withPreWake, "while it depends on one.", "while it depends on one, always."), "while it depends on one, always.", false},
 			{"pre-wake extra continuation line", edit(withPreWake, "one.\n", "one.\n  Our house rule applies.\n"), "Our house rule applies.", false},
+			{"pre-wake tab continuation line", edit(withPreWake, "while it depends on one.\n", "while it depends on one.\n\tOur house rule applies.\n"), "\tOur house rule applies.", false},
 			{"an edited current bullet", edit(sohoBlock, "its exit note wakes the orchestrator.", "its exit note wakes us."), "its exit note wakes us.", true},
 		} {
 			input := legacyForm(tc.input)
