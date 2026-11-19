@@ -1,7 +1,10 @@
 package wait
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/reportscan"
@@ -134,5 +137,55 @@ func TestAnalyzeReportUsesSharedBuilders(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("warnings:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestReportWarningMissingHeaderKindsDistinct: the worker's own missing header
+// and the declared review's missing header are published under different
+// kinds; the review's marker key stays the historical "no-header".
+func TestReportWarningMissingHeaderKindsDistinct(t *testing.T) {
+	own := HeaderWarnings("worker", nil, true)
+	if len(own) != 1 || own[0].Kind != WarningHeaderMissing {
+		t.Fatalf("own header warnings: %+v", own)
+	}
+	if got := PublicKind(own[0].Kind); got != "own-no-header" {
+		t.Fatalf("own public kind: %q", got)
+	}
+	review := NoReviewHeaderWarning("worker")
+	if review.Kind != WarningReviewNoHeader {
+		t.Fatalf("review marker key: %q, want %q", review.Kind, WarningReviewNoHeader)
+	}
+	if got := PublicKind(review.Kind); got != "review-no-header" {
+		t.Fatalf("review public kind: %q", got)
+	}
+	if WarningHeaderMissing == WarningReviewNoHeader {
+		t.Fatal("the two missing-header warnings share a kind")
+	}
+}
+
+// TestAlreadyWarnedFollowsOnlyItsOwnMarker: the review marker's legacy
+// no-header key marks only the declared review's warning; the worker's own
+// missing header has no marker and never reads as already warned.
+func TestAlreadyWarnedFollowsOnlyItsOwnMarker(t *testing.T) {
+	sd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sd, "wait"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	report := "/reports/worker.md"
+	marker := strconv.Quote(report) + "\n" + WarningReviewNoHeader + "\n"
+	if err := os.WriteFile(filepath.Join(sd, "wait", "worker.review-responses-warned"), []byte(marker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !AlreadyWarned(sd, "worker", report, WarningReviewNoHeaderPublic) {
+		t.Fatal("the declared review's missing header ignored the legacy no-header marker")
+	}
+	if AlreadyWarned(sd, "worker", report, PublicKind(WarningHeaderMissing)) {
+		t.Fatal("the worker's own missing header followed the review marker")
+	}
+	if AlreadyWarned(sd, "worker", report, WarningReviewMissing) {
+		t.Fatal("a review kind the marker does not name read as already warned")
+	}
+	if AlreadyWarned(sd, "worker", "/reports/other.md", WarningReviewNoHeaderPublic) {
+		t.Fatal("another report's marker marked this report")
 	}
 }

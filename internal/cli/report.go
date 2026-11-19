@@ -7,6 +7,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/core"
@@ -22,19 +23,34 @@ type reportSelection struct {
 	json        bool
 }
 
+// parseReportArgs accepts exactly the two documented forms —
+// `report <agent> [--json]` and `report --file <path> [--json]` — and the one
+// parser serves the command dispatch and the NOWRITE/hc admission. A file
+// operand that is empty or looks like a flag is refused (a dash-prefixed file
+// is addressed as ./-name), and a repeated --file or --json is refused.
 func parseReportArgs(argv []string) (reportSelection, bool) {
 	var out reportSelection
+	seenJSON, seenFile := false, false
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
 		switch {
 		case arg == "--json":
-			out.json = true
-		case arg == "--file":
-			if out.file != "" || i+1 >= len(argv) {
+			if seenJSON {
 				return reportSelection{}, false
 			}
+			seenJSON = true
+			out.json = true
+		case arg == "--file":
+			if seenFile || i+1 >= len(argv) {
+				return reportSelection{}, false
+			}
+			seenFile = true
 			i++
-			out.file = argv[i]
+			value := argv[i]
+			if value == "" || strings.HasPrefix(value, "-") {
+				return reportSelection{}, false
+			}
+			out.file = value
 		case strings.HasPrefix(arg, "-"):
 			return reportSelection{}, false
 		case out.agent != "":
@@ -136,11 +152,15 @@ func cmdReport(args []string, env platform.Env, cwd string) int {
 		report = selection.file
 	} else {
 		agent = selection.agent
-		ctx := core.LoadConfigFor(readEnv, cwd, core.UserSelection{})
-		stateDir = core.StateDirPath(&ctx, readEnv, cwd)
+		ctx := reportReadOnlyConfig(readEnv, cwd)
+		stateDir = core.StateDirPath(ctx, readEnv, cwd)
 		report = core.LastReport(stateDir, agent)
 		fields := strings.Split(core.RosterLine(stateDir, agent), "\t")
-		role, kind, model = rosterField(fields, 3), rosterField(fields, 2), rosterField(fields, 8)
+		// The dispatched task role comes first, with the roster role as the
+		// fallback, exactly as wait's gates resolve it; kind and model stay
+		// from the roster.
+		role = waitpkg.TaskRole(stateDir, agent)
+		kind, model = rosterField(fields, 2), rosterField(fields, 8)
 		editRole = core.RoleIsEditReadOnly(role, readEnv, cwd)
 		reviewRole = core.IsReviewRole(role)
 	}
@@ -165,8 +185,8 @@ func cmdReport(args []string, env platform.Env, cwd string) int {
 		Model:      model,
 		Counts: reportCountsJSON{
 			Done:    countMarks(items, "done"),
-			Partial: analysis.Partial,
-			Env:     analysis.EnvCount,
+			Partial: countMarks(items, "partial"),
+			Env:     countMarks(items, "env"),
 			Skipped: countMarks(items, "skipped"),
 		},
 		Items:        make([]reportItemJSON, 0, len(items)),
@@ -189,9 +209,10 @@ func cmdReport(args []string, env platform.Env, cwd string) int {
 		payload.Validation = map[string]string{"result": analysis.Validation}
 	}
 	for _, warning := range analysis.Warnings {
+		public := waitpkg.PublicKind(warning.Kind)
 		payload.Warnings = append(payload.Warnings, reportWarningJSON{
-			Kind: warning.Kind, Message: warning.Message,
-			AlreadyWarned: waitpkg.AlreadyWarned(stateDir, agent, report, warning.Kind),
+			Kind: public, Message: warning.Message,
+			AlreadyWarned: waitpkg.AlreadyWarned(stateDir, agent, report, public),
 		})
 	}
 	if !selection.json {
@@ -208,6 +229,42 @@ func cmdReport(args []string, env platform.Env, cwd string) int {
 		return 1
 	}
 	return 0
+}
+
+// reportReadOnlyConfig loads the defaults, user, project and session layers
+// without materializing the skill: the defaults layer comes from an existing
+// skill source or, when none exists, the embedded config.defaults. The state
+// root and workspace keep the normal rules (StateDirPath resolves both), so a
+// read from a checkout without an installed skill answers instead of dying at
+// the skill lookup.
+func reportReadOnlyConfig(readEnv platform.Env, cwd string) *core.Config {
+	sel := core.UserSelection{}
+	root := platform.StateProjectRoot(readEnv, cwd)
+	if root != "" {
+		if absolute, err := filepath.Abs(root); err == nil {
+			root = absolute
+		}
+	}
+	base, err := core.LoadReadOnlyConfig(readEnv, root, "", sel)
+	if err != nil || root == "" {
+		ctx := base.Config
+		return &ctx
+	}
+	// The session layer lives under the caller's workspace, the same id
+	// StateDirPath appends; an id that is not a safe path component leaves
+	// the base layers as they are.
+	session := core.WorkspaceID(&base.Config, readEnv, cwd)
+	if session == "" || !platform.ValidStateComponent(session) {
+		ctx := base.Config
+		return &ctx
+	}
+	full, err := core.LoadReadOnlyConfig(readEnv, root, session, sel)
+	if err != nil {
+		ctx := base.Config
+		return &ctx
+	}
+	ctx := full.Config
+	return &ctx
 }
 
 func rosterField(fields []string, index int) string {

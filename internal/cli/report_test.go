@@ -324,3 +324,223 @@ func TestCapabilitiesIncludesReportJSON(t *testing.T) {
 		t.Fatalf("capabilities: code=%d out=%q stderr=%q", code, out.String(), stderr.String())
 	}
 }
+
+// reportTaskRoleFixture is the dispatch-side fixture: a roster reviewer whose
+// composed brief declares a review with a numbered F1 and whose sidecar may
+// record a different dispatched role, with a VALIDATION.md at the worker root.
+func reportTaskRoleFixture(t *testing.T) (platform.Env, string, string, string) {
+	t.Helper()
+	env, cwd := commandFixture(t)
+	sd := filepath.Join(env.Get("SOHO_DIR"), "ws")
+	for _, dir := range []string{filepath.Join(sd, "wait"), filepath.Join(sd, "briefs")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report := filepath.Join(cwd, "worker-report.md")
+	review := filepath.Join(cwd, "review.md")
+	writeReportFixtureFile(t, report, "# Worker report\n- [partial] host result pending\n")
+	writeReportFixtureFile(t, review, "findings: 1 (P0 0, P1 0, P2 1, P3 0) | verdict: fail\n- [F1] [origin: brief] [class: logic] fix it\n")
+	writeReportFixtureFile(t, filepath.Join(sd, "briefs", "worker-report.md"), "Review: "+review+"\n")
+	writeReportFixtureFile(t, core.LastReportPath(sd, "worker"), report+"\n")
+	header := "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\n"
+	row := strings.Join([]string{"worker", "p1", "pi", "reviewer", "by model", "", cwd, "2026", "model-x", "unsandboxed", "", "build"}, "\t")
+	writeReportFixtureFile(t, filepath.Join(sd, "agents.tsv"), header+row+"\n")
+	writeReportFixtureFile(t, filepath.Join(cwd, "VALIDATION.md"), "")
+	return env, cwd, sd, report
+}
+
+func reportWarningKinds(got parsedReportJSON) []string {
+	kinds := make([]string, 0, len(got.Warnings))
+	for _, warning := range got.Warnings {
+		kinds = append(kinds, warning.Kind)
+	}
+	return kinds
+}
+
+// TestReportRoleUsesDispatchedTaskRole: a reused worker's report uses the
+// dispatched task role (task pointer or dispatch sidecar first, roster only as
+// the fallback) for the role field and every role-gated warning, exactly as
+// wait resolves it; kind and model stay from the roster.
+func TestReportRoleUsesDispatchedTaskRole(t *testing.T) {
+	env, cwd, sd, _ := reportTaskRoleFixture(t)
+	code, out, stderr := runIn(t, []string{"report", "worker", "--json"}, env, cwd)
+	if code != 0 || stderr != "" {
+		t.Fatalf("roster reviewer: code=%d stderr=%q", code, stderr)
+	}
+	got := parseReportOutput(t, out)
+	if got.Role != "reviewer" {
+		t.Fatalf("roster role: role=%q, want reviewer", got.Role)
+	}
+	if kinds := reportWarningKinds(got); !reflect.DeepEqual(kinds, []string{"partial", "own-no-header"}) {
+		t.Fatalf("roster warning kinds: %v", kinds)
+	}
+
+	writeReportFixtureFile(t, filepath.Join(sd, "briefs", "worker-report.dispatch.json"),
+		`{"role":"implementer","git_tree":`+strconv.Quote(cwd)+`}`+"\n")
+	code, out, stderr = runIn(t, []string{"report", "worker", "--json"}, env, cwd)
+	if code != 0 || stderr != "" {
+		t.Fatalf("dispatched implementer: code=%d stderr=%q", code, stderr)
+	}
+	got = parseReportOutput(t, out)
+	if got.Role != "implementer" {
+		t.Fatalf("dispatched role: role=%q, want implementer", got.Role)
+	}
+	if got.Kind != "pi" || got.Model != "model-x" {
+		t.Fatalf("roster kind/model: kind=%q model=%q", got.Kind, got.Model)
+	}
+	if kinds := reportWarningKinds(got); !reflect.DeepEqual(kinds, []string{"partial", "test-layers-missing", "missing"}) {
+		t.Fatalf("implementer warning kinds: %v", kinds)
+	}
+	if !reflect.DeepEqual(got.ReviewResponses.Missing, []int{1}) {
+		t.Fatalf("implementer review responses: %+v", got.ReviewResponses)
+	}
+}
+
+// TestReportResolvesWithoutMaterializedSkill is the binary probe's fixture in
+// process: isolated home, empty bundle cache, explicit state root, a readable
+// last-report marker, no SOHO_SKILL_DIR and no installed skill.
+func TestReportResolvesWithoutMaterializedSkill(t *testing.T) {
+	env, cwd := commandFixture(t)
+	delete(env, "SOHO_SKILL_DIR")
+	sd := filepath.Join(env.Get("SOHO_DIR"), "ws")
+	if err := os.MkdirAll(sd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	report := filepath.Join(cwd, "worker-report.md")
+	writeReportFixtureFile(t, report, "# Report\n- [partial] host result pending\n")
+	writeReportFixtureFile(t, core.LastReportPath(sd, "worker"), report+"\n")
+	code, out, stderr := runIn(t, []string{"report", "worker", "--json"}, env, cwd)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	got := parseReportOutput(t, out)
+	if got.Agent != "worker" || got.ReportPath != report {
+		t.Fatalf("identity: agent=%q report=%q, want worker/%q", got.Agent, got.ReportPath, report)
+	}
+	if got.Counts.Partial != 1 {
+		t.Fatalf("counts: %+v", got.Counts)
+	}
+}
+
+// TestReportItemsAndCountsFromOneClassification: the projection's counts are
+// the items' totals per mark (partial and env may coexist on a line), and no
+// inline-code mention in prose becomes a done or skipped item.
+func TestReportItemsAndCountsFromOneClassification(t *testing.T) {
+	env, cwd, _, _ := reportFixture(t)
+	file := filepath.Join(cwd, "mixed-items.md")
+	writeReportFixtureFile(t, file, "# Report\r\n"+
+		"- [partial] needs a rerun | [env] | Linux host only |\r\n"+
+		"- mentions `[done]` and nothing else\r\n"+
+		"- mentions `[skipped]` and nothing else\r\n"+
+		"~~~md\r\n"+
+		"- [env] fenced\r\n"+
+		"~~~\r\n"+
+		"- `[partial]` real inline-code marker\r\n")
+	code, out, stderr := runIn(t, []string{"report", "--file", file, "--json"}, env, cwd)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	got := parseReportOutput(t, out)
+	want := []struct {
+		line int
+		mark string
+	}{
+		{2, "partial"}, {2, "env"}, {8, "partial"},
+	}
+	if len(got.Items) != len(want) {
+		t.Fatalf("items: %+v", got.Items)
+	}
+	for i, entry := range want {
+		if got.Items[i].Line != entry.line || got.Items[i].Mark != entry.mark {
+			t.Fatalf("item %d: %+v, want line %d %s", i, got.Items[i], entry.line, entry.mark)
+		}
+	}
+	if got.Counts.Done != 0 || got.Counts.Partial != 2 || got.Counts.Env != 1 || got.Counts.Skipped != 0 {
+		t.Fatalf("counts: %+v", got.Counts)
+	}
+}
+
+// TestReportRefusesMalformedArgumentsUnderNowrite: one parser serves the
+// command dispatch and the NOWRITE/hc admission: a flag-shaped --file
+// operand, an unknown flag and a repeated flag exit 2, and a dash-prefixed
+// file is reachable as ./-name.
+func TestReportRefusesMalformedArgumentsUnderNowrite(t *testing.T) {
+	env, cwd, _, report := reportFixture(t)
+	hcEnv := env.Clone()
+	hcEnv["SOHO_TRANSPORT"] = "hc"
+	for _, args := range [][]string{
+		{"report", "--bogus"},
+		{"report", "--file", "--bogus"},
+		{"report", "--file", report, "--json", "--json"},
+		{"report", "--json", "--json", "--file", report},
+		{"report", "--file", ""},
+	} {
+		code, out, stderr := runIn(t, args, hcEnv, cwd)
+		if code != 2 || out != "" || !strings.Contains(stderr, "SOHO_NOWRITE=1 is read-only") {
+			t.Fatalf("%v under NOWRITE/hc: code=%d out=%q stderr=%q", args, code, out, stderr)
+		}
+	}
+	// The command dispatch refuses the same shapes without NOWRITE.
+	plain := env.Clone()
+	delete(plain, "SOHO_NOWRITE")
+	code, out, stderr := runIn(t, []string{"report", "--file", "--bogus"}, plain, cwd)
+	if code != 2 || out != "" || !strings.Contains(stderr, reportUsage) {
+		t.Fatalf("dispatch refusal: code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	// Both documented shapes still run, including a dash-prefixed file
+	// addressed through ./-name.
+	dashed := filepath.Join(cwd, "--dash-report.md")
+	writeReportFixtureFile(t, dashed, "# Report\n- [done] one\n")
+	code, out, stderr = runIn(t, []string{"report", "--file", "./--dash-report.md", "--json"}, hcEnv, cwd)
+	if code != 0 || stderr != "" || out == "" {
+		t.Fatalf("dash file: code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	code, out, stderr = runIn(t, []string{"report", "--file", report, "--json"}, hcEnv, cwd)
+	if code != 0 || stderr != "" || out == "" {
+		t.Fatalf("valid file form: code=%d out=%q stderr=%q", code, out, stderr)
+	}
+}
+
+// TestReportDistinctMissingHeaderWarnings: the worker's own missing header
+// and the declared review's get distinct public kinds, and already_warned
+// follows only each warning's own marker (the review marker's legacy
+// no-header key never silences the worker's own warning).
+func TestReportDistinctMissingHeaderWarnings(t *testing.T) {
+	env, cwd, sd, report := reportTaskRoleFixture(t)
+	if err := os.MkdirAll(filepath.Join(cwd, ".agents", "soho-roles"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeReportFixtureFile(t, filepath.Join(cwd, ".agents", "soho-roles", "reviewer.md"), "---\nmode: edit\n---\n")
+	writeReportFixtureFile(t, filepath.Join(cwd, "review.md"), "# Declared review without a header\n")
+	code, out, stderr := runIn(t, []string{"report", "worker", "--json"}, env, cwd)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	got := parseReportOutput(t, out)
+	if kinds := reportWarningKinds(got); !reflect.DeepEqual(kinds, []string{"partial", "own-no-header", "review-no-header"}) {
+		t.Fatalf("kinds: %v", kinds)
+	}
+	for _, warning := range got.Warnings {
+		if warning.AlreadyWarned {
+			t.Fatalf("%s claimed a marker before one existed", warning.Kind)
+		}
+	}
+	writeReportFixtureFile(t, filepath.Join(sd, "wait", "worker.review-responses-warned"),
+		strconv.Quote(report)+"\nno-header\n")
+	code, out, stderr = runIn(t, []string{"report", "worker", "--json"}, env, cwd)
+	if code != 0 || stderr != "" {
+		t.Fatalf("after marker: code=%d stderr=%q", code, stderr)
+	}
+	got = parseReportOutput(t, out)
+	warned := map[string]bool{}
+	for _, warning := range got.Warnings {
+		warned[warning.Kind] = warning.AlreadyWarned
+	}
+	if warned["own-no-header"] {
+		t.Fatal("the worker's own missing header followed the review marker")
+	}
+	if !warned["review-no-header"] {
+		t.Fatal("the review's missing header ignored its own marker")
+	}
+}

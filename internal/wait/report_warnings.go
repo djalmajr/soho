@@ -26,13 +26,16 @@ type ReportWarning struct {
 
 // Warning kinds. Review kinds are the marker keys already written to
 // <agent>.review-responses-warned; the other kinds name the marker or the
-// check that owns the warning.
+// check that owns the warning. The worker's own missing header is
+// distinguished from the declared review's missing header: both once shared
+// the key "no-header", which made an acknowledged review header silence the
+// worker's own warning in the read-only projection.
 const (
 	WarningPartial            = "partial"
 	WarningEnv                = "env"
 	WarningHeaderVerdictOpen  = "verdict-open"
 	WarningHeaderFindingsSum  = "findings-sum"
-	WarningHeaderMissing      = "no-header"
+	WarningHeaderMissing      = "own-no-header"
 	WarningTestLayersNonPass  = "test-layers-non-pass"
 	WarningTestLayersUnmarked = "test-layers-unmarked"
 	WarningValidation         = "validation"
@@ -47,6 +50,22 @@ const (
 	WarningParityMissing      = "reference-parity-missing"
 	WarningParityUnmarked     = "reference-parity-unmarked"
 )
+
+// WarningReviewNoHeaderPublic is the public kind published for the declared
+// review's missing header. wait keeps writing the historical "no-header"
+// marker key, and the read-only projection tells the two missing-header
+// warnings apart with this name instead.
+const WarningReviewNoHeaderPublic = "review-no-header"
+
+// PublicKind is the warning kind the report projection publishes: the review
+// check's historical "no-header" key is published as "review-no-header", and
+// every other kind is published as itself.
+func PublicKind(kind string) string {
+	if kind == WarningReviewNoHeader {
+		return WarningReviewNoHeaderPublic
+	}
+	return kind
+}
 
 // ReportWarningContext is the context a warning check needs beyond the report
 // text: the state dir for marker and sidecar reads, the settled role, the
@@ -334,24 +353,16 @@ func AnalyzeReport(ctx ReportWarningContext) ReportAnalysis {
 }
 
 // AlreadyWarned reports whether wait's marker for this warning already names
-// this report. A state dir of "" (the --file form) has no marker identity.
+// this report. kind is the public kind (PublicKind). A state dir of "" (the
+// --file form) has no marker identity, and a warning wait prints without a
+// marker (the worker's own missing header, the verdict and findings-sum
+// warnings) is never already warned.
 func AlreadyWarned(sd, agent, report, kind string) bool {
 	if sd == "" || agent == "" {
 		return false
 	}
-	marker := ""
-	switch kind {
-	case WarningPartial:
-		marker = "partial-warned"
-	case WarningEnv:
-		marker = "env-warned"
-	case WarningTestLayersNonPass, WarningTestLayersUnmarked, WarningValidation, WarningTestLayersMissing:
-		marker = "test-layers-warned"
-	case WarningFindingMarks:
-		marker = "finding-marks-warned"
-	case WarningReviewUnreadable, WarningReviewNoHeader, WarningReviewMissing, WarningReviewUnknown, WarningReviewResponses, WarningReviewUnnumbered:
-		marker = "review-responses-warned"
-	default:
+	marker, key := markerEntry(kind)
+	if marker == "" {
 		return false
 	}
 	prev, ok := readWaitFile(sd, agent, marker)
@@ -366,9 +377,32 @@ func AlreadyWarned(sd, agent, report, kind string) bool {
 		return false
 	}
 	for _, sent := range lines[1:] {
-		if sent == kind {
+		if sent == key {
 			return true
 		}
 	}
 	return false
+}
+
+// markerEntry maps a warning kind to the wait marker that records it and the
+// key inside that marker. The declared review's missing header is published
+// as "review-no-header" while its marker entry stays the historical
+// "no-header" key, so existing markers keep working. The worker's own
+// missing header has no marker: wait prints it on every settlement.
+func markerEntry(kind string) (marker, key string) {
+	switch kind {
+	case WarningPartial:
+		return "partial-warned", WarningPartial
+	case WarningEnv:
+		return "env-warned", WarningEnv
+	case WarningTestLayersNonPass, WarningTestLayersUnmarked, WarningValidation, WarningTestLayersMissing:
+		return "test-layers-warned", kind
+	case WarningFindingMarks:
+		return "finding-marks-warned", kind
+	case WarningReviewUnreadable, WarningReviewMissing, WarningReviewUnknown, WarningReviewResponses, WarningReviewUnnumbered:
+		return "review-responses-warned", kind
+	case WarningReviewNoHeader, WarningReviewNoHeaderPublic:
+		return "review-responses-warned", WarningReviewNoHeader
+	}
+	return "", ""
 }

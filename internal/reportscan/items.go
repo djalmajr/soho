@@ -1,6 +1,9 @@
 package reportscan
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // Item is one report line carrying an item state marker outside a fenced
 // code block and outside the Follow-ups section. Line is one-based, and Text
@@ -21,8 +24,9 @@ type LayerEntry struct {
 }
 
 // Items returns the item lines with the same marker, position, fence and
-// Follow-ups rules PartialCount and EnvCount use. A line yields at most one
-// item; a line with both done and skipped yields none.
+// Follow-ups rules PartialCount and EnvCount use. A line yields one item per
+// eligible mark: a line carrying both a partial and an env mark yields both,
+// while done and skipped are exclusive (a line naming both yields neither).
 func Items(text string) []Item {
 	if text == "" {
 		return []Item{}
@@ -67,43 +71,60 @@ func Items(text string) []Item {
 		} else if inFollowups {
 			continue
 		}
-		line := lowerASCII(raw)
-		if anyDone.MatchString(line) && anySkipped.MatchString(line) {
-			continue
-		}
-		mark := ""
-		for _, loc := range partialMarker.FindAllStringIndex(line, -1) {
-			if markerInPosition(line[:loc[0]], line[loc[1]:]) {
-				mark = "partial"
-				break
+		marks := classifyLine(raw)
+		text := strings.TrimSpace(strings.TrimRight(raw, "\r"))
+		for _, mark := range []string{"partial", "env", "done", "skipped"} {
+			if marks[mark] {
+				items = append(items, Item{Line: index + 1, Mark: mark, Text: text})
 			}
-		}
-		if mark == "" {
-			for _, loc := range envMarker.FindAllStringIndex(line, -1) {
-				if !markerInPosition(line[:loc[0]], line[loc[1]:]) {
-					continue
-				}
-				if envReason(line[loc[1]:]) {
-					mark = "env"
-				} else {
-					mark = "partial"
-				}
-				break
-			}
-		}
-		if mark == "" {
-			switch {
-			case anyDone.MatchString(line):
-				mark = "done"
-			case anySkipped.MatchString(line):
-				mark = "skipped"
-			}
-		}
-		if mark != "" {
-			items = append(items, Item{Line: index + 1, Mark: mark, Text: strings.TrimSpace(strings.TrimRight(raw, "\r"))})
 		}
 	}
 	return items
+}
+
+// classifyLine is the one per-line item classification: the marks a line
+// carries in item position, using exactly the marker and position rules
+// PartialCount and EnvCount apply. partial and env may both be set; done and
+// skipped are exclusive, and a line naming both yields no mark at all.
+func classifyLine(raw string) map[string]bool {
+	marks := map[string]bool{}
+	line := lowerASCII(raw)
+	if anyDone.MatchString(line) && anySkipped.MatchString(line) {
+		return marks
+	}
+	if markerPositioned(line, partialMarker) {
+		marks["partial"] = true
+	}
+	for _, loc := range envMarker.FindAllStringIndex(line, -1) {
+		after := line[loc[1]:]
+		if !markerInPosition(line[:loc[0]], after) {
+			continue
+		}
+		if envReason(after) {
+			marks["env"] = true
+		} else {
+			marks["partial"] = true
+		}
+		break
+	}
+	if !marks["partial"] && !marks["env"] {
+		if markerPositioned(line, doneMarker) {
+			marks["done"] = true
+		} else if markerPositioned(line, skippedMarker) {
+			marks["skipped"] = true
+		}
+	}
+	return marks
+}
+
+// markerPositioned reports whether re marks the line in item position.
+func markerPositioned(line string, re *regexp.Regexp) bool {
+	for _, loc := range re.FindAllStringIndex(line, -1) {
+		if markerInPosition(line[:loc[0]], line[loc[1]:]) {
+			return true
+		}
+	}
+	return false
 }
 
 func markerInPosition(before, after string) bool {
