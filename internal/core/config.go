@@ -1277,3 +1277,111 @@ func CmdConfigSet(argv []string, ctx *Config, env platform.Env, cwd string) {
 	ConfigWritePair(dest, key, value, env, cwd)
 	fmt.Fprintf(platform.Stdout, "set %s=%s in %s\n", key, value, dest)
 }
+
+// LoadLocalConfigReadOnly loads the configuration a caller resolves its
+// state directory with when the caller is the local checkout and not a
+// foreign project: the same layer files, in the same order and with the same
+// parser as LoadConfigFor (defaults, the environment's user file, the project
+// file and the session file of the caller's workspace), with one difference —
+// the defaults layer never materializes or repairs the skill, so a read from
+// a checkout without an installed skill answers instead of dying at the skill
+// lookup (the embedded config.defaults is used when no skill source exists).
+//
+// A config file that is a symlink to a regular file is read, as the ordinary
+// loader reads it. A missing file is an ordinary empty layer. A layer path
+// that exists and cannot be read — a symlink whose target is gone, a symlink
+// to a directory, a FIFO or another non-regular file, an unreadable file — is
+// returned as an error, so that a caller resolving a state directory fails
+// instead of silently resolving it from the lower layers.
+//
+// The load writes nothing: no file, directory, lock, cache entry or
+// environment value, and the defaults read is the read-only skill lookup.
+func LoadLocalConfigReadOnly(env platform.Env, cwd string) (Config, error) {
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	ctx := Config{Entries: make(map[string]ConfigEntry), Order: make([]string, 0), Sources: make([]string, 0, 4)}
+	loadReadOnlyDefaults(&ctx, env, nil)
+	loadLocalConfigLayer(&ctx, EffectiveUserConfigFile(platform.Current(), env, UserSelection{}), "user")
+	if file := localProjectConfigFile(env, cwd); file != "" {
+		loadLocalConfigLayer(&ctx, file, "project")
+	}
+	// The session layer sits above the three base layers it reads its own
+	// location from, exactly the layer LoadConfigFor reads through
+	// SessionConfPath; its state_dir may redirect the state root afterwards.
+	if file := SessionConfPath(&ctx, env, cwd); file != "" {
+		loadLocalConfigLayer(&ctx, file, "session")
+	}
+	return ctx, localConfigReadError(ctx)
+}
+
+// localProjectConfigFile names the project layer: the checkout's own
+// .agents/soho.conf, else, when cwd is a linked worktree, the main
+// checkout's. Only a candidate that does not exist lets the search move on to
+// the main checkout: an entry of any kind, or a lookup that failed for
+// another reason (an unsearchable .agents, EACCES), is returned so that the
+// layer reads it or reports it as unreadable, instead of the state directory
+// being taken silently from another root's configuration.
+func localProjectConfigFile(env platform.Env, cwd string) string {
+	seen := map[string]bool{}
+	for _, root := range []string{platform.ProjectRoot(env, cwd), platform.StateProjectRoot(env, cwd)} {
+		if root == "" || seen[root] {
+			continue
+		}
+		seen[root] = true
+		file := filepath.Join(root, ".agents", "soho.conf")
+		if _, err := os.Lstat(file); err == nil || !os.IsNotExist(err) {
+			return file
+		}
+	}
+	return ""
+}
+
+// loadLocalConfigLayer records one layer of the local read-only load with
+// loadConfigFile's parser, and with one deliberate difference: a path that
+// exists and cannot be read is the layer's ReadError rather than a missing
+// layer. It applies the same kind rule as projectConfigProblem — a symlink to
+// a regular file is read, a symlink to a directory or to a missing target is
+// not a regular file. A symlink whose target is gone is inspected with Lstat
+// because the read reports it as os.IsNotExist.
+func loadLocalConfigLayer(ctx *Config, file, label string) {
+	if file == "" {
+		return
+	}
+	if absolute, err := filepath.Abs(file); err == nil {
+		file = absolute
+	}
+	record := ConfigLayer{Source: label, File: file, Entries: make(map[string]ConfigEntry)}
+	info, err := os.Stat(file)
+	switch {
+	case err != nil && !os.IsNotExist(err):
+		record.ReadError = err
+	case err != nil:
+		if _, entryErr := os.Lstat(file); entryErr == nil {
+			record.ReadError = fmt.Errorf("read %s: %v", file, err)
+		}
+	case !info.Mode().IsRegular():
+		record.ReadError = fmt.Errorf("read %s: not a regular file", file)
+	default:
+		raw, readErr := platform.ReadTextFile(file)
+		if readErr != nil {
+			record.ReadError = readErr
+			break
+		}
+		ctx.Sources = append(ctx.Sources, label)
+		applyConfigText(raw, &record, ctx)
+	}
+	ctx.Layers = append(ctx.Layers, record)
+}
+
+// localConfigReadError reports the first layer of the local read-only load
+// that exists and could not be read. An empty layer (missing file) is not an
+// error.
+func localConfigReadError(ctx Config) error {
+	for _, layer := range ctx.Layers {
+		if layer.ReadError != nil {
+			return fmt.Errorf("%s configuration layer %s: %v", layer.Source, layer.File, layer.ReadError)
+		}
+	}
+	return nil
+}

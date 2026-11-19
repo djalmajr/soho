@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/djalmajr/soho/internal/gittree"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -42,33 +41,11 @@ func checkTestLayers(sd, agent, report, text string, line *jsonjs.Object, role s
 	if prev == report {
 		return
 	}
-	warned := false
-	warn := func(format string, args ...any) {
-		sendWarning(fmt.Sprintf(format, args...))
-		warned = true
+	warnings := TestLayerWarnings(agent, layers, validation, hasValidation, !layers.Found && missingSectionWarns(role, testLayersRoot(sd, report)))
+	for _, warning := range warnings {
+		sendWarning(warning.Message)
 	}
-	if layers.Found && len(layers.NonPass) > 0 {
-		names := make([]string, len(layers.NonPass))
-		for i, entry := range layers.NonPass {
-			names[i] = entry.Name + " " + entry.Result
-		}
-		warn("report of '%s' lists %d test layer(s) that did not pass (%s): read them before commit, push or release", agent, len(layers.NonPass), strings.Join(names, ", "))
-	}
-	if layers.Found && layers.Unmarked > 0 {
-		// Name the exact form and the first line that missed it (SOH-319).
-		reason := ""
-		if layers.FirstUnmarkedReason != "" {
-			reason = "; " + layers.FirstUnmarkedReason
-		}
-		warn("report of '%s' has %d Test layers line(s) without a result; the form is '- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a', with ': <reason>' (or ' — <reason>') after FAIL, NOT RUN and BLOCKED, and an optional note after PASS (first: %s%s)", agent, layers.Unmarked, unmarkedExample(layers.FirstUnmarked), reason)
-	}
-	if hasValidation && validation != "PASS" {
-		warn("validation of '%s' is %s: read it before commit, push or release", agent, validation)
-	}
-	if !layers.Found && missingSectionWarns(role, testLayersRoot(sd, report)) {
-		warn("report of '%s' has no Test layers section, and the project has a VALIDATION.md", agent)
-	}
-	if warned {
+	if len(warnings) > 0 {
 		// The warning already went out; a marker that cannot persist only
 		// lets it repeat on the next poll, never aborting the settlement.
 		_ = os.WriteFile(filepath.Join(sd, "wait", agent+".test-layers-warned"), []byte(report+"\n"), 0o666)

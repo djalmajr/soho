@@ -14,6 +14,8 @@ var (
 	blockedScopeRE = regexp.MustCompile(`blocked-by-scope: (\S.*:[0-9]+ [—–] \S.*)$`)
 	partialMarker  = regexp.MustCompile("[`*]*\\[partial\\][`*]*")
 	envMarker      = regexp.MustCompile("[`*]*\\[env\\][`*]*")
+	doneMarker     = regexp.MustCompile("[`*]*\\[done\\][`*]*")
+	skippedMarker  = regexp.MustCompile("[`*]*\\[skipped\\][`*]*")
 	anyItemState   = regexp.MustCompile(`\[(?:done|partial|env|skipped)\]`)
 	stateBefore    = regexp.MustCompile(`^[ \t]*(?:[-*+][ \t]+|[0-9]+\.[ \t]+|#{1,6}[ \t]+|>[ \t]*|\[[ xX]\][ \t]+)?[ \t]*$`)
 	cellBefore     = regexp.MustCompile(`\|[ \t]*$`)
@@ -21,7 +23,6 @@ var (
 	dashBefore     = regexp.MustCompile("[:\\x{2014}\\x{2013}-][`*]*[ \\t]+$")
 	fenceOpen      = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})")
 	fenceClose     = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})[ \\t\\r]*$")
-	anyPartial     = regexp.MustCompile(`\[partial\]`)
 	anyDone        = regexp.MustCompile(`\[done\]`)
 	anySkipped     = regexp.MustCompile(`\[skipped\]`)
 	reviewHeaderRE = regexp.MustCompile(`^findings: ([0-9]+) \(p0 ([0-9]+), p1 ([0-9]+), p2 ([0-9]+), p3 ([0-9]+)\) \| verdict: (pass|fail)$`)
@@ -116,23 +117,12 @@ func limitCounts(text string) (partial, env int) {
 			continue
 		}
 		line = lowerASCII(line)
-		if anyDone.MatchString(line) && anySkipped.MatchString(line) {
-			continue
-		}
-		isPartial := anyPartial.MatchString(line) && markerInStatePosition(line)
-		for _, loc := range envMarker.FindAllStringIndex(line, -1) {
-			before, after := line[:loc[0]], line[loc[1]:]
-			if stateBefore.MatchString(before) || (cellBefore.MatchString(before) && cellAfter.MatchString(after)) || dashBefore.MatchString(before) {
-				if envReason(after) {
-					env++
-				} else {
-					isPartial = true
-				}
-				break // Like partial, a line counts at most once per state.
-			}
-		}
-		if isPartial {
+		marks := classifyLine(line)
+		if marks["partial"] {
 			partial++
+		}
+		if marks["env"] {
+			env++
 		}
 	}
 	return
@@ -152,16 +142,6 @@ func envReason(after string) bool {
 	return strings.IndexFunc(reason, func(r rune) bool {
 		return unicode.IsLetter(r) || unicode.IsDigit(r)
 	}) >= 0
-}
-
-func markerInStatePosition(line string) bool {
-	for _, loc := range partialMarker.FindAllStringIndex(line, -1) {
-		before, after := line[:loc[0]], line[loc[1]:]
-		if stateBefore.MatchString(before) || (cellBefore.MatchString(before) && cellAfter.MatchString(after)) || dashBefore.MatchString(before) {
-			return true
-		}
-	}
-	return false
 }
 
 // PartialCountFile counts partial markers in a report; unreadable files count 0.

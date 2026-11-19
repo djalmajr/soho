@@ -1320,36 +1320,17 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					line.Set("verdict_effective", effective)
 				}
 				jsonLine(line)
-				if partial > 0 {
-					prev, _ := readWaitFile(sd, agent, "partial-warned")
+				for _, warning := range PartialWarnings(agent, partial, envCount) {
+					marker := warning.Kind + "-warned"
+					prev, _ := readWaitFile(sd, agent, marker)
 					if prev != report {
-						sendWarning(fmt.Sprintf("report of '%s' marks %d item(s) partial: a partial item is not a pass; read them before commit, push or release", agent, partial))
-						writeWaitFile(sd, agent, "partial-warned", report+"\n")
-					}
-				}
-				if envCount > 0 {
-					prev, _ := readWaitFile(sd, agent, "env-warned")
-					if prev != report {
-						sendWarning(fmt.Sprintf("report of '%s' marks %d item(s) env-limited: the orchestrator must cover them by other proof (host run, CI, native platform) before commit, push or release", agent, envCount))
-						writeWaitFile(sd, agent, "env-warned", report+"\n")
+						sendWarning(warning.Message)
+						writeWaitFile(sd, agent, marker, report+"\n")
 					}
 				}
 				recordMetrics(sd, agent, report, text, header, partial, ctx, env)
-				if header != nil && header.Verdict == "pass" {
-					open := header.Severity["P0"] + header.Severity["P1"] + header.Severity["P2"]
-					if open > 0 {
-						sendWarning(fmt.Sprintf("report of '%s' says verdict pass with %s open P0-P2 finding(s): read them before commit, push or release", agent, numberString(open)))
-					}
-				}
-				if header != nil {
-					sum := header.Severity["P0"] + header.Severity["P1"] + header.Severity["P2"] + header.Severity["P3"]
-					if sum != header.Findings {
-						sendWarning(fmt.Sprintf("report of '%s': findings %s but P0..P3 add up to %s", agent, numberString(header.Findings), numberString(sum)))
-					}
-				} else {
-					if core.IsReviewRole(role) {
-						sendWarning(fmt.Sprintf("report of '%s' has no 'findings: N (P0 a, P1 b, P2 c, P3 d) | verdict: pass|fail' first line", agent))
-					}
+				for _, warning := range HeaderWarnings(agent, header, core.IsReviewRole(role)) {
+					sendWarning(warning.Message)
 				}
 				if core.Cfg(ctx, "notify", "off", env) == "on" {
 					svc.Window.Notify(context.Background(), "soho: "+agent+" finished", report, transport.Call{})
