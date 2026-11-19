@@ -570,6 +570,15 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 			result.Warnings = append(result.Warnings, fmt.Sprintf("brief %s has a Review: line that names a file that does not exist: %s", brief, text.SanitizeCause(value)))
 		}
 	}
+	// A review brief without a Baseline: ref leaves the reviewer without
+	// the distinction between a defect of the slice and pre-existing behavior.
+	// Warning only, for edit and read-only roles alike; the ref is not resolved.
+	if BriefType(body) == "review" {
+		value, found := declaredBaselineValue(body)
+		if !found || value == "" {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("brief %s has Type: review and no 'Baseline: <ref>' line: nothing tells the reviewer which behavior is already on the base", brief))
+		}
+	}
 	missing := BriefMissingSections(body, options.ReadOnly, aliases)
 	placeholderMarks := UnfilledPlaceholders(body, briefLintPlaceholderMarkers(core.Cfg(ctx, "brief_lint_placeholders", "", env)))
 	if missing == "" && len(placeholderMarks) == 0 {

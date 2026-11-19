@@ -35,6 +35,8 @@ Report an issue only when all hold: provable impact on a specific code path; act
 
 Stop criterion: report as a defect finding only what makes a correct product fail, an incorrect one pass, a user be told something false, a process or resource be left behind or wrongly used, or a published instruction contradict another. A `test-gap`, as the report contract below defines it (the code is right but a test does not prove it, or changed code has no test in a layer VALIDATION.md declares with a command), remains a finding whether or not the product fails. A tighter bound on a test that already discriminates the behavior is a note, not a finding, and does not change the verdict.
 
+When the brief has a `Baseline: <ref>` line, it scopes the findings: a P0–P2 finding, defect or test-gap, is about what the slice adds or changes relative to `<ref>`, and the Stop criterion above still decides what is a finding. Behavior identical to `<ref>` is not a finding: list it under a level-2 `## Follow-ups` heading, without finding marks and outside the first line's count. Items in that section, up to the next level-1 or level-2 heading, do not count as partial.
+
 If your brief names a snapshot, review that path. An existing file or link at either artifact name is refused with exit 2; the existing entry and any link target remain untouched.
 
 <critical>
