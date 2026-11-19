@@ -56,7 +56,7 @@ Requirements: Herdr 0.9.1 or newer (0.9.3 or newer recommended on Windows). `cap
 | 7 | `blocked`: a question, approval or dialog needs a person |
 | 9 | job `timeout`: the active budget or the blocked ceiling was exhausted (`motivo` tells which) |
 | 11 / 14 | `blocked` by quota / provider error (detail in `motivo`) |
-| 19 | `failed`: partial items with no pending decision, failed gates, or the job orchestrator ended without a report |
+| 19 | `failed`: partial items with no pending decision (items under a `## Follow-ups` heading excepted), failed gates, or the job orchestrator ended without a report |
 | 20 | `--id` reused with a different brief (hash mismatch) |
 | 21 | `canceled` |
 | 22 | preparation failed: checkout or clone, GitHub authentication, fetch, unknown base, worktree |
@@ -268,13 +268,13 @@ A job in worktree mode that would end `done` must have a verified final publicat
 }
 ```
 
-- `done`: every item `[done]` or `[skipped]` with a reason, the acceptance checks pass, the review passes when code changed, and `sincronizado` is true. For a publishing (worktree) job, a new `done` is announced only after the supervisor captured and durably saved a verified final publication (see Final publication); a Git-free workspace job has no publication to verify and keeps its own `done` semantics (no git runs and `sincronizado` is false). When the job orchestrator completed but a collaboration was still partial after the graceful closure, the job is still `done` (exit 0) and says so explicitly: `partial: true` and the collaboration IDs in `partial_collaborations`, with the detail in `colaboracoes`. A dispatcher must read those fields; `done` alone does not mean every collaboration finished.
-- `failed`: partial items with no pending decision, a failed check or review, or a job orchestrator that settled without a report or disappeared.
+- `done`: every item `[done]` or `[skipped]` with a reason (items under a `## Follow-ups` heading may stay visibly `[partial]`), the acceptance checks pass, the review passes when code changed, and `sincronizado` is true. For a publishing (worktree) job, a new `done` is announced only after the supervisor captured and durably saved a verified final publication (see Final publication); a Git-free workspace job has no publication to verify and keeps its own `done` semantics (no git runs and `sincronizado` is false). When the job orchestrator completed but a collaboration was still partial after the graceful closure, the job is still `done` (exit 0) and says so explicitly: `partial: true` and the collaboration IDs in `partial_collaborations`, with the detail in `colaboracoes`. A dispatcher must read those fields; `done` alone does not mean every collaboration finished.
+- `failed`: partial items with no pending decision (not counting items under a `## Follow-ups` heading), a failed check or review, or a job orchestrator that settled without a report or disappeared.
 - `blocked`: an unresolved question, dialog, quota or provider error; the question goes in `perguntas`.
 - `memoria.global` holds suggestions that may apply beyond this repository; `memoria.projeto` holds notes that apply only to it. The job never writes them anywhere else; the dispatcher routes them.
 - `limpeza`: `worktree` (`removed` or `kept`) and `removivel` are always present; `workspace` is present when the supervisor records the workspace outcome — `closed` when the workspace closed, `open` when it did not — and is absent from a report without a recorded outcome. The example shows the fields the report produces.
 - `limpeza.removivel` is informational: true when the job worktree is clean and in sync with `origin/job/<id>`, the same facts the automatic close checks before removing it (see Release and automatic close); it never causes a removal.
-- `partial` and `partial_collaborations`: as in Status; `colaboracoes` (present only when the job had collaborations) holds the per-collaboration evidence and outcome. `parciais` keeps counting the `[partial]` items of the orchestrator's report; partial items with no pending decision still end the job `failed`.
+- `partial` and `partial_collaborations`: as in Status; `colaboracoes` (present only when the job had collaborations) holds the per-collaboration evidence and outcome. `parciais` keeps counting the `[partial]` items of the orchestrator's report, except those under a level-2 ATX `## Follow-ups` heading (up to the next level-1 or level-2 heading, outside fenced code and HTML comments), which `itens` still lists; partial items with no pending decision still end the job `failed`.
 - `publico` is built from an allowlist of fields. It is the only part of a report that may appear on a public forge.
 - When `report.json` is absent, `job collect` prints the missing line with `"report":null`, and that line carries `"report_missing":true` only when the status is one that carries a stored report (as in Status); the exit code stays 0, and `--md` without a `report.md` still exits 4 as before.
 

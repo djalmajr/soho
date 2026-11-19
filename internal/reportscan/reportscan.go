@@ -26,6 +26,10 @@ var (
 	anySkipped     = regexp.MustCompile(`\[skipped\]`)
 	reviewHeaderRE = regexp.MustCompile(`^findings: ([0-9]+) \(p0 ([0-9]+), p1 ([0-9]+), p2 ([0-9]+), p3 ([0-9]+)\) \| verdict: (pass|fail)$`)
 	layerHeadingRE = regexp.MustCompile(`^#{1,6}[ \t]+`)
+	// An ATX heading of level 1 or 2: up to three spaces of indentation
+	// (four is code), an optional closing sequence, and an empty title
+	// allowed. Setext headings are not recognized (R572).
+	limitHeadingRE = regexp.MustCompile(`^ {0,3}(#{1,2})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$`)
 	layerBulletRE  = regexp.MustCompile(`^[-*+][ \t]+`)
 	layerNumberRE  = regexp.MustCompile(`^[0-9]+[.)][ \t]+`)
 )
@@ -71,6 +75,7 @@ func limitCounts(text string) (partial, env int) {
 		return
 	}
 	inFence, fenceChar, fenceLen := false, byte(0), 0
+	inFollowups, inComment := false, false
 	for _, line := range strings.Split(text, "\n") {
 		open := fenceOpen.FindStringSubmatch(line)
 		if !inFence && open != nil {
@@ -82,6 +87,32 @@ func limitCounts(text string) (partial, env int) {
 			if close != nil && close[1][0] == fenceChar && len(close[1]) >= fenceLen {
 				inFence = false
 			}
+			continue
+		}
+		// A heading inside an HTML comment neither opens nor closes the
+		// Follow-ups section (R574); how comment lines count is unchanged.
+		hidden := inComment
+		if inComment {
+			if strings.Contains(line, "-->") {
+				inComment = false
+			}
+		} else if i := strings.Index(line, "<!--"); i >= 0 && !strings.Contains(line[i+4:], "-->") {
+			inComment = true
+		}
+		var m []string
+		if !hidden {
+			m = limitHeadingRE.FindStringSubmatch(strings.TrimRight(line, "\r"))
+		}
+		if m != nil {
+			title := lowerASCII(strings.TrimSpace(m[2]))
+			if len(m[1]) == 2 && (title == "follow-ups" || title == "follow ups" || title == "followups") {
+				inFollowups = true
+				continue
+			}
+			if len(m[1]) <= 2 {
+				inFollowups = false
+			}
+		} else if inFollowups {
 			continue
 		}
 		line = lowerASCII(line)
