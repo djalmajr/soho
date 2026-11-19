@@ -22,13 +22,77 @@ const SORT_FIELDS = {
   mode: "mode",
 };
 
+// Accepts the wire payload (`config_unset`) and the controller's own camel
+// object (`configUnset`), so a capability handed back to a helper keeps its
+// meaning instead of reading as absent (F3).
 export function capabilities(payload) {
   const out = {};
   for (const key of CAPABILITIES) {
     const camel = key.replace(/_([a-z])/g, (_m, c) => c.toUpperCase());
-    out[camel] = Boolean(payload && typeof payload === "object" && Object.hasOwn(payload, key));
+    out[camel] = Boolean(payload && typeof payload === "object"
+      && (Object.hasOwn(payload, key) || payload[camel] === true));
   }
   return out;
+}
+
+// A capabilities response that is not an object is a failed discovery, not a
+// version without features (F12).
+export function capabilityAnswer(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { caps: null, error: "soho capabilities --json did not return an object" };
+  }
+  return { caps: payload, error: "" };
+}
+
+// Which independent reads a capability answer allows (F12).
+export function sectionReads(caps) {
+  const support = capabilities(caps);
+  return {
+    assistantsJson: support.assistantsJson,
+    legacyKinds: !support.assistantsJson,
+    health: support.healthJson,
+  };
+}
+
+export const CONTEXT_CHANGED_MESSAGE =
+  "The project, machine or folder changed; the pending change was discarded. Open it again from this project.";
+
+// The identity every displayed dataset and pending action carries (F1).
+export function contextFor(space, folder) {
+  return { space: space?.id ?? "", machine: space?.machine ?? null, folder: folder ?? "" };
+}
+
+export function contextKey(context) {
+  if (!context) return "";
+  return `${context.space ?? ""}|${context.machine ?? ""}|${context.folder ?? ""}`;
+}
+
+export function sameContext(a, b) {
+  return Boolean(a) && Boolean(b) && contextKey(a) === contextKey(b);
+}
+
+// A write is refused when its own context is missing or no longer the shown
+// one. No read sequence enters this decision, so a refresh never abandons a
+// write in flight (F1, F2).
+export function writeGuard(actionContext, current) {
+  if (!actionContext || !sameContext(actionContext, current)) {
+    return { ok: false, message: CONTEXT_CHANGED_MESSAGE };
+  }
+  return { ok: true, message: "" };
+}
+
+export function decideWrite({ actionContext, currentContext, busy }) {
+  if (busy) return { run: false, message: "" };
+  const guard = writeGuard(actionContext, currentContext);
+  return { run: guard.ok, message: guard.message };
+}
+
+// A multi-command action that fails part way says what it already wrote (F2).
+export function partialFailureMessage(applied, remaining, detail) {
+  const done = applied?.length ? `Applied ${applied.join(", ")}` : "Nothing was applied";
+  const left = remaining?.length ? `not applied ${remaining.join(", ")}` : "nothing left to apply";
+  const why = String(detail ?? "").trim();
+  return `${done}; ${left}.${why ? ` ${why}` : ""}`;
 }
 
 export function laneLabel(lane) {
@@ -120,6 +184,24 @@ export function toggleSort(current, column) {
   return { column, dir: "asc" };
 }
 
+// The view and sort a folder has stored, or the defaults when it has no entry
+// (F13).
+export function viewStateFor(prefs, folder, defaults = { view: "grouped", sort: { column: "role", dir: "asc" } }) {
+  const saved = prefsRead(prefs, folder);
+  const view = saved.view === "list" ? "list" : saved.view === "grouped" ? "grouped" : defaults.view;
+  const sort = saved.sort && typeof saved.sort === "object" && SORT_FIELDS[saved.sort.column]
+    ? { column: saved.sort.column, dir: saved.sort.dir === "desc" ? "desc" : "asc" }
+    : defaults.sort;
+  return { view, sort };
+}
+
+// The narrow band also uses the two-line rows and drops the fixed header; its
+// sort control is the More menu (F15).
+export function listLayout(band) {
+  const narrow = band === "narrow";
+  return { narrow, showHeader: !narrow, sortControl: narrow ? "menu" : "header" };
+}
+
 export function sortRoles(rows, sort) {
   const field = SORT_FIELDS[sort?.column] ?? "role";
   const dir = sort?.dir === "desc" ? -1 : 1;
@@ -161,8 +243,26 @@ export function effortTarget(role, groups) {
   };
 }
 
+// One literal operand, `<key>=<value>`, which the CLI already parses
+// (internal/core/config.go:1232-1238): a value that starts with "-" or holds
+// spaces cannot become a flag or move the destination (F8).
+export function configSetArgv(key, value, scope) {
+  return ["config", "set", `${key}=${value}`, scope === "user" ? "--user" : "--project"];
+}
+
+const SAFE_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
+
+// POSIX single-quote quoting for a preview line, so the shown boundaries are
+// the real argv boundaries (F8).
+export function shellQuote(value) {
+  const text = String(value ?? "");
+  if (text !== "" && SAFE_WORD.test(text)) return text;
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
 export function configSetCommand(key, value, scope) {
-  return `soho config set ${key} ${value} --${scope === "user" ? "user" : "project"}`;
+  const flag = scope === "user" ? "--user" : "--project";
+  return `soho config set ${key}=${shellQuote(value)} ${flag}`;
 }
 
 export function editFields({ appliesTo, lane, role, kind, model, effort }) {
@@ -174,24 +274,81 @@ export function editFields({ appliesTo, lane, role, kind, model, effort }) {
   return fields;
 }
 
+// Switching Applies to keeps the role that was opened, not the lane's first
+// member (F5).
+export function roleForScope(selectedRole, group) {
+  const members = Array.isArray(group?.roles) ? group.roles : [];
+  if (selectedRole && members.includes(selectedRole)) return selectedRole;
+  return members[0] ?? selectedRole ?? "";
+}
+
+// A role-only save needs a named role; a lane-header edit has to identify its
+// target first (F5).
+export function editProblem(edit) {
+  if (!edit) return "No edit is open.";
+  if (edit.appliesTo === "role" && !edit.role) {
+    return "Choose which role this edit changes before saving to one role.";
+  }
+  if (edit.appliesTo === "lane" && !edit.lane) return "No lane is selected for this edit.";
+  return "";
+}
+
+// The model input's change event feeds the draft and its preview (F6).
+export function draftWithModel(edit, value) {
+  if (!edit) return null;
+  return { ...edit, model: String(value ?? "") };
+}
+
+// One immutable validated snapshot: what Save runs, with the values Undo
+// restores and the destination it was previewed for (F7).
+export function snapshotFor(edit, preview, previousByKey, file, context) {
+  return {
+    scope: edit.scope,
+    appliesTo: edit.appliesTo,
+    lane: edit.lane,
+    role: edit.role,
+    fields: editFields(edit).map((field) => ({ ...field })),
+    commands: [...(preview?.commands ?? [])],
+    previousByKey: { ...(previousByKey ?? {}) },
+    file: file ?? "",
+    context: context ? { ...context } : null,
+  };
+}
+
+// Save stays disabled while a preview for the changed draft is pending, and
+// the commands still on screen are marked stale (F7).
+export function previewState(edit) {
+  if (!edit) return { canSave: false, stale: false };
+  const stale = Boolean(edit.pending) && Boolean(edit.snapshot);
+  const canSave = !edit.pending && Boolean(edit.snapshot)
+    && (edit.snapshot.fields?.length ?? 0) > 0 && edit.valid !== false;
+  return { canSave, stale };
+}
+
+export function snapshotMatches(snapshot, edit) {
+  if (!snapshot || !edit) return false;
+  if (snapshot.scope !== edit.scope) return false;
+  const fields = editFields(edit);
+  if (snapshot.fields.length !== fields.length) return false;
+  return fields.every((field, i) => snapshot.fields[i].key === field.key
+    && snapshot.fields[i].value === field.value);
+}
+
 export function previewCommands(fields, scope) {
   return fields.map((f) => configSetCommand(f.key, f.value, scope));
 }
 
-// With config_dry_run the CLI owns each line; without it the panel composes
-// the same lines locally. A dry-run result with valid:false is not a preview.
+// The panel composes every preview line itself, in the same argv shape a save
+// runs, so a dry run only decides validity (F8). A valid:false result is not a
+// preview.
 export function previewFromDryRuns(results, fields, scope) {
-  const fallback = previewCommands(fields, scope);
+  const commands = previewCommands(fields, scope);
   if (!Array.isArray(results) || results.length !== fields.length) {
-    return { valid: true, error: "", commands: fallback };
+    return { valid: true, error: "", commands };
   }
   const bad = results.find((r) => r && r.valid === false);
   if (bad) return { valid: false, error: String(bad.error ?? "invalid value"), commands: [] };
-  return {
-    valid: true,
-    error: "",
-    commands: results.map((r, i) => (r && typeof r.command === "string" ? r.command : fallback[i])),
-  };
+  return { valid: true, error: "", commands };
 }
 
 export function undoPlan(previous, key, scope, caps) {
@@ -206,7 +363,7 @@ export function undoPlan(previous, key, scope, caps) {
     }
     return { available: true, args: ["config", "unset", key, flag] };
   }
-  return { available: true, args: ["config", "set", key, String(previous.in_file), flag] };
+  return { available: true, args: configSetArgv(key, String(previous.in_file), scope) };
 }
 
 export function displayFile(file) {
@@ -256,6 +413,49 @@ export function workerStats(workers, max) {
   };
 }
 
+// A roster refusal is a neutral state, not an error: the panel runs outside
+// the Herdr terminal the command needs today.
+export const ROSTER_REFUSAL = "This soho cannot list workers from the panel yet.";
+
+const ROSTER_REFUSAL_MARKERS = [
+  "not running inside Herdr (HERDR_ENV != 1)",
+  "not inside an hc terminal (HC_TERMINAL_ID is not set)",
+];
+
+export function rosterRefusal(stderr) {
+  const text = String(stderr ?? "");
+  return ROSTER_REFUSAL_MARKERS.some((marker) => text.includes(marker)) ? ROSTER_REFUSAL : "";
+}
+
+// The Now tiles: max is only a fact when it is a positive number.
+export function statTiles(stats) {
+  const rows = [
+    [String(stats?.working ?? 0), "working"],
+    [String(stats?.reportIn ?? 0), "report in"],
+  ];
+  const max = Number(stats?.max);
+  if (Number.isFinite(max) && max > 0) rows.push([String(max), "max"]);
+  return rows;
+}
+
+// Tabs follow the capabilities: a missing feature is hidden, never an error.
+export function tabsFor(caps) {
+  const support = capabilities(caps);
+  const tabs = [
+    { id: "team", label: "Team" },
+    { id: "now", label: "Now" },
+    { id: "assistants", label: "Assistants" },
+  ];
+  if (support.healthJson) tabs.push({ id: "health", label: "Health" });
+  return tabs;
+}
+
+// A selected tab that lost its capability falls back to Team before the next
+// render, so the hidden view never paints.
+export function resolveTab(tab, caps) {
+  return tabsFor(caps).some((entry) => entry.id === tab) ? tab : "team";
+}
+
 export function sortedReportItems(items) {
   const rows = Array.isArray(items) ? items : [];
   const weight = (item) => (item?.mark === "partial" || item?.mark === "env" ? 0 : 1);
@@ -273,19 +473,129 @@ export function layerResult(layer) {
   return layer?.reason ? `${result} · ${layer.reason}` : result;
 }
 
+// Herdr delivers only the suffix of "<mod>.<command>" to nextCommand(); the
+// prefixed spelling is accepted too (F4).
+export function parseCommand(command) {
+  if (typeof command !== "string" || !command) return null;
+  const name = command.startsWith("soho-team.") ? command.slice("soho-team.".length) : command;
+  if (!name || name.includes(".")) return null;
+  return { name };
+}
+
+// A confirmation runs only for the pending action and the worker row it was
+// opened on, matched by name and Core address, never by position (F4).
+export function confirmationMatches(pending, command, workers) {
+  const parsed = parseCommand(command);
+  if (!pending || !parsed) return { ok: false, worker: null, reason: "no pending confirmation" };
+  if (parsed.name !== pending.action) {
+    return { ok: false, worker: null, reason: `no pending ${parsed.name} confirmation` };
+  }
+  const worker = findWorker(workers, pending.key);
+  if (!worker || worker.name !== pending.name) {
+    return { ok: false, worker: null, reason: "that worker row changed since the confirmation opened" };
+  }
+  return { ok: true, worker, reason: "" };
+}
+
+export function planKey(plan) {
+  return plan?.args?.[2] ?? "config change";
+}
+
+// A report result belongs to the worker it was requested for (F9).
+export function acceptsReport(selectionKey, requestedKey) {
+  return Boolean(selectionKey) && Boolean(requestedKey) && selectionKey === requestedKey;
+}
+
+export function reportBusyKey(folder, key) {
+  return `report|${folder}|${key}`;
+}
+
+// Legacy roster rows carry `state`, not `status` (internal/cli/roster.go:238-260).
+export function normalizeWorker(worker) {
+  if (!worker || typeof worker !== "object") return worker;
+  if (worker.status != null && worker.status !== "") return worker;
+  if (worker.state == null) return worker;
+  return { ...worker, status: worker.state };
+}
+
+export function normalizeRoster(roster) {
+  if (!roster || typeof roster !== "object") return roster;
+  if (!Array.isArray(roster.agents)) return roster;
+  return { ...roster, agents: roster.agents.map(normalizeWorker) };
+}
+
+// Only a copy that rendered or reported a non-zero size in the last 30 s is
+// polled (F18); the installed API has no copy-visibility call.
+export const VISIBLE_MS = 30000;
+
+export function pollAllowed(lastVisibleAt, now = Date.now(), windowMs = VISIBLE_MS) {
+  const last = Number(lastVisibleAt);
+  if (!Number.isFinite(last) || last <= 0) return false;
+  return now - last <= windowMs;
+}
+
+// A section's diagnostics are first stderr lines, also when the output was not
+// JSON (F14).
+export function nonJsonMessage(command, stderr) {
+  const first = String(stderr ?? "").trim().split("\n").filter(Boolean).slice(0, 4).join("\n");
+  const head = `${command} did not return JSON`;
+  return first ? `${head}\n${first}` : head;
+}
+
+// Per-kind model diagnostics live beside the shared assistants section so a
+// later lookup does not erase them (F14).
+export function modelsErrorKey(kind) {
+  return `models:${kind}`;
+}
+
+// What the cleanup confirmation lists before its button (F16).
+export function gcCandidates(gc) {
+  const rows = Array.isArray(gc?.would_remove) ? gc.would_remove : [];
+  return rows.map((row) => ({
+    path: String(row?.path ?? row?.name ?? row?.id ?? ""),
+    size: Number(row?.bytes ?? row?.size ?? 0) || 0,
+    reason: String(row?.reason ?? row?.state ?? row?.kind ?? ""),
+  }));
+}
+
+// The legacy table is read by its header columns: KIND, EXECUTABLE, FAMILY,
+// EFFORT, INSTALLED and MCP. INSTALLED and MCP come from the trailing columns,
+// so a multi-word FAMILY and a blank EFFORT keep every other cell in place
+// (F11).
 export function parseKindsText(text) {
-  return String(text ?? "")
-    .split("\n")
-    .map((line) => line.trim().split(/\s+/))
-    .filter((cells) => cells.length >= 5 && cells[0] !== "KIND")
-    .map((cells) => ({
-      kind: cells[0],
-      executable: cells[1],
-      family: cells[2],
-      effort_ceiling: cells[3],
-      installed: cells[4].toLowerCase() === "yes",
-      mcp: cells[5] === "yes",
-    }));
+  const lines = String(text ?? "").split("\n");
+  const rows = [];
+  let columns = null;
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) continue;
+    if (!columns) {
+      const found = [...line.matchAll(/[A-Z][A-Z_]*/g)].map((m) => ({ name: m[0], at: m.index }));
+      if (found.length >= 5 && found[0].name === "KIND") columns = found;
+      continue;
+    }
+    const slice = (i) => {
+      const from = columns[i].at;
+      const to = i + 1 < columns.length ? columns[i + 1].at : line.length;
+      return line.slice(from, to).trim();
+    };
+    const tokens = line.trim().split(/\s+/);
+    if (tokens.length < 5) continue;
+    const installed = tokens[tokens.length - 2].toLowerCase();
+    const mcp = tokens[tokens.length - 1].toLowerCase();
+    if (!["yes", "no"].includes(installed) || !["yes", "no"].includes(mcp)) continue;
+    const kind = slice(0);
+    if (!kind) continue;
+    rows.push({
+      kind,
+      executable: slice(1),
+      family: slice(2),
+      effort_ceiling: slice(3),
+      installed: installed === "yes",
+      mcp: mcp === "yes",
+    });
+  }
+  return rows;
 }
 
 export function parseModelsText(text) {
@@ -296,16 +606,14 @@ export function parseModelsText(text) {
 }
 
 // The Edit form lists installed assistants. With assistants_json, only an
-// assistant whose probe answered is offered; without it, `kinds` text is used.
+// assistant whose probe answered "ready" is offered; without it, `kinds` text
+// is used and installed is the only rule (F17).
 export function assistantChoices(payload, kindsText, modelsByKind, caps) {
   const support = capabilities(caps);
   let assistants;
   if (support.assistantsJson && Array.isArray(payload?.assistants)) {
     assistants = payload.assistants
-      // Installed and not known to fail: a probe that never ran (null) still
-      // counts, so a fresh install lists its assistants; no-auth, quota and
-      // error leave the list until "Probe again" says ready.
-      .filter((a) => a && a.installed && (a.probe == null || a.probe.status === "ready"))
+      .filter((a) => a && a.installed && a.probe?.status === "ready")
       .map((a) => ({
         kind: a.kind,
         models: Array.isArray(a.models) ? a.models : [],

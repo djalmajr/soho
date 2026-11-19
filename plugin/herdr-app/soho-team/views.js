@@ -21,25 +21,29 @@ const rowsOf = (app) => Array.isArray(app.data.team?.roles) ? app.data.team.role
 function effortCell(app, row, group, t, cx) {
   const target = M.effortTarget(row, app.groups());
   const id = `effort-${row.role}`;
-  return chooser({
-    id,
-    label: row.effort || "—",
-    value: row.effort,
-    choices: EFFORTS.map((v) => ({ id: v, label: v })),
-    note: target.appliesTo,
-    open: app.menuOpen === id,
-    focus: app.menuFocus,
-    width: 96,
-    disabled: busy(app, `effort:${target.key}`),
-    onOpenChange: (open, ctx) => app.openMenu(open ? id : "", ctx),
-    onChoose: (choice, ctx) => app.setEffort(row, choice.id, ctx),
-  });
+  // The select keeps its own click: stopping it here keeps the row's Edit from
+  // opening when the operator only changes the effort (decision 1).
+  return div().id(`effort-stop-${row.role}`).flex_none()
+    .on_click((_e, ctx) => ctx.stop_propagation())
+    .child(chooser({
+      id,
+      label: row.effort || "—",
+      value: row.effort,
+      choices: EFFORTS.map((v) => ({ id: v, label: v })),
+      note: target.appliesTo,
+      open: app.menuOpen === id,
+      focus: app.menuFocus,
+      width: 96,
+      disabled: busy(app, `effort:${target.key}`),
+      onOpenChange: (open, ctx) => app.openMenu(open ? id : "", ctx),
+      onChoose: (choice, ctx) => app.setEffort(row, choice.id, ctx),
+    }));
 }
 
+// The row is the Edit button: a click anywhere but the effort select opens the
+// form for the role named in this row (decision 1).
 function roleRow(app, row, group, t, cx, { narrow = false, list = false } = {}) {
   const key = `role-${row.role}`;
-  const hovered = app.hovered === key;
-  const showEdit = hovered || narrow;
   const name = div().id(`${key}-name`).min_w(0).flex_1().truncate()
     .text_size(TEXT.small).text_color(t.foreground).child(row.role);
   const meta = list
@@ -49,36 +53,37 @@ function roleRow(app, row, group, t, cx, { narrow = false, list = false } = {}) 
   const controls = h_flex().flex_none().gap(6).items_center()
     .child(div().min_w(72).px(4).text_size(TEXT.caption).text_color(t.muted).child(M.modeLabel(row.mode)))
     .child(effortCell(app, row, group, t, cx));
-  const edit = button(`${key}-edit`, "Edit", (ctx) => app.openEdit({ role: row.role }, ctx), { small: true });
+  const open = (_e, ctx) => app.openEdit({ role: row.role }, ctx);
   return (narrow
-    ? v_flex().id(key).px(8).py(6).gap(5).rounded(6).bg(t.canvas)
-      .hover((s) => s.bg(t.raised))
-      .child(h_flex().gap(6).items_center().child(name).when(showEdit, (el) => el.child(edit)))
+    ? v_flex().id(key).px(8).py(6).gap(5).rounded(6).bg(t.canvas).cursor_pointer()
+      .hover((s) => s.bg(t.raised)).on_click(open)
+      .child(h_flex().gap(6).items_center().child(name))
       .child(h_flex().gap(6).items_center().child(meta).child(controls))
-    : h_flex().id(key).h(list ? 42 : 30).px(7).gap(6).items_center().rounded(6).bg(t.canvas)
-      .hover((s) => s.bg(t.raised))
-      .on_hover((value, ctx) => { if (app.hovered !== (value ? key : "")) { app.hovered = value ? key : ""; ctx.notify(); } })
+    : h_flex().id(key).h(list ? 42 : 30).px(7).gap(6).items_center().rounded(6).bg(t.canvas).cursor_pointer()
+      .hover((s) => s.bg(t.raised)).on_click(open)
       .child(h_flex().min_w(0).flex_1().gap(6).items_center().child(name).child(meta))
-      .child(controls)
-      .when(showEdit, (el) => el.child(edit)));
+      .child(controls));
 }
 
+// A lane header is the lane's Edit button. The "Outside lanes" header names no
+// lane, so it stays a header instead of guessing a role (decision 1).
 function groupHeader(app, group, t) {
+  const editable = Boolean(group.lane);
   return h_flex().id(`group-${group.lane || "outside"}`).h(26).px(4).gap(8).items_center()
+    .when(editable, (el) => el.cursor_pointer().hover((s) => s.bg(t.raised))
+      .on_click((_e, ctx) => app.openEdit({ lane: group.lane }, ctx)))
     .child(growText(group.label.toUpperCase(), t.muted, TEXT.caption))
     .when(Boolean(group.kind), (el) => el.child(chip(group.kind, t)))
-    .when(Boolean(group.model), (el) => el.child(trunc(M.shortModel(group.model), 140, t.dim, TEXT.caption)))
-    .child(button(`group-edit-${group.lane || "outside"}`, "Edit",
-      (cx) => app.openEdit(group.lane ? { lane: group.lane } : { role: group.roles[0] }, cx), { small: true }));
+    .when(Boolean(group.model), (el) => el.child(trunc(M.shortModel(group.model), 140, t.dim, TEXT.caption)));
 }
 
 export function renderGrouped(app, t, cx) {
   const groups = app.groups();
-  if (!groups.length) return v_flex().gap(6).child(errorBlock(app.errors.team, t))
-    .child(div().py(8).text_size(TEXT.small).text_color(t.dim).child("No roles found."));
+  if (!groups.length) {
+    return div().py(8).text_size(TEXT.small).text_color(t.dim).child("No roles found.");
+  }
   const narrow = app.band === "narrow";
   return v_flex().flex_1().min_h(0).gap(8)
-    .child(errorBlock(app.errors.team, t))
     .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().gap(8)
       .children(groups.map((group) =>
         v_flex().gap(3)
@@ -96,18 +101,21 @@ function sortHeader(app, column, label, width, t) {
     .child(`${label}${on ? (app.sort.dir === "asc" ? " ↑" : " ↓") : ""}`);
 }
 
+// The narrow band also uses the two-line rows and drops the fixed header; its
+// sort control lives in the More menu (F15).
 export function renderList(app, t, cx) {
   const rows = M.sortRoles(rowsOf(app), app.sort);
-  if (!rows.length) return v_flex().gap(6).child(errorBlock(app.errors.team, t))
-    .child(div().py(8).text_size(TEXT.small).text_color(t.dim).child("No roles found."));
+  const layout = M.listLayout(app.band);
+  if (!rows.length) {
+    return div().py(8).text_size(TEXT.small).text_color(t.dim).child("No roles found.");
+  }
   return v_flex().flex_1().min_h(0).gap(3)
-    .child(errorBlock(app.errors.team, t))
-    .child(h_flex().h(24).px(7).gap(6).items_center()
+    .when(layout.showHeader, (el) => el.child(h_flex().h(24).px(7).gap(6).items_center()
       .child(sortHeader(app, "role", "Role", 180, t))
       .child(sortHeader(app, "mode", "Mode", 72, t))
-      .child(sortHeader(app, "effort", "Effort", 96, t)))
+      .child(sortHeader(app, "effort", "Effort", 96, t))))
     .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().gap(2)
-      .children(rows.map((row) => roleRow(app, row, null, t, cx, { list: true }))));
+      .children(rows.map((row) => roleRow(app, row, null, t, cx, { list: true, narrow: layout.narrow }))));
 }
 
 export function renderEmpty(app, t) {
@@ -125,12 +133,8 @@ function stats(app, t) {
   const roster = app.data.roster ?? {};
   const s = M.workerStats(roster.agents, roster.settings?.max_workers ?? roster.max_workers);
   return h_flex().gap(8)
-    .children([
-      [String(s.working), "working"],
-      [String(s.reportIn), "report in"],
-      [String(s.max), "max"],
-    ].map(([number, label]) =>
-      v_flex().flex_1().gap(2).px(10).py(6).rounded(7).bg(t.canvas)
+    .children(M.statTiles(s).map(([number, label]) =>
+      v_flex().id(`stat-${label}`).flex_1().gap(2).px(10).py(6).rounded(7).bg(t.canvas)
         .child(div().text_size(19).font_semibold().text_color(t.foreground).child(number))
         .child(div().text_size(TEXT.caption).text_color(t.dim).child(label))));
 }
@@ -172,10 +176,14 @@ function workerCard(app, worker, t, cx, { wide = false } = {}) {
 
 export function renderNow(app, t, cx, { listOnly = false } = {}) {
   const agents = app.data.roster?.agents ?? [];
+  const note = app.notes?.roster ?? "";
   const content = v_flex().flex_1().min_h(0).gap(8)
-    .child(listOnly ? div() : stats(app, t))
+    // The tiles need a roster answer; a neutral note replaces them (decision 3).
+    .when(!listOnly && !note, (el) => el.child(stats(app, t)))
+    .when(Boolean(note), (el) => el.child(div().id("roster-note").py(10)
+      .text_size(TEXT.small).text_color(t.muted).child(note)))
     .child(errorBlock(app.errors.roster, t))
-    .when(agents.length === 0, (el) => el.child(div().py(12).text_size(TEXT.small).text_color(t.dim)
+    .when(!note && agents.length === 0, (el) => el.child(div().py(12).text_size(TEXT.small).text_color(t.dim)
       .child(app.firstReadDone ? "No workers in this project." : "Reading the team…")))
     .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().gap(8)
       .children(agents.map((w) => workerCard(app, w, t, cx, { wide: listOnly }))));
@@ -289,14 +297,18 @@ function bytes(n) {
 export function renderHealth(app, t, cx) {
   const h = app.data.health;
   if (!h) {
-    return v_flex().flex_1().gap(8).child(errorBlock(app.errors.health || "This soho version has no health --json.", t));
+    // A missing health answer is only an error when the command failed (decision 4).
+    return v_flex().flex_1().gap(8)
+      .child(errorBlock(app.errors.health, t))
+      .when(!app.errors.health, (el) => el.child(div().py(8).text_size(TEXT.small).text_color(t.dim)
+        .child(app.firstReadDone ? "Reading health…" : "Reading the team…")));
   }
   const doctor = h.doctor ?? {};
   const copies = h.copies ?? {};
   const procs = h.processes ?? {};
   const gc = h.gc ?? {};
   const update = h.update ?? {};
-  const remove = gc.would_remove ?? [];
+  const remove = M.gcCandidates(gc);
   const confirming = app.cleanupConfirm;
   return v_flex().flex_1().min_h(0).gap(6)
     .child(errorBlock(app.errors.health, t))
@@ -320,6 +332,9 @@ export function renderHealth(app, t, cx) {
     .child(div().px(8).py(5).text_size(TEXT.caption).text_color(t.dim)
       .child(remove.length ? `gc would remove ${remove.length} item(s) (${bytes(gc.total_bytes)}).`
         : "Nothing for gc to remove."))
+    // The confirmation lists every candidate it would delete (F16).
+    .when(confirming, (el) => el.child(v_flex().gap(2).children(remove.map((row) =>
+      diskRow(row.path, row.reason || "no reason reported", bytes(row.size), t)))))
     .child(h_flex().justify_end().gap(6)
       .when(!confirming, (el) => el.child(button("cleanup-ask", "Clean up", () => app.setCleanupConfirm(true, cx),
         { small: true, disabled: remove.length === 0 })))
@@ -332,6 +347,7 @@ export function renderHealth(app, t, cx) {
 export function renderEdit(app, t, cx) {
   const e = app.edit;
   if (!e) return div();
+  const preview = M.previewState(e);
   const scopeChoices = [{ id: "project", label: "Project file" }, { id: "user", label: "User file" }];
   const applies = [{ id: "lane", label: e.laneLabel ? `${e.laneLabel} lane · ${e.roleCount} roles` : "this lane" },
     { id: "role", label: e.role ? `${e.role} only` : "this role only" }];
@@ -341,16 +357,21 @@ export function renderEdit(app, t, cx) {
   const modelChoices = models.map((m) => ({ id: m, label: m }));
   const fileHelp = e.scope === "project" ? ".agents/soho.conf · applies to new workers; open ones keep their assistant." :
     "User config · applies to new workers; open ones keep their assistant.";
+  const assistantChildren = assistants.length
+    ? [chooser({ id: "edit-kind", label: e.kind || "choose", value: e.kind, choices,
+      open: app.menuOpen === "edit-kind", focus: app.menuFocus, width: 240, small: false,
+      onOpenChange: (open, ctx) => app.openMenu(open ? "edit-kind" : "", ctx),
+      onChoose: (choice, ctx) => app.setEditField("kind", choice.id, ctx) })]
+    : [h_flex().gap(8).items_center()
+      .child(div().text_size(TEXT.caption).text_color(t.muted).child("No assistant has answered yet"))
+      .child(button("edit-probe", "Probe again", (ctx) => app.probeAgain(ctx),
+        { small: true, disabled: busy(app, "probe") }))];
   return v_flex().flex_1().min_h(0).gap(12)
     .child(field("Applies to", "", segmented("edit-applies", applies, e.appliesTo,
       (id, ctx) => app.setEditAppliesTo(id, ctx), t)))
     .child(field("Assistant", assistants.length
       ? "Only assistants installed and answering are listed."
-      : "No assistants answered a probe; run Probe again in Assistants.",
-      chooser({ id: "edit-kind", label: e.kind || "choose", value: e.kind, choices,
-        open: app.menuOpen === "edit-kind", focus: app.menuFocus, width: 240, small: false,
-        onOpenChange: (open, ctx) => app.openMenu(open ? "edit-kind" : "", ctx),
-        onChoose: (choice, ctx) => app.setEditField("kind", choice.id, ctx) })))
+      : "", ...assistantChildren))
     .child(field("Model", "", modelChoices.length
       ? chooser({ id: "edit-model", label: e.model || "choose", value: e.model, choices: modelChoices,
         open: app.menuOpen === "edit-model", focus: app.menuFocus, width: 240, small: false,
@@ -366,24 +387,23 @@ export function renderEdit(app, t, cx) {
     .child(v_flex().gap(3).px(10).py(8).rounded(7).border_1().border_color(t.border).bg(t.background)
       .children(e.preview.length ? e.preview.map((line) =>
         div().min_w(0).truncate().text_size(TEXT.caption).text_color(t.muted).child(line))
-        : [div().text_size(TEXT.caption).text_color(t.dim).child("Choose a value to preview the config commands.")]))
+        : [div().text_size(TEXT.caption).text_color(t.dim).child("Choose a value to preview the config commands.")])
+      .when(preview.stale, (el) => el.child(div().text_size(TEXT.caption).text_color(t.ansi3)
+        .child("This preview is stale: it belongs to the previous draft. Save waits for the new one."))))
     .when(Boolean(e.error), (el) => el.child(errorBlock(e.error, t)))
     .child(h_flex().gap(8).justify_end()
       .child(button("edit-cancel", "Cancel", (ctx) => app.closeEdit(ctx), { small: true }))
       .child(button("edit-save", "Save", (ctx) => app.saveEdit(ctx),
-        { small: true, primary: true, disabled: busy(app, "edit-save") || !e.preview.length || !e.valid })));
+        { small: true, primary: true, disabled: busy(app, "edit-save") || !preview.canSave })));
 }
 
+// Equal geometry in every state: selection changes only bg and text color, so
+// no label moves (decision 2).
 export function toolTabs(app, t, cx) {
-  const items = [
-    { id: "team", label: "Team" },
-    { id: "now", label: "Now" },
-    { id: "assistants", label: "Assistants" },
-    { id: "health", label: "Health" },
-  ];
-  return h_flex().gap(3).p(3).rounded(7).bg(t.background)
-    .children(items.map((item) =>
-      div().id(`tab-${item.id}`).h(24).px(app.band === "narrow" ? 8 : 12).items_center().rounded(5)
+  const pad = app.band === "narrow" ? 8 : 12;
+  return h_flex().gap(3).p(3).rounded(7).bg(t.background).items_center()
+    .children(M.tabsFor(app.caps).map((item) =>
+      h_flex().id(`tab-${item.id}`).h(24).flex_none().px(pad).items_center().justify_center().rounded(5)
         .bg(app.tab === item.id ? t.raised : t.background)
         .text_color(app.tab === item.id ? t.foreground : t.muted)
         .text_size(TEXT.caption).cursor_pointer().hover((s) => s.text_color(t.foreground))
@@ -407,7 +427,15 @@ export function moreMenu(app, t, cx) {
     { id: "grouped", label: "Grouped view" },
     { id: "list", label: "List view" },
   ];
-  return chooser({ id, label: "More", value: "", choices, open: app.menuOpen === id, focus: app.moreFocus, width: 150,
+  // The narrow band has no header row, so sorting moves here (F15).
+  if (app.tab === "team") {
+    for (const column of SORTS) {
+      const on = app.sort.column === column.id;
+      choices.push({ id: `sort:${column.id}`,
+        label: `Sort by ${column.label}${on ? (app.sort.dir === "asc" ? " ↑" : " ↓") : ""}` });
+    }
+  }
+  return chooser({ id, label: "More", value: "", choices, open: app.menuOpen === id, focus: app.moreFocus, width: 170,
     onOpenChange: (open, ctx) => app.openMenu(open ? id : "", ctx),
     onChoose: (choice, ctx) => app.moreAction(choice.id, ctx) });
 }

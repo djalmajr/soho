@@ -47,11 +47,12 @@ export function errorBlock(text, t) {
     .bg(t.background).text_size(TEXT.caption).text_color(t.ansi1).child(text);
 }
 
-export function notice(text, undo, onUndo, t) {
+export function notice(text, undo, onUndo, t, opts = {}) {
+  const { disabled = false } = opts;
   return h_flex().id("soho-notice").min_h(30).px(10).py(5).gap(8).items_center()
     .rounded(7).border_1().border_color(t.border).bg(t.raised)
     .child(growText(text, t.foreground, TEXT.caption))
-    .when(Boolean(undo), (el) => el.child(button("soho-undo", "Undo", onUndo, { small: true })));
+    .when(Boolean(undo), (el) => el.child(button("soho-undo", "Undo", onUndo, { small: true, disabled })));
 }
 
 // A controlled value-with-caret chooser. `choices` are {id, label}; Popover

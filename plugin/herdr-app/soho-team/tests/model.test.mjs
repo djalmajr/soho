@@ -108,27 +108,28 @@ test("preview command strings for project and user scope", () => {
   const fields = editFields({ appliesTo: "lane", lane: "build", kind: "pi", model: "opencode-go/hy4-flash-free", effort: "high" });
   assert.deepEqual(fields.map((f) => f.key), ["lane.build.kind", "lane.build.model", "lane.build.effort"]);
   assert.deepEqual(previewCommands(fields, "project"), [
-    "soho config set lane.build.kind pi --project",
-    "soho config set lane.build.model opencode-go/hy4-flash-free --project",
-    "soho config set lane.build.effort high --project",
+    "soho config set lane.build.kind=pi --project",
+    "soho config set lane.build.model=opencode-go/hy4-flash-free --project",
+    "soho config set lane.build.effort=high --project",
   ]);
   assert.deepEqual(previewCommands(fields, "user"), [
-    "soho config set lane.build.kind pi --user",
-    "soho config set lane.build.model opencode-go/hy4-flash-free --user",
-    "soho config set lane.build.effort high --user",
+    "soho config set lane.build.kind=pi --user",
+    "soho config set lane.build.model=opencode-go/hy4-flash-free --user",
+    "soho config set lane.build.effort=high --user",
   ]);
-  assert.equal(configSetCommand("role.reviewer.effort", "low", "user"), "soho config set role.reviewer.effort low --user");
+  assert.equal(configSetCommand("role.reviewer.effort", "low", "user"), "soho config set role.reviewer.effort=low --user");
   const roleFields = editFields({ appliesTo: "role", role: "reviewer", kind: "codex", model: "sol", effort: "low" });
   assert.deepEqual(roleFields.map((f) => f.key), ["role.reviewer.kind", "role.reviewer.model", "role.reviewer.effort"]);
 });
 
-test("dry-run preview uses CLI commands when valid and falls back without the capability", () => {
+test("dry-run preview composes the same lines and takes validity from the CLI", () => {
   const fields = editFields({ appliesTo: "role", role: "reviewer", effort: "low" });
   assert.deepEqual(previewFromDryRuns(null, fields, "project"), {
-    valid: true, error: "", commands: ["soho config set role.reviewer.effort low --project"],
+    valid: true, error: "", commands: ["soho config set role.reviewer.effort=low --project"],
   });
-  const results = [{ valid: true, command: "soho config set role.reviewer.effort low --project" }];
-  assert.equal(previewFromDryRuns(results, fields, "project").commands[0], results[0].command);
+  const results = [{ valid: true, command: "some CLI spelling" }];
+  assert.deepEqual(previewFromDryRuns(results, fields, "project").commands,
+    ["soho config set role.reviewer.effort=low --project"]);
   assert.deepEqual(previewFromDryRuns([{ valid: false, error: "bad effort" }], fields, "project"), {
     valid: false, error: "bad effort", commands: [],
   });
@@ -140,7 +141,7 @@ test("undo uses config unset for in_file null and set for a stored value", () =>
     available: true, args: ["config", "unset", key, "--project"],
   });
   assert.deepEqual(undoPlan({ in_file: "high" }, key, "user", {}), {
-    available: true, args: ["config", "set", key, "high", "--user"],
+    available: true, args: ["config", "set", "lane.build.effort=high", "--user"],
   });
   assert.deepEqual(undoPlan({ in_file: null }, key, "project", {}), {
     available: false, args: [], reason: "soho has no config unset",
@@ -173,7 +174,8 @@ test("fallback without team_json treats team as existing and groups by row lane"
 
 test("fallback without config_dry_run composes commands; without config_unset hides undo for null", () => {
   const fields = editFields({ appliesTo: "lane", lane: "build", effort: "xhigh" });
-  assert.equal(previewFromDryRuns(undefined, fields, "project").commands[0], "soho config set lane.build.effort xhigh --project");
+  assert.equal(previewFromDryRuns(undefined, fields, "project").commands[0],
+    "soho config set lane.build.effort=xhigh --project");
   assert.equal(undoPlan({ in_file: null }, "lane.build.effort", "project", {}).available, false);
   assert.equal(undoPlan({ in_file: "high" }, "lane.build.effort", "project", {}).available, true);
 });
@@ -215,7 +217,8 @@ test("assistants_json filters non-answering assistants and joins roles by kind",
     { kind: "zed", installed: true, models: ["c"], probe: null },
   ] };
   const choices = assistantChoices(payload, "", {}, { assistants_json: true });
-  assert.deepEqual(choices.assistants.map((a) => a.kind), ["pi", "zed"]);
+  // Only a probe that answered "ready" is offered (F17).
+  assert.deepEqual(choices.assistants.map((a) => a.kind), ["pi"]);
   assert.deepEqual(assistantsWithRoles(choices.assistants, [])[0].roles, []);
   const withRoles = assistantsWithRoles(choices.assistants, [{ role: "implementer", lane: "build", kind: "pi", model: "a" }]);
   assert.deepEqual(withRoles[0].roles, [{ role: "implementer", lane: "build", model: "a" }]);

@@ -30,34 +30,48 @@ export default class SohoPanel extends View {
       assistants: null, kindsText: "", modelsByKind: {}, choices: null, health: null,
     };
     this.errors = {};
+    this.notes = {};
     this.caps = M.capabilities(null);
     this.busy = new Set();
-    this.generation = 0;
+    // Reads advance this sequence; writes carry their own context instead, so a
+    // refresh never abandons a write in flight (F2).
+    this.readSeq = 0;
+    this.context = null;
     this.folderKnown = null;
+    this.refreshQueued = false;
     this.firstReadDone = false;
-    this.hovered = "";
     this.menuOpen = "";
     this.selectedWorker = "";
     this.reportAgent = "";
     this.edit = null;
     this.modelInput = InputState.new({ value: "" });
+    this.modelBound = false;
     this.menuFocus = cx.focus_handle();
     this.moreFocus = cx.focus_handle();
     this.noticeItem = null;
     this.noticeTimer = null;
-    this.undo = null;
+    this.undoHolder = null;
+    this.pending = null;
     this.cleanupConfirm = false;
+    this.cleanupContext = null;
     this.configText = null;
     this.updatedAt = null;
+    this.lastVisibleAt = 0;
 
-    const prefs = this.readPrefs();
     const defaultFolder = this.currentFolder();
-    if (prefs[defaultFolder]?.view === "list") this.view = "list";
-    if (prefs[defaultFolder]?.sort) this.sort = prefs[defaultFolder].sort;
+    this.folderKnown = defaultFolder;
+    this.context = M.contextFor(this.space(), defaultFolder);
+    this.applyFolderPrefs(defaultFolder);
 
     if (checking()) return;
+    this.bindModelInput();
     this.refresh(cx);
-    cx.timer.every(REFRESH_MS, (ctx) => this.refresh(ctx));
+    // Poll only while this copy is visible (F18): the installed API has no
+    // visibility call, so the last render or non-zero size is the signal.
+    cx.timer.every(REFRESH_MS, (ctx) => {
+      if (!M.pollAllowed(this.lastVisibleAt)) return;
+      this.refresh(ctx);
+    });
     cx.spawn(async (ctx) => {
       for (;;) {
         const command = await nextCommand();
@@ -82,8 +96,39 @@ export default class SohoPanel extends View {
     return this.folderOf(this.space());
   }
 
-  alive(generation, folder) {
-    return generation === this.generation && this.currentFolder() === folder;
+  currentContext() {
+    return M.contextFor(this.space(), this.currentFolder());
+  }
+
+  sameAs(context) {
+    return M.sameContext(context, this.currentContext());
+  }
+
+  // A context change invalidates every pending action and restores this
+  // folder's own view and sort (F1, F13).
+  adoptContext(context, cx) {
+    const changed = this.context !== null && !M.sameContext(this.context, context);
+    this.context = context;
+    this.folderKnown = context.folder;
+    this.applyFolderPrefs(context.folder);
+    if (!changed) return;
+    let dropped = false;
+    if (this.edit && !M.sameContext(this.edit.context, context)) { this.edit = null; dropped = true; }
+    if (this.undoHolder && !M.sameContext(this.undoHolder.context, context)) { this.undoHolder = null; dropped = true; }
+    if (this.pending) { this.pending = null; dropped = true; }
+    if (this.cleanupConfirm) { this.cleanupConfirm = false; this.cleanupContext = null; dropped = true; }
+    if (dropped) this.showNotice(M.CONTEXT_CHANGED_MESSAGE, null, cx);
+  }
+
+  applyFolderPrefs(folder) {
+    const state = M.viewStateFor(this.readPrefs(), folder, { view: "grouped", sort: { column: "role", dir: "asc" } });
+    this.view = state.view;
+    this.sort = state.sort;
+  }
+
+  // A read is accepted only for the space, machine and folder it started in.
+  alive(gen, context) {
+    return gen === this.readSeq && M.sameContext(context, this.currentContext());
   }
 
   readPrefs() {
@@ -142,43 +187,77 @@ export default class SohoPanel extends View {
   showNotice(text, undo, cx) {
     const item = { text };
     this.noticeItem = item;
-    this.undo = undo?.available ? undo : null;
+    this.undoHolder = undo?.available ? undo : null;
     this.noticeTimer?.cancel();
     this.noticeTimer = cx.timer.after(NOTICE_MS, (ctx) => {
       if (this.noticeItem === item) {
         this.noticeItem = null;
-        this.undo = null;
+        this.undoHolder = null;
       }
       ctx.notify();
     });
   }
 
-  // One read: JSON or text, first stderr lines in the section it feeds.
-  async runSection(cx, section, args, gen, folder, space, json = true) {
-    const key = `${section}|${folder}`;
-    if (this.busy.has(key)) return null;
-    this.busy.add(key);
+  // The typed model input feeds the draft and its preview (F6).
+  bindModelInput() {
+    if (this.modelBound) return;
+    this.modelBound = this.modelInput.on("change", (_event, ctx) => this.modelChanged(ctx));
+  }
+
+  modelChanged(cx) {
+    if (!this.edit || this.busy.has("edit-save")) return;
+    const value = this.modelInput.value();
+    if (this.edit.model === value) return;
+    this.edit = M.draftWithModel(this.edit, value);
+    this.previewEdit(cx);
+  }
+
+  notifySafe(cx) {
     try {
-      const r = await exec("soho", args, { cwd: folder || undefined, on: space?.machine, timeout: 20000 });
-      if (!this.alive(gen, folder)) return null;
+      cx.notify();
+    } catch {
+      // The copy is closed or reloaded: there is nothing left to redraw.
+    }
+  }
+
+  // One read: JSON or text, first stderr lines in the section it feeds. Reads
+  // carry their own sequence; a busy key and an error key can differ from the
+  // section so two consumers do not suppress or erase each other (F9, F14).
+  async runSection(cx, section, args, gen, context, json = true, opts = {}) {
+    const busyKey = opts.busyKey ?? `${section}|${context.folder}`;
+    const errorKey = opts.errorKey ?? section;
+    if (this.busy.has(busyKey)) return null;
+    this.busy.add(busyKey);
+    try {
+      const r = await exec("soho", args, { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
+      if (!this.alive(gen, context)) return null;
       if (r.code !== 0) {
-        this.errors[section] = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
+        // A refusal the panel cannot change is a neutral note, not an error (decision 3).
+        const note = opts.note ? opts.note(r.stderr) : "";
+        if (note) {
+          this.notes[errorKey] = note;
+          this.errors[errorKey] = "";
+          return null;
+        }
+        this.notes[errorKey] = "";
+        this.errors[errorKey] = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
         return null;
       }
-      this.errors[section] = "";
+      this.errors[errorKey] = "";
+      this.notes[errorKey] = "";
       if (!json) return r.stdout ?? "";
       try {
         return JSON.parse(r.stdout);
       } catch {
-        this.errors[section] = `soho ${args.join(" ")} did not return JSON`;
+        this.errors[errorKey] = M.nonJsonMessage(`soho ${args.join(" ")}`, r.stderr);
         return null;
       }
     } catch (e) {
-      if (this.alive(gen, folder)) this.errors[section] = firstLines(e?.message ?? e);
+      if (this.alive(gen, context)) this.errors[errorKey] = firstLines(e?.message ?? e);
       return null;
     } finally {
-      this.busy.delete(key);
-      if (this.alive(gen, folder)) cx.notify();
+      this.busy.delete(busyKey);
+      this.notifySafe(cx);
     }
   }
 
@@ -192,69 +271,86 @@ export default class SohoPanel extends View {
       return;
     }
     const folder = this.folderOf(space);
-    const gen = ++this.generation;
+    const context = M.contextFor(space, folder);
+    this.adoptContext(context, cx);
+    const gen = ++this.readSeq;
     this.folderKnown = folder;
     cx.spawn(async (ctx) => {
-      const capsP = this.runSection(ctx, "capabilities", ["capabilities", "--json"], gen, folder, space);
-      const teamP = this.runSection(ctx, "team", ["roles", "--json"], gen, folder, space);
-      const rosterP = this.runSection(ctx, "roster", ["roster", "--json"], gen, folder, space);
-      const [caps, team, roster] = await Promise.all([capsP, teamP, rosterP]);
-      if (!this.alive(gen, folder)) return;
-      if (caps) {
-        this.data.capabilities = caps;
-        this.caps = M.capabilities(caps);
+      const capsP = this.runSection(ctx, "capabilities", ["capabilities", "--json"], gen, context);
+      const teamP = this.runSection(ctx, "team", ["roles", "--json"], gen, context);
+      const rosterP = this.runSection(ctx, "roster", ["roster", "--json"], gen, context, true,
+        { note: M.rosterRefusal });
+      const [capsRaw, team, roster] = await Promise.all([capsP, teamP, rosterP]);
+      if (!this.alive(gen, context)) return;
+      // A failed or malformed capability answer means the no-new-keys default,
+      // a visible diagnostic and the independent reads still run (F12).
+      const answer = M.capabilityAnswer(capsRaw);
+      if (answer.caps) {
+        this.data.capabilities = answer.caps;
+        this.caps = M.capabilities(answer.caps);
+      } else {
+        this.data.capabilities = null;
+        this.caps = M.capabilities(null);
+        if (!this.errors.capabilities) this.errors.capabilities = answer.error;
       }
       if (team) this.data.team = team;
-      if (roster) this.data.roster = roster;
+      if (roster) this.data.roster = M.normalizeRoster(roster);
+      // A hidden tab never stays selected: the fallback happens before the render
+      // that would paint it (decision 4).
+      this.tab = M.resolveTab(this.tab, this.caps);
       this.firstReadDone = true;
       this.updatedAt = Date.now();
       ctx.notify();
 
-      if (!caps) return;
-      await this.readChoices(ctx, gen, folder, space);
-      if (!this.alive(gen, folder)) return;
-      if (this.caps.healthJson) {
-        const health = await this.runSection(ctx, "health", ["health", "--json"], gen, folder, space);
-        if (this.alive(gen, folder) && health) this.data.health = health;
+      await this.readChoices(ctx, gen, context);
+      if (!this.alive(gen, context)) return;
+      const reads = M.sectionReads(this.data.capabilities ?? this.caps);
+      if (reads.health) {
+        const health = await this.runSection(ctx, "health", ["health", "--json"], gen, context);
+        if (this.alive(gen, context) && health) this.data.health = health;
       }
       const agent = this.reportAgent
         || (this.tab === "now" && this.band === "wide" ? this.selectedWorker : "");
-      if (agent) await this.loadReport(agent, gen, folder, space, ctx);
-      if (this.alive(gen, folder)) ctx.notify();
+      if (agent) await this.loadReport(agent, gen, context, ctx);
+      if (this.alive(gen, context)) ctx.notify();
     });
   }
 
-  async readChoices(cx, gen, folder, space) {
+  async readChoices(cx, gen, context) {
     if (checking()) return;
-    if (this.caps.assistantsJson) {
-      const assistants = await this.runSection(cx, "assistants", ["kinds", "--json"], gen, folder, space);
-      if (!this.alive(gen, folder) || !assistants) return;
+    const reads = M.sectionReads(this.caps);
+    if (reads.assistantsJson) {
+      const assistants = await this.runSection(cx, "assistants", ["kinds", "--json"], gen, context);
+      if (!this.alive(gen, context) || !assistants) return;
       this.data.assistants = assistants;
       this.data.choices = M.assistantChoices(assistants, "", {}, this.caps);
     } else {
-      const text = await this.runSection(cx, "assistants", ["kinds"], gen, folder, space, false);
-      if (!this.alive(gen, folder) || text === null) return;
+      const text = await this.runSection(cx, "assistants", ["kinds"], gen, context, false);
+      if (!this.alive(gen, context) || text === null) return;
       this.data.kindsText = text;
       const modelsByKind = {};
       for (const a of M.parseKindsText(text).filter((row) => row.installed)) {
-        const models = await this.runSection(cx, "assistants", ["models", a.kind], gen, folder, space, false);
-        if (!this.alive(gen, folder)) return;
+        const models = await this.runSection(cx, "assistants", ["models", a.kind], gen, context, false,
+          { errorKey: M.modelsErrorKey(a.kind), busyKey: `assistants|${context.folder}` });
+        if (!this.alive(gen, context)) return;
         modelsByKind[a.kind] = models ?? "";
       }
       this.data.modelsByKind = modelsByKind;
       this.data.choices = M.assistantChoices(null, text, modelsByKind, this.caps);
     }
-    if (this.alive(gen, folder)) cx.notify();
+    if (this.alive(gen, context)) cx.notify();
   }
 
-  async loadReport(agentKey, gen, folder, space, cx) {
+  async loadReport(agentKey, gen, context, cx) {
     if (checking()) return;
     const worker = M.findWorker(this.data.roster?.agents, agentKey);
     if (!worker) return;
-    this.reportAgent = M.workerKey(worker);
+    const requested = M.workerKey(worker);
+    this.reportAgent = requested;
     if (this.caps.reportJson) {
-      const report = await this.runSection(cx, "report", ["report", worker.name, "--json"], gen, folder, space);
-      if (!this.alive(gen, folder)) return;
+      const report = await this.runSection(cx, "report", ["report", worker.name, "--json"], gen, context, true,
+        { busyKey: M.reportBusyKey(context.folder, requested) });
+      if (!this.alive(gen, context) || !M.acceptsReport(this.reportAgent, requested)) return;
       if (report) {
         this.data.report = report;
         this.data.reportMarkdown = null;
@@ -262,31 +358,38 @@ export default class SohoPanel extends View {
     } else if (worker.report_path) {
       try {
         const path = worker.report_path;
-        const text = await readTextFile(path, { on: space?.machine });
-        if (!this.alive(gen, folder)) return;
+        const text = await readTextFile(path, { on: context.machine });
+        if (!this.alive(gen, context) || !M.acceptsReport(this.reportAgent, requested)) return;
         this.data.reportMarkdown = text ?? `Report file is empty: ${path}`;
         this.data.report = null;
         this.errors.report = "";
       } catch (e) {
-        if (this.alive(gen, folder)) this.errors.report = firstLines(e?.message ?? e);
+        if (this.alive(gen, context) && M.acceptsReport(this.reportAgent, requested)) {
+          this.errors.report = firstLines(e?.message ?? e);
+        }
       }
     } else {
       this.errors.report = "soho has no report --json and this worker has no report path";
     }
-    if (this.alive(gen, folder)) cx.notify();
+    if (this.alive(gen, context) && M.acceptsReport(this.reportAgent, requested)) cx.notify();
   }
 
-  // Every state-changing action goes through here: no work while checking.
-  async runAction(cx, key, args, section, onSuccess, text, undo) {
-    if (checking() || this.busy.has(key)) return;
+  // Every state-changing action goes through here: no work while checking, and
+  // a write runs only in the context it was opened in (F1). The busy state
+  // always clears with a notify (F2).
+  async runAction(cx, key, args, section, onSuccess, text, undo, actionContext) {
+    if (checking()) return;
+    const context = actionContext ?? this.currentContext();
+    const decision = M.decideWrite({ actionContext: context, currentContext: this.currentContext(), busy: this.busy.has(key) });
+    if (!decision.run) {
+      if (decision.message) { this.errors[section] = decision.message; cx.notify(); }
+      return;
+    }
     this.busy.add(key);
     cx.notify();
-    const folder = this.currentFolder();
-    const space = this.space();
-    const gen = this.generation;
     try {
-      const r = await exec("soho", args, { cwd: folder || undefined, on: space?.machine, timeout: 20000 });
-      if (!this.alive(gen, folder)) return;
+      const r = await exec("soho", args, { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
+      if (!this.sameAs(context)) return;
       if (r.code !== 0) {
         this.errors[section] = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
         return;
@@ -296,26 +399,27 @@ export default class SohoPanel extends View {
       if (text) this.showNotice(text, undo, cx);
       this.refresh(cx);
     } catch (e) {
-      if (this.alive(gen, folder)) this.errors[section] = firstLines(e?.message ?? e);
+      if (this.sameAs(context)) this.errors[section] = firstLines(e?.message ?? e);
     } finally {
       this.busy.delete(key);
-      if (this.alive(gen, folder)) cx.notify();
+      this.notifySafe(cx);
     }
   }
 
+  // Herdr delivers the suffix only: "close" for "soho-team.close" (F4).
   handleCommand(command, cx) {
-    if (checking() || typeof command !== "string") return;
-    const [mod, name, ...rest] = command.split(".");
-    if (mod !== "soho-team" || rest.length) return;
-    const args = this.pendingCommandArgs ?? {};
-    if (name === "close") {
-      this.runAction(cx, `close:${args.name}`, ["release", args.name, "--close"], "roster",
-        null, `${args.name} closed`);
-    } else if (name === "reopen") {
-      this.runAction(cx, `reopen:${args.name}`, ["reopen", args.name], "roster",
-        null, `${args.name} reopened`);
+    if (checking()) return;
+    const pending = this.pending;
+    const match = M.confirmationMatches(pending, command, this.data.roster?.agents ?? []);
+    if (!match.ok) return;
+    this.pending = null;
+    if (pending.action === "close") {
+      this.runAction(cx, `close:${pending.key}`, ["release", pending.name, "--close"], "roster",
+        null, `${pending.name} closed`, null, pending.context);
+    } else if (pending.action === "reopen") {
+      this.runAction(cx, `reopen:${pending.key}`, ["reopen", pending.name], "roster",
+        null, `${pending.name} reopened`, null, pending.context);
     }
-    this.pendingCommandArgs = null;
   }
 
   // Controller callbacks used by the views.
@@ -353,6 +457,7 @@ export default class SohoPanel extends View {
     this.menuOpen = "";
     if (id === "refresh") this.refresh(cx);
     else if (id === "grouped" || id === "list") this.setView(id, cx);
+    else if (id.startsWith("sort:")) this.setSort(id.slice(5), cx);
   }
 
   peek(worker, cx) {
@@ -369,9 +474,8 @@ export default class SohoPanel extends View {
     this.errors.report = "";
     cx.notify();
     if (!checking()) {
-      const space = this.space();
-      const folder = this.currentFolder();
-      this.loadReport(this.reportAgent, this.generation, folder, space, cx);
+      const context = M.contextFor(this.space(), this.currentFolder());
+      this.loadReport(this.reportAgent, this.readSeq, context, cx);
     }
   }
 
@@ -385,7 +489,7 @@ export default class SohoPanel extends View {
 
   confirmClose(worker, cx) {
     if (checking() || !worker) return;
-    this.pendingCommandArgs = { name: worker.name, terminal: worker.pane ?? "" };
+    this.pending = { action: "close", name: worker.name, key: M.workerKey(worker), context: this.currentContext() };
     openOverlay({ mod: "confirm", kind: "dialog", width: 440, props: {
       title: "Close this worker?",
       detail: `Release ${worker.name} and close its pane. Its report stays available in the team's state.`,
@@ -395,7 +499,7 @@ export default class SohoPanel extends View {
 
   confirmReopen(worker, cx) {
     if (checking() || !worker) return;
-    this.pendingCommandArgs = { name: worker.name, terminal: worker.pane ?? "" };
+    this.pending = { action: "reopen", name: worker.name, key: M.workerKey(worker), context: this.currentContext() };
     openOverlay({ mod: "confirm", kind: "dialog", width: 440, props: {
       title: "Reopen this worker?",
       detail: `Start ${worker.name} fresh with the same role and assistant.`,
@@ -407,22 +511,24 @@ export default class SohoPanel extends View {
     if (checking() || !row || EFFORTS.includes(value) === false) return;
     const target = M.effortTarget(row, this.groups());
     const scope = "project";
-    const flag = "--project";
     const key = `effort:${target.key}`;
-    if (this.busy.has(key)) return;
+    const context = this.currentContext();
+    const decision = M.decideWrite({ actionContext: context, currentContext: this.currentContext(), busy: this.busy.has(key) });
+    if (!decision.run) {
+      if (decision.message) { this.errors.config = decision.message; cx.notify(); }
+      return;
+    }
     this.menuOpen = "";
     this.busy.add(key);
     cx.notify();
-    const folder = this.currentFolder();
-    const space = this.space();
-    const gen = this.generation;
     let previous = null;
     let file = this.configFile(scope);
+    const argv = M.configSetArgv(target.key, value, scope);
     try {
       if (this.caps.configDryRun) {
-        const r = await exec("soho", ["config", "set", target.key, value, flag, "--dry-run", "--json"],
-          { cwd: folder || undefined, on: space?.machine, timeout: 20000 });
-        if (!this.alive(gen, folder)) return;
+        const r = await exec("soho", [...argv, "--dry-run", "--json"],
+          { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
+        if (!this.sameAs(context)) return;
         if (r.code !== 0) {
           this.errors.config = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
           return;
@@ -431,7 +537,7 @@ export default class SohoPanel extends View {
         try {
           plan = JSON.parse(r.stdout);
         } catch {
-          this.errors.config = "soho config set --dry-run --json did not return JSON";
+          this.errors.config = M.nonJsonMessage(`soho ${[...argv, "--dry-run", "--json"].join(" ")}`, r.stderr);
           return;
         }
         if (plan.valid === false) {
@@ -442,22 +548,22 @@ export default class SohoPanel extends View {
         file = plan.file ?? file;
       }
       this.errors.config = "";
-      const args = ["config", "set", target.key, value, flag];
-      const r = await exec("soho", args, { cwd: folder || undefined, on: space?.machine, timeout: 20000 });
-      if (!this.alive(gen, folder)) return;
+      const r = await exec("soho", argv, { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
+      if (!this.sameAs(context)) return;
       if (r.code !== 0) {
         this.errors.config = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
         return;
       }
       const what = target.lane ? `${target.label} lane effort` : `${row.role} effort`;
       const undo = M.undoPlan(previous, target.key, scope, this.caps);
-      this.showNotice(M.noticeText(what, value, target.key, file), undo, cx);
+      this.showNotice(M.noticeText(what, value, target.key, file),
+        undo.available ? { ...undo, context } : null, cx);
       this.refresh(cx);
     } catch (e) {
-      if (this.alive(gen, folder)) this.errors.config = firstLines(e?.message ?? e);
+      if (this.sameAs(context)) this.errors.config = firstLines(e?.message ?? e);
     } finally {
       this.busy.delete(key);
-      if (this.alive(gen, folder)) cx.notify();
+      this.notifySafe(cx);
     }
   }
 
@@ -466,13 +572,15 @@ export default class SohoPanel extends View {
     const group = sel.lane ? this.groups().find((g) => g.lane === sel.lane) : null;
     const row = sel.role ? this.roleByName(sel.role) : null;
     if (!group && !row) return;
-    const byLane = Boolean(group);
+    const byLane = Boolean(group) && sel.appliesTo !== "role";
+    const targetRole = group ? M.roleForScope(sel.role, group) : (row?.role ?? "");
     this.edit = {
       appliesTo: byLane ? "lane" : "role",
       lane: group?.lane ?? row?.lane ?? "",
       laneLabel: group?.label ?? "",
       roleCount: group?.roles?.length ?? 1,
-      role: byLane ? "" : row.role,
+      role: byLane ? "" : targetRole,
+      targetRole,
       kind: byLane ? (group.kind || "") : (row.kind || ""),
       model: byLane ? (group.model || "") : (row.model || ""),
       effort: byLane ? (group.effort || "") : (row.effort || ""),
@@ -483,15 +591,17 @@ export default class SohoPanel extends View {
       previous: null,
       previousByKey: {},
       file: this.configFile("project"),
+      pending: false,
+      snapshot: null,
+      context: this.currentContext(),
       token: 0,
     };
     this.tab = "team";
     this.menuOpen = "";
+    this.bindModelInput();
     this.modelInput.set_value(this.edit.model);
     cx.notify();
-    const space = this.space();
-    const folder = this.currentFolder();
-    this.readChoices(cx, this.generation, folder, space);
+    this.readChoices(cx, this.readSeq, M.contextFor(this.space(), this.currentFolder()));
     this.previewEdit(cx);
   }
 
@@ -502,41 +612,55 @@ export default class SohoPanel extends View {
   }
 
   setEditField(field, value, cx) {
-    if (!this.edit) return;
+    if (!this.edit || this.busy.has("edit-save")) return;
     this.edit[field] = value;
     if (field === "model") this.modelInput.set_value(value);
     this.menuOpen = "";
     this.previewEdit(cx);
   }
 
+  // Switching Applies to keeps the role that was opened (F5).
   setEditAppliesTo(appliesTo, cx) {
-    if (!this.edit) return;
+    if (!this.edit || this.busy.has("edit-save")) return;
     const group = this.groups().find((g) => g.lane === this.edit.lane);
-    const row = this.roleByName(this.edit.role);
-    this.edit.appliesTo = appliesTo;
-    if (!group) return;
-    if (appliesTo === "lane") {
-      this.edit.kind = group.kind || "";
-      this.edit.model = group.model || "";
-      this.edit.effort = group.effort || "";
-    } else if (group.roles[0]) {
-      const first = this.roleByName(group.roles[0]) ?? {};
-      this.edit.role = first.role ?? "";
-      this.edit.kind = first.kind || "";
-      this.edit.model = first.model || "";
-      this.edit.effort = first.effort || "";
+    this.edit.appliesTo = appliesTo === "role" ? "role" : "lane";
+    if (this.edit.appliesTo === "lane") {
+      if (group) {
+        this.edit.kind = group.kind || "";
+        this.edit.model = group.model || "";
+        this.edit.effort = group.effort || "";
+      }
+    } else {
+      const role = M.roleForScope(this.edit.role || this.edit.targetRole, group);
+      const row = this.roleByName(role);
+      this.edit.role = role;
+      this.edit.kind = row?.kind || "";
+      this.edit.model = row?.model || "";
+      this.edit.effort = row?.effort || "";
     }
     this.modelInput.set_value(this.edit.model);
     this.previewEdit(cx);
-    void row;
   }
 
+  // One validated snapshot for the exact draft; the previous preview is stale
+  // while the new one runs and Save waits for it (F7).
   async previewEdit(cx) {
     if (checking() || !this.edit) return;
     const e = this.edit;
     const token = ++e.token;
+    e.pending = true;
+    const problem = M.editProblem(e);
     const fields = M.editFields(e);
+    if (problem) {
+      e.pending = false;
+      e.preview = [];
+      e.valid = false;
+      e.error = problem;
+      cx.notify();
+      return;
+    }
     if (!fields.length) {
+      e.pending = false;
       e.preview = [];
       e.valid = true;
       e.error = "";
@@ -544,30 +668,49 @@ export default class SohoPanel extends View {
       cx.notify();
       return;
     }
+    const context = M.contextFor(this.space(), this.currentFolder());
     let preview;
     if (this.caps.configDryRun) {
-      const folder = this.currentFolder();
-      const space = this.space();
-      const gen = this.generation;
       const results = [];
       for (const f of fields) {
-        const flag = e.scope === "user" ? "--user" : "--project";
+        const argv = [...M.configSetArgv(f.key, f.value, e.scope), "--dry-run", "--json"];
         try {
-          const r = await exec("soho", ["config", "set", f.key, f.value, flag, "--dry-run", "--json"],
-            { cwd: folder || undefined, on: space?.machine, timeout: 20000 });
-          if (this.edit !== e || token !== e.token || !this.alive(gen, folder)) return;
+          const r = await exec("soho", argv, { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
+          if (this.edit !== e || token !== e.token) return;
+          if (!M.sameContext(context, this.currentContext())) {
+            e.pending = false;
+            e.valid = false;
+            e.snapshot = null;
+            e.error = M.CONTEXT_CHANGED_MESSAGE;
+            cx.notify();
+            return;
+          }
           if (r.code !== 0) {
             e.error = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
             e.preview = [];
             e.valid = false;
+            e.pending = false;
             cx.notify();
             return;
           }
-          results.push(JSON.parse(r.stdout));
+          let result;
+          try {
+            result = JSON.parse(r.stdout);
+          } catch {
+            e.error = M.nonJsonMessage(`soho ${argv.join(" ")}`, r.stderr);
+            e.preview = [];
+            e.valid = false;
+            e.pending = false;
+            cx.notify();
+            return;
+          }
+          results.push(result);
         } catch (err) {
+          if (this.edit !== e || token !== e.token) return;
           e.error = firstLines(err?.message ?? err);
           e.preview = [];
           e.valid = false;
+          e.pending = false;
           cx.notify();
           return;
         }
@@ -586,75 +729,100 @@ export default class SohoPanel extends View {
     e.preview = preview.commands;
     e.valid = preview.valid;
     e.error = preview.error;
+    e.snapshot = preview.valid ? M.snapshotFor(e, preview, e.previousByKey, e.file, context) : null;
+    e.pending = false;
     cx.notify();
   }
 
   async saveEdit(cx) {
     if (checking() || !this.edit || this.busy.has("edit-save")) return;
     const e = this.edit;
-    const fields = M.editFields(e);
-    if (!fields.length || !e.valid) return;
+    const state = M.previewState(e);
+    if (!state.canSave) return;
+    const snapshot = e.snapshot;
+    if (!M.snapshotMatches(snapshot, e)) {
+      e.error = "The preview is out of date; wait for it to update before saving.";
+      cx.notify();
+      return;
+    }
+    const decision = M.decideWrite({ actionContext: snapshot.context, currentContext: this.currentContext(), busy: false });
+    if (!decision.run) {
+      this.errors.config = decision.message;
+      cx.notify();
+      return;
+    }
     this.busy.add("edit-save");
     cx.notify();
-    const folder = this.currentFolder();
-    const space = this.space();
-    const gen = this.generation;
-    const flag = e.scope === "user" ? "--user" : "--project";
-    const plans = [];
+    const scope = snapshot.scope;
+    const applied = [];
     try {
-      for (const f of fields) {
-        const r = await exec("soho", ["config", "set", f.key, f.value, flag],
-          { cwd: folder || undefined, on: space?.machine, timeout: 20000 });
-        if (!this.alive(gen, folder)) return;
+      for (let i = 0; i < snapshot.fields.length; i += 1) {
+        const f = snapshot.fields[i];
+        const r = await exec("soho", M.configSetArgv(f.key, f.value, scope),
+          { cwd: snapshot.context.folder || undefined, on: snapshot.context.machine, timeout: 20000 });
+        if (!this.sameAs(snapshot.context)) return;
         if (r.code !== 0) {
-          this.errors.config = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
+          const detail = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
+          this.errors.config = M.partialFailureMessage(applied,
+            snapshot.fields.slice(i).map((x) => x.key), detail);
+          this.refresh(cx);
           return;
         }
-        plans.push(M.undoPlan(e.previousByKey[f.key] ?? null, f.key, e.scope, this.caps));
+        applied.push(f.key);
       }
       this.errors.config = "";
-      const what = e.lane && e.appliesTo === "lane" ? `${e.laneLabel} lane settings` : `${e.role} settings`;
+      const plans = snapshot.fields.map((f) => M.undoPlan(snapshot.previousByKey[f.key] ?? null, f.key, scope, this.caps));
       const undo = plans.every((p) => p.available)
-        ? { available: true, plans, key: fields[0].key }
+        ? { available: true, plans, key: snapshot.fields[0].key, context: snapshot.context }
         : null;
-      this.edit = null;
-      this.showNotice(M.noticeText(what, fields[0].value, fields[0].key, e.file), undo, cx);
+      const what = e.lane && snapshot.appliesTo === "lane" ? `${e.laneLabel} lane settings` : `${e.role} settings`;
+      if (this.edit === e) this.edit = null;
+      this.showNotice(M.noticeText(what, snapshot.fields[0].value, snapshot.fields[0].key, snapshot.file), undo, cx);
       this.refresh(cx);
     } catch (err) {
-      if (this.alive(gen, folder)) this.errors.config = firstLines(err?.message ?? err);
+      if (this.sameAs(snapshot.context)) {
+        this.errors.config = M.partialFailureMessage(applied,
+          snapshot.fields.slice(applied.length).map((f) => f.key), firstLines(err?.message ?? err));
+      }
     } finally {
       this.busy.delete("edit-save");
-      if (this.alive(gen, folder)) cx.notify();
+      this.notifySafe(cx);
     }
   }
 
-  async undo(cx) {
-    if (checking() || !this.undo) return;
-    const plans = this.undo.plans ?? [this.undo];
-    const key = "undo";
-    if (this.busy.has(key)) return;
-    this.busy.add(key);
-    const folder = this.currentFolder();
-    const space = this.space();
-    const gen = this.generation;
+  // The clicked plan outlives the notice and is used to the end (F3).
+  async undoLast(cx) {
+    if (checking() || !this.undoHolder || this.busy.has("undo")) return;
+    const holder = this.undoHolder;
+    const decision = M.decideWrite({ actionContext: holder.context, currentContext: this.currentContext(), busy: false });
+    if (!decision.run) {
+      this.errors.config = decision.message;
+      this.undoHolder = null;
+      cx.notify();
+      return;
+    }
+    this.busy.add("undo");
+    cx.notify();
+    const plans = holder.plans ?? [holder];
     try {
       for (const plan of plans) {
-        const r = await exec("soho", plan.args, { cwd: folder || undefined, on: space?.machine, timeout: 20000 });
-        if (!this.alive(gen, folder)) return;
+        const r = await exec("soho", plan.args,
+          { cwd: holder.context.folder || undefined, on: holder.context.machine, timeout: 20000 });
+        if (!this.sameAs(holder.context)) return;
         if (r.code !== 0) {
           this.errors.config = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
           return;
         }
       }
       this.errors.config = "";
-      const undone = this.undo.key ?? planKey(plans[0]);
-      this.showNotice(`Undid ${undone}`, null, cx);
+      this.undoHolder = null;
+      this.showNotice(`Undid ${holder.key ?? M.planKey(plans[0])}`, null, cx);
       this.refresh(cx);
     } catch (e) {
-      if (this.alive(gen, folder)) this.errors.config = firstLines(e?.message ?? e);
+      if (this.sameAs(holder.context)) this.errors.config = firstLines(e?.message ?? e);
     } finally {
-      this.busy.delete(key);
-      if (this.alive(gen, folder)) cx.notify();
+      this.busy.delete("undo");
+      this.notifySafe(cx);
     }
   }
 
@@ -662,8 +830,9 @@ export default class SohoPanel extends View {
     if (checking()) return;
     const path = this.configFile("project");
     if (!path) return;
+    const context = this.currentContext();
     try {
-      const text = await readTextFile(path, { on: this.space()?.machine });
+      const text = await readTextFile(path, { on: context.machine });
       this.configText = text ?? `Config file is empty: ${path}`;
       this.tab = "config";
       cx.notify();
@@ -675,12 +844,16 @@ export default class SohoPanel extends View {
 
   setCleanupConfirm(value, cx) {
     this.cleanupConfirm = value;
+    this.cleanupContext = value ? this.currentContext() : null;
     cx.notify();
   }
 
   cleanup(cx) {
+    const context = this.cleanupContext ?? this.currentContext();
     this.cleanupConfirm = false;
-    this.runAction(cx, "cleanup", ["gc", "--yes"], "health", null, "Orphan copies and processes cleaned up");
+    this.cleanupContext = null;
+    this.runAction(cx, "cleanup", ["gc", "--yes"], "health", null,
+      "Orphan copies and processes cleaned up", null, context);
   }
 
   probeAgain(cx) {
@@ -692,7 +865,18 @@ export default class SohoPanel extends View {
     const t = theme();
     const space = this.space();
     const folder = this.currentFolder();
-    if (!checking() && this.folderKnown !== null && folder !== this.folderKnown) this.refresh(cx);
+    // A folder, space or machine change reloads that project's data, view and
+    // sort, and drops pending actions that belonged to the old context
+    // (F1, F13).
+    const context = M.contextFor(space, folder);
+    if (!checking() && this.context && !M.sameContext(this.context, context) && !this.refreshQueued) {
+      this.refreshQueued = true;
+      cx.spawn(async (ctx) => {
+        this.refreshQueued = false;
+        this.refresh(ctx);
+      });
+    }
+    if (!checking()) this.lastVisibleAt = Date.now();
     const title = this.tab === "report"
       ? (M.findWorker(this.data.roster?.agents, this.reportAgent)?.name ?? "Report")
       : this.tab === "config" ? "Config"
@@ -723,6 +907,7 @@ export default class SohoPanel extends View {
       .text_size(TEXT.small).p(10).gap(7)
       .on_size_change((size, ctx) => {
         this.width = size.width;
+        if (size.width > 0 && size.height > 0) this.lastVisibleAt = Date.now();
         const band = M.bandForWidth(size.width);
         if (band !== this.band) { this.band = band; ctx.notify(); }
       })
@@ -733,7 +918,8 @@ export default class SohoPanel extends View {
       .when(this.errors.capabilities, (el) => el.child(errorBlock(`capabilities: ${this.errors.capabilities}`, t)))
       .when(this.errors.config, (el) => el.child(errorBlock(this.errors.config, t)))
       .child(body)
-      .when(Boolean(this.noticeItem), (el) => el.child(notice(this.noticeItem.text, this.undo, (ctx) => this.undo(ctx), t)));
+      .when(Boolean(this.noticeItem), (el) => el.child(notice(this.noticeItem.text, this.undoHolder,
+        (ctx) => this.undoLast(ctx), t, { disabled: this.isBusy("undo") })));
   }
 
   teamToolbar(t, cx) {
@@ -753,15 +939,13 @@ export default class SohoPanel extends View {
         .child(div().text_size(TEXT.small).text_color(t.dim).child("Reading the team…"));
     }
     if (this.tab === "team") {
-      if (!M.teamExists(this.data.team ?? {}, this.data.capabilities ?? this.caps)) return renderEmpty(this, t);
-      const list = this.view === "list" ? renderList(this, t, cx) : renderGrouped(this, t, cx);
-      if (this.band === "wide" && this.edit) {
-        return h_flex().flex_1().min_h(0).gap(10)
-          .child(v_flex().w(320).flex_none().min_h(0).child(list))
-          .child(v_flex().flex_1().min_w(0).min_h(0).overflow_y_scrollbar().child(renderEdit(this, t, cx)));
-      }
-      if (this.edit) return renderEdit(this, t, cx);
-      return list;
+      // The team diagnostic renders in every branch, the empty one included (F14).
+      const body = M.teamExists(this.data.team ?? {}, this.data.capabilities ?? this.caps)
+        ? this.teamBody(t, cx)
+        : renderEmpty(this, t);
+      return v_flex().flex_1().min_h(0).gap(6)
+        .child(errorBlock(this.errors.team, t))
+        .child(body);
     }
     if (this.tab === "now") {
       if (this.band === "wide") {
@@ -781,6 +965,17 @@ export default class SohoPanel extends View {
     if (this.tab === "config") return markdown("soho-config", this.configText ?? "");
     return div();
   }
+
+  teamBody(t, cx) {
+    const list = this.view === "list" ? renderList(this, t, cx) : renderGrouped(this, t, cx);
+    if (this.band === "wide" && this.edit) {
+      return h_flex().flex_1().min_h(0).gap(10)
+        .child(v_flex().w(320).flex_none().min_h(0).child(list))
+        .child(v_flex().flex_1().min_w(0).min_h(0).overflow_y_scrollbar().child(renderEdit(this, t, cx)));
+    }
+    if (this.edit) return renderEdit(this, t, cx);
+    return list;
+  }
 }
 
 function segmentedView(app, t, cx) {
@@ -791,8 +986,4 @@ function segmentedView(app, t, cx) {
       .text_color(app.view === c.id ? t.foreground : t.muted)
       .text_size(TEXT.caption).hover((s) => s.text_color(t.foreground))
       .on_click((_e, ctx) => app.setView(c.id, ctx)).child(c.label)));
-}
-
-function planKey(plan) {
-  return plan?.args?.[2] ?? "config change";
 }
