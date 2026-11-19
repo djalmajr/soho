@@ -544,3 +544,177 @@ func TestReportDistinctMissingHeaderWarnings(t *testing.T) {
 		t.Fatal("the review's missing header ignored its own marker")
 	}
 }
+
+// reportConfigFixture writes what the report config tests choose between: a
+// project layer selecting the base state dir and a worker report in both the
+// base and the redirect target, so a wrong resolution is visible in the JSON
+// report_path instead of an empty answer. SOHO_DIR and SOHO_STATE_DIR are
+// removed so the config layers, not the environment, select the state root.
+func reportConfigFixture(t *testing.T) (platform.Env, string, string, string) {
+	t.Helper()
+	env, cwd := commandFixture(t)
+	env["SOHO_NOWRITE"] = "1"
+	delete(env, "SOHO_DIR")
+	delete(env, "SOHO_STATE_DIR")
+	if err := os.MkdirAll(filepath.Join(cwd, ".agents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeReportFixtureFile(t, filepath.Join(cwd, ".agents", "soho.conf"), "state_dir = base\n")
+	baseReport := filepath.Join(cwd, "base-report.md")
+	redirectedReport := filepath.Join(cwd, "redirected-report.md")
+	writeReportFixtureFile(t, baseReport, "# Base report\n- [done] base\n")
+	writeReportFixtureFile(t, redirectedReport, "# Redirected report\n- [done] redirected\n")
+	for state, report := range map[string]string{"base": baseReport, "redirected": redirectedReport} {
+		dir := filepath.Join(cwd, state, "ws")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeReportFixtureFile(t, core.LastReportPath(dir, "worker"), report+"\n")
+	}
+	return env, cwd, baseReport, redirectedReport
+}
+
+// runReportPath runs the agent form and returns its report_path.
+func runReportPath(t *testing.T, env platform.Env, cwd string) string {
+	t.Helper()
+	code, out, stderr := runIn(t, []string{"report", "worker", "--json"}, env, cwd)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	return parseReportOutput(t, out).ReportPath
+}
+
+// TestReportConfigFollowsSymlinkedSessionFile pins the state-root redirect a
+// workspace session file supplies when that file is a symlink to a regular
+// file: the config-file semantics LoadConfigFor reads for wait, so report
+// resolves the named worker's report in the redirected state dir, not in the
+// project layer's base dir. The regular-file run is the control.
+func TestReportConfigFollowsSymlinkedSessionFile(t *testing.T) {
+	env, cwd, baseReport, redirectedReport := reportConfigFixture(t)
+	dir := filepath.Join(cwd, "base", "ws")
+	session := filepath.Join(dir, "session.conf")
+	body := "state_dir = redirected\n"
+	writeReportFixtureFile(t, filepath.Join(dir, "redirected-session.conf"), body)
+	writeReportFixtureFile(t, session, body)
+	if got := runReportPath(t, env, cwd); got != redirectedReport {
+		t.Fatalf("regular session file: report_path=%q, want %q (base %q)", got, redirectedReport, baseReport)
+	}
+	if err := os.Remove(session); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("redirected-session.conf", session); err != nil {
+		t.Fatal(err)
+	}
+	if got := runReportPath(t, env, cwd); got != redirectedReport {
+		t.Fatalf("symlinked session file: report_path=%q, want %q (base %q must not win)", got, redirectedReport, baseReport)
+	}
+}
+
+// TestReportConfigFollowsSymlinkedProjectFile: the project layer's own
+// symlink is read, so its state_dir still places the session file and the
+// worker report that session redirects to.
+func TestReportConfigFollowsSymlinkedProjectFile(t *testing.T) {
+	env, cwd, baseReport, redirectedReport := reportConfigFixture(t)
+	writeReportFixtureFile(t, filepath.Join(cwd, "base", "ws", "session.conf"), "state_dir = redirected\n")
+	project := filepath.Join(cwd, ".agents", "soho.conf")
+	if err := os.Rename(project, filepath.Join(cwd, ".agents", "regular-project.conf")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("regular-project.conf", project); err != nil {
+		t.Fatal(err)
+	}
+	if got := runReportPath(t, env, cwd); got != redirectedReport {
+		t.Fatalf("symlinked project file: report_path=%q, want %q (base %q must not win)", got, redirectedReport, baseReport)
+	}
+}
+
+// TestReportConfigFollowsSymlinkedUserFile: the user layer's own symlink is
+// read, so a state root it selects places the worker report.
+func TestReportConfigFollowsSymlinkedUserFile(t *testing.T) {
+	env, cwd := commandFixture(t)
+	env["SOHO_NOWRITE"] = "1"
+	delete(env, "SOHO_DIR")
+	delete(env, "SOHO_STATE_DIR")
+	userDir := filepath.Join(env.Get("XDG_CONFIG_HOME"), "soho")
+	if err := os.MkdirAll(userDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeReportFixtureFile(t, filepath.Join(userDir, "regular-user.conf"), "state_dir = redirected\n")
+	if err := os.Symlink("regular-user.conf", filepath.Join(userDir, "config")); err != nil {
+		t.Fatal(err)
+	}
+	redirectedReport := filepath.Join(cwd, "redirected-report.md")
+	writeReportFixtureFile(t, redirectedReport, "# Redirected report\n- [done] redirected\n")
+	if err := os.MkdirAll(filepath.Join(cwd, "redirected", "ws"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeReportFixtureFile(t, filepath.Join(cwd, "redirected", "ws", "last-report-worker"), redirectedReport+"\n")
+	if got := runReportPath(t, env, cwd); got != redirectedReport {
+		t.Fatalf("symlinked user file: report_path=%q, want %q", got, redirectedReport)
+	}
+}
+
+// TestReportConfigIgnoresAnotherWorkspaceSession: the session layer is the
+// caller workspace's own file, so another workspace's session.conf never
+// redirects the state root; the same content in the caller's workspace does
+// (the control).
+func TestReportConfigIgnoresAnotherWorkspaceSession(t *testing.T) {
+	env, cwd, baseReport, redirectedReport := reportConfigFixture(t)
+	other := filepath.Join(cwd, "base", "ws2")
+	if err := os.MkdirAll(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeReportFixtureFile(t, filepath.Join(other, "session.conf"), "state_dir = redirected\n")
+	if got := runReportPath(t, env, cwd); got != baseReport {
+		t.Fatalf("another workspace's session file redirected the read: report_path=%q, want %q", got, baseReport)
+	}
+	writeReportFixtureFile(t, filepath.Join(cwd, "base", "ws", "session.conf"), "state_dir = redirected\n")
+	if got := runReportPath(t, env, cwd); got != redirectedReport {
+		t.Fatalf("the caller workspace's session file: report_path=%q, want %q", got, redirectedReport)
+	}
+}
+
+// TestReportConfigUnreadableLayerExitsOne: a layer that exists and cannot be
+// read fails the command with exit 1 and no JSON, instead of resolving the
+// base state dir a silent skip would select (its report is present).
+func TestReportConfigUnreadableLayerExitsOne(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		breakLayer func(t *testing.T, env platform.Env, cwd string)
+	}{
+		{"session symlink to a missing target", func(t *testing.T, env platform.Env, cwd string) {
+			if err := os.Symlink("missing-session.conf", filepath.Join(cwd, "base", "ws", "session.conf")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"session symlink to a directory", func(t *testing.T, env platform.Env, cwd string) {
+			if err := os.MkdirAll(filepath.Join(cwd, "not-a-file"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(cwd, "not-a-file"), filepath.Join(cwd, "base", "ws", "session.conf")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"project symlink to a missing target", func(t *testing.T, env platform.Env, cwd string) {
+			project := filepath.Join(cwd, ".agents", "soho.conf")
+			if err := os.Remove(project); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("missing-project.conf", project); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, cwd, _, _ := reportConfigFixture(t)
+			tc.breakLayer(t, env, cwd)
+			code, out, stderr := runIn(t, []string{"report", "worker", "--json"}, env, cwd)
+			if code != 1 || out != "" {
+				t.Fatalf("code=%d out=%q stderr=%q, want exit 1 and no output", code, out, stderr)
+			}
+			if !strings.Contains(stderr, "configuration layer") {
+				t.Fatalf("stderr=%q does not name the unreadable layer", stderr)
+			}
+		})
+	}
+}

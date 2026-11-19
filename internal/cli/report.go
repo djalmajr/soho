@@ -7,7 +7,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/core"
@@ -152,8 +151,11 @@ func cmdReport(args []string, env platform.Env, cwd string) int {
 		report = selection.file
 	} else {
 		agent = selection.agent
-		ctx := reportReadOnlyConfig(readEnv, cwd)
-		stateDir = core.StateDirPath(ctx, readEnv, cwd)
+		ctx, err := core.LoadLocalConfigReadOnly(readEnv, cwd)
+		if err != nil {
+			platform.Die("report: "+err.Error(), 1)
+		}
+		stateDir = core.StateDirPath(&ctx, readEnv, cwd)
 		report = core.LastReport(stateDir, agent)
 		fields := strings.Split(core.RosterLine(stateDir, agent), "\t")
 		// The dispatched task role comes first, with the roster role as the
@@ -229,42 +231,6 @@ func cmdReport(args []string, env platform.Env, cwd string) int {
 		return 1
 	}
 	return 0
-}
-
-// reportReadOnlyConfig loads the defaults, user, project and session layers
-// without materializing the skill: the defaults layer comes from an existing
-// skill source or, when none exists, the embedded config.defaults. The state
-// root and workspace keep the normal rules (StateDirPath resolves both), so a
-// read from a checkout without an installed skill answers instead of dying at
-// the skill lookup.
-func reportReadOnlyConfig(readEnv platform.Env, cwd string) *core.Config {
-	sel := core.UserSelection{}
-	root := platform.StateProjectRoot(readEnv, cwd)
-	if root != "" {
-		if absolute, err := filepath.Abs(root); err == nil {
-			root = absolute
-		}
-	}
-	base, err := core.LoadReadOnlyConfig(readEnv, root, "", sel)
-	if err != nil || root == "" {
-		ctx := base.Config
-		return &ctx
-	}
-	// The session layer lives under the caller's workspace, the same id
-	// StateDirPath appends; an id that is not a safe path component leaves
-	// the base layers as they are.
-	session := core.WorkspaceID(&base.Config, readEnv, cwd)
-	if session == "" || !platform.ValidStateComponent(session) {
-		ctx := base.Config
-		return &ctx
-	}
-	full, err := core.LoadReadOnlyConfig(readEnv, root, session, sel)
-	if err != nil {
-		ctx := base.Config
-		return &ctx
-	}
-	ctx := full.Config
-	return &ctx
 }
 
 func rosterField(fields []string, index int) string {
