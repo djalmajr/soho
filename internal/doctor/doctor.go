@@ -627,7 +627,7 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	doctorProjectRoles(env, cwd, s)
 	doctorOrphans(ctx, svc, env, cwd, s)
 	doctorDoneOpen(ctx, svc, env, cwd, s)
-	doctorCopiesDir(ctx, env, s)
+	doctorCopiesDirAdvice(ctx, env, s)
 	doctorCopiesPressure(ctx, env, cwd, s)
 	doctorWorkerCwds(ctx, svc, env, cwd, s)
 	doctorNativeParentless(ctx, svc, env, cwd, s)
@@ -1847,4 +1847,42 @@ func doctorWorkerCwds(ctx *core.Config, svc transport.Services, env platform.Env
 			s.Warning(fmt.Sprintf("worker '%s' runs in %s, which no longer exists; release it with --close", cols[0], cols[6]))
 		}
 	}
+}
+
+// doctorCopiesDirAdvice runs the copies_dir advice: the world-writable TMPDIR
+// suggestion of copies_dir.go and the project-only warning below.
+func doctorCopiesDirAdvice(ctx *core.Config, env platform.Env, s *Say) {
+	doctorCopiesDir(ctx, env, s)
+	doctorCopiesDirProjectOnly(ctx, env, s)
+}
+
+// doctorCopiesDirProjectOnly warns when copies_dir comes from the project
+// config file and no config file that outlives the checkout sets it: the
+// setting is machine-wide (mutation copies land outside the repository), so a
+// project-only value leaves every other repository on the default. The layers
+// are read as config loads them (an empty value is not a setting), and an
+// unresolved copies_dir still changes nothing here.
+func doctorCopiesDirProjectOnly(ctx *core.Config, env platform.Env, s *Say) {
+	// SOHO_COPIES_DIR exported in the environment already reaches every
+	// repository this shell opens, which is what the advice asks for.
+	if env.Get("SOHO_COPIES_DIR") != "" {
+		return
+	}
+	project, user := false, false
+	for _, layer := range ctx.Layers {
+		entry, ok := layer.Entries["copies_dir"]
+		if !ok || entry.Value == "" {
+			continue
+		}
+		switch layer.Source {
+		case "project":
+			project = true
+		case "user":
+			user = true
+		}
+	}
+	if !project || user {
+		return
+	}
+	s.Warning("copies_dir is a machine setting; set it with --user so workers in other repositories use it too (soho config set copies_dir <path> --user)")
 }
