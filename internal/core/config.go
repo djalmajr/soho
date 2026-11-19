@@ -1319,8 +1319,9 @@ func LoadLocalConfigReadOnly(env platform.Env, cwd string) (Config, error) {
 // selection rule (ProjectConfigFileUsed): the checkout's own
 // .agents/soho.conf when it is a regular file, otherwise the main checkout's
 // when cwd is a linked worktree. When neither is a regular file, a candidate
-// that still has a directory entry is returned so that the layer reports it
-// as unreadable, instead of the path looking like a missing layer.
+// that still has a directory entry, or whose lookup failed for a reason other
+// than absence, is returned so that the layer reports it as unreadable,
+// instead of the path looking like a missing layer.
 func localProjectConfigFile(env platform.Env, cwd string) string {
 	if file := ProjectConfigFileUsed(env, cwd); file != "" {
 		return file
@@ -1332,7 +1333,11 @@ func localProjectConfigFile(env platform.Env, cwd string) string {
 		}
 		seen[root] = true
 		file := filepath.Join(root, ".agents", "soho.conf")
-		if _, err := os.Lstat(file); err == nil {
+		// Any answer but "does not exist" keeps the candidate: an entry that
+		// is there, or a lookup that failed (an unsearchable .agents, EACCES),
+		// both make the layer report the file as unreadable instead of
+		// falling through to another root's configuration.
+		if _, err := os.Lstat(file); err == nil || !os.IsNotExist(err) {
 			return file
 		}
 	}

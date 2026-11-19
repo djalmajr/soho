@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -208,6 +209,37 @@ func TestLoadLocalConfigReadOnlyUnreadableLayerIsAnError(t *testing.T) {
 	roWrite(t, filepath.Join(cwd, "base", "ws", "session.conf"), "# empty\n")
 	if _, err := core.LoadLocalConfigReadOnly(env, cwd); err != nil {
 		t.Fatalf("a comment-only session file was an error: %v", err)
+	}
+}
+
+// TestLoadLocalConfigReadOnlyUnsearchableProjectDirIsAnError: a readable
+// .agents/soho.conf under a .agents directory that cannot be searched is an
+// unreadable project layer, not a missing one, so the state directory is not
+// silently taken from the other layers (review round 3, F1).
+func TestLoadLocalConfigReadOnlyUnsearchableProjectDirIsAnError(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("directory search permission is not enforced here")
+	}
+	env, _, cwd := localFixture(t)
+	agents := filepath.Join(cwd, ".agents")
+	roWrite(t, filepath.Join(agents, "soho.conf"), "state_dir=base\n")
+	if err := os.Chmod(agents, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(agents, 0o700) })
+	_, err := core.LoadLocalConfigReadOnly(env, cwd)
+	if err == nil {
+		t.Fatal("an unsearchable project config directory was treated as a missing layer")
+	}
+	if !strings.Contains(err.Error(), "project configuration layer") {
+		t.Fatalf("error %q does not name the project layer", err)
+	}
+	// The control: with search permission back, the same file loads.
+	if err := os.Chmod(agents, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := core.LoadLocalConfigReadOnly(env, cwd); err != nil {
+		t.Fatalf("the restored project layer was an error: %v", err)
 	}
 }
 
