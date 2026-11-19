@@ -31,6 +31,9 @@ export default class SohoPanel extends View {
     };
     this.errors = {};
     this.notes = {};
+    // The read that wrote each section's diagnostic, so a late answer from an
+    // older request never repaints a newer one (R4-F3).
+    this.diagSeq = {};
     this.caps = M.capabilities(null);
     this.busy = new Set();
     // Reads carry an origin, not a generation: a refresh that overlaps another
@@ -338,10 +341,25 @@ export default class SohoPanel extends View {
     }
   }
 
+  // A section's diagnostic is written only by a read at least as new as the one
+  // that wrote it last, so an older in-flight answer never repaints the result
+  // of a newer reconcile (R4-F3).
+  diagnose(key, origin, { note, error }) {
+    const seq = Number(origin?.seq ?? 0);
+    if (seq < Number(this.diagSeq[key] ?? -1)) return false;
+    this.diagSeq[key] = seq;
+    this.notes[key] = note;
+    this.errors[key] = error;
+    return true;
+  }
+
   // One read: JSON or text, first stderr lines in the section it feeds. A read
   // is admitted by its whole origin and coalesces with an identical read still
   // in flight, so two refreshes of one context share one answer (F1, F2, F9,
   // F14). `opts.accept` can drop a diagnostic whose consumer moved on (F7).
+  // The result carries the origin of the request that fetched it, so a caller
+  // that joined an older request publishes with that request's sequence, never
+  // with its own (R4-F3).
   async runSection(cx, section, args, origin, json = true, opts = {}) {
     const bound = this.originFrom(origin);
     if (!bound) return null;
@@ -365,32 +383,26 @@ export default class SohoPanel extends View {
           const note = opts.note ? opts.note(r.stderr) : "";
           if (!accept()) return null;
           if (note) {
-            this.notes[errorKey] = note;
-            this.errors[errorKey] = "";
+            this.diagnose(errorKey, bound, { note, error: "" });
             return null;
           }
           // An unexpected rejection clears the neutral note it contradicts (F10).
-          this.notes[errorKey] = "";
-          this.errors[errorKey] = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
+          this.diagnose(errorKey, bound, { note: "", error: firstLines(r.stderr || r.stdout || `soho exited ${r.code}`) });
           return null;
         }
-        if (accept()) {
-          this.errors[errorKey] = "";
-          this.notes[errorKey] = "";
-        }
-        if (!json) return r.stdout ?? "";
+        if (accept()) this.diagnose(errorKey, bound, { note: "", error: "" });
+        if (!json) return { value: r.stdout ?? "", origin: bound };
         try {
-          return JSON.parse(r.stdout);
+          return { value: JSON.parse(r.stdout), origin: bound };
         } catch {
-          if (accept()) this.errors[errorKey] = M.nonJsonMessage(`soho ${args.join(" ")}`, r.stderr);
+          if (accept()) {
+            this.diagnose(errorKey, bound, { note: "", error: M.nonJsonMessage(`soho ${args.join(" ")}`, r.stderr) });
+          }
           return null;
         }
       } catch (e) {
         // A thrown read contradicts a note as much as a rejected one does (F10).
-        if (accept()) {
-          this.notes[errorKey] = "";
-          this.errors[errorKey] = firstLines(e?.message ?? e);
-        }
+        if (accept()) this.diagnose(errorKey, bound, { note: "", error: firstLines(e?.message ?? e) });
         return null;
       } finally {
         this.busy.delete(busyKey);
@@ -424,21 +436,22 @@ export default class SohoPanel extends View {
         { fresh: Boolean(options.reconcile) });
       const rosterP = this.runSection(ctx, "roster", ["roster", "--json"], origin, true,
         { note: M.rosterRefusal });
-      const [capsRaw, team, roster] = await Promise.all([capsP, teamP, rosterP]);
+      const [capsRead, teamRead, rosterRead] = await Promise.all([capsP, teamP, rosterP]);
       if (!this.alive(origin)) return;
       // A failed or malformed capability answer means the no-new-keys default,
       // a visible diagnostic and the independent reads still run (F12).
-      const answer = M.capabilityAnswer(capsRaw);
+      const answer = M.capabilityAnswer(capsRead?.value ?? null);
+      const capsOrigin = capsRead?.origin ?? origin;
       if (answer.caps) {
-        this.publish("capabilities", answer.caps, origin);
+        this.publish("capabilities", answer.caps, capsOrigin);
         this.caps = M.capabilities(answer.caps);
       } else {
-        this.publish("capabilities", null, origin);
+        this.publish("capabilities", null, capsOrigin);
         this.caps = M.capabilities(null);
-        if (!this.errors.capabilities) this.errors.capabilities = answer.error;
+        if (!this.errors.capabilities) this.diagnose("capabilities", capsOrigin, { note: "", error: answer.error });
       }
-      if (team) this.publish("team", team, origin);
-      if (roster) this.publish("roster", M.normalizeRoster(roster), origin);
+      if (teamRead) this.publish("team", teamRead.value, teamRead.origin);
+      if (rosterRead) this.publish("roster", M.normalizeRoster(rosterRead.value), rosterRead.origin);
       // A hidden tab never stays selected: the fallback happens before the render
       // that would paint it (decision 4). A detail view keeps its tab (F8).
       this.tab = M.resolveTab(this.tab, this.caps);
@@ -451,7 +464,7 @@ export default class SohoPanel extends View {
       const reads = M.sectionReads(this.data.capabilities ?? this.caps);
       if (reads.health) {
         const health = await this.runSection(ctx, "health", ["health", "--json"], origin);
-        if (this.alive(origin) && health) this.publish("health", health, origin);
+        if (this.alive(origin) && health) this.publish("health", health.value, health.origin);
       }
       const agent = this.reportAgent
         || (this.tab === "now" && this.band === "wide" ? this.selectedWorker : "");
@@ -466,21 +479,22 @@ export default class SohoPanel extends View {
     if (reads.assistantsJson) {
       const assistants = await this.runSection(cx, "assistants", ["kinds", "--json"], origin);
       if (!this.alive(origin) || !assistants) return;
-      this.publish("assistants", assistants, origin);
-      this.publish("choices", M.assistantChoices(assistants, "", {}, this.caps), origin);
+      this.publish("assistants", assistants.value, assistants.origin);
+      this.publish("choices", M.assistantChoices(assistants.value, "", {}, this.caps), assistants.origin);
     } else {
-      const text = await this.runSection(cx, "assistants", ["kinds"], origin, false);
-      if (!this.alive(origin) || text === null) return;
-      this.publish("kindsText", text, origin);
+      const kinds = await this.runSection(cx, "assistants", ["kinds"], origin, false);
+      if (!this.alive(origin) || !kinds) return;
+      const text = kinds.value ?? "";
+      this.publish("kindsText", text, kinds.origin);
       const modelsByKind = {};
       for (const a of M.parseKindsText(text).filter((row) => row.installed)) {
         const models = await this.runSection(cx, "assistants", ["models", a.kind], origin, false,
           { errorKey: M.modelsErrorKey(a.kind), busyKey: M.readBusyKey(`assistants:${a.kind}`, origin) });
         if (!this.alive(origin)) return;
-        modelsByKind[a.kind] = models ?? "";
+        modelsByKind[a.kind] = models?.value ?? "";
       }
-      this.publish("modelsByKind", modelsByKind, origin);
-      this.publish("choices", M.assistantChoices(null, text, modelsByKind, this.caps), origin);
+      this.publish("modelsByKind", modelsByKind, kinds.origin);
+      this.publish("choices", M.assistantChoices(null, text, modelsByKind, this.caps), kinds.origin);
     }
     if (this.alive(origin)) cx.notify();
   }
@@ -499,8 +513,8 @@ export default class SohoPanel extends View {
         { busyKey: M.reportBusyKey(origin, requested), accept: stillWanted });
       if (!this.alive(origin) || !stillWanted()) return;
       if (report) {
-        this.publish("report", report, origin);
-        this.publish("reportMarkdown", null, origin);
+        this.publish("report", report.value, report.origin);
+        this.publish("reportMarkdown", null, report.origin);
       }
     } else if (worker.report_path) {
       try {
@@ -540,13 +554,17 @@ export default class SohoPanel extends View {
     cx.notify();
     try {
       const r = await exec("soho", args, { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
-      if (!this.current(origin) || !kept()) return;
+      if (!this.current(origin)) return;
       if (r.code !== 0) {
-        if (!kept()) return;
-        this.errors[errorKey] = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
+        // The diagnostic belongs to the source that started the action, so a
+        // source that left the screen paints nothing (F5, R3-F5).
+        if (kept()) this.errors[errorKey] = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
         return;
       }
-      this.errors[errorKey] = "";
+      // Only the diagnostic is scoped to the source's lifetime: a success in a
+      // project that is still shown refreshes it, whatever became of the button
+      // that started the action (R4-F5).
+      if (kept()) this.errors[errorKey] = "";
       if (onSuccess) onSuccess(r);
       if (text) this.showNotice(text, undo, cx);
       this.refresh(cx, { reconcile: true });
@@ -628,14 +646,19 @@ export default class SohoPanel extends View {
 
   showWorkerReport(capture, cx) {
     if (!this.workerCurrent(capture)) { this.refuse(cx); return; }
+    // An explicit selection is a read of its own: it carries a fresh sequence of
+    // the captured project, so its clear and its response publish even when a
+    // later refresh already moved another section past the roster row it came
+    // from (R4-F4).
     const bound = this.originFrom(capture);
+    const selection = this.beginRead(M.contextOfOrigin(bound));
     this.selectedWorker = capture.key;
     this.reportAgent = capture.key;
-    this.publish("report", null, bound);
-    this.publish("reportMarkdown", null, bound);
+    this.publish("report", null, selection);
+    this.publish("reportMarkdown", null, selection);
     this.errors.report = "";
     cx.notify();
-    if (!checking()) this.loadReport(this.reportAgent, bound, cx);
+    if (!checking()) this.loadReport(this.reportAgent, selection, cx);
   }
 
   openReport(capture, cx) {
@@ -954,7 +977,7 @@ export default class SohoPanel extends View {
       cx.notify();
       return;
     }
-    const snapshot = e.snapshot;
+    const snapshot = capturedSnapshot;
     const state = M.previewState(e);
     if (!state.canSave) return;
     const origin = this.originFrom(snapshot.origin) ?? this.originFrom(e.origin);
@@ -1066,12 +1089,14 @@ export default class SohoPanel extends View {
 
   // The file is read in the origin it was opened from, and a late completion
   // for a context that changed is discarded instead of painted (F1, R3-F1).
+  // The captured path is the one its footer displayed: a footer replaced by a
+  // refresh cannot open the newer path, and opens nothing (R4-F2).
   async openConfig(capture, cx) {
     if (checking()) return;
     const bound = this.originFrom(capture);
-    if (!bound || !this.current(bound)) { this.refuse(cx); return; }
-    const path = this.configFile("project");
-    if (!path) return;
+    const path = capture?.path ?? "";
+    if (!bound || !path || !this.current(bound)) { this.refuse(cx); return; }
+    if (path !== this.configFile("project")) { this.refuse(cx); return; }
     const context = M.contextOfOrigin(bound);
     try {
       const text = await readTextFile(path, { on: context.machine });
@@ -1088,16 +1113,28 @@ export default class SohoPanel extends View {
 
   // A cleanup confirmation is a token with the origin it was opened in, so a
   // dialog from another context or an earlier confirmation runs no gc
-  // (F1, R3-F1).
+  // (F1, R3-F1). The opener carries the Health origin captured when its button
+  // was drawn, and Cancel carries the token of the dialog it dismisses
+  // (R4-F2).
   setCleanupConfirm(value, capture, cx) {
     if (value) {
-      if (!this.captureCurrent(capture)) { this.refuse(cx); return; }
+      if (!this.captureCurrent(capture)) {
+        // An opener drawn for another project cannot arm the dialog on screen,
+        // and leaves none pending: the panel only shows one confirmation, and
+        // it is not the one this click belongs to (R4-F2).
+        this.cleanupConfirm = null;
+        this.refuse(cx);
+        cx.notify();
+        return;
+      }
       this.cleanupSeq += 1;
       this.cleanupConfirm = {
         token: M.confirmationToken(this.cleanupSeq),
         origin: this.originFrom(capture),
       };
     } else {
+      // Cancel dismisses only the confirmation that rendered it.
+      if (capture?.token && capture.token !== this.cleanupConfirm?.token) return;
       this.cleanupConfirm = null;
     }
     cx.notify();
@@ -1165,6 +1202,9 @@ export default class SohoPanel extends View {
     // Every rendered write keeps the identity it displayed (F1, R3-F1).
     const probeOrigin = this.originOf("assistants") ?? this.originOf("capabilities");
     const configOrigin = this.originOf("team");
+    // The footer names one file and its button opens that file; a refresh that
+    // changes the path leaves the old handler with the old path (R4-F2).
+    const configPath = this.configFile("project");
     const undoCapture = this.noticeCapture();
     const header = h_flex().h(28).flex_none().gap(8).items_center().justify_between()
       .child(h_flex().min_w(0).gap(8).items_center()
@@ -1184,9 +1224,9 @@ export default class SohoPanel extends View {
 
     const body = this.renderBody(t, cx);
     const footer = h_flex().h(24).flex_none().gap(8).items_center()
-      .child(growText(`From ${M.displayFile(this.configFile("project")) || "soho config"}`, t.dim, TEXT.caption))
-      .when(Boolean(this.configFile("project") && this.tab !== "config"), (el) => el.child(
-        button("open-config", "Open config", (ctx) => this.openConfig(configOrigin, ctx), { small: true })))
+      .child(growText(`From ${M.displayFile(configPath) || "soho config"}`, t.dim, TEXT.caption))
+      .when(Boolean(configPath && this.tab !== "config"), (el) => el.child(
+        button("open-config", "Open config", (ctx) => this.openConfig({ origin: configOrigin, path: configPath }, ctx), { small: true })))
       .child(div().flex_none().text_size(TEXT.caption).text_color(t.dim)
         .child(this.updatedAt ? "Updated just now" : "Not read yet"));
     return v_flex().id("soho-root").size_full().min_w(0).min_h(0).bg(t.surface).text_color(t.foreground)

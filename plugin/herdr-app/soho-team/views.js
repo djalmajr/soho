@@ -326,8 +326,11 @@ export function renderHealth(app, t, cx) {
   const update = h.update ?? {};
   const removing = M.gcCandidates(gc);
   const confirming = app.cleanupConfirm;
-  // The confirmation carries the token this button confirms (F1, R3-F1).
-  const cleanupCapture = { token: confirming ? confirming.token : "" };
+  // The opener carries the Health origin this render read, and the dialog's own
+  // token, so an older button arms nothing and an older Cancel dismisses only
+  // the dialog it rendered (R4-F2).
+  const healthOrigin = originOf(app, "health");
+  const cleanupCapture = { token: confirming ? confirming.token : "", origin: healthOrigin };
   return v_flex().flex_1().min_h(0).gap(6)
     .child(errorBlock(app.errors.health, t))
     .child(sectionTitle("Update", t))
@@ -354,10 +357,10 @@ export function renderHealth(app, t, cx) {
     .when(confirming, (el) => el.child(v_flex().gap(2).children(removing.map((row) =>
       diskRow(row.path, row.reason || "no reason reported", bytes(row.size), t)))))
     .child(h_flex().justify_end().gap(6)
-      .when(!confirming, (el) => el.child(button("cleanup-ask", "Clean up", (ctx) => app.setCleanupConfirm(true, originOf(app, "health"), ctx),
+      .when(!confirming, (el) => el.child(button("cleanup-ask", "Clean up", (ctx) => app.setCleanupConfirm(true, { origin: healthOrigin }, ctx),
         { small: true, disabled: removing.length === 0 })))
       .when(confirming, (el) => el.child(div().text_size(TEXT.caption).text_color(t.ansi3).child("Remove these copies and stop orphan processes?")))
-      .when(confirming, (el) => el.child(button("cleanup-no", "Cancel", () => app.setCleanupConfirm(false, null, cx), { small: true })))
+      .when(confirming, (el) => el.child(button("cleanup-no", "Cancel", (ctx) => app.setCleanupConfirm(false, cleanupCapture, ctx), { small: true })))
       .when(confirming, (el) => el.child(button("cleanup-yes", "Clean up", (ctx) => app.cleanup(cleanupCapture, ctx),
         { small: true, primary: true, disabled: busy(app, "cleanup") }))));
 }
@@ -395,6 +398,11 @@ export function renderEdit(app, t, cx) {
       .when(canProbe, (el) => el.child(button("edit-probe", "Probe again", (ctx) => app.probeAgain(probeSource, ctx),
         { small: true, disabled: busy(app, "probe") })))];
   const fields = M.editFields(e);
+  // Save keeps the draft and the validated snapshot this render displayed, so a
+  // newer preview for the same draft is never written by an older button
+  // (R4-F1).
+  const saveDraftId = e.id;
+  const saveSnapshot = e.snapshot;
   return v_flex().flex_1().min_h(0).gap(12)
     .child(field("Applies to", "", segmented("edit-applies", applies, e.appliesTo,
       (id, ctx) => app.setEditAppliesTo(id, e.id, ctx), t)))
@@ -424,7 +432,7 @@ export function renderEdit(app, t, cx) {
     .child(h_flex().gap(8).justify_end()
       .child(button("edit-cancel", "Cancel", (ctx) => app.closeEdit(e.id, ctx), { small: true }))
       // A draft with no changed fields has no snapshot, so it offers no Save (F6).
-      .when(fields.length > 0, (el) => el.child(button("edit-save", "Save", (ctx) => app.saveEdit(ctx, e.id, e.snapshot),
+      .when(fields.length > 0, (el) => el.child(button("edit-save", "Save", (ctx) => app.saveEdit(ctx, saveDraftId, saveSnapshot),
         { small: true, primary: true, disabled: busy(app, "edit-save") || !preview.canSave }))));
 }
 

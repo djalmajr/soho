@@ -211,7 +211,9 @@ test("R2-F1: a delayed Open config cannot paint the former project's file", asyn
   const panel = await boot(cx, { team: { roles: [ROLE], config_files: { project: "/a/.agents/soho.conf" } } });
   let complete;
   H.state.readText = () => new Promise((resolve) => { complete = resolve; });
-  const reading = panel.openConfig(panel.originOf("team"), cx);
+  // The capture is the one the footer installs: the team origin it read plus
+  // the file path it displayed (R4-F2).
+  const reading = panel.openConfig({ origin: panel.originOf("team"), path: panel.configFile("project") }, cx);
   useFolder(spaceB(), "/w/b");
   panel.refresh(cx);
   await tick();
@@ -426,7 +428,7 @@ test("R2-F8: a same-context refresh keeps Report and Config open with their data
 
   panel.data.team = { roles: [ROLE], config_files: { project: "/w/a/.agents/soho.conf" } };
   H.state.readText = () => "project settings";
-  await panel.openConfig(panel.originOf("team"), cx);
+  await panel.openConfig({ origin: panel.originOf("team"), path: panel.configFile("project") }, cx);
   assert.equal(panel.tab, "config");
   panel.refresh(cx);
   await flush(cx);
