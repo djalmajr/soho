@@ -510,6 +510,26 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 			result.Warnings = append(result.Warnings, result.UnseenPaths...)
 		}
 	}
+	// The first candidate that is an existing directory is the tree: a
+	// stale declared Worktree falls through to the worker's own directory,
+	// the one dispatch records (R587).
+	lintTree := ""
+	for _, candidate := range []string{DeclaredWorktree(body), options.InheritedWorktree, options.WorkerCwd} {
+		if candidate == "" {
+			continue
+		}
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			lintTree = candidate
+			break
+		}
+	}
+	// Warning only: Owned item warnings are never added to UnseenPaths, so
+	// brief_lint=strict cannot refuse them. The only filesystem check is one
+	// os.Stat per bare name at the worktree root; the tree is never listed.
+	// Without a known tree the warnings stay silent.
+	if lintTree != "" {
+		result.Warnings = append(result.Warnings, ownedItemLintWarnings(brief, lintTree, ownedBriefSectionLines(body, aliases))...)
+	}
 	if options.PathsOnly {
 		return result
 	}
@@ -803,6 +823,69 @@ func unseenPathWarnings(brief, body, workerCwd string, roots []string) []string 
 		}
 		for _, m := range regexp.MustCompile(`(?:^|[\s"'(])([^\s"'<>`+"`"+`]+)`).FindAllStringSubmatch(masked, -1) {
 			add(m[1], i+1, false, masked)
+		}
+	}
+	return out
+}
+
+// ownedBriefSectionLines returns the fenced-filtered lines of the brief's
+// Owned files section, using the same heading aliases as the other lint
+// checks. A negative Owned label is kept out by OwnedSectionLines.
+func ownedBriefSectionLines(body string, aliases map[string][]string) []string {
+	lines := strings.Split(body, "\n")
+	fenced := briefFenceMask(lines)
+	start, level := -1, 0
+	for i, line := range lines {
+		if fenced[i] {
+			continue
+		}
+		title, ok := briefHeadingTitle(line)
+		if !ok || !BriefSectionTitleMatches(title, "Owned files", aliases) {
+			continue
+		}
+		start, level = i, briefHeadingLevel(line)
+		break
+	}
+	if start < 0 {
+		return nil
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if fenced[i] {
+			continue
+		}
+		if _, ok := briefHeadingTitle(lines[i]); ok && briefHeadingLevel(lines[i]) <= level {
+			end = i
+			break
+		}
+	}
+	filtered, _ := OwnedSectionLines(lines[start+1 : end])
+	return filtered
+}
+
+func briefHeadingLevel(line string) int {
+	level := 0
+	for level < len(line) && level < 3 && line[level] == '#' {
+		level++
+	}
+	return level
+}
+
+func ownedItemLintWarnings(brief, tree string, lines []string) []string {
+	messages := gittree.OwnedItemLintMessages(lines)
+	bareNames := gittree.OwnedBareNames(lines)
+	out := make([]string, 0, len(messages)+len(bareNames))
+	for _, message := range messages {
+		out = append(out, fmt.Sprintf("brief %s: Owned files item %s", brief, message))
+	}
+	// A declared tree that does not exist is not a usable worker tree:
+	// checking bare names against it would warn on every name. One stat of
+	// the tree itself guards that case without listing it.
+	if info, err := os.Stat(tree); err == nil && info.IsDir() {
+		for _, name := range bareNames {
+			if _, err := os.Stat(filepath.Join(tree, name)); err != nil {
+				out = append(out, fmt.Sprintf("brief %s: Owned files item '%s' is not a file at the worktree root; write its path from the root", brief, name))
+			}
 		}
 	}
 	return out

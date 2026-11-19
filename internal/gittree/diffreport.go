@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -924,6 +926,132 @@ func diffOwned(text, tree, goos string) ([]string, bool) {
 	return diffSection(text, tree, goos, "owned files")
 }
 
+// diffOwnedExtension is the 1-10 character extension a path-shaped plain
+// token may end with.
+var diffOwnedExtension = regexp.MustCompile(`(?i)\.[a-z0-9]{1,10}$`)
+
+// diffOwnedPlainToken trims the prose punctuation around a plain path token.
+// A parenthesis at either end is only prose when the token's parentheses are
+// unbalanced, so a path such as src/(setup) keeps its spelling.
+func diffOwnedPlainToken(token string) string {
+	name := strings.TrimRight(token, ".,;:")
+	if strings.Count(name, "(") == strings.Count(name, ")") {
+		return name
+	}
+	return strings.Trim(name, "()")
+}
+
+// diffOwnedLooksPath reports whether a plain token names a path: a separator,
+// a glob, or a short file extension. Prose words never qualify.
+func diffOwnedLooksPath(token string) bool {
+	name := diffOwnedPlainToken(token)
+	return name != "" && (strings.ContainsAny(name, "/*\\") || diffOwnedExtension.MatchString(name))
+}
+
+// diffOwnedNoFilesWords are the empty-scope words the dispatch lint already
+// recognizes for an explicit empty Owned declaration. The lint must not warn
+// about one of those items.
+var diffOwnedNoFilesWords = []string{"none", "nenhum", "nenhuma", "nada", "nothing", "n/a"}
+
+func diffOwnedDeclaresNoFiles(item string) bool {
+	item = strings.TrimSpace(item)
+	if item != "" && strings.ContainsRune("-*+", rune(item[0])) {
+		item = strings.TrimSpace(item[1:])
+	}
+	if item == "—" || item == "-" {
+		return true
+	}
+	lower := strings.ToLower(item)
+	for _, word := range diffOwnedNoFilesWords {
+		if !strings.HasPrefix(lower, word) {
+			continue
+		}
+		rest := lower[len(word):]
+		if rest == "" {
+			return true
+		}
+		if r, _ := utf8.DecodeRuneInString(rest); !unicode.IsLetter(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// ownedItemLintTokens returns the path tokens of one Owned item with the
+// same rules the audit parser uses. An exempt item (empty scope, inherit,
+// new tests, or a continuation line) contributes no tokens and no warning.
+func ownedItemLintTokens(line string) ([]string, bool) {
+	if strings.TrimSpace(line) == "- inherit: previous brief" || !diffBulletRE.MatchString(line) {
+		return nil, true
+	}
+	item := strings.TrimSpace(diffBulletRE.ReplaceAllString(line, ""))
+	if item == "" || diffNewTestsItemRE.MatchString(item) || diffOwnedDeclaresNoFiles(item) {
+		return nil, true
+	}
+	if matches := diffTokenRE.FindAllStringSubmatch(line, -1); len(matches) > 0 {
+		// Backticked tokens count exactly as written.
+		tokens := make([]string, 0, len(matches))
+		for _, m := range matches {
+			tokens = append(tokens, m[1])
+		}
+		return tokens, false
+	}
+	var tokens []string
+	for _, token := range strings.Fields(item) {
+		if diffOwnedLooksPath(token) {
+			tokens = append(tokens, diffOwnedPlainToken(token))
+		}
+	}
+	return tokens, false
+}
+
+// OwnedItemLintMessages returns the short warning for an Owned section line
+// that names no path. The caller prefixes the brief path and item label.
+func OwnedItemLintMessages(lines []string) []string {
+	var out []string
+	for _, line := range lines {
+		tokens, skip := ownedItemLintTokens(line)
+		if skip {
+			continue
+		}
+		if len(tokens) == 0 {
+			item := strings.TrimSpace(diffBulletRE.ReplaceAllString(line, ""))
+			out = append(out, fmt.Sprintf("'%s' names no path", diffOwnedCut(item, 60)))
+		}
+	}
+	return out
+}
+
+// OwnedBareNames returns the distinct bare names in the Owned items. A bare
+// name has no path separator and no glob character: it means the file at the
+// worktree root. The caller checks the root and decides whether to warn.
+func OwnedBareNames(lines []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range lines {
+		tokens, skip := ownedItemLintTokens(line)
+		if skip {
+			continue
+		}
+		for _, token := range tokens {
+			if token == "" || strings.ContainsAny(token, `/\\*?[]`) || seen[token] {
+				continue
+			}
+			seen[token] = true
+			out = append(out, token)
+		}
+	}
+	return out
+}
+
+func diffOwnedCut(value string, max int) string {
+	runes := []rune(value)
+	if len(runes) <= max {
+		return value
+	}
+	return string(runes[:max])
+}
+
 func diffSection(text, tree, goos, section string) ([]string, bool) {
 	lines := diffMarkdown(text)
 	// A composed role may itself contain headings. Only its brief is scope.
@@ -975,8 +1103,16 @@ func diffSection(text, tree, goos, section string) ([]string, bool) {
 				// to the new-tests pattern, not the first-word pattern a
 				// path item yields.
 				items = append(items, diffOwnedNewTests)
-			} else {
+			} else if section != "owned files" && section != "orchestrator files" {
 				push(strings.Fields(item)[0])
+			} else {
+				// Both Owned files and Orchestrator files count every
+				// path-shaped plain token; prose words alone own nothing.
+				for _, token := range strings.Fields(item) {
+					if diffOwnedLooksPath(token) {
+						push(diffOwnedPlainToken(token))
+					}
+				}
 			}
 		}
 	}
