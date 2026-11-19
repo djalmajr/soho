@@ -35,8 +35,11 @@ func TestNativeBulletNeverBlocks(t *testing.T) {
 		t.Fatal("the current bullet does not open with the never-blocks rule")
 	}
 	if !strings.Contains(nativeBulletText, "dispatch with `--no-wait`, arm `soho wait <agent> --wake` and end the") ||
-		!strings.Contains(nativeBulletText, "No\n  foreground `soho wait --timeout` or `hc wait`, in blocks or in a loop.\n") {
+		!strings.Contains(nativeBulletText, "No foreground\n  `soho wait --timeout` or `hc wait`, in blocks or in a loop.\n") {
 		t.Fatal("the current bullet does not replace the foreground wait with dispatch --no-wait plus the wake")
+	}
+	if !strings.Contains(nativeBulletText, "turn. When the note says done, run `soho wait <agent>` once; on a\n  checkpoint (exit 9), arm `--wake` again.") {
+		t.Fatal("the current bullet does not say to read only a done note and to re-arm on a checkpoint")
 	}
 	if !strings.Contains(sohoBlock, nativeBulletText) {
 		t.Fatal("the generated block does not carry the current bullet")
