@@ -34,7 +34,7 @@ import (
 var pairRE = regexp.MustCompile(`^(.+)-(\d{8}T\d{6})(-\d+)?$`)
 var roleRE = regexp.MustCompile("You are running as the `([^`]+)` role")
 var dateRE = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})$`)
-var relativeSinceRE = regexp.MustCompile(`^([1-9][0-9]{0,3})([hdw])$`)
+var relativeSinceRE = regexp.MustCompile(`^([1-9][0-9]{0,3})([mhdw])$`)
 var isoRE = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(\.\d{1,9})?)?(Z|[+-]\d{2}:?\d{2})?$`)
 var jsWhitespace = `\t\n\v\f\r \x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}`
 var shaLineRE = regexp.MustCompile(`^[` + jsWhitespace + `]*([0-9a-f]{64})[` + jsWhitespace + `]+\*?([^` + jsWhitespace + `].*?)[` + jsWhitespace + `]*$`)
@@ -114,17 +114,20 @@ func jsObject(pairs ...any) *jsonjs.Object { return jsonjs.O(pairs...) }
 func number(v int) any                     { return v }
 
 // SinceUsage is the accepted forms of a `--since` flag, for its usage error.
-const SinceUsage = "AAAA-MM-DD, an ISO date or a duration such as 12h, 1d or 2w"
+const SinceUsage = "AAAA-MM-DD, an ISO date or a duration such as 50m, 12h, 1d or 2w"
 
 // ParseSinceFlag reads a `--since` flag: what ParseSince accepts, or a
-// duration back from now, <N>h, <N>d or <N>w with N from 1 to 9999
-// (SOH-306: `friction --since 1d`). A day is 24 hours. The bound keeps
-// 9999w (about 191 years) inside time.Duration (R407 F1).
+// duration back from now, <N>m, <N>h, <N>d or <N>w with N from 1 to 9999
+// (SOH-306: `friction --since 1d`; SOH-424: `m` means minutes). A day is
+// 24 hours; the bound keeps 9999w (about 191 years) inside time.Duration
+// (R407 F1).
 func ParseSinceFlag(value string, now time.Time) (time.Time, bool) {
 	if m := relativeSinceRE.FindStringSubmatch(value); m != nil {
 		n, _ := strconv.Atoi(m[1])
 		unit := time.Hour
 		switch m[2] {
+		case "m":
+			unit = time.Minute
 		case "d":
 			unit = 24 * time.Hour
 		case "w":
