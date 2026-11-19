@@ -1,0 +1,413 @@
+// The five views of the SoHo panel. Values come from the controller; these
+// functions only describe elements and send clicks back through `app`.
+import { div, svg } from "gpui-kit";
+import { h_flex, v_flex, Input } from "gpui-base";
+import { theme } from "herdr";
+import * as M from "./model.js";
+import { button, chip, chooser, dot, errorBlock, field, growText, markdown, sectionTitle, segmented, TEXT, trunc } from "./ui.js";
+
+const EFFORTS = ["low", "medium", "high", "xhigh"];
+const SORTS = [
+  { id: "role", label: "role" },
+  { id: "assistant", label: "assistant" },
+  { id: "model", label: "model" },
+  { id: "effort", label: "effort" },
+  { id: "mode", label: "mode" },
+];
+
+const busy = (app, key) => app.busy.has(key);
+const rowsOf = (app) => Array.isArray(app.data.team?.roles) ? app.data.team.roles : [];
+
+function effortCell(app, row, group, t, cx) {
+  const target = M.effortTarget(row, app.groups());
+  const id = `effort-${row.role}`;
+  return chooser({
+    id,
+    label: row.effort || "—",
+    value: row.effort,
+    choices: EFFORTS.map((v) => ({ id: v, label: v })),
+    note: target.appliesTo,
+    open: app.menuOpen === id,
+    focus: app.menuFocus,
+    width: 96,
+    disabled: busy(app, `effort:${target.key}`),
+    onOpenChange: (open, ctx) => app.openMenu(open ? id : "", ctx),
+    onChoose: (choice, ctx) => app.setEffort(row, choice.id, ctx),
+  });
+}
+
+function roleRow(app, row, group, t, cx, { narrow = false, list = false } = {}) {
+  const key = `role-${row.role}`;
+  const hovered = app.hovered === key;
+  const showEdit = hovered || narrow;
+  const name = div().id(`${key}-name`).min_w(0).flex_1().truncate()
+    .text_size(TEXT.small).text_color(t.foreground).child(row.role);
+  const meta = list
+    ? div().min_w(0).flex_1().truncate().text_size(TEXT.caption).text_color(t.dim)
+      .child(`${row.kind ?? ""} · ${M.shortModel(row.model)}`)
+    : div();
+  const controls = h_flex().flex_none().gap(6).items_center()
+    .child(div().min_w(72).px(4).text_size(TEXT.caption).text_color(t.muted).child(M.modeLabel(row.mode)))
+    .child(effortCell(app, row, group, t, cx));
+  const edit = button(`${key}-edit`, "Edit", (ctx) => app.openEdit({ role: row.role }, ctx), { small: true });
+  return (narrow
+    ? v_flex().id(key).px(8).py(6).gap(5).rounded(6).bg(t.canvas)
+      .hover((s) => s.bg(t.raised))
+      .child(h_flex().gap(6).items_center().child(name).when(showEdit, (el) => el.child(edit)))
+      .child(h_flex().gap(6).items_center().child(meta).child(controls))
+    : h_flex().id(key).h(list ? 42 : 30).px(7).gap(6).items_center().rounded(6).bg(t.canvas)
+      .hover((s) => s.bg(t.raised))
+      .on_hover((value, ctx) => { if (app.hovered !== (value ? key : "")) { app.hovered = value ? key : ""; ctx.notify(); } })
+      .child(h_flex().min_w(0).flex_1().gap(6).items_center().child(name).child(meta))
+      .child(controls)
+      .when(showEdit, (el) => el.child(edit)));
+}
+
+function groupHeader(app, group, t) {
+  return h_flex().id(`group-${group.lane || "outside"}`).h(26).px(4).gap(8).items_center()
+    .child(growText(group.label.toUpperCase(), t.muted, TEXT.caption))
+    .when(Boolean(group.kind), (el) => el.child(chip(group.kind, t)))
+    .when(Boolean(group.model), (el) => el.child(trunc(M.shortModel(group.model), 140, t.dim, TEXT.caption)))
+    .child(button(`group-edit-${group.lane || "outside"}`, "Edit",
+      (cx) => app.openEdit(group.lane ? { lane: group.lane } : { role: group.roles[0] }, cx), { small: true }));
+}
+
+export function renderGrouped(app, t, cx) {
+  const groups = app.groups();
+  if (!groups.length) return v_flex().gap(6).child(errorBlock(app.errors.team, t))
+    .child(div().py(8).text_size(TEXT.small).text_color(t.dim).child("No roles found."));
+  const narrow = app.band === "narrow";
+  return v_flex().flex_1().min_h(0).gap(8)
+    .child(errorBlock(app.errors.team, t))
+    .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().gap(8)
+      .children(groups.map((group) =>
+        v_flex().gap(3)
+          .child(groupHeader(app, group, t))
+          .children(M.sortRoles(group.roles.map((name) => app.roleByName(name)), app.sort)
+            .filter(Boolean)
+            .map((row) => roleRow(app, row, group, t, cx, { narrow }))))));
+}
+
+function sortHeader(app, column, label, width, t) {
+  const on = app.sort.column === column;
+  return div().id(`sort-${column}`).w(width).flex_none().px(6).cursor_pointer()
+    .text_size(TEXT.caption).text_color(on ? t.foreground : t.dim)
+    .on_click((_e, cx) => app.setSort(column, cx))
+    .child(`${label}${on ? (app.sort.dir === "asc" ? " ↑" : " ↓") : ""}`);
+}
+
+export function renderList(app, t, cx) {
+  const rows = M.sortRoles(rowsOf(app), app.sort);
+  if (!rows.length) return v_flex().gap(6).child(errorBlock(app.errors.team, t))
+    .child(div().py(8).text_size(TEXT.small).text_color(t.dim).child("No roles found."));
+  return v_flex().flex_1().min_h(0).gap(3)
+    .child(errorBlock(app.errors.team, t))
+    .child(h_flex().h(24).px(7).gap(6).items_center()
+      .child(sortHeader(app, "role", "Role", 180, t))
+      .child(sortHeader(app, "mode", "Mode", 72, t))
+      .child(sortHeader(app, "effort", "Effort", 96, t)))
+    .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().gap(2)
+      .children(rows.map((row) => roleRow(app, row, null, t, cx, { list: true }))));
+}
+
+export function renderEmpty(app, t) {
+  return v_flex().flex_1().min_h(0).items_center().justify_center().gap(12).px(16)
+    .child(div().w(48).h(48).rounded(10).border_1().border_color(t.border).bg(t.raised))
+    .child(div().text_size(TEXT.title).font_semibold().text_color(t.foreground).child("No team in this project"))
+    .child(div().text_size(TEXT.small).text_color(t.muted)
+      .child("soho is not set up here yet. In the project's orchestrator, run:"))
+    .child(div().px(14).py(7).rounded(7).border_1().border_color(t.border).bg(t.input)
+      .text_size(TEXT.small).text_color(t.foreground).child("soho init"))
+    .child(div().text_size(TEXT.caption).text_color(t.dim).child("The roles show up here once the team exists."));
+}
+
+function stats(app, t) {
+  const roster = app.data.roster ?? {};
+  const s = M.workerStats(roster.agents, roster.settings?.max_workers ?? roster.max_workers);
+  return h_flex().gap(8)
+    .children([
+      [String(s.working), "working"],
+      [String(s.reportIn), "report in"],
+      [String(s.max), "max"],
+    ].map(([number, label]) =>
+      v_flex().flex_1().gap(2).px(10).py(6).rounded(7).bg(t.canvas)
+        .child(div().text_size(19).font_semibold().text_color(t.foreground).child(number))
+        .child(div().text_size(TEXT.caption).text_color(t.dim).child(label))));
+}
+
+function statusColor(status, t) {
+  if (status === "working") return t.working;
+  if (status === "quota" || status === "blocked") return t.blocked;
+  if (status === "gone") return t.unknown;
+  return t.done;
+}
+
+function workerCard(app, worker, t, cx, { wide = false } = {}) {
+  const key = M.workerKey(worker);
+  const label = M.statusLabel(worker.status, worker.report);
+  const time = label === "report in" ? label : (M.durationLabel(worker.task_s ?? worker.activity_s) || label);
+  const selected = app.selectedWorker === key;
+  const hasTerminal = Boolean(worker.pane);
+  const canReport = app.caps.reportJson || Boolean(worker.report_path);
+  const task = div().min_w(0).truncate().text_size(TEXT.caption).text_color(t.muted).child(worker.task ?? "");
+  const actions = h_flex().gap(6).items_center()
+    .when(hasTerminal, (el) => el.child(button(`term-${key}`, "Terminal", (ctx) => app.peek(worker, ctx), { small: true })))
+    .when(canReport, (el) => el.child(button(`report-${key}`, "Report", (ctx) => app.openReport(worker, ctx), { small: true })))
+    .when(label === "report in", (el) => el.child(button(`close-${key}`, "Close", (ctx) => app.confirmClose(worker, ctx),
+      { small: true, disabled: busy(app, `close:${worker.name}`) })))
+    .when(label === "stopped", (el) => el.child(button(`reopen-${key}`, "Reopen", (ctx) => app.confirmReopen(worker, ctx),
+      { small: true, disabled: busy(app, `reopen:${worker.name}`) })));
+  const name = div().min_w(0).flex_1().truncate().text_size(TEXT.small).font_semibold().text_color(t.foreground).child(worker.name);
+  return v_flex().id(`worker-${key}`).gap(6).px(10).py(8).rounded(7)
+    .border_1().border_color(selected ? t.accent : t.border).bg(selected ? t.raised : t.canvas)
+    .cursor_pointer().hover((s) => s.bg(t.raised))
+    .on_click((_e, ctx) => { if (wide && canReport) app.showWorkerReport(worker, ctx); else { app.selectedWorker = key; ctx.notify(); } })
+    .child(h_flex().gap(8).items_center().child(dot(statusColor(worker.status, t), t)).child(name)
+      .child(div().flex_none().text_size(TEXT.caption).text_color(t.dim).child(time)))
+    .child(task)
+    .child(h_flex().gap(6).items_center().child(chip(worker.kind, t))
+      .child(growText(`${worker.role ?? ""}${worker.model ? ` · ${M.shortModel(worker.model)}` : ""}`, t.dim, TEXT.caption))
+      .child(actions));
+}
+
+export function renderNow(app, t, cx, { listOnly = false } = {}) {
+  const agents = app.data.roster?.agents ?? [];
+  const content = v_flex().flex_1().min_h(0).gap(8)
+    .child(listOnly ? div() : stats(app, t))
+    .child(errorBlock(app.errors.roster, t))
+    .when(agents.length === 0, (el) => el.child(div().py(12).text_size(TEXT.small).text_color(t.dim)
+      .child(app.firstReadDone ? "No workers in this project." : "Reading the team…")))
+    .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().gap(8)
+      .children(agents.map((w) => workerCard(app, w, t, cx, { wide: listOnly }))));
+  if (!listOnly) return content;
+  return content;
+}
+
+function reportItem(item, t) {
+  const bad = item.mark === "partial" || item.mark === "env";
+  return h_flex().id(`item-${item.line}`).gap(8).px(8).py(5).rounded(6).bg(t.canvas)
+    .items_start()
+    .child(div().w(58).flex_none().text_size(TEXT.caption).text_color(bad ? t.ansi3 : t.done).child(item.mark))
+    .child(growText(item.text ?? "", t.muted, TEXT.caption));
+}
+
+function layerRow(layer, t) {
+  const ok = layer.result === "PASS";
+  return h_flex().gap(8).px(8).py(4).rounded(6).bg(t.canvas).items_center()
+    .child(growText(layer.name ?? "", t.foreground, TEXT.caption))
+    .child(div().flex_none().text_size(TEXT.caption).text_color(ok ? t.done : t.ansi3).child(M.layerResult(layer)));
+}
+
+export function renderReport(app, t, cx) {
+  const r = app.data.report;
+  if (app.data.reportMarkdown != null) {
+    return v_flex().flex_1().min_h(0).gap(8)
+      .child(errorBlock(app.errors.report, t))
+      .child(markdown(`report-file-${app.reportAgent ?? "agent"}`, app.data.reportMarkdown));
+  }
+  if (!r) {
+    return v_flex().flex_1().gap(8).child(errorBlock(app.errors.report || "No report selected.", t));
+  }
+  const counts = r.counts ?? {};
+  const bad = (counts.partial ?? 0) + (counts.env ?? 0);
+  const failed = (r.test_layers?.layers ?? []).filter((l) => l.result !== "PASS" && l.result !== "NA");
+  const responses = r.review_responses?.fixed ?? [];
+  const worker = app.reportWorker();
+  return v_flex().flex_1().min_h(0).gap(6)
+    .child(errorBlock(app.errors.report, t))
+    .when(bad > 0, (el) => el.child(div().px(9).py(6).rounded(6).border_1().border_color(t.border)
+      .bg(t.raised).text_size(TEXT.caption).text_color(t.ansi3)
+      .child(`${bad} items partial · not a pass: check them before push`)))
+    .child(sectionTitle("Items", t))
+    .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().gap(2)
+      .children([
+        ...M.sortedReportItems(r.items).map((item) => reportItem(item, t)),
+        ...(failed.length ? [sectionTitle("Test layers", t), ...M.sortedLayers(failed).map((l) => layerRow(l, t))] : []),
+        ...(responses.length ? [sectionTitle("Review responses", t), ...responses.map((n) =>
+          reportItem({ line: n, mark: "fixed", text: `F${n} · fixed` }, t))] : []),
+        ...((r.warnings ?? []).length ? [sectionTitle("Warnings", t), ...r.warnings.map((w) =>
+          reportItem({ line: "", mark: w.kind, text: w.message }, t))] : []),
+      ]))
+    .child(h_flex().gap(6).justify_end()
+      .when(Boolean(worker?.pane), (el) => el.child(button("report-terminal", "Terminal", (cx) => app.peek(worker, cx), { small: true })))
+      .when(Boolean(worker?.pane), (el) => el.child(button("report-reopen", "Reopen", (cx) => app.confirmReopen(worker, cx),
+        { small: true, disabled: busy(app, `reopen:${worker?.name}`) })))
+      .when(Boolean(worker), (el) => el.child(button("report-close", "Close", (cx) => app.confirmClose(worker, cx),
+        { small: true, primary: true, disabled: busy(app, `close:${worker?.name}`) }))));
+}
+
+function probeLabel(probe) {
+  if (!probe) return "not probed";
+  if (probe.status === "ready") return "answering";
+  if (probe.status === "no-auth") return "needs auth";
+  if (probe.status === "quota") return "out of quota";
+  return probe.status;
+}
+
+function assistantCard(app, a, t) {
+  const status = probeLabel(a.probe);
+  const color = status === "answering" ? t.working : status === "out of quota" ? t.blocked : t.unknown;
+  const roleNames = a.roles ?? [];
+  return v_flex().gap(6).px(10).py(8).rounded(7).border_1().border_color(t.border).bg(t.canvas)
+    .child(h_flex().gap(8).items_center().child(dot(color, t))
+      .child(div().flex_1().truncate().text_size(TEXT.small).font_semibold().text_color(t.foreground).child(a.kind))
+      .child(div().flex_none().text_size(TEXT.caption).text_color(t.dim).child(status)))
+    .when(Boolean(a.family || a.models?.length), (el) => el.child(growText(
+      [a.family, ...(a.models ?? []).slice(0, 3)].filter(Boolean).join(" · "), t.dim, TEXT.caption)))
+    .when(roleNames.length > 0, (el) => el.child(h_flex().gap(5).items_center()
+      .child(chip(M.laneLabel(roleNames[0].lane) || "Roles", t))
+      .child(growText(roleNames.map((r) => r.role).join(", "), t.dim, TEXT.caption))));
+}
+
+export function renderAssistants(app, t) {
+  const assistants = app.assistantCards();
+  return v_flex().flex_1().min_h(0).gap(8)
+    .child(errorBlock(app.errors.assistants, t))
+    .when(!app.caps.assistantsJson, (el) => el.child(div().text_size(TEXT.caption).text_color(t.dim)
+      .child("This soho version has no assistants --json; showing soho kinds.")))
+    .when(assistants.length === 0, (el) => el.child(div().py(10).text_size(TEXT.small).text_color(t.dim)
+      .child(app.firstReadDone ? "No assistants found." : "Reading the team…")))
+    .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().gap(8)
+      .children(assistants.map((a) => assistantCard(app, a, t))));
+}
+
+function diskRow(name, detail, size, t) {
+  return h_flex().gap(8).h(34).px(8).items_center().rounded(6).bg(t.canvas)
+    .child(growText(`${name} · ${detail}`, t.muted, TEXT.caption))
+    .child(div().flex_none().text_size(TEXT.caption).text_color(t.dim).child(size));
+}
+
+function bytes(n) {
+  if (!Number.isFinite(Number(n)) || n <= 0) return "—";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = Number(n);
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) { value /= 1024; i += 1; }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`;
+}
+
+export function renderHealth(app, t, cx) {
+  const h = app.data.health;
+  if (!h) {
+    return v_flex().flex_1().gap(8).child(errorBlock(app.errors.health || "This soho version has no health --json.", t));
+  }
+  const doctor = h.doctor ?? {};
+  const copies = h.copies ?? {};
+  const procs = h.processes ?? {};
+  const gc = h.gc ?? {};
+  const update = h.update ?? {};
+  const remove = gc.would_remove ?? [];
+  const confirming = app.cleanupConfirm;
+  return v_flex().flex_1().min_h(0).gap(6)
+    .child(errorBlock(app.errors.health, t))
+    .child(sectionTitle("Update", t))
+    .child(div().px(9).py(7).rounded(6).border_1().border_color(t.border).bg(t.canvas)
+      .text_size(TEXT.caption).text_color(t.muted)
+      .child(update.latest ? `${update.latest} is out; you run ${update.current ?? "an unknown version"}.`
+        : (update.reason || "No update check available.")))
+    .child(sectionTitle(`Doctor · ${doctor.warnings?.length ?? 0} warning(s)`, t))
+    .child(v_flex().gap(2).children((doctor.warnings ?? []).map((w) =>
+      h_flex().gap(8).px(8).py(5).rounded(6).bg(t.canvas)
+        .child(div().flex_none().text_size(TEXT.caption).text_color(t.ansi3).child(w.level ?? "warn"))
+        .child(growText(w.message ?? "", t.muted, TEXT.caption)))))
+    .child(sectionTitle(`Copies · ${copies.total ?? (copies.rows ?? []).length} · ${bytes(copies.total_bytes)}`, t))
+    .child(v_flex().gap(2).children((copies.rows ?? []).map((row) =>
+      diskRow(row.path?.split("/").pop() ?? "", `${row.owner ?? "?"} · ${row.state ?? "?"}`, bytes(row.bytes), t))))
+    .child(sectionTitle(`Processes · ${(procs.unregistered_orphans ?? []).length} left behind`, t))
+    .child(v_flex().gap(2).children((procs.unregistered_orphans ?? []).map((p) =>
+      diskRow(String(p.pid), `${p.name ?? ""} · ${p.cwd ?? ""} · ${p.state ?? ""}`, "orphan", t))))
+    .child(sectionTitle("Clean up", t))
+    .child(div().px(8).py(5).text_size(TEXT.caption).text_color(t.dim)
+      .child(remove.length ? `gc would remove ${remove.length} item(s) (${bytes(gc.total_bytes)}).`
+        : "Nothing for gc to remove."))
+    .child(h_flex().justify_end().gap(6)
+      .when(!confirming, (el) => el.child(button("cleanup-ask", "Clean up", () => app.setCleanupConfirm(true, cx),
+        { small: true, disabled: remove.length === 0 })))
+      .when(confirming, (el) => el.child(div().text_size(TEXT.caption).text_color(t.ansi3).child("Remove these copies and stop orphan processes?")))
+      .when(confirming, (el) => el.child(button("cleanup-no", "Cancel", () => app.setCleanupConfirm(false, cx), { small: true })))
+      .when(confirming, (el) => el.child(button("cleanup-yes", "Clean up", () => app.cleanup(cx),
+        { small: true, primary: true, disabled: busy(app, "cleanup") }))));
+}
+
+export function renderEdit(app, t, cx) {
+  const e = app.edit;
+  if (!e) return div();
+  const scopeChoices = [{ id: "project", label: "Project file" }, { id: "user", label: "User file" }];
+  const applies = [{ id: "lane", label: e.laneLabel ? `${e.laneLabel} lane · ${e.roleCount} roles` : "this lane" },
+    { id: "role", label: e.role ? `${e.role} only` : "this role only" }];
+  const assistants = app.editAssistants();
+  const choices = assistants.map((a) => ({ id: a.kind, label: a.kind }));
+  const models = assistants.find((a) => a.kind === e.kind)?.models ?? [];
+  const modelChoices = models.map((m) => ({ id: m, label: m }));
+  const fileHelp = e.scope === "project" ? ".agents/soho.conf · applies to new workers; open ones keep their assistant." :
+    "User config · applies to new workers; open ones keep their assistant.";
+  return v_flex().flex_1().min_h(0).gap(12)
+    .child(field("Applies to", "", segmented("edit-applies", applies, e.appliesTo,
+      (id, ctx) => app.setEditAppliesTo(id, ctx), t)))
+    .child(field("Assistant", assistants.length
+      ? "Only assistants installed and answering are listed."
+      : "No assistants answered a probe; run Probe again in Assistants.",
+      chooser({ id: "edit-kind", label: e.kind || "choose", value: e.kind, choices,
+        open: app.menuOpen === "edit-kind", focus: app.menuFocus, width: 240, small: false,
+        onOpenChange: (open, ctx) => app.openMenu(open ? "edit-kind" : "", ctx),
+        onChoose: (choice, ctx) => app.setEditField("kind", choice.id, ctx) })))
+    .child(field("Model", "", modelChoices.length
+      ? chooser({ id: "edit-model", label: e.model || "choose", value: e.model, choices: modelChoices,
+        open: app.menuOpen === "edit-model", focus: app.menuFocus, width: 240, small: false,
+        onOpenChange: (open, ctx) => app.openMenu(open ? "edit-model" : "", ctx),
+        onChoose: (choice, ctx) => app.setEditField("model", choice.id, ctx) })
+      : h_flex().id("edit-model-input").h(32).px(10).rounded(7).border_1().border_color(t.input).bg(t.input)
+        .child(Input.new(app.modelInput).h_full().text_size(TEXT.small).text_color(t.foreground))))
+    .child(field("Effort", "", segmented("edit-effort", EFFORTS.map((v) => ({ id: v, label: v })), e.effort,
+      (id, ctx) => app.setEditField("effort", id, ctx), t)))
+    .child(field("Save to", fileHelp, segmented("edit-scope", scopeChoices, e.scope,
+      (id, ctx) => app.setEditField("scope", id, ctx), t)))
+    .child(sectionTitle("Commands", t))
+    .child(v_flex().gap(3).px(10).py(8).rounded(7).border_1().border_color(t.border).bg(t.background)
+      .children(e.preview.length ? e.preview.map((line) =>
+        div().min_w(0).truncate().text_size(TEXT.caption).text_color(t.muted).child(line))
+        : [div().text_size(TEXT.caption).text_color(t.dim).child("Choose a value to preview the config commands.")]))
+    .when(Boolean(e.error), (el) => el.child(errorBlock(e.error, t)))
+    .child(h_flex().gap(8).justify_end()
+      .child(button("edit-cancel", "Cancel", (ctx) => app.closeEdit(ctx), { small: true }))
+      .child(button("edit-save", "Save", (ctx) => app.saveEdit(ctx),
+        { small: true, primary: true, disabled: busy(app, "edit-save") || !e.preview.length || !e.valid })));
+}
+
+export function toolTabs(app, t, cx) {
+  const items = [
+    { id: "team", label: "Team" },
+    { id: "now", label: "Now" },
+    { id: "assistants", label: "Assistants" },
+    { id: "health", label: "Health" },
+  ];
+  return h_flex().gap(3).p(3).rounded(7).bg(t.background)
+    .children(items.map((item) =>
+      div().id(`tab-${item.id}`).h(24).px(app.band === "narrow" ? 8 : 12).items_center().rounded(5)
+        .bg(app.tab === item.id ? t.raised : t.background)
+        .text_color(app.tab === item.id ? t.foreground : t.muted)
+        .text_size(TEXT.caption).cursor_pointer().hover((s) => s.text_color(t.foreground))
+        .on_click((_e, ctx) => app.setTab(item.id, ctx))
+        .child(item.label)));
+}
+
+export function sortMenu(app, t, cx) {
+  const id = "sort-menu";
+  const current = SORTS.find((s) => s.id === app.sort.column)?.label ?? "role";
+  return chooser({ id, label: `Sort: ${current}, ${app.sort.dir === "asc" ? "A–Z" : "Z–A"}`,
+    value: app.sort.column, choices: SORTS, open: app.menuOpen === id, focus: app.menuFocus, width: 170,
+    onOpenChange: (open, ctx) => app.openMenu(open ? id : "", ctx),
+    onChoose: (choice, ctx) => app.setSort(choice.id, ctx) });
+}
+
+export function moreMenu(app, t, cx) {
+  const id = "more-menu";
+  const choices = [
+    { id: "refresh", label: "Refresh" },
+    { id: "grouped", label: "Grouped view" },
+    { id: "list", label: "List view" },
+  ];
+  return chooser({ id, label: "More", value: "", choices, open: app.menuOpen === id, focus: app.moreFocus, width: 150,
+    onOpenChange: (open, ctx) => app.openMenu(open ? id : "", ctx),
+    onChoose: (choice, ctx) => app.moreAction(choice.id, ctx) });
+}

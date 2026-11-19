@@ -1,0 +1,15 @@
+# SoHo panel for Herdr.app
+
+A Herdr.app mod that shows the SoHo team of the project in the shown space. Team groups roles by lane (Build, Review, Risky code, Docs, and any other lane by name), or lists them flat with clickable sorting by role, mode, effort, assistant and model. Mode is text only in this version. Each role has an effort chooser that writes `lane.<lane>.effort` for a lane role and `role.<role>.effort` otherwise; a lane edit changes the whole lane. The Edit form sets assistant, model and effort for a lane or one role, previews the exact `soho config set` commands and saves to the project or user config. A save shows an inline notice with Undo for eight seconds. View and sort are kept per project folder in the mod's `localStorage`.
+
+Now lists live workers with status, task and elapsed time, and opens a terminal, the parsed report, or a confirmation before closing or reopening a worker. Report shows partial items and failing test layers first. Assistants shows installed and probed assistants and their roles; Health shows doctor warnings, copies, orphan processes and what gc would remove, with an inline confirm before cleanup. An empty project shows `soho init` as text; the panel never runs init. Widths up to 320 px use a two-line narrow layout with a More menu, 321–559 px use the normal layout, and 560 px and above use a list beside the detail (the worker's report in Now, the Edit form in Team).
+
+## Requirements
+
+The mod needs Go-only `soho` on the machine of the shown space. It reads `soho capabilities --json`, `soho roles --json` and `soho roster --json` on open, every 15 seconds while the panel lives, after every action and when the folder changes. Older soho versions still work: without `team_json` the panel groups by `roles[].lane`; without `config_dry_run` it composes the same config commands locally; without `config_unset` Undo appears only for a value already in a config file; without `roster_workers` it uses the base roster fields; without `report_json` it reads the report file in the panel; without `assistants_json` it reads `soho kinds` and `soho models <kind>`; without `health_json` the Health view says that the version cannot report health. Missing keys never fail the whole panel.
+
+Feature keys checked in `soho capabilities --json`: `team_json`, `config_dry_run`, `config_unset`, `roster_workers`, `report_json`, `assistants_json`, `health_json`. The Edit form uses `soho kinds --json` when `assistants_json` is present. State-changing actions are `soho config set`, `soho config unset`, `soho release <agent> --close`, `soho reopen <agent>`, `soho gc --yes` and `soho setup --probe`; each runs only after a user action, and closing/reopening/cleanup ask for confirmation first.
+
+## Install
+
+Copy the whole folder to `~/.config/herdr-app/mods/soho-team/`, then open the mod from a panel or layout as `soho-team`. Keep `main.js`, `model.js`, `ui.js`, `views.js`, `mod.json`, `icon.svg` and `README.md` together. `tests/model.test.mjs` runs outside Herdr with `node --test plugin/herdr-app/soho-team/tests/` and imports only `model.js`, which has no gpui-kit or herdr dependency.
