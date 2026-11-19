@@ -99,6 +99,7 @@ async function boot(cx, options = {}) {
 
 function readyEdit(context, previousByKey = {}) {
   const edit = {
+    id: "draft-manual",
     appliesTo: "role", lane: "build", laneLabel: "Build", role: "implementer",
     kind: "pi", model: "m-1", effort: "high", scope: "project",
     pending: false, valid: true, context,
@@ -111,7 +112,7 @@ function readyEdit(context, previousByKey = {}) {
 test("F1 controller: a context change drops the open edit and refuses its save", async () => {
   const cx = fakeCx();
   const panel = await boot(cx);
-  panel.openEdit({ role: "implementer" }, cx);
+  panel.openEdit(M.rowCapture(panel.originOf("team"), { role: "implementer" }), cx);
   await flush(cx);
   assert.equal(panel.edit.context.folder, "/w/a");
   assert.equal(panel.edit.context.machine, "m1");
@@ -125,16 +126,16 @@ test("F1 controller: a context change drops the open edit and refuses its save",
   const stale = readyEdit(M.contextFor(spaceA(), "/w/a"));
   panel.edit = stale;
   const before = H.state.calls.filter((call) => call.args?.[0] === "config").length;
-  await panel.saveEdit(cx);
+  await panel.saveEdit(cx, panel.edit.id, panel.edit.snapshot);
   await flush(cx);
-  assert.equal(panel.errors.config, M.CONTEXT_CHANGED_MESSAGE);
+  assert.equal(panel.noticeItem?.text, M.CONTEXT_CHANGED_MESSAGE, "the stale Save refuses with a visible notice");
   assert.equal(H.state.calls.filter((call) => call.args?.[0] === "config").length, before);
 });
 
 test("F1 controller: the same folder path on another machine is still a context change", async () => {
   const cx = fakeCx();
   const panel = await boot(cx);
-  panel.openEdit({ role: "implementer" }, cx);
+  panel.openEdit(M.rowCapture(panel.originOf("team"), { role: "implementer" }), cx);
   await flush(cx);
   assert.equal(panel.edit.context.machine, "m1");
   // Same space id and folder path, another machine: the review's second probe.
@@ -165,7 +166,7 @@ test("F2 controller: a refresh during a save neither abandons it nor hides a par
   };
   panel.edit = readyEdit(M.contextFor(spaceA(), "/w/a"));
   const notifiesBefore = cx.notifies;
-  await panel.saveEdit(cx);
+  await panel.saveEdit(cx, panel.edit.id, panel.edit.snapshot);
   await flush(cx);
   assert.equal(writes.length, 2, "the second write still runs after the refresh");
   // Every write is one literal key=value operand followed by the destination.
@@ -188,7 +189,7 @@ test("F3 controller: Undo runs the clicked unset plan even after the notice expi
     "role.implementer.model": { in_file: "old-model" },
     "role.implementer.effort": { in_file: "low" },
   });
-  await panel.saveEdit(cx);
+  await panel.saveEdit(cx, panel.edit.id, panel.edit.snapshot);
   await flush(cx);
   assert.equal(panel.undoHolder.plans[0].args.join(" "), "config unset role.implementer.kind --project");
 
@@ -202,7 +203,7 @@ test("F3 controller: Undo runs the clicked unset plan even after the notice expi
     }
     return read(name, args);
   };
-  await panel.undoLast(cx);
+  await panel.undoLast(panel.noticeCapture(), cx);
   await flush(cx);
   assert.equal(H.state.calls.filter((call) => call.args?.join(" ") === "config unset role.implementer.kind --project").length, 1);
   assert.equal(panel.noticeItem?.text, "Undid role.implementer.kind");
@@ -215,7 +216,7 @@ test("F4 controller: the suffix-only confirmation runs release only for the pend
   const panel = await boot(cx, { reads: { roster: { agents: [worker] } } });
   panel.data.roster = M.normalizeRoster({ agents: [worker] });
 
-  panel.confirmClose(worker, cx);
+  panel.confirmClose(M.workerCapture(panel.originOf("roster"), worker), cx);
   assert.equal(panel.pending.action, "close");
   // The dialog's own suffix carries its token (F4 round 3).
   const suffix = H.state.overlays.at(-1).props.command.name.split(".")[1];
@@ -226,10 +227,10 @@ test("F4 controller: the suffix-only confirmation runs release only for the pend
   assert.deepEqual(H.state.calls.find((call) => call.args?.[0] === "release").args, ["release", "implementer-1", "--close"]);
 
   const before = H.state.calls.filter((call) => call.args?.[0] === "release").length;
-  panel.confirmClose(worker, cx);
+  panel.confirmClose(M.workerCapture(panel.originOf("roster"), worker), cx);
   panel.handleCommand("reopen", cx); // a different action
   await flush(cx);
-  panel.confirmReopen(worker, cx);
+  panel.confirmReopen(M.workerCapture(panel.originOf("roster"), worker), cx);
   panel.data.roster = { agents: [{ name: "other-1", pane: "%9", status: "gone" }] }; // the row changed
   const token = panel.pending.token;
   panel.handleCommand(`close_${token}`, cx);
@@ -240,7 +241,7 @@ test("F4 controller: the suffix-only confirmation runs release only for the pend
 test("F6 controller: the typed model reaches the draft and the preview", async () => {
   const cx = fakeCx();
   const panel = await boot(cx);
-  panel.openEdit({ role: "implementer" }, cx);
+  panel.openEdit(M.rowCapture(panel.originOf("team"), { role: "implementer" }), cx);
   await flush(cx);
   panel.modelInput.type("model with spaces", cx);
   await flush(cx);
@@ -265,8 +266,8 @@ test("F9 controller: a late report for the previous worker is discarded", async 
     }
     return read(name, args);
   };
-  panel.showWorkerReport(w1, cx);
-  panel.showWorkerReport(w2, cx);
+  panel.showWorkerReport(M.workerCapture(panel.originOf("roster"), w1), cx);
+  panel.showWorkerReport(M.workerCapture(panel.originOf("roster"), w2), cx);
   await tick();
   assert.equal(pending.size, 2, "both reads started (keyed by worker)");
   pending.get("reviewer-1")(ok({ agent: "reviewer-1" }));
@@ -304,19 +305,19 @@ test("F7 controller: Save waits for the preview of the current draft and runs th
   const stale = readyEdit(context);
   // A preview for a changed draft is still running: no write at all.
   panel.edit = { ...stale, pending: true };
-  await panel.saveEdit(cx);
+  await panel.saveEdit(cx, panel.edit.id, panel.edit.snapshot);
   await flush(cx);
   assert.equal(H.state.calls.filter((call) => call.args?.[0] === "config").length, 0);
   assert.equal(panel.busy.has("edit-save"), false);
   // The draft no longer matches its snapshot: refused with a message.
   panel.edit = { ...stale, scope: "user" };
-  await panel.saveEdit(cx);
+  await panel.saveEdit(cx, panel.edit.id, panel.edit.snapshot);
   await flush(cx);
   assert.equal(H.state.calls.filter((call) => call.args?.[0] === "config").length, 0);
   assert.match(panel.edit.error, /out of date/);
   // The matching snapshot writes exactly the commands that were previewed.
   panel.edit = readyEdit(context);
-  await panel.saveEdit(cx);
+  await panel.saveEdit(cx, panel.edit.id, panel.edit.snapshot);
   await flush(cx);
   const written = H.state.calls.filter((call) => call.args?.[0] === "config").map((call) => call.args.join(" "));
   assert.deepEqual(written, [
@@ -404,13 +405,13 @@ test("F5 controller: the opened role survives lane and role scope switches", asy
   const cx = fakeCx();
   const other = { role: "reviewer", lane: "build", kind: "codex", model: "sol", effort: "low", mode: "read-only" };
   const panel = await boot(cx, { team: { roles: [ROLE, other] } });
-  panel.openEdit({ role: "reviewer" }, cx);
+  panel.openEdit(M.rowCapture(panel.originOf("team"), { role: "reviewer" }), cx);
   await flush(cx);
   assert.equal(panel.edit.role, "reviewer");
-  panel.setEditAppliesTo("lane", cx);
+  panel.setEditAppliesTo("lane", panel.edit.id, cx);
   await flush(cx);
   assert.equal(panel.edit.appliesTo, "lane");
-  panel.setEditAppliesTo("role", cx);
+  panel.setEditAppliesTo("role", panel.edit.id, cx);
   await flush(cx);
   assert.equal(panel.edit.appliesTo, "role");
   assert.equal(panel.edit.role, "reviewer");

@@ -211,7 +211,7 @@ test("R2-F1: a delayed Open config cannot paint the former project's file", asyn
   const panel = await boot(cx, { team: { roles: [ROLE], config_files: { project: "/a/.agents/soho.conf" } } });
   let complete;
   H.state.readText = () => new Promise((resolve) => { complete = resolve; });
-  const reading = panel.openConfig(cx);
+  const reading = panel.openConfig(panel.originOf("team"), cx);
   useFolder(spaceB(), "/w/b");
   panel.refresh(cx);
   await tick();
@@ -265,9 +265,9 @@ test("R2-F3: a rejected command in a partly applied Save names the keys and refr
     }
     return read(name, args);
   };
-  panel.openEdit({ role: "second" }, cx);
+  panel.openEdit(M.rowCapture(panel.originOf("team"), { role: "second" }), cx);
   await flush(cx);
-  await panel.saveEdit(cx);
+  await panel.saveEdit(cx, panel.edit.id, panel.edit.snapshot);
   await flush(cx);
   assert.equal(panel.errors.config,
     "Applied role.second.kind; rejected role.second.model: machine unreachable; not tried role.second.effort.");
@@ -284,9 +284,9 @@ test("R2-F4: an earlier dialog's confirmation cannot release the worker of the d
   const panel = await boot(cx, { reads: { roster: { agents: [a, b] } } });
   panel.data.roster = M.normalizeRoster({ agents: [a, b] });
 
-  panel.confirmClose(a, cx);
+  panel.confirmClose(M.workerCapture(panel.originOf("roster"), a), cx);
   const older = H.state.overlays[0].props.command.name.split(".")[1];
-  panel.confirmClose(b, cx);
+  panel.confirmClose(M.workerCapture(panel.originOf("roster"), b), cx);
   const current = H.state.overlays[1].props.command.name.split(".")[1];
   assert.match(older, /^close_[0-9]+$/);
   assert.notEqual(older, current, "each dialog carries its own token");
@@ -299,7 +299,7 @@ test("R2-F4: an earlier dialog's confirmation cannot release the worker of the d
 
   // A suffix of another context, and one of another Core address, are ignored.
   const before = releases().length;
-  panel.confirmClose(a, cx);
+  panel.confirmClose(M.workerCapture(panel.originOf("roster"), a), cx);
   const suffix = H.state.overlays.at(-1).props.command.name.split(".")[1];
   useFolder(spaceB(), "/w/b");
   panel.refresh(cx);
@@ -307,7 +307,7 @@ test("R2-F4: an earlier dialog's confirmation cannot release the worker of the d
   panel.handleCommand(suffix, cx);
   await flush(cx);
   assert.equal(releases().length, before, "the context changed under the dialog");
-  panel.confirmClose(a, cx);
+  panel.confirmClose(M.workerCapture(panel.originOf("roster"), a), cx);
   const moved = H.state.overlays.at(-1).props.command.name.split(".")[1];
   panel.data.roster = M.normalizeRoster({ agents: [{ ...a, pane: "%9" }] });
   panel.handleCommand(moved, cx);
@@ -335,9 +335,9 @@ test("R2-F5: Close and Reopen are disabled by the same worker key the controller
     return read(name, args);
   };
   const suffix = () => H.state.overlays.at(-1).props.command.name.split(".")[1];
-  panel.confirmClose(done, cx);
+  panel.confirmClose(M.workerCapture(panel.originOf("roster"), done), cx);
   panel.handleCommand(suffix(), cx);
-  panel.confirmReopen(gone, cx);
+  panel.confirmReopen(M.workerCapture(panel.originOf("roster"), gone), cx);
   panel.handleCommand(suffix(), cx);
   assert.equal(held.length, 2, "both commands are in flight");
   assert.equal(panel.isBusy(`close:${M.workerKey(done)}`), true);
@@ -360,12 +360,12 @@ test("R2-F5: Close and Reopen are disabled by the same worker key the controller
 test("R2-F6: a draft whose fields are all cleared has no snapshot, no Save and no write", async () => {
   const cx = fakeCx();
   const panel = await boot(cx, { team: { roles: [ROLE] } });
-  panel.openEdit({ role: "implementer" }, cx);
+  panel.openEdit(M.rowCapture(panel.originOf("team"), { role: "implementer" }), cx);
   await flush(cx);
   assert.ok(panel.edit.snapshot, "the opened draft has a snapshot");
-  panel.setEditField("kind", "", cx);
-  panel.setEditField("model", "", cx);
-  panel.setEditField("effort", "", cx);
+  panel.setEditField("kind", "", panel.edit.id, cx);
+  panel.setEditField("model", "", panel.edit.id, cx);
+  panel.setEditField("effort", "", panel.edit.id, cx);
   await flush(cx);
   assert.deepEqual(panel.edit.preview, []);
   assert.equal(panel.edit.snapshot, null, "no validated snapshot without fields");
@@ -373,7 +373,7 @@ test("R2-F6: a draft whose fields are all cleared has no snapshot, no Save and n
   const root = panel.render(cx);
   assert.equal(findRecord(root, "edit-save"), undefined, "no Save is drawn for an empty draft");
   assert.match(textOf(root), /Choose a value to preview the config commands/);
-  await panel.saveEdit(cx);
+  await panel.saveEdit(cx, panel.edit.id, panel.edit.snapshot);
   await flush(cx);
   assert.deepEqual(configWrites(), []);
 });
@@ -393,8 +393,8 @@ test("R2-F7: a late report failure for the worker that lost the selection is dis
     if (args[0] === "report") return new Promise((resolve) => pending.set(args[1], resolve));
     return read(name, args);
   };
-  panel.openReport(a, cx);
-  panel.openReport(b, cx);
+  panel.openReport(M.workerCapture(panel.originOf("roster"), a), cx);
+  panel.openReport(M.workerCapture(panel.originOf("roster"), b), cx);
   await tick();
   assert.equal(pending.size, 2, "both reads started");
   pending.get("b-1")(ok({ agent: "b-1", items: [{ line: 1, mark: "done", text: "B report" }] }));
@@ -416,7 +416,7 @@ test("R2-F8: a same-context refresh keeps Report and Config open with their data
   const panel = await boot(cx, { reads: { roster: { agents: [w] } } });
   panel.data.roster = M.normalizeRoster({ agents: [w] });
 
-  panel.openReport(w, cx);
+  panel.openReport(M.workerCapture(panel.originOf("roster"), w), cx);
   await flush(cx);
   assert.equal(panel.tab, "report");
   panel.refresh(cx);
@@ -426,7 +426,7 @@ test("R2-F8: a same-context refresh keeps Report and Config open with their data
 
   panel.data.team = { roles: [ROLE], config_files: { project: "/w/a/.agents/soho.conf" } };
   H.state.readText = () => "project settings";
-  await panel.openConfig(cx);
+  await panel.openConfig(panel.originOf("team"), cx);
   assert.equal(panel.tab, "config");
   panel.refresh(cx);
   await flush(cx);
@@ -462,7 +462,7 @@ test("R2-F9: a per-kind model error renders beside its kind, not only in the err
   assert.doesNotMatch(textOf(findRecord(assistants, "assistant-pi")), /cursor model list failed/,
     "the diagnostic stays beside its own kind");
 
-  panel.openEdit({ role: "curator" }, cx);
+  panel.openEdit(M.rowCapture(panel.originOf("team"), { role: "curator" }), cx);
   await flush(cx);
   assert.match(textOf(V.renderEdit(panel, T, cx)), /cursor model list failed/);
 });
@@ -476,13 +476,13 @@ test("R2-F9: a Probe again failure started in Edit renders inside that form", as
     return read(name, args);
   };
   const panel = await boot(cx, { exec, reads: { capabilities: capable }, team: { roles: [ROLE] } });
-  panel.openEdit({ role: "implementer" }, cx);
+  panel.openEdit(M.rowCapture(panel.originOf("team"), { role: "implementer" }), cx);
   await flush(cx);
   assert.deepEqual(panel.editAssistants(), [], "no assistant answered yet");
-  await panel.probeAgain(cx, panel.edit.origin);
+  await panel.probeAgain({ kind: "edit", draftId: panel.edit.id, origin: panel.edit.origin }, cx);
   await flush(cx);
   assert.equal(panel.errors.assistants, "", "the tab's error slot is untouched");
-  assert.match(panel.errors["probe:edit"], /probe failed/);
+  assert.match(panel.errors[M.probeEditKey(panel.edit.id)], /probe failed/);
   assert.match(textOf(V.renderEdit(panel, T, cx)), /probe failed: no login/);
 });
 
@@ -545,11 +545,11 @@ test("R2-F11: Probe again exists only where the controller can run it", async ()
   // The controller refuses the probe it cannot run, and runs it where it can.
   const read = reader({ capabilities: { schema: 1, team_json: true } });
   const panel = await boot(cx, { reads: { capabilities: { schema: 1, team_json: true } }, team: { roles: [ROLE] } });
-  panel.openEdit({ role: "implementer" }, cx);
+  panel.openEdit(M.rowCapture(panel.originOf("team"), { role: "implementer" }), cx);
   await flush(cx);
   H.state.exec = read;
   const before = H.state.calls.filter((call) => call.args?.[0] === "setup").length;
-  panel.probeAgain(cx);
+  panel.probeAgain(null, cx);
   await flush(cx);
   assert.equal(H.state.calls.filter((call) => call.args?.[0] === "setup").length, before);
 });
@@ -581,10 +581,10 @@ test("R2-F13: a new roles request follows the failure, in both partial-failure p
       }
       return read(name, args);
     };
-    panel.openEdit({ role: "second" }, cx);
+    panel.openEdit(M.rowCapture(panel.originOf("team"), { role: "second" }), cx);
     await flush(cx);
     const before = rolesReads().length;
-    await panel.saveEdit(cx);
+    await panel.saveEdit(cx, panel.edit.id, panel.edit.snapshot);
     await flush(cx);
     assert.ok(rolesAfterFailure > 0, `${mode}: a roles read follows the failure`);
     assert.ok(rolesReads().length > before, `${mode}: the reconciliation read reached the CLI`);

@@ -138,7 +138,8 @@ test("F9: a report result is accepted only for the worker that asked for it", ()
   assert.equal(M.acceptsReport(a, a), true);
   assert.equal(M.acceptsReport("", a), false);
   assert.equal(M.acceptsReport(b, undefined), false);
-  assert.equal(M.reportBusyKey("/p", b), "report|/p|reviewer-1|%4");
+  assert.equal(M.reportBusyKey({ spaceId: "s1", machine: "m1", folder: "/p" }, b),
+    "report|s1|m1|/p|reviewer-1|%4");
 });
 
 test("F10: the legacy roster shape's state becomes the worker status", () => {

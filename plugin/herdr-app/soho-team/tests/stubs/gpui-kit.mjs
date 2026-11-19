@@ -10,6 +10,10 @@ export function element(record = { children: [], ids: [], handlers: {}, calls: [
       if (prop === "children") {
         return (items) => { for (const item of items) record.children.push(item); return proxy; };
       }
+      // A popover's trigger and content are part of the tree a test walks.
+      if (prop === "content" || prop === "trigger") {
+        return (child) => { record.children.push(child); return proxy; };
+      }
       if (prop === "when") return (condition, branch) => (condition ? (branch(proxy) ?? proxy) : proxy);
       if (prop === "map") return (transform) => transform(proxy);
       if (prop === "id") return (name) => { record.ids.push(name); return proxy; };

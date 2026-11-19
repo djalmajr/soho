@@ -40,6 +40,9 @@ export default class SohoPanel extends View {
     this.originDefault = null;
     this.inflight = new Map();
     this.confirmSeq = 0;
+    this.cleanupSeq = 0;
+    this.draftSeq = 0;
+    this.undoSeq = 0;
     this.context = null;
     this.folderKnown = null;
     this.refreshQueued = false;
@@ -56,8 +59,9 @@ export default class SohoPanel extends View {
     this.noticeTimer = null;
     this.undoHolder = null;
     this.pending = null;
-    this.cleanupConfirm = false;
-    this.cleanupOrigin = null;
+    // A cleanup confirmation carries its own token and origin (F1, R3-F1);
+    // null means no confirmation is pending.
+    this.cleanupConfirm = null;
     this.updatedAt = null;
     this.lastVisibleAt = 0;
 
@@ -120,21 +124,58 @@ export default class SohoPanel extends View {
     return this.boundTo(origin, this.currentContext());
   }
 
-  asOrigin(captured) {
-    if (!captured) return M.originFor(this.currentContext());
-    return captured.spaceId !== undefined ? { ...captured } : M.originFor(captured);
+  // A render-time capture is a copy of the dataset origin, so the handler keeps
+  // the identity it displayed after a refresh replaced it (F1, R3-F1). There is
+  // no fallback: a capture taken with no origin runs nothing.
+  originOf(name) {
+    const origin = this.origins[name];
+    return origin ? { ...origin } : null;
   }
 
-  originOf(name) {
-    return this.origins[name] ?? this.originDefault;
+  // A capture may be an origin object or a view capture that carries one.
+  originFrom(captured) {
+    if (!captured) return null;
+    if (captured.spaceId !== undefined) return { ...captured };
+    const origin = captured.origin;
+    return origin && origin.spaceId !== undefined ? { ...origin } : null;
+  }
+
+  captureCurrent(capture) {
+    const origin = this.originFrom(capture);
+    return Boolean(origin) && this.current(origin);
+  }
+
+  // The row a handler displayed is still the current row with that identity
+  // (F1, R3-F1).
+  rowCurrent(capture) {
+    return this.captureCurrent(capture)
+      && M.rowStillCurrent(capture, this.data.team?.roles ?? [], this.groups());
+  }
+
+  workerCurrent(capture) {
+    return this.captureCurrent(capture)
+      && M.workerStillCurrent(capture, this.data.roster?.agents ?? []);
+  }
+
+  // A stale or missing capture runs nothing and refuses on screen (F1, R3-F1),
+  // without taking away the Undo plan still shown.
+  refuse(cx, text = M.STALE_ACTION_MESSAGE) {
+    this.showNotice(text, this.undoHolder, cx);
+    return false;
   }
 
   // A dataset is stored together with the origin of the read that produced it
-  // (F1).
+  // (F1). A read that started earlier never overwrites one that started later,
+  // so a poll admitted before a write cannot undo its reconciliation (F3).
   publish(name, value, origin) {
+    const bound = origin ?? this.originDefault;
+    const previous = this.origins[name];
+    if (previous && bound
+      && M.sameContext(M.contextOfOrigin(previous), M.contextOfOrigin(bound))
+      && Number(previous.seq ?? 0) > Number(bound.seq ?? 0)) return;
     this.data[name] = value;
-    this.origins[name] = origin ?? this.originDefault;
-    if (origin) this.originDefault = origin;
+    this.origins[name] = bound;
+    if (bound) this.originDefault = bound;
   }
 
   // Datasets bound to another context leave the view at once, so the loading
@@ -162,15 +203,6 @@ export default class SohoPanel extends View {
     return M.readBusyKey(section, context);
   }
 
-  // An action carries the origin of the dataset it was rendered from; a stale
-  // origin is refused with a visible notice (F1).
-  fromOrigin(origin, cx) {
-    if (origin === undefined || origin === null) return true;
-    if (this.current(origin)) return true;
-    this.showNotice(M.CONTEXT_CHANGED_MESSAGE, null, cx);
-    return false;
-  }
-
   // A context change invalidates every pending action, drops the old
   // project's datasets and restores this folder's own view and sort (F1,
   // F8, F13).
@@ -181,6 +213,10 @@ export default class SohoPanel extends View {
     this.applyFolderPrefs(context.folder);
     if (!changed) return false;
     this.dropDatasets();
+    // Capability flags belong to the context that answered: until this
+    // context's own reply arrives the panel knows nothing, so Health and
+    // Probe again are not offered (F2, R3-F2).
+    this.caps = M.capabilities(null);
     this.errors = {};
     this.notes = {};
     this.firstReadDone = false;
@@ -188,11 +224,12 @@ export default class SohoPanel extends View {
     this.reportAgent = "";
     this.selectedWorker = "";
     if (M.isDetailTab(this.tab)) this.tab = "team";
+    this.tab = M.resolveTab(this.tab, this.caps);
     let dropped = false;
     if (this.edit && !this.boundTo(this.edit.origin ?? this.edit.context, context)) { this.edit = null; dropped = true; }
     if (this.undoHolder && !this.boundTo(this.undoHolder.origin ?? this.undoHolder.context, context)) { this.undoHolder = null; dropped = true; }
     if (this.pending && !this.boundTo(this.pending.origin ?? this.pending.context, context)) { this.pending = null; dropped = true; }
-    if (this.cleanupConfirm) { this.cleanupConfirm = false; this.cleanupOrigin = null; dropped = true; }
+    if (this.cleanupConfirm) { this.cleanupConfirm = null; dropped = true; }
     if (dropped) this.showNotice(M.CONTEXT_CHANGED_MESSAGE, null, cx);
     return true;
   }
@@ -266,7 +303,9 @@ export default class SohoPanel extends View {
   showNotice(text, undo, cx) {
     const item = { text };
     this.noticeItem = item;
-    this.undoHolder = undo?.available ? undo : null;
+    // The rendered Undo keeps this plan id, so a later notice's plan is never
+    // run by a button drawn for an earlier one (F1, R3-F1).
+    this.undoHolder = undo?.available ? { ...undo, id: undo.id ?? (this.undoSeq += 1) } : null;
     this.noticeTimer?.cancel();
     this.noticeTimer = cx.timer.after(NOTICE_MS, (ctx) => {
       if (this.noticeItem === item) {
@@ -304,13 +343,17 @@ export default class SohoPanel extends View {
   // in flight, so two refreshes of one context share one answer (F1, F2, F9,
   // F14). `opts.accept` can drop a diagnostic whose consumer moved on (F7).
   async runSection(cx, section, args, origin, json = true, opts = {}) {
-    const bound = this.asOrigin(origin);
+    const bound = this.originFrom(origin);
+    if (!bound) return null;
     const context = M.contextOfOrigin(bound);
-    const busyKey = opts.busyKey ?? M.readBusyKey(section, bound);
+    const baseKey = opts.busyKey ?? M.readBusyKey(section, bound);
+    // A reconcile read always starts its own request, after the write it
+    // reconciles, instead of joining one admitted before the write (F3).
+    const busyKey = opts.fresh ? `${baseKey}|fresh|${bound.seq}` : baseKey;
     const errorKey = opts.errorKey ?? section;
     const moved = () => (typeof opts.accept === "function" ? !opts.accept() : false);
     const accept = () => this.alive(bound) && !moved();
-    const running = this.inflight.get(busyKey);
+    const running = opts.fresh ? null : this.inflight.get(busyKey);
     if (running) return running;
     this.busy.add(busyKey);
     const task = (async () => {
@@ -359,7 +402,9 @@ export default class SohoPanel extends View {
     return task;
   }
 
-  refresh(cx) {
+  // `options.reconcile` marks the read that follows a write: its roles request
+  // starts after that write instead of joining one admitted before it (F3).
+  refresh(cx, options = {}) {
     if (checking()) return;
     const space = this.space();
     if (!space) {
@@ -375,7 +420,8 @@ export default class SohoPanel extends View {
     this.folderKnown = folder;
     cx.spawn(async (ctx) => {
       const capsP = this.runSection(ctx, "capabilities", ["capabilities", "--json"], origin);
-      const teamP = this.runSection(ctx, "team", ["roles", "--json"], origin);
+      const teamP = this.runSection(ctx, "team", ["roles", "--json"], origin, true,
+        { fresh: Boolean(options.reconcile) });
       const rosterP = this.runSection(ctx, "roster", ["roster", "--json"], origin, true,
         { note: M.rosterRefusal });
       const [capsRaw, team, roster] = await Promise.all([capsP, teamP, rosterP]);
@@ -450,7 +496,7 @@ export default class SohoPanel extends View {
     const stillWanted = () => M.acceptsReport(this.reportAgent, requested);
     if (this.caps.reportJson) {
       const report = await this.runSection(cx, "report", ["report", worker.name, "--json"], origin, true,
-        { busyKey: `${M.reportBusyKey(origin.folder, requested)}|${origin.machine ?? ""}`, accept: stillWanted });
+        { busyKey: M.reportBusyKey(origin, requested), accept: stillWanted });
       if (!this.alive(origin) || !stillWanted()) return;
       if (report) {
         this.publish("report", report, origin);
@@ -476,33 +522,36 @@ export default class SohoPanel extends View {
   }
 
   // Every state-changing action goes through here: no work while checking, and
-  // a write runs only for the origin it was opened from (F1). The busy state
+  // a write runs only for the identity it was opened from (F1). The busy state
   // always clears with a notify (F2).
-  async runAction(cx, key, args, section, onSuccess, text, undo, actionContext, actionOrigin) {
+  async runAction(cx, key, args, section, onSuccess, text, undo, capture, opts = {}) {
     if (checking()) return;
-    const origin = this.asOrigin(actionOrigin ?? actionContext);
-    const context = actionContext ?? M.contextOfOrigin(origin);
-    if (!this.fromOrigin(actionOrigin, cx)) return;
+    if (!this.captureCurrent(capture)) { this.refuse(cx); return; }
+    const origin = this.originFrom(capture);
+    const context = M.contextOfOrigin(origin);
+    const errorKey = opts.errorKey ?? section;
+    const kept = typeof opts.accept === "function" ? opts.accept : () => true;
     const decision = M.decideWrite({ actionContext: context, currentContext: this.currentContext(), busy: this.busy.has(key) });
     if (!decision.run) {
-      if (decision.message) { this.errors[section] = decision.message; cx.notify(); }
+      if (decision.message) { this.errors[errorKey] = decision.message; cx.notify(); }
       return;
     }
     this.busy.add(key);
     cx.notify();
     try {
       const r = await exec("soho", args, { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
-      if (!this.current(origin)) return;
+      if (!this.current(origin) || !kept()) return;
       if (r.code !== 0) {
-        this.errors[section] = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
+        if (!kept()) return;
+        this.errors[errorKey] = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
         return;
       }
-      this.errors[section] = "";
+      this.errors[errorKey] = "";
       if (onSuccess) onSuccess(r);
       if (text) this.showNotice(text, undo, cx);
-      this.refresh(cx);
+      this.refresh(cx, { reconcile: true });
     } catch (e) {
-      if (this.current(origin)) this.errors[section] = firstLines(e?.message ?? e);
+      if (this.current(origin) && kept()) this.errors[errorKey] = firstLines(e?.message ?? e);
     } finally {
       this.busy.delete(key);
       this.notifySafe(cx);
@@ -525,10 +574,10 @@ export default class SohoPanel extends View {
     this.pending = null;
     if (pending.action === "close") {
       this.runAction(cx, `close:${pending.key}`, ["release", pending.name, "--close"], "roster",
-        null, `${pending.name} closed`, null, pending.context, pending.origin);
+        null, `${pending.name} closed`, null, pending);
     } else if (pending.action === "reopen") {
       this.runAction(cx, `reopen:${pending.key}`, ["reopen", pending.name], "roster",
-        null, `${pending.name} reopened`, null, pending.context, pending.origin);
+        null, `${pending.name} reopened`, null, pending);
     }
   }
 
@@ -536,7 +585,7 @@ export default class SohoPanel extends View {
   setTab(id, cx) {
     this.tab = id;
     this.menuOpen = "";
-    this.cleanupConfirm = false;
+    this.cleanupConfirm = null;
     if (id === "team") this.edit = null;
     if (id === "now" && this.band === "wide" && this.selectedWorker) {
       this.refresh(cx);
@@ -570,17 +619,18 @@ export default class SohoPanel extends View {
     else if (id.startsWith("sort:")) this.setSort(id.slice(5), cx);
   }
 
-  peek(worker, cx, origin) {
-    if (!this.fromOrigin(origin, cx)) return;
+  peek(capture, cx) {
+    if (!this.workerCurrent(capture)) { this.refuse(cx); return; }
+    const worker = M.findWorker(this.data.roster?.agents, capture.key);
     if (worker?.pane) run("terminal.peek", { terminal: worker.pane });
     else this.showNotice("No terminal address for this worker", null, cx);
   }
 
-  showWorkerReport(worker, cx, origin) {
-    if (!worker || !this.fromOrigin(origin, cx)) return;
-    const bound = this.asOrigin(origin);
-    this.selectedWorker = M.workerKey(worker);
-    this.reportAgent = this.selectedWorker;
+  showWorkerReport(capture, cx) {
+    if (!this.workerCurrent(capture)) { this.refuse(cx); return; }
+    const bound = this.originFrom(capture);
+    this.selectedWorker = capture.key;
+    this.reportAgent = capture.key;
     this.publish("report", null, bound);
     this.publish("reportMarkdown", null, bound);
     this.errors.report = "";
@@ -588,56 +638,58 @@ export default class SohoPanel extends View {
     if (!checking()) this.loadReport(this.reportAgent, bound, cx);
   }
 
-  openReport(worker, cx, origin) {
-    if (!worker || !this.fromOrigin(origin, cx)) return;
-    this.showWorkerReport(worker, cx, origin);
+  openReport(capture, cx) {
+    if (!this.workerCurrent(capture)) { this.refuse(cx); return; }
+    this.showWorkerReport(capture, cx);
     this.tab = "report";
     this.menuOpen = "";
     cx.notify();
   }
 
   // Each dialog carries a token in its command suffix, so an older overlay's
-  // suffix cannot confirm a later dialog for the same action (F4).
-  confirmation(action, worker, cx, origin) {
-    if (!this.fromOrigin(origin, cx)) return null;
-    const bound = this.asOrigin(origin);
+  // suffix cannot confirm a later dialog for the same action. The pending
+  // action keeps the identity it was opened for (F1, F4, R3-F1).
+  confirmation(action, capture, cx) {
+    if (!this.workerCurrent(capture)) { this.refuse(cx); return null; }
+    const bound = this.originFrom(capture);
     const token = M.confirmationToken(++this.confirmSeq);
     this.pending = {
-      action, name: worker.name, key: M.workerKey(worker), token,
+      action, name: capture.name, key: capture.key, token,
       origin: bound, context: M.contextOfOrigin(bound),
     };
     return token;
   }
 
-  confirmClose(worker, cx, origin) {
-    if (checking() || !worker) return;
-    const token = this.confirmation("close", worker, cx, origin);
+  confirmClose(capture, cx) {
+    if (checking()) return;
+    const token = this.confirmation("close", capture, cx);
     if (!token) return;
     openOverlay({ mod: "confirm", kind: "dialog", width: 440, props: {
       title: "Close this worker?",
-      detail: `Release ${worker.name} and close its pane. Its report stays available in the team's state.`,
-      command: { name: `soho-team.close_${token}`, args: { name: worker.name } },
+      detail: `Release ${capture.name} and close its pane. Its report stays available in the team's state.`,
+      command: { name: `soho-team.close_${token}`, args: { name: capture.name } },
     } });
   }
 
-  confirmReopen(worker, cx, origin) {
-    if (checking() || !worker) return;
-    const token = this.confirmation("reopen", worker, cx, origin);
+  confirmReopen(capture, cx) {
+    if (checking()) return;
+    const token = this.confirmation("reopen", capture, cx);
     if (!token) return;
     openOverlay({ mod: "confirm", kind: "dialog", width: 440, props: {
       title: "Reopen this worker?",
-      detail: `Start ${worker.name} fresh with the same role and assistant.`,
-      command: { name: `soho-team.reopen_${token}`, args: { name: worker.name } },
+      detail: `Start ${capture.name} fresh with the same role and assistant.`,
+      command: { name: `soho-team.reopen_${token}`, args: { name: capture.name } },
     } });
   }
 
-  async setEffort(row, value, cx, origin) {
-    if (checking() || !row || EFFORTS.includes(value) === false) return;
-    if (!this.fromOrigin(origin, cx)) return;
-    const bound = this.asOrigin(origin);
-    const target = M.effortTarget(row, this.groups());
+  // The effort select writes the target it displayed, for the row it displayed
+  // (F1, R3-F1).
+  async setEffort(capture, value, cx) {
+    if (checking() || EFFORTS.includes(value) === false) return;
+    if (!this.rowCurrent(capture)) { this.refuse(cx); return; }
+    const bound = this.originFrom(capture);
     const scope = "project";
-    const key = `effort:${target.key}`;
+    const key = `effort:${capture.key}`;
     const context = M.contextOfOrigin(bound);
     const decision = M.decideWrite({ actionContext: context, currentContext: this.currentContext(), busy: this.busy.has(key) });
     if (!decision.run) {
@@ -649,7 +701,7 @@ export default class SohoPanel extends View {
     cx.notify();
     let previous = null;
     let file = this.configFile(scope);
-    const argv = M.configSetArgv(target.key, value, scope);
+    const argv = M.configSetArgv(capture.key, value, scope);
     try {
       if (this.caps.configDryRun) {
         const r = await exec("soho", [...argv, "--dry-run", "--json"],
@@ -680,11 +732,11 @@ export default class SohoPanel extends View {
         this.errors.config = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
         return;
       }
-      const what = target.lane ? `${target.label} lane effort` : `${row.role} effort`;
-      const undo = M.undoPlan(previous, target.key, scope, this.caps);
-      this.showNotice(M.noticeText(what, value, target.key, file),
+      const what = capture.lane ? `${capture.label} lane effort` : `${capture.role} effort`;
+      const undo = M.undoPlan(previous, capture.key, scope, this.caps);
+      this.showNotice(M.noticeText(what, value, capture.key, file),
         undo.available ? { ...undo, context, origin: bound } : null, cx);
-      this.refresh(cx);
+      this.refresh(cx, { reconcile: true });
     } catch (e) {
       if (this.current(bound)) this.errors.config = firstLines(e?.message ?? e);
     } finally {
@@ -693,15 +745,25 @@ export default class SohoPanel extends View {
     }
   }
 
-  openEdit(sel, cx, origin) {
-    if (checking() || !this.fromOrigin(origin, cx)) return;
-    const bound = this.asOrigin(origin);
+  nextDraftId() {
+    this.draftSeq += 1;
+    return `draft-${this.draftSeq}`;
+  }
+
+  // The row or lane a handler displayed is still there, with that identity
+  // (F1, R3-F1).
+  openEdit(capture, cx) {
+    if (checking()) return;
+    if (!this.rowCurrent(capture)) { this.refuse(cx); return; }
+    const bound = this.originFrom(capture);
+    const sel = { role: capture.role ?? "", lane: capture.lane ?? "" };
     const group = sel.lane ? this.groups().find((g) => g.lane === sel.lane) : null;
     const row = sel.role ? this.roleByName(sel.role) : null;
     if (!group && !row) return;
     const byLane = Boolean(group) && sel.appliesTo !== "role";
     const targetRole = group ? M.roleForScope(sel.role, group) : (row?.role ?? "");
     this.edit = {
+      id: this.nextDraftId(),
       appliesTo: byLane ? "lane" : "role",
       lane: group?.lane ?? row?.lane ?? "",
       laneLabel: group?.label ?? "",
@@ -733,14 +795,18 @@ export default class SohoPanel extends View {
     this.previewEdit(cx);
   }
 
-  closeEdit(cx) {
+  closeEdit(draftId, cx) {
+    if (!this.edit || (draftId !== undefined && this.edit.id !== draftId)) { this.refuse(cx); return; }
+    const id = this.edit.id;
     this.edit = null;
+    if (id) delete this.errors[M.probeEditKey(id)];
     this.menuOpen = "";
     cx.notify();
   }
 
-  setEditField(field, value, cx) {
-    if (!this.edit || this.busy.has("edit-save")) return;
+  setEditField(field, value, draftId, cx) {
+    if (!this.edit || (draftId !== undefined && this.edit.id !== draftId)) { this.refuse(cx); return; }
+    if (this.busy.has("edit-save")) return;
     this.edit[field] = value;
     if (field === "model") this.modelInput.set_value(value);
     this.menuOpen = "";
@@ -748,8 +814,9 @@ export default class SohoPanel extends View {
   }
 
   // Switching Applies to keeps the role that was opened (F5).
-  setEditAppliesTo(appliesTo, cx) {
-    if (!this.edit || this.busy.has("edit-save")) return;
+  setEditAppliesTo(appliesTo, draftId, cx) {
+    if (!this.edit || (draftId !== undefined && this.edit.id !== draftId)) { this.refuse(cx); return; }
+    if (this.busy.has("edit-save")) return;
     const group = this.groups().find((g) => g.lane === this.edit.lane);
     this.edit.appliesTo = appliesTo === "role" ? "role" : "lane";
     if (this.edit.appliesTo === "lane") {
@@ -800,9 +867,9 @@ export default class SohoPanel extends View {
       cx.notify();
       return;
     }
-    const origin = this.asOrigin(e.origin);
+    const origin = this.originFrom(e.origin) ?? this.originFrom(e.context);
     const context = M.contextOfOrigin(origin);
-    if (!this.current(origin)) {
+    if (!origin || !this.current(origin)) {
       e.pending = false;
       e.valid = false;
       e.snapshot = null;
@@ -875,21 +942,24 @@ export default class SohoPanel extends View {
     cx.notify();
   }
 
-  async saveEdit(cx) {
+  // Save runs only for the draft and the validated snapshot that rendered its
+  // button; another draft, or a newer preview for this one, runs nothing
+  // (F1, R3-F1).
+  async saveEdit(cx, capturedId, capturedSnapshot) {
     if (checking() || !this.edit || this.busy.has("edit-save")) return;
     const e = this.edit;
-    const snapshot = e.snapshot;
-    if (snapshot && !M.snapshotMatches(snapshot, e)) {
+    if (!capturedId || e.id !== capturedId) { this.refuse(cx); return; }
+    if (!capturedSnapshot || e.snapshot !== capturedSnapshot || !M.snapshotMatches(capturedSnapshot, e)) {
       e.error = "The preview is out of date; wait for it to update before saving.";
       cx.notify();
       return;
     }
+    const snapshot = e.snapshot;
     const state = M.previewState(e);
     if (!state.canSave) return;
-    const origin = this.asOrigin(snapshot.origin ?? e.origin);
-    if (!this.current(origin)) {
-      this.errors.config = M.CONTEXT_CHANGED_MESSAGE;
-      cx.notify();
+    const origin = this.originFrom(snapshot.origin) ?? this.originFrom(e.origin);
+    if (!origin || !this.current(origin)) {
+      this.refuse(cx, M.CONTEXT_CHANGED_MESSAGE);
       return;
     }
     const decision = M.decideWrite({ actionContext: snapshot.context, currentContext: this.currentContext(), busy: false });
@@ -913,7 +983,7 @@ export default class SohoPanel extends View {
           this.errors.config = M.saveFailureMessage(applied, f.key,
             snapshot.fields.slice(i + 1).map((x) => x.key), detail);
           // A partly applied Save reconciles the team with the CLI (F3).
-          this.refresh(cx);
+          this.refresh(cx, { reconcile: true });
           return;
         }
         applied.push(f.key);
@@ -926,14 +996,14 @@ export default class SohoPanel extends View {
       const what = e.lane && snapshot.appliesTo === "lane" ? `${e.laneLabel} lane settings` : `${e.role} settings`;
       if (this.edit === e) this.edit = null;
       this.showNotice(M.noticeText(what, snapshot.fields[0].value, snapshot.fields[0].key, snapshot.file), undo, cx);
-      this.refresh(cx);
+      this.refresh(cx, { reconcile: true });
     } catch (err) {
       if (this.current(origin)) {
         const rejected = snapshot.fields[applied.length]?.key ?? null;
         this.errors.config = M.saveFailureMessage(applied, rejected,
           snapshot.fields.slice(applied.length + 1).map((f) => f.key), firstLines(err?.message ?? err));
         // The bridge rejected the command, so the team may be partly written (F3).
-        this.refresh(cx);
+        this.refresh(cx, { reconcile: true });
       }
     } finally {
       this.busy.delete("edit-save");
@@ -941,12 +1011,22 @@ export default class SohoPanel extends View {
     }
   }
 
-  // The clicked plan outlives the notice and is used to the end (F3).
-  async undoLast(cx) {
-    if (checking() || !this.undoHolder || this.busy.has("undo")) return;
+  // The notice a handler displayed is still the notice that shows its Undo:
+  // the captured plan id, not whatever plan is current when it is clicked
+  // (F1, R3-F1). The clicked plan outlives the notice and is used to the end
+  // (F3).
+  noticeCapture() {
+    if (!this.undoHolder) return null;
+    const origin = this.originFrom(this.undoHolder.origin ?? this.undoHolder.context);
+    return origin ? { id: this.undoHolder.id, origin } : null;
+  }
+
+  async undoLast(capture, cx) {
+    if (checking() || this.busy.has("undo")) return;
     const holder = this.undoHolder;
-    const origin = this.asOrigin(holder.origin ?? holder.context);
-    if (!this.current(origin)) {
+    if (!holder || !capture || holder.id !== capture.id) { this.refuse(cx); return; }
+    const origin = this.originFrom(holder.origin ?? holder.context);
+    if (!origin || !this.current(origin)) {
       this.errors.config = M.CONTEXT_CHANGED_MESSAGE;
       this.undoHolder = null;
       cx.notify();
@@ -975,7 +1055,7 @@ export default class SohoPanel extends View {
       this.errors.config = "";
       this.undoHolder = null;
       this.showNotice(`Undid ${holder.key ?? M.planKey(plans[0])}`, null, cx);
-      this.refresh(cx);
+      this.refresh(cx, { reconcile: true });
     } catch (e) {
       if (this.current(origin)) this.errors.config = firstLines(e?.message ?? e);
     } finally {
@@ -985,14 +1065,11 @@ export default class SohoPanel extends View {
   }
 
   // The file is read in the origin it was opened from, and a late completion
-  // for a context that changed is discarded instead of painted (F1).
-  async openConfig(cx, origin) {
+  // for a context that changed is discarded instead of painted (F1, R3-F1).
+  async openConfig(capture, cx) {
     if (checking()) return;
-    const bound = this.asOrigin(origin);
-    if (!this.current(bound)) {
-      this.showNotice(M.CONTEXT_CHANGED_MESSAGE, null, cx);
-      return;
-    }
+    const bound = this.originFrom(capture);
+    if (!bound || !this.current(bound)) { this.refuse(cx); return; }
     const path = this.configFile("project");
     if (!path) return;
     const context = M.contextOfOrigin(bound);
@@ -1009,30 +1086,55 @@ export default class SohoPanel extends View {
     }
   }
 
-  setCleanupConfirm(value, cx, origin) {
-    if (value && !this.fromOrigin(origin, cx)) return;
-    this.cleanupConfirm = value;
-    this.cleanupOrigin = value ? this.asOrigin(origin) : null;
+  // A cleanup confirmation is a token with the origin it was opened in, so a
+  // dialog from another context or an earlier confirmation runs no gc
+  // (F1, R3-F1).
+  setCleanupConfirm(value, capture, cx) {
+    if (value) {
+      if (!this.captureCurrent(capture)) { this.refuse(cx); return; }
+      this.cleanupSeq += 1;
+      this.cleanupConfirm = {
+        token: M.confirmationToken(this.cleanupSeq),
+        origin: this.originFrom(capture),
+      };
+    } else {
+      this.cleanupConfirm = null;
+    }
     cx.notify();
   }
 
-  cleanup(cx) {
-    const origin = this.cleanupOrigin ?? this.asOrigin(undefined);
-    this.cleanupConfirm = false;
-    this.cleanupOrigin = null;
+  cleanup(capture, cx) {
+    const confirm = this.cleanupConfirm;
+    if (!confirm || !capture || capture.token !== confirm.token) { this.refuse(cx); return; }
+    const origin = this.originFrom(confirm.origin);
+    if (!origin || !this.current(origin)) {
+      this.cleanupConfirm = null;
+      this.refuse(cx, M.CONTEXT_CHANGED_MESSAGE);
+      return;
+    }
+    this.cleanupConfirm = null;
     this.runAction(cx, "cleanup", ["gc", "--yes"], "health", null,
-      "Orphan copies and processes cleaned up", null, M.contextOfOrigin(origin), origin);
+      "Orphan copies and processes cleaned up", null, confirm);
   }
 
-  // Probe again runs only where the controller can execute it (F11); its
-  // failure is published where it was started, so the Edit form that asked for
-  // it can show it (F9).
-  probeAgain(cx, origin) {
+  // Probe again runs only where the controller can execute it (F11). Its source
+  // comes from the rendered button: the Assistants view or the draft that
+  // started it (F5, R3-F5). A draft dismissed while the probe runs has no slot
+  // to paint, so its diagnostic is dropped.
+  probeAgain(source, cx) {
     if (!this.caps.assistantsJson) return;
-    const fromEdit = Boolean(this.edit);
-    const bound = this.asOrigin(origin ?? this.edit?.origin ?? this.originOf("assistants"));
-    this.runAction(cx, "probe", ["setup", "--probe"], fromEdit ? "probe:edit" : "assistants",
-      null, "Assistants probed again", null, M.contextOfOrigin(bound), bound);
+    const origin = this.originFrom(source);
+    if (!origin || !this.current(origin)) { this.refuse(cx); return; }
+    let errorKey = "assistants";
+    let kept = () => true;
+    if (source.kind === "edit") {
+      const draftId = source.draftId;
+      if (!this.edit || this.edit.id !== draftId) { this.refuse(cx); return; }
+      errorKey = M.probeEditKey(draftId);
+      kept = () => Boolean(this.edit) && this.edit.id === draftId;
+    }
+    this.runAction(cx, "probe", ["setup", "--probe"], "assistants",
+      null, "Assistants probed again", null, { origin }, { errorKey, accept: kept });
   }
 
   render(cx) {
@@ -1060,6 +1162,10 @@ export default class SohoPanel extends View {
       ? (M.findWorker(this.data.roster?.agents, this.reportAgent)?.name ?? "Report")
       : this.tab === "config" ? "Config"
         : this.edit ? `Edit · ${this.edit.laneLabel || this.edit.role || "role"}` : "SoHo";
+    // Every rendered write keeps the identity it displayed (F1, R3-F1).
+    const probeOrigin = this.originOf("assistants") ?? this.originOf("capabilities");
+    const configOrigin = this.originOf("team");
+    const undoCapture = this.noticeCapture();
     const header = h_flex().h(28).flex_none().gap(8).items_center().justify_between()
       .child(h_flex().min_w(0).gap(8).items_center()
         .when(this.tab === "report", (el) => el.child(button("back-now", "‹ Now", () => this.setTab("now", cx), { small: true })))
@@ -1067,7 +1173,8 @@ export default class SohoPanel extends View {
         .child(div().min_w(0).truncate().text_size(16).font_semibold().text_color(t.foreground).child(title)))
       .child(h_flex().flex_none().gap(6).items_center()
         .when(this.tab === "assistants" && this.caps.assistantsJson, (el) => el.child(
-          button("probe-again", "Probe again", (ctx) => this.probeAgain(ctx, this.originOf("assistants")),
+          button("probe-again", "Probe again",
+            (ctx) => this.probeAgain({ kind: "assistants", origin: probeOrigin }, ctx),
             { small: true, disabled: this.isBusy("probe") })))
         .when(this.band === "narrow", (el) => el.child(moreMenu(this, t, cx)))
         .child(button("refresh", "Refresh", (ctx) => this.refresh(ctx),
@@ -1079,7 +1186,7 @@ export default class SohoPanel extends View {
     const footer = h_flex().h(24).flex_none().gap(8).items_center()
       .child(growText(`From ${M.displayFile(this.configFile("project")) || "soho config"}`, t.dim, TEXT.caption))
       .when(Boolean(this.configFile("project") && this.tab !== "config"), (el) => el.child(
-        button("open-config", "Open config", (ctx) => this.openConfig(ctx, this.originOf("team")), { small: true })))
+        button("open-config", "Open config", (ctx) => this.openConfig(configOrigin, ctx), { small: true })))
       .child(div().flex_none().text_size(TEXT.caption).text_color(t.dim)
         .child(this.updatedAt ? "Updated just now" : "Not read yet"));
     return v_flex().id("soho-root").size_full().min_w(0).min_h(0).bg(t.surface).text_color(t.foreground)
@@ -1097,8 +1204,9 @@ export default class SohoPanel extends View {
       .when(this.errors.capabilities, (el) => el.child(errorBlock(`capabilities: ${this.errors.capabilities}`, t)))
       .when(this.errors.config, (el) => el.child(errorBlock(this.errors.config, t)))
       .child(body)
+      .child(footer)
       .when(Boolean(this.noticeItem), (el) => el.child(notice(this.noticeItem.text, this.undoHolder,
-        (ctx) => this.undoLast(ctx), t, { disabled: this.isBusy("undo") })));
+        (ctx) => this.undoLast(undoCapture, ctx), t, { disabled: this.isBusy("undo") })));
   }
 
   teamToolbar(t, cx) {

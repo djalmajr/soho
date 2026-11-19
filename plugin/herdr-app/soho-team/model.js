@@ -57,6 +57,11 @@ export function sectionReads(caps) {
 export const CONTEXT_CHANGED_MESSAGE =
   "The project, machine or folder changed; the pending change was discarded. Open it again from this project.";
 
+// A handler whose row, draft or confirmation left the screen runs nothing; the
+// notice says so (F1, R3-F1).
+export const STALE_ACTION_MESSAGE =
+  "That button no longer belongs to the row, draft or confirmation on screen. Open it again from the current project.";
+
 // The identity every displayed dataset and pending action carries (F1).
 export function contextFor(space, folder) {
   return { space: space?.id ?? "", machine: space?.machine ?? null, folder: folder ?? "" };
@@ -93,6 +98,53 @@ export function contextOfOrigin(origin) {
 // shown project; the read sequence is not compared (F1, F2).
 export function originCurrent(origin, current) {
   return Boolean(origin) && sameContext(contextOfOrigin(origin), current);
+}
+
+// A capture is taken when a view renders and kept in its handler: the origin of
+// the dataset it was drawn from plus the row identity (F1, R3-F1). A capture
+// with no origin runs nothing, so the helpers leave it out instead of
+// inventing one.
+export function rowCapture(origin, row) {
+  const identity = { role: row?.role ?? "" };
+  return origin ? { origin: { ...origin }, ...identity } : identity;
+}
+
+export function laneCapture(origin, lane) {
+  const identity = { lane: lane ?? "" };
+  return origin ? { origin: { ...origin }, ...identity } : identity;
+}
+
+export function effortCapture(origin, row, target) {
+  const identity = {
+    role: row?.role ?? "", lane: row?.lane ?? "",
+    key: target?.key ?? "", appliesTo: target?.appliesTo ?? "", label: target?.label ?? "",
+  };
+  return origin ? { origin: { ...origin }, ...identity } : identity;
+}
+
+export function workerCapture(origin, worker) {
+  const identity = { key: workerKey(worker), name: worker?.name ?? "" };
+  return origin ? { origin: { ...origin }, ...identity } : identity;
+}
+
+// The row a handler displayed is still the row it names: same role or lane, by
+// identity, never by position (R3-F1).
+export function rowStillCurrent(capture, rows, groups) {
+  if (!capture) return false;
+  if (capture.role) {
+    return (Array.isArray(rows) ? rows : []).some((row) => row.role === capture.role
+      && (capture.lane === undefined || (row.lane ?? "") === capture.lane));
+  }
+  if (capture.lane) return (Array.isArray(groups) ? groups : []).some((g) => g.lane === capture.lane);
+  return false;
+}
+
+// The worker row a handler displayed is still there, with the same name and
+// Core address (R3-F1).
+export function workerStillCurrent(capture, workers) {
+  if (!capture) return false;
+  const worker = findWorker(workers, capture.key);
+  return Boolean(worker) && worker.name === capture.name;
 }
 
 // Report and Config are detail views, not capability-gated tool tabs, so an
@@ -568,8 +620,11 @@ export function acceptsReport(selectionKey, requestedKey) {
   return Boolean(selectionKey) && Boolean(requestedKey) && selectionKey === requestedKey;
 }
 
-export function reportBusyKey(folder, key) {
-  return `report|${folder}|${key}`;
+// A report read is shared only for the same whole origin: two spaces at one
+// machine and folder are different projects (F4, R3-F4).
+export function reportBusyKey(origin, key) {
+  const bound = origin?.spaceId !== undefined ? origin : originFor(origin);
+  return `report|${contextKey(contextOfOrigin(bound))}|${key}`;
 }
 
 // A section read's busy key is keyed by its whole origin, never by the folder
@@ -615,6 +670,12 @@ export function nonJsonMessage(command, stderr) {
 // later lookup does not erase them (F14).
 export function modelsErrorKey(kind) {
   return `models:${kind}`;
+}
+
+// A probe failure belongs to the view or the draft whose button started it; a
+// dismissed draft has no key on screen (F5, R3-F5).
+export function probeEditKey(draftId) {
+  return `probe:edit:${draftId ?? ""}`;
 }
 
 // What the cleanup confirmation lists before its button (F16).
