@@ -511,13 +511,25 @@ func TestPanelRosterReportPathNeedsARegularFile(t *testing.T) {
 	}
 	empty := filepath.Join(sd, "reports", "empty.md")
 	panelWrite(t, empty, "")
+	// The legacy indicator keeps its size rule, and a directory's size is
+	// platform-defined (non-zero on Unix, zero on Windows): the expected
+	// indicator follows what os.Stat reports, while the published path is
+	// absent on every platform.
+	dirInfo, err := os.Stat(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directoryReport := "pending"
+	if dirInfo.Size() > 0 {
+		directoryReport = "ready"
+	}
 	for _, tc := range []struct {
 		name           string
 		pointer        string
 		wantReport     string
 		wantReportPath any
 	}{
-		{"a directory", directory, "ready", nil},
+		{"a directory", directory, directoryReport, nil},
 		{"an empty regular file", empty, "pending", empty},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
