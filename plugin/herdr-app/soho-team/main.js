@@ -341,6 +341,23 @@ export default class SohoPanel extends View {
     }
   }
 
+  // An event cx is valid only for the call that delivered it. Work that
+  // outlives that call runs in a task and uses only the AsyncContext the task
+  // hands back. `Task` itself is not thenable, so the returned promise settles
+  // when the body ends: callers that await a write still resume after it.
+  spawnFrom(cx, body) {
+    let settle;
+    const done = new Promise((resolve) => { settle = resolve; });
+    cx.spawn(async (ctx) => {
+      try {
+        return await body(ctx);
+      } finally {
+        settle();
+      }
+    });
+    return done;
+  }
+
   // A section's diagnostic is written only by a read at least as new as the one
   // that wrote it last, so an older in-flight answer never repaints the result
   // of a newer reconcile (R4-F3).
@@ -476,27 +493,29 @@ export default class SohoPanel extends View {
   async readChoices(cx, origin) {
     if (checking() || !this.alive(origin)) return;
     const reads = M.sectionReads(this.caps);
-    if (reads.assistantsJson) {
-      const assistants = await this.runSection(cx, "assistants", ["kinds", "--json"], origin);
-      if (!this.alive(origin) || !assistants) return;
-      this.publish("assistants", assistants.value, assistants.origin);
-      this.publish("choices", M.assistantChoices(assistants.value, "", {}, this.caps), assistants.origin);
-    } else {
-      const kinds = await this.runSection(cx, "assistants", ["kinds"], origin, false);
-      if (!this.alive(origin) || !kinds) return;
-      const text = kinds.value ?? "";
-      this.publish("kindsText", text, kinds.origin);
-      const modelsByKind = {};
-      for (const a of M.parseKindsText(text).filter((row) => row.installed)) {
-        const models = await this.runSection(cx, "assistants", ["models", a.kind], origin, false,
-          { errorKey: M.modelsErrorKey(a.kind), busyKey: M.readBusyKey(`assistants:${a.kind}`, origin) });
-        if (!this.alive(origin)) return;
-        modelsByKind[a.kind] = models?.value ?? "";
+    return this.spawnFrom(cx, async (ctx) => {
+      if (reads.assistantsJson) {
+        const assistants = await this.runSection(ctx, "assistants", ["kinds", "--json"], origin);
+        if (!this.alive(origin) || !assistants) return;
+        this.publish("assistants", assistants.value, assistants.origin);
+        this.publish("choices", M.assistantChoices(assistants.value, "", {}, this.caps), assistants.origin);
+      } else {
+        const kinds = await this.runSection(ctx, "assistants", ["kinds"], origin, false);
+        if (!this.alive(origin) || !kinds) return;
+        const text = kinds.value ?? "";
+        this.publish("kindsText", text, kinds.origin);
+        const modelsByKind = {};
+        for (const a of M.parseKindsText(text).filter((row) => row.installed)) {
+          const models = await this.runSection(ctx, "assistants", ["models", a.kind], origin, false,
+            { errorKey: M.modelsErrorKey(a.kind), busyKey: M.readBusyKey(`assistants:${a.kind}`, origin) });
+          if (!this.alive(origin)) return;
+          modelsByKind[a.kind] = models?.value ?? "";
+        }
+        this.publish("modelsByKind", modelsByKind, kinds.origin);
+        this.publish("choices", M.assistantChoices(null, text, modelsByKind, this.caps), kinds.origin);
       }
-      this.publish("modelsByKind", modelsByKind, kinds.origin);
-      this.publish("choices", M.assistantChoices(null, text, modelsByKind, this.caps), kinds.origin);
-    }
-    if (this.alive(origin)) cx.notify();
+      if (this.alive(origin)) ctx.notify();
+    });
   }
 
   // fresh: an explicit selection never joins a read already in flight for the
@@ -511,31 +530,33 @@ export default class SohoPanel extends View {
     // A result or a diagnostic for a worker that lost the selection is dropped
     // before it can be published (F7).
     const stillWanted = () => M.acceptsReport(this.reportAgent, requested);
-    if (this.caps.reportJson) {
-      const report = await this.runSection(cx, "report", ["report", worker.name, "--json"], origin, true,
-        { busyKey: M.reportBusyKey(origin, requested), accept: stillWanted, fresh });
-      if (!this.alive(origin) || !stillWanted()) return;
-      if (report) {
-        this.publish("report", report.value, report.origin);
-        this.publish("reportMarkdown", null, report.origin);
-      }
-    } else if (worker.report_path) {
-      try {
-        const path = worker.report_path;
-        const text = await readTextFile(path, { on: origin.machine });
+    return this.spawnFrom(cx, async (ctx) => {
+      if (this.caps.reportJson) {
+        const report = await this.runSection(ctx, "report", ["report", worker.name, "--json"], origin, true,
+          { busyKey: M.reportBusyKey(origin, requested), accept: stillWanted, fresh });
         if (!this.alive(origin) || !stillWanted()) return;
-        this.publish("reportMarkdown", text ?? `Report file is empty: ${path}`, origin);
-        this.publish("report", null, origin);
-        this.errors.report = "";
-      } catch (e) {
-        if (this.alive(origin) && stillWanted()) {
-          this.errors.report = firstLines(e?.message ?? e);
+        if (report) {
+          this.publish("report", report.value, report.origin);
+          this.publish("reportMarkdown", null, report.origin);
         }
+      } else if (worker.report_path) {
+        try {
+          const path = worker.report_path;
+          const text = await readTextFile(path, { on: origin.machine });
+          if (!this.alive(origin) || !stillWanted()) return;
+          this.publish("reportMarkdown", text ?? `Report file is empty: ${path}`, origin);
+          this.publish("report", null, origin);
+          this.errors.report = "";
+        } catch (e) {
+          if (this.alive(origin) && stillWanted()) {
+            this.errors.report = firstLines(e?.message ?? e);
+          }
+        }
+      } else {
+        this.errors.report = "soho has no report --json and this worker has no report path";
       }
-    } else {
-      this.errors.report = "soho has no report --json and this worker has no report path";
-    }
-    if (this.alive(origin) && stillWanted()) cx.notify();
+      if (this.alive(origin) && stillWanted()) ctx.notify();
+    });
   }
 
   // Every state-changing action goes through here: no work while checking, and
@@ -555,28 +576,30 @@ export default class SohoPanel extends View {
     }
     this.busy.add(key);
     cx.notify();
-    try {
-      const r = await exec("soho", args, { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
-      if (!this.current(origin)) return;
-      if (r.code !== 0) {
-        // The diagnostic belongs to the source that started the action, so a
-        // source that left the screen paints nothing (F5, R3-F5).
-        if (kept()) this.errors[errorKey] = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
-        return;
+    return this.spawnFrom(cx, async (ctx) => {
+      try {
+        const r = await exec("soho", args, { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
+        if (!this.current(origin)) return;
+        if (r.code !== 0) {
+          // The diagnostic belongs to the source that started the action, so a
+          // source that left the screen paints nothing (F5, R3-F5).
+          if (kept()) this.errors[errorKey] = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
+          return;
+        }
+        // Only the diagnostic is scoped to the source's lifetime: a success in a
+        // project that is still shown refreshes it, whatever became of the button
+        // that started the action (R4-F5).
+        if (kept()) this.errors[errorKey] = "";
+        if (onSuccess) onSuccess(r);
+        if (text) this.showNotice(text, undo, ctx);
+        this.refresh(ctx, { reconcile: true });
+      } catch (e) {
+        if (this.current(origin) && kept()) this.errors[errorKey] = firstLines(e?.message ?? e);
+      } finally {
+        this.busy.delete(key);
+        this.notifySafe(ctx);
       }
-      // Only the diagnostic is scoped to the source's lifetime: a success in a
-      // project that is still shown refreshes it, whatever became of the button
-      // that started the action (R4-F5).
-      if (kept()) this.errors[errorKey] = "";
-      if (onSuccess) onSuccess(r);
-      if (text) this.showNotice(text, undo, cx);
-      this.refresh(cx, { reconcile: true });
-    } catch (e) {
-      if (this.current(origin) && kept()) this.errors[errorKey] = firstLines(e?.message ?? e);
-    } finally {
-      this.busy.delete(key);
-      this.notifySafe(cx);
-    }
+    });
   }
 
   // Herdr delivers the suffix only: "close_<token>" for
@@ -728,47 +751,49 @@ export default class SohoPanel extends View {
     let previous = null;
     let file = this.configFile(scope);
     const argv = M.configSetArgv(capture.key, value, scope);
-    try {
-      if (this.caps.configDryRun) {
-        const r = await exec("soho", [...argv, "--dry-run", "--json"],
-          { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
+    return this.spawnFrom(cx, async (ctx) => {
+      try {
+        if (this.caps.configDryRun) {
+          const r = await exec("soho", [...argv, "--dry-run", "--json"],
+            { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
+          if (!this.current(bound)) return;
+          if (r.code !== 0) {
+            this.errors.config = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
+            return;
+          }
+          let plan;
+          try {
+            plan = JSON.parse(r.stdout);
+          } catch {
+            this.errors.config = M.nonJsonMessage(`soho ${[...argv, "--dry-run", "--json"].join(" ")}`, r.stderr);
+            return;
+          }
+          if (plan.valid === false) {
+            this.errors.config = String(plan.error ?? "invalid value");
+            return;
+          }
+          previous = plan.previous ?? null;
+          file = plan.file ?? file;
+        }
+        this.errors.config = "";
+        const r = await exec("soho", argv, { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
         if (!this.current(bound)) return;
         if (r.code !== 0) {
           this.errors.config = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
           return;
         }
-        let plan;
-        try {
-          plan = JSON.parse(r.stdout);
-        } catch {
-          this.errors.config = M.nonJsonMessage(`soho ${[...argv, "--dry-run", "--json"].join(" ")}`, r.stderr);
-          return;
-        }
-        if (plan.valid === false) {
-          this.errors.config = String(plan.error ?? "invalid value");
-          return;
-        }
-        previous = plan.previous ?? null;
-        file = plan.file ?? file;
+        const what = capture.lane ? `${capture.label} lane effort` : `${capture.role} effort`;
+        const undo = M.undoPlan(previous, capture.key, scope, this.caps);
+        this.showNotice(M.noticeText(what, value, capture.key, file),
+          undo.available ? { ...undo, context, origin: bound } : null, ctx);
+        this.refresh(ctx, { reconcile: true });
+      } catch (e) {
+        if (this.current(bound)) this.errors.config = firstLines(e?.message ?? e);
+      } finally {
+        this.busy.delete(key);
+        this.notifySafe(ctx);
       }
-      this.errors.config = "";
-      const r = await exec("soho", argv, { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
-      if (!this.current(bound)) return;
-      if (r.code !== 0) {
-        this.errors.config = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
-        return;
-      }
-      const what = capture.lane ? `${capture.label} lane effort` : `${capture.role} effort`;
-      const undo = M.undoPlan(previous, capture.key, scope, this.caps);
-      this.showNotice(M.noticeText(what, value, capture.key, file),
-        undo.available ? { ...undo, context, origin: bound } : null, cx);
-      this.refresh(cx, { reconcile: true });
-    } catch (e) {
-      if (this.current(bound)) this.errors.config = firstLines(e?.message ?? e);
-    } finally {
-      this.busy.delete(key);
-      this.notifySafe(cx);
-    }
+    });
   }
 
   nextDraftId() {
@@ -903,69 +928,71 @@ export default class SohoPanel extends View {
       cx.notify();
       return;
     }
-    let preview;
-    if (this.caps.configDryRun) {
-      const results = [];
-      for (const f of fields) {
-        const argv = [...M.configSetArgv(f.key, f.value, e.scope), "--dry-run", "--json"];
-        try {
-          const r = await exec("soho", argv, { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
-          if (this.edit !== e || token !== e.token) return;
-          if (!this.current(origin)) {
-            e.pending = false;
-            e.valid = false;
-            e.snapshot = null;
-            e.error = M.CONTEXT_CHANGED_MESSAGE;
-            cx.notify();
-            return;
-          }
-          if (r.code !== 0) {
-            e.error = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
-            e.preview = [];
-            e.valid = false;
-            e.pending = false;
-            cx.notify();
-            return;
-          }
-          let result;
+    return this.spawnFrom(cx, async (ctx) => {
+      let preview;
+      if (this.caps.configDryRun) {
+        const results = [];
+        for (const f of fields) {
+          const argv = [...M.configSetArgv(f.key, f.value, e.scope), "--dry-run", "--json"];
           try {
-            result = JSON.parse(r.stdout);
-          } catch {
-            e.error = M.nonJsonMessage(`soho ${argv.join(" ")}`, r.stderr);
+            const r = await exec("soho", argv, { cwd: context.folder || undefined, on: context.machine, timeout: 20000 });
+            if (this.edit !== e || token !== e.token) return;
+            if (!this.current(origin)) {
+              e.pending = false;
+              e.valid = false;
+              e.snapshot = null;
+              e.error = M.CONTEXT_CHANGED_MESSAGE;
+              ctx.notify();
+              return;
+            }
+            if (r.code !== 0) {
+              e.error = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
+              e.preview = [];
+              e.valid = false;
+              e.pending = false;
+              ctx.notify();
+              return;
+            }
+            let result;
+            try {
+              result = JSON.parse(r.stdout);
+            } catch {
+              e.error = M.nonJsonMessage(`soho ${argv.join(" ")}`, r.stderr);
+              e.preview = [];
+              e.valid = false;
+              e.pending = false;
+              ctx.notify();
+              return;
+            }
+            results.push(result);
+          } catch (err) {
+            if (this.edit !== e || token !== e.token) return;
+            e.error = firstLines(err?.message ?? err);
             e.preview = [];
             e.valid = false;
             e.pending = false;
-            cx.notify();
+            ctx.notify();
             return;
           }
-          results.push(result);
-        } catch (err) {
-          if (this.edit !== e || token !== e.token) return;
-          e.error = firstLines(err?.message ?? err);
-          e.preview = [];
-          e.valid = false;
-          e.pending = false;
-          cx.notify();
-          return;
         }
+        preview = M.previewFromDryRuns(results, fields, e.scope);
+        e.previous = results[0]?.previous ?? null;
+        e.previousByKey = Object.fromEntries(results.map((r, i) => [fields[i].key, r?.previous ?? null]));
+        e.file = results[0]?.file ?? this.configFile(e.scope);
+      } else {
+        preview = M.previewFromDryRuns(null, fields, e.scope);
+        e.file = this.configFile(e.scope);
+        e.previous = null;
+        e.previousByKey = {};
       }
-      preview = M.previewFromDryRuns(results, fields, e.scope);
-      e.previous = results[0]?.previous ?? null;
-      e.previousByKey = Object.fromEntries(results.map((r, i) => [fields[i].key, r?.previous ?? null]));
-      e.file = results[0]?.file ?? this.configFile(e.scope);
-    } else {
-      preview = M.previewFromDryRuns(null, fields, e.scope);
-      e.file = this.configFile(e.scope);
-      e.previous = null;
-      e.previousByKey = {};
-    }
-    if (this.edit !== e || token !== e.token) return;
-    e.preview = preview.commands;
-    e.valid = preview.valid;
-    e.error = preview.error;
-    e.snapshot = preview.valid ? M.snapshotFor(e, preview, e.previousByKey, e.file, context) : null;
-    e.pending = false;
-    cx.notify();
+      if (this.edit !== e || token !== e.token) return;
+      e.preview = preview.commands;
+      e.valid = preview.valid;
+      e.error = preview.error;
+      e.snapshot = preview.valid ? M.snapshotFor(e, preview, e.previousByKey, e.file, context) : null;
+      e.pending = false;
+      ctx.notify();
+    });
   }
 
   // Save runs only for the draft and the validated snapshot that rendered its
@@ -998,43 +1025,45 @@ export default class SohoPanel extends View {
     cx.notify();
     const scope = snapshot.scope;
     const applied = [];
-    try {
-      for (let i = 0; i < snapshot.fields.length; i += 1) {
-        const f = snapshot.fields[i];
-        const r = await exec("soho", M.configSetArgv(f.key, f.value, scope),
-          { cwd: snapshot.context.folder || undefined, on: snapshot.context.machine, timeout: 20000 });
-        if (!this.current(origin)) return;
-        if (r.code !== 0) {
-          const detail = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
-          this.errors.config = M.saveFailureMessage(applied, f.key,
-            snapshot.fields.slice(i + 1).map((x) => x.key), detail);
-          // A partly applied Save reconciles the team with the CLI (F3).
-          this.refresh(cx, { reconcile: true });
-          return;
+    return this.spawnFrom(cx, async (ctx) => {
+      try {
+        for (let i = 0; i < snapshot.fields.length; i += 1) {
+          const f = snapshot.fields[i];
+          const r = await exec("soho", M.configSetArgv(f.key, f.value, scope),
+            { cwd: snapshot.context.folder || undefined, on: snapshot.context.machine, timeout: 20000 });
+          if (!this.current(origin)) return;
+          if (r.code !== 0) {
+            const detail = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
+            this.errors.config = M.saveFailureMessage(applied, f.key,
+              snapshot.fields.slice(i + 1).map((x) => x.key), detail);
+            // A partly applied Save reconciles the team with the CLI (F3).
+            this.refresh(ctx, { reconcile: true });
+            return;
+          }
+          applied.push(f.key);
         }
-        applied.push(f.key);
+        this.errors.config = "";
+        const plans = snapshot.fields.map((f) => M.undoPlan(snapshot.previousByKey[f.key] ?? null, f.key, scope, this.caps));
+        const undo = plans.every((p) => p.available)
+          ? { available: true, plans, key: snapshot.fields[0].key, context: snapshot.context, origin }
+          : null;
+        const what = e.lane && snapshot.appliesTo === "lane" ? `${e.laneLabel} lane settings` : `${e.role} settings`;
+        if (this.edit === e) this.edit = null;
+        this.showNotice(M.noticeText(what, snapshot.fields[0].value, snapshot.fields[0].key, snapshot.file), undo, ctx);
+        this.refresh(ctx, { reconcile: true });
+      } catch (err) {
+        if (this.current(origin)) {
+          const rejected = snapshot.fields[applied.length]?.key ?? null;
+          this.errors.config = M.saveFailureMessage(applied, rejected,
+            snapshot.fields.slice(applied.length + 1).map((f) => f.key), firstLines(err?.message ?? err));
+          // The bridge rejected the command, so the team may be partly written (F3).
+          this.refresh(ctx, { reconcile: true });
+        }
+      } finally {
+        this.busy.delete("edit-save");
+        this.notifySafe(ctx);
       }
-      this.errors.config = "";
-      const plans = snapshot.fields.map((f) => M.undoPlan(snapshot.previousByKey[f.key] ?? null, f.key, scope, this.caps));
-      const undo = plans.every((p) => p.available)
-        ? { available: true, plans, key: snapshot.fields[0].key, context: snapshot.context, origin }
-        : null;
-      const what = e.lane && snapshot.appliesTo === "lane" ? `${e.laneLabel} lane settings` : `${e.role} settings`;
-      if (this.edit === e) this.edit = null;
-      this.showNotice(M.noticeText(what, snapshot.fields[0].value, snapshot.fields[0].key, snapshot.file), undo, cx);
-      this.refresh(cx, { reconcile: true });
-    } catch (err) {
-      if (this.current(origin)) {
-        const rejected = snapshot.fields[applied.length]?.key ?? null;
-        this.errors.config = M.saveFailureMessage(applied, rejected,
-          snapshot.fields.slice(applied.length + 1).map((f) => f.key), firstLines(err?.message ?? err));
-        // The bridge rejected the command, so the team may be partly written (F3).
-        this.refresh(cx, { reconcile: true });
-      }
-    } finally {
-      this.busy.delete("edit-save");
-      this.notifySafe(cx);
-    }
+    });
   }
 
   // The notice a handler displayed is still the notice that shows its Undo:
@@ -1068,26 +1097,28 @@ export default class SohoPanel extends View {
     this.busy.add("undo");
     cx.notify();
     const plans = holder.plans ?? [holder];
-    try {
-      for (const plan of plans) {
-        const r = await exec("soho", plan.args,
-          { cwd: holder.context.folder || undefined, on: holder.context.machine, timeout: 20000 });
-        if (!this.current(origin)) return;
-        if (r.code !== 0) {
-          this.errors.config = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
-          return;
+    return this.spawnFrom(cx, async (ctx) => {
+      try {
+        for (const plan of plans) {
+          const r = await exec("soho", plan.args,
+            { cwd: holder.context.folder || undefined, on: holder.context.machine, timeout: 20000 });
+          if (!this.current(origin)) return;
+          if (r.code !== 0) {
+            this.errors.config = firstLines(r.stderr || r.stdout || `soho exited ${r.code}`);
+            return;
+          }
         }
+        this.errors.config = "";
+        this.undoHolder = null;
+        this.showNotice(`Undid ${holder.key ?? M.planKey(plans[0])}`, null, ctx);
+        this.refresh(ctx, { reconcile: true });
+      } catch (e) {
+        if (this.current(origin)) this.errors.config = firstLines(e?.message ?? e);
+      } finally {
+        this.busy.delete("undo");
+        this.notifySafe(ctx);
       }
-      this.errors.config = "";
-      this.undoHolder = null;
-      this.showNotice(`Undid ${holder.key ?? M.planKey(plans[0])}`, null, cx);
-      this.refresh(cx, { reconcile: true });
-    } catch (e) {
-      if (this.current(origin)) this.errors.config = firstLines(e?.message ?? e);
-    } finally {
-      this.busy.delete("undo");
-      this.notifySafe(cx);
-    }
+    });
   }
 
   // The file is read in the origin it was opened from, and a late completion
@@ -1101,17 +1132,19 @@ export default class SohoPanel extends View {
     if (!bound || !path || !this.current(bound)) { this.refuse(cx); return; }
     if (path !== this.configFile("project")) { this.refuse(cx); return; }
     const context = M.contextOfOrigin(bound);
-    try {
-      const text = await readTextFile(path, { on: context.machine });
-      if (!this.current(bound)) return;
-      this.publish("configText", text ?? `Config file is empty: ${path}`, bound);
-      this.tab = "config";
-      cx.notify();
-    } catch (e) {
-      if (!this.current(bound)) return;
-      this.errors.config = firstLines(e?.message ?? e);
-      cx.notify();
-    }
+    return this.spawnFrom(cx, async (ctx) => {
+      try {
+        const text = await readTextFile(path, { on: context.machine });
+        if (!this.current(bound)) return;
+        this.publish("configText", text ?? `Config file is empty: ${path}`, bound);
+        this.tab = "config";
+        ctx.notify();
+      } catch (e) {
+        if (!this.current(bound)) return;
+        this.errors.config = firstLines(e?.message ?? e);
+        ctx.notify();
+      }
+    });
   }
 
   // A cleanup confirmation is a token with the origin it was opened in, so a
