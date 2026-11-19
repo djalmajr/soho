@@ -216,13 +216,10 @@ func TestInventoryCollectHCConflictingPhysicalIdentity(t *testing.T) {
 				}
 			}
 			after := treeFiles(t, fixture)
-			if len(before) != len(after) {
-				t.Fatalf("%s: the fixture tree changed: %d -> %d files", shape.name, len(before), len(after))
-			}
-			for path, content := range before {
-				if after[path] != content {
-					t.Fatalf("%s: the file %s was missing or changed", shape.name, path)
-				}
+			removed, added, changed := treeDiff(before, after)
+			if len(removed)+len(added)+len(changed) != 0 {
+				t.Fatalf("%s: the fixture tree changed: %d -> %d files; removed=%q added=%q changed=%q",
+					shape.name, len(before), len(after), removed, added, changed)
 			}
 		})
 	}
