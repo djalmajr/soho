@@ -276,6 +276,9 @@ soho init                                    # doctor + name yourself `orchestra
 soho title "<objective>"                     # this pane's title: `orchestrator: <objective>`
 soho title --clear                           # clear this pane's title
 soho doctor [--fix --panes 2|3|4] [--user|--session]   # advisory check (`first_run: true|false`); --fix normalizes the project, user or session file
+soho update --check [--json] [--channel stable|rc]   # check for a newer release and install nothing: the one-line answer (or one --json object); the advice names --channel when it differs from this binary's own
+soho update [--channel stable|rc]   # install the newest release of this binary's channel (rc for a pre-release build, stable otherwise); a channel release lower than the running version needs --version; prints the `soho setup --local` next step and, when ~/.agents/skills/soho exists, the `npx -y skills add "djalmajr/soho#<tag>" --global --skill soho -y` command (printed, never run)
+soho update --version vTAG   # install exactly that release tag; doctor and init print one cached `update available: <tag> (soho update)` line
 soho explain                                 # plain text: what is running (with the team's footprint line when copies or registered processes are due), or how to start
 soho setup [--target FILE] [--no-hooks]      # AGENTS.md block + Claude Code, Codex and pi peer checks (idempotent)
 soho setup --detect                          # JSON: installed kinds, summaries, models (incl. custom providers), recommended reviewer; writes nothing

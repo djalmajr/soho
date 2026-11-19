@@ -1371,3 +1371,32 @@ func TestInstallMoveAsideNeedsAnExistingDestination(t *testing.T) {
 	}
 	assertDirExact(t, dir)
 }
+
+// TestReleaseListEnvironmentName pins the override the channel resolver reads
+// (internal/update): a rename would silently send every check to the public
+// endpoint, and the tests' httptest servers would never be asked.
+func TestReleaseListEnvironmentName(t *testing.T) {
+	if EnvReleasesAPI != "SOHO_RELEASES_API" {
+		t.Fatalf("EnvReleasesAPI = %q", EnvReleasesAPI)
+	}
+	if EnvReleaseBase != "SOHO_RELEASE_BASE" {
+		t.Fatalf("EnvReleaseBase = %q", EnvReleaseBase)
+	}
+}
+
+// TestBinaryNameIsTheInstallDestinationName keeps the self-update rule (SOH-447
+// F5) tied to what install.Run really writes for the host platform.
+func TestBinaryNameIsTheInstallDestinationName(t *testing.T) {
+	dir := t.TempDir()
+	destination := installDest(dir, binaryBaseName, runtime.GOOS)
+	if got := filepath.Base(destination); got != BinaryName() {
+		t.Fatalf("BinaryName() = %q, install writes %q", BinaryName(), got)
+	}
+	want := "soho"
+	if runtime.GOOS == "windows" {
+		want = "soho.exe"
+	}
+	if BinaryName() != want {
+		t.Fatalf("BinaryName() = %q, want %q", BinaryName(), want)
+	}
+}

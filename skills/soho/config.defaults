@@ -377,6 +377,15 @@ metrics=off
 # Herdr toast when a report lands: on | off.
 notify=off
 
+# Passive update check: on (default) | off. With on, `soho doctor` and
+# `soho init` print one line `update available: <tag> (soho update)` when a
+# newer release exists in the running binary's channel (rc for a pre-release
+# build, stable otherwise). At most one network check runs per 24 h, bounded
+# to 2 s, with the outcome cached in the state dir as update-check.json; a
+# failure is silent. SOHO_NO_UPDATE_CHECK=1 turns it off too, and a build
+# that is not a released version ("dev") gets no notice.
+update_check=on
+
 # Native args always appended for a kind (after the skill's own flags, before `--`).
 # Example (you accept the risk): args.codex=--dangerously-bypass-hook-trust
 # args.codex=

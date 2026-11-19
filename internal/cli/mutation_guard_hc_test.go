@@ -423,7 +423,7 @@ func TestMutationGuardNowrite(t *testing.T) {
 		if out != "" {
 			t.Fatalf("stdout = %q, want empty", out)
 		}
-		wantStderr := "soho: soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, --patterns, --json, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json'; rejected: mutation-guard (3 extra arguments not allowed) — unset SOHO_NOWRITE to write\n"
+		wantStderr := "soho: soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, --patterns, --json, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json', 'update --check [--json] [--channel stable|rc]'; rejected: mutation-guard (3 extra arguments not allowed) — unset SOHO_NOWRITE to write\n"
 		if errOut != wantStderr {
 			t.Fatalf("stderr = %q, want %q", errOut, wantStderr)
 		}
@@ -447,7 +447,7 @@ func TestMutationGuardNowrite(t *testing.T) {
 		if out != "" {
 			t.Fatalf("stdout = %q, want empty", out)
 		}
-		wantStderr := "soho: soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, --patterns, --json, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json'; rejected: mutation-guard — unset SOHO_NOWRITE to write\n"
+		wantStderr := "soho: soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, --patterns, --json, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json', 'update --check [--json] [--channel stable|rc]'; rejected: mutation-guard — unset SOHO_NOWRITE to write\n"
 		if errOut != wantStderr {
 			t.Fatalf("stderr = %q, want %q", errOut, wantStderr)
 		}
@@ -582,7 +582,7 @@ func TestMutationGuardHelp(t *testing.T) {
 		env["HC_TERMINAL_ID"] = "t1"
 		env["SOHO_TRANSPORT"] = "hc"
 
-		wantStderr := "soho: soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, --patterns, --json, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json'; rejected: mutation-guard (1 extra argument not allowed) — unset SOHO_NOWRITE to write\n"
+		wantStderr := "soho: soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, --patterns, --json, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json', 'update --check [--json] [--channel stable|rc]'; rejected: mutation-guard (1 extra argument not allowed) — unset SOHO_NOWRITE to write\n"
 
 		for _, flag := range []string{"--help", "-h"} {
 			code, out, errOut := runMutationGuardHc(t, []string{"mutation-guard", flag}, env)

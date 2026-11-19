@@ -483,8 +483,9 @@ func CfgSource(ctx *Config, key string, env platform.Env) string {
 }
 
 func ConfigKeyOk(key string) bool {
-	// Keep the frozen config listing order while accepting the copy policy.
-	if key == "mutation_copy_exclude" || key == "opencode_tui_profile" {
+	// Keep the frozen config listing order while accepting the copy policy
+	// and the passive update check.
+	if key == "mutation_copy_exclude" || key == "opencode_tui_profile" || key == "update_check" {
 		return true
 	}
 	for _, scalar := range ConfigScalarKeys {

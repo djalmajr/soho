@@ -572,3 +572,36 @@ func ChildGuardConfig(env platform.Env, cwd string) Config {
 	}
 	return ctx
 }
+
+// StateDirForRead resolves the state dir for a passive reader — the update
+// notice of doctor and init — with no side effect: no mkdir, no .gitignore
+// append (the path resolves over a read-only environment clone), and nothing
+// created on refusal. The same admissions as stateDirRefuse apply (a state dir
+// inside the installed skill and a former state dir waiting for the setup
+// move), and the directory must already exist. "" means the reader has no
+// admitted state dir and must stay silent: a reader can never create protected
+// state or block the setup migration.
+func StateDirForRead(ctx *Config, env platform.Env, cwd string) (dir string) {
+	defer func() {
+		if value := recover(); value != nil {
+			if _, ok := value.(*platform.ExitError); !ok {
+				panic(value)
+			}
+			dir = ""
+		}
+	}()
+	if StateInSkill(ctx, env, cwd) != "" {
+		return ""
+	}
+	if _, _, waiting := FormerStateWaiting(ctx, env, cwd); waiting {
+		return ""
+	}
+	readEnv := env.Clone()
+	readEnv["SOHO_NOWRITE"] = "1"
+	path := StateDirPath(ctx, readEnv, cwd)
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	return path
+}

@@ -26,6 +26,7 @@ import (
 	"github.com/djalmajr/soho/internal/spawn"
 	"github.com/djalmajr/soho/internal/stats"
 	"github.com/djalmajr/soho/internal/transport"
+	"github.com/djalmajr/soho/internal/update"
 	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
 
@@ -41,7 +42,7 @@ var knownCommands = map[string]bool{
 	"roster": true, "friction": true, "feedback": true, "tab-label": true,
 	"layout-plan": true, "env": true, "mutation-guard": true, "mutation-copy": true, "gate": true, "review-snapshot": true,
 	"reopen": true, "compact": true, "metrics": true, "copies": true, "gc": true,
-	"procs": true, "install": true, "promote": true, "validate": true,
+	"procs": true, "install": true, "update": true, "promote": true, "validate": true,
 	"collaborate": true, "capabilities": true, "hook": true, "job": true, "inventory": true,
 	"report": true,
 }
@@ -554,6 +555,8 @@ func Run(args []string, env platform.Env) (code int) {
 		return cmdValidate(args[1:], ctx, decisionEnv, commandCwd)
 	case "install":
 		return cmdInstall(args[1:], decisionEnv)
+	case "update":
+		return cmdUpdate(args[1:], decisionEnv)
 	}
 	// A registered command without a native case dies with the same
 	// diagnostic as an unknown one: nothing is probed or executed.
@@ -587,7 +590,7 @@ func transportModeFor(ctx *core.Config, env, decisionEnv platform.Env, cwd strin
 // diagnostics and configuration commands (doctor, config, explain,
 // capabilities), the usage and version invocations, the advisory hook, and
 // the commands that never touch the transport (kinds, models, model, roles,
-// role, lint, install, env — env reports the herdr version through a
+// role, lint, install, update, env — env reports the herdr version through a
 // one-shot external binary call, never the transport). Every other command
 // is refused at the entry with the guard's line.
 // setup skips TUI plugin migration; mutation-copy uses the guarded copier.
@@ -605,7 +608,7 @@ func hcCommandAllowed(command string) bool {
 		// terminal state, the terminal listing, the recent output); gc and
 		// procs never close or signal a terminal.
 		return true
-	case "kinds", "models", "model", "roles", "role", "lint", "install", "env", "validate", "setup":
+	case "kinds", "models", "model", "roles", "role", "lint", "install", "update", "env", "validate", "setup":
 		// validate never touches the worker transport: it reads the project's
 		// VALIDATION.md and runs its declared test layers through sh, like env
 		// runs the herdr binary version probe, never the transport.
@@ -637,7 +640,7 @@ func dieNowriteGenericRefusal(command string, args []string) {
 		}
 		extra = fmt.Sprintf(" (%d extra %s not allowed)", count, noun)
 	}
-	platform.Die("soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, --patterns, --json, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json'; rejected: "+shown+extra+" — unset SOHO_NOWRITE to write", 2)
+	platform.Die("soho: SOHO_NOWRITE=1 is read-only: only these invocations run (the plugin's reads): the exact 'doctor', 'roster [--scope workspace|server] [--json]', 'explain', 'config [get <key>]', 'roles [--json]', 'friction' with the read options --since, --level, --command, --agent, --summary, --patterns, --json, 'collect <agent> [--lines N] [--verify]', 'copies', 'procs', 'status [agents...]', 'gc' without --yes, 'collaborate status <assignment> [--json]', 'capabilities --json', 'update --check [--json] [--channel stable|rc]'; rejected: "+shown+extra+" — unset SOHO_NOWRITE to write", 2)
 }
 
 // nowriteReadInvocation decides, from the shape of the invocation alone, what
@@ -645,9 +648,9 @@ func dieNowriteGenericRefusal(command string, args []string) {
 // actions, roster with its --scope and --json shapes), the exact explain,
 // config (the listing) and config get <key>, copies and procs, roles with
 // the optional --json, friction with only the read options, collect <agent>
-// with its options, status with agent names, and gc without --yes.
-// Every other shape is rejected before any command runs, so a rejected
-// invocation writes nothing (not even a friction line).
+// with its options, status with agent names, gc without --yes, and the
+// read-only update --check. Every other shape is rejected before any command
+// runs, so a rejected invocation writes nothing (not even a friction line).
 func nowriteReadInvocation(args []string) bool {
 	if len(args) == 0 {
 		return false
@@ -680,6 +683,8 @@ func nowriteReadInvocation(args []string) bool {
 		return ok
 	case "doctor", "explain", "copies", "procs":
 		return len(args) == 1
+	case "update":
+		return nowriteUpdateCheck(args[1:])
 	case "config":
 		if len(args) == 1 || (len(args) == 3 && args[1] == "get" && args[2] != "") {
 			return true
@@ -705,6 +710,28 @@ func nowriteReadInvocation(args []string) bool {
 		return nowriteFlagOnly(args[1:], []string{"--older-than"}, []string{"--include-unregistered", "--verbose"})
 	}
 	return false
+}
+
+// nowriteUpdateCheck accepts only the read-only `update --check` shape: the
+// check itself with the optional --json and --channel stable|rc. Anything else
+// (an install) writes and is refused before it runs.
+func nowriteUpdateCheck(argv []string) bool {
+	seenCheck := false
+	for i := 0; i < len(argv); i++ {
+		switch argv[i] {
+		case "--check":
+			seenCheck = true
+		case "--json":
+		case "--channel":
+			if i+1 >= len(argv) || (argv[i+1] != update.ChannelStable && argv[i+1] != update.ChannelRC) {
+				return false
+			}
+			i++
+		default:
+			return false
+		}
+	}
+	return seenCheck
 }
 
 // nowriteConfigSetDryRun admits exactly the shape the command itself calls a
