@@ -634,7 +634,7 @@ func TestPanelRosterPendingReportPublishesNoPath(t *testing.T) {
 			continue
 		}
 		for key, want := range map[string]any{"report": "pending", "status": "no-report-yet", "report_path": nil} {
-			if value, _ := got.Get(key); value != want {
+			if value, ok := got.Get(key); !ok || value != want {
 				t.Fatalf("pending %s = %#v, want %#v", key, value, want)
 			}
 		}
