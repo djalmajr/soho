@@ -90,6 +90,15 @@ func copyAncestorGuard(path string, env platform.Env, cwd string) string {
 // copyDeletionGuard runs after main's path check and before a destructive
 // action. Registry read errors are distinct from ordinary refusals.
 func copyDeletionGuard(path, owner, sd string, env platform.Env, cwd string) (string, error) {
+	return copyDeletionGuardFor(path, owner, sd, env, cwd, false)
+}
+
+// copyDeletionGuardFor is copyDeletionGuard that, with anyOwner, also
+// refuses a copy holding a registered copy of the same owner. gc sets it
+// for a candidate admitted by the empty-.git exception (gcAllowEmptyGit):
+// that decision was made on an earlier registry read, and a copy registered
+// inside it since then must keep the parent (R593).
+func copyDeletionGuardFor(path, owner, sd string, env platform.Env, cwd string, anyOwner bool) (string, error) {
 	if cause := copyAncestorGuard(path, env, cwd); cause != "" {
 		return cause, nil
 	}
@@ -111,7 +120,7 @@ func copyDeletionGuard(path, owner, sd string, env platform.Env, cwd string) (st
 			return "", fmt.Errorf("cannot read copy registry %s (%v); fix it and retry", core.CopiesFile(dir), err)
 		}
 		for _, row := range rows {
-			if row.Owner != owner && copyIdentityInside(target, row.Path) {
+			if (anyOwner || row.Owner != owner) && copyIdentityInside(target, row.Path) {
 				held, err := os.Stat(row.Path)
 				if err == nil && !os.SameFile(target, held) {
 					return fmt.Sprintf("holds %s registered by %s", row.Path, row.Owner), nil

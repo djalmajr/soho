@@ -237,7 +237,7 @@ func TestHcGcCopies(t *testing.T) {
 		want := strings.Join([]string{
 			"resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)",
 			"would remove " + l.oldOrphan + "  25 B  ghost  3h",
-			"would remove " + l.missing + "  0 B  worker  3h",
+			"would drop the line of " + l.missing + " (already gone from disk)",
 			"total: 25 B",
 			"run 'soho gc --yes' to remove them",
 			gcUnregisteredHeader,

@@ -163,8 +163,7 @@ func TestGcInUseMissingPathRowStaysAMissingCandidate(t *testing.T) {
 	code, out, errOut := g.f.run(t, g.f.env, "gc")
 	want := strings.Join([]string{
 		gcPressureNone,
-		"would remove " + g.copy + "  0 B  worker  3h",
-		"total: 0 B",
+		"would drop the line of " + g.copy + " (already gone from disk)",
 		"run 'soho gc --yes' to remove them",
 	}, "\n") + "\n"
 	gcInUseWant(t, code, out, errOut, want)

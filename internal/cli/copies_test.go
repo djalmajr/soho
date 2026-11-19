@@ -680,7 +680,7 @@ func TestGc(t *testing.T) {
 		want := strings.Join([]string{
 			"resource pressure: not detected (disk 60% free, limit 15% / 20 GiB; swap 30% used, limit 80%)",
 			"would remove " + l.oldOrphan + "  25 B  ghost  3h",
-			"would remove " + l.missing + "  0 B  worker  3h",
+			"would drop the line of " + l.missing + " (already gone from disk)",
 			"total: 25 B",
 			"run 'soho gc --yes' to remove them",
 			gcUnregisteredHeader,
@@ -808,8 +808,11 @@ func TestGc(t *testing.T) {
 		if strings.Contains(out, l.oldOrphan) {
 			t.Fatalf("a 3h old copy is a candidate at --older-than 5:\n%s", out)
 		}
-		if !strings.Contains(out, "would remove "+l.missing+"  0 B  worker  3h") {
+		if !strings.Contains(out, "would drop the line of "+l.missing+" (already gone from disk)") {
 			t.Fatalf("the missing line is a candidate regardless of the threshold:\n%s", out)
+		}
+		if strings.Contains(out, "total:") {
+			t.Fatalf("a line to drop has no total:\n%s", out)
 		}
 		if _, err := os.Stat(l.oldOrphan); err != nil {
 			t.Fatalf("the dry-run removed the old orphan: %v", err)
