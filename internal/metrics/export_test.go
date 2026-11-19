@@ -412,7 +412,7 @@ func TestExportSince(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit=%d want 2 (stderr=%q)", code, stderr)
 	}
-	if message != "metrics export: --since expects AAAA-MM-DD, an ISO date or a duration such as 12h, 1d or 2w (got 'not-a-date')" {
+	if message != "metrics export: --since expects AAAA-MM-DD, an ISO date or a duration such as 50m, 12h, 1d or 2w (got 'not-a-date')" {
 		t.Fatalf("message=%q", message)
 	}
 	// A missing value exits 2.

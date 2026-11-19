@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
@@ -78,6 +79,18 @@ func TestFrictionFilterOptions(t *testing.T) {
 			"2026-09-30T11:31:00\terror(exit 16)\tcollect\tanother failure for 'beta'\n" +
 			"2026-09-30T12:00:00\tnote\tfriction\tmanual note for 'alpha'\n" +
 			"2026-10-01T09:00:00\twarning\tdispatch\tlate entry for 'gamma'\n"
+		if code != 0 || stderr != "" || out != want {
+			t.Fatalf("code=%d stderr=%q out=%q", code, stderr, out)
+		}
+	})
+	t.Run("friction: --since 50m keeps a 30-minute-old line and drops a 70-minute-old line", func(t *testing.T) {
+		now := platform.Now()
+		recent := now.Add(-30 * time.Minute).Format("2006-01-02T15:04:05")
+		old := now.Add(-70 * time.Minute).Format("2006-01-02T15:04:05")
+		log := old + "\twarning\twait\ttoo old\n" + recent + "\twarning\twait\twithin the window\n"
+		env, logPath := frictionFilterFixture(t, log)
+		code, out, stderr := runFriction(t, env, "--since", "50m")
+		want := header(logPath) + recent + "\twarning\twait\twithin the window\n"
 		if code != 0 || stderr != "" || out != want {
 			t.Fatalf("code=%d stderr=%q out=%q", code, stderr, out)
 		}
@@ -177,7 +190,7 @@ func TestFrictionFilterOptions(t *testing.T) {
 			args []string
 			want string
 		}{
-			{[]string{"--since", "not-a-date"}, "friction: --since expects AAAA-MM-DD, an ISO date or a duration such as 12h, 1d or 2w (got 'not-a-date')"},
+			{[]string{"--since", "not-a-date"}, "friction: --since expects AAAA-MM-DD, an ISO date or a duration such as 50m, 12h, 1d or 2w (got 'not-a-date')"},
 			{[]string{"--level", "bogus"}, "friction: --level expects warning, note or error (got 'bogus')"},
 			{[]string{"--command"}, "friction: --command expects a value"},
 			{[]string{"--agent", "--summary"}, "friction: --agent expects a value"},
