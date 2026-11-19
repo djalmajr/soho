@@ -440,3 +440,43 @@ test("R4-F5: a successful editor probe refreshes the project after its draft clo
   panel.setTab("assistants", cx);
   assert.match(textOf(panel.render(cx)), /answering/, "the Assistants view shows the new probe result");
 });
+
+test("R5-F1: reopening a worker's Report while a refresh holds its read shows the report", async () => {
+  const cx = fakeCx();
+  const workers = [{ name: "first", pane: "t1", status: "done", report: "ready" }];
+  const report = { agent: "first", items: [{ line: 1, mark: "done", text: "first report" }] };
+  let reads = 0;
+  let finishPoll;
+  const panel = await boot(cx, {
+    exec: async (name, args) => {
+      if (args[0] === "capabilities") return ok({ schema: 1, team_json: true, report_json: true });
+      if (args[0] === "roles") return ok({ roles: [ROLE] });
+      if (args[0] === "roster") return ok({ agents: workers });
+      if (args[0] === "report") {
+        reads += 1;
+        if (reads === 2) return new Promise((resolve) => { finishPoll = resolve; });
+        return ok(report);
+      }
+      return ok({});
+    },
+  });
+  panel.setTab("now", cx);
+  click(panel, cx, "report-first|t1")({}, cx);
+  await flush(cx);
+  assert.equal(panel.data.report?.agent, "first");
+
+  // The refresh re-reads the selected report and holds that read open.
+  panel.refresh(cx);
+  await flush(cx);
+  assert.equal(typeof finishPoll, "function", "the refresh started a report read");
+
+  // Back to Now and the same worker's Report again, on a fresh render.
+  panel.setTab("now", cx);
+  click(panel, cx, "report-first|t1")({}, cx);
+  await flush(cx);
+  finishPoll(ok(report));
+  await flush(cx);
+  assert.equal(reads, 3, "the selection started its own read instead of joining the held one");
+  assert.equal(panel.data.report?.agent, "first", "the selected worker's report is published");
+  assert.match(textOf(panel.render(cx)), /first report/);
+});

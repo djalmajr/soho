@@ -499,7 +499,10 @@ export default class SohoPanel extends View {
     if (this.alive(origin)) cx.notify();
   }
 
-  async loadReport(agentKey, origin, cx) {
+  // fresh: an explicit selection never joins a read already in flight for the
+  // same worker, whose result carries an older sequence than the selection's
+  // clear and would be refused (R5-F1).
+  async loadReport(agentKey, origin, cx, fresh = false) {
     if (checking() || !this.alive(origin)) return;
     const worker = M.findWorker(this.data.roster?.agents, agentKey);
     if (!worker) return;
@@ -510,7 +513,7 @@ export default class SohoPanel extends View {
     const stillWanted = () => M.acceptsReport(this.reportAgent, requested);
     if (this.caps.reportJson) {
       const report = await this.runSection(cx, "report", ["report", worker.name, "--json"], origin, true,
-        { busyKey: M.reportBusyKey(origin, requested), accept: stillWanted });
+        { busyKey: M.reportBusyKey(origin, requested), accept: stillWanted, fresh });
       if (!this.alive(origin) || !stillWanted()) return;
       if (report) {
         this.publish("report", report.value, report.origin);
@@ -658,7 +661,7 @@ export default class SohoPanel extends View {
     this.publish("reportMarkdown", null, selection);
     this.errors.report = "";
     cx.notify();
-    if (!checking()) this.loadReport(this.reportAgent, selection, cx);
+    if (!checking()) this.loadReport(this.reportAgent, selection, cx, true);
   }
 
   openReport(capture, cx) {
