@@ -158,7 +158,7 @@ func TestUnfilledPlaceholderMarks(t *testing.T) {
 	t.Run("sections come first, then the marks, and known reasons keep their tail", func(t *testing.T) {
 		file := write(t, strings.Replace(body, "# Report\nDone.\n", "", 1))
 		findings := BriefLintFindings(file, defaultsCtx(t, nil), platform.Env{}, BriefLintOptions{})
-		want := "brief " + file + " is missing sections: [Report] [unfilled placeholder 'AGENT_NAME' (line 2)] [unfilled placeholder 'WORKTREE_PATH' (line 9)] — without a report section the worker may never write one"
+		want := "brief " + file + " is missing sections: [Report] [unfilled placeholder 'AGENT_NAME' (line 2)] [unfilled placeholder 'WORKTREE_PATH' (line 9)] — without a report section the worker may never write one — accepted headings: Report: Report, Relatório; add your own with brief_lint_aliases=<Section>=<Heading>|<Heading>"
 		if findings.MissingMessage != want {
 			t.Fatalf("MissingMessage = %q, want %q", findings.MissingMessage, want)
 		}
