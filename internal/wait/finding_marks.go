@@ -8,7 +8,6 @@ package wait
 // blocks on any of it and never changes the result.
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -39,7 +38,9 @@ func checkFindingMarks(sd, agent, report, text string, header *reportscan.Review
 	if prev == report {
 		return
 	}
-	sendWarning(fmt.Sprintf("report of '%s' has %d finding(s) without an origin and a class", agent, marks.Unmarked))
+	for _, warning := range FindingMarkWarnings(agent, marks.Unmarked) {
+		sendWarning(warning.Message)
+	}
 	// The warning already went out; a marker that cannot persist only lets
 	// it repeat on the next poll, never aborting the settlement.
 	_ = os.WriteFile(filepath.Join(sd, "wait", agent+".finding-marks-warned"), []byte(report+"\n"), 0o666)

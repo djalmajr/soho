@@ -46,13 +46,13 @@ func checkReviewResponses(sd, agent, report, reportText string, line *jsonjs.Obj
 	}
 	data, err := core.ReadScratchReportLimited(declared, reviewResponsesLimit)
 	if err != nil {
-		warnReviewResponses(sd, agent, report, []reviewWarning{{"unreadable", fmt.Sprintf("brief of '%s' names a review that cannot be read: %s", agent, text.SanitizeCause(declared))}})
+		warnReviewResponses(sd, agent, report, []reviewWarning{UnreadableReviewWarning(agent, text.SanitizeCause(declared))})
 		return
 	}
 	reviewText := platform.DecodeText(data)
 	reviewHeader := reportscan.ReviewHeader(reviewText)
 	if reviewHeader == nil {
-		warnReviewResponses(sd, agent, report, []reviewWarning{{"no-header", fmt.Sprintf("review named by the brief of '%s' has no review header", agent)}})
+		warnReviewResponses(sd, agent, report, []reviewWarning{NoReviewHeaderWarning(agent)})
 		return
 	}
 	marks := reportscan.FindingMarks(reviewText, reviewHeader)
@@ -73,25 +73,13 @@ func checkReviewResponses(sd, agent, report, reportText string, line *jsonjs.Obj
 		"unmarked", responses.Unmarked,
 		"unnumbered", unnumbered,
 	))
-	warnings := []reviewWarning{}
-	if len(missing) > 0 {
-		warnings = append(warnings, reviewWarning{"missing", fmt.Sprintf("report of '%s' leaves %d finding(s) of the review without a response (%s): read them before commit, push or release", agent, len(missing), formatFindingNumbers(missing))})
-	}
-	if len(unknown) > 0 {
-		warnings = append(warnings, reviewWarning{"unknown", fmt.Sprintf("report of '%s' answers %d finding(s) the review does not have (%s)", agent, len(unknown), formatFindingNumbers(unknown))})
-	}
-	if responses.Unmarked > 0 {
-		warnings = append(warnings, reviewWarning{"unmarked", fmt.Sprintf("report of '%s' has %d Review responses line(s) without a valid answer", agent, responses.Unmarked)})
-	}
-	if unnumbered > 0 {
-		warnings = append(warnings, reviewWarning{"unnumbered", fmt.Sprintf("review named by the brief of '%s' has %d finding(s) without a number, so their responses cannot be checked", agent, unnumbered)})
-	}
-	warnReviewResponses(sd, agent, report, warnings)
+	warnReviewResponses(sd, agent, report, ReviewResponseWarnings(agent, missing, unknown, responses.Unmarked, unnumbered))
 }
 
 // reviewWarning is one kind of warning: the key the marker remembers, so a kind
-// that has not gone out yet is never silenced by another that has.
-type reviewWarning struct{ key, message string }
+// that has not gone out yet is never silenced by another that has. The shared
+// builder returns the same key/message pair as ReportWarning.
+type reviewWarning = ReportWarning
 
 // warnReviewResponses sends each kind of warning at most once per report,
 // through the review-responses-warned wait file: the report path, quoted so a
@@ -110,11 +98,11 @@ func warnReviewResponses(sd, agent, report string, warnings []reviewWarning) {
 	}
 	fresh := false
 	for _, warning := range warnings {
-		if slices.Contains(sent, warning.key) {
+		if slices.Contains(sent, warning.Kind) {
 			continue
 		}
-		sendWarning(warning.message)
-		sent = append(sent, warning.key)
+		sendWarning(warning.Message)
+		sent = append(sent, warning.Kind)
 		fresh = true
 	}
 	if !fresh {

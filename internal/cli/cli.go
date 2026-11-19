@@ -43,6 +43,7 @@ var knownCommands = map[string]bool{
 	"reopen": true, "compact": true, "metrics": true, "copies": true, "gc": true,
 	"procs": true, "install": true, "promote": true, "validate": true,
 	"collaborate": true, "capabilities": true, "hook": true, "job": true, "inventory": true,
+	"report": true,
 }
 
 var frictionLogPath string
@@ -149,7 +150,7 @@ func Run(args []string, env platform.Env) (code int) {
 		// transport is the configured worker transport for this directory
 		// (DJA-603); the other fields are fixed for this binary.
 		cwd, _ := os.Getwd()
-		_, _ = fmt.Fprintf(platform.Stdout, "{\"schema\":1,\"worker_collaboration\":1,\"ephemeral_job\":1,\"job_events\":1,\"inventory\":1,\"transport\":%q}\n", core.TransportModeAt(env, cwd))
+		_, _ = fmt.Fprintf(platform.Stdout, "{\"schema\":1,\"worker_collaboration\":1,\"ephemeral_job\":1,\"job_events\":1,\"inventory\":1,\"report_json\":1,\"transport\":%q}\n", core.TransportModeAt(env, cwd))
 		return 0
 	}
 
@@ -448,6 +449,8 @@ func Run(args []string, env platform.Env) (code int) {
 		return cmdCollaborate(args[1:], ctx, decisionEnv, commandCwd)
 	case "capabilities":
 		platform.Die("usage: capabilities --json", 2)
+	case "report":
+		return cmdReport(args[1:], decisionEnv, commandCwd)
 	case "job":
 		// The job family loads no Herdr environment, never calls Herdr and
 		// leaves frictionLogPath empty (it runs outside Herdr).
@@ -581,7 +584,7 @@ func hcCommandAllowed(command string) bool {
 		return true
 	case "", "help", "-h", "--help":
 		return true
-	case "status", "wait", "spawn", "dispatch", "release", "collaborate", "doctor", "config", "explain", "capabilities":
+	case "status", "wait", "spawn", "dispatch", "release", "collaborate", "doctor", "config", "explain", "capabilities", "report":
 		return true
 	case "copies", "gc", "procs", "friction", "roster", "collect":
 		// The housekeeping commands (DJA-604): they read and write soho's own
@@ -654,6 +657,9 @@ func nowriteReadInvocation(args []string) bool {
 		return len(args) >= 3 && len(args) <= 4 && args[1] == "status" && args[2] != "" && !strings.HasPrefix(args[2], "-") && (len(args) == 3 || args[3] == "--json")
 	case "capabilities":
 		return len(args) == 2 && args[1] == "--json"
+	case "report":
+		_, ok := parseReportArgs(args[1:])
+		return ok
 	case "job":
 		return nowriteJobRead(args[1:])
 	case "roster":
