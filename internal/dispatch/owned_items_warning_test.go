@@ -74,6 +74,11 @@ func TestBriefLintOwnedItemWarnings(t *testing.T) {
 	if err := os.WriteFile(rootFile, []byte("package root\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	for _, name := range []string{"NOTES.MD", "Dockerfile", "go.mod"} {
+		if err := os.WriteFile(filepath.Join(tree, name), []byte("fixture\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.MkdirAll(filepath.Join(tree, "assets"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -101,6 +106,20 @@ func TestBriefLintOwnedItemWarnings(t *testing.T) {
 		{"prose item", "- O vtest dele (crie se não existir)", []string{"'O vtest dele (crie se não existir)' names no path"}},
 		{"long prose is cut at 60", "- " + strings.Repeat("x", 75), []string{"'" + strings.Repeat("x", 60) + "' names no path"}},
 		{"bare name and prose in separate items", "- `ghost.ts`\n- O vtest dele", []string{"'O vtest dele' names no path", bare("ghost.ts")}},
+		{
+			name: "prose identifiers inside backticks are not paths",
+			item: "- `apps/desktop/src/app.tsx`, only in the handlers `ai.openChat` and `ai.inlineAction` and in `attachSelectionToChat`",
+		},
+		{"a single backticked Makefile is checked at the root", "- `Makefile`", []string{bare("Makefile")}},
+		{"an uppercase extension is prose, not a bare name", "- `NOTES.MD` and `src/a.ts`", nil},
+		// F2: a plain token keeps the case-insensitive extension grammar.
+		{"a plain uppercase path names a path at the root", "- NOTES.MD", nil},
+		{"a plain uppercase path is checked at the root", "- README.MD", []string{bare("README.MD")}},
+		// F3: a real root entry listed beside another path is a path.
+		{"a real root file in a mixed item", "- `Dockerfile` and `go.mod`", nil},
+		{"a labeled single path", "- Owned: `Dockerfile`", nil},
+		// F1: '?' is a glob character, so a wildcard item names a path.
+		{"a question glob with a note", "- `tool?` (generated)", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

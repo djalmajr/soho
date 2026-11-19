@@ -1,10 +1,38 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestOwnedPathsQuotedPathShape(t *testing.T) {
+	cases := []struct {
+		name, body string
+		want       []string
+	}{
+		{
+			name: "prose identifiers around one real path",
+			body: "## Owned files\n- `apps/desktop/src/app.tsx`, only in the handlers `ai.openChat` and `ai.inlineAction` and in `attachSelectionToChat`\n",
+			want: []string{"apps/desktop/src/app.tsx"},
+		},
+		{"single bare backticked name", "## Owned files\n- `Makefile`\n", []string{"Makefile"}},
+		{"single backticked README", "## Owned files\n- `README`\n", []string{"README"}},
+		{"two prose identifiers own nothing", "## Owned files\n- `Makefile` and `README`\n", []string{}},
+		{"uppercase extension among other tokens is prose", "## Owned files\n- `NOTES.MD` and `src/a.ts`\n", []string{"src/a.ts"}},
+		{"dotfile and digit extension are paths", "## Owned files\n- `.env` and `clip.mp4`\n", []string{".env", "clip.mp4"}},
+		{"globs are paths", "## Owned files\n- `*.go` and `src/**`\n", []string{"*.go", "src/**"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ownedPaths(tc.body, nil); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("ownedPaths=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestOwnedLabelsPaths(t *testing.T) {
 	cases := []struct {
@@ -72,5 +100,62 @@ func TestOwnedLabelsOverlap(t *testing.T) {
 	bare := dja661OverlapFixture(t, func(string) string { return "- Owned: src/ui/app.go" }, func(string) string { return "- `src/ui/app.go`" })
 	if !strings.Contains(bare, "owns files") {
 		t.Fatalf("missing warning for a bare path after a positive label: %s", bare)
+	}
+}
+
+// F1, F2 and F3: the overlap reader calls the same plain and backticked token
+// decisions as the audit and the lint, and reads the brief's declared tree for
+// an unshaped backticked name.
+func TestOwnedPathsSharedTokenDecision(t *testing.T) {
+	// F1: '?' is a glob character, so a root-level wildcard crosses the file
+	// it matches even beside another path.
+	glob := dja661OverlapFixture(t,
+		func(string) string { return "`tool?` and `go.mod`" },
+		func(string) string { return "- `tool1`" })
+	if !strings.Contains(glob, "owns files that 'peer' is still editing: tool?") {
+		t.Fatalf("question glob did not cross tool1: %s", glob)
+	}
+	// F2: a plain token keeps the case-insensitive extension grammar.
+	upper := dja661OverlapFixture(t,
+		func(string) string { return "- NOTES.MD" },
+		func(string) string { return "- NOTES.MD" })
+	if !strings.Contains(upper, "owns files that 'peer' is still editing: NOTES.MD") {
+		t.Fatalf("plain uppercase path did not cross: %s", upper)
+	}
+	// F3: a real root entry listed beside another path is owned through the
+	// tree the brief declares; the same item without that entry owns only the
+	// path-shaped token.
+	withEntry := dja661OverlapFixture(t,
+		func(root string) string {
+			if err := os.WriteFile(filepath.Join(root, "Dockerfile"), []byte("fixture\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return "`Dockerfile` and `go.mod`"
+		},
+		func(string) string { return "- `Dockerfile`" })
+	if !strings.Contains(withEntry, "owns files that 'peer' is still editing: Dockerfile") {
+		t.Fatalf("a real root entry did not cross: %s", withEntry)
+	}
+	without := dja661OverlapFixture(t,
+		func(string) string { return "`ai.openChat` and `go.mod`" },
+		func(string) string { return "- ai.openChat" })
+	if strings.Contains(without, "owns files") {
+		t.Fatalf("an identifier without a root entry crossed: %s", without)
+	}
+	// The root lookup reads the tree it is given, never the caller's own
+	// directory: the same item owns Dockerfile only under the tree that has it.
+	rootWith, rootWithout := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(rootWith, "Dockerfile"), []byte("fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := "## Owned files\n- `Dockerfile` and `go.mod`\n"
+	if got := ownedPathsIn(body, nil, rootWith, false); !reflect.DeepEqual(got, []string{"Dockerfile", "go.mod"}) {
+		t.Fatalf("ownedPathsIn with the entry = %q, want [Dockerfile go.mod]", got)
+	}
+	if got := ownedPathsIn(body, nil, rootWithout, false); !reflect.DeepEqual(got, []string{"go.mod"}) {
+		t.Fatalf("ownedPathsIn without the entry = %q, want [go.mod]", got)
+	}
+	if got := ownedPathsIn(body, nil, "", false); !reflect.DeepEqual(got, []string{"go.mod"}) {
+		t.Fatalf("ownedPathsIn without a tree = %q, want [go.mod]", got)
 	}
 }

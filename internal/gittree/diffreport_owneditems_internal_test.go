@@ -131,6 +131,184 @@ func TestDiffEffectiveOwnedInheritedBaseFields(t *testing.T) {
 	}
 }
 
+// SOH-444: a backticked token counts as a path only when it is path-shaped;
+// an item that is only one backticked token keeps it (a bare root name).
+func TestDiffSectionOwnedItemQuotedPathShape(t *testing.T) {
+	cases := []struct {
+		name, item string
+		want       []string
+	}{
+		{
+			name: "prose identifiers and prose words around one real path",
+			item: "- `apps/desktop/src/app.tsx`, only in the handlers `ai.openChat` and `ai.inlineAction` and in `attachSelectionToChat`",
+			want: []string{"apps/desktop/src/app.tsx"},
+		},
+		{"a single backticked name is still a path", "- `editor.tsx`", []string{"editor.tsx"}},
+		{"a single backticked bare name is still a path", "- `Makefile`", []string{"Makefile"}},
+		{"a single backticked README is still a path", "- `README`", []string{"README"}},
+		{"two prose identifiers own nothing", "- `Makefile` and `README`", nil},
+		{"one prose identifier alone is the single-token exception", "- `ai.openChat`", []string{"ai.openChat"}},
+		{"a capital extension among other tokens is prose", "- `NOTES.MD` and `src/a.ts`", []string{"src/a.ts"}},
+		{"a digit extension is a path", "- `.env` and `clip.mp4`", []string{".env", "clip.mp4"}},
+		{"globs are paths", "- `*.go` and `src/**`", []string{"*.go", "src/**"}},
+		{"a prose note makes the item more than one token", "- `Makefile` (build)", nil},
+		{"balanced parentheses in a quoted path stay", "- `src/(setup)`", []string{"src/(setup)"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, found := diffSection(ownedItemSection(tc.item, "Owned files"), "", platform.Current(), "owned files")
+			if !found {
+				t.Fatal("Owned files section not found")
+			}
+			if want := sortedItems(tc.want); !reflect.DeepEqual(sortedItems(got), want) {
+				t.Fatalf("diffSection = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// F2: a plain (unquoted) token keeps the grammar it had before the
+// backticked rule: the extension is matched case-insensitively, so a plain
+// NOTES.MD names a path while the backticked one stays prose.
+func TestDiffSectionPlainTokenPathShape(t *testing.T) {
+	got, found := diffSection(ownedItemSection("- NOTES.MD", "Owned files"), "", platform.Current(), "owned files")
+	if want := []string{"NOTES.MD"}; !found || !reflect.DeepEqual(got, want) {
+		t.Fatalf("plain uppercase extension = %q (found=%t), want %q", got, found, want)
+	}
+	got, found = diffSection(ownedItemSection("- notes.md", "Owned files"), "", platform.Current(), "owned files")
+	if want := []string{"notes.md"}; !found || !reflect.DeepEqual(got, want) {
+		t.Fatalf("lowercase extension = %q (found=%t), want %q", got, found, want)
+	}
+	got, found = diffSection(ownedItemSection("- `NOTES.MD` and `src/a.ts`", "Owned files"), "", platform.Current(), "owned files")
+	if want := []string{"src/a.ts"}; !found || !reflect.DeepEqual(sortedItems(got), sortedItems(want)) {
+		t.Fatalf("backticked uppercase extension = %q (found=%t), want %q", got, found, want)
+	}
+}
+
+// F1: '?' is a glob character in the shared shape rule, like '*' and '[', so
+// a root-level wildcard beside another path owns the files it matches.
+func TestDiffSectionOwnedQuestionGlob(t *testing.T) {
+	got, found := diffSection(ownedItemSection("- `tool?` and `go.mod`", "Owned files"), "", platform.Current(), "owned files")
+	if want := []string{"go.mod", "tool?"}; !found || !reflect.DeepEqual(sortedItems(got), sortedItems(want)) {
+		t.Fatalf("question glob = %q (found=%t), want %q", got, found, want)
+	}
+	if !diffOwnedMatch("tool?", "tool1") || diffOwnedMatch("tool?", "src/tool1") {
+		t.Fatal("the question glob must match a root name and nothing nested")
+	}
+	for _, item := range []string{"- `tool?` (generated)", "- `tool?`"} {
+		if got, found := diffSection(ownedItemSection(item, "Owned files"), "", platform.Current(), "owned files"); !found || len(got) != 1 || got[0] != "tool?" {
+			t.Fatalf("item %q = %q (found=%t), want [tool?]", item, got, found)
+		}
+	}
+}
+
+// F3: a real root entry listed beside another path is a path, a positive
+// label is stripped before the single-token decision, and an identifier with
+// no such root entry stays prose.
+func TestDiffSectionOwnedRootEntry(t *testing.T) {
+	tree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tree, "Dockerfile"), []byte("fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, item string
+		root       string
+	}{
+		{"real root file in a list", "- `Dockerfile` and `go.mod`", tree},
+		{"labeled single path with its tree", "- Owned: `Dockerfile`", tree},
+		{"labeled single path without a tree", "- Owned: `Dockerfile`", ""},
+		{"single path with its tree", "- `Dockerfile`", tree},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, found := diffSection(ownedItemSection(tc.item, "Owned files"), tc.root, platform.Current(), "owned files")
+			if !found {
+				t.Fatal("Owned files section not found")
+			}
+			want := []string{"Dockerfile", "go.mod"}
+			if tc.item == "- `Dockerfile`" || tc.item == "- Owned: `Dockerfile`" {
+				want = []string{"Dockerfile"}
+			}
+			if !reflect.DeepEqual(sortedItems(got), sortedItems(want)) {
+				t.Fatalf("diffSection = %q, want %q", got, want)
+			}
+		})
+	}
+	// Without a tree, a mixed item applies the shape rule only: the name that
+	// is not path-shaped stays prose, exactly as before F3.
+	got, found := diffSection(ownedItemSection("- `Dockerfile` and `go.mod`", "Owned files"), "", platform.Current(), "owned files")
+	if want := []string{"go.mod"}; !found || !reflect.DeepEqual(got, want) {
+		t.Fatalf("mixed item without a tree = %q (found=%t), want %q", got, found, want)
+	}
+	// A prose identifier beside a real path never becomes a path.
+	got, found = diffSection(ownedItemSection("- `go.mod`, only in `ai.openChat`", "Owned files"), tree, platform.Current(), "owned files")
+	if want := []string{"go.mod"}; !found || !reflect.DeepEqual(got, want) {
+		t.Fatalf("identifier beside a path = %q (found=%t), want %q", got, found, want)
+	}
+}
+
+// SOH-444: the lint readers (OwnedBareNames, OwnedItemLintMessages) share the
+// rule: the reported line names no bare name and no prose item.
+func TestOwnedItemLintTokensQuotedPathShape(t *testing.T) {
+	line := "- `apps/desktop/src/app.tsx`, only in the handlers `ai.openChat` and `ai.inlineAction` and in `attachSelectionToChat`"
+	if got := OwnedBareNames([]string{line}, ""); len(got) != 0 {
+		t.Fatalf("bare names = %q, want none", got)
+	}
+	if got := OwnedItemLintMessages([]string{line}, ""); len(got) != 0 {
+		t.Fatalf("lint messages = %q, want none", got)
+	}
+	if got := OwnedBareNames([]string{"- `Makefile` and `README`"}, ""); len(got) != 0 {
+		t.Fatalf("two prose names = %q, want none", got)
+	}
+	if got, want := OwnedBareNames([]string{"- `Makefile`"}, ""), []string{"Makefile"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("single bare name = %q, want %q", got, want)
+	}
+}
+
+// F3: a backticked token that is not path-shaped counts as a path when an
+// entry of exactly that name exists at the tree root, so a real Dockerfile
+// listed beside another path survives while an identifier does not. Without a
+// tree (root ""), the shape rule alone decides.
+func TestOwnedItemLintRootEntry(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "Dockerfile"), []byte("fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "vendor"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lines := []string{"- `Dockerfile` and `go.mod`", "- `vendor` (generated)"}
+	if got, want := ownedItemLintTokensForTest(lines, root), []string{"Dockerfile", "go.mod", "vendor"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("tokens with a real root entry = %q, want %q", got, want)
+	}
+	if got := OwnedItemLintMessages(lines, root); len(got) != 0 {
+		t.Fatalf("lint messages with a real root entry = %q, want none", got)
+	}
+	if got, want := ownedItemLintTokensForTest([]string{"- `ai.openChat` and `go.mod`"}, root), []string{"go.mod"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("tokens for an identifier without a root entry = %q, want %q", got, want)
+	}
+	if got, want := ownedItemLintTokensForTest(lines[1:], ""), []string(nil); !reflect.DeepEqual(got, want) {
+		t.Fatalf("tokens without a tree = %q, want %q", got, want)
+	}
+	for i, tc := range []string{"`Dockerfile` (build)", "Owned: `Dockerfile`"} {
+		if got, want := ownedItemLintTokensForTest([]string{"- " + tc}, root), []string{"Dockerfile"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("case %d: tokens = %q, want %q", i, got, want)
+		}
+	}
+}
+
+// ownedItemLintTokensForTest flattens the tokens of several Owned lines.
+func ownedItemLintTokensForTest(lines []string, root string) []string {
+	var out []string
+	for _, line := range lines {
+		tokens, skip := ownedItemLintTokens(line, root)
+		if skip {
+			continue
+		}
+		out = append(out, tokens...)
+	}
+	return out
+}
+
 func windowsWant(windows, other string) []string {
 	if platform.Current() == "win32" {
 		return []string{windows}
@@ -213,7 +391,7 @@ func TestOwnedItemLintMessages(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := OwnedItemLintMessages([]string{tc.item})
+			got := OwnedItemLintMessages([]string{tc.item}, "")
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("warnings = %q, want %q", got, tc.want)
 			}
@@ -240,7 +418,7 @@ func TestOwnedBareNames(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := OwnedBareNames(tc.lines)
+			got := OwnedBareNames(tc.lines, "")
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("OwnedBareNames = %q, want %q", got, tc.want)
 			}

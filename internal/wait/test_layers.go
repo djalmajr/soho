@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"unicode/utf8"
 
 	"github.com/djalmajr/soho/internal/gittree"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -90,13 +92,29 @@ func validationFilePresent(root string) bool {
 	return true
 }
 
-// unmarkedExample quotes the first unmarked line for the warning: at most 80
-// runes (the 80th becomes an ellipsis), Go-quoted so a control character in
+// unmarkedExampleMax is the excerpt bound both the unmarked-line example and
+// the non-pass layer name keep: at most 120 runes, the 120th becoming an
+// ellipsis.
+const unmarkedExampleMax = 120
+
+// unmarkedExample quotes the first unmarked line for the warning: at most 120
+// runes (the 120th becomes an ellipsis), Go-quoted so a control character in
 // report text never reaches the terminal raw.
 func unmarkedExample(line string) string {
 	runes := []rune(line)
-	if len(runes) > 80 {
-		runes = append(runes[:79], '…')
+	if len(runes) > unmarkedExampleMax {
+		runes = append(runes[:unmarkedExampleMax-1], '…')
 	}
 	return fmt.Sprintf("%q", string(runes))
+}
+
+// layerName renders one report-supplied layer name for the non-pass warning:
+// an ordinary name prints byte for byte, while a name carrying a control
+// character or exceeding the excerpt bound is quoted and cut exactly as
+// unmarkedExample quotes a line, so report text never reaches stderr raw.
+func layerName(name string) string {
+	if utf8.RuneCountInString(name) <= unmarkedExampleMax && strconv.Quote(name) == `"`+name+`"` {
+		return name
+	}
+	return unmarkedExample(name)
 }

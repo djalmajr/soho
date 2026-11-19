@@ -30,6 +30,7 @@ func hasReviewWarning(text string) bool {
 		"finding(s) of the review without a response",
 		"the review does not have",
 		"Review responses line(s) without a valid answer",
+		"has no Review responses section",
 		"finding(s) without a number",
 		"names a review that cannot be read",
 		"has no review header",
@@ -64,6 +65,95 @@ func markedReview(n int) string {
 
 func responsesReport(body string) string {
 	return "# Report\n\n## Review responses\n\n" + body + "\n## Items\n| item | state |\n| --- | --- |\n| slice a | [done] |\n"
+}
+
+func TestWaitReviewResponsesSectionMissing(t *testing.T) { // item 6
+	plainReport := "# Report\n\n## Items\n| item | state |\n| --- | --- |\n| slice a | [done] |\n"
+	t.Run("wait: no section names the missing section and the expected form, not the per-finding warning", func(t *testing.T) {
+		dir := t.TempDir()
+		reviewPath := filepath.Join(dir, "review.md")
+		writeReviewFile(t, reviewPath, markedReview(2))
+		f := newMetricsFixture(t, "off", metricsImplementerRoster, plainReport, reviewBrief(reviewPath), "")
+		out, errText, rc := f.run(t)
+		if rc != 0 {
+			t.Fatalf("rc=%d out=%q err=%q", rc, out, errText)
+		}
+		if !strings.Contains(out, `"review_responses":{"fixed":[],"declined":[],"missing":[1,2],"unknown":[],"unmarked":0,"unnumbered":0}`) {
+			t.Fatalf("review_responses missing or wrong: %q", out)
+		}
+		want := "report of 'worker' has no Review responses section, and the brief names a review to answer; expected '- F<n>: <fixed|declined>: <note>', one line per finding"
+		if !strings.Contains(errText, want) {
+			t.Fatalf("missing the section warning: %q", errText)
+		}
+		if strings.Contains(errText, "without a response") {
+			t.Fatalf("the per-finding warning replaced the section warning: %q", errText)
+		}
+	})
+	t.Run("wait: a review whose only finding is unnumbered still names the missing section", func(t *testing.T) {
+		dir := t.TempDir()
+		reviewPath := filepath.Join(dir, "review.md")
+		writeReviewFile(t, reviewPath, "findings: 1 (P0 0, P1 0, P2 1, P3 0) | verdict: fail\n- Finding without a number\n")
+		f := newMetricsFixture(t, "off", metricsImplementerRoster, plainReport, reviewBrief(reviewPath), "")
+		out, errText, rc := f.run(t)
+		if rc != 0 {
+			t.Fatalf("rc=%d out=%q err=%q", rc, out, errText)
+		}
+		if !strings.Contains(out, `"review_responses":{"fixed":[],"declined":[],"missing":[],"unknown":[],"unmarked":0,"unnumbered":1}`) {
+			t.Fatalf("review_responses missing or wrong: %q", out)
+		}
+		if !strings.Contains(errText, "has no Review responses section") || !strings.Contains(errText, "finding(s) without a number") {
+			t.Fatalf("expected both independent warnings, got: %q", errText)
+		}
+	})
+	t.Run("wait: a review with no findings stays quiet without a section", func(t *testing.T) {
+		dir := t.TempDir()
+		reviewPath := filepath.Join(dir, "review.md")
+		writeReviewFile(t, reviewPath, "findings: 0 (P0 0, P1 0, P2 0, P3 0) | verdict: pass\n")
+		f := newMetricsFixture(t, "off", metricsImplementerRoster, plainReport, reviewBrief(reviewPath), "")
+		_, errText, rc := f.run(t)
+		if rc != 0 || hasReviewWarning(errText) {
+			t.Fatalf("rc=%d err=%q; a review without findings warns nothing", rc, errText)
+		}
+	})
+	t.Run("wait: a section that misses a finding keeps the per-finding warning", func(t *testing.T) {
+		dir := t.TempDir()
+		reviewPath := filepath.Join(dir, "review.md")
+		writeReviewFile(t, reviewPath, markedReview(2))
+		f := newMetricsFixture(t, "off", metricsImplementerRoster, responsesReport("- F1: fixed\n"), reviewBrief(reviewPath), "")
+		out, errText, rc := f.run(t)
+		if rc != 0 {
+			t.Fatalf("rc=%d out=%q err=%q", rc, out, errText)
+		}
+		if !strings.Contains(out, `"review_responses":{"fixed":[1],"declined":[],"missing":[2],"unknown":[],"unmarked":0,"unnumbered":0}`) {
+			t.Fatalf("review_responses missing or wrong: %q", out)
+		}
+		if !strings.Contains(errText, "report of 'worker' leaves 1 finding(s) of the review without a response (F2)") {
+			t.Fatalf("missing the per-finding warning: %q", errText)
+		}
+		if strings.Contains(errText, "has no Review responses section") {
+			t.Fatalf("an existing section read as missing: %q", errText)
+		}
+	})
+}
+
+func TestWaitReviewResponsesAcceptedForms(t *testing.T) {
+	t.Run("wait: bold id, em dash and parenthesis separators are answers", func(t *testing.T) {
+		dir := t.TempDir()
+		reviewPath := filepath.Join(dir, "review.md")
+		writeReviewFile(t, reviewPath, markedReview(3))
+		body := "- **F1**: fixed — ran the gate\n- F2 — declined (out of scope for this slice)\n- F3: fixed (note)\n"
+		f := newMetricsFixture(t, "off", metricsImplementerRoster, responsesReport(body), reviewBrief(reviewPath), "")
+		out, errText, rc := f.run(t)
+		if rc != 0 {
+			t.Fatalf("rc=%d err=%q", rc, errText)
+		}
+		if !strings.Contains(out, `"review_responses":{"fixed":[1,3],"declined":[2],"missing":[],"unknown":[],"unmarked":0,"unnumbered":0}`) {
+			t.Fatalf("review_responses missing or wrong: %q", out)
+		}
+		if hasReviewWarning(errText) {
+			t.Fatalf("accepted forms warned: %q", errText)
+		}
+	})
 }
 
 func TestWaitReviewResponsesMissing(t *testing.T) { // scenario 5
@@ -369,8 +459,8 @@ func TestWaitReviewResponsesWithoutReviewLine(t *testing.T) { // scenario 11
 	})
 }
 
-func TestWaitReviewResponsesNoSection(t *testing.T) { // scenario 12
-	t.Run("wait: a report without the section leaves every review finding missing", func(t *testing.T) {
+func TestWaitReviewResponsesNoSection(t *testing.T) { // scenario 12; item 6
+	t.Run("wait: a report without the section names the missing section instead of every finding", func(t *testing.T) {
 		dir := t.TempDir()
 		reviewPath := filepath.Join(dir, "review.md")
 		writeReviewFile(t, reviewPath, markedReview(2))
@@ -382,8 +472,12 @@ func TestWaitReviewResponsesNoSection(t *testing.T) { // scenario 12
 		if !strings.Contains(out, `"review_responses":{"fixed":[],"declined":[],"missing":[1,2],"unknown":[],"unmarked":0,"unnumbered":0}`) {
 			t.Fatalf("all-missing not in the done line: %q", out)
 		}
-		if !strings.Contains(errText, "report of 'worker' leaves 2 finding(s) of the review without a response (F1, F2): read them before commit, push or release") {
-			t.Fatalf("missing the without-a-response warning: %q", errText)
+		want := "report of 'worker' has no Review responses section, and the brief names a review to answer; expected '- F<n>: <fixed|declined>: <note>', one line per finding"
+		if !strings.Contains(errText, want) {
+			t.Fatalf("missing the missing-section warning: %q", errText)
+		}
+		if strings.Contains(errText, "without a response") {
+			t.Fatalf("the per-finding warning replaced the section warning: %q", errText)
 		}
 	})
 }

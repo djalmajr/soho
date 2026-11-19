@@ -30,6 +30,19 @@ func TestReviewResponses(t *testing.T) {
 		{name: "bold fixed is unmarked", text: "## Review responses\n\n- F1: **fixed**\n", found: true, fixed: []int{}, declined: []int{}, unmarked: 1},
 		{name: "extra words after fixed is unmarked", text: "## Review responses\n\n- F1: fixed extra\n", found: true, fixed: []int{}, declined: []int{}, unmarked: 1},
 		{name: "declined reason with a unicode letter", text: "## Review responses\n\n- F3: declined: não cabe\n", found: true, fixed: []int{}, declined: []int{3}, unmarked: 0},
+		{name: "id separator em dash", text: "## Review responses\n\n- F1 — fixed: note\n", found: true, fixed: []int{1}, declined: []int{}, unmarked: 0},
+		{name: "id separator en dash", text: "## Review responses\n\n- F1 – declined: out of scope\n", found: true, fixed: []int{}, declined: []int{1}, unmarked: 0},
+		{name: "id separator parenthesis", text: "## Review responses\n\n- F1 (fixed)\n", found: true, fixed: []int{1}, declined: []int{}, unmarked: 0},
+		{name: "answer word em dash note", text: "## Review responses\n\n- F1: fixed — ran the proof\n", found: true, fixed: []int{1}, declined: []int{}, unmarked: 0},
+		{name: "answer word parenthesis note", text: "## Review responses\n\n- F1: fixed (ran the proof)\n", found: true, fixed: []int{1}, declined: []int{}, unmarked: 0},
+		{name: "declined parenthesis reason", text: "## Review responses\n\n- F2: declined (the case is out of scope)\n", found: true, fixed: []int{}, declined: []int{2}, unmarked: 0},
+		{name: "bold id", text: "## Review responses\n\n- **F1**: fixed: note\n- **F2** — declined (out of scope)\n", found: true, fixed: []int{1}, declined: []int{2}, unmarked: 0},
+		{name: "bracketed mark is not an answer", text: "## Review responses\n\n- [F1]: fixed\n", found: true, fixed: []int{}, declined: []int{}, unmarked: 1},
+		{name: "no separator after the id is not an answer", text: "## Review responses\n\n- F1 fixed: note\n", found: true, fixed: []int{}, declined: []int{}, unmarked: 1},
+		{name: "bold id without a separator is not an answer", text: "## Review responses\n\n- **F1** fixed\n", found: true, fixed: []int{}, declined: []int{}, unmarked: 1},
+		{name: "unclosed parenthesis note is not an answer", text: "## Review responses\n\n- F1: fixed (ran the proof\n", found: true, fixed: []int{}, declined: []int{}, unmarked: 1},
+		{name: "parenthesis declined reason with no letter is not an answer", text: "## Review responses\n\n- F1: declined (---)\n", found: true, fixed: []int{}, declined: []int{}, unmarked: 1},
+		{name: "dash without spaces is not a separator", text: "## Review responses\n\n- F1 —fixed\n", found: true, fixed: []int{}, declined: []int{}, unmarked: 1},
 		{name: "fenced block is ignored", text: "## Review responses\n\n```\n- F1: fixed\n- F9: declined: inside a fence\n```\n\n- F2: fixed\n", found: true, fixed: []int{2}, declined: []int{}, unmarked: 0},
 		{name: "next h2 title ends the section", text: "## Review responses\n\n- F1: fixed\n\n## Next\n- F2: fixed\n", found: true, fixed: []int{1}, declined: []int{}, unmarked: 0},
 		{name: "next h1 title ends the section", text: "## Review responses\n\n- F1: fixed\n\n# Top\n- F2: fixed\n", found: true, fixed: []int{1}, declined: []int{}, unmarked: 0},
@@ -58,6 +71,18 @@ func TestReviewResponses(t *testing.T) {
 				t.Fatalf("Unmarked = %d, want %d", got.Unmarked, tc.unmarked)
 			}
 		})
+	}
+}
+
+// TestReviewResponsesFirstUnmarked keeps the first invalid line for the
+// warning, as written.
+func TestReviewResponsesFirstUnmarked(t *testing.T) {
+	got := ReviewResponses("## Review responses\n\n- F1: fixed\n- F2: FIXED\n- F3: fixed (unclosed\n")
+	if got.Unmarked != 2 || got.FirstUnmarked != "- F2: FIXED" {
+		t.Fatalf("got %+v", got)
+	}
+	if clean := ReviewResponses("## Review responses\n\n- F1: fixed\n"); clean.Unmarked != 0 || clean.FirstUnmarked != "" {
+		t.Fatalf("clean section: %+v", clean)
 	}
 }
 

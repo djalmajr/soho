@@ -881,8 +881,8 @@ func briefHeadingLevel(line string) int {
 }
 
 func ownedItemLintWarnings(brief, tree string, lines []string) []string {
-	messages := gittree.OwnedItemLintMessages(lines)
-	bareNames := gittree.OwnedBareNames(lines)
+	messages := gittree.OwnedItemLintMessages(lines, tree)
+	bareNames := gittree.OwnedBareNames(lines, tree)
 	out := make([]string, 0, len(messages)+len(bareNames))
 	for _, message := range messages {
 		out = append(out, fmt.Sprintf("brief %s: Owned files item %s", brief, message))

@@ -101,6 +101,17 @@ func TestWaitTestLayersFailWarnsOnce(t *testing.T) { // scenarios 5+7
 			t.Fatalf("the warning should repeat while the marker cannot persist: %q", err2)
 		}
 	})
+	t.Run("wait: a control character in a layer name reaches stderr escaped and bounded", func(t *testing.T) {
+		body := "# Report\n\n## Test layers\n- unit\tlocal: FAIL (a reason)\n\n## Items\n| item | state |\n| --- | --- |\n| slice a | [done] |\n"
+		f := newMetricsFixture(t, "off", metricsImplementerRoster, body, metricsBriefBackend, "")
+		out, errText, rc := f.run(t)
+		if rc != 0 || !strings.Contains(out, `"test_layers":{"pass":0,"fail":1,`) {
+			t.Fatalf("rc=%d out=%q err=%q", rc, out, errText)
+		}
+		if !strings.Contains(errText, "(\"unit\\tlocal\" FAIL)") || strings.Contains(errText, "\t") {
+			t.Fatalf("the layer name was not quoted and escaped: %q", errText)
+		}
+	})
 }
 
 func TestWaitTestLayersAllPassIsQuiet(t *testing.T) { // scenario 6
@@ -128,7 +139,7 @@ func TestWaitTestLayersAllPassIsQuiet(t *testing.T) { // scenario 6
 		if !strings.Contains(out, `"test_layers":{"pass":0,"fail":0,"not_run":0,"blocked":0,"na":0,"unmarked":2}`) {
 			t.Fatalf("test_layers missing or wrong: %q", out)
 		}
-		if !strings.Contains(errText, "report of 'worker' has 2 Test layers line(s) without a result; the form is '- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a', with ': <reason>' (or ' — <reason>') after FAIL, NOT RUN and BLOCKED, and an optional note after PASS (first: \"- unit: **PASS**\"; unknown result word)") {
+		if !strings.Contains(errText, "report of 'worker' has 2 Test layers line(s) without a result; expected '- <layer>: <RESULT>[: reason]' with one of PASS, FAIL, NOT RUN, BLOCKED or n/a, a reason after FAIL, NOT RUN and BLOCKED, an optional note after PASS or n/a, and ': ', ' — ', ' – ' or ' (' before the text (first: \"- unit: **PASS**\"; unknown result word)") {
 			t.Fatalf("missing the unmarked warning with the form and the first line: %q", errText)
 		}
 		if strings.Contains(errText, "did not pass") {
@@ -138,13 +149,13 @@ func TestWaitTestLayersAllPassIsQuiet(t *testing.T) { // scenario 6
 }
 
 func TestWaitTestLayersSeparators(t *testing.T) {
-	body := "## Test layers\n- a: FAIL: reason\n- b: FAIL — reason\n- c: FAIL – reason\n- d: NOT RUN: reason\n- e: NOT RUN — reason\n- f: NOT RUN – reason\n- g: BLOCKED: reason\n- h: BLOCKED — reason\n- i: BLOCKED – reason\n- j: PASS: note\n- k: PASS — FAIL\n- l: PASS – note\n- m: n/a: note\n- n: n/a — note\n- o: n/a – note\n- p: PASS - note\n"
+	body := "## Test layers\n- a: FAIL: reason\n- b: FAIL — reason\n- c: FAIL – reason\n- d: NOT RUN: reason\n- e: NOT RUN — reason\n- f: NOT RUN – reason\n- g: BLOCKED: reason\n- h: BLOCKED — reason\n- i: BLOCKED – reason\n- j: PASS: note\n- k: PASS — FAIL\n- l: PASS – note\n- m: n/a: note\n- n: n/a — note\n- o: n/a – note\n- p: PASS - note\n- q: PASS (bun run typecheck, 0 erros)\n- r: FAIL (the suite failed)\n- s: NOT RUN (no host)\n- t: BLOCKED (no browser)\n- u: n/a (not a CLI project)\n- v: PASS (unclosed\n"
 	f := newMetricsFixture(t, "off", metricsImplementerRoster, body, metricsBriefBackend, "")
 	out, errText, rc := f.run(t)
-	if rc != 0 || !strings.Contains(out, `"test_layers":{"pass":3,"fail":3,"not_run":3,"blocked":3,"na":3,"unmarked":1}`) {
+	if rc != 0 || !strings.Contains(out, `"test_layers":{"pass":4,"fail":4,"not_run":4,"blocked":4,"na":4,"unmarked":2}`) {
 		t.Fatalf("rc=%d out=%q err=%q", rc, out, errText)
 	}
-	if !strings.Contains(errText, "lists 9 test layer(s) that did not pass (a FAIL, b FAIL, c FAIL, d NOT RUN, e NOT RUN, f NOT RUN, g BLOCKED, h BLOCKED, i BLOCKED)") || !strings.Contains(errText, "has 1 Test layers line(s) without a result") {
+	if !strings.Contains(errText, "lists 12 test layer(s) that did not pass (a FAIL, b FAIL, c FAIL, d NOT RUN, e NOT RUN, f NOT RUN, g BLOCKED, h BLOCKED, i BLOCKED, r FAIL, s NOT RUN, t BLOCKED)") || !strings.Contains(errText, "has 2 Test layers line(s) without a result") {
 		t.Fatalf("warnings: %q", errText)
 	}
 }

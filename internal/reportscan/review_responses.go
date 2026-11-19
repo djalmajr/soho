@@ -14,28 +14,35 @@ type ReviewResponsesResult struct {
 	Fixed    []int
 	Declined []int
 	Unmarked int
+	// FirstUnmarked is the first list line of the section without the form,
+	// as written (trimmed), for the warning.
+	FirstUnmarked string
 }
 
-// responseIDColon is a finding number at the start of a response body: F<n>
-// followed by a colon and at least one space or tab.
-var responseIDColon = regexp.MustCompile(`^F([0-9]+):[ \t]+`)
+// responseIDRE is a finding number at the start of a response body, plain or
+// bold, then one of the accepted separators: ": ", " — ", " – " or " (".
+// A bracketed mark ([F1]) is a finding mark, not an answer.
+var responseIDRE = regexp.MustCompile(`^(?:\*\*F([0-9]+)\*\*|F([0-9]+))(:[ \t]+| [—–] | \()`)
 
 // responseBulletRE is the only bullet of the form. A star or a plus is a list
 // line too, and counts as one without a valid answer.
 var responseBulletRE = regexp.MustCompile(`^-[ \t]+`)
 
 // ReviewResponses parses the report's ## Review responses section, outside
-// fenced code blocks: one line per finding in one of the exact forms
+// fenced code blocks: one line per finding in one of the forms
 //
 //   - F<n>: fixed
 //   - F<n>: fixed: <note>   (the note is ignored)
 //   - F<n>: declined: <reason>   (the reason needs at least one letter or digit)
 //
-// in any list position. Any other list line in the section is unmarked, and a
-// repeated number keeps the first answer. The section starts at the exact
-// "## Review responses" title and ends at the next # or ## title; deeper
-// titles and non-list lines are skipped. The form is exact on purpose: a
-// formatted, uppercase, zero or free-text line is never an answer.
+// where the id may be bold (**F<n>**) and both the id and the answer word
+// take ": ", " — ", " – " or " (" as the separator, the parenthesized text
+// counting as the note or the reason (after the id, the parenthesis closes
+// around the answer itself). Any other list line in the section is unmarked,
+// and a repeated number keeps the first answer. The section starts at the
+// exact "## Review responses" title and ends at the next # or ## title;
+// deeper titles and non-list lines are skipped. The form is exact on purpose:
+// a formatted, uppercase, zero or free-text line is never an answer.
 func ReviewResponses(text string) ReviewResponsesResult {
 	out := ReviewResponsesResult{Fixed: []int{}, Declined: []int{}}
 	inFence, fenceChar, fenceLen := false, byte(0), 0
@@ -68,6 +75,9 @@ func ReviewResponses(text string) ReviewResponsesResult {
 			continue
 		}
 		if !parseResponseLine(trim, &out) {
+			if out.Unmarked == 0 {
+				out.FirstUnmarked = trim
+			}
 			out.Unmarked++
 		}
 	}
@@ -97,27 +107,74 @@ func parseResponseLine(trim string, out *ReviewResponsesResult) bool {
 		return false
 	}
 	body := strings.TrimSpace(trim[m[1]:])
-	idm := responseIDColon.FindStringSubmatchIndex(body)
+	idm := responseIDRE.FindStringSubmatchIndex(body)
 	if idm == nil {
 		return false
 	}
-	n, err := strconv.Atoi(body[idm[2]:idm[3]])
+	start, end := idm[2], idm[3]
+	if start < 0 {
+		start, end = idm[4], idm[5]
+	}
+	n, err := strconv.Atoi(body[start:end])
 	if err != nil || n < 1 {
 		return false
 	}
-	rest := strings.TrimSpace(body[idm[1]:])
-	switch {
-	case rest == "fixed":
-		return recordResponse(out, n, true)
-	case strings.HasPrefix(rest, "fixed: "):
-		return recordResponse(out, n, true)
-	case strings.HasPrefix(rest, "declined: "):
-		if !layerReasonOK(strings.TrimSpace(rest[len("declined: "):])) {
+	rest := strings.TrimSpace(body[idm[7]:])
+	if body[idm[6]:idm[7]] == " (" {
+		if !strings.HasSuffix(rest, ")") {
 			return false
 		}
-		return recordResponse(out, n, false)
+		rest = strings.TrimSpace(strings.TrimSuffix(rest, ")"))
+	}
+	return parseResponseAnswer(rest, n, out)
+}
+
+// parseResponseAnswer matches the answer word and its optional note or reason:
+// "fixed", "fixed: <note>", "declined: <reason>" and the em dash, en dash and
+// parenthesis separators. A declined reason still needs at least one letter or
+// digit; a fixed note is ignored.
+func parseResponseAnswer(rest string, n int, out *ReviewResponsesResult) bool {
+	for _, answer := range []struct {
+		word  string
+		fixed bool
+	}{{"fixed", true}, {"declined", false}} {
+		note, ok := responseNote(rest, answer.word)
+		if !ok {
+			continue
+		}
+		if !answer.fixed && !layerReasonOK(note) {
+			return false
+		}
+		return recordResponse(out, n, answer.fixed)
 	}
 	return false
+}
+
+// responseNote reports whether rest is the answer word alone or the word
+// followed by an accepted separator and its text: ": ", " — ", " – " or " (",
+// the last one closing with ")". The answer word alone yields an empty note.
+func responseNote(rest, word string) (string, bool) {
+	if rest == word {
+		return "", true
+	}
+	if !strings.HasPrefix(rest, word) {
+		return "", false
+	}
+	after := rest[len(word):]
+	for _, separator := range []string{": ", " — ", " – ", " ("} {
+		if !strings.HasPrefix(after, separator) {
+			continue
+		}
+		text := strings.TrimSpace(after[len(separator):])
+		if separator == " (" {
+			if !strings.HasSuffix(text, ")") {
+				return "", false
+			}
+			text = strings.TrimSpace(strings.TrimSuffix(text, ")"))
+		}
+		return text, true
+	}
+	return "", false
 }
 
 // recordResponse stores the answer for a number the report has not answered
