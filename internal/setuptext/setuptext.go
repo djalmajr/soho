@@ -36,15 +36,29 @@ const designBullet = "- **Design**: when the project has a root `DESIGN.md`, rea
 const designBulletAnchor = "- **Briefs are contracts**: goal, expected result, acceptance criteria with\n"
 
 // nativeBullet is the native Herdr Core line of the current generation (hc
-// standard v6): how workers and long runs are parented and how the
-// orchestrator is woken. It is the single source of the bullet text, spliced
-// into the block before the Quota item and installed in place by the legacy
-// migration when the block predates it.
-const nativeBullet = "- **Native Core** (`SOHO_TRANSPORT=hc`): workers and long runs are child\n  terminals of the orchestrator, never background tasks of the assistant's\n  harness. Builds, tests and scripts run as the child's own program\n  (`hc run --bg --outlive-parent --name <project>-<role> -- sh -c '<cmd>'`):\n  its exit note wakes the orchestrator. A soho worker stays alive after its\n  report and sends no note, so the orchestrator keeps its turn open and\n  waits (`soho wait`) while it depends on one, or arms\n  `soho wait <agent> --wake` and ends its turn: the note wakes it, and it\n  runs `soho wait <agent>` once.\n"
+// standard v7, 2026-11-19): how workers and long runs are parented, how the
+// orchestrator is woken, and that its prompt never blocks. It is the single
+// source of the bullet text, spliced into the block before the Quota item and
+// installed in place by the legacy migration when the block predates it.
+const nativeBullet = "- **Native Core** (`SOHO_TRANSPORT=hc`): workers and long runs are child\n  terminals of the orchestrator, never background tasks of the assistant's\n  harness. Builds, tests and scripts run as the child's own program\n  (`hc run --bg --outlive-parent --name <project>-<role> -- sh -c '<cmd>'`):\n  its exit note wakes the orchestrator. The orchestrator's prompt never\n  blocks: a soho worker stays alive after its report and sends no note, so\n  dispatch with `--no-wait`, arm `soho wait <agent> --wake` and end the\n  turn; the note wakes it, and it runs `soho wait <agent>` once. No\n  foreground `soho wait --timeout` or `hc wait`, in blocks or in a loop.\n"
+
+// previousNativeBullets are the exact native Core lines of the recognized
+// generations before v7: the v6 wake-arming bullet (which still kept the
+// turn open) and the pre-wake one. The in-place migration replaces either
+// with nativeBullet, and an edited bullet is left as it is.
+var previousNativeBullets = []string{
+	// v6NativeBullet: the wake arming (`soho wait <agent> --wake`) next to
+	// the foreground wait it was meant to replace.
+	v6NativeBullet,
+	// previousNativeBullet: the generation before the wake arming.
+	previousNativeBullet,
+}
+
+// v6NativeBullet is the exact native Core line of hc standard v6.
+const v6NativeBullet = "- **Native Core** (`SOHO_TRANSPORT=hc`): workers and long runs are child\n  terminals of the orchestrator, never background tasks of the assistant's\n  harness. Builds, tests and scripts run as the child's own program\n  (`hc run --bg --outlive-parent --name <project>-<role> -- sh -c '<cmd>'`):\n  its exit note wakes the orchestrator. A soho worker stays alive after its\n  report and sends no note, so the orchestrator keeps its turn open and\n  waits (`soho wait`) while it depends on one, or arms\n  `soho wait <agent> --wake` and ends its turn: the note wakes it, and it\n  runs `soho wait <agent>` once.\n"
 
 // previousNativeBullet is the exact native Core line of the generation before
-// the wake arming (`soho wait <agent> --wake`): the in-place migration
-// replaces it with nativeBullet, and an edited bullet is left as it is.
+// the wake arming (`soho wait <agent> --wake`).
 const previousNativeBullet = "- **Native Core** (`SOHO_TRANSPORT=hc`): workers and long runs are child\n  terminals of the orchestrator, never background tasks of the assistant's\n  harness. Builds, tests and scripts run as the child's own program\n  (`hc run --bg --outlive-parent --name <project>-<role> -- sh -c '<cmd>'`):\n  its exit note wakes the orchestrator. A soho worker stays alive after its\n  report and sends no note, so the orchestrator keeps its turn open and\n  waits (`soho wait`) while it depends on one.\n"
 
 // nativeBulletAnchor is the exact opening line of the generated Quota item,
@@ -369,27 +383,30 @@ func installDesignBullet(content string) string {
 	return content[:start] + block + content[end:]
 }
 
-// upgradeNativeBullet replaces the exact previous native Core bullet with the
-// current one, in place, in a migrated legacy block. The whole item must be
-// the previous text: a bullet the project edited (a changed or extra line)
-// does not match and stays as written.
+// upgradeNativeBullet replaces the exact bullet of a recognized previous
+// generation with the current one, in place, in a migrated legacy block. The
+// whole item must be the previous text: a bullet the project edited (a
+// changed or extra line) does not match and stays as written.
 func upgradeNativeBullet(content string) string {
 	start, end := strings.Index(content, SetupStart), strings.Index(content, SetupEnd)
 	if start < 0 || end < start {
 		return content
 	}
 	block := content[start:end]
-	at := strings.Index(block, "\n"+previousNativeBullet)
-	if at < 0 {
-		return content
+	for _, previous := range previousNativeBullets {
+		at := strings.Index(block, "\n"+previous)
+		if at < 0 {
+			continue
+		}
+		at++
+		after := at + len(previous)
+		if strings.HasPrefix(block[after:], "  ") {
+			return content
+		}
+		block = block[:at] + nativeBullet + block[after:]
+		return content[:start] + block + content[end:]
 	}
-	at++
-	after := at + len(previousNativeBullet)
-	if strings.HasPrefix(block[after:], "  ") {
-		return content
-	}
-	block = block[:at] + nativeBullet + block[after:]
-	return content[:start] + block + content[end:]
+	return content
 }
 
 // installNativeBullet adds the native Core bullet before the Quota item of a
