@@ -172,7 +172,7 @@ test("F2 controller: a refresh during a save neither abandons it nor hides a par
   assert.deepEqual(H.state.calls.filter((call) => call.args?.[0] === "config").map((call) => call.args),
     [["config", "set", "role.implementer.kind=pi", "--project"],
       ["config", "set", "role.implementer.model=m-1", "--project"]]);
-  assert.match(panel.errors.config, /^Applied role\.implementer\.kind; not applied role\.implementer\.model, role\.implementer\.effort\. invalid value 'high'$/);
+  assert.match(panel.errors.config, /^Applied role\.implementer\.kind; rejected role\.implementer\.model: invalid value 'high'; not tried role\.implementer\.effort\.$/);
   assert.equal(panel.busy.has("edit-save"), false);
   assert.ok(cx.notifies > notifiesBefore);
   assert.ok(H.state.calls.some((call) => call.args?.join(" ") === "roles --json"), "the refresh ran");
@@ -217,7 +217,10 @@ test("F4 controller: the suffix-only confirmation runs release only for the pend
 
   panel.confirmClose(worker, cx);
   assert.equal(panel.pending.action, "close");
-  panel.handleCommand("close", cx);
+  // The dialog's own suffix carries its token (F4 round 3).
+  const suffix = H.state.overlays.at(-1).props.command.name.split(".")[1];
+  assert.match(suffix, /^close_[0-9]+$/);
+  panel.handleCommand(suffix, cx);
   await flush(cx);
   assert.equal(H.state.calls.filter((call) => call.args?.[0] === "release").length, 1);
   assert.deepEqual(H.state.calls.find((call) => call.args?.[0] === "release").args, ["release", "implementer-1", "--close"]);
@@ -228,7 +231,8 @@ test("F4 controller: the suffix-only confirmation runs release only for the pend
   await flush(cx);
   panel.confirmReopen(worker, cx);
   panel.data.roster = { agents: [{ name: "other-1", pane: "%9", status: "gone" }] }; // the row changed
-  panel.handleCommand("close", cx);
+  const token = panel.pending.token;
+  panel.handleCommand(`close_${token}`, cx);
   await flush(cx);
   assert.equal(H.state.calls.filter((call) => call.args?.[0] === "release").length, before);
 });
@@ -471,6 +475,7 @@ test("F17 view: with no answering assistant, Edit says so and offers Probe again
     band: "wide", tab: "team", busy: new Set(), errors: {}, menuOpen: "", menuFocus: {},
     modelInput: null,
     edit,
+    caps: M.capabilities({ assistants_json: true }),
     data: { choices: { assistants: [] } },
     editAssistants: () => [],
     probeAgain: () => {}, openMenu: () => {}, setEditField: () => {}, setEditAppliesTo: () => {},

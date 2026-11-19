@@ -71,6 +71,38 @@ export function sameContext(a, b) {
   return Boolean(a) && Boolean(b) && contextKey(a) === contextKey(b);
 }
 
+// The origin every displayed dataset and every action carries (F1). It is
+// created when a read starts and stored with what that read returns; the
+// sequence only tells two reads of the same context apart, it never decides
+// eligibility (F2).
+export function originFor(context, seq = 0) {
+  return {
+    spaceId: context?.space ?? "",
+    machine: context?.machine ?? null,
+    folder: context?.folder ?? "",
+    seq: Number(seq) || 0,
+  };
+}
+
+export function contextOfOrigin(origin) {
+  if (!origin) return null;
+  return { space: origin.spaceId ?? "", machine: origin.machine ?? null, folder: origin.folder ?? "" };
+}
+
+// A dataset or an action stays usable only while its origin is still the
+// shown project; the read sequence is not compared (F1, F2).
+export function originCurrent(origin, current) {
+  return Boolean(origin) && sameContext(contextOfOrigin(origin), current);
+}
+
+// Report and Config are detail views, not capability-gated tool tabs, so an
+// ordinary refresh keeps them open (F8).
+export const DETAIL_TABS = ["report", "config"];
+
+export function isDetailTab(tab) {
+  return DETAIL_TABS.includes(tab);
+}
+
 // A write is refused when its own context is missing or no longer the shown
 // one. No read sequence enters this decision, so a refresh never abandons a
 // write in flight (F1, F2).
@@ -93,6 +125,15 @@ export function partialFailureMessage(applied, remaining, detail) {
   const left = remaining?.length ? `not applied ${remaining.join(", ")}` : "nothing left to apply";
   const why = String(detail ?? "").trim();
   return `${done}; ${left}.${why ? ` ${why}` : ""}`;
+}
+
+// A Save that stops part way says what it wrote, which key the CLI rejected and
+// which keys it never tried (F3). `detail` is that rejected key's own error.
+export function saveFailureMessage(applied, rejected, notTried, detail) {
+  const done = applied?.length ? `Applied ${applied.join(", ")}` : "Nothing was applied";
+  const refused = rejected ? `rejected ${rejected}${detail ? `: ${detail}` : ""}` : "";
+  const left = notTried?.length ? `not tried ${notTried.join(", ")}` : "nothing left to try";
+  return `${[done, refused, left].filter(Boolean).join("; ")}.`;
 }
 
 export function laneLabel(lane) {
@@ -312,15 +353,18 @@ export function snapshotFor(edit, preview, previousByKey, file, context) {
     previousByKey: { ...(previousByKey ?? {}) },
     file: file ?? "",
     context: context ? { ...context } : null,
+    origin: edit.origin ? { ...edit.origin } : (context ? originFor(context) : null),
   };
 }
 
 // Save stays disabled while a preview for the changed draft is pending, and
-// the commands still on screen are marked stale (F7).
+// the commands still on screen are marked stale (F7). The button state also
+// requires a snapshot of this exact draft: an empty-field draft has none, so it
+// offers no Save (F6).
 export function previewState(edit) {
   if (!edit) return { canSave: false, stale: false };
   const stale = Boolean(edit.pending) && Boolean(edit.snapshot);
-  const canSave = !edit.pending && Boolean(edit.snapshot)
+  const canSave = !edit.pending && Boolean(edit.snapshot) && snapshotMatches(edit.snapshot, edit)
     && (edit.snapshot.fields?.length ?? 0) > 0 && edit.valid !== false;
   return { canSave, stale };
 }
@@ -451,8 +495,11 @@ export function tabsFor(caps) {
 }
 
 // A selected tab that lost its capability falls back to Team before the next
-// render, so the hidden view never paints.
+// render, so the hidden view never paints. A detail view (Report, Config) has
+// no capability of its own and survives an ordinary refresh (F8); it is
+// dropped when its source context changes, not here.
 export function resolveTab(tab, caps) {
+  if (isDetailTab(tab)) return tab;
   return tabsFor(caps).some((entry) => entry.id === tab) ? tab : "team";
 }
 
@@ -474,21 +521,36 @@ export function layerResult(layer) {
 }
 
 // Herdr delivers only the suffix of "<mod>.<command>" to nextCommand(); the
-// prefixed spelling is accepted too (F4).
+// prefixed spelling is accepted too (F4). A confirmation suffix carries the
+// dialog's token after an underscore: "close_3". No colon: in a Herdr action
+// string, "name:value" passes the value as the command's first argument, and
+// a mod's nextCommand() receives only the name.
 export function parseCommand(command) {
   if (typeof command !== "string" || !command) return null;
-  const name = command.startsWith("soho-team.") ? command.slice("soho-team.".length) : command;
-  if (!name || name.includes(".")) return null;
-  return { name };
+  const suffix = command.startsWith("soho-team.") ? command.slice("soho-team.".length) : command;
+  const m = /^([a-z][a-z-]*)(?:_([0-9]+))?$/.exec(suffix);
+  if (!m) return null;
+  return m[2] ? { name: m[1], token: m[2] } : { name: m[1] };
 }
 
-// A confirmation runs only for the pending action and the worker row it was
-// opened on, matched by name and Core address, never by position (F4).
+// The token in a confirmation's command suffix: a counter that tells two
+// dialogs of the same action apart (F4). The worker's Core address is checked
+// through the pending action's key, not carried in the suffix.
+export function confirmationToken(counter) {
+  return String(Number(counter) || 0);
+}
+
+// A confirmation runs only for the pending action and the dialog that opened
+// it: the same action, the same token, and a worker row matched by name and
+// Core address, never by position (F4).
 export function confirmationMatches(pending, command, workers) {
   const parsed = parseCommand(command);
   if (!pending || !parsed) return { ok: false, worker: null, reason: "no pending confirmation" };
   if (parsed.name !== pending.action) {
     return { ok: false, worker: null, reason: `no pending ${parsed.name} confirmation` };
+  }
+  if (pending.token != null && parsed.token !== pending.token) {
+    return { ok: false, worker: null, reason: "that confirmation belongs to another dialog" };
   }
   const worker = findWorker(workers, pending.key);
   if (!worker || worker.name !== pending.name) {
@@ -508,6 +570,13 @@ export function acceptsReport(selectionKey, requestedKey) {
 
 export function reportBusyKey(folder, key) {
   return `report|${folder}|${key}`;
+}
+
+// A section read's busy key is keyed by its whole origin, never by the folder
+// alone: another machine at the same path is a different read (F2).
+export function readBusyKey(section, origin) {
+  const bound = origin?.spaceId !== undefined ? origin : originFor(origin);
+  return `${section}|${contextKey(contextOfOrigin(bound))}`;
 }
 
 // Legacy roster rows carry `state`, not `status` (internal/cli/roster.go:238-260).

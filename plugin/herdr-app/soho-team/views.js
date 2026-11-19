@@ -17,6 +17,8 @@ const SORTS = [
 
 const busy = (app, key) => app.busy.has(key);
 const rowsOf = (app) => Array.isArray(app.data.team?.roles) ? app.data.team.roles : [];
+// Every action carries the origin of the dataset it was rendered from (F1).
+const originOf = (app, name) => (typeof app.originOf === "function" ? app.originOf(name) : undefined);
 
 function effortCell(app, row, group, t, cx) {
   const target = M.effortTarget(row, app.groups());
@@ -36,7 +38,7 @@ function effortCell(app, row, group, t, cx) {
       width: 96,
       disabled: busy(app, `effort:${target.key}`),
       onOpenChange: (open, ctx) => app.openMenu(open ? id : "", ctx),
-      onChoose: (choice, ctx) => app.setEffort(row, choice.id, ctx),
+      onChoose: (choice, ctx) => app.setEffort(row, choice.id, ctx, originOf(app, "team")),
     }));
 }
 
@@ -53,7 +55,7 @@ function roleRow(app, row, group, t, cx, { narrow = false, list = false } = {}) 
   const controls = h_flex().flex_none().gap(6).items_center()
     .child(div().min_w(72).px(4).text_size(TEXT.caption).text_color(t.muted).child(M.modeLabel(row.mode)))
     .child(effortCell(app, row, group, t, cx));
-  const open = (_e, ctx) => app.openEdit({ role: row.role }, ctx);
+  const open = (_e, ctx) => app.openEdit({ role: row.role }, ctx, originOf(app, "team"));
   return (narrow
     ? v_flex().id(key).px(8).py(6).gap(5).rounded(6).bg(t.canvas).cursor_pointer()
       .hover((s) => s.bg(t.raised)).on_click(open)
@@ -71,7 +73,7 @@ function groupHeader(app, group, t) {
   const editable = Boolean(group.lane);
   return h_flex().id(`group-${group.lane || "outside"}`).h(26).px(4).gap(8).items_center()
     .when(editable, (el) => el.cursor_pointer().hover((s) => s.bg(t.raised))
-      .on_click((_e, ctx) => app.openEdit({ lane: group.lane }, ctx)))
+      .on_click((_e, ctx) => app.openEdit({ lane: group.lane }, ctx, originOf(app, "team"))))
     .child(growText(group.label.toUpperCase(), t.muted, TEXT.caption))
     .when(Boolean(group.kind), (el) => el.child(chip(group.kind, t)))
     .when(Boolean(group.model), (el) => el.child(trunc(M.shortModel(group.model), 140, t.dim, TEXT.caption)));
@@ -154,18 +156,19 @@ function workerCard(app, worker, t, cx, { wide = false } = {}) {
   const hasTerminal = Boolean(worker.pane);
   const canReport = app.caps.reportJson || Boolean(worker.report_path);
   const task = div().min_w(0).truncate().text_size(TEXT.caption).text_color(t.muted).child(worker.task ?? "");
+  // Close and Reopen use the same worker key the controller marks busy (F5).
   const actions = h_flex().gap(6).items_center()
-    .when(hasTerminal, (el) => el.child(button(`term-${key}`, "Terminal", (ctx) => app.peek(worker, ctx), { small: true })))
-    .when(canReport, (el) => el.child(button(`report-${key}`, "Report", (ctx) => app.openReport(worker, ctx), { small: true })))
-    .when(label === "report in", (el) => el.child(button(`close-${key}`, "Close", (ctx) => app.confirmClose(worker, ctx),
-      { small: true, disabled: busy(app, `close:${worker.name}`) })))
-    .when(label === "stopped", (el) => el.child(button(`reopen-${key}`, "Reopen", (ctx) => app.confirmReopen(worker, ctx),
-      { small: true, disabled: busy(app, `reopen:${worker.name}`) })));
+    .when(hasTerminal, (el) => el.child(button(`term-${key}`, "Terminal", (ctx) => app.peek(worker, ctx, originOf(app, "roster")), { small: true })))
+    .when(canReport, (el) => el.child(button(`report-${key}`, "Report", (ctx) => app.openReport(worker, ctx, originOf(app, "roster")), { small: true })))
+    .when(label === "report in", (el) => el.child(button(`close-${key}`, "Close", (ctx) => app.confirmClose(worker, ctx, originOf(app, "roster")),
+      { small: true, disabled: busy(app, `close:${key}`) })))
+    .when(label === "stopped", (el) => el.child(button(`reopen-${key}`, "Reopen", (ctx) => app.confirmReopen(worker, ctx, originOf(app, "roster")),
+      { small: true, disabled: busy(app, `reopen:${key}`) })));
   const name = div().min_w(0).flex_1().truncate().text_size(TEXT.small).font_semibold().text_color(t.foreground).child(worker.name);
   return v_flex().id(`worker-${key}`).gap(6).px(10).py(8).rounded(7)
     .border_1().border_color(selected ? t.accent : t.border).bg(selected ? t.raised : t.canvas)
     .cursor_pointer().hover((s) => s.bg(t.raised))
-    .on_click((_e, ctx) => { if (wide && canReport) app.showWorkerReport(worker, ctx); else { app.selectedWorker = key; ctx.notify(); } })
+    .on_click((_e, ctx) => { if (wide && canReport) app.showWorkerReport(worker, ctx, originOf(app, "roster")); else { app.selectedWorker = key; ctx.notify(); } })
     .child(h_flex().gap(8).items_center().child(dot(statusColor(worker.status, t), t)).child(name)
       .child(div().flex_none().text_size(TEXT.caption).text_color(t.dim).child(time)))
     .child(task)
@@ -237,11 +240,11 @@ export function renderReport(app, t, cx) {
           reportItem({ line: "", mark: w.kind, text: w.message }, t))] : []),
       ]))
     .child(h_flex().gap(6).justify_end()
-      .when(Boolean(worker?.pane), (el) => el.child(button("report-terminal", "Terminal", (cx) => app.peek(worker, cx), { small: true })))
-      .when(Boolean(worker?.pane), (el) => el.child(button("report-reopen", "Reopen", (cx) => app.confirmReopen(worker, cx),
-        { small: true, disabled: busy(app, `reopen:${worker?.name}`) })))
-      .when(Boolean(worker), (el) => el.child(button("report-close", "Close", (cx) => app.confirmClose(worker, cx),
-        { small: true, primary: true, disabled: busy(app, `close:${worker?.name}`) }))));
+      .when(Boolean(worker?.pane), (el) => el.child(button("report-terminal", "Terminal", (cx) => app.peek(worker, cx, originOf(app, "roster")), { small: true })))
+      .when(Boolean(worker?.pane), (el) => el.child(button("report-reopen", "Reopen", (cx) => app.confirmReopen(worker, cx, originOf(app, "roster")),
+        { small: true, disabled: busy(app, `reopen:${M.workerKey(worker)}`) })))
+      .when(Boolean(worker), (el) => el.child(button("report-close", "Close", (cx) => app.confirmClose(worker, cx, originOf(app, "roster")),
+        { small: true, primary: true, disabled: busy(app, `close:${M.workerKey(worker)}`) }))));
 }
 
 function probeLabel(probe) {
@@ -256,10 +259,13 @@ function assistantCard(app, a, t) {
   const status = probeLabel(a.probe);
   const color = status === "answering" ? t.working : status === "out of quota" ? t.blocked : t.unknown;
   const roleNames = a.roles ?? [];
-  return v_flex().gap(6).px(10).py(8).rounded(7).border_1().border_color(t.border).bg(t.canvas)
+  // A model lookup that failed for this kind stays beside this kind (F9).
+  const kindError = app.errors?.[M.modelsErrorKey(a.kind)] ?? "";
+  return v_flex().id(`assistant-${a.kind}`).gap(6).px(10).py(8).rounded(7).border_1().border_color(t.border).bg(t.canvas)
     .child(h_flex().gap(8).items_center().child(dot(color, t))
       .child(div().flex_1().truncate().text_size(TEXT.small).font_semibold().text_color(t.foreground).child(a.kind))
       .child(div().flex_none().text_size(TEXT.caption).text_color(t.dim).child(status)))
+    .when(Boolean(kindError), (el) => el.child(errorBlock(kindError, t)))
     .when(Boolean(a.family || a.models?.length), (el) => el.child(growText(
       [a.family, ...(a.models ?? []).slice(0, 3)].filter(Boolean).join(" · "), t.dim, TEXT.caption)))
     .when(roleNames.length > 0, (el) => el.child(h_flex().gap(5).items_center()
@@ -336,7 +342,7 @@ export function renderHealth(app, t, cx) {
     .when(confirming, (el) => el.child(v_flex().gap(2).children(remove.map((row) =>
       diskRow(row.path, row.reason || "no reason reported", bytes(row.size), t)))))
     .child(h_flex().justify_end().gap(6)
-      .when(!confirming, (el) => el.child(button("cleanup-ask", "Clean up", () => app.setCleanupConfirm(true, cx),
+      .when(!confirming, (el) => el.child(button("cleanup-ask", "Clean up", () => app.setCleanupConfirm(true, cx, originOf(app, "health")),
         { small: true, disabled: remove.length === 0 })))
       .when(confirming, (el) => el.child(div().text_size(TEXT.caption).text_color(t.ansi3).child("Remove these copies and stop orphan processes?")))
       .when(confirming, (el) => el.child(button("cleanup-no", "Cancel", () => app.setCleanupConfirm(false, cx), { small: true })))
@@ -357,21 +363,30 @@ export function renderEdit(app, t, cx) {
   const modelChoices = models.map((m) => ({ id: m, label: m }));
   const fileHelp = e.scope === "project" ? ".agents/soho.conf · applies to new workers; open ones keep their assistant." :
     "User config · applies to new workers; open ones keep their assistant.";
+  // A model lookup that failed for the chosen kind shows in this form (F9);
+  // Probe again exists only where the controller can run it (F11).
+  const canProbe = Boolean(app.caps?.assistantsJson);
+  const kindError = e.kind ? (app.errors?.[M.modelsErrorKey(e.kind)] ?? "") : "";
+  const probeError = app.errors?.["probe:edit"] ?? "";
   const assistantChildren = assistants.length
     ? [chooser({ id: "edit-kind", label: e.kind || "choose", value: e.kind, choices,
       open: app.menuOpen === "edit-kind", focus: app.menuFocus, width: 240, small: false,
       onOpenChange: (open, ctx) => app.openMenu(open ? "edit-kind" : "", ctx),
-      onChoose: (choice, ctx) => app.setEditField("kind", choice.id, ctx) })]
+      onChoose: (choice, ctx) => app.setEditField("kind", choice.id, ctx) }),
+    ...(kindError ? [errorBlock(kindError, t)] : [])]
     : [h_flex().gap(8).items_center()
-      .child(div().text_size(TEXT.caption).text_color(t.muted).child("No assistant has answered yet"))
-      .child(button("edit-probe", "Probe again", (ctx) => app.probeAgain(ctx),
-        { small: true, disabled: busy(app, "probe") }))];
+      .child(div().text_size(TEXT.caption).text_color(t.muted)
+        .child(canProbe ? "No assistant has answered yet" : "No assistant installed"))
+      .when(canProbe, (el) => el.child(button("edit-probe", "Probe again", (ctx) => app.probeAgain(ctx, e.origin),
+        { small: true, disabled: busy(app, "probe") })))];
+  const fields = M.editFields(e);
   return v_flex().flex_1().min_h(0).gap(12)
     .child(field("Applies to", "", segmented("edit-applies", applies, e.appliesTo,
       (id, ctx) => app.setEditAppliesTo(id, ctx), t)))
     .child(field("Assistant", assistants.length
       ? "Only assistants installed and answering are listed."
       : "", ...assistantChildren))
+    .when(Boolean(probeError), (el) => el.child(errorBlock(probeError, t)))
     .child(field("Model", "", modelChoices.length
       ? chooser({ id: "edit-model", label: e.model || "choose", value: e.model, choices: modelChoices,
         open: app.menuOpen === "edit-model", focus: app.menuFocus, width: 240, small: false,
@@ -393,8 +408,9 @@ export function renderEdit(app, t, cx) {
     .when(Boolean(e.error), (el) => el.child(errorBlock(e.error, t)))
     .child(h_flex().gap(8).justify_end()
       .child(button("edit-cancel", "Cancel", (ctx) => app.closeEdit(ctx), { small: true }))
-      .child(button("edit-save", "Save", (ctx) => app.saveEdit(ctx),
-        { small: true, primary: true, disabled: busy(app, "edit-save") || !preview.canSave })));
+      // A draft with no changed fields has no snapshot, so it offers no Save (F6).
+      .when(fields.length > 0, (el) => el.child(button("edit-save", "Save", (ctx) => app.saveEdit(ctx),
+        { small: true, primary: true, disabled: busy(app, "edit-save") || !preview.canSave }))));
 }
 
 // Equal geometry in every state: selection changes only bg and text color, so

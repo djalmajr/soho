@@ -62,6 +62,8 @@ test("F4: Herdr's suffix-only command runs only for the matching pending confirm
   assert.deepEqual(M.parseCommand("soho-team.close"), { name: "close" });
   assert.equal(M.parseCommand("soho-team.close.extra"), null);
   assert.equal(M.parseCommand(""), null);
+  assert.deepEqual(M.parseCommand("soho-team.close_12"), { name: "close", token: "12" });
+  assert.equal(M.parseCommand("close:12"), null, "no colon: Herdr would split it off as an argument");
   const pending = { action: "close", name: "reviewer-1", key: M.workerKey(workers[1]) };
   assert.equal(M.confirmationMatches(pending, "close", workers).worker.name, "reviewer-1");
   assert.equal(M.confirmationMatches(pending, "soho-team.close", workers).ok, true);

@@ -17,6 +17,7 @@ export function reset() {
   state.focused = null;
   state.checking = false;
   state.exec = async () => ({ code: 0, stdout: "", stderr: "" });
+  state.readText = null;
   state.calls = [];
   state.overlays = [];
   state.notices = [];
@@ -61,8 +62,9 @@ export function openOverlay(spec) {
   return `overlay-${state.overlays.length}`;
 }
 
-export async function readTextFile(path) {
-  state.calls.push({ name: "readTextFile", args: [path] });
+export async function readTextFile(path, options) {
+  state.calls.push({ name: "readTextFile", args: [path], options });
+  if (typeof state.readText === "function") return state.readText(path, options);
   return null;
 }
 
