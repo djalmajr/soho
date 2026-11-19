@@ -17,18 +17,13 @@ func panelLaneRows(ctx *Config, env platform.Env) []any {
 		return lanes
 	}
 	for _, name := range LaneNames(ctx, env) {
-		kind := LaneAttr(ctx, name, "kind", nil, env)
-		model := LaneAttr(ctx, name, "model", nil, env)
-		effort := LaneAttr(ctx, name, "effort", nil, env)
-		approvals := LaneAttr(ctx, name, "approvals", nil, env)
-		from := func(attr, value string) string {
-			if value == "" {
-				return "default"
-			}
-			return CfgSource(ctx, LaneKey(name, attr), env)
-		}
+		rolesCSV := SplitRoles(LaneRolesCSV(ctx, name, env))
+		kind, kindFrom := panelLaneAttr(ctx, name, "kind", nil, env)
+		model, modelFrom := panelLaneLayerAttr(ctx, name, "model", rolesCSV, env)
+		effort, effortFrom := panelLaneLayerAttr(ctx, name, "effort", rolesCSV, env)
+		approvals, _ := panelLaneAttr(ctx, name, "approvals", nil, env)
 		roles := []any{}
-		for _, role := range SplitRoles(LaneRolesCSV(ctx, name, env)) {
+		for _, role := range rolesCSV {
 			roles = append(roles, role)
 		}
 		lanes = append(lanes, jsonjs.O(
@@ -39,12 +34,48 @@ func panelLaneRows(ctx *Config, env platform.Env) []any {
 			"model", model,
 			"effort", effort,
 			"approvals", approvals,
-			"kind_from", from("kind", kind),
-			"model_from", from("model", model),
-			"effort_from", from("effort", effort),
+			"kind_from", kindFrom,
+			"model_from", modelFrom,
+			"effort_from", effortFrom,
 		))
 	}
 	return lanes
+}
+
+// panelLaneAttr is one lane-level attribute with the source the panel shows:
+// the value the lane sets, or ""/"default" when it sets none.
+func panelLaneAttr(ctx *Config, lane, attr string, kindLayer *int, env platform.Env) (any, string) {
+	value := LaneAttr(ctx, lane, attr, kindLayer, env)
+	if value == "" {
+		return "", "default"
+	}
+	return value, CfgSource(ctx, LaneKey(lane, attr), env)
+}
+
+// panelLaneLayerAttr projects a lane's model or effort exactly as the resolver
+// applies it to each member: LaneAttr filtered by that member's kind layer,
+// which is what spawn passes through ResolveRoleSettings (F11). A lane whose
+// members receive different values announces no single value: the field is
+// null with a "mixed" source, and each member's own value stays in its role
+// row.
+func panelLaneLayerAttr(ctx *Config, lane, attr string, roles []string, env platform.Env) (any, string) {
+	if len(roles) == 0 {
+		return panelLaneAttr(ctx, lane, attr, nil, env)
+	}
+	valueOf := func(role string) string {
+		kindLayer := SpawnKindLayer(ctx, role, lane, false, env)
+		return LaneAttr(ctx, lane, attr, &kindLayer, env)
+	}
+	first := valueOf(roles[0])
+	for _, role := range roles[1:] {
+		if valueOf(role) != first {
+			return nil, "mixed"
+		}
+	}
+	if first == "" {
+		return "", "default"
+	}
+	return first, CfgSource(ctx, LaneKey(lane, attr), env)
 }
 
 // panelUnassignedRoles lists, in roles order, the roles with no effective

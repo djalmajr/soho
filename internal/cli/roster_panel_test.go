@@ -6,12 +6,15 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
+	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
 
 func panelStateJSON(state string) string {
@@ -54,6 +57,7 @@ func panelFixtureWithWorkers(t *testing.T) *copiesFixture {
 		{Argv: []string{"agent", "get", "quota"}, Stdout: panelStateJSON("idle")},
 		{Argv: []string{"agent", "get", "gone"}, Stdout: panelStateJSON("gone")},
 		{Argv: []string{"agent", "read", "quota", "--source", "visible", "--lines", "20"}, Stdout: "hit your usage limit\n"},
+		{Argv: []string{"agent", "read", "work", "--source", "visible"}, Stdout: panelSteadyScreen},
 	})
 	row := func(name, pane, kind, role, model, effort string) string {
 		return strings.Join([]string{name, pane, kind, role, "xai", "0", "/tmp/work", "now", model, "ask", "", "build", "", "", effort}, "\t")
@@ -77,7 +81,55 @@ func panelFixtureWithWorkers(t *testing.T) *copiesFixture {
 	if err := os.WriteFile(filepath.Join(sd, "last-report-done"), []byte(filepath.Join(sd, "reports", "done-report.md")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Deterministic elapsed values (F13): the done task started 42 s before
+	// its report, and the working pane's last screen change was 17 s ago.
+	pointer := filepath.Join(sd, "last-report-done")
+	report := filepath.Join(sd, "reports", "done-report.md")
+	start := time.Unix(panelFixedUnix-panelTaskSeconds, 0)
+	if err := os.Chtimes(pointer, start, start); err != nil {
+		t.Fatal(err)
+	}
+	done := time.Unix(panelFixedUnix, 0)
+	if err := os.Chtimes(report, done, done); err != nil {
+		t.Fatal(err)
+	}
+	panelWriteActivityMarker(t, sd, "work", panelActivitySeconds)
 	return f
+}
+
+// panelFixedUnix is the pinned clock and the anchor of the deterministic
+// elapsed fixtures: every expected task_s/activity_s below is a literal.
+const (
+	panelFixedUnix       = int64(1_800_000_000)
+	panelTaskSeconds     = 42
+	panelActivitySeconds = 17
+	panelSteadyScreen    = "steady screen\n"
+)
+
+// panelWriteActivityMarker records the screen hash and the last-change time
+// the activity computation compares, for the pinned clock.
+func panelWriteActivityMarker(t *testing.T, sd, agent string, ageSeconds int64) {
+	t.Helper()
+	waitDir := filepath.Join(sd, "wait")
+	if err := os.MkdirAll(waitDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hash := strconv.FormatUint(uint64(waitpkg.CksumField(waitpkg.NormalizeScreen(panelSteadyScreen))), 10) + "\n"
+	if err := os.WriteFile(filepath.Join(waitDir, agent+".stuck-hash"), []byte(hash), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	at := strconv.FormatInt(panelFixedUnix-ageSeconds, 10) + "\n"
+	if err := os.WriteFile(filepath.Join(waitDir, agent+".activity-at"), []byte(at), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// panelPinClock pins platform.Now for one test and restores it afterwards.
+func panelPinClock(t *testing.T) {
+	t.Helper()
+	old := platform.Now
+	platform.Now = func() time.Time { return time.Unix(panelFixedUnix, 0) }
+	t.Cleanup(func() { platform.Now = old })
 }
 
 func panelAgentRow(t *testing.T, agents []any, name string) *jsonjs.Object {
@@ -97,6 +149,7 @@ func panelAgentRow(t *testing.T, agents []any, name string) *jsonjs.Object {
 
 func TestPanelRosterWorkersFieldsAndNoWrites(t *testing.T) {
 	f := panelFixtureWithWorkers(t)
+	panelPinClock(t)
 	before := panelTreeDigest(t, f.state)
 	env := f.env.Clone()
 	env["SOHO_NOWRITE"] = "1"
@@ -138,17 +191,20 @@ func TestPanelRosterWorkersFieldsAndNoWrites(t *testing.T) {
 				t.Fatalf("agents[%s].%s = %#v, want %q", name, key, got, value)
 			}
 		}
-		elapsed, _ := row.Get("task_s")
-		switch v := elapsed.(type) {
-		case nil, float64:
-		default:
-			t.Fatalf("agents[%s].task_s = %T, want integer or null", name, v)
+	}
+	// F13: literal elapsed values and the null controls, not any number.
+	for name, want := range map[string]struct{ taskS, activityS any }{
+		"work":  {nil, float64(panelActivitySeconds)},
+		"done":  {float64(panelTaskSeconds), nil},
+		"quota": {nil, nil},
+		"gone":  {nil, nil},
+	} {
+		row := panelAgentRow(t, agents, name)
+		if got, _ := row.Get("task_s"); got != want.taskS {
+			t.Fatalf("agents[%s].task_s = %#v, want %#v", name, got, want.taskS)
 		}
-		activity, _ := row.Get("activity_s")
-		switch v := activity.(type) {
-		case nil, float64:
-		default:
-			t.Fatalf("agents[%s].activity_s = %T, want integer or null", name, v)
+		if got, _ := row.Get("activity_s"); got != want.activityS {
+			t.Fatalf("agents[%s].activity_s = %#v, want %#v", name, got, want.activityS)
 		}
 	}
 	done := panelAgentRow(t, agents, "done")
@@ -158,8 +214,8 @@ func TestPanelRosterWorkersFieldsAndNoWrites(t *testing.T) {
 	if path, _ := done.Get("report_path"); path != filepath.Join(f.stateDir(t), "reports", "done-report.md") {
 		t.Fatalf("done report_path = %v", path)
 	}
-	if taskS, _ := done.Get("task_s"); taskS == nil {
-		t.Fatal("done task_s = null, the last-report pointer exists")
+	if taskS, _ := done.Get("task_s"); taskS != float64(panelTaskSeconds) {
+		t.Fatalf("done task_s = %#v, want the literal %d", taskS, panelTaskSeconds)
 	}
 	gone := panelAgentRow(t, agents, "gone")
 	if path, _ := gone.Get("report_path"); path != "" {
@@ -201,8 +257,13 @@ func TestPanelCapabilitiesHelpAndNowrite(t *testing.T) {
 		argv []string
 		want int
 	}{
+		{[]string{"config", "set", "lane.build.effort", "xhigh", "--dry-run"}, 0},
+		{[]string{"config", "set", "lane.build.effort=xhigh", "--dry-run"}, 0},
+		{[]string{"config", "set", "lane.build.effort=xhigh", "--dry-run", "--json"}, 0},
 		{[]string{"config", "set", "lane.build.effort", "xhigh", "--dry-run", "--json"}, 0},
 		{[]string{"config", "set", "lane.build.effort", "xhigh"}, 2},
+		{[]string{"config", "set", "lane.build.effort=xhigh"}, 2},
+		{[]string{"config", "set", "lane.build.effort=xhigh", "--json"}, 2},
 		{[]string{"config", "unset", "lane.build.effort"}, 2},
 	} {
 		env := f.env.Clone()
@@ -343,14 +404,25 @@ func TestPanelRosterEmptyAndLegacyRows(t *testing.T) {
 
 func TestPanelRosterReusedNameUsesItsOwnRow(t *testing.T) {
 	f := newCopiesFixture(t, []fakecli.Rule{
-		{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},
+		{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"reused","pane_id":"ws:live","agent":"pi","agent_status":"working"}]}}`},
 		{Argv: []string{"pane", "list", "--workspace", "ws"}, Stdout: `{"result":{"panes":[]}}`},
 		{Argv: []string{"tab", "list", "--workspace", "ws"}, Stdout: `{"result":{"tabs":[]}}`},
+		{Argv: []string{"agent", "get", "reused"}, Stdout: panelStateJSON("working")},
+		{Argv: []string{"agent", "read", "reused", "--source", "visible"}, Stdout: panelSteadyScreen},
 	})
-	row := func(model, effort string) string {
-		return strings.Join([]string{"reused", "", "pi", "implementer", "xai", "0", "/tmp/work", "now", model, "ask", "", "build", "", "", effort}, "\t")
+	row := func(pane, model, effort string) string {
+		return strings.Join([]string{"reused", pane, "pi", "implementer", "xai", "0", "/tmp/work", "now", model, "ask", "", "build", "", "", effort}, "	")
 	}
-	f.writeRoster(t, row("old-model", "low"), row("live-model", "max"))
+	f.writeRoster(t, row("ws:old", "old-model", "low"), row("ws:live", "live-model", "max"))
+	sd := f.stateDir(t)
+	pointer := filepath.Join(sd, "last-report-reused")
+	panelWrite(t, pointer, filepath.Join(sd, "reports", "reused-report.md")+"\n")
+	start := time.Unix(panelFixedUnix-120, 0)
+	if err := os.Chtimes(pointer, start, start); err != nil {
+		t.Fatal(err)
+	}
+	panelWriteActivityMarker(t, sd, "reused", panelActivitySeconds)
+	panelPinClock(t)
 	code, out, stderr := f.run(t, f.env, "roster", "--json")
 	if code != 0 || stderr != "" {
 		t.Fatalf("reused-name roster code=%d stderr=%q out=%q", code, stderr, out)
@@ -374,6 +446,69 @@ func TestPanelRosterReusedNameUsesItsOwnRow(t *testing.T) {
 	}
 	if effort, _ := second.Get("effort"); effort != "max" {
 		t.Fatalf("second row effort = %v, want max", effort)
+	}
+	// The stale pane keeps its own recorded state and never borrows the live
+	// pane's status or elapsed values (F10, literal values from F13).
+	for key, want := range map[string]any{"pane": "ws:old", "state": "gone", "status": "gone", "task_s": nil, "activity_s": nil} {
+		if got, _ := first.Get(key); got != want {
+			t.Fatalf("first row %s = %#v, want %#v", key, got, want)
+		}
+	}
+	if got, _ := second.Get("status"); got != "working" {
+		t.Fatalf("second row status = %#v, want working", got)
+	}
+	if got, _ := second.Get("task_s"); got != float64(120) {
+		t.Fatalf("second row task_s = %#v, want 120", got)
+	}
+	if got, _ := second.Get("activity_s"); got != float64(panelActivitySeconds) {
+		t.Fatalf("second row activity_s = %#v, want %d", got, panelActivitySeconds)
+	}
+}
+
+// TestPanelRosterPendingReportPublishesNoPath pins F9: the pending pointer
+// keeps its pending indicator but never publishes a path to a file that does
+// not exist, and publishes it once the report does.
+func TestPanelRosterPendingReportPublishesNoPath(t *testing.T) {
+	f := newCopiesFixture(t, []fakecli.Rule{
+		{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"tester","pane_id":"ws:p1","agent":"codex","agent_status":"idle"}]}}`},
+		{Argv: []string{"pane", "list", "--workspace", "ws"}, Stdout: `{"result":{"panes":[]}}`},
+		{Argv: []string{"tab", "list", "--workspace", "ws"}, Stdout: `{"result":{"tabs":[]}}`},
+		{Argv: []string{"agent", "get", "tester"}, Stdout: panelStateJSON("idle")},
+	})
+	row := strings.Join([]string{"tester", "ws:p1", "codex", "tester", "xai", "0", "/tmp/work", "now", "test-model", "ask", "", "build", "", "", "high"}, "\t")
+	f.writeRoster(t, row)
+	sd := f.stateDir(t)
+	pending := filepath.Join(sd, "reports", "pending.md")
+	panelWrite(t, filepath.Join(sd, "last-report-tester"), pending+"\n")
+	env := f.env.Clone()
+	env["SOHO_NOWRITE"] = "1"
+	for _, ready := range []bool{false, true} {
+		if ready {
+			panelWrite(t, pending, "report body\n")
+		}
+		code, out, stderr := f.run(t, env, "roster", "--json")
+		if code != 0 || stderr != "" {
+			t.Fatalf("pending=%v code=%d stderr=%q out=%q", !ready, code, stderr, out)
+		}
+		agents, _ := rosterJSONParse(t, out).Get("agents")
+		arr, _ := agents.([]any)
+		if len(arr) != 1 {
+			t.Fatalf("pending=%v agents = %#v", !ready, agents)
+		}
+		got := panelObj(t, arr[0], "tester row")
+		if ready {
+			for key, want := range map[string]any{"report": "ready", "status": "done", "report_path": pending} {
+				if value, _ := got.Get(key); value != want {
+					t.Fatalf("ready %s = %#v, want %#v", key, value, want)
+				}
+			}
+			continue
+		}
+		for key, want := range map[string]any{"report": "pending", "status": "no-report-yet", "report_path": ""} {
+			if value, _ := got.Get(key); value != want {
+				t.Fatalf("pending %s = %#v, want %#v", key, value, want)
+			}
+		}
 	}
 }
 

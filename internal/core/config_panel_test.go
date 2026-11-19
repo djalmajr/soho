@@ -1,10 +1,14 @@
 package core
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -82,6 +86,10 @@ func TestPanelConfigSetDryRunPrintsThePlanAndWritesNothing(t *testing.T) {
 		t.Fatalf("dry-run text = %q, want %q", text, want)
 	}
 
+	configBefore := map[string]string{
+		"project": panelFileDigestOrAbsent(t, file),
+		"user":    panelFileDigestOrAbsent(t, ConfigFileFor("user", env, repo)),
+	}
 	out, _ := capture(t, func() {
 		CmdConfigSet([]string{"role.reviewer.effort", "max", "--dry-run", "--json"}, &ctx, env, repo)
 	})
@@ -90,7 +98,7 @@ func TestPanelConfigSetDryRunPrintsThePlanAndWritesNothing(t *testing.T) {
 		t.Fatalf("dry-run JSON key order = %v", keys)
 	}
 	fields := map[string]any{"schema": float64(1), "key": "role.reviewer.effort", "value": "max", "scope": "project", "file": file,
-		"command": "soho config set role.reviewer.effort max --project", "valid": true}
+		"command": "soho config set role.reviewer.effort=max --project", "valid": true}
 	for key, wantValue := range fields {
 		if got, _ := obj.Get(key); got != wantValue {
 			t.Fatalf("dry-run JSON %s = %#v, want %#v", key, got, wantValue)
@@ -112,6 +120,13 @@ func TestPanelConfigSetDryRunPrintsThePlanAndWritesNothing(t *testing.T) {
 	if after := panelTree(t, filepath.Dir(filepath.Dir(file))); len(before) != len(after) {
 		t.Fatalf("dry-run --json changed the tree: before %v, after %v", before, after)
 	}
+	// F13: the JSON branch is compared as a full digest of the config files,
+	// not only as a file count, so an in-place rewrite cannot pass.
+	for name, path := range map[string]string{"project": file, "user": ConfigFileFor("user", env, repo)} {
+		if got := panelFileDigestOrAbsent(t, path); got != configBefore[name] {
+			t.Fatalf("dry-run --json changed the %s config: %s -> %s", name, configBefore[name], got)
+		}
+	}
 }
 
 func TestPanelConfigSetDryRunLaneAppliesToRolesAndUserScope(t *testing.T) {
@@ -129,7 +144,7 @@ func TestPanelConfigSetDryRunLaneAppliesToRolesAndUserScope(t *testing.T) {
 	if got, _ := obj.Get("file"); got != ConfigFileFor("user", env, repo) {
 		t.Fatalf("file = %v, want %v", got, ConfigFileFor("user", env, repo))
 	}
-	if command, _ := obj.Get("command"); command != "soho config set lane.build.effort xhigh --user" {
+	if command, _ := obj.Get("command"); command != "soho config set lane.build.effort=xhigh --user" {
 		t.Fatalf("command = %v", command)
 	}
 	if got := panelStringArray(t, objValue(obj, "applies_to_roles"), "applies_to_roles"); len(got) != 2 || got[0] != "designer" || got[1] != "tasker" {
@@ -320,4 +335,375 @@ func TestPanelConfigUnsetHostileKeysAndPrefixKey(t *testing.T) {
 			t.Fatalf("hostile value %q: dry=(%d,%q) set=(%d,%q)", value, dryCode, dryMessage, setCode, setMessage)
 		}
 	}
+}
+
+func TestPanelConfigScopeFlagIsRefusedInsteadOfLastWins(t *testing.T) {
+	env, repo := fixture(t)
+	ctx := LoadConfig(env, repo)
+	project := filepath.Join(repo, ".agents", "soho.conf")
+	user := ConfigFileFor("user", env, repo)
+	write(t, project, "role.tester.model=project-value\n")
+	write(t, user, "role.tester.model=user-value\n")
+	beforeProject, beforeUser := panelDigest(t, project), panelDigest(t, user)
+	const want = "config set: only one scope option (--project or --user) may be given"
+	for _, argv := range [][]string{
+		{"role.tester.model=changed", "--user", "--project"},
+		{"--project", "role.tester.model=changed", "--project"},
+		{"--user", "role.tester.model=changed", "--user"},
+	} {
+		code, message := panelExit(t, func() { CmdConfigSet(argv, &ctx, env, repo) })
+		if code != 2 || message != want {
+			t.Fatalf("set %v = (%d, %q), want exit 2 with the scope refusal", argv, code, message)
+		}
+	}
+	out, _ := capture(t, func() {
+		code, message := panelExit(t, func() {
+			CmdConfigSet([]string{"role.tester.model=changed", "--user", "--project", "--dry-run", "--json"}, &ctx, env, repo)
+		})
+		if code != 2 || message != want {
+			t.Fatalf("preview = (%d, %q)", code, message)
+		}
+	})
+	obj := panelParseObject(t, out)
+	if valid, _ := obj.Get("valid"); valid != false {
+		t.Fatalf("preview valid = %v, want false", valid)
+	}
+	if got, _ := obj.Get("error"); got != want {
+		t.Fatalf("preview error = %v, want %q", got, want)
+	}
+	for _, argv := range [][]string{
+		{"role.tester.model", "--user", "--project"},
+		{"role.tester.model", "--project", "--project"},
+	} {
+		code, message := panelExit(t, func() { CmdConfigUnset(argv, env, repo) })
+		if wantUnset := "config unset: only one scope option (--project or --user) may be given"; code != 2 || message != wantUnset {
+			t.Fatalf("unset %v = (%d, %q), want exit 2 with the scope refusal", argv, code, message)
+		}
+	}
+	if got := panelDigest(t, project); got != beforeProject {
+		t.Fatalf("the scope conflict rewrote the project config")
+	}
+	if got := panelDigest(t, user); got != beforeUser {
+		t.Fatalf("the scope conflict rewrote the user config")
+	}
+}
+
+func TestPanelConfigPreviewCommandReplaysThroughTheShell(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the replay shell is /bin/sh")
+	}
+	env, repo := fixture(t)
+	ctx := LoadConfig(env, repo)
+	project := filepath.Join(repo, ".agents", "soho.conf")
+	bin := t.TempDir()
+	script := filepath.Join(bin, "soho")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		value  string
+		quoted bool
+	}{
+		{"-x", true},
+		{"two words", true},
+		{"a$HOME", true},
+		{"--json", true},
+		{"plain.value:_1", false},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			write(t, project, "role.tester.model=sentinel\n")
+			out, _ := capture(t, func() {
+				CmdConfigSet([]string{"role.tester.model=" + tc.value, "--project", "--dry-run", "--json"}, &ctx, env, repo)
+			})
+			command, _ := panelParseObject(t, out).Get("command")
+			text, ok := command.(string)
+			if !ok {
+				t.Fatalf("command = %#v", command)
+			}
+			token := "role.tester.model=" + tc.value
+			if tc.quoted != strings.Contains(text, "'"+token+"'") {
+				t.Fatalf("command %q quoting for %q = %v, want %v", text, tc.value, !tc.quoted, tc.quoted)
+			}
+			cmd := exec.Command("/bin/sh", "-c", text)
+			cmd.Env = []string{"PATH=" + bin}
+			replayed, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("/bin/sh -c %q: %v", text, err)
+			}
+			args := strings.Split(strings.TrimSuffix(string(replayed), "\n"), "\n")
+			if len(args) != 4 || args[0] != "config" || args[1] != "set" || args[2] != token || args[3] != "--project" {
+				t.Fatalf("/bin/sh -c %q tokenized to %q, want one key=value token and --project", text, args)
+			}
+			_, _ = capture(t, func() { CmdConfigSet(args[2:], &ctx, env, repo) })
+			if got := FileKeyValue(project, "role.tester.model"); got != tc.value {
+				t.Fatalf("replayed value = %q, want %q", got, tc.value)
+			}
+		})
+	}
+}
+
+func TestPanelConfigPreviewPreservesEmptyAssignmentsAndTheListingProjection(t *testing.T) {
+	env, repo := fixture(t)
+	file := filepath.Join(repo, ".agents", "soho.conf")
+	write(t, file, "role.tester.model=\nlane.build.roles=tester\n")
+	ctx := LoadConfig(env, repo)
+	out, _ := capture(t, func() {
+		CmdConfigSet([]string{"role.tester.model=preview", "--project", "--dry-run", "--json"}, &ctx, env, repo)
+	})
+	prev := panelObjectField(t, objValue(panelParseObject(t, out), "previous"), "previous")
+	if got, ok := prev.Get("in_file"); !ok || got != "" {
+		t.Fatalf("present empty in_file = %#v (present=%v), want \"\"", got, ok)
+	}
+	out, _ = capture(t, func() {
+		CmdConfigSet([]string{"role.tester.effort=high", "--project", "--dry-run", "--json"}, &ctx, env, repo)
+	})
+	prev = panelObjectField(t, objValue(panelParseObject(t, out), "previous"), "previous")
+	if got, _ := prev.Get("in_file"); got != nil {
+		t.Fatalf("absent in_file = %#v, want null", got)
+	}
+
+	listing, _ := capture(t, func() { CmdConfig(&ctx, env, repo) })
+	wantValue, wantSource := "", ""
+	for _, line := range strings.Split(listing, "\n") {
+		if fields := strings.Fields(line); len(fields) == 3 && fields[0] == "max_workers" {
+			wantValue, wantSource = fields[1], fields[2]
+		}
+	}
+	if wantValue == "" || wantSource != "lanes" {
+		t.Fatalf("listing max_workers row = (%q, %q), want the lane-derived value", wantValue, wantSource)
+	}
+	out, _ = capture(t, func() {
+		CmdConfigSet([]string{"max_workers=3", "--project", "--dry-run", "--json"}, &ctx, env, repo)
+	})
+	prev = panelObjectField(t, objValue(panelParseObject(t, out), "previous"), "previous")
+	if got, _ := prev.Get("effective"); got != wantValue {
+		t.Fatalf("previous.effective = %#v, want the listing's %q", got, wantValue)
+	}
+	if got, _ := prev.Get("effective_source"); got != wantSource {
+		t.Fatalf("previous.effective_source = %#v, want the listing's %q", got, wantSource)
+	}
+}
+
+func TestPanelConfigUnsetKeepsEveryNonTargetByte(t *testing.T) {
+	env, repo := fixture(t)
+	file := filepath.Join(repo, ".agents", "soho.conf")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct{ name, before, after string }{
+		{"crlf and an unterminated last line", "# comment\r\nrole.tester.model=drop\r\n\r\nrole.tester.effort=high", "# comment\r\n\r\nrole.tester.effort=high"},
+		{"a later crlf target", "panes=4\r\nrole.tester.model=drop\r\n# tail\r\n", "panes=4\r\n# tail\r\n"},
+		{"lone lf endings", "# c\nrole.tester.model=drop\nrole.tester.effort=high\n", "# c\nrole.tester.effort=high\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(file, []byte(tc.before), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = capture(t, func() { CmdConfigUnset([]string{"role.tester.model", "--project"}, env, repo) })
+			got, err := os.ReadFile(file)
+			if err != nil || !bytes.Equal(got, []byte(tc.after)) {
+				t.Fatalf("unset bytes = %q err=%v, want %q", got, err, tc.after)
+			}
+		})
+	}
+}
+
+func TestPanelConfigSetAndUnsetSerializeOnTheDestination(t *testing.T) {
+	env, repo := fixture(t)
+	ctx := LoadConfig(env, repo)
+	file := filepath.Join(repo, ".agents", "soho.conf")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pad := strings.Repeat("# retained padding line for the read-modify-write window\n", 60000)
+	oldOut := platform.Stdout
+	platform.Stdout = io.Discard
+	t.Cleanup(func() { platform.Stdout = oldOut })
+	run := func(fn func()) (code int, message string) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				exit, ok := recovered.(*platform.ExitError)
+				if !ok {
+					panic(recovered)
+				}
+				code, message = exit.Code, exit.Msg
+			}
+		}()
+		fn()
+		return 0, ""
+	}
+	for round := 0; round < 16; round++ {
+		setKey, setValue, goneKey := "role.tester.model", "", "role.tester.effort"
+		if round%2 == 1 {
+			setKey, goneKey = "role.tester.effort", "role.tester.model"
+		}
+		setValue = "round-" + string(rune('a'+round))
+		if setKey == "role.tester.effort" {
+			setValue = "high"
+			if round%4 == 3 {
+				setValue = "low"
+			}
+		}
+		if err := os.WriteFile(file, []byte("role.tester.model=old\nrole.tester.effort=old\n"+pad), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		setArgs, unsetArgs := []string{setKey + "=" + setValue, "--project"}, []string{goneKey, "--project"}
+		start := make(chan struct{})
+		results := make(chan [2]any, 2)
+		go func() {
+			<-start
+			code, message := run(func() { CmdConfigSet(setArgs, &ctx, env, repo) })
+			results <- [2]any{code, message}
+		}()
+		go func() {
+			<-start
+			code, message := run(func() { CmdConfigUnset(unsetArgs, env, repo) })
+			results <- [2]any{code, message}
+		}()
+		close(start)
+		for i := 0; i < 2; i++ {
+			if result := <-results; result[0] != 0 {
+				t.Fatalf("round %d: %v failed: (%v, %v)", round, []any{setArgs, unsetArgs}, result[0], result[1])
+			}
+		}
+		pairs, err := ReadConfigFilePairs(file)
+		if err != nil {
+			t.Fatalf("round %d: read back: %v", round, err)
+		}
+		got := map[string]string{}
+		for _, pair := range pairs {
+			got[pair.Key] = pair.Value
+		}
+		if got[NormalizeKey(setKey)] != setValue {
+			t.Fatalf("round %d: the set was lost: %v = %q", round, setKey, got[NormalizeKey(setKey)])
+		}
+		if _, present := got[NormalizeKey(goneKey)]; present {
+			t.Fatalf("round %d: the unset was lost: %s is still assigned", round, goneKey)
+		}
+	}
+}
+
+func TestPanelConfigUnsetRefusesTheProjectDestinationInsideTheSkill(t *testing.T) {
+	env, repo := fixture(t)
+	skill := filepath.Join(repo, "scratch-skill")
+	if err := os.MkdirAll(filepath.Join(skill, ".agents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "init", "-q")
+	cmd.Dir = skill
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %s: %v", out, err)
+	}
+	file := filepath.Join(skill, ".agents", "soho.conf")
+	write(t, file, "role.tester.model=fixture\n")
+	envSkill := env.Clone()
+	envSkill["SOHO_SKILL_DIR"] = skill
+	code, message := panelExit(t, func() { CmdConfigUnset([]string{"role.tester.model", "--project"}, envSkill, skill) })
+	if code != 2 || !strings.HasPrefix(message, "config unset: the state dir") || !strings.Contains(message, "(nothing was written)") {
+		t.Fatalf("project unset inside the skill = (%d, %q)", code, message)
+	}
+	if got, _ := os.ReadFile(file); string(got) != "role.tester.model=fixture\n" {
+		t.Fatalf("project unset inside the skill wrote the file: %q", got)
+	}
+	// The user destination stays valid from inside the skill.
+	userFile := ConfigFileFor("user", envSkill, skill)
+	write(t, userFile, "role.tester.model=user-fixture\n")
+	out, _ := capture(t, func() { CmdConfigUnset([]string{"role.tester.model", "--user"}, envSkill, skill) })
+	if want := "unset role.tester.model in " + userFile + "\n"; out != want {
+		t.Fatalf("user unset inside the skill = %q, want %q", out, want)
+	}
+}
+
+func TestPanelConfigUnsetReportsReadFailures(t *testing.T) {
+	env, repo := fixture(t)
+	userFile := ConfigFileFor("user", env, repo)
+	if _, err := os.Stat(userFile); !os.IsNotExist(err) {
+		t.Fatalf("the fixture's user config should be absent")
+	}
+	out, _ := capture(t, func() {
+		if code, message := panelExit(t, func() { CmdConfigUnset([]string{"role.tester.model", "--user"}, env, repo) }); code != 0 {
+			t.Fatalf("missing file = (%d, %q)", code, message)
+		}
+	})
+	if want := "not set in " + userFile + "\n"; out != want {
+		t.Fatalf("missing file output = %q, want %q", out, want)
+	}
+
+	if err := os.MkdirAll(userFile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	code, message := panelExit(t, func() { CmdConfigUnset([]string{"role.tester.model", "--user"}, env, repo) })
+	if code != 4 || !strings.Contains(message, userFile) || !strings.Contains(message, "(file left untouched)") {
+		t.Fatalf("directory destination = (%d, %q), want exit 4 (file left untouched)", code, message)
+	}
+	if err := os.Remove(userFile); err != nil {
+		t.Fatal(err)
+	}
+
+	write(t, userFile, "role.tester.model=kept\n")
+	if err := os.Chmod(userFile, 0o000); err != nil {
+		t.Skipf("cannot make %s unreadable: %v", userFile, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(userFile, 0o600) })
+	if _, err := os.ReadFile(userFile); err == nil {
+		t.Skip("the process can still read a 0000 file (root?), so the permission case cannot fire")
+	}
+	code, message = panelExit(t, func() { CmdConfigUnset([]string{"role.tester.model", "--user"}, env, repo) })
+	if code != 4 || !strings.Contains(message, "(file left untouched)") {
+		t.Fatalf("unreadable destination = (%d, %q), want exit 4 (file left untouched)", code, message)
+	}
+}
+
+func TestPanelConfigSetReservedTokensKeepTheBaseGrammar(t *testing.T) {
+	env, repo := fixture(t)
+	ctx := LoadConfig(env, repo)
+	file := filepath.Join(repo, ".agents", "soho.conf")
+	write(t, file, "role.tester.model=sentinel\n")
+	// One token after the key is the value, even when it is a preview flag.
+	out, _ := capture(t, func() { CmdConfigSet([]string{"role.tester.model", "--dry-run"}, &ctx, env, repo) })
+	if want := "set role.tester.model=--dry-run in " + file + "\n"; out != want {
+		t.Fatalf("lone --dry-run token = %q, want a real set (%q)", out, want)
+	}
+	if got := FileKeyValue(file, "role.tester.model"); got != "--dry-run" {
+		t.Fatalf("saved value = %q, want --dry-run", got)
+	}
+	// The inline assignment is the explicit preview escape for a reserved value.
+	out, _ = capture(t, func() {
+		CmdConfigSet([]string{"role.tester.model=--dry-run", "--dry-run", "--json"}, &ctx, env, repo)
+	})
+	preview := panelParseObject(t, out)
+	if value, _ := preview.Get("value"); value != "--dry-run" {
+		t.Fatalf("inline preview value = %v", value)
+	}
+	if got := FileKeyValue(file, "role.tester.model"); got != "--dry-run" {
+		t.Fatalf("the inline preview wrote the file: %q", got)
+	}
+	// --json without --dry-run stays an unknown option: exit 2, stderr only.
+	write(t, file, "panes=4\n")
+	out, _ = capture(t, func() {
+		code, message := panelExit(t, func() { CmdConfigSet([]string{"panes", "5", "--json"}, &ctx, env, repo) })
+		if code != 2 || message != "config set: unknown option '--json'" {
+			t.Fatalf("set --json without --dry-run = (%d, %q)", code, message)
+		}
+	})
+	if out != "" {
+		t.Fatalf("set --json without --dry-run printed %q on stdout, want nothing", out)
+	}
+	if got, _ := os.ReadFile(file); string(got) != "panes=4\n" {
+		t.Fatalf("the rejected set wrote the file: %q", got)
+	}
+}
+
+func panelFileDigestOrAbsent(t *testing.T, file string) string {
+	t.Helper()
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "absent"
+		}
+		t.Fatalf("read %s: %v", file, err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }

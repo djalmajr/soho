@@ -234,3 +234,61 @@ func TestPanelTeamEmptyConfigAndLaneWithNoRoles(t *testing.T) {
 		t.Fatalf("lanes[0].roles = %s, want []", jsonjs.Stringify(roles))
 	}
 }
+
+func TestPanelTeamLaneSettingsUseTheResolversKindLayer(t *testing.T) {
+	env, repo := fixture(t)
+	write(t, ConfigFileFor("user", env, repo), "lane.build.model=user-model\nlane.build.effort=high\n")
+	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lanes=on\nlane.build.roles=tester\nrole.tester.kind=codex\nrole.tester.model=project-choice\nrole.tester.effort=low\n")
+	ctx := LoadConfig(env, repo)
+	out, _ := capture(t, func() { CmdRolesPanelJSON(&ctx, env, repo, true) })
+	obj := panelParseObject(t, out)
+	lanes, ok := objValue(obj, "lanes").([]any)
+	if !ok || len(lanes) != 1 {
+		t.Fatalf("lanes = %#v, want the one build lane", objValue(obj, "lanes"))
+	}
+	lane := panelObjectField(t, lanes[0], "lanes[0]")
+	// The project role kind outranks the user-layer lane model/effort: the
+	// lane announces no override its only member would not receive.
+	for key, want := range map[string]any{"model": "", "model_from": "default", "effort": "", "effort_from": "default"} {
+		if got, _ := lane.Get(key); got != want {
+			t.Fatalf("lanes[0].%s = %#v, want %#v", key, got, want)
+		}
+	}
+	// The member's own resolution keeps its project values.
+	roles, _ := objValue(obj, "roles").([]any)
+	var tester *jsonjs.Object
+	for _, value := range roles {
+		row := panelObjectField(t, value, "role row")
+		if role, _ := row.Get("role"); role == "tester" {
+			tester = row
+		}
+	}
+	if tester == nil {
+		t.Fatal("no tester role row")
+	}
+	for key, want := range map[string]any{"model": "project-choice", "effort": "low"} {
+		if got, _ := tester.Get(key); got != want {
+			t.Fatalf("tester.%s = %#v, want %#v", key, got, want)
+		}
+	}
+
+	// Members with different kind layers receive different lane values: the
+	// lane field is null and its source "mixed", never one member's value.
+	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lanes=on\nlane.build.roles=tester,designer\nrole.tester.kind=codex\nrole.tester.model=project-choice\nrole.tester.effort=low\n")
+	ctx = LoadConfig(env, repo)
+	out, _ = capture(t, func() { CmdRolesPanelJSON(&ctx, env, repo, true) })
+	lanes, _ = objValue(panelParseObject(t, out), "lanes").([]any)
+	lane = panelObjectField(t, lanes[0], "lanes[0]")
+	if got, _ := lane.Get("model"); got != nil {
+		t.Fatalf("mixed lane model = %#v, want null", got)
+	}
+	if got, _ := lane.Get("model_from"); got != "mixed" {
+		t.Fatalf("mixed lane model_from = %#v, want mixed", got)
+	}
+	if got, _ := lane.Get("effort"); got != nil {
+		t.Fatalf("mixed lane effort = %#v, want null", got)
+	}
+	if got, _ := lane.Get("effort_from"); got != "mixed" {
+		t.Fatalf("mixed lane effort_from = %#v, want mixed", got)
+	}
+}

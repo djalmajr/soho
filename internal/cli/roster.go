@@ -260,15 +260,27 @@ func cmdRoster(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 					report = "ready"
 				} else {
 					report = "pending"
+					if err != nil {
+						// The pointer names a file that does not exist yet: the
+						// pending indicator stays, the published path does not
+						// (F9), so a panel never offers to open a missing file.
+						reportPath = ""
+					}
 				}
 			}
 			// The panel's per-worker status and elapsed fields come from the
-			// read-only inspection of this roster row's own name. CmdStatus's
-			// mirror, marker and friction writes are never reached.
-			view := waitpkg.InspectAgentPanelStatus(waitpkg.AgentStatusRequest{
+			// read-only inspection of this roster row's own pane (F10): a row
+			// whose pane is not the live one for that name keeps its own
+			// recorded state and null elapsed values. CmdStatus's mirror,
+			// marker and friction writes are never reached.
+			livePane := ""
+			if agent != nil {
+				livePane = valueString(field(agent, "pane_id"), "")
+			}
+			view := waitpkg.InspectRosterRowPanelStatus(waitpkg.AgentStatusRequest{
 				StateDir: sd, SessionID: ws, Agent: name, Cwd: cwdCol,
 				Config: ctx, Env: env, Services: svc,
-			})
+			}, pane, livePane)
 			previousRole := ""
 			if history := col(10); history != "" && history != role {
 				previousRole = history

@@ -243,6 +243,20 @@ func InspectAgentPanelStatus(request AgentStatusRequest) AgentPanelStatus {
 	return AgentPanelStatus{State: res.state, TaskS: res.taskS, ActivityS: res.activityS}
 }
 
+// InspectRosterRowPanelStatus is the roster's row-scoped panel helper: it
+// resolves the live pane's status and elapsed values only when the row's own
+// recorded pane is the one the transport currently reports for that name. A
+// stale row that shares its name with a live pane keeps its own recorded
+// state (gone) and null elapsed values, and the name lookup never selects
+// another row's pane (F10). pane is the row's own pane; livePane is the pane
+// the caller matched for this name, "" when no live agent carries it.
+func InspectRosterRowPanelStatus(request AgentStatusRequest, pane, livePane string) AgentPanelStatus {
+	if pane != "" && pane != livePane {
+		return AgentPanelStatus{State: "gone"}
+	}
+	return InspectAgentPanelStatus(request)
+}
+
 // agentStatusRequest is the per-agent input to the shared status
 // resolution. session and workspaceEnv are lazy: session is consulted
 // only when the scratch-mirror check needs it and workspaceEnv only when

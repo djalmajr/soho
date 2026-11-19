@@ -707,46 +707,15 @@ func nowriteReadInvocation(args []string) bool {
 	return false
 }
 
-// nowriteConfigSetDryRun is the exact read-only shape of config set: a key,
-// a value, one --dry-run and the preview's optional --json/scope flags. A
-// real set, an unset and any other flag stay behind the write gate.
+// nowriteConfigSetDryRun admits exactly the shape the command itself calls a
+// preview, through the command's own argument classifier: every preview form
+// (set k v --dry-run, set k=v --dry-run, either with --json) runs, and every
+// writing form stays behind the gate (F4).
 func nowriteConfigSetDryRun(argv []string) bool {
-	if len(argv) < 4 || argv[0] != "set" {
+	if len(argv) == 0 || argv[0] != "set" {
 		return false
 	}
-	dry, jsonMode, scoped, keySeen, valueSeen := false, false, false, false, false
-	for _, arg := range argv[1:] {
-		switch {
-		case arg == "--dry-run":
-			if dry {
-				return false
-			}
-			dry = true
-		case arg == "--json":
-			if jsonMode {
-				return false
-			}
-			jsonMode = true
-		case arg == "--project" || arg == "--user":
-			if scoped {
-				return false
-			}
-			scoped = true
-		case strings.HasPrefix(arg, "-"):
-			return false
-		case !keySeen:
-			if eq := strings.IndexByte(arg, '='); eq > 0 {
-				keySeen, valueSeen = true, eq+1 < len(arg)
-			} else {
-				keySeen = true
-			}
-		case !valueSeen:
-			valueSeen = true
-		default:
-			return false
-		}
-	}
-	return dry && keySeen && valueSeen
+	return core.ConfigSetPreviewShape(argv[1:])
 }
 
 // nowriteFlagOnly accepts a flag-only invocation: every token is one of the
