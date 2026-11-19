@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -108,11 +109,15 @@ func hostGitDir(t *testing.T) string {
 
 // inventoryFixture builds the hermetic collector environment: a pinned
 // HOME/USERPROFILE/XDG_CONFIG_HOME/TMPDIR and a PATH that a test extends
-// with its fake CLI and the host git. It returns the environment, the
-// fixture root and the hermetic home.
+// with its fake CLI and the host git. TMPDIR is its own scratch tree, not
+// the fixture whose files the read-only assertions snapshot: every CLI the
+// collector launches receives that TMPDIR, and a helper's temporary output
+// there must never appear as a change to the asserted tree. It returns the
+// environment, the fixture root and the hermetic home.
 func inventoryFixture(t *testing.T) (platform.Env, string, string) {
 	t.Helper()
 	fixture := t.TempDir()
+	scratch := t.TempDir()
 	home := gitFixtureHome(t)
 	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
 		t.Fatal(err)
@@ -121,7 +126,7 @@ func inventoryFixture(t *testing.T) (platform.Env, string, string) {
 		"HOME":            home,
 		"USERPROFILE":     home,
 		"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
-		"TMPDIR":          fixture,
+		"TMPDIR":          scratch,
 	}
 	return env, fixture, home
 }
@@ -1206,13 +1211,10 @@ func TestInventoryCollectNowriteReadonly(t *testing.T) {
 		t.Fatalf("NOWRITE document = %+v, want the read-only collection to still work", doc)
 	}
 	after := treeFiles(t, fixture)
-	if len(before) != len(after) {
-		t.Fatalf("the collection created or removed files: %d -> %d", len(before), len(after))
-	}
-	for path, content := range before {
-		if after[path] != content {
-			t.Fatalf("the file %s was missing or changed", path)
-		}
+	removed, added, changed := treeDiff(before, after)
+	if len(removed)+len(added)+len(changed) != 0 {
+		t.Fatalf("the collection created or removed files: %d -> %d; removed=%q added=%q changed=%q",
+			len(before), len(after), removed, added, changed)
 	}
 }
 
@@ -1300,13 +1302,10 @@ func TestInventoryCollectConflictingPhysicalIdentity(t *testing.T) {
 				}
 			}
 			after := treeFiles(t, fixture)
-			if len(before) != len(after) {
-				t.Fatalf("%s: the fixture tree changed: %d -> %d files", shape.name, len(before), len(after))
-			}
-			for path, content := range before {
-				if after[path] != content {
-					t.Fatalf("%s: the file %s was missing or changed", shape.name, path)
-				}
+			removed, added, changed := treeDiff(before, after)
+			if len(removed)+len(added)+len(changed) != 0 {
+				t.Fatalf("%s: the fixture tree changed: %d -> %d files; removed=%q added=%q changed=%q",
+					shape.name, len(before), len(after), removed, added, changed)
 			}
 		})
 	}
@@ -1601,28 +1600,68 @@ func TestInventoryCollectPrefixStopsAcrossProjects(t *testing.T) {
 	})
 }
 
-// treeFiles maps every file under root to its content hash.
+// treeFiles maps every file under root to its content hash. A file that
+// cannot be inspected or read is a test failure naming that file: silently
+// dropping it would look exactly like a product write that removed it.
 func treeFiles(t *testing.T, root string) map[string]string {
 	t.Helper()
 	files := map[string]string{}
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil
+			return fmt.Errorf("inspect %s: %w", path, err)
 		}
 		if !info.Mode().IsRegular() {
 			return nil
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil
+			return fmt.Errorf("read %s: %w", path, err)
 		}
 		files[filepath.ToSlash(strings.TrimPrefix(path, root))] = fmt.Sprintf("%x", fnv(data))
 		return nil
 	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("snapshot %s: %v", root, err)
 	}
 	return files
+}
+
+// TestInventoryFixtureScratchOutsideReadOnlyTree: the scratch TMPDIR the
+// fixture env hands to every CLI is outside the tree the read-only tests
+// snapshot. A temporary file written there changes no fixture file, and a
+// helper that removes it cannot trigger a false read-only failure.
+func TestInventoryFixtureScratchOutsideReadOnlyTree(t *testing.T) {
+	env, fixture, _ := inventoryFixture(t)
+	scratch := env["TMPDIR"]
+	if scratch == "" || scratch == fixture || strings.HasPrefix(scratch, fixture+string(os.PathSeparator)) {
+		t.Fatalf("TMPDIR = %q, want a scratch directory outside the fixture %q", scratch, fixture)
+	}
+	writeFile(t, filepath.Join(scratch, ".soho-out-probe"), "scratch\n")
+	if files := treeFiles(t, fixture); len(files) != 0 {
+		t.Fatalf("fixture tree = %v, want no files after writing only to scratch", files)
+	}
+}
+
+// treeDiff names the exact paths that a snapshot lost, gained or changed.
+func treeDiff(before, after map[string]string) (removed, added, changed []string) {
+	for path, content := range before {
+		got, ok := after[path]
+		switch {
+		case !ok:
+			removed = append(removed, path)
+		case got != content:
+			changed = append(changed, path)
+		}
+	}
+	for path := range after {
+		if _, ok := before[path]; !ok {
+			added = append(added, path)
+		}
+	}
+	sort.Strings(removed)
+	sort.Strings(added)
+	sort.Strings(changed)
+	return removed, added, changed
 }
 
 // fnv is a small content hash for the tree comparison (no crypto needed).
