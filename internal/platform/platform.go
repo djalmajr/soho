@@ -767,6 +767,14 @@ func resolveWriteTarget(dest string) (string, error) {
 	return "", fmt.Errorf("ELOOP: %w", syscall.ELOOP)
 }
 
+// WriteTarget returns the path AtomicWrite resolves a destination to: the
+// symlinks leading to it are followed (a dangling chain resolves to its
+// final target), so two names for one file share one target. A caller that
+// must hold one lock per file resolves once and locks the result.
+func WriteTarget(dest string) (string, error) {
+	return resolveWriteTarget(dest)
+}
+
 func AtomicWrite(dest, content string) error {
 	target, err := resolveWriteTarget(dest)
 	if err != nil {

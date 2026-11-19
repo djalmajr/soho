@@ -193,6 +193,16 @@ type AgentStatusView struct {
 	ReportReady   bool
 }
 
+// AgentPanelStatus is the panel's read-only projection of one agent: the
+// raw status word plus the elapsed values the resolver already computed.
+// It is a separate type so InspectAgentStatus's compared view stays exactly
+// the three fields its callers and parity tests already use.
+type AgentPanelStatus struct {
+	State     string
+	TaskS     any // nil when the resolver had no task elapsed
+	ActivityS any // nil when the resolver had no activity elapsed
+}
+
 // InspectAgentStatus resolves one agent's status through the exact
 // resolver CmdStatus renders, without printing or writing anything: no
 // stdout or stderr, no friction line, no report mirror, no marker or
@@ -202,7 +212,14 @@ type AgentStatusView struct {
 // scratch-report mirror observation and the collaboration workspace
 // context; no caller, current-pane or session discovery call runs, and
 // the caller's Env is never mutated.
-func InspectAgentStatus(request AgentStatusRequest) AgentStatusView {
+func inspectAgentStatus(request AgentStatusRequest) agentStatusResult {
+	return inspectAgentStatusRow(request, "")
+}
+
+// inspectAgentStatusRow is inspectAgentStatus with the caller's exact roster
+// row pane: the row-scoped entry point resolves the row it was given, never the
+// last row that happens to share the name (F3).
+func inspectAgentStatusRow(request AgentStatusRequest, rosterPane string) agentStatusResult {
 	res, _ := resolveAgentStatus(agentStatusRequest{
 		stateDir:       request.StateDir,
 		session:        func() string { return request.SessionID },
@@ -215,8 +232,40 @@ func InspectAgentStatus(request AgentStatusRequest) AgentStatusView {
 		listScope:      transport.Scope{All: true},
 		inspect:        true,
 		source:         request.Source,
+		rosterPane:     rosterPane,
 	}, 0)
+	return res
+}
+
+func InspectAgentStatus(request AgentStatusRequest) AgentStatusView {
+	res := inspectAgentStatus(request)
 	return AgentStatusView{State: res.state, TerminalState: res.terminal, ReportReady: res.reportReady}
+}
+
+// InspectAgentPanelStatus is the read-only elapsed helper for roster --json:
+// it runs the same silent resolver as InspectAgentStatus and returns only the
+// raw status word and the elapsed values, with no mirror, marker or friction
+// line and no change to InspectAgentStatus's view contract.
+func InspectAgentPanelStatus(request AgentStatusRequest) AgentPanelStatus {
+	res := inspectAgentStatus(request)
+	return AgentPanelStatus{State: res.state, TaskS: res.taskS, ActivityS: res.activityS}
+}
+
+// InspectRosterRowPanelStatus is the roster's row-scoped panel helper: it
+// resolves the live pane's status and elapsed values only when the row's own
+// recorded pane is the one the transport currently reports for that name. A
+// stale row that shares its name with a live pane keeps its own recorded
+// state (gone) and null elapsed values, and the name lookup never selects
+// another row's pane (F10). pane is the row's own pane; livePane is the pane
+// the caller matched for this name, "" when no live agent carries it. The row
+// the caller selected is the row the resolution uses, whatever order the
+// roster stores its rows in (F3).
+func InspectRosterRowPanelStatus(request AgentStatusRequest, pane, livePane string) AgentPanelStatus {
+	if pane != "" && pane != livePane {
+		return AgentPanelStatus{State: "gone"}
+	}
+	res := inspectAgentStatusRow(request, pane)
+	return AgentPanelStatus{State: res.state, TaskS: res.taskS, ActivityS: res.activityS}
 }
 
 // agentStatusRequest is the per-agent input to the shared status
@@ -248,6 +297,9 @@ type agentStatusRequest struct {
 	listScope      transport.Scope
 	inspect        bool
 	source         *core.SessionSource
+	// rosterPane is the exact row pane the caller selected ("" for the
+	// existing last-row-by-name lookup).
+	rosterPane string
 }
 
 // agentStatusResult is the shared per-agent resolution: the effective
@@ -262,6 +314,8 @@ type agentStatusResult struct {
 	terminal          string // the underlying probe's state word ("" when none)
 	report            string // the observed report path
 	reportReady       bool   // a nonempty current report was observed
+	taskS             any    // reported task elapsed, nil when unknown
+	activityS         any    // reported activity elapsed, nil when unknown
 	line              string // the exact line the status command prints
 	compactUnreadable bool
 	compactPath       string
@@ -580,6 +634,7 @@ func resolveAgentStatus(req agentStatusRequest, rc int) (agentStatusResult, int)
 			cause += "; " + idle
 		}
 	}
+	res.taskS, res.activityS = taskS, activityS
 	ageFields := []any{}
 	if idleMinutes > 0 {
 		ageFields = append(ageFields, "idle_minutes", idleMinutes)
@@ -656,6 +711,17 @@ func markerExists(sd, agent, name string) bool {
 func rosterRow(req agentStatusRequest, agent string) (core.RosterRow, bool) {
 	if req.source != nil {
 		return req.source.Roster().Row(agent)
+	}
+	if req.rosterPane != "" {
+		// The caller named the row: the same name in another pane is a
+		// different worker, so only this exact row counts (F3).
+		for _, line := range core.RosterRows(req.stateDir) {
+			fields := strings.Split(line, "\t")
+			if field(fields, 0) == agent && field(fields, 1) == req.rosterPane {
+				return core.RosterRow{Fields: fields}, true
+			}
+		}
+		return core.RosterRow{}, false
 	}
 	line := core.RosterLine(req.stateDir, agent)
 	if line == "" {

@@ -17,6 +17,7 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 	herdrtext "github.com/djalmajr/soho/internal/text"
 	"github.com/djalmajr/soho/internal/transport"
+	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
 
 func valueString(v any, fallback string) string {
@@ -61,6 +62,22 @@ func tabLabelString(label any) string {
 		return cutUTF16(text, 16)
 	}
 	return cutUTF16(jsonjs.Stringify(label), 16)
+}
+
+// panelElapsed turns the read-only status inspection's elapsed values into
+// the roster's integer-or-null wire shape. The status resolver reports a
+// rounded float64 (or nil); no other type is invented here.
+func panelElapsed(value any) any {
+	switch n := value.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	default:
+		return nil
+	}
 }
 
 // windowObjects re-projects a window listing back into the raw JSON objects
@@ -236,14 +253,41 @@ func cmdRoster(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 				}
 			}
 			state := valueString(field(agent, "agent_status"), "gone")
+			reportPath := core.LastReport(sd, name)
 			report := "none"
-			if reportPath := core.LastReport(sd, name); reportPath != "" {
+			if reportPath != "" {
 				if st, err := os.Stat(reportPath); err == nil && st.Size() > 0 {
 					report = "ready"
+					if !st.Mode().IsRegular() {
+						// The legacy indicator keeps its size rule; the panel's path
+						// is published only for a regular file, so a directory
+						// never looks like a report a panel could open (F5).
+						reportPath = ""
+					}
 				} else {
 					report = "pending"
+					if err != nil || !st.Mode().IsRegular() {
+						// The pointer names a file that does not exist yet (or is not
+						// a regular file): the pending indicator stays, the published
+						// path does not (F9), so a panel never offers to open a
+						// missing file.
+						reportPath = ""
+					}
 				}
 			}
+			// The panel's per-worker status and elapsed fields come from the
+			// read-only inspection of this roster row's own pane (F10): a row
+			// whose pane is not the live one for that name keeps its own
+			// recorded state and null elapsed values. CmdStatus's mirror,
+			// marker and friction writes are never reached.
+			livePane := ""
+			if agent != nil {
+				livePane = valueString(field(agent, "pane_id"), "")
+			}
+			view := waitpkg.InspectRosterRowPanelStatus(waitpkg.AgentStatusRequest{
+				StateDir: sd, SessionID: ws, Agent: name, Cwd: cwdCol,
+				Config: ctx, Env: env, Services: svc,
+			}, pane, livePane)
 			previousRole := ""
 			if history := col(10); history != "" && history != role {
 				previousRole = history
@@ -257,7 +301,18 @@ func cmdRoster(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 				}
 			}
 			tab, _ := tabValue(pane)
-			agents = append(agents, jsonjs.O("name", name, "role", role, "previous_role", previousRole, "kind", kind, "pane", pane, "tab", tab, "state", state, "report", report, "cwd", cwdCol, "task", task))
+			// No publishable report file is JSON null, never an empty string, so
+			// a consumer's null check covers a missing, pending or directory
+			// pointer alike (review round 3, F1).
+			var reportPathJSON any
+			if reportPath != "" {
+				reportPathJSON = reportPath
+			}
+			agents = append(agents, jsonjs.O(
+				"name", name, "role", role, "previous_role", previousRole, "kind", kind, "pane", pane, "tab", tab, "state", state, "report", report, "cwd", cwdCol, "task", task,
+				"model", col(8), "effort", col(14), "status", view.State, "report_path", reportPathJSON,
+				"task_s", panelElapsed(view.TaskS), "activity_s", panelElapsed(view.ActivityS),
+			))
 		}
 		others := []any{}
 		for _, agent := range live {

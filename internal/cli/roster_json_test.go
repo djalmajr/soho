@@ -103,7 +103,7 @@ func TestRosterJSONWorkspaceScope(t *testing.T) {
 	if !ok {
 		t.Fatalf("agents[0] is %T, want object", arr[0])
 	}
-	if keys := a.Keys(); strings.Join(keys, ",") != "name,role,previous_role,kind,pane,tab,state,report,cwd,task" {
+	if keys := a.Keys(); strings.Join(keys, ",") != "name,role,previous_role,kind,pane,tab,state,report,cwd,task,model,effort,status,report_path,task_s,activity_s" {
 		t.Fatalf("agents[0] key order = %v", keys)
 	}
 	field := func(key string) any {

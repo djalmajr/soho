@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/launchprofile"
 	"github.com/djalmajr/soho/internal/platform"
 	textutil "github.com/djalmajr/soho/internal/text"
@@ -595,7 +597,7 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return contains(KnownKinds, value)
 	case strings.HasPrefix(key, "lane.") && strings.HasSuffix(key, ".roles"):
 		return ConfigRolesOk(value, env, cwd)
-	case strings.HasPrefix(key, "lane.") && strings.HasSuffix(key, ".effort"):
+	case strings.HasPrefix(key, "lane.") && strings.HasSuffix(key, ".effort"), strings.HasPrefix(key, "role.") && strings.HasSuffix(key, ".effort"):
 		return contains(EffortLadder, value)
 	case strings.HasPrefix(key, "role.") && strings.HasSuffix(key, ".mcp"), strings.HasPrefix(key, "lane.") && strings.HasSuffix(key, ".mcp"):
 		return McpValueError(value) == ""
@@ -901,13 +903,20 @@ func ConfigWritePair(dest, key, value string, env platform.Env, cwd string) {
 	configWritePair(dest, key, value, env, cwd, "config set")
 }
 
-func configWritePair(dest, key, value string, env platform.Env, cwd, command string) {
+// configWritePair rewrites dest with key=value under the caller's lock. The
+// optional display is the path its error messages print, when the caller acts on
+// a resolved destination that differs from the path the user named.
+func configWritePair(dest, key, value string, env platform.Env, cwd, command string, display ...string) {
+	shown := dest
+	if len(display) > 0 && display[0] != "" {
+		shown = display[0]
+	}
 	raw := ""
 	if _, err := os.Stat(dest); err == nil {
 		var readErr error
 		raw, readErr = platform.ReadTextFile(dest)
 		if readErr != nil {
-			platform.Die(fmt.Sprintf("%s: could not rewrite %s (file left untouched)", command, dest), 4)
+			platform.Die(fmt.Sprintf("%s: could not rewrite %s (file left untouched)", command, shown), 4)
 		}
 	}
 	out := make([]string, 0)
@@ -940,10 +949,10 @@ func configWritePair(dest, key, value string, env platform.Env, cwd, command str
 	}
 	content := strings.Join(out, "\n") + "\n"
 	if !strings.Contains(content, key+"=") {
-		platform.Die(fmt.Sprintf("%s: rewrite of %s dropped %s (file left untouched)", command, dest, key), 4)
+		platform.Die(fmt.Sprintf("%s: rewrite of %s dropped %s (file left untouched)", command, shown, key), 4)
 	}
 	if err := writeConfigAtomic(dest, content); err != nil {
-		platform.Die(fmt.Sprintf("%s: could not rewrite %s (file left untouched)", command, dest), 4)
+		platform.Die(fmt.Sprintf("%s: could not rewrite %s (file left untouched)", command, shown), 4)
 	}
 }
 
@@ -1090,49 +1099,19 @@ func CmdConfig(ctx *Config, env platform.Env, cwd string) {
 	}
 	lines := []string{row("KEY", "VALUE", "SOURCE")}
 	for _, key := range ConfigScalarKeys {
-		source := CfgSource(ctx, key, env)
-		if key == "max_workers" && LanesEnabled(ctx, env) && !ConfigExplicit(ctx, key, env) {
-			source = "lanes"
-		}
-		lines = append(lines, row(key, ConfigScalarValue(ctx, key, env, cwd), source))
+		value, source := configListingValueSource(ctx, key, env, cwd)
+		lines = append(lines, row(key, value, source))
 	}
-	dotted := map[string]bool{}
-	for _, key := range ctx.Order {
-		if isDottedNormalizedKey(key) {
-			dotted[key] = true
-		}
-	}
-	for name, value := range env {
-		if !strings.HasPrefix(name, "SOHO_") || value == "" {
-			continue
-		}
-		key := strings.ToLower(NormalizeKey(strings.TrimPrefix(name, "SOHO_")))
-		if isDottedNormalizedKey(key) {
-			dotted[key] = true
-		}
-	}
-	keys := make([]string, 0, len(dotted))
-	for key := range dotted {
-		keys = append(keys, key)
-	}
-	textutil.SortUTF16(keys)
-	listedLanes := map[string]bool{}
-	for _, key := range keys {
-		entry := ctx.Entries[key]
-		name := entry.Original
-		if name == "" {
-			name = DottedKeyName(key, ctx, env, cwd)
-		}
-		lines = append(lines, row(name, Cfg(ctx, key, "", env), CfgSource(ctx, key, env)))
-		parts := strings.Split(name, ".")
-		if len(parts) == 3 && parts[0] == "lane" {
-			listedLanes[NormalizeKey(parts[1])] = true
-		}
+	dotted := configListingKeys(ctx, env, cwd)
+	listedLanes := listedLaneKeys(ctx, dotted, env, cwd)
+	for _, item := range dotted {
+		lines = append(lines, row(item.name, Cfg(ctx, item.key, "", env), CfgSource(ctx, item.key, env)))
 	}
 	if LanesEnabled(ctx, env) {
 		for _, lane := range LaneNames(ctx, env) {
 			if !listedLanes[NormalizeKey(lane)] {
-				lines = append(lines, row("lane."+lane+".roles", PresetLaneRoles(lane, PanesValue(ctx, env), PaneMode(ctx, env)), "skill default"))
+				value, source := presetLaneRolesRow(ctx, lane, env)
+				lines = append(lines, row("lane."+lane+".roles", value, source))
 			}
 		}
 	}
@@ -1158,6 +1137,107 @@ func CmdConfig(ctx *Config, env platform.Env, cwd string) {
 	}
 	lines = append(lines, "session file: "+sessionFile)
 	fmt.Fprintln(platform.Stdout, strings.Join(lines, "\n"))
+}
+
+// configListingValueSource is one listing row's VALUE and SOURCE, computed in
+// one place: the lane-derived max_workers case names "lanes" exactly as the
+// listing does, and a lane with no configured key of its own shows the skill
+// default's roles row, the same synthesized row the listing prints. The
+// dry-run preview reads it too, so its previous.effective and
+// previous.effective_source are the listing's projection, never a second
+// one (F3, F6).
+func configListingValueSource(ctx *Config, key string, env platform.Env, cwd string) (string, string) {
+	if value, source, ok := presetLaneRolesValue(ctx, key, env, cwd); ok {
+		return value, source
+	}
+	source := CfgSource(ctx, key, env)
+	if key == "max_workers" && LanesEnabled(ctx, env) && !ConfigExplicit(ctx, key, env) {
+		source = "lanes"
+	}
+	return ConfigScalarValue(ctx, key, env, cwd), source
+}
+
+// configListingKey is one dotted listing key with the name its row prints: the
+// key's own spelling from the file, else its dotted name.
+type configListingKey struct{ key, name string }
+
+// configListingKeys is the listing's dotted keys in the frozen order: every
+// dotted file key, plus the environment's dotted keys the files do not set.
+func configListingKeys(ctx *Config, env platform.Env, cwd string) []configListingKey {
+	dotted := map[string]bool{}
+	for _, key := range ctx.Order {
+		if isDottedNormalizedKey(key) {
+			dotted[key] = true
+		}
+	}
+	for name, value := range env {
+		if !strings.HasPrefix(name, "SOHO_") || value == "" {
+			continue
+		}
+		key := strings.ToLower(NormalizeKey(strings.TrimPrefix(name, "SOHO_")))
+		if isDottedNormalizedKey(key) {
+			dotted[key] = true
+		}
+	}
+	keys := make([]string, 0, len(dotted))
+	for key := range dotted {
+		keys = append(keys, key)
+	}
+	textutil.SortUTF16(keys)
+	out := make([]configListingKey, 0, len(keys))
+	for _, key := range keys {
+		name := ctx.Entries[key].Original
+		if name == "" {
+			name = DottedKeyName(key, ctx, env, cwd)
+		}
+		out = append(out, configListingKey{key: key, name: name})
+	}
+	return out
+}
+
+// presetLaneRolesRow is the listing's synthesized row for a lane that has no
+// configured key: its roles come from the skill default.
+func presetLaneRolesRow(ctx *Config, lane string, env platform.Env) (string, string) {
+	return PresetLaneRoles(lane, PanesValue(ctx, env), PaneMode(ctx, env)), "skill default"
+}
+
+// listedLaneKeys is the set of lanes (normalized) that have a dotted key of
+// their own among the listing keys, matched by the normalized key's dotted
+// name, so a file that spells it lane_build_roles counts like
+// lane.build.roles. The listing and the dry-run preview share it (review
+// round 3, F2).
+func listedLaneKeys(ctx *Config, keys []configListingKey, env platform.Env, cwd string) map[string]bool {
+	listed := map[string]bool{}
+	for _, item := range keys {
+		parts := strings.Split(DottedKeyName(item.key, ctx, env, cwd), ".")
+		if len(parts) == 3 && parts[0] == "lane" {
+			listed[NormalizeKey(parts[1])] = true
+		}
+	}
+	return listed
+}
+
+// presetLaneRolesValue answers the listing's synthesized row for a
+// lane.<lane>.roles key: the lane must exist, lanes must be on and the lane
+// must have no dotted key of its own (that is the listing's own rule for
+// adding the row).
+func presetLaneRolesValue(ctx *Config, key string, env platform.Env, cwd string) (string, string, bool) {
+	if ctx == nil || !LanesEnabled(ctx, env) {
+		return "", "", false
+	}
+	parts := strings.Split(DottedKeyName(key, ctx, env, cwd), ".")
+	if len(parts) != 3 || parts[0] != "lane" || parts[2] != "roles" {
+		return "", "", false
+	}
+	listed := listedLaneKeys(ctx, configListingKeys(ctx, env, cwd), env, cwd)
+	for _, lane := range LaneNames(ctx, env) {
+		if NormalizeKey(lane) != NormalizeKey(parts[1]) || listed[NormalizeKey(lane)] {
+			continue
+		}
+		value, source := presetLaneRolesRow(ctx, lane, env)
+		return value, source, true
+	}
+	return "", "", false
 }
 
 // ConfigScalarValue is the listing's VALUE column for one scalar key: the
@@ -1210,12 +1290,344 @@ func SplitPairArg(key, value string, sawValue bool, cmd string) (string, string,
 	return key, value, false
 }
 
-func CmdConfigSet(argv []string, ctx *Config, env platform.Env, cwd string) {
-	key, value, where, sawValue := "", "", "project", false
+// configSetPlan is the parsed, validated shape shared by config set and
+// its dry-run preview. Parsing resolves the destination but never writes it.
+type configSetPlan struct {
+	Key, Value, Where, Dest string
+	DryRun, JSON            bool
+}
+
+// splitPairArgPlan is SplitPairArg's grammar without its Die: the preview
+// needs the same message on stdout as JSON before the caller turns it into
+// the same exit-2 diagnostic set has always printed.
+func splitPairArgPlan(key, value string, sawValue bool) (string, string, bool, string) {
+	if sawValue || key == "" {
+		return key, value, sawValue, ""
+	}
+	if eq := strings.IndexByte(key, '='); eq > 0 {
+		return key[:eq], key[eq+1:], true, ""
+	}
+	if strings.IndexFunc(key, isJSWhitespace) >= 0 {
+		return key, value, false, fmt.Sprintf(`config set: '%s' arrived as one argument; pass the key and the value as two arguments or as key=value (zsh does not split "$var": use ${=var})`, key)
+	}
+	return key, value, false, ""
+}
+
+// configSetArgs is the argument-only shape of config set: the grammar shared
+// by the command's parser and the read-only admission gate, before any key,
+// value or destination validation.
+type configSetArgs struct {
+	Key, Value, Where string
+	DryRun, JSON      bool
+	SawValue          bool
+	// Inline records the key=<value> spelling: it supplies the value even when
+	// empty, so an empty inline assignment is refused with F1's message while
+	// an explicit empty second argument keeps the base refusal.
+	Inline        bool
+	ScopeSeen     bool
+	ScopeConflict bool
+}
+
+// scanConfigSetArgs walks argv with the one config set grammar. It returns a
+// grammar error message (never a validation one): CmdConfigSet's parser and
+// the read-only gate both classify the same shape through this function.
+func scanConfigSetArgs(argv []string) (configSetArgs, string) {
+	args := configSetArgs{Where: "project"}
 	// A value may begin with hyphens (lane.review.args --add-dir /x): only an
 	// argument before the key, or after a value that does not begin with a
 	// hyphen, is an unknown option, and a "--" ends option parsing (--project
-	// and --user included) for what follows.
+	// and --user included) for what follows. A preview flag counts only where
+	// a preview flag can be: before the key, or once the value is known, so a
+	// lone token after the key is the value even when it is "--dry-run" or
+	// "--json" (F12).
+	noOptions := false
+	message := ""
+	// A grammar error does not stop the walk: --dry-run and --json decide the
+	// response mode wherever they appear, so an early return would render an
+	// error for an invocation whose real mode is JSON (F7). The first error
+	// wins; later tokens only fill the mode flags.
+	for _, arg := range argv {
+		if !noOptions && arg == "--" {
+			noOptions = true
+			continue
+		}
+		if !noOptions && (arg == "--project" || arg == "--user") {
+			if args.ScopeSeen {
+				args.ScopeConflict = true
+			}
+			args.ScopeSeen = true
+			args.Where = strings.TrimPrefix(arg, "--")
+			continue
+		}
+		if !noOptions && (arg == "--dry-run" || arg == "--json") && (args.Key == "" || args.SawValue) {
+			if arg == "--dry-run" {
+				args.DryRun = true
+			} else {
+				args.JSON = true
+			}
+			continue
+		}
+		if !noOptions && strings.HasPrefix(arg, "--") && (args.Key == "" || (args.SawValue && !strings.HasPrefix(args.Value, "-"))) {
+			if message == "" {
+				message = "config set: unknown option '" + arg + "'"
+			}
+			continue
+		}
+		if args.Key == "" {
+			if eq := strings.IndexByte(arg, '='); eq > 0 {
+				args.Key, args.Value = arg[:eq], arg[eq+1:]
+				// An inline assignment supplies the value even when it is empty:
+				// the tokens after it are options, never a replacement value (F1).
+				args.SawValue = true
+				args.Inline = true
+			} else {
+				args.Key = arg
+			}
+			continue
+		}
+		if !args.SawValue {
+			args.Value, args.SawValue = arg, true
+		} else if strings.HasPrefix(args.Value, "-") {
+			args.Value += " " + arg
+		} else if message == "" {
+			message = "config set: unexpected argument '" + arg + "'"
+		}
+	}
+	return args, message
+}
+
+// ConfigSetPreviewShape reports whether argv (the words after "config set")
+// is the write-free preview form: the command's own grammar with --dry-run
+// and no grammar error. The SOHO_NOWRITE gate admits exactly this shape, so
+// the gate and the command can never disagree about what a preview is.
+func ConfigSetPreviewShape(argv []string) bool {
+	args, message := scanConfigSetArgs(argv)
+	return message == "" && args.DryRun
+}
+
+// parseConfigSet is CmdConfigSet's argument grammar and validation, with no
+// side effects. On failure it returns the partial key and value alongside
+// the exact message the command prints, so text and --json errors agree.
+func parseConfigSet(argv []string, env platform.Env, cwd string) (configSetPlan, string) {
+	args, message := scanConfigSetArgs(argv)
+	// The response mode is decided before any parse error: JSON on stdout only
+	// for a real preview, --dry-run and --json both present wherever they
+	// appear (F7). Every other invocation keeps stderr only.
+	plan := configSetPlan{Key: args.Key, Value: args.Value, Where: args.Where, DryRun: args.DryRun, JSON: args.JSON && args.DryRun}
+	fail := func(message string) (configSetPlan, string) {
+		plan.Key, plan.Value = args.Key, args.Value
+		return plan, message
+	}
+	if message != "" {
+		return fail(message)
+	}
+	if args.ScopeConflict {
+		// A second scope flag has no meaning and used to win silently; the
+		// preview's JSON error is rendered like every other invalid input.
+		return fail("config set: only one scope option (--project or --user) may be given")
+	}
+	if args.JSON && !args.DryRun {
+		// --json belongs to the preview: without --dry-run this invocation
+		// was and stays an unknown option on the writing command, reported on
+		// stderr alone (F12: no JSON object on stdout).
+		return fail("config set: unknown option '--json'")
+	}
+	key, value, sawValue, message := splitPairArgPlan(args.Key, args.Value, args.SawValue)
+	if message != "" {
+		return fail(message)
+	}
+	// inline is the key=<value> spelling of the scan, so an empty inline
+	// assignment is told apart from an explicit empty second argument.
+	inline := args.Inline
+	if key == "" || !sawValue {
+		return fail("usage: config set <key> <value> | <key>=<value> [--project|--user] (default --project; for this session only: soho session set)")
+	}
+	if value == "" {
+		if inline {
+			// An inline assignment that carries nothing is the usage error it
+			// always was; the tokens after it stay options, so a following
+			// flag never becomes the value (F1).
+			return fail("usage: config set <key> <value> | <key>=<value> [--project|--user] (default --project; for this session only: soho session set)")
+		}
+		return fail("config set: empty value")
+	}
+	if !ConfigKeyOk(key) {
+		return fail("config set: unknown key '" + key + "'")
+	}
+	if !ConfigValueOk(key, value, env, cwd) {
+		if key == "opencode_tui_profile" {
+			return fail("config set: " + launchprofile.ErrInvalidTUIProfile.Error())
+		}
+		return fail("config set: invalid value '" + value + "' for " + key)
+	}
+	plan.Key, plan.Value = key, value
+	plan.Dest = ConfigFileFor(plan.Where, env, cwd)
+	// The project file lands under the project root; refuse it inside the
+	// skill before MkdirAll/rewrite. The user file stays valid from inside.
+	if plan.Where == "project" {
+		root := platform.ProjectRoot(env, cwd)
+		if skill := StatePathInSkill(env, root); skill != "" {
+			return fail(StateInSkillMessage("config set", root, skill))
+		}
+	}
+	return plan, ""
+}
+
+// configSetAppliesToRoles is the panel's "who is affected" projection: the
+// lane's configured roles for a lane key, the named role for a role key.
+func configSetAppliesToRoles(key string, ctx *Config, env platform.Env) []any {
+	parts := strings.Split(key, ".")
+	out := []any{}
+	if len(parts) < 2 {
+		return out
+	}
+	switch parts[0] {
+	case "lane":
+		for _, role := range SplitRoles(LaneRolesCSV(ctx, parts[1], env)) {
+			out = append(out, role)
+		}
+	case "role":
+		out = append(out, parts[1])
+	}
+	return out
+}
+
+// configValueShellToken renders key=value as the one argv token the preview's
+// command is replayed with through a POSIX shell. A value holding only
+// [A-Za-z0-9._/:@%+=,-] and not starting with "-" stays bare; everything
+// else (spaces, quotes, $, a leading dash) is single-quoted, with each
+// embedded single quote escaped for the shell.
+func configValueShellToken(key, value string) string {
+	token := key + "=" + value
+	if value != "" && !strings.HasPrefix(value, "-") && strings.IndexFunc(token, func(r rune) bool {
+		return !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/:@%+=,-", r)
+	}) < 0 {
+		return token
+	}
+	return "'" + strings.ReplaceAll(token, "'", `'\''`) + "'"
+}
+
+// cmdConfigSetDryRun prints the write plan and nothing else: no MkdirAll, no
+// rewrite and no file creation, including when the destination is absent.
+func cmdConfigSetDryRun(plan configSetPlan, ctx *Config, env platform.Env, cwd string) {
+	if !plan.JSON {
+		fmt.Fprintf(platform.Stdout, "would set %s=%s in %s\n", plan.Key, plan.Value, plan.Dest)
+		return
+	}
+	// previous.in_file keeps the parser's distinction: a present assignment
+	// with an empty value is "", an absent one is null (F3).
+	var inFile any
+	if pairs, err := ReadConfigFilePairs(plan.Dest); err == nil {
+		normalized := NormalizeKey(plan.Key)
+		for _, pair := range pairs {
+			if pair.Key == normalized {
+				inFile = pair.Value
+				break
+			}
+		}
+	}
+	normalized := NormalizeKey(plan.Key)
+	effective, source := "", "builtin"
+	if ctx != nil {
+		effective, source = configListingValueSource(ctx, normalized, env, cwd)
+	}
+	fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O(
+		"schema", 1,
+		"key", plan.Key,
+		"value", plan.Value,
+		"scope", plan.Where,
+		"file", plan.Dest,
+		"command", "soho config set "+configValueShellToken(plan.Key, plan.Value)+" --"+plan.Where,
+		"valid", true,
+		"previous", jsonjs.O("in_file", inFile, "effective", effective, "effective_source", source),
+		"applies_to_roles", configSetAppliesToRoles(plan.Key, ctx, env),
+	)))
+}
+
+func CmdConfigSet(argv []string, ctx *Config, env platform.Env, cwd string) {
+	plan, message := parseConfigSet(argv, env, cwd)
+	if message != "" {
+		if plan.JSON {
+			fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O("schema", 1, "key", plan.Key, "value", plan.Value, "valid", false, "error", message)))
+		}
+		platform.Die(message, 2)
+	}
+	if plan.DryRun {
+		cmdConfigSetDryRun(plan, ctx, env, cwd)
+		return
+	}
+	// The destination is resolved once (symlinks followed) and reused for the
+	// directory, the lock, the read, the change and the rename, so two names
+	// for one file serialize on the file itself (F2). The path the user's
+	// config names stays what the messages print.
+	target := resolveConfigDestination(plan.Dest)
+	if err := os.MkdirAll(filepath.Dir(target), 0o777); err != nil {
+		platform.Die(fmt.Sprintf("config set: could not rewrite %s (file left untouched)", plan.Dest), 4)
+	}
+	// The set holds the destination lock across its own read, change and
+	// rename, the same lock config unset takes (F6).
+	unlock := lockConfigDestination(target, "config set", plan.Dest)
+	defer unlock()
+	configWritePair(target, plan.Key, plan.Value, env, cwd, "config set", plan.Dest)
+	fmt.Fprintf(platform.Stdout, "set %s=%s in %s\n", plan.Key, plan.Value, plan.Dest)
+}
+
+// resolveConfigDestination is the one destination config set and config unset
+// act on: the file the atomic writer renames to, with every symlink on the way
+// followed. A destination the platform cannot resolve is left as it is, so the
+// ordinary read or write error names the path the user's config set.
+func resolveConfigDestination(dest string) string {
+	target, err := platform.WriteTarget(dest)
+	if err != nil {
+		return dest
+	}
+	return target
+}
+
+// lockConfigDestination takes the shared destination lock next to a config
+// file. The exclusive-create file lock is the registries' lock helper, with
+// its retry, stale and timeout rules, so config set and config unset
+// serialize across processes as well as goroutines. lockPath is the resolved
+// destination (the lock's identity); display is the path errors print, which
+// defaults to lockPath.
+func lockConfigDestination(lockPath, command string, display ...string) func() {
+	shown := lockPath
+	if len(display) > 0 && display[0] != "" {
+		shown = display[0]
+	}
+	dir, name := filepath.Dir(lockPath), "."+filepath.Base(lockPath)+".lock"
+	unlock, err := lockRegistry(dir, name, "config")
+	if err != nil {
+		platform.Die(fmt.Sprintf("%s: could not lock %s (file left untouched)", command, shown), 4)
+	}
+	return unlock
+}
+
+// splitRawLines splits raw file bytes into lines that each keep their own
+// terminator: "\n" or "\r\n". A last line without a terminator stays
+// without one, so concatenating the returned slices reproduces the input.
+func splitRawLines(raw []byte) [][]byte {
+	lines := make([][]byte, 0)
+	for len(raw) > 0 {
+		if i := bytes.IndexByte(raw, '\n'); i >= 0 {
+			lines = append(lines, raw[:i+1])
+			raw = raw[i+1:]
+			continue
+		}
+		lines = append(lines, raw)
+		break
+	}
+	return lines
+}
+
+// CmdConfigUnset removes exactly the key's assignment lines from the selected
+// file. Every other byte — CRLF endings, comments, blank lines and a last
+// line without a newline — is copied unchanged: the removed line takes only
+// its own terminator with it (F5). The rewrite goes through the same atomic
+// writer config set uses, under the same destination lock.
+func CmdConfigUnset(argv []string, env platform.Env, cwd string) {
+	key, where := "", "project"
+	scopeSeen, conflict := false, false
 	noOptions := false
 	for _, arg := range argv {
 		if !noOptions && arg == "--" {
@@ -1223,59 +1635,87 @@ func CmdConfigSet(argv []string, ctx *Config, env platform.Env, cwd string) {
 			continue
 		}
 		if !noOptions && (arg == "--project" || arg == "--user") {
+			if scopeSeen {
+				conflict = true
+			}
+			scopeSeen = true
 			where = strings.TrimPrefix(arg, "--")
 			continue
 		}
-		if !noOptions && strings.HasPrefix(arg, "--") && (key == "" || (sawValue && !strings.HasPrefix(value, "-"))) {
-			platform.Die("config set: unknown option '"+arg+"'", 2)
+		if !noOptions && strings.HasPrefix(arg, "--") {
+			platform.Die("config unset: unknown option '"+arg+"'", 2)
 		}
 		if key == "" {
-			if eq := strings.IndexByte(arg, '='); eq > 0 {
-				key, value = arg[:eq], arg[eq+1:]
-				sawValue = value != ""
-			} else {
-				key = arg
-			}
+			key = arg
 			continue
 		}
-		if !sawValue {
-			value, sawValue = arg, true
-		} else if strings.HasPrefix(value, "-") {
-			value += " " + arg
-		} else {
-			platform.Die("config set: unexpected argument '"+arg+"'", 2)
-		}
+		platform.Die("config unset: unexpected argument '"+arg+"'", 2)
 	}
-	key, value, sawValue = SplitPairArg(key, value, sawValue, "config set")
-	if key == "" || !sawValue {
-		platform.Die("usage: config set <key> <value> | <key>=<value> [--project|--user] (default --project; for this session only: soho session set)", 2)
+	if conflict {
+		platform.Die("config unset: only one scope option (--project or --user) may be given", 2)
 	}
-	if value == "" {
-		platform.Die("config set: empty value", 2)
+	if key == "" {
+		platform.Die("usage: config unset <key> [--project|--user] (default --project)", 2)
 	}
 	if !ConfigKeyOk(key) {
-		platform.Die("config set: unknown key '"+key+"'", 2)
+		platform.Die("config unset: unknown key '"+key+"'", 2)
 	}
-	if !ConfigValueOk(key, value, env, cwd) {
-		if key == "opencode_tui_profile" {
-			platform.Die("config set: "+launchprofile.ErrInvalidTUIProfile.Error(), 2)
-		}
-		platform.Die("config set: invalid value '"+value+"' for "+key, 2)
-	}
-	dest := ConfigFileFor(where, env, cwd)
-	// The project file lands under the project root; refuse it inside the
-	// skill before MkdirAll/rewrite. The user file stays valid from inside.
+	// The project destination carries the same guard as config set, before
+	// any project file is touched (F7); the user file stays valid from inside
+	// the skill.
 	if where == "project" {
 		root := platform.ProjectRoot(env, cwd)
 		if skill := StatePathInSkill(env, root); skill != "" {
-			platform.Die(StateInSkillMessage("config set", root, skill), 2)
+			platform.Die(StateInSkillMessage("config unset", root, skill), 2)
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o777); err != nil {
-		platform.Die(fmt.Sprintf("config set: could not rewrite %s (file left untouched)", dest), 4)
+	file := ConfigFileFor(where, env, cwd)
+	// A genuinely missing file is a no-op; any other read failure is an I/O
+	// error, never a false "not set" (F8).
+	if _, err := os.Stat(file); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(platform.Stdout, "not set in %s\n", file)
+			return
+		}
+		platform.Die(fmt.Sprintf("config unset: could not rewrite %s (file left untouched)", file), 4)
 	}
-	ConfigWritePair(dest, key, value, env, cwd)
-	fmt.Fprintf(platform.Stdout, "set %s=%s in %s\n", key, value, dest)
+	// The resolved destination is the lock's identity, the file read, changed
+	// and renamed, so a project and a user config that are two links to one
+	// file serialize on that file (F2). Messages keep the user's path.
+	target := resolveConfigDestination(file)
+	unlock := lockConfigDestination(target, "config unset", file)
+	defer unlock()
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(platform.Stdout, "not set in %s\n", file)
+			return
+		}
+		platform.Die(fmt.Sprintf("config unset: could not rewrite %s (file left untouched)", file), 4)
+	}
+	normalized := NormalizeKey(key)
+	kept := make([]byte, 0, len(raw))
+	removed := false
+	for _, rawLine := range splitRawLines(raw) {
+		line := strings.TrimSuffix(platform.DecodeText(rawLine), "\n")
+		body, _, _ := strings.Cut(line, "#")
+		stripped := trimJSWhitespace(body)
+		if stripped != "" && !strings.HasPrefix(stripped, "#") {
+			if eq := strings.IndexByte(stripped, '='); eq >= 0 && NormalizeKey(trimJSWhitespace(stripped[:eq])) == normalized {
+				removed = true
+				continue
+			}
+		}
+		kept = append(kept, rawLine...)
+	}
+	if !removed {
+		fmt.Fprintf(platform.Stdout, "not set in %s\n", file)
+		return
+	}
+	if err := writeConfigAtomic(target, string(kept)); err != nil {
+		platform.Die(fmt.Sprintf("config unset: could not rewrite %s (file left untouched)", file), 4)
+	}
+	fmt.Fprintf(platform.Stdout, "unset %s in %s\n", key, file)
 }
 
 // LoadLocalConfigReadOnly loads the configuration a caller resolves its

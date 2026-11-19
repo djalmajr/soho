@@ -363,11 +363,9 @@ func CmdRoles(env platform.Env, cwd string) {
 	_, _ = fmt.Fprintln(platform.Stdout, strings.Join(lines, "\n"))
 }
 
-// CmdRolesJSON prints the roles table as one compact JSON object on one
-// line (the plugin's read): the same roles, order and values as the text
-// table, with the empty values as "" (the "-" cells are text-only).
-func CmdRolesJSON(env platform.Env, cwd string) {
-	rows := collectRoles(env, cwd)
+// rolesJSONArray is the single projection behind the legacy roles JSON and
+// the panel's extended read: same rows, order, key order and empty values.
+func rolesJSONArray(rows []roleTableRow) []any {
 	roles := make([]any, 0, len(rows))
 	for _, row := range rows {
 		res := row.Res
@@ -385,5 +383,12 @@ func CmdRolesJSON(env platform.Env, cwd string) {
 			"source", row.Source,
 		))
 	}
-	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O("roles", roles)))
+	return roles
+}
+
+// CmdRolesJSON prints the roles table as one compact JSON object on one
+// line (the plugin's read): the same roles, order and values as the text
+// table, with the empty values as "" (the "-" cells are text-only).
+func CmdRolesJSON(env platform.Env, cwd string) {
+	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O("roles", rolesJSONArray(collectRoles(env, cwd)))))
 }
