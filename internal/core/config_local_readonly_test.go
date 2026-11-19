@@ -11,6 +11,7 @@ package core_test
 import (
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -240,6 +241,68 @@ func TestLoadLocalConfigReadOnlyUnsearchableProjectDirIsAnError(t *testing.T) {
 	}
 	if _, err := core.LoadLocalConfigReadOnly(env, cwd); err != nil {
 		t.Fatalf("the restored project layer was an error: %v", err)
+	}
+}
+
+// TestLoadLocalConfigReadOnlyLinkedWorktreeLookupError: in a linked worktree,
+// a project config whose lookup fails (unsearchable .agents) is an unreadable
+// layer, not a reason to read the main checkout's config; only a missing
+// local file falls back to the main checkout (review round 4, F1).
+func TestLoadLocalConfigReadOnlyLinkedWorktreeLookupError(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("directory search permission is not enforced here")
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is not installed")
+	}
+	env, root, _ := localFixture(t)
+	env["PATH"] = filepath.Dir(gitPath)
+	env["GIT_CONFIG_NOSYSTEM"] = "1"
+	env["GIT_CONFIG_GLOBAL"] = os.DevNull
+	mainDir := filepath.Join(root, "main")
+	linked := filepath.Join(root, "linked")
+	if err := os.MkdirAll(mainDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = mainDir
+		cmd.Env = []string{"HOME=" + env["HOME"], "PATH=" + env["PATH"], "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	git("-c", "user.email=test@example.invalid", "-c", "user.name=test", "commit", "-q", "--allow-empty", "-m", "base")
+	git("worktree", "add", "-q", linked)
+	roWrite(t, filepath.Join(mainDir, ".agents", "soho.conf"), "state_dir=main-state\n")
+	linkedAgents := filepath.Join(linked, ".agents")
+	roWrite(t, filepath.Join(linkedAgents, "soho.conf"), "state_dir=linked-state\n")
+
+	stateDir := func() (string, error) {
+		ctx, err := core.LoadLocalConfigReadOnly(env, linked)
+		return ctx.Entries["state_dir"].Value, err
+	}
+	if got, err := stateDir(); err != nil || got != "linked-state" {
+		t.Fatalf("readable linked config: state_dir=%q err=%v, want linked-state", got, err)
+	}
+	if err := os.Chmod(linkedAgents, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(linkedAgents, 0o700) })
+	if got, err := stateDir(); err == nil || !strings.Contains(err.Error(), "project configuration layer") {
+		t.Fatalf("unsearchable linked .agents: state_dir=%q err=%v, want a project layer error", got, err)
+	}
+	if err := os.Chmod(linkedAgents, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(linkedAgents, "soho.conf")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := stateDir(); err != nil || got != "main-state" {
+		t.Fatalf("missing linked config: state_dir=%q err=%v, want the main checkout's main-state", got, err)
 	}
 }
 

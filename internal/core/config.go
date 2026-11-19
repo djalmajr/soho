@@ -1315,17 +1315,14 @@ func LoadLocalConfigReadOnly(env platform.Env, cwd string) (Config, error) {
 	return ctx, localConfigReadError(ctx)
 }
 
-// localProjectConfigFile names the project layer with LoadConfigFor's
-// selection rule (ProjectConfigFileUsed): the checkout's own
-// .agents/soho.conf when it is a regular file, otherwise the main checkout's
-// when cwd is a linked worktree. When neither is a regular file, a candidate
-// that still has a directory entry, or whose lookup failed for a reason other
-// than absence, is returned so that the layer reports it as unreadable,
-// instead of the path looking like a missing layer.
+// localProjectConfigFile names the project layer: the checkout's own
+// .agents/soho.conf, else, when cwd is a linked worktree, the main
+// checkout's. Only a candidate that does not exist lets the search move on to
+// the main checkout: an entry of any kind, or a lookup that failed for
+// another reason (an unsearchable .agents, EACCES), is returned so that the
+// layer reads it or reports it as unreadable, instead of the state directory
+// being taken silently from another root's configuration.
 func localProjectConfigFile(env platform.Env, cwd string) string {
-	if file := ProjectConfigFileUsed(env, cwd); file != "" {
-		return file
-	}
 	seen := map[string]bool{}
 	for _, root := range []string{platform.ProjectRoot(env, cwd), platform.StateProjectRoot(env, cwd)} {
 		if root == "" || seen[root] {
@@ -1333,10 +1330,6 @@ func localProjectConfigFile(env platform.Env, cwd string) string {
 		}
 		seen[root] = true
 		file := filepath.Join(root, ".agents", "soho.conf")
-		// Any answer but "does not exist" keeps the candidate: an entry that
-		// is there, or a lookup that failed (an unsearchable .agents, EACCES),
-		// both make the layer report the file as unreadable instead of
-		// falling through to another root's configuration.
 		if _, err := os.Lstat(file); err == nil || !os.IsNotExist(err) {
 			return file
 		}
