@@ -259,7 +259,13 @@ func spawnReopenedWorker(agent, pane, briefPath string, redispatch bool, spawnAr
 			panic(value)
 		}
 		_, _ = fmt.Fprintf(platform.Stderr, "soho: warning: reopen already closed '%s' (pane %s); no replacement was spawned and no brief was redispatched: %s\n", agent, pane, exit.Msg)
-		_, _ = fmt.Fprintf(platform.Stderr, "soho: reopen: to recover, run: %s\n", reopenRecoveryCommand(agent, spawnArgs))
+		recovery := reopenRecoveryCommand(agent, spawnArgs)
+		if laneOverride && reopenRecoveryCrossesLane(spawnArgs, ctx, env) {
+			// reopen's swap skipped the lane-kind check; a plain spawn would
+			// refuse with exit 13, so the printed command opts out of lanes.
+			recovery = "SOHO_LANES=off " + recovery
+		}
+		_, _ = fmt.Fprintf(platform.Stderr, "soho: reopen: to recover, run: %s\n", recovery)
 		if redispatch && briefPath != "" {
 			_, _ = fmt.Fprintf(platform.Stderr, "soho: reopen: then run: soho dispatch %s %s\n", reopenShellQuote(agent), reopenShellQuote(briefPath))
 		}
@@ -275,6 +281,29 @@ func spawnReopenedWorker(agent, pane, briefPath string, redispatch bool, spawnAr
 // reopenRecoveryCommand rebuilds the spawn the reopen would have run after
 // closing the old worker. --name is printed once, next to the role, and the
 // remaining argv is the exact argv reopen handed to spawn, in the same order.
+// reopenRecoveryCrossesLane reports whether a plain spawn of these arguments
+// would refuse because the requested kind differs from the role's lane kind.
+func reopenRecoveryCrossesLane(spawnArgs []string, ctx *core.Config, env platform.Env) bool {
+	if len(spawnArgs) == 0 {
+		return false
+	}
+	kind := ""
+	for i := 1; i+1 < len(spawnArgs); i++ {
+		if spawnArgs[i] == "--" {
+			break
+		}
+		if spawnArgs[i] == "--kind" {
+			kind = spawnArgs[i+1]
+			break
+		}
+	}
+	if kind == "" {
+		return false
+	}
+	_, _, conflict := spawn.LaneKindConflict(spawnArgs[0], kind, ctx, env)
+	return conflict
+}
+
 func reopenRecoveryCommand(agent string, spawnArgs []string) string {
 	if len(spawnArgs) == 0 {
 		return "soho spawn " + reopenShellQuote(agent)
