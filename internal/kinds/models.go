@@ -40,6 +40,39 @@ func ParseAgyModels(stdout string) []string {
 	}
 	return ids
 }
+
+// ParsePiModels reads provider/model ids from pi --list-models, whose table
+// has a header row followed by provider, model and capability columns.
+func ParsePiModels(stdout string) []string {
+	var ids []string
+	token := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
+	for _, line := range strings.Split(ansiSGR.ReplaceAllString(stdout, ""), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 6 || (fields[0] == "provider" && fields[1] == "model") {
+			continue
+		}
+		if !token.MatchString(fields[0]) || !token.MatchString(fields[1]) {
+			continue
+		}
+		ids = append(ids, fields[0]+"/"+fields[1])
+	}
+	return ids
+}
+
+// ParseOpenCodeModels reads the provider/model ids printed one per line by
+// opencode models; anything that is not a provider/model id is ignored.
+func ParseOpenCodeModels(stdout string) []string {
+	var ids []string
+	idRE := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._+:-]*$`)
+	for _, line := range strings.Split(ansiSGR.ReplaceAllString(stdout, ""), "\n") {
+		id := strings.TrimSpace(line)
+		if idRE.MatchString(id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 func ParseGrokModels(stdout string) []string {
 	re := regexp.MustCompile("grok-[0-9][0-9a-z.-]*")
 	set := map[string]bool{}
@@ -69,29 +102,59 @@ func ModelsCacheFile(kind string, env platform.Env) string {
 // re-read, and a stale copy could hide a model Codex just added (the doctor
 // then reported "does not resolve" until the copy expired).
 func ModelIDs(kind string, env platform.Env) []string {
-	ids, _ := modelIDs(kind, env, false)
+	ids, _, _ := modelIDs(kind, env, false)
 	return ids
 }
 
+// ModelListError is a failed CLI-backed model listing. Reason is one of
+// "failed (exit N)", "timed out", "not found" or "listed no models".
+type ModelListError struct {
+	Kind    string
+	Command string
+	Reason  string
+}
+
+func (e *ModelListError) Error() string { return e.Command + " " + e.Reason }
+
+// ListModels is ModelIDs with the failure of a pi/opencode listing reported
+// instead of discarded. Other kinds keep their existing empty-list behavior.
+func ListModels(kind string, env platform.Env) ([]string, error) {
+	ids, _, err := modelIDs(kind, env, false)
+	return ids, err
+}
+
+func modelListCommand(kind string) string {
+	if kind == "pi" {
+		return "pi --list-models"
+	}
+	return "opencode models"
+}
+
 // hasModelSource reports whether the kind's list comes from a source that
-// can change behind the 1-hour copy (the cursor/agy/grok CLI listing). codex
+// can change behind the 1-hour copy (the cursor/agy/grok/pi/opencode CLI listing).
+// codex
 // reads its source directly (no copy); the other kinds (claude, ...) have no
 // source — a copy, when present, is all the list there is.
 func hasModelSource(kind string) bool {
-	return kind == "cursor" || kind == "agy" || kind == "grok"
+	return kind == "cursor" || kind == "agy" || kind == "grok" || kind == "pi" || kind == "opencode"
 }
 
 // modelIDs reads the model list of the kind from its source. skipCopy
 // ignores the 1-hour copy read (the copy is still rewritten on success);
 // fromCopy reports whether the returned list came from that copy.
-func modelIDs(kind string, env platform.Env, skipCopy bool) ([]string, bool) {
+
+// modelListFallbackMs is the pi and opencode listing timeout when
+// SOHO_MODELS_TIMEOUT is unset or unusable; tests lower it.
+var modelListFallbackMs = 20000
+
+func modelIDs(kind string, env platform.Env, skipCopy bool) ([]string, bool, error) {
 	file := ModelsCacheFile(kind, env)
 	shortRaw, short := env.Lookup("SOHO_MODELS_TIMEOUT")
 	short = short && shortRaw != ""
 	if kind != "codex" && !skipCopy {
 		if st, err := os.Stat(file); err == nil && st.Size() > 0 && st.ModTime().After(platform.Now().Add(-time.Hour)) {
 			if data, err := os.ReadFile(file); err == nil {
-				return nonemptyLines(string(data)), true
+				return nonemptyLines(string(data)), true, nil
 			}
 		}
 	}
@@ -122,12 +185,47 @@ func modelIDs(kind string, env platform.Env, skipCopy bool) ([]string, bool) {
 				}
 			}
 		}
-	case "cursor", "agy", "grok":
+	case "cursor", "agy", "grok", "pi", "opencode":
 		timeout, ok := seconds(20)
 		if kind == "agy" {
 			timeout, ok = seconds(30)
 		}
-		if ok {
+		if kind == "pi" || kind == "opencode" {
+			// An unparsable, negative or zero override keeps the documented
+			// fallback: RunCli applies no deadline at all for 0 ms.
+			if !ok || timeout <= 0 {
+				timeout = modelListFallbackMs
+			}
+			fail := func(reason string) ([]string, bool, error) {
+				return nil, false, &ModelListError{Kind: kind, Command: modelListCommand(kind), Reason: reason}
+			}
+			exe, args := "opencode", []string{"models"}
+			if kind == "pi" {
+				exe, args = "pi", []string{"--list-models"}
+			}
+			r := platform.RunCli(exe, args, platform.RunOptions{Env: env, TimeoutMs: timeout})
+			if r.NotFound {
+				return fail("not found")
+			}
+			if r.TimedOut {
+				return fail("timed out")
+			}
+			if r.Status == nil || *r.Status != 0 {
+				code := 1
+				if r.Status != nil {
+					code = *r.Status
+				}
+				return fail(fmt.Sprintf("failed (exit %d)", code))
+			}
+			if kind == "pi" {
+				out = ParsePiModels(r.Stdout)
+			} else {
+				out = ParseOpenCodeModels(r.Stdout)
+			}
+			if len(out) == 0 {
+				return fail("listed no models")
+			}
+		} else if ok {
 			exe, args := kind, []string{"models"}
 			if kind == "cursor" {
 				exe, args = "cursor-agent", []string{"--list-models"}
@@ -148,7 +246,7 @@ func modelIDs(kind string, env platform.Env, skipCopy bool) ([]string, bool) {
 	if kind != "codex" && !short && len(out) > 0 {
 		_ = platform.AtomicWrite(file, strings.Join(out, "\n")+"\n")
 	}
-	return out, false
+	return out, false, nil
 }
 func nonemptyLines(data string) []string {
 	var out []string
@@ -303,7 +401,7 @@ func ResolveModel(kind, spec, effort string, env platform.Env, warn WarnFunc) (s
 	if warn == nil {
 		warn = DefaultWarn
 	}
-	ids, fromCopy := modelIDs(kind, env, false)
+	ids, fromCopy, _ := modelIDs(kind, env, false)
 	if len(ids) == 0 {
 		if kind == "claude" {
 			if m := claudeDottedAliasRE.FindStringSubmatch(spec); m != nil {
@@ -322,7 +420,7 @@ func ResolveModel(kind, spec, effort string, env platform.Env, warn WarnFunc) (s
 	// one is all the list there is, and a now-empty source passes the spec
 	// through unchanged, as with a cold list.
 	if fromCopy && hasModelSource(kind) {
-		fresh, _ := modelIDs(kind, env, true)
+		fresh, _, _ := modelIDs(kind, env, true)
 		if len(fresh) == 0 {
 			return spec, nil
 		}
