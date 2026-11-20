@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 
@@ -62,4 +63,45 @@ func TestDispatchResultCopiesTestLayersAndValidation(t *testing.T) {
 			t.Fatalf("keys invented for a wait line without them: %s", out.String())
 		}
 	})
+}
+
+// SOH-442: the real dispatch command puts the declared test-layers line in
+// the composed prompt the worker reads; a brief without the line does not.
+func TestDispatchDeclaredTestLayersPrompt(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		brief string
+		want  bool
+	}{
+		{
+			name:  "declared",
+			brief: "# Goal\nrun\n\nTest layers: unit, mutation\n# Expected result\nDone.\n# Owned files\nnone\n# Forbidden\nNo commit.\n# Report\ndone\n",
+			want:  true,
+		},
+		{
+			name:  "undeclared",
+			brief: "# Goal\nrun\n# Expected result\nDone.\n# Owned files\nnone\n# Forbidden\nNo commit.\n# Report\ndone\n",
+			want:  false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The git-policy fixture also pins the clock that matches the fake
+			// screen's composed-prompt evidence, so the arrival is proved.
+			f := gitPolicyFixture(t, "implementer")
+			if err := os.WriteFile(f.brief, []byte(tc.brief), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if code, out, errText := f.run(t, "worker", f.brief, "--no-wait"); code != 0 {
+				t.Fatalf("dispatch code=%d out=%s stderr=%s", code, out, errText)
+			}
+			prompts := composedFor(t, f, "worker")
+			if len(prompts) != 1 {
+				t.Fatalf("composed prompts=%d want 1", len(prompts))
+			}
+			const line = "- Test layers that apply: unit, mutation; mark the others n/a: <why>.\n"
+			if got := strings.Count(prompts[0], line); (got == 1) != tc.want {
+				t.Fatalf("composed prompt line count=%d want=%v: %q", got, tc.want, prompts[0])
+			}
+		})
+	}
 }
