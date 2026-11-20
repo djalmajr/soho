@@ -240,14 +240,14 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 
 // releaseEndedInProviderError reads only the released worker's own wait
 // cause and requires its current screen to show a terminal provider outcome.
-// wait writes that cause for terminal outcomes, but also before a capacity
-// retry it never clears on recovery, so the file alone cannot say the task
-// ended; dispatch clears it before every new task. A fresh read of the
-// worker's own recent screen, through the same classifier wait uses with the
-// configured provider texts, separates a live worker from one still stopped
-// at a refusal, auth error or lost connection. A failed read, no detection,
-// or a capacity-only detection keeps the working refusal. Screen text is
-// never printed: only the sanitized, bounded cause from disk is.
+// wait writes that cause only for terminal provider outcomes and clears it on
+// a working observation, so the file alone cannot say the task ended; dispatch
+// clears it before every new task too. A fresh read of the worker's own recent
+// screen, through the same classifier wait uses with the configured provider
+// texts, is the guard that keeps a stale cause from any source from skipping
+// the working refusal. A failed read or no terminal detection keeps that
+// refusal. Screen text is never printed: only the sanitized, bounded cause
+// from disk is.
 func releaseEndedInProviderError(sd, agent, state string, ctx *core.Config, env platform.Env, svc transport.Services) (string, bool) {
 	wait := filepath.Join(sd, "wait")
 	raw, err := platform.ReadTextFile(filepath.Join(wait, agent+".provider-cause"))
@@ -277,7 +277,7 @@ func releaseEndedInProviderError(sd, agent, state string, ctx *core.Config, env 
 	}
 	terminal := detection.Status == "provider-refusal" || detection.Status == "provider-error" ||
 		detection.Cause == provider.LostConnectionCause
-	if !terminal || detection.Status == "capacity" {
+	if !terminal {
 		return "", false
 	}
 	return cause, true

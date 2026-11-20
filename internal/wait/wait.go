@@ -772,7 +772,15 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 	}
 	removeWaitFile(sd, agent, "blocked")
 	pfile := filepath.Join(sd, "wait", agent+".provider")
-	clearProvider := func() { _ = os.Remove(pfile); removeWaitFile(sd, agent, "capacity-at") }
+	// The cause belongs to a terminal provider outcome only: a capacity
+	// stop that recovers and a worker back at work must leave no claim on
+	// disk that the task ended in a provider error. Detection below writes
+	// the cause again when the same run still sees a terminal stop.
+	clearProvider := func() {
+		_ = os.Remove(pfile)
+		removeWaitFile(sd, agent, "capacity-at")
+		removeWaitFile(sd, agent, "provider-cause")
+	}
 	if st.State == "working" {
 		clearProvider()
 	}
@@ -879,10 +887,10 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 				writeWaitFile(sd, agent, "provider", target+"\n")
 				return "working"
 			}
-			writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
 			if p.Status == "provider-error" {
 				_ = os.Remove(queuedFile)
 				_ = os.Remove(retryFile)
+				writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
 				return "provider-error"
 			}
 			used := 0
@@ -890,6 +898,7 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 				if !uintPattern.MatchString(strings.TrimSpace(raw)) {
 					_ = os.Remove(queuedFile)
 					_ = os.Remove(retryFile)
+					writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
 					return "capacity"
 				}
 				used, _ = strconv.Atoi(strings.TrimSpace(raw))
@@ -898,6 +907,7 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 			if e != nil || used >= limit {
 				_ = os.Remove(queuedFile)
 				_ = os.Remove(retryFile)
+				writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
 				return "capacity"
 			}
 			at, ok := readWaitFile(sd, agent, "capacity-at")
@@ -935,6 +945,7 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 				sendWarning("provider capacity: failed to send the continue to '" + agent + "': " + sent.Err.Message + "; acting as exhausted")
 				_ = os.Remove(queuedFile)
 				_ = os.Remove(retryFile)
+				writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
 				return "capacity"
 			}
 			writeWaitFile(sd, agent, "capacity-retries", fmt.Sprintf("%d\n", used+1))
