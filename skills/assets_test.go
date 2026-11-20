@@ -317,6 +317,48 @@ func TestReviewResponseRolesCarryTheRule(t *testing.T) {
 	}
 }
 
+// SOH-407: every role that writes a report keeps long logs beside the report
+// and cites a short excerpt, so a pasted 400 MB mutant log cannot reach the
+// orchestrator through the report.
+func TestReportWritingRolesBoundLogCitations(t *testing.T) {
+	const rule = "cite at most 40 lines of any log in the report; put the whole log in a .log file beside the report and link it."
+	for _, name := range []string{
+		"implementer.md", "critical-implementer.md", "tester.md", "tasker.md", "designer.md",
+		"documenter.md", "reviewer.md", "security-reviewer.md", "validator.md", "inspector.md",
+		"ui-reviewer.md", "scouter.md", "researcher.md", "sub-orchestrator.md", "job-orchestrator.md", "planner.md",
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := roleBody(t, name)
+			start := strings.Index(body, "<report>")
+			end := strings.Index(body, "</report>")
+			if start < 0 || end < start {
+				t.Fatalf("%s: no report block", name)
+			}
+			if !strings.Contains(body[start:end], rule) {
+				t.Fatalf("%s: report block lost the log-citation rule", name)
+			}
+		})
+	}
+}
+
+// SOH-407: the review roles lacked the Test layers line form the implementer,
+// critical-implementer and tester carry, so wait warned about their valid
+// report lines. All five roles now use the same paragraph.
+func TestReportRolesCarryTheTestLayersRule(t *testing.T) {
+	const rule = "When the project has a `VALIDATION.md`, the report carries a `## Test layers` section with one line per layer the file declares, in the form `- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a`, with `: <reason>` (or ` — <reason>` or ` – <reason>`) after FAIL, NOT RUN and BLOCKED, and an optional note after PASS or n/a using the same separators. A layer the brief reserves to the orchestrator (the app run of a `UI lifecycle` section, for example) is `n/a: reserved to the orchestrator` with the brief section that reserves it, not `NOT RUN`: `NOT RUN` is for a layer you should have run and did not. A layer line takes no item state: `- unit: [done] PASS` is a line without a result, so item states (`[done]`, `[partial]`, …) stay on the items, not on the layers; and a layer the worker did not run is `NOT RUN`, never `PASS`. The `wait` warns when a layer did not pass, a section line has no result, or the section is missing from a report of a role that declares layers — it only warns: it never blocks and never runs anything."
+	for _, name := range []string{"implementer.md", "critical-implementer.md", "reviewer.md", "security-reviewer.md"} {
+		t.Run(name, func(t *testing.T) {
+			if got := strings.Count(roleBody(t, name), rule); got != 1 {
+				t.Fatalf("%s: Test layers rule count = %d, want 1", name, got)
+			}
+		})
+	}
+	// tester.md keeps its own shorter wording, but still states the line form.
+	if body := roleBody(t, "tester.md"); !strings.Contains(body, "- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a") {
+		t.Fatal("tester.md lost the Test layers line form")
+	}
+}
+
 // TestEditRolesListChangedFilesUnderFilesChanged (DJA-666): every edit role
 // tells the worker the changed-file list belongs in a `## Files changed`
 // section of the report, with the reason the wait audit reads only that

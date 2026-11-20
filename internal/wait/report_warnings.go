@@ -50,7 +50,12 @@ const (
 	WarningReviewUnnumbered     = "unnumbered"
 	WarningParityMissing        = "reference-parity-missing"
 	WarningParityUnmarked       = "reference-parity-unmarked"
+	WarningReportSize           = "report-size"
 )
+
+// ReportSizeWarnBytes is the boundary for the oversized-report warning: a
+// report is warned about only when it is strictly larger than 1 MiB.
+const ReportSizeWarnBytes int64 = 1 << 20
 
 // WarningReviewNoHeaderPublic is the public kind published for the declared
 // review's missing header. wait keeps writing the historical "no-header"
@@ -94,6 +99,16 @@ type ReportAnalysis struct {
 	Unnumbered        int
 	BlockedByScope    []string
 	Warnings          []ReportWarning
+}
+
+// ReportSizeWarning builds the oversized-report warning shared by wait and
+// collect. The size is printed in MiB with one decimal; a report of exactly
+// the threshold, an empty one and a missing one produce no warning.
+func ReportSizeWarning(agent string, size int64) (ReportWarning, bool) {
+	if size <= ReportSizeWarnBytes {
+		return ReportWarning{}, false
+	}
+	return ReportWarning{WarningReportSize, fmt.Sprintf("report of '%s' is %.1f MB; keep long logs in a file beside it and cite short excerpts", agent, float64(size)/float64(ReportSizeWarnBytes))}, true
 }
 
 // PartialWarnings builds the two once-per-report item warnings.
@@ -413,6 +428,8 @@ func markerEntry(kind string) (marker, key string) {
 		return "test-layers-warned", kind
 	case WarningFindingMarks:
 		return "finding-marks-warned", kind
+	case WarningReportSize:
+		return "report-size-warned", WarningReportSize
 	case WarningReviewUnreadable, WarningReviewMissing, WarningReviewUnknown, WarningReviewResponses, WarningReviewSectionMissing, WarningReviewUnnumbered:
 		return "review-responses-warned", kind
 	case WarningReviewNoHeader, WarningReviewNoHeaderPublic:

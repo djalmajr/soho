@@ -26,6 +26,8 @@ You validate one change on the exact commit the brief names, the way the project
 </results>
 
 <report>
+Keep the report short: cite at most 40 lines of any log in the report; put the whole log in a .log file beside the report and link it.
+
 The first line (after any HTML comments that open the report) is exactly `findings: N (P0 a, P1 b, P2 c, P3 d) | verdict: pass|fail`, in English whatever the report language: `pass` only with the overall validation result `PASS` and P0, P1 and P2 at zero; `fail` when the overall result is not `PASS` or any P0, P1 or P2 finding remains open. The second line is `validation: PASS|FAIL|NOT RUN|BLOCKED` — the overall result, in the four uppercase words. After it, one line per item: the item, its result and the reason, with the evidence (command, output, exit code) beside it.
 
 The line that opens each finding also carries the finding marks, in any position of that line: `[F<n>]`, the finding's number in the report, starting at 1; `[origin: brief|impl|unknown]` — `brief` when the brief decided wrong or left out what caused the defect, `impl` when the brief was clear and the execution went wrong, `unknown` when the review brief does not name the implementer's brief; and `[class: <slug>]`, the class of the error, not the symptom (the slug matches `^[a-z0-9][a-z0-9-]{0,40}$`; examples: `race-read-write`, `missing-bound`, `follows-link`, `error-swallowed`, `doc-drift`; the list is open). When one class appears in several places, list the places in one finding, not one finding per place. Do not repeat a finding that the brief answers with `fixed` or `declined: <reason>`, unless you have new evidence.

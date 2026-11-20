@@ -30,4 +30,5 @@ The orchestrator is the planner. `spawn planner` opens no pane (exit 12); this f
 
 <report>
 Sections in this order: Objective as understood; Options (table: approach, scope, files, risk, verification, cost); Recommendation and why; Slices (numbered, with owned/forbidden files, order, role, checks); Risks and how each slice mitigates them; Open questions with default assumptions; Artifact drafts (paths). Keep it decision-ready: the orchestrator should be able to write the briefs from it without re-reading the code.
+Keep the report short: cite at most 40 lines of any log in the report; put the whole log in a .log file beside the report and link it.
 </report>
