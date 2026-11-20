@@ -269,7 +269,7 @@ func TestListModelsPiOpenCodeUnusableTimeoutKeepsTheFallback(t *testing.T) {
 	modelListFallbackMs = 50
 	t.Cleanup(func() { modelListFallbackMs = saved })
 	for _, kind := range []string{"pi", "opencode"} {
-		for _, raw := range []string{"abc", "-1", "0"} {
+		for _, raw := range []string{"abc", "-1", "0", "0.0005"} {
 			t.Run(kind+"/"+raw, func(t *testing.T) {
 				argv := []string{"models"}
 				if kind == "pi" {

@@ -146,11 +146,14 @@ var modelListFallbackMs = 20000
 func listCLIModels(kind string, env platform.Env) ([]string, error) {
 	shortRaw, short := env.Lookup("SOHO_MODELS_TIMEOUT")
 	short = short && shortRaw != ""
-	timeout := 20000
+	// An unset, unparsable, non-positive or sub-millisecond override keeps
+	// the fallback: RunCli applies no deadline at all for 0 ms.
+	timeout := modelListFallbackMs
 	if short {
-		timeout = modelListFallbackMs
 		if n, err := strconv.ParseFloat(shortRaw, 64); err == nil && n > 0 {
-			timeout = int(n * 1000)
+			if ms := int(n * 1000); ms > 0 {
+				timeout = ms
+			}
 		}
 	}
 	fail := func(reason string) ([]string, error) {
