@@ -927,7 +927,15 @@ func (b *backend) sendReply(target transport.Target, out string, err error, guar
 				if guard == hc.GuardReady {
 					want = "ready"
 				}
-				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureBusy, Message: "worker " + name + " is not " + want}}
+				failure := &transport.Failure{Kind: transport.FailureBusy, Message: "worker " + name + " is not " + want}
+				if guard != "" {
+					// Only a guarded send's mismatch proves that hc typed
+					// nothing: keep the hc exit as the cause so
+					// SendRefusedBeforeWrite can tell it from a Busy that
+					// soho builds itself.
+					failure.Cause = err
+				}
+				return transport.Reply[string]{Err: failure}
 			case hc.ExitFinished:
 				return transport.Reply[string]{Err: &transport.Failure{Kind: transport.FailureNotFound, Message: hcErr.Error(), Cause: err}}
 			}
@@ -935,6 +943,23 @@ func (b *backend) sendReply(target transport.Target, out string, err error, guar
 		return transport.Reply[string]{Err: failure(err)}
 	}
 	return transport.Reply[string]{Value: out, Valid: true}
+}
+
+// SendRefusedBeforeWrite reports whether a failed Send proves that no byte
+// reached the terminal: hc refused the guarded send (`--if`) because the
+// terminal's status differs from the guard (exit 10), and hc types only
+// after that check passes. Every other failure is uncertain, including the
+// capability refusals (the probes never issued a send, but a missing
+// capability does not change by waiting), a launch failure, a timeout or a
+// cancellation (the write may have happened before they surfaced), the
+// blocked and finished exits, and any Busy that soho builds itself (it
+// carries no hc exit). A nil failure proves nothing.
+func SendRefusedBeforeWrite(f *transport.Failure) bool {
+	if f == nil || f.Kind != transport.FailureBusy {
+		return false
+	}
+	var hcErr *hc.Error
+	return errors.As(f.Cause, &hcErr) && hcErr.Exit == hc.ExitStatusMismatch
 }
 
 // Keys sends one key on the terminal's channel (hc has one channel; the
