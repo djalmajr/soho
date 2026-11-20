@@ -613,7 +613,10 @@ func LaneRoleEffortConflict(role, kind, model, effective string, ctx *core.Confi
 }
 
 func warnLaneRoleEffort(name, role, lane, kind, model, effective string, fromLane bool, ctx *core.Config, env platform.Env, cwd string, output ...spawnOptions) {
-	if !fromLane || lane == "" {
+	// A kind without an effort ceiling has no native effort flag (the
+	// kinds effort mapping warns "no effort mapping" for it), so a lane's
+	// effort cannot be applied and the conflict note would only be noise.
+	if !fromLane || lane == "" || kinds.KindEffortCeiling(kind) == "" {
 		return
 	}
 	if requested, source := LaneRoleEffortConflict(role, kind, model, effective, ctx, env, cwd); requested != "" {
@@ -1678,7 +1681,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 				if d.N >= d.Capacity || renameCapacity.Full {
 					busyLane(lane, selected, fmt.Sprintf("spawn: idle worker '%s' was not reused as '%s' because native Core cannot rename it, and lane '%s' has no room for a new worker. Dispatch to '%s', or release it.", selected, o.name, lane, selected), o.role, ctx, env, cwd, o)
 				}
-				Warn(fmt.Sprintf("spawn: idle worker '%s' was not reused as '%s' because native Core cannot rename it; starting a new worker '%s'", selected, o.name, o.name), ctx, env, "spawn")
+				warnOnce("hc-idle-not-reused:"+lane, fmt.Sprintf("spawn: idle worker '%s' was not reused as '%s' because native Core cannot rename it; starting a new worker '%s'", selected, o.name, o.name), ctx, env, cwd, admissionOnly, Warn)
 				break
 			}
 			var renameCapacity core.WorkerCapacity
@@ -3056,7 +3059,18 @@ func freshSpawnArgs(o spawnOptions, lane, kind string, ctx *core.Config, env pla
 			warn(fmt.Sprintf("spawn: codex args already set the sandbox or approvals (%s); approvals=%s adds nothing for '%s'", flag, o.approvals, o.name), ctx, env, "spawn")
 		}
 	}
-	args := launchArgs(kind, approvalsForArgs, o.model, o.effort, ctx, env, o.launchProfile, func(msg string) { warn(msg, ctx, env, "spawn") })
+	// Only spawn's sandbox fallback is a once-per-session note: kinds keeps
+	// warning on its other callers. The exact text of this fallback is the
+	// only handle the warn callback has to distinguish it.
+	sandboxNote := kind + " has no separate sandbox switch; approvals=unsandboxed runs as full"
+	launchWarn := func(msg string) {
+		if msg == sandboxNote {
+			warnOnce("unsandboxed-no-switch:"+kind, msg, ctx, env, cwd, admissionOnly, warn)
+			return
+		}
+		warn(msg, ctx, env, "spawn")
+	}
+	args := launchArgs(kind, approvalsForArgs, o.model, o.effort, ctx, env, o.launchProfile, launchWarn)
 	// DJA-392/DJA-693: the mcp choice translates right after the effort args
 	// (buildArgs ends with them) and before the config and user args; a kind
 	// without a per-process flag warns once and the agent keeps the user's
