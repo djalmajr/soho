@@ -209,7 +209,7 @@ func registrantExpect(t *testing.T, target registrantTarget, env platform.Env, o
 		}
 		return
 	}
-	if strings.Count(errOut, "\n") != 1 || !strings.HasPrefix(errOut, target.cmd+": registered without an owner (this terminal could not be identified") {
+	if strings.Count(mutationCopyAdviceFree(errOut), "\n") != 1 || !strings.HasPrefix(errOut, target.cmd+": registered without an owner (this terminal could not be identified") {
 		t.Fatalf("%s: stderr=%q; want exactly one ownerless line", target.cmd, errOut)
 	}
 	verdict := map[string]string{"unverified": "gc keeps it because its owner cannot be verified", "orphan": "gc treats it as an orphan"}[line]

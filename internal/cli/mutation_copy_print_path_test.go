@@ -27,6 +27,35 @@ func TestMutationCopyPrintPathDefaultJSONContract(t *testing.T) {
 	}
 }
 
+const mutationCopyAdviceLine = "soho: mutation-copy: give each mutant run a timeout (go test -timeout 5m or the stack's equivalent) and stop its processes before the next\n"
+
+// mutationCopyAdviceFree removes the --print-path advice line so existing
+// assertions keep checking the rest of the command's stderr.
+func mutationCopyAdviceFree(stderr string) string {
+	return strings.ReplaceAll(stderr, mutationCopyAdviceLine, "")
+}
+
+// SOH-459: --print-path keeps stdout to the path alone and puts the
+// per-run timeout advice on stderr. Other modes and refusals stay quiet.
+func TestMutationCopyPrintPathPrintsTimeoutAdviceOnStderr(t *testing.T) {
+	f := newMutationCopyFixture(t)
+	dest := filepath.Join(f.root, "advised-copy")
+	code, out, stderr := runMutationCopyCmd(t, f, f.root, nil, "--source", f.source, "--dest", dest, "--print-path")
+	wantAdvice := "soho: mutation-copy: give each mutant run a timeout (go test -timeout 5m or the stack's equivalent) and stop its processes before the next"
+	if code != 0 || out != dest+"\n" || strings.Count(stderr, wantAdvice+"\n") != 1 {
+		t.Fatalf("path mode: exit=%d stdout=%q stderr=%q; want stdout=%q and one timeout advice line on stderr", code, out, stderr, dest+"\n")
+	}
+	jsonDest := filepath.Join(f.root, "json-copy")
+	code, out, stderr = runMutationCopyCmd(t, f, f.root, nil, "--source", f.source, "--dest", jsonDest)
+	if code != 0 || !strings.HasPrefix(out, "{") || strings.Contains(stderr, wantAdvice) {
+		t.Fatalf("JSON mode: exit=%d stdout=%q stderr=%q; no timeout advice expected", code, out, stderr)
+	}
+	code, out, stderr = runMutationCopyCmd(t, f, f.root, nil, "--source", filepath.Join(f.root, "missing"), "--dest", filepath.Join(f.root, "refused-copy"), "--print-path")
+	if code != 2 || out != "" || strings.Contains(stderr, wantAdvice) {
+		t.Fatalf("refusal: exit=%d stdout=%q stderr=%q; no timeout advice expected", code, out, stderr)
+	}
+}
+
 func TestMutationCopyPrintPathCanonicalConsumer(t *testing.T) {
 	for _, alias := range []bool{false, true} {
 		t.Run(fmt.Sprintf("symlink=%t", alias), func(t *testing.T) {
