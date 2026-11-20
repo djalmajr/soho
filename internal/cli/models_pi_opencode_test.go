@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -20,6 +21,35 @@ func runModelsForTest(t *testing.T, env platform.Env, kind string) (int, string,
 	platform.Stdout, platform.Stderr = &out, &stderr
 	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
 	return cmdModels([]string{kind}, env), out.String(), stderr.String()
+}
+
+// modelsTmpInventory records every file under TMPDIR with its content, so
+// a test can prove the explicit listing and resolution created no file.
+func modelsTmpInventory(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		out[rel] = string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func modelsFixture(t *testing.T, name string) string {
@@ -123,6 +153,73 @@ func TestModelsPiAndOpenCodeFailureExitAndStderr(t *testing.T) {
 			code, out, stderr := runModelsForTest(t, env, tc.kind)
 			if code != 1 || out != "" || stderr != tc.wantLine+"\n" {
 				t.Fatalf("code=%d stdout=%q stderr=%q, want 1, empty stdout and %q", code, out, stderr, tc.wantLine+"\n")
+			}
+		})
+	}
+}
+
+func TestModelsPiAndOpenCodeIgnoreStaleCacheAndWriteNoFile(t *testing.T) {
+	for _, tc := range []struct {
+		kind, exe, fixture string
+		args               []string
+	}{
+		{"pi", "pi", "pi-models.txt", []string{"--list-models"}},
+		{"opencode", "opencode", "opencode-models.txt", []string{"models"}},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			env := commandFakeEnv(t, map[string][]fakecli.Rule{tc.exe: {{Argv: tc.args, Stdout: modelsFixture(t, tc.fixture)}}})
+			cache := filepath.Join(env.Get("TMPDIR"), "soho-models-"+tc.kind+".txt")
+			if err := os.WriteFile(cache, []byte("anthropic/cached-model\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before := modelsTmpInventory(t, env.Get("TMPDIR"))
+			code, out, stderr := runModelsForTest(t, env, tc.kind)
+			if code != 0 || stderr != "" {
+				t.Fatalf("code=%d stderr=%q", code, stderr)
+			}
+			lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+			want := []string{
+				"anthropic/claude-fable-5", "anthropic/claude-opus-4-6", "provider-abc1/qwen3.8-27b",
+				"console-openai/gpt-6.1-terra", "opencode-go/hy4-flash-free",
+			}
+			sort.Strings(lines)
+			sort.Strings(want)
+			if !reflect.DeepEqual(lines, want) {
+				t.Fatalf("stdout = %q, want the fresh CLI ids %q", out, want)
+			}
+			if after := modelsTmpInventory(t, env.Get("TMPDIR")); !reflect.DeepEqual(before, after) {
+				t.Fatalf("explicit listing changed the cache tree: before=%v after=%v", before, after)
+			}
+		})
+	}
+}
+
+func TestModelPiAndOpenCodeResolveWithoutCLIOrFile(t *testing.T) {
+	for _, kind := range []string{"pi", "opencode"} {
+		t.Run(kind, func(t *testing.T) {
+			argv := []string{"models"}
+			if kind == "pi" {
+				argv = []string{"--list-models"}
+			}
+			env := commandFakeEnv(t, map[string][]fakecli.Rule{kind: {{Argv: argv, Stdout: "anthropic/listed-model\n"}}})
+			before := modelsTmpInventory(t, env.Get("TMPDIR"))
+			oldOut, oldErr := platform.Stdout, platform.Stderr
+			var out, stderr bytes.Buffer
+			platform.Stdout, platform.Stderr = &out, &stderr
+			t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
+			code := cmdModel([]string{kind, "provider/model"}, env)
+			if code != 0 || stderr.String() != "" || !strings.Contains(out.String(), `"model": "provider/model"`) {
+				t.Fatalf("code=%d stdout=%q stderr=%q, want the spec passed through", code, out.String(), stderr.String())
+			}
+			calls, readErr := fakecli.ReadCallsForConfig(filepath.Join(env.Get("SOHO_FAKECLI_CONFIG"), kind+".json"))
+			if readErr != nil && !os.IsNotExist(readErr) {
+				t.Fatalf("cannot read %s call log: %v", kind, readErr)
+			}
+			if len(calls) != 0 {
+				t.Fatalf("model command called %s: calls=%+v", kind, calls)
+			}
+			if after := modelsTmpInventory(t, env.Get("TMPDIR")); !reflect.DeepEqual(before, after) {
+				t.Fatalf("model command changed the file tree: before=%v after=%v", before, after)
 			}
 		})
 	}
