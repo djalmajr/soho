@@ -531,6 +531,27 @@ func RosterSetRole(dir, name, role string) {
 	})
 }
 
+// RosterSetModel writes a pi worker's verified model (column 9) and the
+// thinking level its footer shows (column 15) in one locked write. Rows older
+// than that column are expanded without touching any other field.
+func RosterSetModel(dir, name, model, effort string) {
+	WithRosterLock(dir, func() {
+		lines := tsvLines(dir)
+		for i, line := range lines {
+			f := strings.Split(line, "\t")
+			if f[0] != name {
+				continue
+			}
+			for len(f) < 15 {
+				f = append(f, "")
+			}
+			f[8], f[14] = model, effort
+			lines[i] = strings.Join(f, "\t")
+		}
+		atomicRoster(filepath.Join(dir, "agents.tsv"), lines)
+	})
+}
+
 func RosterReplacePane(dir, oldPane, newPane string) {
 	if oldPane == newPane || newPane == "" {
 		return

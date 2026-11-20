@@ -941,7 +941,7 @@ func (b *backend) sendReply(target transport.Target, out string, err error, guar
 // pane flag is not honored). A key soho does not map is
 // FailureUnsupported, never a guess at hc's name for it.
 func (b *backend) Keys(ctx context.Context, target transport.Target, keys string, pane bool, call transport.Call) transport.Reply[bool] {
-	mapped, ok := keysHC[keys]
+	mapped, ok := hcKeyName(keys)
 	if !ok {
 		return transport.Reply[bool]{Err: &transport.Failure{Kind: transport.FailureUnsupported, Message: fmt.Sprintf("key %q is not supported with transport=hc", keys)}}
 	}
@@ -2185,4 +2185,27 @@ func Parent(env platform.Env) (string, error) {
 		return "", err
 	}
 	return record.Parent, nil
+}
+
+// hcKeyName resolves one soho key name for hc keys. The map keeps its
+// entries' meaning (including "t"); "space" and exactly one safe ASCII
+// character are the only additions. Anything else stays unsupported, so an
+// arbitrary string can never be passed to hc keys.
+func hcKeyName(keys string) (string, bool) {
+	if mapped, ok := keysHC[keys]; ok {
+		return mapped, true
+	}
+	if keys == "space" {
+		return "space", true
+	}
+	if len(keys) != 1 {
+		return "", false
+	}
+	switch c := keys[0]; {
+	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		return keys, true
+	case c == '.', c == '_', c == ':', c == '/', c == '-':
+		return keys, true
+	}
+	return "", false
 }
