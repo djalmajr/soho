@@ -467,7 +467,7 @@ func TestHcMutationCopyIsListedAndRemoved(t *testing.T) {
 	t.Run("copies lists the copy as owned and release removes it", func(t *testing.T) {
 		f, sd, dir := hcHkMutationCopy(t, fakecli.Rule{Argv: []string{"get", "native-worker", "--json"}, ArgvPrefix: true, Stdout: hcHkRecord("t-copy", "native-worker", "idle")})
 		code, out, stderr := runMutationCopyCmd(t, f, f.source, nil, "--source", f.source, "--print-path")
-		if code != 0 || mutationCopyAdviceFree(stderr) != "" {
+		if code != 0 || stderr != "" {
 			t.Fatalf("mutation-copy: exit=%d stdout=%q stderr=%q", code, out, stderr)
 		}
 		path := strings.TrimSuffix(out, "\n")
@@ -497,7 +497,7 @@ func TestHcMutationCopyIsListedAndRemoved(t *testing.T) {
 	t.Run("copies lists the copy as orphan and gc removes it", func(t *testing.T) {
 		f, sd, dir := hcHkMutationCopy(t, fakecli.Rule{Argv: []string{"get", "native-worker", "--json"}, ArgvPrefix: true, Code: 3, Stderr: hcHkNotFound})
 		code, out, stderr := runMutationCopyCmd(t, f, f.source, nil, "--source", f.source, "--print-path")
-		if code != 0 || mutationCopyAdviceFree(stderr) != "" {
+		if code != 0 || stderr != "" {
 			t.Fatalf("mutation-copy: exit=%d stdout=%q stderr=%q", code, out, stderr)
 		}
 		path := strings.TrimSuffix(out, "\n")
