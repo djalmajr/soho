@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -917,6 +918,47 @@ func TestBackendKeys(t *testing.T) {
 			wantArgv(t, calls(), [][]string{{"keys", "t7", pair.hcName, "--json"}})
 		})
 	}
+
+	for _, key := range []string{"a", "/", "-", ".", ":", "0", "space"} {
+		key := key
+		t.Run("safe key "+strconv.Quote(key)+" passes through", func(t *testing.T) {
+			env, calls := fakeHc(t, []fakecli.Rule{{Argv: []string{"keys", "t7", key, "--json"}, Stdout: `{"turn":3}`}})
+			b := &backend{env: env, client: hc.New(env)}
+			rep := b.Keys(context.Background(), transport.Target{ID: "t7"}, key, true, transport.Call{})
+			if rep.Err != nil || !rep.Value || !rep.Valid {
+				t.Fatalf("rep: %+v", rep)
+			}
+			wantArgv(t, calls(), [][]string{{"keys", "t7", key, "--json"}})
+		})
+	}
+
+	for _, key := range []string{"é", "ab", "ctrl+x", " "} {
+		key := key
+		t.Run("unsafe key "+strconv.Quote(key)+" is refused without a launch", func(t *testing.T) {
+			env, calls := fakeHc(t, nil)
+			b := &backend{env: env, client: hc.New(env)}
+			rep := b.Keys(context.Background(), transport.Target{ID: "t7"}, key, false, transport.Call{})
+			if rep.Err == nil || rep.Err.Kind != transport.FailureUnsupported {
+				t.Fatalf("err: %+v", rep.Err)
+			}
+			if !strings.Contains(rep.Err.Message, strconv.Quote(key)) {
+				t.Fatalf("message %q", rep.Err.Message)
+			}
+			if got := calls(); len(got) != 0 {
+				t.Fatalf("calls %v want none", got)
+			}
+		})
+	}
+
+	t.Run("a mapped single character keeps its map entry", func(t *testing.T) {
+		env, calls := fakeHc(t, []fakecli.Rule{{Argv: []string{"keys", "t7", "t", "--json"}, Stdout: `{"turn":3}`}})
+		b := &backend{env: env, client: hc.New(env)}
+		rep := b.Keys(context.Background(), transport.Target{ID: "t7"}, "t", true, transport.Call{})
+		if rep.Err != nil || !rep.Value {
+			t.Fatalf("rep: %+v", rep)
+		}
+		wantArgv(t, calls(), [][]string{{"keys", "t7", "t", "--json"}})
+	})
 
 	t.Run("an unmapped key is unsupported without a launch", func(t *testing.T) {
 		env, calls := fakeHc(t, nil)
