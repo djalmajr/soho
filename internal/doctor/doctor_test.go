@@ -769,3 +769,44 @@ func TestDoctorReportsRetiredFamilyConfigInEveryLayer(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorDiscardedModelsUseTheEffectiveModelsList(t *testing.T) {
+	root := t.TempDir()
+	roles := filepath.Join(root, "roles")
+	if err := os.Mkdir(roles, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roles, "implementer.md"), []byte("---\nmode: edit\n---\nImplement.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := platform.Env{"SOHO_SKILL_DIR": root, "SOHO_ROLES": roles}
+	ctx := core.Config{Entries: map[string]core.ConfigEntry{
+		"lanes":             {Value: "on", Source: "project"},
+		"panes":             {Value: "4", Source: "project"},
+		"lane_build_roles":  {Value: "implementer", Source: "project"},
+		"lane_build_kind":   {Value: "codex", Source: "project"},
+		"lane_build_model":  {Value: "old", Source: "user"},
+		"lane_build_models": {Value: "m1,m2", Source: "user"},
+	}, Order: []string{"lanes", "panes", "lane_build_roles", "lane_build_kind", "lane_build_model", "lane_build_models"}}
+	shadow := core.ModelShadowWarnings(&ctx, env)
+	if len(shadow) != 1 {
+		t.Fatalf("ModelShadowWarnings = %#v", shadow)
+	}
+	want := "warn   " + shadow[0] + "\n" +
+		"warn   config: lane.build.models=m1,m2 (user) is ignored: lane.build.kind=codex comes from a higher layer (project) without a model\n"
+	var out strings.Builder
+	doctorDiscardedModels(&ctx, env, root, &Say{Out: &out})
+	if out.String() != want {
+		t.Fatalf("doctor warnings=%q\nwant      %q", out.String(), want)
+	}
+
+	// Control: without the list the original single-model warning is unchanged.
+	delete(ctx.Entries, "lane_build_models")
+	ctx.Order = []string{"lanes", "panes", "lane_build_roles", "lane_build_kind", "lane_build_model"}
+	out.Reset()
+	doctorDiscardedModels(&ctx, env, root, &Say{Out: &out})
+	want = "warn   config: lane.build.model=old (user) is ignored: lane.build.kind=codex comes from a higher layer (project) without a model\n"
+	if out.String() != want {
+		t.Fatalf("control warnings=%q\nwant        %q", out.String(), want)
+	}
+}

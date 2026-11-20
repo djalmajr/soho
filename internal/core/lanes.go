@@ -1156,3 +1156,151 @@ func ApplyLaneFileThrough(file, panes string, env platform.Env, cwd, through str
 	lines = append(lines, "set reuse_workers=on", "removed role.planner.* and the role kind/model keys of lanes that agreed; divergent lanes kept theirs")
 	return lines
 }
+
+// ModelCapValueOk and ModelListValueOk are the value grammars of the two
+// rotation keys. model_cap is either the word off or a positive decimal; a
+// list needs at least one non-empty comma item. Empty items are dropped by
+// LaneModels rather than rejected, so a trailing comma is harmless.
+func ModelCapValueOk(value string) bool {
+	if !positiveLaneRE.MatchString(value) {
+		return false
+	}
+	n, err := strconv.Atoi(value)
+	return err == nil && n > 0
+}
+
+func ModelListValueOk(value string) bool {
+	for _, item := range strings.Split(value, ",") {
+		if strings.TrimSpace(item) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// ModelCap returns the configured live-workers-per-model limit and whether the
+// cap is on. An invalid value (a file that predates config set validation)
+// falls back to off instead of refusing a spawn.
+func ModelCap(ctx *Config, env platform.Env) (int, bool) {
+	value := Cfg(ctx, "model_cap", "off", env)
+	if value == "off" || !ModelCapValueOk(value) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 {
+		return 0, false
+	}
+	return n, true
+}
+
+// LaneModels is the configured model list in order: whitespace around an item
+// is ignored and empty items are dropped, while duplicates keep their places.
+func LaneModels(ctx *Config, lane string, env platform.Env) []string {
+	value := Cfg(ctx, LaneKey(lane, "models"), "", env)
+	if value == "" {
+		return nil
+	}
+	out := []string{}
+	for _, item := range strings.Split(value, ",") {
+		if model := strings.TrimSpace(item); model != "" {
+			out = append(out, model)
+		}
+	}
+	return out
+}
+
+// LaneModelSpec returns the model spec a lane contributes: models wins over
+// model whenever both keys are set. The caller still resolves the spec
+// against the kind's model list before it reaches argv.
+func LaneModelSpec(ctx *Config, lane string, env platform.Env) string {
+	if models := LaneModels(ctx, lane, env); len(models) > 0 {
+		return models[0]
+	}
+	return LaneAttr(ctx, lane, "model", nil, env)
+}
+
+// ModelShadowWarnings names every lane whose model key is overridden by its
+// models list. Config surfaces these once per lane; the spawn that picks from
+// the list never reads the shadowed key.
+func ModelShadowWarnings(ctx *Config, env platform.Env) []string {
+	out := []string{}
+	for _, lane := range LaneNames(ctx, env) {
+		models := Cfg(ctx, LaneKey(lane, "models"), "", env)
+		model := Cfg(ctx, LaneKey(lane, "model"), "", env)
+		if models == "" || model == "" {
+			continue
+		}
+		out = append(out, fmt.Sprintf("config: lane.%s.model=%s is ignored: lane.%s.models=%s wins", lane, model, lane, models))
+	}
+	return out
+}
+
+type liveModelRow struct {
+	name, model string
+	released    bool
+}
+
+// LiveModelCounts counts live workers by the model recorded in roster column
+// 8, over every workspace of this state root. Each workspace's rows and
+// released-panes registry are read under that workspace's own roster lock —
+// the same <workspace>/agents.lock its writers take — and the liveness probes
+// run after that lock is released, never while it is held. This is a best-effort
+// snapshot, not a reservation: the window between a spawn choosing a model and
+// appending its row is not serialized, so two spawns at the same moment can
+// both see a free slot and exceed model_cap. A row whose runtime state is gone
+// or released, or whose name is in its workspace's released-panes registry, is
+// not live.
+func LiveModelCounts(ctx *Config, env platform.Env, cwd string) map[string]int {
+	counts := map[string]int{}
+	root := StateRootPath(ctx, env, cwd)
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return counts
+	}
+	dirs := []string{root}
+	if entries, err := os.ReadDir(root); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() {
+				dirs = append(dirs, filepath.Join(root, entry.Name()))
+			}
+		}
+	}
+	snapshot := []liveModelRow{}
+	for _, dir := range dirs {
+		var rows []string
+		released := map[string]bool{}
+		WithRosterLock(dir, func() {
+			rows = RosterRows(dir)
+			for _, row := range readReleasedPanes(dir) {
+				released[row.Name] = true
+			}
+		})
+		for _, line := range rows {
+			fields := strings.Split(line, "\t")
+			if len(fields) <= 8 {
+				continue
+			}
+			model := strings.TrimSpace(fields[8])
+			name := fields[0]
+			if model == "" {
+				continue
+			}
+			snapshot = append(snapshot, liveModelRow{name: name, model: model, released: released[name]})
+		}
+	}
+	svc := backend.New(env)
+	for _, row := range snapshot {
+		if row.released {
+			continue
+		}
+		state := svc.Runtime.Get(nil, transport.Target{ID: row.name}, transport.Call{}).Value.State
+		if state == "gone" || state == "released" {
+			continue
+		}
+		counts[row.model]++
+	}
+	return counts
+}
+
+func LiveModelCount(ctx *Config, env platform.Env, cwd, model string) int {
+	return LiveModelCounts(ctx, env, cwd)[model]
+}

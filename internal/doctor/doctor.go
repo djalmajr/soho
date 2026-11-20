@@ -1267,12 +1267,20 @@ func doctorProjectRoles(env platform.Env, cwd string, s *Say) {
 }
 
 func doctorDiscardedModels(ctx *core.Config, env platform.Env, cwd string, s *Say) {
+	// The same wording config uses: a models list wins over a lane's model.
+	for _, warning := range core.ModelShadowWarnings(ctx, env) {
+		s.Warning(warning)
+	}
 	if core.LanesEnabled(ctx, env) {
 		for _, lane := range core.LaneNames(ctx, env) {
 			kk, mk := core.LaneKey(lane, "kind"), core.LaneKey(lane, "model")
 			k, m := core.Cfg(ctx, kk, "", env), core.Cfg(ctx, mk, "", env)
-			if k != "" && m != "" && core.CfgLayerRank(ctx, mk, env) < core.CfgLayerRank(ctx, kk, env) {
-				s.Warning(fmt.Sprintf("config: lane.%s.model=%s (%s) is ignored: lane.%s.kind=%s comes from a higher layer (%s) without a model", lane, m, core.CfgSource(ctx, mk, env), lane, k, core.CfgSource(ctx, kk, env)))
+			label, effectiveKey := "model", mk
+			if models := core.Cfg(ctx, core.LaneKey(lane, "models"), "", env); models != "" {
+				label, effectiveKey, m = "models", core.LaneKey(lane, "models"), models
+			}
+			if k != "" && m != "" && core.CfgLayerRank(ctx, effectiveKey, env) < core.CfgLayerRank(ctx, kk, env) {
+				s.Warning(fmt.Sprintf("config: lane.%s.%s=%s (%s) is ignored: lane.%s.kind=%s comes from a higher layer (%s) without a model", lane, label, m, core.CfgSource(ctx, effectiveKey, env), lane, k, core.CfgSource(ctx, kk, env)))
 			}
 		}
 	}

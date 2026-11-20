@@ -504,6 +504,92 @@ func clampResolvedEffort(effort, kind, model string, ctx *core.Config, env platf
 	return effort
 }
 
+// ChooseSpawnModel decides where the spawn's model comes from. A lane's
+// models list rotates by the live count of each resolved model in the roster
+// of the whole state root; every other path keeps its existing model and only
+// warns when it is already at the cap. The returned spec still goes through
+// the kind's normal model resolution before argv and the roster see it.
+func ChooseSpawnModel(flagModel string, res core.RoleSettings, ctx *core.Config, env platform.Env, cwd, kind, effort string, warn func(string, *core.Config, platform.Env, string)) (string, string) {
+	capN, capped := core.ModelCap(ctx, env)
+	lane := res.Lane
+	if flagModel == "" && lane != "" && core.LanesEnabled(ctx, env) {
+		models := core.LaneModels(ctx, lane, env)
+		if len(models) > 0 {
+			if !capped {
+				return models[0], "list"
+			}
+			counts := core.LiveModelCounts(ctx, env, cwd)
+			full := make([]string, 0, len(models))
+			for _, spec := range models {
+				resolved, _ := kinds.ResolveModel(kind, spec, effort, env, func(string) {})
+				count := counts[resolved]
+				if count < capN {
+					return spec, "list"
+				}
+				full = append(full, fmt.Sprintf("%s (%d)", resolved, count))
+			}
+			core.DieFriction(fmt.Sprintf("spawn: every model of lane '%s' is at the cap of %d live workers: %s; release a worker or raise model_cap", lane, capN, strings.Join(full, ", ")), 13, "", "")
+		}
+	}
+	spec := res.ModelSpec
+	choice := "default"
+	switch {
+	case flagModel != "":
+		choice = "flag"
+	case lane != "" && strings.HasPrefix(res.ModelFrom, "lane "):
+		choice = "lane"
+	}
+	if spec != "" && capped {
+		resolved, _ := kinds.ResolveModel(kind, spec, effort, env, func(string) {})
+		if count := core.LiveModelCounts(ctx, env, cwd)[resolved]; count >= capN {
+			warn(fmt.Sprintf("spawn: model '%s' already has %d live workers (model_cap %d)", resolved, count, capN), ctx, env, "spawn")
+		}
+	}
+	return spec, choice
+}
+
+// ReusableListedModel returns the spec from the lane's models list whose
+// resolved model is recorded on a worker that passes the very same reuse
+// predicate the lane's reuse branch applies, or "" when there is no such
+// reuse. Reuse adds no live worker, so it must be decided before the cap
+// rotates or refuses. A listed worker that fails cwd, effort, approvals, MCP
+// or native-args matching is not a reuse candidate: rotation stays in charge.
+func ReusableListedModel(flagModel string, res core.RoleSettings, req laneReuseRequest, o spawnOptions, ctx *core.Config) string {
+	env := req.env
+	if flagModel != "" || res.Lane == "" || !core.LanesEnabled(ctx, env) || o.pane != "" || o.reuse == "off" {
+		return ""
+	}
+	reuse := o.reuse
+	if reuse == "" {
+		reuse = core.Cfg(ctx, "reuse_workers", "on", env)
+	}
+	if reuse != "on" {
+		return ""
+	}
+	models := core.LaneModels(ctx, res.Lane, env)
+	if len(models) == 0 {
+		return ""
+	}
+	sd := req.sd
+	rt := backend.New(env).Runtime
+	for _, row := range core.LaneWorkers(sd, res.Lane) {
+		fields := strings.Split(row, "\t")
+		if fieldAt(fields, 0) == "" {
+			continue
+		}
+		state, _ := agentGetState(rt, fieldAt(fields, 0))
+		for _, spec := range models {
+			silent := func(string) {}
+			resolved, _ := kinds.ResolveModel(req.kind, spec, req.effort, env, silent)
+			candidate := req.forModel(resolved)
+			if candidate.accepts(fields, state) {
+				return spec
+			}
+		}
+	}
+	return ""
+}
+
 // LaneRoleEffortConflict compares a lane session's effective effort with an
 // explicit role request, excluding kind defaults and applying spawn's ceilings.
 // Callers first establish that the effort came from the lane, rather than a flag.
@@ -683,6 +769,52 @@ func laneReuseCandidate(f []string, state, role, kind, model, effort, approvals,
 	return fieldAt(f, 2) == kind && fieldAt(f, 8) == model && effortMatches(f, effort) && laneApprovalsMatch(f, approvals) && mcpMatches(f, mcp) && dispatch.SamePath(fieldAt(f, 6), workerCwd, platform.Current())
 }
 
+// laneReuseRequest is the resolved request the early listed-model probe and
+// the lane's reuse branch both check a candidate against. One set of helpers
+// keeps the two decisions from drifting: filtersMatch is the row predicate
+// (state, report, kind, model, cwd, effort, approvals, MCP), nativeArgsMatch
+// is the opening-args predicate, and accepts is their conjunction used by the
+// probe before it can suppress cap rotation.
+type laneReuseRequest struct {
+	role, kind, model, effort, approvals, mcp, workerCwd, sd, nativeArgs string
+	env                                                                  platform.Env
+	processCwd                                                           string
+}
+
+// newLaneReuseRequest is the single construction point for both the listed
+// model probe and the lane reuse branch. Its inputs are the already resolved
+// spawn options: canonical mcp, effort clamped to the kind and max_effort,
+// resolved cwd and approvals.
+func newLaneReuseRequest(o spawnOptions, kind, sd, nativeArgs string, env platform.Env, cwd string) laneReuseRequest {
+	return laneReuseRequest{
+		role: o.role, kind: kind, model: o.model, effort: o.effort, approvals: o.approvals, mcp: o.mcp,
+		workerCwd: o.cwd, sd: sd, nativeArgs: nativeArgs, env: env, processCwd: cwd,
+	}
+}
+
+// forModel derives the request for one concrete model: codex has a
+// model-specific effort ceiling, applied by the same shared normalization the
+// spawn's own effort path uses. No other field changes.
+func (r laneReuseRequest) forModel(model string) laneReuseRequest {
+	r.model = model
+	if r.kind == "codex" && r.effort != "" {
+		r.effort = kinds.ClampTo(r.effort, kinds.CodexEffortCeiling(model, r.env))
+	}
+	return r
+}
+
+func (r laneReuseRequest) filtersMatch(f []string, state string) bool {
+	return laneReuseCandidate(f, state, r.role, r.kind, r.model, r.effort, r.approvals, r.mcp, r.workerCwd, r.sd, r.env, r.processCwd)
+}
+
+func (r laneReuseRequest) nativeArgsMatch(f []string) bool {
+	return fieldAt(f, 13) == r.nativeArgs
+}
+
+func (r laneReuseRequest) accepts(f []string, state string) bool {
+	return r.filtersMatch(f, state) && r.nativeArgsMatch(f)
+}
+
 // effortMatches requires the opening effort column, including a recorded
 // empty value when the CLI chose its default. Historical rows cannot prove it.
 func effortMatches(f []string, want string) bool {
@@ -725,10 +857,10 @@ func laneReusePick(sd, lane, role, kind, model, effort, approvals, mcp, workerCw
 }
 
 func EmitReuse(name, role, kind string, ctx *core.Config, env platform.Env, cwd string) bool {
-	return emitReuse(name, role, kind, "", ctx, env, cwd)
+	return emitReuse(name, role, kind, "", "default", ctx, env, cwd)
 }
 
-func emitReuse(name, role, kind, qualifiedProfile string, ctx *core.Config, env platform.Env, cwd string) bool {
+func emitReuse(name, role, kind, qualifiedProfile, modelChoice string, ctx *core.Config, env platform.Env, cwd string) bool {
 	sd := core.StateDirPath(ctx, env, cwd)
 	line := core.RosterLine(sd, name)
 	if line == "" {
@@ -743,7 +875,7 @@ func emitReuse(name, role, kind, qualifiedProfile string, ctx *core.Config, env 
 	}
 	// model, effort and agent_args are the roster columns the spawn recorded
 	// (8, 14, 13); a missing value comes out as "".
-	out := jsonjs.O("name", name, "pane_id", fieldAt(f, 1), "kind", kind, "role", role, "family", fieldAt(f, 4), "reused", true, "previous_role", prev, "effort", fieldAt(f, 14), "model", fieldAt(f, 8), "agent_args", fieldAt(f, 13), "status", "ready")
+	out := jsonjs.O("name", name, "pane_id", fieldAt(f, 1), "kind", kind, "role", role, "family", fieldAt(f, 4), "reused", true, "previous_role", prev, "effort", fieldAt(f, 14), "model", fieldAt(f, 8), "model_choice", modelChoice, "agent_args", fieldAt(f, 13), "status", "ready")
 	if kind == "opencode" && env.Get("SOHO_TRANSPORT") == "hc" {
 		// SOH-201 phase B: the reuse gate proved this worker reports the
 		// primary profile; disclose the known profile name only, never its
@@ -1127,6 +1259,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		}()
 	}
 	var o spawnOptions
+	modelChoice := "default"
 	// Explicit handoff admission and snapshot precede even warning writes,
 	// caller checks, naming and reuse. The snapshot map itself stays private.
 	explicitEnv := hasSpawnEnvOption(argv)
@@ -1236,6 +1369,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		// terminal name and nothing else happens.
 		warnOnce("hc-no-rename", "spawn: transport=hc has no rename; the orchestrator keeps its terminal name", ctx, env, cwd, admissionOnly, warn)
 	}
+	flagModel := o.model
 	res := core.ResolveRoleSettings(o.role, ctx, env, cwd, core.RoleFlags{Kind: o.kind, Model: o.model, Effort: o.effort, Approvals: o.approvals})
 	deferRename := false
 	if res.Kind == "opencode" && env.Get("SOHO_TRANSPORT") != "hc" {
@@ -1326,6 +1460,20 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			o.effort = clamped
 		}
 	}
+	// One normalized request value serves both the listed-model probe and the
+	// lane reuse branch. Normalization (MCP canonicalization and effort clamps)
+	// happens above, before any model choice or terminal is opened.
+	request := newLaneReuseRequest(o, kind, core.StateDirPath(ctx, env, cwd), ConfigNativeArgs(kind, lane, o.role, ctx, env, cwd, nil), env, cwd)
+	reuseListed := ""
+	if !admissionOnly {
+		reuseListed = ReusableListedModel(flagModel, res, request, o, ctx)
+	}
+	if reuseListed != "" {
+		res.ModelSpec, modelChoice = reuseListed, "list"
+	} else {
+		res.ModelSpec, modelChoice = ChooseSpawnModel(flagModel, res, ctx, env, cwd, kind, request.effort, warn)
+	}
+	o.model, modelSpec = res.ModelSpec, res.ModelSpec
 	if modelSpec != "" {
 		o.model, _ = kinds.ResolveModel(kind, modelSpec, o.effort, env, func(msg string) { warnBeforeAdmission(func() { Warn(msg, ctx, env, "spawn") }) })
 	}
@@ -1344,6 +1492,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			o.effort = mc
 		}
 	}
+	request = request.forModel(o.model)
 	// SOH-201 phase B: the native hc+opencode primary profile is prepared
 	// here, before any reuse decision or terminal creation, with the
 	// explicitly resolved requested model and the caller's inline
@@ -1410,6 +1559,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	burst := false
 	if lane != "" && o.pane == "" {
 		d := core.LaneDecide(ctx, lane, o.role, env, cwd, o.reuse == "on")
+		reuseReq := request
 		for _, gone := range d.Gone {
 			core.RosterRemove(sd, gone)
 			if len(refuseParts) > 0 {
@@ -1436,7 +1586,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 					}
 					named = true
 					state, _ := agentGetState(svc.Runtime, o.name)
-					if laneReuseCandidate(rf, state, o.role, kind, o.model, o.effort, o.approvals, o.mcp, o.cwd, sd, env, cwd) {
+					if reuseReq.filtersMatch(rf, state) {
 						selected = o.name
 					}
 					break
@@ -1465,10 +1615,12 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 				// when the lane has a slot, exit 13 when it does not.
 				// DJA-392: the MCP choice the worker was opened with (roster
 				// column 15) must match too, under the same rule.
+				state, _ := agentGetState(svc.Runtime, d.Name)
+				filtersOk := reuseReq.filtersMatch(f, state)
 				modelCwdOk := fieldAt(f, 8) == o.model && dispatch.SamePath(fieldAt(f, 6), o.cwd, platform.Current())
 				approvalsOk := laneApprovalsMatch(f, o.approvals)
 				effortOk := effortMatches(f, o.effort)
-				if !modelCwdOk || !approvalsOk || !effortOk || !mcpMatches(f, o.mcp) {
+				if !filtersOk {
 					selected = laneReusePick(sd, lane, o.role, kind, o.model, o.effort, o.approvals, o.mcp, o.cwd, env, cwd)
 					if selected == "" {
 						if d.N < d.Capacity {
@@ -1496,8 +1648,8 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			if len(f) >= 14 {
 				args = f[13]
 			}
-			wanted := ConfigNativeArgs(kind, lane, o.role, ctx, env, cwd, nil)
-			if args != wanted {
+			wanted := reuseReq.nativeArgs
+			if !reuseReq.nativeArgsMatch(f) {
 				obj := jsonjs.O("status", "kind-mismatch", "lane", lane, "name", selected, "session_args", args, "requested_args", wanted)
 				_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(obj))
 				Warn(fmt.Sprintf("lane '%s' worker '%s' was started with other native args ('%s'); this spawn wants '%s'. Release the lane, then spawn again.", lane, selected, args, wanted), ctx, env, "spawn")
@@ -1542,7 +1694,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			}
 			gateReuse(svc, name, o.role, actual, ctx, env, cwd)
 			warnLaneRoleEffort(name, o.role, lane, actual, fieldAt(f, 8), fieldAt(f, 14), strings.HasPrefix(res.EffortFrom, "lane "), ctx, env, cwd)
-			emitReuse(name, o.role, actual, qualifiedProfile, ctx, env, cwd)
+			emitReuse(name, o.role, actual, qualifiedProfile, modelChoice, ctx, env, cwd)
 			sameTreeEditors(name, o.role, fieldAt(f, 6), sd, env, cwd, ctx)
 			warnMsg := fmt.Sprintf("reusing idle lane '%s' worker '%s' as %s; existing session context is retained", lane, selected, o.role)
 			if renamedTo != "" {
@@ -1587,7 +1739,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			qualifiedProfile := gateConfiguredReuse(svc.Terminal, core.RosterLine(sd, reused), o, kind, configuredArgs, env)
 			previous := fieldAt(strings.Split(core.RosterLine(sd, reused), "\t"), 3)
 			gateReuse(svc, reused, o.role, kind, ctx, env, cwd)
-			emitReuse(reused, o.role, kind, qualifiedProfile, ctx, env, cwd)
+			emitReuse(reused, o.role, kind, qualifiedProfile, modelChoice, ctx, env, cwd)
 			sameTreeEditors(reused, o.role, o.cwd, sd, env, cwd, ctx)
 			if previous == o.role {
 				Warn(fmt.Sprintf("reusing idle worker '%s' (%s, %s; dispatch to '%s'); existing session context is retained", reused, kind, o.role, reused), ctx, env, "spawn")
@@ -1941,7 +2093,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			}
 		}
 	}
-	out := jsonjs.O("name", o.name, "pane_id", o.pane, "kind", kind, "role", o.role, "family", family, "created_pane", created, "layout", layoutMode, "placement", placement, "effort", defaultValue(o.effort, "default"), "model", defaultValue(o.model, "default"), "model_spec", modelSpec, "approvals", defaultValue(o.approvals, "auto"), "agent_args", strings.Join(agentArgs, " "), "status", func() string {
+	out := jsonjs.O("name", o.name, "pane_id", o.pane, "kind", kind, "role", o.role, "family", family, "created_pane", created, "layout", layoutMode, "placement", placement, "effort", defaultValue(o.effort, "default"), "model", defaultValue(o.model, "default"), "model_spec", modelSpec, "model_choice", modelChoice, "approvals", defaultValue(o.approvals, "auto"), "agent_args", strings.Join(agentArgs, " "), "status", func() string {
 		if blocked {
 			return "blocked_at_startup"
 		}
