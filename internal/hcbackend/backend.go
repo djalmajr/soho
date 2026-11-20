@@ -2186,3 +2186,11 @@ func Parent(env platform.Env) (string, error) {
 	}
 	return record.Parent, nil
 }
+
+// StatusOfRecord is stateOf exposed to read-only consumers that read one
+// `hc get` record themselves. It is the same mapping, with no extra rule:
+// finished or missing is gone, a live record's reported status passes
+// through, and a live record with no status is unknown. Existing callers of
+// stateOf are unchanged. It is placed after every existing declaration so
+// their line numbers stay stable.
+func StatusOfRecord(obj *jsonjs.Object) string { return stateOf(obj) }

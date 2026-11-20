@@ -237,12 +237,12 @@ func TestPanelCapabilitiesHelpAndNowrite(t *testing.T) {
 		t.Fatalf("capabilities code=%d stderr=%q", code, stderr)
 	}
 	obj := panelParseCaps(t, out)
-	for _, key := range []string{"team_json", "config_dry_run", "config_unset", "roster_workers"} {
+	for _, key := range []string{"team_json", "config_dry_run", "config_unset", "roster_workers", "roster_detached"} {
 		if value, _ := obj.Get(key); value != float64(1) {
 			t.Fatalf("capabilities.%s = %#v, want 1", key, value)
 		}
 	}
-	if keys := obj.Keys(); strings.Join(keys, ",") != "schema,worker_collaboration,ephemeral_job,job_events,inventory,report_json,team_json,config_dry_run,config_unset,roster_workers,transport" {
+	if keys := obj.Keys(); strings.Join(keys, ",") != "schema,worker_collaboration,ephemeral_job,job_events,inventory,report_json,team_json,config_dry_run,config_unset,roster_workers,roster_detached,transport" {
 		t.Fatalf("capabilities key order = %v", keys)
 	}
 

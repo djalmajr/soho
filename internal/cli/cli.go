@@ -150,7 +150,7 @@ func Run(args []string, env platform.Env) (code int) {
 		// transport is the configured worker transport for this directory
 		// (DJA-603); the other fields are fixed for this binary.
 		cwd, _ := os.Getwd()
-		_, _ = fmt.Fprintf(platform.Stdout, "{\"schema\":1,\"worker_collaboration\":1,\"ephemeral_job\":1,\"job_events\":1,\"inventory\":1,\"report_json\":1,\"team_json\":1,\"config_dry_run\":1,\"config_unset\":1,\"roster_workers\":1,\"transport\":%q}\n", core.TransportModeAt(env, cwd))
+		_, _ = fmt.Fprintf(platform.Stdout, "{\"schema\":1,\"worker_collaboration\":1,\"ephemeral_job\":1,\"job_events\":1,\"inventory\":1,\"report_json\":1,\"team_json\":1,\"config_dry_run\":1,\"config_unset\":1,\"roster_workers\":1,\"roster_detached\":1,\"transport\":%q}\n", core.TransportModeAt(env, cwd))
 		return 0
 	}
 
@@ -162,6 +162,18 @@ func Run(args []string, env platform.Env) (code int) {
 	launch := job.ReadLaunchLocators(env)
 	env = job.WithoutLaunchLocators(env)
 	decisionEnv := env.Clone()
+
+	// The SoHo panel runs outside a Herdr terminal. A roster --json caller
+	// with no transport identity takes the read-only detached path after the
+	// private locators are dropped, so its hc child cannot inherit them, and
+	// before caller, friction, state or transport setup; every other form
+	// keeps its existing refusal (SOH-451).
+	if len(args) >= 2 && args[0] == "roster" {
+		cwd, _ := os.Getwd()
+		if runDetachedRoster(args[1:], env, cwd) {
+			return 0
+		}
+	}
 	command := ""
 	if len(args) != 0 {
 		command = args[0]

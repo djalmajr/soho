@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/hc"
+	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
@@ -17,6 +18,34 @@ import (
 )
 
 func TestMain(m *testing.M) { fakecli.RunTests(m) }
+
+// StatusOfRecord exposes stateOf without changing it: the exported word
+// must equal the rule every backend caller already uses, including the
+// finished, string-status and missing-status cases.
+func TestStatusOfRecordSharesStateOfRule(t *testing.T) {
+	for _, tc := range []struct{ name, record, want string }{
+		{"finished without status", `{"state":"finished","exit_code":0}`, "gone"},
+		{"finished with done status", `{"state":"finished","status":{"state":"done"}}`, "gone"},
+		{"live working", `{"state":"live","status":{"state":"working"}}`, "working"},
+		{"live string status", `{"state":"live","status":"blocked"}`, "blocked"},
+		{"live without status", `{"state":"live"}`, "unknown"},
+		{"live with null status", `{"state":"live","status":null}`, "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value, err := jsonjs.Parse([]byte(tc.record))
+			if err != nil {
+				t.Fatal(err)
+			}
+			obj, ok := value.(*jsonjs.Object)
+			if !ok {
+				t.Fatalf("record = %T, want object", value)
+			}
+			if got := StatusOfRecord(obj); got != tc.want || got != stateOf(obj) {
+				t.Fatalf("StatusOfRecord = %q, stateOf = %q, want %q", got, stateOf(obj), tc.want)
+			}
+		})
+	}
+}
 
 func TestCurrentCwdProjectionPreservesCwd(t *testing.T) {
 	for _, tc := range []struct {
