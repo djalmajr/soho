@@ -189,11 +189,6 @@ var compactProofByKind = map[string]string{
 	"opencode": compactOpenCodeProofMarker,
 }
 
-// compactThinkingFooterRE matches a thinking level at the end of a footer
-// line only when a boundary precedes it (start of line, whitespace, • or :),
-// so a word like `cutoff` does not read as `off`.
-var compactThinkingFooterRE = regexp.MustCompile(`(^|[\s•:])(off|minimal|low|medium|high|xhigh|max)\s*$`)
-
 var compactPiFooterRE = regexp.MustCompile(`(?:^|\s)(\d{1,3}(?:\.\d+)?%|\?)/\d+(?:\.\d+)?[kKmM](?:\s|$)`)
 
 // compactPiContext reads only below the last input-box border, within the
@@ -1442,18 +1437,7 @@ func compactThinkingLevel(agent, pane string, env platform.Env, wanted string, b
 // the screen (the last line containing a bullet) ends with, or "" when that
 // line does not end with a level.
 func compactThinkingFooter(screen string) string {
-	lines := strings.Split(strings.ReplaceAll(screen, "\r\n", "\n"), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if !strings.Contains(line, "•") {
-			continue
-		}
-		if m := compactThinkingFooterRE.FindStringSubmatch(line); m != nil {
-			return m[2]
-		}
-		return ""
-	}
-	return ""
+	return text.ThinkingFooterLevel(screen)
 }
 
 // openCodeMenuResult reports what the opencode command-menu selection found.

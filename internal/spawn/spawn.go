@@ -980,6 +980,11 @@ type spawnOptions struct {
 	launchProfile                                                                                          kinds.LaunchProfile
 	nativeArgsSnapshot                                                                                     string
 	loginShell                                                                                             string
+	// piStartScreen is hc's post-ready screen read, reused for the thinking
+	// footer so a fresh pi terminal keeps its established single-read start.
+	piStartScreen      string
+	piStartScreenOK    bool
+	piStartScreenTried bool
 }
 
 // spawnValueOption is the authoritative option/value grammar for parsing and
@@ -1941,6 +1946,33 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			}
 		}
 	}
+	// SOH-454: a fresh pi worker may draw a thinking level different from
+	// the requested one. Read only its own screen, after the start checks
+	// have established readiness, and never hold the spawn past two reads
+	// inside a 2 s window. The text on screen is matched, never echoed.
+	// hc already took that post-ready read during terminal start; it is
+	// reused here, with a retry only for a footer caught mid-draw.
+	effortEffective := ""
+	if !blocked && kind == "pi" {
+		readTarget := o.name
+		if env.Get("SOHO_TRANSPORT") == "hc" {
+			// hc addresses a transport by its terminal address, not its name.
+			readTarget = o.pane
+		}
+		if env.Get("SOHO_TRANSPORT") == "hc" && o.piStartScreenTried {
+			if o.piStartScreenOK {
+				effortEffective = text.ThinkingFooterLevel(o.piStartScreen)
+				if effortEffective == "" && piThinkingPartialFooter(o.piStartScreen) {
+					effortEffective = readPiThinkingLevel(svc.Runtime, readTarget, time.Now, time.Sleep)
+				}
+			}
+		} else {
+			effortEffective = readPiThinkingLevel(svc.Runtime, readTarget, time.Now, time.Sleep)
+		}
+		if effortEffective != "" && o.effort != "" && effortEffective != o.effort {
+			warnOnce("pi-thinking:"+o.model+":"+o.effort, fmt.Sprintf("spawn: pi shows thinking '%s' for '%s' where '%s' was asked; this model may not offer '%s'", effortEffective, o.name, o.effort, o.effort), ctx, env, cwd, admissionOnly, warn)
+		}
+	}
 	out := jsonjs.O("name", o.name, "pane_id", o.pane, "kind", kind, "role", o.role, "family", family, "created_pane", created, "layout", layoutMode, "placement", placement, "effort", defaultValue(o.effort, "default"), "model", defaultValue(o.model, "default"), "model_spec", modelSpec, "approvals", defaultValue(o.approvals, "auto"), "agent_args", strings.Join(agentArgs, " "), "status", func() string {
 		if blocked {
 			return "blocked_at_startup"
@@ -1957,6 +1989,9 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	}
 	if contextWindow != "" {
 		out.Set("context_window", contextWindow)
+	}
+	if effortEffective != "" {
+		out.Set("effort_effective", effortEffective)
 	}
 	if burst {
 		out.Set("burst", true)
@@ -2380,6 +2415,10 @@ func startHcAgentUsingServices(ctx *core.Config, o *spawnOptions, kind string, e
 			if kind == "pi" {
 				screen := svc.Runtime.Read(context.Background(), transport.Target{ID: rep.Value}, transport.Read{Source: "visible", Lines: intPtr(40)}, transport.Call{})
 				keyFailure := false
+				o.piStartScreenTried = true
+				if screen.Err == nil {
+					o.piStartScreen, o.piStartScreenOK = screen.Value, true
+				}
 				if screen.Err == nil && screen.Valid {
 					for _, line := range strings.Split(screen.Value, "\n") {
 						if strings.Contains(line, "No API key found for") || strings.Contains(line, "Failed to resolve API key") || strings.Contains(line, "API key auth failed for provider") {
@@ -2901,6 +2940,12 @@ func freshSpawnArgs(o spawnOptions, lane, kind string, ctx *core.Config, env pla
 		}
 	case len(core.McpNames(o.mcp)) > 0:
 		// DJA-693: a list on a kind without codex's per-server overrides.
+		// SOH-453: the cannot-limit warnings repeat once per session per
+		// requested list, independent of the order of its names and of the
+		// worker name in the message.
+		names := slices.Clone(core.McpNames(o.mcp))
+		slices.Sort(names)
+		keyNames := strings.Join(names, ",")
 		switch kind {
 		case "pi":
 			present, reason := mcpPiListNames(env, o.cwd)
@@ -2909,10 +2954,10 @@ func freshSpawnArgs(o spawnOptions, lane, kind string, ctx *core.Config, env pla
 			} else if !mcpNamePresent(core.McpNames(o.mcp), present) {
 				args = append(args, "--no-mcp")
 			} else {
-				warn(fmt.Sprintf("spawn: pi cannot limit its MCP servers to the requested list per process; '%s' keeps the user's MCP servers", o.name), ctx, env, "spawn")
+				warnOnce("pi-mcp-list:"+keyNames, fmt.Sprintf("spawn: pi cannot limit its MCP servers to the requested list per process; '%s' keeps the user's MCP servers", o.name), ctx, env, cwd, admissionOnly, warn)
 			}
 		case "claude":
-			warn(fmt.Sprintf("spawn: claude cannot limit its MCP servers to the requested list per process; '%s' keeps the user's MCP servers", o.name), ctx, env, "spawn")
+			warnOnce("claude-mcp-list:"+keyNames, fmt.Sprintf("spawn: claude cannot limit its MCP servers to the requested list per process; '%s' keeps the user's MCP servers", o.name), ctx, env, cwd, admissionOnly, warn)
 		default:
 			warn(fmt.Sprintf("spawn: %s cannot turn MCP servers off per process; '%s' keeps the user's MCP servers", kind, o.name), ctx, env, "spawn")
 		}
