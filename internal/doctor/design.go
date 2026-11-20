@@ -92,7 +92,7 @@ func designLineCount(text string) int {
 
 // doctorDesign checks the project's DESIGN.md (brief DJA-695 fatia 2,
 // decision 1): it is the presence-driven mirror of doctorValidation, with
-// the same warning cap and the same early return under setup_target=local.
+// the same warning cap and the same early return under a local setup.
 // It speaks only when DESIGN.md exists in the project root as a regular
 // file: no file, a link and a directory are all silence (a project without
 // the file is not demanded), and nothing is ever written. The front matter
@@ -101,8 +101,8 @@ func designLineCount(text string) int {
 // the VALIDATION.md is looked up through the shared reader
 // (validation.Parse): when VALIDATION.md is absent, its own warning
 // already exists and is not repeated.
-func doctorDesign(ctx *core.Config, env platform.Env, cwd string, s *Say) {
-	if core.Cfg(ctx, "setup_target", "canonical", env) == "local" {
+func doctorDesign(ctx *core.Config, env platform.Env, cwd string, s *Say, memo *doctorSetupMemo) {
+	if memo.local(ctx, env, cwd) {
 		return
 	}
 	root := platform.ProjectRoot(env, cwd)

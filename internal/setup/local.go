@@ -832,3 +832,22 @@ func warnTrackedCanonical(root, file string, env platform.Env, before, after *st
 		}
 	}
 }
+
+// ImplicitLocalSetupInEffect reports whether plain setup in this repository
+// wrote the local setup because no soho file is tracked. It shares the
+// tracking rules with implicitLocalSetup and never writes. An explicitly
+// configured setup_target (including canonical and local) keeps its own
+// choice, and a git failure keeps the conservative tracked answer.
+func ImplicitLocalSetupInEffect(root string, ctx *core.Config, env platform.Env) bool {
+	if core.ConfigExplicit(ctx, "setup_target", env) {
+		return false
+	}
+	if !hasGitMetadata(root) {
+		return false
+	}
+	if trackedSohoFile(root, env, &setupTracking{}) {
+		return false
+	}
+	text, err := platform.ReadTextFile(localTarget(root))
+	return err == nil && (strings.Contains(text, setuptext.SetupStart) || strings.Contains(text, setuptext.LegacySetupStart))
+}
