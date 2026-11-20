@@ -618,7 +618,7 @@ func TestDispatchHcUnknownCapabilityZeroSend(t *testing.T) {
 	if !strings.Contains(out, wantRaw) {
 		t.Fatalf("out=%s, want the capability refusal %q", out, wantRaw)
 	}
-	wantWarn := "soho: warning: prompt submission failed; inspect with: hc get worker && hc read worker. Do not resend blindly."
+	wantWarn := "soho: warning: prompt submission failed (protocol: cannot prove the --if guard for worker worker: no --if guard is proven on both sides: the parser holds [working], the serving enum holds [idle working]; cause: no --if guard is proven on bot...); inspect with: hc get worker && hc read worker. Do not resend blindly."
 	if !strings.Contains(errText, wantWarn) {
 		t.Fatalf("stderr=%q, want the inspection warning %q", errText, wantWarn)
 	}

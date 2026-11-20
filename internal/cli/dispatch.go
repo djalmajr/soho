@@ -20,6 +20,7 @@ import (
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
 	"github.com/djalmajr/soho/internal/gittree"
+	"github.com/djalmajr/soho/internal/hcbackend"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/kinds"
@@ -37,6 +38,14 @@ import (
 
 var dispatchWaitFiles = []string{"size", "screen", "since", "blocked", "approvals", "quota", "provider", "provider-cause", "capacity-retries", "capacity-at", "question", "stuck-hash", "stuck-since", "stuck-warned", "activity-at", "probe-at", "not-received", "queued", "enter-retry", "approve-screen"}
 var dispatchWaitFor = waitpkg.WaitFor
+
+// dispatchFirstResendPolls is how many one-second pauses a first dispatch
+// waits for the worker to be idle with an empty composer before it gives up
+// on resending a refused prompt (SOH-409).
+const dispatchFirstResendPolls = 10
+
+// dispatchFirstResendPause is that one-second pause; tests replace it.
+var dispatchFirstResendPause = func() { time.Sleep(time.Second) }
 var writeDispatchSidecar = dispatch.WriteSidecar
 var dispatchCodexSupportsNoDaemon = spawn.CodexSupportsNoDaemon
 var workerLifecycleLock = core.LockWorkerLifecycle
@@ -826,6 +835,23 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		}
 	}
 
+	// SOH-409: a first dispatch to a fresh codex worker whose guarded send hc
+	// refused before typing anything (the status mismatch, exit 10) sends the
+	// same prompt once more when the worker is idle with a readable empty
+	// composer. The task pointer, the sidecar and the composed prompt stand
+	// as the first send left them; a refusal that stands falls into the
+	// failure branch below with today's restoration and result.
+	resentFirst := false
+	if hcMode && promptRep.Err != nil && kind == "codex" && !amend && !queue && !queuedHC && !busyRefusal && !behavior.noResend &&
+		priorPointer == nil && oldReport == "" && hcbackend.SendRefusedBeforeWrite(promptRep.Err) &&
+		firstDispatchResendReady(svc, agent, kind, composed) {
+		promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text}, sendCall)
+		if promptRep.Err == nil {
+			resentFirst = true
+			core.Warn(fmt.Sprintf("the first prompt to '%s' was refused before it was written; sent it once more", agent), frictionLogPath, "dispatch")
+		}
+	}
+
 	markSubmitFailed := func() string {
 		restoredReport := ""
 		if restored := taskreport.ReadTaskReportPointer(sd, agent); restored != nil {
@@ -864,7 +890,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		if hcMode {
 			probe = "hc get " + agent + " && hc read " + agent
 		}
-		warning := "prompt submission failed; inspect with: " + probe + ". Do not resend blindly."
+		warning := submitFailedWarning(promptRep.Err, probe)
 		if busyRefusal {
 			warning = promptRep.Err.Message
 		}
@@ -1137,7 +1163,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			}
 		}
 	}
-	resultCode := emitDispatchResult(agent, role, kind, composed, report, taskReport, status, amend, last, waitCode, sd, enterSent, resent)
+	resultCode := emitDispatchResult(agent, role, kind, composed, report, taskReport, status, amend, last, waitCode, sd, enterSent, resent, resentFirst)
 	return resultCode
 }
 
@@ -1578,6 +1604,66 @@ func transcriptPathMarker(path string) string {
 	return out.String()
 }
 
+// submitFailedWarning is the failed-submission warning. With a message it
+// names the transport error: kind, optional code, message, and the root
+// cause when that says more than the message, escaped and cut at
+// dispatchCauseLimit characters; without a message it is the short line.
+func submitFailedWarning(failure *transport.Failure, probe string) string {
+	tail := "; inspect with: " + probe + ". Do not resend blindly."
+	if failure == nil || failure.Message == "" {
+		return "prompt submission failed" + tail
+	}
+	cause := string(failure.Kind)
+	if failure.Code != "" {
+		cause += "/" + failure.Code
+	}
+	cause += ": " + failure.Message
+	if failure.Cause != nil {
+		if root := failure.Cause.Error(); root != "" && root != failure.Message {
+			cause += "; cause: " + root
+		}
+	}
+	return "prompt submission failed (" + boundedEscaped(cause, dispatchCauseLimit) + ")" + tail
+}
+
+// dispatchCauseLimit bounds the cause text of a failed-submission warning.
+const dispatchCauseLimit = 200
+
+// boundedEscaped renders value on one line: backslash, newline, carriage
+// return, tab and the other control characters become visible escapes, then
+// the result is cut at limit characters with "..." when it was longer.
+func boundedEscaped(value string, limit int) string {
+	var out strings.Builder
+	count := 0
+	for _, r := range value {
+		var piece string
+		switch {
+		case r == '\\':
+			piece = `\\`
+		case r == '\n':
+			piece = `\n`
+		case r == '\r':
+			piece = `\r`
+		case r == '\t':
+			piece = `\t`
+		case r < 0x20 || r == 0x7f:
+			piece = fmt.Sprintf(`\x%02x`, r)
+		case r >= 0x80 && r <= 0x9f:
+			piece = fmt.Sprintf(`\u%04x`, r)
+		default:
+			piece = string(r)
+		}
+		for _, c := range piece {
+			if count == limit {
+				return out.String() + "..."
+			}
+			out.WriteRune(c)
+			count++
+		}
+	}
+	return out.String()
+}
+
 func sanitizeDispatchCause(raw string) string { return core.FrictionSafe(strings.TrimSpace(raw)) }
 func dispatchCauseOrUnknown(err error) string {
 	if cause := sanitizeDispatchCause(err.Error()); cause != "" {
@@ -1663,6 +1749,66 @@ func dispatchComposerEmpty(kind string, region []string) bool {
 		}
 	}
 	return true
+}
+
+// firstDispatchResendReady waits, one second at a time and up to
+// dispatchFirstResendPolls seconds, for a worker that reads idle with a
+// recognized, empty composer, and reports whether a refused first prompt may
+// be sent once more. It never sends a key. The composed prompt path on the
+// visible or the recent screen, a dialog, or a blocked worker end it at
+// once (the prompt may have landed, or the pane belongs to a person); a
+// state or screen that cannot be read counts as not ready, so the window
+// expires and nothing is sent. Nothing from the screen is returned or logged.
+func firstDispatchResendReady(svc transport.Services, agent, kind, composed string) bool {
+	for tick := 0; ; tick++ {
+		switch firstDispatchResendProbe(svc, agent, kind, composed) {
+		case firstResendReady:
+			return true
+		case firstResendStop:
+			return false
+		}
+		if tick >= dispatchFirstResendPolls {
+			return false
+		}
+		dispatchFirstResendPause()
+	}
+}
+
+type firstResendVerdict int
+
+const (
+	firstResendWait firstResendVerdict = iota
+	firstResendReady
+	firstResendStop
+)
+
+func firstDispatchResendProbe(svc transport.Services, agent, kind, composed string) firstResendVerdict {
+	state := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
+	if state.State == "blocked" {
+		return firstResendStop
+	}
+	if state.State != "idle" {
+		return firstResendWait
+	}
+	screen, ok := readScreen(svc, agent, "visible", nil)
+	if !ok {
+		return firstResendWait
+	}
+	if provider.ScreenShowsPath(screen, composed) || provider.DialogUI(kind, screen) != "" {
+		return firstResendStop
+	}
+	region, recognized := provider.ComposerRegion(kind, screen)
+	if !recognized || !dispatchComposerEmpty(kind, region) {
+		return firstResendWait
+	}
+	recent, ok := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
+	if !ok {
+		return firstResendWait
+	}
+	if provider.ScreenShowsPath(recent, composed) {
+		return firstResendStop
+	}
+	return firstResendReady
 }
 
 // cursorStartupRefusal reports whether the current visible screen is the
@@ -1825,7 +1971,7 @@ func markReportVolatile(out *jsonjs.Object, report, sd string) {
 	}
 }
 
-func emitDispatchResult(agent, role, kind, composed, report, taskReport, status string, amend bool, last *jsonjs.Object, waitCode int, sd string, enterSent, resent bool) int {
+func emitDispatchResult(agent, role, kind, composed, report, taskReport, status string, amend bool, last *jsonjs.Object, waitCode int, sd string, enterSent, resent bool, resentFirst ...bool) int {
 	if last != nil {
 		if v, ok := last.Get("status"); ok {
 			if s, yes := v.(string); yes {
@@ -1876,6 +2022,9 @@ func emitDispatchResult(agent, role, kind, composed, report, taskReport, status 
 	}
 	if resent {
 		out.Set("resent", true)
+	}
+	if slices.Contains(resentFirst, true) {
+		out.Set("resent_first", true)
 	}
 	fmt.Fprintln(platform.Stdout, jsonjs.Stringify(out))
 	switch status {
