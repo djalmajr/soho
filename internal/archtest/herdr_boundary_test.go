@@ -95,6 +95,12 @@ var allowedSites = []allowedSite{
 		reason:   "the opts.Run(\"herdr\", ...) seam: the Herdr plugin's loadBoardEntries (internal/plugin) injects pickerDiscoveryRun, which runs Herdr through the plugin's HERDR_BIN_PATH — the same exception class as internal/plugin — and the peer tests inject their own runner; the default path (Run nil) goes through the backend's Legacy.MachineListRaw and makes no direct herdr run (TestPeerSessionsDefaultPathUsesTheBackend)",
 	},
 	{
+		file:     "internal/cli/roster_detached.go",
+		function: "runDetachedRoster",
+		rules:    "2",
+		reason:   "roster --json decides the caller has no Herdr identity (HERDR_ENV != 1 under herdr, as the entry check in Run does) before reading the state root without a transport; it never talks to Herdr",
+	},
+	{
 		file:     "internal/cli/env.go",
 		function: "cmdEnv",
 		rules:    "1",

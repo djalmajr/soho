@@ -2187,6 +2187,14 @@ func Parent(env platform.Env) (string, error) {
 	return record.Parent, nil
 }
 
+// StatusOfRecord is stateOf exposed to read-only consumers that read one
+// `hc get` record themselves. It is the same mapping, with no extra rule:
+// finished or missing is gone, a live record's reported status passes
+// through, and a live record with no status is unknown. Existing callers of
+// stateOf are unchanged. It is placed after every existing declaration so
+// their line numbers stay stable.
+func StatusOfRecord(obj *jsonjs.Object) string { return stateOf(obj) }
+
 // hcKeyName resolves one soho key name for hc keys. The map keeps its
 // entries' meaning (including "t"); "space" and exactly one safe ASCII
 // character are the only additions. Anything else stays unsupported, so an
