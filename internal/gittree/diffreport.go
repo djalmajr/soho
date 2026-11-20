@@ -376,7 +376,28 @@ func PreviousOwnedWithPointer(sidecar, agent, tree string, prior *jsonjs.Object)
 	return filtered, ok
 }
 
-// InheritsPrevious recognizes the explicit bullet only inside Owned files.
+// normalizedOwnedSection copies lines and replaces one section body with the
+// shared Owned normalizer. diffMarkdown has already blanked fenced lines.
+func normalizedOwnedSection(lines []string, start, end int) []string {
+	out := append([]string(nil), lines...)
+	filtered, _ := OwnedSectionLines(lines[start:end])
+	copy(out[start:end], filtered)
+	return out
+}
+
+// nextSectionHeading is the end of the section body that starts at from.
+func nextSectionHeading(lines []string, from int) int {
+	for i := from; i < len(lines); i++ {
+		if _, n := diffHeading(lines[i]); n != 0 {
+			return i
+		}
+	}
+	return len(lines)
+}
+
+// InheritsPrevious recognizes the explicit bullet only inside an Owned files
+// section, after the same label and emphasis normalization the lint and the
+// overlap reader apply. An inherit under a negative label is not a directive.
 func InheritsPrevious(text string) bool {
 	level := 0
 	lines := diffMarkdown(text)
@@ -386,8 +407,9 @@ func InheritsPrevious(text string) bool {
 			break
 		}
 	}
-	for _, line := range lines {
-		if title, n := diffHeading(line); n != 0 {
+	normalized := lines
+	for i := 0; i < len(lines); i++ {
+		if title, n := diffHeading(lines[i]); n != 0 {
 			if title == "report contract" && n == 1 {
 				break
 			}
@@ -396,10 +418,11 @@ func InheritsPrevious(text string) bool {
 			}
 			if title == "owned files" {
 				level = n
+				normalized = normalizedOwnedSection(lines, i+1, nextSectionHeading(lines, i+1))
 			}
 			continue
 		}
-		if level != 0 && strings.TrimSpace(line) == "- inherit: previous brief" {
+		if level != 0 && strings.TrimSpace(normalized[i]) == "- inherit: previous brief" {
 			return true
 		}
 	}
@@ -1011,31 +1034,120 @@ var diffOwnedLabelMarkerRE = regexp.MustCompile(`^(?:[-*+]|[0-9]+[.)])[ \t]+`)
 var diffOwnedNegativeLabels = []string{"proibido", "proibidos", "forbidden", "nao tocar", "do not touch", "fora do escopo", "out of scope"}
 var diffOwnedPositiveLabels = []string{"pode tocar", "owned", "may edit", "arquivos proprios", "arquivos de posse"}
 
-// OwnedItemLabel classifies the section label at the start of an Owned files
-// or Orchestrator files line, so the audit keeps the same positive and
-// negative labels out of (or into) the owned set as the lint and the
-// dispatch overlap reader. Names are compared folded and without marks, so
-// Nao tocar and Não tocar are the same label.
-func OwnedItemLabel(line string) (negative, positive bool) {
+// OwnedLabel identifies a fixed label at the start of an Owned files line;
+// remainder is the value after a positive label's colon, without the label's
+// own closing emphasis ("**Owned:** x"), without a list marker of its own
+// ("Owned: - x") and without a symmetric emphasis pair around it
+// ("Owned: **x**"), so neither can become part of a path. A glob such as
+// src/** or **/x.go has no matching pair and is kept whole. This is the one
+// label reader the lint, the overlap reader and the audit all use. Names are
+// compared folded and without marks, so Nao tocar and Não tocar are the same.
+func OwnedLabel(line string) (negative, positive bool, remainder string) {
 	line = strings.TrimSpace(line)
 	line = diffOwnedLabelMarkerRE.ReplaceAllString(line, "")
-	line = strings.TrimLeft(line, " \t*_")
+	trimmed := strings.TrimLeft(line, " \t*_")
+	labelEmphasis := line[:len(line)-len(trimmed)]
+	line = trimmed
 	colon := strings.IndexByte(line, ':')
 	if colon < 0 {
-		return false, false
+		return false, false, ""
 	}
-	name := text.JSLower(text.StripMarksNFD(strings.TrimRight(strings.TrimSpace(line[:colon]), "*_ \t")))
+	name := text.JSLower(text.StripMarksNFD(strings.TrimSpace(strings.TrimRight(line[:colon], "*_ \t"))))
 	for _, label := range diffOwnedNegativeLabels {
 		if name == label {
-			return true, false
+			return true, false, ""
 		}
 	}
 	for _, label := range diffOwnedPositiveLabels {
 		if name == label {
-			return false, true
+			return false, true, OwnedLabelValue(line[colon+1:], strings.TrimSpace(labelEmphasis))
 		}
 	}
-	return false, false
+	return false, false, ""
+}
+
+// OwnedLabelValue cleans the text after a positive label's colon; see OwnedLabel.
+func OwnedLabelValue(value, labelEmphasis string) string {
+	if labelEmphasis != "" {
+		value = strings.TrimPrefix(value, labelEmphasis)
+	}
+	value = strings.TrimSpace(value)
+	value = strings.TrimSpace(diffOwnedLabelMarkerRE.ReplaceAllString(value, ""))
+	for _, pair := range []string{"**", "__", "*", "_"} {
+		if len(value) > 2*len(pair) && strings.HasPrefix(value, pair) && strings.HasSuffix(value, pair) {
+			value = strings.TrimSpace(value[len(pair) : len(value)-len(pair)])
+			break
+		}
+	}
+	return value
+}
+
+// diffFenceMask reports fenced lines with the audit's fence grammar, the same
+// one diffMarkdown blanks before headings and tokens are interpreted.
+func diffFenceMask(lines []string) []bool {
+	mask := make([]bool, len(lines))
+	fence := ""
+	for i, line := range lines {
+		if m := diffFenceRE.FindStringSubmatch(line); m != nil {
+			if fence == "" {
+				fence = m[1]
+			} else if m[1][0] == fence[0] && len(m[1]) >= len(fence) && strings.TrimSpace(m[2]) == "" {
+				fence = ""
+			}
+			mask[i] = true
+			continue
+		}
+		mask[i] = fence != ""
+	}
+	return mask
+}
+
+// OwnedSectionLines filters one Owned section with the audit's fence mask,
+// keeping line positions. OwnedSectionLinesWithMask applies the same shared
+// normalizer with a caller supplied mask, so the dispatch readers keep their
+// own fence grammar without a second label parser.
+func OwnedSectionLines(lines []string) ([]string, []bool) {
+	mask := diffFenceMask(lines)
+	return OwnedSectionLinesWithMask(lines, mask), mask
+}
+
+// OwnedSectionLinesWithMask strips each positive label and its emphasis,
+// drops negative lines until the next positive label, and leaves fenced lines
+// out. The rest keeps a list marker, so a bare path after the label
+// ("- Owned: src/ui/app.go") is still read as an owned item.
+func OwnedSectionLinesWithMask(lines []string, fenced []bool) []string {
+	out := make([]string, len(lines))
+	excluded := false
+	for i, line := range lines {
+		if fenced[i] {
+			continue
+		}
+		negative, positive, rest := OwnedLabel(line)
+		if negative {
+			excluded = true
+			continue
+		}
+		if positive {
+			excluded = false
+			if strings.TrimSpace(rest) != "" {
+				out[i] = "- " + rest
+			}
+			continue
+		}
+		if !excluded {
+			out[i] = line
+		}
+	}
+	return out
+}
+
+// OwnedItemLabel classifies the section label at the start of an Owned files
+// or Orchestrator files line, so the audit keeps the same positive and
+// negative labels out of (or into) the owned set as the lint and the
+// dispatch overlap reader.
+func OwnedItemLabel(line string) (negative, positive bool) {
+	negative, positive, _ = OwnedLabel(line)
+	return negative, positive
 }
 
 // diffOwnedPlainToken trims the prose punctuation around a plain path token.
@@ -1190,6 +1302,37 @@ func ownedItemLintTokens(line, root string) ([]string, bool) {
 	return OwnedPlainPaths(item), false
 }
 
+// OwnedSectionDeclaresScope reports whether a normalized Owned section
+// declares any scope at all: a path, a path pattern, the new-tests pattern,
+// an explicit no-files declaration, or an inherit directive. Prose lines name
+// paths the same way the audit reads them; a section with nothing but prose
+// and no path declares none.
+func OwnedSectionDeclaresScope(lines []string, root string) bool {
+	for _, line := range lines {
+		item := strings.TrimSpace(diffBulletRE.ReplaceAllString(line, ""))
+		if item == "" {
+			continue
+		}
+		if diffOwnedDeclaresNoFiles(item) || diffNewTestsItemRE.MatchString(item) || strings.TrimSpace(line) == "- inherit: previous brief" {
+			return true
+		}
+		if matches := diffTokenRE.FindAllStringSubmatch(line, -1); len(matches) > 0 {
+			tokens := make([]string, 0, len(matches))
+			for _, m := range matches {
+				tokens = append(tokens, m[1])
+			}
+			if len(OwnedQuotedPaths(item, tokens, root, nil)) > 0 {
+				return true
+			}
+			continue
+		}
+		if len(OwnedPlainPaths(item)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // OwnedItemLintMessages returns the short warning for an Owned section line
 // that names no path. The caller prefixes the brief path and item label.
 func OwnedItemLintMessages(lines []string, root string) []string {
@@ -1255,42 +1398,33 @@ func diffSectionNames(text, tree string, recordedRoots map[string]bool, goos, se
 		}
 	}
 	items, found, ownedLevel := []string{}, false, 0
-	// labeled is true in the two sections that share the Owned item rules;
-	// excluded carries a negative label over the following lines the way the
-	// lint's OwnedSectionLines does.
+	// Labeled sections read the shared normalized stream: labels and their
+	// emphasis are stripped and negative lines are dropped before the audit
+	// recognizes a directive or tests a path token.
 	labeled := ownedItemRules(section)
-	excluded := false
-	for _, line := range lines {
-		if title, level := diffHeading(line); level != 0 {
+	normalized := lines
+	for i := 0; i < len(lines); i++ {
+		if title, level := diffHeading(lines[i]); level != 0 {
 			if title == "report contract" && level == 1 {
 				break
 			}
 			if ownedLevel > 0 && level <= ownedLevel {
 				ownedLevel = 0
-				excluded = false
 			}
 			if title == section {
 				found, ownedLevel = true, level
-				excluded = false
+				if labeled {
+					normalized = normalizedOwnedSection(lines, i+1, nextSectionHeading(lines, i+1))
+				}
 			}
 			continue
 		}
 		if ownedLevel == 0 {
 			continue
 		}
+		line := normalized[i]
 		if section == "owned files" && strings.TrimSpace(line) == "- inherit: previous brief" {
 			items = append(items, "\x00inherit previous brief")
-			continue
-		}
-		if labeled {
-			if negative, positive := OwnedItemLabel(line); negative {
-				excluded = true
-				continue
-			} else if positive {
-				excluded = false
-			}
-		}
-		if excluded {
 			continue
 		}
 		push := func(raw string) {
