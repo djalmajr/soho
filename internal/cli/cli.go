@@ -44,7 +44,7 @@ var knownCommands = map[string]bool{
 	"reopen": true, "compact": true, "metrics": true, "copies": true, "gc": true,
 	"procs": true, "install": true, "update": true, "promote": true, "validate": true,
 	"collaborate": true, "capabilities": true, "hook": true, "job": true, "inventory": true,
-	"report": true,
+	"report": true, "model-set": true,
 }
 
 var frictionLogPath string
@@ -217,7 +217,7 @@ func Run(args []string, env platform.Env) (code int) {
 		commandConfig = &ctx
 	}
 	readOnlyRejectedDoctor := command == "doctor" && decisionEnv.Get("SOHO_NOWRITE") == "1" && len(args) > 1
-	if !readOnlyRejectedDoctor && (command == "review-snapshot" || command == "config" || command == "session" || command == "roles" || command == "role" || command == "explain" || command == "layout-plan" || command == "regrid" || command == "promote" || command == "tab-label" || command == "stats" || command == "metrics" || command == "collect" || command == "setup" || command == "release" || command == "doctor" || command == "init" || command == "spawn" || command == "dispatch" || command == "resume" || command == "run" || command == "lint" || command == "wait" || command == "status" || command == "validate") {
+	if !readOnlyRejectedDoctor && (command == "review-snapshot" || command == "config" || command == "session" || command == "roles" || command == "role" || command == "explain" || command == "layout-plan" || command == "regrid" || command == "promote" || command == "tab-label" || command == "stats" || command == "metrics" || command == "collect" || command == "setup" || command == "release" || command == "doctor" || command == "init" || command == "spawn" || command == "dispatch" || command == "resume" || command == "run" || command == "lint" || command == "wait" || command == "status" || command == "validate" || command == "model-set") {
 		ctx := core.LoadConfigFor(decisionEnv, commandCwd, userSel)
 		configCtx = &ctx
 	}
@@ -326,7 +326,7 @@ func Run(args []string, env platform.Env) (code int) {
 	if command == "hook" {
 		return cmdHook(args[1:], decisionEnv, commandCwd)
 	}
-	if command == "roster" || command == "friction" || command == "title" || command == "clean" || command == "feedback" || command == "regrid" || command == "promote" || command == "tab-label" || command == "release" || command == "reopen" || command == "spawn" || command == "dispatch" || command == "resume" || command == "run" || command == "collect" || command == "init" || command == "wait" || command == "status" || command == "compact" || command == "copies" || command == "gc" || command == "procs" {
+	if command == "roster" || command == "friction" || command == "title" || command == "clean" || command == "feedback" || command == "regrid" || command == "promote" || command == "tab-label" || command == "release" || command == "reopen" || command == "spawn" || command == "dispatch" || command == "resume" || command == "run" || command == "collect" || command == "init" || command == "wait" || command == "status" || command == "compact" || command == "model-set" || command == "copies" || command == "gc" || command == "procs" {
 		ctx := core.LoadConfigFor(decisionEnv, commandCwd, userSel)
 		commandConfig = &ctx
 		// The herdr environment check belongs to the herdr transport: under
@@ -465,6 +465,8 @@ func Run(args []string, env platform.Env) (code int) {
 		return cmdModels(args[1:], decisionEnv)
 	case "model":
 		return cmdModel(args[1:], decisionEnv)
+	case "model-set":
+		return cmdModelSet(args[1:], ctx, decisionEnv, commandCwd)
 	case "env":
 		cmdEnv(configCtx, decisionEnv, commandCwd)
 		return 0
@@ -596,6 +598,10 @@ func transportModeFor(ctx *core.Config, env, decisionEnv platform.Env, cwd strin
 // setup skips TUI plugin migration; mutation-copy uses the guarded copier.
 func hcCommandAllowed(command string) bool {
 	switch command {
+	case "model-set":
+		// hc keys accepts single characters and "space", so /model and
+		// /thinking are typed one key at a time on the worker's terminal.
+		return true
 	case "mutation-copy", "review-snapshot", "session":
 		return true
 	case "", "help", "-h", "--help":
