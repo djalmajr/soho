@@ -19,6 +19,7 @@ import (
 	"github.com/djalmajr/soho/internal/dispatch"
 	"github.com/djalmajr/soho/internal/hc"
 	"github.com/djalmajr/soho/internal/herdr"
+	"github.com/djalmajr/soho/internal/install"
 	"github.com/djalmajr/soho/internal/inventory"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/kinds"
@@ -29,6 +30,7 @@ import (
 	"github.com/djalmajr/soho/internal/spawn"
 	textutil "github.com/djalmajr/soho/internal/text"
 	"github.com/djalmajr/soho/internal/transport"
+	"github.com/djalmajr/soho/internal/update"
 	waitpkg "github.com/djalmajr/soho/internal/wait"
 	skillassets "github.com/djalmajr/soho/skills"
 )
@@ -657,10 +659,60 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	doctorDesign(ctx, env, cwd, s)
 	doctorPeerInbound(ctx, svc, env, cwd, s)
 	doctorFootprint(ctx, svc, env, cwd, s)
+	doctorUpdateNotice(ctx, env, cwd, out)
 	if adviseRegistration && inventory.CurrentMissingRegistration(env, cwd, ctx.User, svc) {
 		s.Warning(inventory.MissingRegistrationAdvisory)
 	}
 	fmt.Fprintf(out, "first_run: %t\n%d ok, %d warning(s)\n", ProjectIsFirstRun(ctx, env, cwd), s.OK, s.Warn)
+}
+
+// doctorUpdateNotice is the passive update line (SOH-447): one line when the
+// cached check says a newer release exists in the running build's channel. It
+// never announces from a build that is not a release (there is no channel
+// position to compare), never runs under SOHO_NOWRITE (the check caches to the
+// state dir), honors update_check=off and SOHO_NO_UPDATE_CHECK=1, and is
+// silent on every failure; the network bound is internal/update's 2 s.
+func doctorUpdateNotice(ctx *core.Config, env platform.Env, cwd string, out io.Writer) {
+	if env.Get("SOHO_NOWRITE") == "1" {
+		return
+	}
+	if _, err := update.ParseVersion(BuildVersion); err != nil {
+		return
+	}
+	if core.Cfg(ctx, "update_check", "on", env) == "off" {
+		return
+	}
+	if env.Get(update.EnvNoUpdateCheck) == "1" {
+		return
+	}
+	state := doctorStateDirPath(ctx, env, cwd)
+	if state == "" {
+		return
+	}
+	tag, err := update.Notice(context.Background(), update.NoticeOptions{
+		Current:  BuildVersion,
+		StateDir: state,
+		API:      env.Get(install.EnvReleasesAPI),
+	})
+	if err != nil || tag == "" {
+		return
+	}
+	fmt.Fprintf(out, "update available: %s (soho update)\n", tag)
+}
+
+// doctorStateDirPath resolves the state dir only when it already exists and
+// the state admission allows it (core.StateDirForRead), and never lets a
+// refusal reach the doctor's own output. "" means the notice stays silent.
+func doctorStateDirPath(ctx *core.Config, env platform.Env, cwd string) (dir string) {
+	defer func() {
+		if value := recover(); value != nil {
+			if _, ok := value.(*platform.ExitError); !ok {
+				panic(value)
+			}
+			dir = ""
+		}
+	}()
+	return core.StateDirForRead(ctx, env, cwd)
 }
 
 func doctorSohoSkill(env platform.Env, s *Say) {

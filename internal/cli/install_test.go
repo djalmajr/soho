@@ -80,6 +80,7 @@ func installTestEnv(t *testing.T, home string) platform.Env {
 	return platform.Env{
 		"PATH":            t.TempDir(),
 		"HOME":            home,
+		"USERPROFILE":     home,
 		"XDG_CONFIG_HOME": t.TempDir(),
 	}
 }
@@ -1104,5 +1105,30 @@ func TestInstallStrandedLines(t *testing.T) {
 	want := `install: an earlier backup stays at C:\bin\soho.exe.old.soho-check-42, next to its marker: its bytes did not match the marker, or it could not be removed`
 	if len(got) != 1 || got[0] != want {
 		t.Fatalf("lines = %q; want [%q]", got, want)
+	}
+}
+
+// TestInstallRefusesAChannelTagBelowAHugeRunningIdentifier is the round-2 F6
+// defect: distinct numeric identifiers past uint64 must still order, so the
+// downgrade refusal fires before any download.
+func TestInstallRefusesAChannelTagBelowAHugeRunningIdentifier(t *testing.T) {
+	const lower = "v0.3.1-rc.20000000000000000000"
+	const current = "v0.3.1-rc.20000000000000000001"
+	f := updateFixtureServer(t, lower)
+	setBuildVersion(t, current)
+	env := f.env(t, t.TempDir())
+	destination := t.TempDir()
+	code, out, stderr := runInstallCLI(t, env, "--dir", destination)
+	if code != 2 {
+		t.Fatalf("code=%d, want 2; stdout=%q stderr=%q", code, out, stderr)
+	}
+	if !strings.Contains(stderr, "lower than the running "+current) {
+		t.Fatalf("stderr=%q does not explain the refusal", stderr)
+	}
+	if f.downloads() != 0 {
+		t.Fatalf("downloads = %d, want 0 before the refusal", f.downloads())
+	}
+	if _, err := os.Lstat(filepath.Join(destination, installBinaryName())); !os.IsNotExist(err) {
+		t.Fatalf("the refused install wrote the destination: %v", err)
 	}
 }

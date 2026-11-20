@@ -16,6 +16,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/install"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/update"
 )
 
 // installTimeout bounds the whole install command (both downloads and the
@@ -53,7 +54,7 @@ var userPathStoreFactory = install.DefaultUserPathStore
 func cmdInstall(args []string, env platform.Env) int {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	version := fs.String("version", "", "release tag to install (v-prefixed); empty installs the latest release")
+	versionFlag := fs.String("version", "", "release tag to install (v-prefixed); empty follows the running binary's channel (stable or rc)")
 	dir := fs.String("dir", "", "install directory; default: $SOHO_INSTALL_DIR, or $HOME/.local/bin on POSIX / %LOCALAPPDATA%/Programs/soho on Windows")
 	addToPath := fs.Bool("add-to-path", false, "append the install directory to the Windows user PATH (opt-in, like the old -AddToPath; refused on other OSes before any effect)")
 	verifyVersion := fs.Bool("verify-version", false, "run the installed binary's --version once and print the result (opt-in; the default install never executes it)")
@@ -76,8 +77,25 @@ func cmdInstall(args []string, env platform.Env) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
 	defer cancel()
+	tag := *versionFlag
+	if tag == "" {
+		// Without --version the installer follows the running binary's
+		// channel (SOH-447): an rc build resolves the newest rc, a stable or
+		// dev build the newest stable. A tag lower than the running version
+		// is refused before any download (it needs an explicit --version).
+		channel := update.ChannelFor(version)
+		resolved, err := update.CheckChannel(ctx, update.CheckOptions{Current: version, Channel: channel, API: env.Get(install.EnvReleasesAPI)})
+		if err != nil {
+			platform.Die("install: could not resolve the newest "+channel+" release: "+err.Error(), 1)
+		}
+		tag = resolved.Newest.Tag
+		fmt.Fprintf(platform.Stdout, "tag %s (channel %s)\n", tag, resolved.Channel)
+		if update.Lower(tag, version) {
+			platform.Die(fmt.Sprintf("install: the newest %s release %s is lower than the running %s; install it with: soho install --version %s", resolved.Channel, tag, version, tag), 2)
+		}
+	}
 	res, err := install.Run(ctx, install.Options{
-		Version:     *version,
+		Version:     tag,
 		InstallDir:  abs,
 		ReleaseBase: env.Get(install.EnvReleaseBase),
 	})
