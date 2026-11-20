@@ -632,6 +632,7 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	doctorDoneOpen(ctx, svc, env, cwd, s)
 	doctorCopiesDirAdvice(ctx, env, s)
 	doctorCopiesPressure(ctx, env, cwd, s)
+	doctorCopyProcesses(ctx, env, cwd, s)
 	doctorWorkerCwds(ctx, svc, env, cwd, s)
 	doctorNativeParentless(ctx, svc, env, cwd, s)
 	doctorDiscardedModels(ctx, env, cwd, s)
@@ -1946,6 +1947,109 @@ func doctorCopiesDirProjectOnly(ctx *core.Config, env platform.Env, s *Say) {
 		return
 	}
 	s.Warning("copies_dir is a machine setting; set it with --user so workers in other repositories use it too (soho config set copies_dir <path> --user)")
+}
+
+// doctorCopyProcessAge is the boundary for naming a process left in a copy:
+// exactly at the boundary is not yet older than 30 minutes.
+const doctorCopyProcessAge = 30 * time.Minute
+
+// doctorCopyProcessesScan is the same process scan procs and gc use. The
+// doctor only reads it; it never signals a process. A platform whose scan
+// cannot read another process's working directory reports an error, and this
+// check stays silent there instead of adding platform process code.
+var doctorCopyProcessesScan = platform.UserOrphanProcesses
+
+type doctorRegisteredCopy struct {
+	path     string // the path as registered in copies.tsv, printed in the warning
+	resolved string // the symlink-resolved directory used to match a cwd
+}
+
+// doctorCopyProcesses warns once per process older than 30 minutes whose cwd
+// is inside a copy registered in this project's copies registry. It reports
+// the OS stop command (the scan finds unregistered orphans, which soho procs
+// stop refuses) and changes nothing; the owner decides to stop.
+func doctorCopyProcesses(ctx *core.Config, env platform.Env, cwd string, s *Say) {
+	stateDir := doctorStateDirPath(ctx, env, cwd)
+	if stateDir == "" {
+		return
+	}
+	rows, err := core.ReadCopies(stateDir)
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	procs, err := doctorCopyProcessesScan()
+	if err != nil || len(procs) == 0 {
+		return
+	}
+	copies := make([]doctorRegisteredCopy, 0, len(rows))
+	for _, row := range rows {
+		resolved, err := filepath.EvalSymlinks(row.Path)
+		if err != nil || resolved == "" {
+			continue
+		}
+		copies = append(copies, doctorRegisteredCopy{path: row.Path, resolved: filepath.Clean(resolved)})
+	}
+	if len(copies) == 0 {
+		return
+	}
+	now := platform.Now()
+	for _, proc := range procs {
+		age := now.Sub(proc.Started)
+		if proc.Started.IsZero() || age <= doctorCopyProcessAge {
+			continue
+		}
+		for _, copy := range copies {
+			if !doctorProcessInsideCopy(proc.Cwd, copy.resolved) {
+				continue
+			}
+			ageText := doctorProcessAgeText(age)
+			name := doctorProcessName(proc.Name)
+			s.Warning(fmt.Sprintf("process %d (%s, %s) has run inside copy %s for %s; stop it with: kill %d", proc.Pid, name, ageText, copy.path, ageText, proc.Pid))
+			break // once per process, even when two registry rows match
+		}
+	}
+}
+
+// doctorProcessInsideCopy matches by path component: copy-2 is not copy,
+// and a cwd whose symlinks resolve into the copy is still inside it.
+func doctorProcessInsideCopy(cwd, copyDir string) bool {
+	if cwd == "" || copyDir == "" || !filepath.IsAbs(cwd) {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(cwd); err == nil && resolved != "" {
+		cwd = resolved
+	}
+	rel, err := filepath.Rel(copyDir, filepath.Clean(cwd))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
+// doctorProcessAgeText uses the same minute/hour/day shape as the copies and
+// procs listings.
+func doctorProcessAgeText(age time.Duration) string {
+	if age < time.Hour {
+		return fmt.Sprintf("%dm", int64(age.Minutes()))
+	}
+	if age < 24*time.Hour {
+		return fmt.Sprintf("%dh", int64(age.Hours()))
+	}
+	return fmt.Sprintf("%dd", int64(age.Hours())/24)
+}
+
+// doctorProcessName prints only a sanitized, cut command name: never the
+// arguments or the environment, which can hold credentials.
+func doctorProcessName(name string) string {
+	clean := textutil.SanitizeCause(textutil.RedactSecrets(name))
+	runes := []rune(clean)
+	if len(runes) > 64 {
+		clean = string(runes[:64])
+	}
+	if clean == "" {
+		return "-"
+	}
+	return clean
 }
 
 // doctorNativeOrphanChildren warns once per live hc terminal that is a child

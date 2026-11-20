@@ -747,6 +747,37 @@ func TestMutationCopyRolesForbidGit(t *testing.T) {
 	}
 }
 
+// SOH-459: the implementer role and the brief template both bind each mutant
+// run and its control to a timeout and to stopping its processes first.
+func TestMutationRunsCarryPerRunTimeout(t *testing.T) {
+	role := roleBody(t, "implementer.md")
+	data, err := fs.ReadFile(resources, "templates/brief.md")
+	if err != nil {
+		t.Fatalf("bundle is missing templates/brief.md: %v", err)
+	}
+	template := string(data)
+	for _, phrase := range []string{"per-run timeout", "about twice the control's time", "killed by timeout"} {
+		if !strings.Contains(role, phrase) {
+			t.Errorf("implementer.md: missing %q", phrase)
+		}
+		if !strings.Contains(template, phrase) {
+			t.Errorf("templates/brief.md: missing %q", phrase)
+		}
+	}
+	if !strings.Contains(role, "go test -timeout 5m") {
+		t.Error("implementer.md: missing the Go per-run timeout command")
+	}
+	if !strings.Contains(template, "five minutes") {
+		t.Error("templates/brief.md: missing the stack-neutral per-run timeout")
+	}
+	if !strings.Contains(role, "you stop that run's processes before the next one") {
+		t.Error("implementer.md: missing the rule to stop the run's processes before the next")
+	}
+	if !strings.Contains(template, "its processes are stopped before the next run") {
+		t.Error("templates/brief.md: missing the rule to stop the run's processes before the next")
+	}
+}
+
 // The pre-move embedded tree contained these 35 files; the count and two
 // representative paths guard the package boundary and embed patterns.
 func TestEmbeddedTreeBeforePackageMove(t *testing.T) {

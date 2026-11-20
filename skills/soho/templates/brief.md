@@ -73,6 +73,8 @@ One row per rule the slice adds or changes: the mutation (what the rule stops do
 |---|---|
 | <what the rule stops doing> | <the test or check that must fail, named> |
 
+Give each mutant run and its control a per-run timeout (five minutes, or about twice the control's time; the stack's equivalent elsewhere); a run that reaches it fails as `killed by timeout` with the mutant named, and its processes are stopped before the next run.
+
 ## When the brief does not decide
 
 Do not choose. Mark the item `partial`, list the gap and the options you see under open questions, and continue with the other items. Never invent names, endpoints, flags, credentials, URLs or requirements.

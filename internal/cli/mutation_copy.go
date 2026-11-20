@@ -333,12 +333,17 @@ func runMutationCopy(args []string, env platform.Env) int {
 	}
 	registerMutationCopy(env, source, dest)
 	if parsed.printPath {
+		// stdout stays the path alone; the timeout advice goes to stderr so
+		// the captured directory is never mixed with another line (SOH-459).
+		_, _ = fmt.Fprintln(platform.Stderr, mutationCopyTimeoutAdvice)
 		_, _ = fmt.Fprintln(platform.Stdout, dest)
 	} else {
 		_, _ = fmt.Fprintln(platform.Stdout, string(encoded))
 	}
 	return 0
 }
+
+const mutationCopyTimeoutAdvice = "soho: mutation-copy: give each mutant run a timeout (go test -timeout 5m or the stack's equivalent) and stop its processes before the next"
 
 func mutationCopyPrintablePath(path string) bool {
 	return !strings.ContainsAny(path, "\r\n")
