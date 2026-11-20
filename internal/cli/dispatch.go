@@ -39,6 +39,133 @@ import (
 var dispatchWaitFiles = []string{"size", "screen", "since", "blocked", "approvals", "quota", "provider", "provider-cause", "capacity-retries", "capacity-at", "question", "stuck-hash", "stuck-since", "stuck-warned", "activity-at", "probe-at", "not-received", "queued", "enter-retry", "approve-screen"}
 var dispatchWaitFor = waitpkg.WaitFor
 
+// dispatchPromptBudgets reads the two existing prompt budgets once. Their sum
+// plus a fixed margin is the --no-wait ceiling: every wait after the optional
+// compact step shares it, while each wait keeps its own configured budget.
+// An invalid settle keeps the code's 20 s default; an invalid check disables
+// that budget, as the pre-send probe already does.
+func dispatchPromptBudgets(ctx *core.Config, env platform.Env) (settleSecs, checkSecs int) {
+	settleSecs = 20
+	if raw, err := strconv.Atoi(core.Cfg(ctx, "prompt_settle_seconds", "20", env)); err == nil {
+		settleSecs = raw
+	}
+	if raw, err := strconv.Atoi(core.Cfg(ctx, "prompt_check_seconds", "15", env)); err == nil {
+		checkSecs = raw
+	}
+	return settleSecs, checkSecs
+}
+
+// dispatchCeilingMargin is the fixed room inside the shared ceiling for the
+// reads, lint and sends before a wait, so that pre-wait work never shaves a
+// wait's configured budget. Tests set it to zero to reach a send boundary
+// without holding a fixture for ten seconds.
+var dispatchCeilingMargin = 10 * time.Second
+
+// dispatchWaitBudget is the shared wall-clock ceiling of one --no-wait
+// dispatch. It uses time.Now, not platform.Now: the bound is a real limit on
+// how long the orchestrator's prompt stays blocked, while the individual wait
+// windows keep their existing clocks. A budget of zero forbids waiting but
+// does not interrupt a state that needs no wait at all.
+type dispatchWaitBudget struct {
+	start       time.Time
+	deadline    time.Time
+	total       time.Duration
+	agent       string
+	env         platform.Env
+	softPrinted bool
+}
+
+func newDispatchWaitBudget(settleSecs, checkSecs int, agent string, env platform.Env) *dispatchWaitBudget {
+	total := time.Duration(max(settleSecs, 0)+max(checkSecs, 0))*time.Second + dispatchCeilingMargin
+	now := time.Now()
+	return &dispatchWaitBudget{start: now, deadline: now.Add(total), total: total, agent: agent, env: env}
+}
+
+// abort fires once the shared ceiling is reached. The phase and code come
+// from the wait that reached it: 10 when nothing was submitted, 15 when a
+// prompt went out but receipt could not be proved.
+func (b *dispatchWaitBudget) abort(phase string, code int) {
+	if b == nil || time.Now().Before(b.deadline) {
+		return
+	}
+	panic(&dispatchCeilingHit{phase: phase, code: code, ceiling: b.total})
+}
+
+// dispatchWaitWindow carries whether the shared ceiling, rather than the
+// wait's own budget, is the binding limit. Only a wait whose own deadline is
+// later than the ceiling is bounded; when both deadlines coincide the wait's
+// ordinary result stands, so an arrival window that simply expired still
+// returns the existing not-received result.
+type dispatchWaitWindow struct {
+	duration time.Duration
+	bounded  bool
+	budget   *dispatchWaitBudget
+	phase    string
+	code     int
+}
+
+func (b *dispatchWaitBudget) window(duration time.Duration, phase string, code int) dispatchWaitWindow {
+	w := dispatchWaitWindow{duration: duration, budget: b, phase: phase, code: code}
+	if b == nil || duration <= 0 {
+		return w
+	}
+	// The wait keeps its own deadline; only the guard is shared. Shortening
+	// the window itself would move a fake-clock test's deadline without
+	// moving the clock the wait reads.
+	w.bounded = duration > b.deadline.Sub(time.Now())
+	return w
+}
+
+// abort returns true when a code-15 wait reached the shared ceiling and the
+// caller should stop with its ordinary not-received result. A code-10 hit
+// panics instead: nothing was submitted and no further worker write is safe.
+func (w dispatchWaitWindow) abort() bool {
+	if !w.bounded || w.budget == nil {
+		return false
+	}
+	if w.code == 15 {
+		return w.budget.softHit(w.phase)
+	}
+	w.budget.abort(w.phase, w.code)
+	return false
+}
+
+// softHit reports a reached ceiling in a wait whose ordinary outcome is
+// already exit 15. The wait prints the required line once, then returns its
+// normal not-received result, so the JSON and the reason for the uncertainty
+// are not lost.
+func (b *dispatchWaitBudget) softHit(phase string) bool {
+	if b == nil || time.Now().Before(b.deadline) {
+		return false
+	}
+	if !b.softPrinted {
+		fmt.Fprintf(platform.Stderr, "soho: dispatch: --no-wait gave up after %s s waiting for %s; inspect with: %s\n", dispatchCeilingSeconds(b.total), phase, dispatchInspectCommand(b.agent, b.env))
+		b.softPrinted = true
+	}
+	return true
+}
+
+// dispatchCeilingHit is recovered by the dispatch command itself, which
+// restores an unsubmitted task and prints the one required stderr line.
+type dispatchCeilingHit struct {
+	phase   string
+	code    int
+	ceiling time.Duration
+}
+
+// dispatchInspectCommand is the existing read-only inspect pair for the
+// transport in use; it always names the dispatched worker.
+func dispatchInspectCommand(agent string, env platform.Env) string {
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		return "hc get " + agent + " && hc read " + agent
+	}
+	return "herdr agent get " + agent + " && herdr agent read " + agent
+}
+
+func dispatchCeilingSeconds(total time.Duration) string {
+	return strconv.FormatFloat(total.Seconds(), 'f', -1, 64)
+}
+
 // dispatchFirstResendPolls is how many one-second pauses a first dispatch
 // waits for the worker to be idle with an empty composer before it gives up
 // on resending a refused prompt (SOH-409).
@@ -56,7 +183,7 @@ func cmdDispatch(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 
 type dispatchOptions struct{ noResend bool }
 
-func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, cwd string, behavior dispatchOptions) int {
+func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, cwd string, behavior dispatchOptions) (code int) {
 	// The agent and the brief are the first two arguments that are neither
 	// an option nor an option's value, so options may come before them.
 	// --cwd is refused below, but its value is still skipped here so the
@@ -149,6 +276,34 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		}
 		core.DieFriction("dispatch: --when-idle cannot be combined with "+other, 2, frictionLogPath, "dispatch")
 	}
+	// One shared ceiling for every wait that --no-wait can run before it
+	// returns. The deferred recovery is the single place that turns a hit
+	// into the required stderr line and exit code; it restores an unsubmitted
+	// task so a busy worker is not left pointing at a brief it never got.
+	settleSecs, checkSecs := dispatchPromptBudgets(ctx, env)
+	var ceiling *dispatchWaitBudget
+	var ceilingSD, ceilingLastPath string
+	var ceilingLastData []byte
+	var ceilingPrior *jsonjs.Object
+	var ceilingClaimed, ceilingSubmitted bool
+	if noWait {
+		ceiling = newDispatchWaitBudget(settleSecs, checkSecs, agent, env)
+		defer func() {
+			value := recover()
+			hit, ok := value.(*dispatchCeilingHit)
+			if !ok {
+				if value != nil {
+					panic(value)
+				}
+				return
+			}
+			if hit.code == 10 && ceilingClaimed && !ceilingSubmitted {
+				_ = restoreTaskDispatch(ceilingSD, agent, ceilingLastPath, ceilingLastData, ceilingPrior)
+			}
+			fmt.Fprintf(platform.Stderr, "soho: dispatch: --no-wait gave up after %s s waiting for %s; inspect with: %s\n", dispatchCeilingSeconds(hit.ceiling), hit.phase, dispatchInspectCommand(agent, env))
+			code = hit.code
+		}()
+	}
 	// DJA-604 2b-3a: the compact step is a later slice under hc; refuse
 	// before anything is sent.
 	if compact && env.Get("SOHO_TRANSPORT") == "hc" {
@@ -162,6 +317,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// collaboration cleanup or interaction with the worker.
 	platform.LauncherPath(env)
 	sd := core.StateDirPath(ctx, env, cwd)
+	ceilingSD = sd
 	unlockLifecycle := func() {}
 	if env.Get("SOHO_TRANSPORT") == "hc" {
 		unlock, err := workerLifecycleLock(sd, agent)
@@ -376,6 +532,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	reportAt := func(s string) string { return filepath.Join(reportDir, agent+"-"+stamp+s+".md") }
 	lastPath := filepath.Join(sd, "last-report-"+agent)
 	lastData, _ := os.ReadFile(lastPath)
+	ceilingLastPath, ceilingLastData = lastPath, lastData
 	oldReport := strings.TrimSpace(string(lastData))
 	suffix := dispatch.DispatchPairSuffix(composedAt, reportAt, func(p string) bool { _, e := os.Stat(p); return e == nil }, oldReport)
 	composed, report := composedAt(suffix), reportAt(suffix)
@@ -481,9 +638,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// prompt_check_seconds gates the arrival check below; it also decides
 	// whether the dispatch makes its pre-send agent get (a 0 dispatch
 	// sends one prompt and probes nothing, as the ported behavior keeps).
-	checkRaw := core.Cfg(ctx, "prompt_check_seconds", "15", env)
-	checkSecs, checkErr := strconv.Atoi(checkRaw)
-	checkOn := checkErr == nil && checkSecs > 0
+	checkOn := checkSecs > 0
 	// D25: a fresh brief typed while the agent is still on an open task
 	// makes its CLI read the brief mid-turn and drop the open task: refuse
 	// (exit 10) before typing anything or writing any task state, naming
@@ -517,11 +672,13 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			if !timeoutGiven {
 				waitTimeout = float64(core.RoleTimeoutMs(waitpkg.TaskRole(sd, agent), ctx, env, cwd))
 			}
-			deadline := started.Add(time.Duration(waitTimeout) * time.Millisecond)
+			idleWindow := ceiling.window(time.Duration(waitTimeout)*time.Millisecond, "worker to become idle", 10)
+			deadline := started.Add(idleWindow.duration)
 			timedOut := func() {
 				core.DieFriction(fmt.Sprintf("dispatch: '%s' was still working after %s; nothing was sent (--when-idle)", agent, platform.Now().Sub(started)), 9, frictionLogPath, "dispatch")
 			}
 			for {
+				idleWindow.abort()
 				left := deadline.Sub(platform.Now())
 				if left <= 0 {
 					timedOut()
@@ -530,21 +687,25 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 					break
 				}
 				time.Sleep(min(time.Duration(waitpkg.PollIntervalMs(env))*time.Millisecond, left))
+				idleWindow.abort()
 				left = deadline.Sub(platform.Now())
 				if left <= 0 {
 					continue
 				}
 				before = readState(svc, agent, transport.Call{Timeout: min(herdr.Timeout, left)})
+				idleWindow.abort()
 			}
 			// Re-read before resuming the normal busy check: a settled pane
 			// may have started another turn or opened a dialog meanwhile.
 			// The read stays inside the budget, and nothing is sent past it.
 			if before.State == "idle" || before.State == "done" {
+				idleWindow.abort()
 				left := deadline.Sub(platform.Now())
 				if left <= 0 {
 					timedOut()
 				}
 				before = readState(svc, agent, transport.Call{Timeout: min(herdr.Timeout, left)})
+				idleWindow.abort()
 				if deadline.Sub(platform.Now()) <= 0 {
 					timedOut()
 				}
@@ -569,6 +730,8 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// updates it (the new task's stable report, or the current one for an
 	// amendment).
 	priorPointer := taskreport.ReadTaskReportPointer(sd, agent)
+	ceilingPrior = priorPointer
+	ceilingClaimed = true
 	taskReport := taskReportAfterDispatch(sd, report, amend, priorPointer)
 	taskReport = filepath.Join(reportDir, filepath.Base(taskReport))
 	authorContext := dispatchAuthorContext{stateDir: sd, env: env, cwd: cwd}
@@ -646,13 +809,6 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// the send's own proof instead. priorAuth stays empty for the no-wait
 	// observation. hcMode is resolved above, before the first provider
 	// check.
-	settleSecs := 20
-	rawSettle := core.Cfg(ctx, "prompt_settle_seconds", "20", env)
-	var settleErr error
-	settleSecs, settleErr = strconv.Atoi(rawSettle)
-	if settleErr != nil {
-		settleSecs = 20
-	}
 	// The last visible settle/baseline screen is reused for Codex hooks.
 	// Cursor is read again after all reads that can fall back to visible.
 	lastVisible := ""
@@ -660,9 +816,11 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		prev, _ := readScreen(svc, agent, "visible", nil)
 		lastVisible = prev
 		settled := false
-		deadline := time.Now().Add(time.Duration(settleSecs) * time.Second)
+		settleWait := ceiling.window(time.Duration(settleSecs)*time.Second, "prompt to settle", 10)
+		deadline := time.Now().Add(settleWait.duration)
 		for time.Now().Add(500 * time.Millisecond).Before(deadline) {
 			time.Sleep(500 * time.Millisecond)
+			settleWait.abort()
 			ready := isInteractiveReady(agent, svc)
 			curr, _ := readScreen(svc, agent, "visible", nil)
 			lastVisible = curr
@@ -671,6 +829,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				break
 			}
 			prev = curr
+			settleWait.abort()
 		}
 		if !settled {
 			core.Warn(fmt.Sprintf("prompt to '%s' did not settle in %ds; sending anyway", agent, settleSecs), frictionLogPath, "dispatch")
@@ -780,6 +939,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		clearDispatchWait()
 	}
 	sendCall := transport.Call{}
+	sendWindow := ceiling.window(0, "send to be accepted", 15)
 	if hcMode && amend {
 		// An amendment cannot rely on an unguarded queue: hc does not prove
 		// that a working CLI accepted the input. Bound the guarded send too.
@@ -787,7 +947,8 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		if seconds <= 0 {
 			seconds = 15
 		}
-		sendCall.Timeout = time.Duration(seconds) * time.Second
+		sendWindow = ceiling.window(time.Duration(seconds)*time.Second, "send to be accepted", 15)
+		sendCall.Timeout = sendWindow.duration
 	}
 	snapshotCapWarned := false
 	warnSnapshotCap := func(fields *jsonjs.Object) {
@@ -811,25 +972,44 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		return fmt.Sprintf("worker %s is still working; queued dispatch was not sent. Wait for it to settle, then dispatch again without --queue", agent)
 	}
 	var promptRep transport.Reply[string]
+	// A send that proved receipt keeps its result even when its reply lands at
+	// the ceiling. An unproven send that reached it takes the ordinary
+	// not-received exit: JSON line, marker, sidecar and task state as any 15,
+	// with the already-read sequence instead of a fresh transport read.
+	sendNotReceivedAtCeiling := func() int {
+		return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "the send did not prove receipt before the --no-wait ceiling", before.Seq)
+	}
+	sendReachedCeiling := func(rep transport.Reply[string]) bool {
+		return rep.Err != nil && sendWindow.abort()
+	}
 	// Decide at the delivery boundary, even if the earlier sample was working.
 	promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue && !hcMode}, sendCall)
+	if sendReachedCeiling(promptRep) {
+		return sendNotReceivedAtCeiling()
+	}
 
 	if hcMode && !queuedHC && !busyRefusal && promptRep.Err != nil && promptRep.Err.Kind == transport.FailureBusy {
 		if amend || queue {
 			if queueEligible {
 				queuedHC = true
 				promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: true}, sendCall)
+				if sendReachedCeiling(promptRep) {
+					return sendNotReceivedAtCeiling()
+				}
 			} else {
 				busyRefusal = true
 				promptRep.Err.Message = busyMessage()
 			}
-		} else if hcSettled(svc, agent, timeoutRaw, timeoutGiven, sd, ctx, env, cwd) {
+		} else if hcSettled(svc, agent, timeoutRaw, timeoutGiven, sd, ctx, env, cwd, ceiling) {
 			gitFields = dispatchGitFields(briefRaw, workerCwd, cwd, sd, agent, false, priorPointer, env)
 			warnSnapshotCap(gitFields)
 			if err := gittree.ReplaceBaseline(sidecar, gitFields); err != nil {
 				promptRep.Err = &transport.Failure{Kind: transport.FailureBusy, Message: "could not persist refreshed Git baseline; the send was not retried"}
 			} else {
 				promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text}, transport.Call{})
+				if sendReachedCeiling(promptRep) {
+					return sendNotReceivedAtCeiling()
+				}
 			}
 		} else {
 			promptRep.Err = &transport.Failure{Kind: transport.FailureBusy, Message: fmt.Sprintf("worker %s is still working after the idle wait; the send was not retried", agent)}
@@ -845,8 +1025,11 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	resentFirst := false
 	if hcMode && promptRep.Err != nil && kind == "codex" && !amend && !queue && !queuedHC && !busyRefusal && !behavior.noResend &&
 		priorPointer == nil && oldReport == "" && hcbackend.SendRefusedBeforeWrite(promptRep.Err) &&
-		firstDispatchResendReady(svc, agent, kind, composed) {
+		firstDispatchResendReady(svc, agent, kind, composed, ceiling) {
 		promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text}, sendCall)
+		if sendReachedCeiling(promptRep) {
+			return sendNotReceivedAtCeiling()
+		}
 		if promptRep.Err == nil {
 			resentFirst = true
 			core.Warn(fmt.Sprintf("the first prompt to '%s' was refused before it was written; sent it once more", agent), frictionLogPath, "dispatch")
@@ -887,16 +1070,14 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, restoredReport, briefSHA, "failed", "", session, role); err != nil {
 			core.Warn(fmt.Sprintf("could not record the failed submission in the attempt sidecar %s: %s", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 		}
-		probe := "herdr agent get " + agent + " && herdr agent read " + agent
-		if hcMode {
-			probe = "hc get " + agent + " && hc read " + agent
-		}
+		probe := dispatchInspectCommand(agent, env)
 		warning := submitFailedWarning(promptRep.Err, probe)
 		if busyRefusal {
 			warning = promptRep.Err.Message
 		}
 		return writeDispatchError(agent, role, kind, composed, report, taskReport, sd, promptRep.Err.Message, 4, warning)
 	}
+	ceilingSubmitted = true
 	if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session, role); err != nil {
 		core.Warn(fmt.Sprintf("could not record the accepted submission in the attempt sidecar %s: %s; the prompt went out", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 	}
@@ -942,7 +1123,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			// The proof must be read inside the window: each get is capped
 			// to the remaining time and a result that returns after the
 			// deadline does not count as arrival.
-			arrived := hcTurnArrival(time.Duration(checkSecs)*time.Second, env, svc, agent, sendTurn, sendTurnOK)
+			arrived := hcTurnArrival(time.Duration(checkSecs)*time.Second, env, svc, agent, sendTurn, sendTurnOK, ceiling)
 			if !arrived {
 				return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "no turn started under hc")
 			}
@@ -962,7 +1143,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			screen, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
 			return provider.PromptEvidence(screen, composed)
 		}
-		if !wasWorking && !waitDispatchArrivalExtra(window, env, arrived, transcriptArrival) {
+		if !wasWorking && !waitDispatchArrivalExtra(window, env, arrived, transcriptArrival, ceiling) {
 			screen, _ := readScreen(svc, agent, "visible", nil)
 			// A plan refusal leaves the pointer in the composer. Neither an
 			// Enter nor a resend can change the subscription's model settings.
@@ -993,7 +1174,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				if sendAgentKey(svc, agent, "enter") {
 					enterSent = true
 					core.Warn(fmt.Sprintf("prompt to '%s' sat in the input box; sent Enter", agent), frictionLogPath, "dispatch")
-					if !waitDispatchArrival(window, env, arrived) {
+					if !waitDispatchArrival(window, env, arrived, ceiling) {
 						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an Enter on the text left in its input box")
 					}
 				} else {
@@ -1044,7 +1225,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 					if sendAgentKey(svc, agent, "enter") {
 						enterSent = true
 						core.Warn(fmt.Sprintf("prompt to '%s' reached its input after the arrival check; sent Enter without resending", agent), frictionLogPath, "dispatch")
-						if !waitDispatchArrival(window, env, arrived) {
+						if !waitDispatchArrival(window, env, arrived, ceiling) {
 							return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an Enter on the text left in its input box")
 						}
 					} else {
@@ -1074,7 +1255,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 					core.Warn(fmt.Sprintf("prompt to '%s' did not arrive; sending it once more", agent), frictionLogPath, "dispatch")
 					if svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text}, transport.Call{}).Err == nil {
 						resent = true
-						if !waitDispatchArrivalExtra(window, env, arrived, transcriptArrival) {
+						if !waitDispatchArrivalExtra(window, env, arrived, transcriptArrival, ceiling) {
 							return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "one resend")
 						}
 					} else {
@@ -1086,15 +1267,15 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		if wasWorking {
 			ok := waitDispatchArrivalExtra(window, env, arrived, func() bool {
 				return promptEvidence() || transcriptArrival()
-			})
+			}, ceiling)
 			if !ok && settleSecs > 0 {
 				// Some CLIs (Cursor) hold a prompt sent during a turn in a queue they do
 				// not show: wait up to prompt_settle_seconds for that turn to end, then
 				// look for the arrival once more. After the turn only a new working turn
 				// or the report counts: a path in the scrollback of an idle agent is not
 				// a queued prompt (the next wait would read it as stuck in the input).
-				ok = waitWorkingTurnEnd(agent, preSeq, time.Duration(settleSecs)*time.Second, env, svc) &&
-					waitDispatchArrival(window, env, arrived)
+				ok = waitWorkingTurnEnd(agent, preSeq, time.Duration(settleSecs)*time.Second, env, svc, ceiling) &&
+					waitDispatchArrival(window, env, arrived, ceiling)
 			}
 			if !ok && noWait {
 				// The text was typed: the CLI may run it when the turn ends. Record the
@@ -1434,12 +1615,20 @@ func parseTimeout(raw string) float64 {
 	}
 	return v
 }
-func waitDispatchArrival(window time.Duration, env platform.Env, arrived func() bool) bool {
-	return waitDispatchArrivalExtra(window, env, arrived, nil)
+func waitDispatchArrival(window time.Duration, env platform.Env, arrived func() bool, budgets ...*dispatchWaitBudget) bool {
+	return waitDispatchArrivalExtra(window, env, arrived, nil, budgets...)
 }
-func waitDispatchArrivalExtra(window time.Duration, env platform.Env, arrived, extra func() bool) bool {
-	deadline := platform.Now().Add(window)
+func waitDispatchArrivalExtra(window time.Duration, env platform.Env, arrived, extra func() bool, budgets ...*dispatchWaitBudget) bool {
+	var budget *dispatchWaitBudget
+	if len(budgets) > 0 {
+		budget = budgets[0]
+	}
+	wait := budget.window(window, "prompt arrival", 15)
+	deadline := platform.Now().Add(wait.duration)
 	for {
+		if wait.abort() {
+			return false
+		}
 		if arrived() {
 			return true
 		}
@@ -1454,6 +1643,9 @@ func waitDispatchArrivalExtra(window time.Duration, env platform.Env, arrived, e
 			poll = 100 * time.Millisecond
 		}
 		time.Sleep(poll)
+		if wait.abort() {
+			return false
+		}
 	}
 }
 
@@ -1461,10 +1653,21 @@ func waitDispatchArrivalExtra(window time.Duration, env platform.Env, arrived, e
 // until its turn ends (it leaves working and blocked) or a new turn starts (its
 // state_change_seq moves while working), up to window. It reports whether that
 // happened in time.
-func waitWorkingTurnEnd(agent, preSeq string, window time.Duration, env platform.Env, svc transport.Services) bool {
-	deadline := platform.Now().Add(window)
+func waitWorkingTurnEnd(agent, preSeq string, window time.Duration, env platform.Env, svc transport.Services, budgets ...*dispatchWaitBudget) bool {
+	var budget *dispatchWaitBudget
+	if len(budgets) > 0 {
+		budget = budgets[0]
+	}
+	wait := budget.window(window, "worker turn to end", 15)
+	deadline := platform.Now().Add(wait.duration)
 	for {
+		if wait.abort() {
+			return false
+		}
 		st := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
+		if wait.abort() {
+			return false
+		}
 		if st.State != "working" && st.State != "blocked" {
 			return st.State == "idle" || st.State == "done"
 		}
@@ -1479,6 +1682,9 @@ func waitWorkingTurnEnd(agent, preSeq string, window time.Duration, env platform
 			poll = 100 * time.Millisecond
 		}
 		time.Sleep(poll)
+		if wait.abort() {
+			return false
+		}
 	}
 }
 
@@ -1510,18 +1716,25 @@ func hcSendResult(raw string) (started bool, turn uint64, turnOK bool) {
 // worker settled inside it. Each Get is capped to the remaining budget, the
 // deadline is checked before it starts and after it returns, and a result
 // that arrives after the deadline does not authorize the retry.
-func hcSettled(svc transport.Services, agent string, timeoutRaw string, timeoutGiven bool, sd string, ctx *core.Config, env platform.Env, cwd string) bool {
-	waitTimeout := parseTimeout(timeoutRaw)
-	if !timeoutGiven {
-		waitTimeout = float64(core.RoleTimeoutMs(waitpkg.TaskRole(sd, agent), ctx, env, cwd))
+func hcSettled(svc transport.Services, agent string, timeoutRaw string, timeoutGiven bool, sd string, ctx *core.Config, env platform.Env, cwd string, budgets ...*dispatchWaitBudget) bool {
+	var budget *dispatchWaitBudget
+	if len(budgets) > 0 {
+		budget = budgets[0]
 	}
-	deadline := platform.Now().Add(time.Duration(waitTimeout) * time.Millisecond)
+	waitWindow := time.Duration(parseTimeout(timeoutRaw)) * time.Millisecond
+	if !timeoutGiven {
+		waitWindow = time.Duration(core.RoleTimeoutMs(waitpkg.TaskRole(sd, agent), ctx, env, cwd)) * time.Millisecond
+	}
+	wait := budget.window(waitWindow, "worker to become idle", 10)
+	deadline := platform.Now().Add(wait.duration)
 	for {
+		wait.abort()
 		left := deadline.Sub(platform.Now())
 		if left <= 0 {
 			return false
 		}
 		st := readState(svc, agent, transport.Call{Timeout: left})
+		wait.abort()
 		if !platform.Now().Before(deadline) {
 			// The read returned after the idle budget ended (or was cut at
 			// the edge): its result does not settle the worker.
@@ -1539,6 +1752,7 @@ func hcSettled(svc transport.Services, agent string, timeoutRaw string, timeoutG
 			poll = left
 		}
 		time.Sleep(poll)
+		wait.abort()
 	}
 }
 
@@ -1548,14 +1762,25 @@ func hcSettled(svc transport.Services, agent string, timeoutRaw string, timeoutG
 // returns after the deadline is rejected, and no poll starts at or after
 // expiry. A send whose turn is missing or invalid (turnOK false) can only
 // arrive through the working state.
-func hcTurnArrival(window time.Duration, env platform.Env, svc transport.Services, agent string, sendTurn uint64, sendTurnOK bool) bool {
-	deadline := platform.Now().Add(window)
+func hcTurnArrival(window time.Duration, env platform.Env, svc transport.Services, agent string, sendTurn uint64, sendTurnOK bool, budgets ...*dispatchWaitBudget) bool {
+	var budget *dispatchWaitBudget
+	if len(budgets) > 0 {
+		budget = budgets[0]
+	}
+	wait := budget.window(window, "prompt arrival", 15)
+	deadline := platform.Now().Add(wait.duration)
 	for {
+		if wait.abort() {
+			return false
+		}
 		left := deadline.Sub(platform.Now())
 		if left <= 0 {
 			return false
 		}
 		st := readState(svc, agent, transport.Call{Timeout: left})
+		if wait.abort() {
+			return false
+		}
 		if !platform.Now().Before(deadline) {
 			// The read returned after the window ended (or was cut at the
 			// edge): its result is not arrival proof.
@@ -1579,6 +1804,9 @@ func hcTurnArrival(window time.Duration, env platform.Env, svc transport.Service
 			poll = left
 		}
 		time.Sleep(poll)
+		if wait.abort() {
+			return false
+		}
 	}
 }
 
@@ -1760,8 +1988,14 @@ func dispatchComposerEmpty(kind string, region []string) bool {
 // once (the prompt may have landed, or the pane belongs to a person); a
 // state or screen that cannot be read counts as not ready, so the window
 // expires and nothing is sent. Nothing from the screen is returned or logged.
-func firstDispatchResendReady(svc transport.Services, agent, kind, composed string) bool {
+func firstDispatchResendReady(svc transport.Services, agent, kind, composed string, budgets ...*dispatchWaitBudget) bool {
+	var budget *dispatchWaitBudget
+	if len(budgets) > 0 {
+		budget = budgets[0]
+	}
+	wait := budget.window(time.Duration(dispatchFirstResendPolls)*time.Second, "first-send readiness", 10)
 	for tick := 0; ; tick++ {
+		wait.abort()
 		switch firstDispatchResendProbe(svc, agent, kind, composed) {
 		case firstResendReady:
 			return true
@@ -1772,6 +2006,7 @@ func firstDispatchResendReady(svc transport.Services, agent, kind, composed stri
 			return false
 		}
 		dispatchFirstResendPause()
+		wait.abort()
 	}
 }
 
