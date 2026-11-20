@@ -4,12 +4,40 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
+
+// modelTmpInventory records every file under TMPDIR with its content so a
+// test can prove nothing was created, removed or rewritten.
+func modelTmpInventory(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		out[rel] = string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
 
 func modelFixture(t *testing.T, name string) string {
 	t.Helper()
@@ -81,9 +109,8 @@ func TestListModelsPiOpenCodeUsesItsOwnCommand(t *testing.T) {
 			if readErr != nil || len(calls) != 1 || !reflect.DeepEqual(calls[0].Argv, tc.args) {
 				t.Fatalf("calls = %+v err = %v, want one call with %q", calls, readErr, tc.args)
 			}
-			cached, readErr := os.ReadFile(ModelsCacheFile(tc.kind, env))
-			if readErr != nil || !strings.Contains(string(cached), "opencode-go/hy4-flash-free") {
-				t.Fatalf("cache = %q err = %v", cached, readErr)
+			if _, statErr := os.Stat(ModelsCacheFile(tc.kind, env)); !os.IsNotExist(statErr) {
+				t.Fatalf("explicit listing created a cache: %v", statErr)
 			}
 		})
 	}
@@ -161,17 +188,69 @@ func TestListModelsPiOpenCodeFailures(t *testing.T) {
 	}
 }
 
-func TestListModelsPiOpenCodeUsesFreshCache(t *testing.T) {
+func TestListModelsPiOpenCodeIgnoresStaleCache(t *testing.T) {
+	for _, tc := range []struct {
+		kind, exe, fixture string
+		args               []string
+	}{
+		{"pi", "pi", "pi-models.txt", []string{"--list-models"}},
+		{"opencode", "opencode", "opencode-models.txt", []string{"models"}},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			env, bin := fakeEnv(t, map[string][]fakecli.Rule{tc.exe: {{Argv: tc.args, Stdout: modelFixture(t, tc.fixture)}}})
+			cache := ModelsCacheFile(tc.kind, env)
+			if err := os.WriteFile(cache, []byte("anthropic/cached-model\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before := modelTmpInventory(t, env.Get("TMPDIR"))
+			ids, err := ListModels(tc.kind, env)
+			if err != nil || !reflect.DeepEqual(ids, []string{
+				"anthropic/claude-fable-5", "anthropic/claude-opus-4-6", "provider-abc1/qwen3.8-27b",
+				"console-openai/gpt-6.1-terra", "opencode-go/hy4-flash-free",
+			}) {
+				t.Fatalf("ids=%q err=%v, want the fresh CLI list", ids, err)
+			}
+			calls, readErr := fakecli.ReadCallsForConfig(filepath.Join(bin, tc.exe+".json"))
+			if readErr != nil || len(calls) != 1 {
+				t.Fatalf("CLI calls = %+v err = %v, want one fresh listing", calls, readErr)
+			}
+			if after := modelTmpInventory(t, env.Get("TMPDIR")); !reflect.DeepEqual(before, after) {
+				t.Fatalf("stale cache was read or rewritten: before=%v after=%v", before, after)
+			}
+		})
+	}
+}
+
+func TestResolveModelPiOpenCodeRunsNoCLIAndWritesNoFile(t *testing.T) {
 	for _, kind := range []string{"pi", "opencode"} {
 		t.Run(kind, func(t *testing.T) {
-			env, _ := fakeEnv(t, nil)
+			argv := []string{"models"}
+			if kind == "pi" {
+				argv = []string{"--list-models"}
+			}
+			env, bin := fakeEnv(t, map[string][]fakecli.Rule{kind: {{Argv: argv, Stdout: "anthropic/listed-model\n"}}})
 			cache := ModelsCacheFile(kind, env)
 			if err := os.WriteFile(cache, []byte("anthropic/cached-model\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			ids, err := ListModels(kind, env)
-			if err != nil || !reflect.DeepEqual(ids, []string{"anthropic/cached-model"}) {
-				t.Fatalf("ids=%q err=%v", ids, err)
+			before := modelTmpInventory(t, env.Get("TMPDIR"))
+			var warns []string
+			got, err := ResolveModel(kind, "provider/model", "", env, func(m string) { warns = append(warns, m) })
+			if err != nil || got != "provider/model" || len(warns) != 0 {
+				t.Fatalf("ResolveModel(%s) = %q err=%v warns=%v, want the spec unchanged", kind, got, err, warns)
+			}
+			if ids := ModelIDs(kind, env); len(ids) != 0 {
+				t.Fatalf("ModelIDs(%s) = %q, want no ids in resolution", kind, ids)
+			}
+			calls, readErr := fakecli.ReadCallsForConfig(filepath.Join(bin, kind+".json"))
+			if readErr != nil && !os.IsNotExist(readErr) {
+				t.Fatalf("cannot read %s call log: %v", kind, readErr)
+			}
+			if len(calls) != 0 {
+				t.Fatalf("resolution called %s: calls=%+v", kind, calls)
+			}
+			if after := modelTmpInventory(t, env.Get("TMPDIR")); !reflect.DeepEqual(before, after) {
+				t.Fatalf("resolution changed the file tree: before=%v after=%v", before, after)
 			}
 		})
 	}

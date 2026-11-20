@@ -97,7 +97,9 @@ func ModelsCacheFile(kind string, env platform.Env) string {
 }
 
 // ModelIDs reads the model list of the kind, honoring the 1-hour copy in
-// TMPDIR for the kinds whose source is a CLI. codex never uses the copy:
+// TMPDIR for the kinds whose source is a CLI. pi and opencode have no source
+// in resolution: their specs pass through and only ListModels runs their CLI.
+// codex never uses the copy:
 // its source is the local ~/.codex/models_cache.json, which is cheap to
 // re-read, and a stale copy could hide a model Codex just added (the doctor
 // then reported "does not resolve" until the copy expired).
@@ -116,9 +118,13 @@ type ModelListError struct {
 
 func (e *ModelListError) Error() string { return e.Command + " " + e.Reason }
 
-// ListModels is ModelIDs with the failure of a pi/opencode listing reported
-// instead of discarded. Other kinds keep their existing empty-list behavior.
+// ListModels serves the explicit `soho models` command. pi and opencode
+// always run their listing CLI here: no models cache is read or written.
+// Other kinds keep ModelIDs' existing behavior.
 func ListModels(kind string, env platform.Env) ([]string, error) {
+	if kind == "pi" || kind == "opencode" {
+		return listCLIModels(kind, env)
+	}
 	ids, _, err := modelIDs(kind, env, false)
 	return ids, err
 }
@@ -130,24 +136,72 @@ func modelListCommand(kind string) string {
 	return "opencode models"
 }
 
-// hasModelSource reports whether the kind's list comes from a source that
-// can change behind the 1-hour copy (the cursor/agy/grok/pi/opencode CLI listing).
-// codex
-// reads its source directly (no copy); the other kinds (claude, ...) have no
-// source — a copy, when present, is all the list there is.
+// modelListFallbackMs is the pi and opencode listing timeout when
+// SOHO_MODELS_TIMEOUT is unset or unusable; tests lower it.
+var modelListFallbackMs = 20000
+
+// listCLIModels runs an always-fresh pi or opencode listing. It is reachable
+// only from ListModels: resolution and spawn never call it. No models cache
+// file is read, created or rewritten, even when a stale one is present.
+func listCLIModels(kind string, env platform.Env) ([]string, error) {
+	shortRaw, short := env.Lookup("SOHO_MODELS_TIMEOUT")
+	short = short && shortRaw != ""
+	timeout := 20000
+	if short {
+		timeout = modelListFallbackMs
+		if n, err := strconv.ParseFloat(shortRaw, 64); err == nil && n > 0 {
+			timeout = int(n * 1000)
+		}
+	}
+	fail := func(reason string) ([]string, error) {
+		return nil, &ModelListError{Kind: kind, Command: modelListCommand(kind), Reason: reason}
+	}
+	exe, args := "opencode", []string{"models"}
+	if kind == "pi" {
+		exe, args = "pi", []string{"--list-models"}
+	}
+	r := platform.RunCli(exe, args, platform.RunOptions{Env: env, TimeoutMs: timeout})
+	if r.NotFound {
+		return fail("not found")
+	}
+	if r.TimedOut {
+		return fail("timed out")
+	}
+	if r.Status == nil || *r.Status != 0 {
+		code := 1
+		if r.Status != nil {
+			code = *r.Status
+		}
+		return fail(fmt.Sprintf("failed (exit %d)", code))
+	}
+	var out []string
+	if kind == "pi" {
+		out = ParsePiModels(r.Stdout)
+	} else {
+		out = ParseOpenCodeModels(r.Stdout)
+	}
+	if len(out) == 0 {
+		return fail("listed no models")
+	}
+	return out, nil
+}
+
+// hasModelSource reports whether the kind's list in modelIDs comes from a
+// source that can change behind the 1-hour copy (the cursor/agy/grok CLI
+// listing). codex reads its source directly (no copy); the other kinds
+// (claude, pi, opencode, ...) have no source here — a copy, when present, is
+// all the list there is, and pi/opencode never read one.
 func hasModelSource(kind string) bool {
-	return kind == "cursor" || kind == "agy" || kind == "grok" || kind == "pi" || kind == "opencode"
+	return kind == "cursor" || kind == "agy" || kind == "grok"
 }
 
 // modelIDs reads the model list of the kind from its source. skipCopy
 // ignores the 1-hour copy read (the copy is still rewritten on success);
 // fromCopy reports whether the returned list came from that copy.
-
-// modelListFallbackMs is the pi and opencode listing timeout when
-// SOHO_MODELS_TIMEOUT is unset or unusable; tests lower it.
-var modelListFallbackMs = 20000
-
 func modelIDs(kind string, env platform.Env, skipCopy bool) ([]string, bool, error) {
+	if kind == "pi" || kind == "opencode" {
+		return nil, false, nil
+	}
 	file := ModelsCacheFile(kind, env)
 	shortRaw, short := env.Lookup("SOHO_MODELS_TIMEOUT")
 	short = short && shortRaw != ""
@@ -185,47 +239,12 @@ func modelIDs(kind string, env platform.Env, skipCopy bool) ([]string, bool, err
 				}
 			}
 		}
-	case "cursor", "agy", "grok", "pi", "opencode":
+	case "cursor", "agy", "grok":
 		timeout, ok := seconds(20)
 		if kind == "agy" {
 			timeout, ok = seconds(30)
 		}
-		if kind == "pi" || kind == "opencode" {
-			// An unparsable, negative or zero override keeps the documented
-			// fallback: RunCli applies no deadline at all for 0 ms.
-			if !ok || timeout <= 0 {
-				timeout = modelListFallbackMs
-			}
-			fail := func(reason string) ([]string, bool, error) {
-				return nil, false, &ModelListError{Kind: kind, Command: modelListCommand(kind), Reason: reason}
-			}
-			exe, args := "opencode", []string{"models"}
-			if kind == "pi" {
-				exe, args = "pi", []string{"--list-models"}
-			}
-			r := platform.RunCli(exe, args, platform.RunOptions{Env: env, TimeoutMs: timeout})
-			if r.NotFound {
-				return fail("not found")
-			}
-			if r.TimedOut {
-				return fail("timed out")
-			}
-			if r.Status == nil || *r.Status != 0 {
-				code := 1
-				if r.Status != nil {
-					code = *r.Status
-				}
-				return fail(fmt.Sprintf("failed (exit %d)", code))
-			}
-			if kind == "pi" {
-				out = ParsePiModels(r.Stdout)
-			} else {
-				out = ParseOpenCodeModels(r.Stdout)
-			}
-			if len(out) == 0 {
-				return fail("listed no models")
-			}
-		} else if ok {
+		if ok {
 			exe, args := kind, []string{"models"}
 			if kind == "cursor" {
 				exe, args = "cursor-agent", []string{"--list-models"}
