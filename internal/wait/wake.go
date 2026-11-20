@@ -8,10 +8,13 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
@@ -87,10 +90,14 @@ func wakeChildArgs(agents []string, timeoutMs int64, anyDone bool) []string {
 // answer to the run is the only thing it waits for.
 //
 // The child ends with the caller's program (no one else could receive its
-// note) and notifies the caller on exit. A finished child of the caller with
-// the same name is removed first, best effort; a live one makes the run
-// answer name_taken, reported as already-armed with nothing started.
-func cmdWake(agents []string, timeoutMs float64, anyDone bool, ctx *core.Config, env platform.Env, cwd, sd string) int {
+// note) and notifies the caller on exit. A plain --wake first stops this
+// caller's previous recorded wakes (kill then rm through the transport) and
+// arms exactly the requested agents; --add keeps the older reconciliation,
+// skipping covered agents and answering already-armed when none remain. A
+// finished child of the caller with the new name is removed first, best
+// effort; a live one makes the run answer name_taken, reported as
+// already-armed with nothing started.
+func cmdWake(agents []string, timeoutMs float64, anyDone, add bool, ctx *core.Config, env platform.Env, cwd, sd string) int {
 	if env.Get("SOHO_TRANSPORT") != "hc" {
 		core.DieFriction("wait: --wake needs the native transport (SOHO_TRANSPORT=hc)", 2, "", "wait")
 	}
@@ -115,9 +122,22 @@ func cmdWake(agents []string, timeoutMs float64, anyDone bool, ctx *core.Config,
 	} else {
 		defer storage.Close()
 	}
-	remaining, err := uncoveredWakeAgents(svc, env.Get("HC_TERMINAL_ID"), storage, agents)
-	if err != nil {
-		core.DieFriction("wait: --wake could not check existing wakes: "+err.Error(), 4, "", "wait")
+	caller := env.Get("HC_TERMINAL_ID")
+	var remaining, replaced []string
+	if add {
+		var err error
+		remaining, err = uncoveredWakeAgents(svc, caller, storage, agents)
+		if err != nil {
+			core.DieFriction("wait: --wake could not check existing wakes: "+err.Error(), 4, "", "wait")
+		}
+		replaced = []string{}
+	} else {
+		var err error
+		replaced, err = stopPreviousWakes(svc, caller, storage)
+		if err != nil {
+			core.DieFriction("wait: --wake could not stop previous wakes: "+err.Error(), 4, "", "wait")
+		}
+		remaining = agents
 	}
 	if len(remaining) == 0 {
 		return 0
@@ -153,7 +173,7 @@ func cmdWake(agents []string, timeoutMs float64, anyDone bool, ctx *core.Config,
 	if err := recordWake(storage, rep.Value, agents); err != nil {
 		core.DieFriction(fmt.Sprintf("wait: --wake started child '%s' but could not record its agents: %v; check it before arming again", rep.Value, err), 4, "", "wait")
 	}
-	jsonLine(jsonjs.O("wake", "armed", "agents", stringsAny(agents), "terminal", rep.Value, "name", name, "timeout_ms", ms))
+	jsonLine(jsonjs.O("wake", "armed", "agents", stringsAny(agents), "terminal", rep.Value, "name", name, "timeout_ms", ms, "replaced", stringsAny(replaced)))
 	return 0
 }
 
@@ -186,27 +206,43 @@ func openWakeStorage(sd string) (*os.Root, error) {
 	return root, nil
 }
 
-// uncoveredWakeAgents reconciles records only after a successful live listing.
-func uncoveredWakeAgents(svc transport.Services, caller string, dir *os.Root, agents []string) ([]string, error) {
+// wakeSnapshot is the live part of one successful Core listing: every live
+// terminal address, and the subset Core reports as a child of this caller.
+// No terminal is ever selected by name; recorded wakes are matched against
+// this snapshot.
+type wakeSnapshot struct {
+	live     map[string]bool
+	children map[string]bool
+}
+
+func liveWakeSnapshot(svc transport.Services, caller string) (wakeSnapshot, error) {
 	rep := svc.Runtime.List(context.Background(), transport.Scope{All: true}, transport.Call{})
 	if rep.Err != nil {
-		return nil, rep.Err
+		return wakeSnapshot{}, rep.Err
 	}
 	if !rep.Valid {
-		return nil, fmt.Errorf("terminal listing is invalid")
+		return wakeSnapshot{}, fmt.Errorf("terminal listing is invalid")
+	}
+	snapshot := wakeSnapshot{live: make(map[string]bool), children: make(map[string]bool)}
+	for _, term := range rep.Value {
+		if term.NativeState == "live" {
+			snapshot.live[term.Target.ID] = true
+			if term.ParentKnown && term.Parent == caller {
+				snapshot.children[term.Target.ID] = true
+			}
+		}
+	}
+	return snapshot, nil
+}
+
+// uncoveredWakeAgents reconciles records only after a successful live listing.
+func uncoveredWakeAgents(svc transport.Services, caller string, dir *os.Root, agents []string) ([]string, error) {
+	snapshot, err := liveWakeSnapshot(svc, caller)
+	if err != nil {
+		return nil, err
 	}
 	if dir == nil {
 		return agents, nil
-	}
-	live := make(map[string]bool)
-	children := make(map[string]bool)
-	for _, term := range rep.Value {
-		if term.NativeState == "live" {
-			live[term.Target.ID] = true
-			if term.ParentKnown && term.Parent == caller {
-				children[term.Target.ID] = true
-			}
-		}
 	}
 	f, err := dir.Open(".")
 	if err != nil {
@@ -223,13 +259,13 @@ func uncoveredWakeAgents(svc transport.Services, caller string, dir *os.Root, ag
 		if !validWakeAddress(name) {
 			return nil, fmt.Errorf("invalid wake record %q", name)
 		}
-		if !live[name] {
+		if !snapshot.live[name] {
 			if err := dir.Remove(name); err != nil {
 				return nil, err
 			}
 			continue
 		}
-		if !children[name] {
+		if !snapshot.children[name] {
 			continue
 		}
 		info, err := dir.Lstat(name)
@@ -270,6 +306,62 @@ func uncoveredWakeAgents(svc transport.Services, caller string, dir *os.Root, ag
 		}
 	}
 	return remaining, nil
+}
+
+// stopPreviousWakes closes every wake recorded in this state dir that Core
+// still reports live and parented by the caller. The kill and the remove go
+// through the transport's Close, never a shell, and no terminal is chosen by
+// name. A recorded wake Core no longer reports live has only its stale
+// record dropped; a live wake of another parent, or a live child of the
+// caller that is not recorded here, is left completely alone.
+func stopPreviousWakes(svc transport.Services, caller string, dir *os.Root) ([]string, error) {
+	snapshot, err := liveWakeSnapshot(svc, caller)
+	if err != nil {
+		return nil, err
+	}
+	stopped := []string{}
+	if dir == nil {
+		return stopped, nil
+	}
+	f, err := dir.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	entries, err := f.ReadDir(-1)
+	_ = f.Close()
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !validWakeAddress(name) {
+			return nil, fmt.Errorf("invalid wake record %q", name)
+		}
+		if !snapshot.live[name] {
+			if err := dir.Remove(name); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if !snapshot.children[name] {
+			continue
+		}
+		info, err := dir.Lstat(name)
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("invalid wake record %q", name)
+		}
+		if rep := svc.Runtime.Close(context.Background(), transport.Target{ID: name}, transport.Call{}); rep.Err != nil {
+			return nil, fmt.Errorf("could not close wake %s: %w", name, rep.Err)
+		}
+		if err := dir.Remove(name); err != nil {
+			return nil, err
+		}
+		stopped = append(stopped, name)
+	}
+	return stopped, nil
 }
 
 func validWakeAddress(terminal string) bool {
@@ -326,4 +418,62 @@ func wakeStateDir(ctx *core.Config, env platform.Env, cwd string) string {
 		core.DieFriction("wait: --wake cannot forward the state root as SOHO_STATE_DIR: it must be an absolute path without NUL, CR or LF", 2, "", "wait")
 	}
 	return root
+}
+
+// armWakeSignals is the observe child's signal handler. On Unix, a SIGHUP,
+// SIGINT or SIGTERM prints one interrupted line with the rearm command and
+// exits with 128 plus the signal number, so an orchestrator that killed the
+// child learns which agents lost their watch. The names in that line are the
+// validated agents this wait was given; nothing Core printed is echoed.
+// Windows keeps today's behavior: no handler is installed. The returned
+// function removes the handler when a wait returns without a signal.
+func armWakeSignals(agents []string, timeoutMs int64, anyDone bool) func() {
+	noop := func() {}
+	if runtime.GOOS == "windows" {
+		return noop
+	}
+	ch := make(chan os.Signal, 1)
+	done := make(chan struct{})
+	signal.Notify(ch, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-done:
+		case sig := <-ch:
+			signal.Stop(ch)
+			jsonLine(jsonjs.O("wake", "interrupted", "signal", wakeSignalName(sig), "agents", stringsAny(agents), "rearm", wakeRearmCommand(agents, timeoutMs, anyDone)))
+			code := 128
+			if number, ok := sig.(syscall.Signal); ok {
+				code += int(number)
+			}
+			os.Exit(code)
+		}
+	}()
+	return func() {
+		close(done)
+		signal.Stop(ch)
+	}
+}
+
+func wakeSignalName(sig os.Signal) string {
+	switch sig {
+	case syscall.SIGHUP:
+		return "SIGHUP"
+	case syscall.SIGINT:
+		return "SIGINT"
+	case syscall.SIGTERM:
+		return "SIGTERM"
+	}
+	return sig.String()
+}
+
+// wakeRearmCommand is the form an orchestrator copies back: the same wake
+// flags the child was started with, including --any only when it was asked.
+func wakeRearmCommand(agents []string, timeoutMs int64, anyDone bool) string {
+	args := append([]string{"soho", "wait"}, agents...)
+	args = append(args, "--wake")
+	if anyDone {
+		args = append(args, "--any")
+	}
+	args = append(args, "--timeout", strconv.FormatInt(timeoutMs, 10))
+	return strings.Join(args, " ")
 }

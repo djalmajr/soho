@@ -1121,6 +1121,10 @@ func WaitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 // observe line is printed, and no settling side effect runs, so the
 // orchestrator's own wait after the wake settles it with every field.
 func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, timeoutMs float64, anyDone, observe bool, cwd string) int {
+	if observe {
+		stopSignals := armWakeSignals(agents, int64(timeoutMs), anyDone)
+		defer stopSignals()
+	}
 	svc := backend.New(env)
 	for _, agent := range agents {
 		removeWaitFile(sd, agent, "size")
@@ -1823,6 +1827,7 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	timeout := float64(math.NaN())
 	any := false
 	wake := false
+	add := false
 	observe := false
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
@@ -1846,6 +1851,8 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 			any = true
 		case "--wake":
 			wake = true
+		case "--add":
+			add = true
 		case "--observe":
 			observe = true
 		default:
@@ -1860,6 +1867,9 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	}
 	if wake && observe {
 		core.DieFriction("wait: --wake and --observe do not combine: --observe is the probe the --wake child runs", 2, "", "wait")
+	}
+	if add && !wake {
+		core.DieFriction("wait: --add needs --wake", 2, "", "wait")
 	}
 	var sd string
 	if observe {
@@ -1905,7 +1915,7 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		panic(value)
 	}()
 	if wake {
-		return cmdWake(agents, timeout, any, ctx, env, cwd, sd)
+		return cmdWake(agents, timeout, any, add, ctx, env, cwd, sd)
 	}
 	return waitFor(agents, sd, ctx, env, timeout, any, observe, cwd)
 }
