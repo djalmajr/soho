@@ -160,8 +160,9 @@ func TestHcCopiesAdd(t *testing.T) {
 	}
 	src := mk("handcopy")
 	code, out, errOut := f.run(t, f.env, "copies", "add", src)
-	if code != 0 || out != "" || errOut != "" {
-		t.Fatalf("code=%d out=%q err=%q; want a silent success", code, out, errOut)
+	wantOut := "copies add: registered " + src + " (owner worker)\n"
+	if code != 0 || out != wantOut || errOut != "" {
+		t.Fatalf("code=%d out=%q err=%q; want %q and no stderr", code, out, errOut, wantOut)
 	}
 	rows := f.copiesRows(t)
 	if len(rows) != 1 || rows[0].Path != src || rows[0].Owner != "worker" || rows[0].Pane != "p-worker" || rows[0].Source != "-" || rows[0].Origin != "add" {
@@ -330,8 +331,9 @@ func TestHcGcUnrosteredCallerCopy(t *testing.T) {
 			if err := os.MkdirAll(dir, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if code, out, errOut := f.run(t, f.env, "copies", "add", dir); code != 0 || out != "" || errOut != "" {
-				t.Fatalf("copies add: code=%d out=%q err=%q", code, out, errOut)
+			wantOut := "copies add: registered " + dir + " (owner -)\n"
+			if code, out, errOut := f.run(t, f.env, "copies", "add", dir); code != 0 || out != wantOut || errOut != "" {
+				t.Fatalf("copies add: code=%d out=%q err=%q; want %q", code, out, errOut, wantOut)
 			}
 			if rows := f.copiesRows(t); len(rows) != 1 || rows[0].Owner != "-" || rows[0].Pane != "p-worker" {
 				t.Fatalf("registry rows=%#v; want one unrostered line recording the caller terminal", rows)

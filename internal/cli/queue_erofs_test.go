@@ -27,8 +27,9 @@ func TestRegistrationQueuesOnAReadOnlyFileSystem(t *testing.T) {
 		code, out, errOut := f.run(t, f.env, "copies", "add", copyDir)
 		queue := core.PendingCopiesFile(f.env, "ws")
 		want := "copies add: the state dir " + sd + " is not writable from here; the registration is queued for the orchestrator in " + queue + "\n"
-		if code != 0 || out != "" || errOut != want {
-			t.Fatalf("code=%d out=%q err=%q; want 0 and %q", code, out, errOut, want)
+		wantOut := "copies add: registered " + copyDir + " (owner -)\n"
+		if code != 0 || out != wantOut || errOut != want {
+			t.Fatalf("code=%d out=%q err=%q; want 0, %q and %q", code, out, errOut, wantOut, want)
 		}
 		if raw := readQueue(t, queue); !containsLine(raw, copyDir) {
 			t.Fatalf("queue=%q; want the copy queued", raw)

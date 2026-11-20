@@ -313,8 +313,8 @@ func TestCopiesAdd(t *testing.T) {
 			t.Fatal(err)
 		}
 		code, out, errOut := f.run(t, f.env, "copies", "add", src)
-		if code != 0 || out != "" || errOut != "" {
-			t.Fatalf("code=%d out=%q err=%q; want a silent success", code, out, errOut)
+		if code != 0 || out != "copies add: registered "+src+" (owner worker)\n" || errOut != "" {
+			t.Fatalf("code=%d out=%q err=%q; want the registered line and no stderr", code, out, errOut)
 		}
 		rows := f.copiesRows(t)
 		if len(rows) != 1 || rows[0].Path != src || rows[0].Owner != "worker" || rows[0].Pane != "p-worker" || rows[0].Source != "-" || rows[0].Origin != "add" {
@@ -2186,7 +2186,7 @@ func readQueue(t *testing.T, path string) string {
 }
 
 func TestCopiesAddQueuesWhenTheStateDirRefusesWrites(t *testing.T) {
-	queued := func(t *testing.T, f *copiesFixture, env platform.Env) (string, string, string) {
+	queued := func(t *testing.T, f *copiesFixture, env platform.Env, owner string) (string, string, string) {
 		t.Helper()
 		sd := f.stateDir(t)
 		copyDir := filepath.Join(f.tmp, "queued-copy")
@@ -2198,8 +2198,9 @@ func TestCopiesAddQueuesWhenTheStateDirRefusesWrites(t *testing.T) {
 		restore()
 		queue := core.PendingCopiesFile(f.env, "ws")
 		wantLine := "copies add: the state dir " + sd + " is not writable from here; the registration is queued for the orchestrator in " + queue + "\n"
-		if code != 0 || out != "" || errOut != wantLine {
-			t.Fatalf("code=%d out=%q err=%q; want 0 and the queue line %q", code, out, errOut, wantLine)
+		wantOut := "copies add: registered " + copyDir + " (owner " + owner + ")\n"
+		if code != 0 || out != wantOut || errOut != wantLine {
+			t.Fatalf("code=%d out=%q err=%q; want 0, %q and the queue line %q", code, out, errOut, wantOut, wantLine)
 		}
 		if rows := f.copiesRows(t); len(rows) != 0 {
 			t.Fatalf("the refused registry was written: %#v", rows)
@@ -2213,7 +2214,7 @@ func TestCopiesAddQueuesWhenTheStateDirRefusesWrites(t *testing.T) {
 		task := filepath.Join(f.root, "reports", "worker.current.md")
 		current := filepath.Join(f.root, "reports", "task-1.md")
 		writeTaskPointer(t, f.stateDir(t), "worker", task, current)
-		sd, copyDir, queue := queued(t, f, f.env)
+		sd, copyDir, queue := queued(t, f, f.env, "worker")
 		raw := readQueue(t, queue)
 		lines := strings.Split(strings.TrimSuffix(raw, "\n"), "\n")
 		if len(lines) != 2 || lines[0] != "state_dir\tpath\towner\tpane\tcreated\tsource\torigin\ttask\treport" {
@@ -2243,7 +2244,7 @@ func TestCopiesAddQueuesWhenTheStateDirRefusesWrites(t *testing.T) {
 			{Argv: []string{"pane", "list", "--workspace", "ws"}, Stdout: `{"result":{"panes":[]}}`},
 		})
 		f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
-		_, copyDir, queue := queued(t, f, f.env)
+		_, copyDir, queue := queued(t, f, f.env, "worker")
 		addReleaseReport(t, filepath.Join(f.state, "ws"), "worker", false)
 		code, out, errOut := f.run(t, f.env, "release", "worker")
 		if code != 0 || !strings.Contains(out, "removed copy "+copyDir+"\n") {
@@ -2265,7 +2266,7 @@ func TestCopiesAddQueuesWhenTheStateDirRefusesWrites(t *testing.T) {
 		f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
 		env := f.env.Clone()
 		env["HERDR_PANE_ID"] = "p-nobody"
-		_, copyDir, queue := queued(t, f, env)
+		_, copyDir, queue := queued(t, f, env, "-")
 		code, out, errOut := f.run(t, f.env, "gc", "--older-than", "0")
 		if code != 0 || errOut != "" || !strings.Contains(out, "would remove "+copyDir+"  0 B  -  ") {
 			t.Fatalf("gc: code=%d out=%q err=%q; want the queued orphan offered", code, out, errOut)
@@ -2323,8 +2324,9 @@ func TestCopiesAddQueuesWhenTheStateDirRefusesWrites(t *testing.T) {
 		if err := os.MkdirAll(copyDir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if code, out, errOut := f.run(t, f.env, "copies", "add", copyDir); code != 0 || out != "" || errOut != "" {
-			t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
+		wantOut := "copies add: registered " + copyDir + " (owner worker)\n"
+		if code, out, errOut := f.run(t, f.env, "copies", "add", copyDir); code != 0 || out != wantOut || errOut != "" {
+			t.Fatalf("code=%d out=%q err=%q; want %q", code, out, errOut, wantOut)
 		}
 		if rows := f.copiesRows(t); len(rows) != 1 || rows[0].Path != copyDir {
 			t.Fatalf("registry rows=%#v", rows)
@@ -2539,7 +2541,7 @@ func refuseIncorporation(t *testing.T, err error) {
 }
 
 func TestSandboxedCopiesStayQuietOnAPermissionIncorporation(t *testing.T) {
-	t.Run("a second copies add prints only the queue line, and copies lists without a warning", func(t *testing.T) {
+	t.Run("a second copies add prints the queue line and the registered line, and copies lists without a warning", func(t *testing.T) {
 		f := newCopiesFixture(t, []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: agentIdleJSON}})
 		f.writeRoster(t, copiesRosterRow("worker", "p-worker"))
 		sd := f.stateDir(t)
@@ -2553,8 +2555,9 @@ func TestSandboxedCopiesStayQuietOnAPermissionIncorporation(t *testing.T) {
 				t.Fatal(err)
 			}
 			code, out, errOut := f.run(t, f.env, "copies", "add", copyDir)
-			if code != 0 || out != "" || errOut != wantLine {
-				t.Fatalf("%s add: code=%d out=%q err=%q; want 0 and only %q", name, code, out, errOut, wantLine)
+			wantOut := "copies add: registered " + copyDir + " (owner worker)\n"
+			if code != 0 || out != wantOut || errOut != wantLine {
+				t.Fatalf("%s add: code=%d out=%q err=%q; want 0, %q and the queue line %q", name, code, out, errOut, wantOut, wantLine)
 			}
 		}
 		if lines := strings.Split(strings.TrimSuffix(readQueue(t, queue), "\n"), "\n"); len(lines) != 3 {
