@@ -126,3 +126,78 @@ func TestHcPiKeyStartup(t *testing.T) {
 		})
 	}
 }
+
+// TestHcPiEffectiveThinking exercises the hc path that reuses the screen read
+// taken during terminal start: a drawn footer needs no second read, a footer
+// caught mid-draw spends the bounded retry, and neither a hostile screen nor
+// a failed read invents an effort_effective value.
+func TestHcPiEffectiveThinking(t *testing.T) {
+	const otherLevelWarn = "soho: warning: spawn: pi shows thinking 'low' for 'worker' where 'high' was asked; this model may not offer 'high'"
+	cases := []struct {
+		name, screen, retryScreen, effort, wantLevel string
+		readFail                                     bool
+		wantReads                                    int
+		wantWarn                                     bool
+	}{
+		{name: "drawn footer", screen: "model • high\n", retryScreen: "working\n", effort: "high", wantLevel: "high", wantReads: 1},
+		{name: "footer cut mid-draw", screen: "model • hig\n", retryScreen: "model • high\n", effort: "high", wantLevel: "high", wantReads: 2},
+		{name: "footer absent", screen: "ready\n", retryScreen: "working\n", effort: "medium", wantReads: 1},
+		{name: "another level", screen: "model • low\n", retryScreen: "working\n", effort: "high", wantLevel: "low", wantReads: 1, wantWarn: true},
+		{name: "failed start read", retryScreen: "model • high\n", effort: "medium", readFail: true, wantReads: 1},
+		{name: "level word in model id", screen: "model-high • unavailable\n", retryScreen: "working\n", effort: "medium", wantReads: 1},
+		{name: "control characters in footer", screen: "model\x00 • high\x00\n", retryScreen: "working\n", effort: "medium", wantReads: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd, bin, _, env, ctx := hcSpawnFixture(t, "worker", "pi")
+			screenJSON := func(s string) string {
+				t.Helper()
+				payload, err := json.Marshal(map[string]any{"text": s, "complete": true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(payload)
+			}
+			startRead := fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Call: 1, Stdout: screenJSON(tc.screen)}
+			if tc.readFail {
+				startRead.Code = 1
+				startRead.Stderr = `{"error":{"kind":"internal","message":"read failed"}}`
+			}
+			rules := append(hcFixtureRules(),
+				fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcReadyWorker},
+				startRead,
+				fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Call: 2, Stdout: screenJSON(tc.retryScreen)},
+				fakecli.Rule{Argv: []string{"read", "t7", "--lines", "0", "--json"}, Call: 3, Stdout: screenJSON("working\n")},
+				fakecli.Rule{Argv: []string{"kill", "t7", "--json"}, Stdout: `{"address":"t7","state":"finished"}`},
+				fakecli.Rule{Argv: []string{"rm", "t7", "--json"}, Stdout: `{"address":"t7"}`},
+			)
+			if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+				t.Fatal(err)
+			}
+			exit, out, stderr, calls := spawnHcExitWithConn(t, bin, []string{"worker", "--kind", "pi", "--model", "model-a", "--effort", tc.effort}, ctx, env, cwd, newFakeSpawnRPCConn())
+			if exit != nil {
+				t.Fatalf("exit=%+v out=%q stderr=%q", exit, out, stderr)
+			}
+			level, present := spawnJSONField(t, out.String(), "effort_effective")
+			if present != (tc.wantLevel != "") || level != tc.wantLevel {
+				t.Fatalf("effort_effective=%q present=%v, want %q present=%v; stdout=%s", level, present, tc.wantLevel, tc.wantLevel != "", out)
+			}
+			reads := 0
+			for _, c := range calls {
+				if c.Argv[0] != "read" {
+					continue
+				}
+				reads++
+				if len(c.Argv) < 2 || c.Argv[1] != "t7" {
+					t.Fatalf("wrong read target: %v", c.Argv)
+				}
+			}
+			if reads != tc.wantReads {
+				t.Fatalf("reads=%d want %d: calls=%v", reads, tc.wantReads, calls)
+			}
+			if warned := strings.Contains(stderr.String(), otherLevelWarn); warned != tc.wantWarn {
+				t.Fatalf("warning=%v want %v; stderr=%q", warned, tc.wantWarn, stderr)
+			}
+		})
+	}
+}
