@@ -59,6 +59,7 @@ var testEnvExceptions = []testEnvException{
 	{"internal/cli/spawn_env_redact_test.go", "init", "Getenv", "The re-executed RPC fake reads the synthetic response explicitly supplied by the redaction test."},
 	{"internal/cli/tui_profile_model_test.go", "TestOpenCodeTUIModelDiscovery", "LookupEnv", "Read back a process selector explicitly set by this test to prove routing does not mutate it."},
 	{"internal/cli/worker_state_test.go", "init", "Getenv", "Re-executed worker fake consumes its parent-supplied role before TestMain."},
+	{"internal/wait/wake_signal_unix_test.go", "TestWakeObserveSignalHelper", "Getenv", "The re-executed observe-wait helper reads the helper flag, the binary path and the ready-file path explicitly supplied by the parent signal test."},
 	{"internal/core/compact_phase_test.go", "TestCompactPhaseLivenessChild", "Getenv", "Read the sleeper duration explicitly supplied by the liveness fixture."},
 	{"internal/core/footprint_test.go", "TestFootprintHelper", "Getenv", "Dispatch the process role explicitly supplied by the footprint fixture."},
 	{"internal/core/procs_test.go", "TestProcsSleeperHelper", "Getenv", "Dispatch the sleeper role explicitly supplied by the process fixture."},

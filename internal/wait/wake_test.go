@@ -287,7 +287,7 @@ func TestWakeArmsOneChildTerminal(t *testing.T) {
 			}
 			arm := wakeJSON(t, out)
 			wantTimeout := wantArgs(tc.wantArgs, "--timeout")
-			want := map[string]any{"wake": "armed", "agents": []any{"w1"}, "terminal": "t9", "name": "wake-w1", "timeout_ms": wantTimeout}
+			want := map[string]any{"wake": "armed", "agents": []any{"w1"}, "terminal": "t9", "name": "wake-w1", "timeout_ms": wantTimeout, "replaced": []any{}}
 			if !reflect.DeepEqual(arm, want) {
 				t.Fatalf("arming JSON %v, want %v", arm, want)
 			}
@@ -448,10 +448,10 @@ func TestWakeMembershipReconciliation(t *testing.T) {
 		wantArgs           []string
 		wantWarning, stale bool
 	}{
-		{"same agent", []string{"w1", "--wake"}, []string{"w1", "--wake"}, live, 1, nil, true, false},
-		{"partial any", []string{"w1", "--wake"}, []string{"w1", "w2", "--any", "--wake"}, live, 2, []string{"wait", "w2", "--timeout", "123000", "--any", "--observe"}, true, false},
-		{"stale child", []string{"w1", "--wake"}, []string{"w1", "--wake"}, `{"terminals":[]}`, 2, []string{"wait", "w1", "--timeout", "123000", "--observe"}, false, true},
-		{"hashed membership", []string{"w1", "w2", "--any", "--wake"}, []string{"w2", "--wake"}, live, 1, nil, true, false},
+		{"same agent", []string{"w1", "--wake"}, []string{"w1", "--wake", "--add"}, live, 1, nil, true, false},
+		{"partial any", []string{"w1", "--wake"}, []string{"w1", "w2", "--any", "--wake", "--add"}, live, 2, []string{"wait", "w2", "--timeout", "123000", "--any", "--observe"}, true, false},
+		{"stale child", []string{"w1", "--wake"}, []string{"w1", "--wake", "--add"}, `{"terminals":[]}`, 2, []string{"wait", "w1", "--timeout", "123000", "--observe"}, false, true},
+		{"hashed membership", []string{"w1", "w2", "--any", "--wake"}, []string{"w2", "--wake", "--add"}, live, 1, nil, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			conn := newWakeRPCConn(wakeRPCRun)
@@ -803,7 +803,7 @@ func TestWakeOtherCallerPreservesLiveRecord(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(f.sd, "wakes", "t9")); err != nil {
 		t.Fatal(err)
 	}
-	code, msg, _, stderr := f.cmd(t, "w1", "--wake")
+	code, msg, _, stderr := f.cmd(t, "w1", "--wake", "--add")
 	if code != 0 || !strings.Contains(stderr, "already armed (t9)") || len(conn.runs(t)) != 1 {
 		t.Fatalf("repeat: %d %s stderr=%q runs=%d", code, msg, stderr, len(conn.runs(t)))
 	}
@@ -827,5 +827,10 @@ func TestWakeRefusesLinkedStorage(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(outside, "keep"))
 	if code != 0 || wakeJSON(t, out)["wake"] != "armed" || len(conn.runs(t)) != 1 || strings.Count(stderr, "duplicate detection") != 1 || err != nil || string(data) != "unrelated" || len(entries) != 1 {
 		t.Fatalf("code=%d msg=%q stderr=%q entries=%v data=%q err=%v", code, msg, stderr, entries, data, err)
+	}
+	for _, argv := range f.hcArgvs(t) {
+		if argv[0] == "kill" || argv[0] == "rm" {
+			t.Fatalf("a terminal was closed without wake storage: %v", argv)
+		}
 	}
 }
