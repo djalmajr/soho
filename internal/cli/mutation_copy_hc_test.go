@@ -62,7 +62,7 @@ func TestMutationCopyHCNativeRun(t *testing.T) {
 				args = append(args, "--print-path")
 			}
 			code, out, stderr := runMutationCopyCmd(t, f, f.source, nil, args...)
-			if code != 0 || mutationCopyAdviceFree(stderr) != "" {
+			if code != 0 || stderr != "" {
 				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, stderr)
 			}
 			rows, err := core.ReadCopies(sd)
@@ -300,7 +300,7 @@ func TestMutationCopyHCRegistrationFallback(t *testing.T) {
 					t.Fatalf("queue=%q", raw)
 				}
 			}
-			if code != 0 || out != dest+"\n" || mutationCopyAdviceFree(stderr) != want {
+			if code != 0 || out != dest+"\n" || stderr != want {
 				t.Fatalf("exit=%d stdout=%q stderr=%q want=%q", code, out, stderr, want)
 			}
 			if _, err := os.Stat(filepath.Join(dest, "tracked.txt")); err != nil {
