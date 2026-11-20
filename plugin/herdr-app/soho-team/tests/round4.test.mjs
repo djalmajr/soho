@@ -62,8 +62,9 @@ function fakeCx() {
         return { cancel() { entry.cancelled = true; } };
       },
     },
+    // gpui-kit calls the body in the delivering call, then adopts its promise.
     spawn(body) {
-      const promise = Promise.resolve().then(() => body(ctx));
+      const promise = Promise.resolve(body(ctx));
       ctx.tasks.push(promise);
       return promise;
     },

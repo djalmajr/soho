@@ -62,8 +62,9 @@ function fakeCx() {
         return { cancel() { entry.cancelled = true; } };
       },
     },
+    // gpui-kit calls the body in the delivering call, then adopts its promise.
     spawn(body) {
-      const promise = Promise.resolve().then(() => body(ctx));
+      const promise = Promise.resolve(body(ctx));
       ctx.tasks.push(promise);
       return promise;
     },
@@ -72,9 +73,12 @@ function fakeCx() {
 }
 
 async function flush(cx) {
-  for (let i = 0; i < 50; i += 1) {
+  // A read the test holds open must not block the drain: detach it and keep
+  // advancing the microtask queue until no new task appears.
+  for (let i = 0; i < 80; i += 1) {
     const pending = cx.tasks.splice(0);
-    if (pending.length) await Promise.allSettled(pending);
+    for (const task of pending) task.catch(() => {});
+    if (pending.length) await Promise.race([Promise.allSettled(pending), tick()]);
     await tick();
     if (!pending.length && cx.tasks.length === 0) return;
   }
