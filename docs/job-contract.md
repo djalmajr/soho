@@ -249,7 +249,7 @@ A job in worktree mode that would end `done` must have a verified final publicat
   "partial": false,
   "partial_collaborations": [],
   "testes": [{ "cmd": "go test ./...", "resultado": "pass" }],
-  "revisao": { "verdict": "pass", "findings": 1, "severity": "P0 0, P1 0, P2 1, P3 0" },
+  "revisao": { "verdict": "pass", "findings": 1, "severity": "P0 0, P1 0, P2 0, P3 1" },
   "artefatos": [{ "path": "report.md", "sha256": "<hex>" }],
   "blockers": [],
   "perguntas": [],
