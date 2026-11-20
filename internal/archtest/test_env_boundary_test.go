@@ -53,6 +53,7 @@ var testEnvExceptions = []testEnvException{
 	{"internal/cli/procs_test.go", "runProcsHelperRole", "Environ", "Forward the controlled child environment when the explicitly selected process role starts its descendant."},
 	{"internal/cli/release_dispatch_lifecycle_hc_test.go", "TestHcLifecycleCommandHelper", "Getenv", "Read only lifecycle root, args, lock, gate and fake config explicitly assigned by the parent lifecycle fixture."},
 	{"internal/cli/release_dispatch_lifecycle_hc_test.go", "TestReleaseHcLifecycleCleanupFailureHelper", "Getenv", "Read the cleanup marker explicitly supplied to the re-executed failure helper."},
+	{"internal/cli/reopen_hc_test.go", "init", "Getenv", "The re-executed hc RPC fake reads the frame and request explicitly supplied by the reopen hc test."},
 	{"internal/cli/review_snapshot_timeout_unix_test.go", "review545TimeoutHelper", "Getenv", "Re-executed Git helper consumes explicit role, marker and real Git path and forwards the controlled child environment."},
 	{"internal/cli/review_snapshot_timeout_unix_test.go", "review545TimeoutHelper", "Environ", "Re-executed Git helper consumes explicit role, marker and real Git path and forwards the controlled child environment."},
 	{"internal/cli/spawn_env_redact_test.go", "init", "Getenv", "The re-executed RPC fake reads the synthetic response explicitly supplied by the redaction test."},
