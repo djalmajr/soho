@@ -77,11 +77,30 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 		return 4
 	}
 	pendingResultLines("copies release", "copy", res, nil)
+	// Each requested path is resolved once (SOH-464): the queued-registration
+	// checks below and the row selection under the lock use this same result,
+	// so a parent link that changes in between cannot make them disagree.
+	canonicals := make([]string, len(paths))
+	spellings := make([][]string, len(paths))
+	for i, path := range paths {
+		spellings[i] = []string{path}
+		if !filepath.IsAbs(path) {
+			continue
+		}
+		if canonical, ok := canonicalCopyPath(path); ok {
+			canonicals[i] = canonical
+			if canonical != path {
+				spellings[i] = append(spellings[i], canonical)
+			}
+		}
+	}
 	for _, dropped := range res.Dropped {
-		for _, path := range paths {
-			if dropped.Malformed || dropped.What == path || inside(path, dropped.What) || inside(dropped.What, path) {
-				_, _ = fmt.Fprintf(platform.Stderr, "copies release: unresolved queued registration %q (%s); nothing removed\n", dropped.What, dropped.Cause)
-				return 4
+		for i := range paths {
+			for _, path := range spellings[i] {
+				if dropped.Malformed || dropped.What == path || inside(path, dropped.What) || inside(dropped.What, path) {
+					_, _ = fmt.Fprintf(platform.Stderr, "copies release: unresolved queued registration %q (%s); nothing removed\n", dropped.What, dropped.Cause)
+					return 4
+				}
 			}
 		}
 	}
@@ -103,11 +122,13 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 		return 4
 	}
 	for _, pending := range pendingRows {
-		for _, path := range paths {
-			if pending.Path == path || inside(path, pending.Path) || inside(pending.Path, path) {
-				unlock()
-				_, _ = fmt.Fprintf(platform.Stderr, "copies release: pending registration %q overlaps request; nothing removed\n", pending.Path)
-				return 4
+		for i := range paths {
+			for _, path := range spellings[i] {
+				if pending.Path == path || inside(path, pending.Path) || inside(pending.Path, path) {
+					unlock()
+					_, _ = fmt.Fprintf(platform.Stderr, "copies release: pending registration %q overlaps request; nothing removed\n", pending.Path)
+					return 4
+				}
 			}
 		}
 	}
@@ -115,12 +136,35 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 	for _, row := range rows {
 		byPath[row.Path] = row
 	}
+	// A row can hold a path resolved through a symlinked parent (SOH-464).
+	// When the path as typed misses, look up its canonical spelling and use
+	// the registered path for every later step. The typed path stays in the
+	// refusal lines, with the resolved spelling when one was computed.
+	effective := make([]string, len(paths))
+	resolvedNote := make([]string, len(paths))
+	for i, typed := range paths {
+		effective[i] = typed
+		if _, ok := byPath[typed]; ok {
+			continue
+		}
+		canonical := canonicals[i]
+		if canonical == "" {
+			continue
+		}
+		if canonical != typed {
+			resolvedNote[i] = " (resolved: " + canonical + ")"
+		}
+		if _, ok := byPath[canonical]; ok {
+			effective[i] = canonical
+		}
+	}
 	seen := map[string]bool{}
-	for _, path := range paths {
+	for i, typed := range paths {
+		path := effective[i]
 		row, ok := byPath[path]
 		reason := ""
 		switch {
-		case !filepath.IsAbs(path) || strings.HasPrefix(path, "-"):
+		case !filepath.IsAbs(typed) || strings.HasPrefix(typed, "-"):
 			reason = "not an absolute path"
 		case !ok:
 			reason = "not registered"
@@ -139,7 +183,7 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 		}
 		if reason != "" {
 			unlock()
-			_, _ = fmt.Fprintf(platform.Stderr, "copies release: refusing '%s': %s; nothing removed\n", path, reason)
+			_, _ = fmt.Fprintf(platform.Stderr, "copies release: refusing '%s': %s%s; nothing removed\n", typed, reason, resolvedNote[i])
 			return 2
 		}
 		if _, err := os.Lstat(path); err == nil {
@@ -152,7 +196,7 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 				}
 				if held != "" {
 					unlock()
-					_, _ = fmt.Fprintf(platform.Stderr, "copies release: refusing '%s': %s; nothing removed\n", path, held)
+					_, _ = fmt.Fprintf(platform.Stderr, "copies release: refusing '%s': %s%s; nothing removed\n", typed, held, resolvedNote[i])
 					return 2
 				}
 			}
@@ -160,13 +204,13 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 		seen[path] = true
 	}
 	outer := make([]string, 0, len(seen))
-	for _, path := range paths {
+	for _, path := range effective {
 		if !seen[path] {
 			continue
 		}
 		seen[path] = false
 		covered := false
-		for _, other := range paths {
+		for _, other := range effective {
 			if other != path && inside(other, path) {
 				covered = true
 				break
@@ -220,6 +264,7 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 		}
 		removals = append(removals, removal{path: path, discard: discard, parent: parent, children: children})
 	}
+
 	drop := map[string]bool{}
 	for _, r := range removals {
 		drop[r.path] = true
@@ -285,4 +330,48 @@ func copiesRelease(paths []string, ctx *core.Config, env platform.Env, cwd strin
 		return 4
 	}
 	return 0
+}
+
+// canonicalCopyPath is the registry spelling of a requested path, resolved
+// the way copies add resolves the path it registers (SOH-464): a path that
+// is itself a symlink has none, since add refuses a symlink as the copy and a
+// link named like a copy must never redirect a release to its target;
+// otherwise filepath.EvalSymlinks of the whole path, exactly the value add
+// stores, so `link/../copy`, `copy/.` and `copy/inner/..` name the row add
+// wrote. A copy that is already gone cannot be resolved whole; its parent is
+// then cut from the text as typed, before any cleaning, resolved, and joined
+// with the last element, which may not be "." or "..". A parent that cannot
+// be resolved has no canonical form.
+func canonicalCopyPath(path string) (string, bool) {
+	if isFinalSymlink(path) {
+		return "", false
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved, true
+	}
+	trimmed := withoutTrailingSeparators(path)
+	volume := filepath.VolumeName(trimmed)
+	cut := -1
+	for i := len(trimmed) - 1; i >= len(volume); i-- {
+		if os.IsPathSeparator(trimmed[i]) {
+			cut = i
+			break
+		}
+	}
+	if cut < 0 {
+		return "", false
+	}
+	base := trimmed[cut+1:]
+	if base == "" || base == "." || base == ".." {
+		return "", false
+	}
+	parentText := trimmed[:cut]
+	if len(parentText) <= len(volume) {
+		parentText = trimmed[:cut+1]
+	}
+	parent, err := filepath.EvalSymlinks(parentText)
+	if err != nil {
+		return "", false
+	}
+	return filepath.Join(parent, base), true
 }

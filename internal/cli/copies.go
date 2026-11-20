@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	copiesUsage = "usage: soho copies [add <path> [--agent <name>] | release <path>...]"
+	copiesUsage = "usage: soho copies [list | add <path> [--agent <name>] | release <path>...]"
 	gcUsage     = "usage: soho gc [--yes] [--verbose] [--older-than HOURS] [--include-unregistered] [--include-unregistered-procs]"
 
 	// copiesTimeLayout is the ISO-8601 UTC format the registry stores in the
@@ -43,6 +43,26 @@ func copyRefusal(path string, env platform.Env, cwd string) string {
 	return cause
 }
 
+// withoutTrailingSeparators drops trailing path separators without cleaning
+// the rest of the text (a volume root keeps its separator), so `..` and
+// symlinks in the middle of the path keep their meaning.
+func withoutTrailingSeparators(path string) string {
+	volume := filepath.VolumeName(path)
+	for len(path) > len(volume)+1 && os.IsPathSeparator(path[len(path)-1]) {
+		path = path[:len(path)-1]
+	}
+	return path
+}
+
+// isFinalSymlink reports whether the last entry of path is a symlink. Lstat
+// on "link/" follows the link on macOS and Linux, so the trailing separators
+// are dropped first (SOH-464): copies add refuses, and copies release never
+// follows, a symlink as the copy whatever the spelling.
+func isFinalSymlink(path string) bool {
+	info, err := os.Lstat(withoutTrailingSeparators(path))
+	return err == nil && info.Mode()&os.ModeSymlink != 0
+}
+
 // checkCopyPath is copyRefusal with the resolved path on success. The
 // identity comparison runs before the textual checks, which stay as the
 // second barrier. The .git refusal is delegated to gitRefusal so the gc
@@ -55,7 +75,7 @@ func checkCopyPath(path string, env platform.Env, cwd string) (string, string) {
 	if err != nil {
 		return "", "does not exist"
 	}
-	if info, lstatErr := os.Lstat(path); lstatErr == nil && info.Mode()&os.ModeSymlink != 0 {
+	if isFinalSymlink(path) {
 		return "", "is a symlink"
 	}
 	if isFilesystemRoot(resolved) {
@@ -376,7 +396,7 @@ func pendingResultLines(cmd, kind string, res core.PendingResult, err error) {
 
 // cmdCopies lists the copy registry, or registers a copy made by hand.
 func cmdCopies(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
-	if len(argv) == 0 {
+	if len(argv) == 0 || (len(argv) == 1 && argv[0] == "list") {
 		return copiesList(ctx, env, cwd)
 	}
 	if argv[0] == "release" {
@@ -1003,8 +1023,7 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	row := core.CopyRow{Path: resolved, Owner: owner, Pane: pane, Created: core.FrictionISO(platform.Now()), Source: "-", Origin: "add", Task: task, Report: report}
 	if err := upsertCopies(sd, row); err != nil {
 		if err = queueCopy("copies add", sd, row, err, env); err == nil {
-			registrantOwnerlessLine("copies add", owner, pane, "copy", env)
-			warnLiveCopies(sd, owner, caller, env)
+			finishCopiesAdd(sd, owner, caller, pane, resolved, env)
 			return 0
 		}
 		var locked *core.CopiesLockedError
@@ -1013,8 +1032,7 @@ func copiesAdd(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		}
 		core.DieFriction(fmt.Sprintf("copies add: could not register '%s' (%v)", path, err), 4, frictionLogPath, "copies")
 	}
-	registrantOwnerlessLine("copies add", owner, pane, "copy", env)
-	warnLiveCopies(sd, owner, caller, env)
+	finishCopiesAdd(sd, owner, caller, pane, resolved, env)
 	return 0
 }
 
@@ -2096,7 +2114,7 @@ func checkCopyPathFor(path string, env platform.Env, cwd string, allowEmptyGit b
 	if err != nil {
 		return "", "does not exist"
 	}
-	if info, lstatErr := os.Lstat(path); lstatErr == nil && info.Mode()&os.ModeSymlink != 0 {
+	if isFinalSymlink(path) {
 		return "", "is a symlink"
 	}
 	if isFilesystemRoot(resolved) {
@@ -2204,4 +2222,13 @@ func checkedCopyFor(path string, env platform.Env, cwd string, allowEmptyGit boo
 		return "", nil, "cannot verify the copy path"
 	}
 	return resolved, parentInfo, ""
+}
+
+// finishCopiesAdd is the shared ending of a written and a queued registration:
+// the advisory lines and one stdout confirmation naming the registered path
+// and owner (SOH-464). The queue line itself is printed by queueCopy.
+func finishCopiesAdd(sd, owner, caller, pane, resolved string, env platform.Env) {
+	registrantOwnerlessLine("copies add", owner, pane, "copy", env)
+	warnLiveCopies(sd, owner, caller, env)
+	_, _ = fmt.Fprintf(platform.Stdout, "copies add: registered %s (owner %s)\n", resolved, owner)
 }

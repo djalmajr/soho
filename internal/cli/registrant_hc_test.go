@@ -196,6 +196,9 @@ func registrantTargets() map[string]func(t *testing.T) registrantTarget {
 func registrantExpect(t *testing.T, target registrantTarget, env platform.Env, owner, pane, line string) {
 	t.Helper()
 	code, out, errOut, wantOut := target.run(t, env)
+	if target.cmd == "copies add" {
+		wantOut = "copies add: registered " + target.registered() + " (owner " + owner + ")\n"
+	}
 	if code != 0 || out != wantOut {
 		t.Fatalf("%s: code=%d out=%q (want %q) err=%q", target.cmd, code, out, wantOut, errOut)
 	}
@@ -405,8 +408,9 @@ func TestRegistrationLegacyOwnerlessPrintsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out, errOut := f.run(t, env, "copies", "add", dir)
-	if code != 0 || out != "" || errOut != "" {
-		t.Fatalf("code=%d out=%q err=%q; want a silent success", code, out, errOut)
+	wantOut := "copies add: registered " + dir + " (owner -)\n"
+	if code != 0 || out != wantOut || errOut != "" {
+		t.Fatalf("code=%d out=%q err=%q; want %q and no stderr", code, out, errOut, wantOut)
 	}
 	rows := f.copiesRows(t)
 	if len(rows) != 1 || rows[0].Owner != "-" || rows[0].Pane != "-" {

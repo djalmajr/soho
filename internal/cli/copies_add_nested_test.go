@@ -75,7 +75,12 @@ func TestCopiesAddNested(t *testing.T) {
 				initial = append(initial, core.CopyRow{Path: second, Owner: "-", Pane: "-", Created: "2026-01-01T00:00:00Z", Source: "-", Origin: "add", Task: "-", Report: "-"})
 			}
 			f.writeCopies(t, initial)
+			resolved, err := filepath.EvalSymlinks(input)
+			if err != nil {
+				t.Fatal(err)
+			}
 			code, out, stderr := f.run(t, f.env, "copies", "add", input)
+			wantOut := "copies add: registered " + resolved + " (owner worker)\n"
 			want := ""
 			if wantWarning {
 				want = fmt.Sprintf("copies add: %s contains the registered copy %s%s%s; release removes all of %s, logs included. Register only the copy, or release with --keep-copies to keep it", parent, child, more, other, parent)
@@ -84,12 +89,8 @@ func TestCopiesAddNested(t *testing.T) {
 			if want != "" {
 				wantStderr = "soho: warning: " + want + "\n"
 			}
-			if code != 0 || out != "" || stderr != wantStderr {
-				t.Fatalf("copies add %q: code=%d stdout=%q stderr=%q; want exit=0 stdout=empty stderr=%q", input, code, out, stderr, wantStderr)
-			}
-			resolved, err := filepath.EvalSymlinks(input)
-			if err != nil {
-				t.Fatal(err)
+			if code != 0 || out != wantOut || stderr != wantStderr {
+				t.Fatalf("copies add %q: code=%d stdout=%q stderr=%q; want exit=0 stdout=%q stderr=%q", input, code, out, stderr, wantOut, wantStderr)
 			}
 			rows := f.copiesRows(t)
 			wantCount := len(initial) + 1
