@@ -49,6 +49,21 @@ func busyAmendDecode(t *testing.T, out string) map[string]any {
 	return obj
 }
 
+// waitReportField returns the decoded "report" field of wait's JSON line, so
+// a path compares the same on every OS (JSON doubles Windows backslashes).
+func waitReportField(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		var obj map[string]any
+		if json.Unmarshal([]byte(strings.TrimSpace(line)), &obj) != nil {
+			continue
+		}
+		if report, ok := obj["report"].(string); ok {
+			return report
+		}
+	}
+	return ""
+}
+
 func TestDispatchHcBusyAmendLeavesAcceptedWaitUntouched(t *testing.T) {
 	f := newDispatchHcFixture(t, nil)
 	clock := platform.Now
@@ -121,7 +136,7 @@ func TestDispatchHcBusyAmendLeavesAcceptedWaitUntouched(t *testing.T) {
 		defer func() { platform.Stdout, platform.Stderr = oldOut, oldErr }()
 		return Run([]string{"wait", "worker", "--timeout", "5s"}, f.env)
 	}()
-	if waitCode != 0 || !strings.Contains(waitOut.String(), `"status":"done"`) || !strings.Contains(waitOut.String(), firstReport) {
+	if waitCode != 0 || !strings.Contains(waitOut.String(), `"status":"done"`) || waitReportField(waitOut.String()) != firstReport {
 		t.Fatalf("wait exit=%d out=%q stderr=%q", waitCode, waitOut.String(), waitErr.String())
 	}
 	if strings.Contains(waitOut.String(), "not-received") || strings.Contains(waitOut.String(), "submission-failed") || strings.Contains(waitErr.String(), "previous task") {
@@ -262,7 +277,7 @@ func TestDispatchHcBusyAmendWaitStartsWhileWorking(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("wait did not finish after the report was written")
 	}
-	if waitCode != 0 || !strings.Contains(waitOut.String(), `"status":"done"`) || !strings.Contains(waitOut.String(), firstReport) {
+	if waitCode != 0 || !strings.Contains(waitOut.String(), `"status":"done"`) || waitReportField(waitOut.String()) != firstReport {
 		t.Fatalf("wait exit=%d out=%q stderr=%q", waitCode, waitOut.String(), waitErr.String())
 	}
 	if strings.Contains(waitOut.String(), "not-received") || strings.Contains(waitOut.String(), "submission-failed") {
