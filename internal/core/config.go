@@ -117,6 +117,9 @@ var transportKeys = []string{"transport"}
 // Inventory keys stay outside the frozen configuration listing order.
 var inventoryKeys = []string{"inventory", "inventory_name"}
 
+// Fallback assistant keys stay outside the frozen configuration listing order.
+var fallbackKeys = []string{"fallback_edit", "fallback_review"}
+
 var KnownKinds = []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode"}
 var EffortLadder = []string{"low", "medium", "high", "xhigh", "max"}
 
@@ -512,6 +515,11 @@ func ConfigKeyOk(key string) bool {
 			return true
 		}
 	}
+	for _, scalar := range fallbackKeys {
+		if scalar == key {
+			return true
+		}
+	}
 	return dottedKeyRE.MatchString(key)
 }
 
@@ -571,6 +579,8 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 		return HooksReviewModeOk(value)
 	case key == "transport":
 		return TransportValueOk(value)
+	case key == "fallback_edit" || key == "fallback_review":
+		return fallbackValueOk(value)
 	case key == "inventory":
 		return value == "off" || value == "hidden" || value == "show"
 	case key == "inventory_name":
@@ -619,6 +629,19 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 	default:
 		return true
 	}
+}
+
+// fallbackValueOk accepts the empty default or exactly three fields:
+// a known kind, a model id and an effort from the ladder.
+func fallbackValueOk(value string) bool {
+	if value == "" {
+		return true
+	}
+	fields := strings.Fields(value)
+	if len(fields) != 3 || !contains(KnownKinds, fields[0]) || fields[1] == "" || !contains(EffortLadder, fields[2]) {
+		return false
+	}
+	return true
 }
 
 // jobTimeoutValueOk is the contract range for the default job budget: 1..1440 minutes.

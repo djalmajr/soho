@@ -43,7 +43,7 @@ var hcRefusedCommands = []string{
 	"send", "stats", "clean",
 	"regrid", "feedback", "tab-label",
 	"layout-plan",
-	"reopen", "compact", "metrics", "promote",
+	"compact", "metrics", "promote",
 	"job", "plugin",
 }
 

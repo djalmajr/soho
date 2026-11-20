@@ -597,7 +597,7 @@ func hcCommandAllowed(command string) bool {
 		return true
 	case "", "help", "-h", "--help":
 		return true
-	case "status", "wait", "spawn", "dispatch", "release", "collaborate", "doctor", "config", "explain", "capabilities", "report":
+	case "status", "wait", "spawn", "dispatch", "release", "reopen", "collaborate", "doctor", "config", "explain", "capabilities", "report":
 		return true
 	case "copies", "gc", "procs", "friction", "roster", "collect":
 		// The housekeeping commands (DJA-604): they read and write soho's own

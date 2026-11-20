@@ -968,7 +968,7 @@ func defaultValue(value, fallback string) string {
 
 type spawnOptions struct {
 	role, name, kind, direction, ratio, cwd, pane, timeout, effort, model, approvals, reuse, tabLabel, mcp string
-	kindSet                                                                                                bool
+	kindSet, laneKindOverride                                                                              bool
 	force                                                                                                  bool
 	native                                                                                                 []string
 	envFrom                                                                                                []string
@@ -1098,17 +1098,17 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 }
 
 func cmdSpawnWithHcStarter(argv []string, ctx *core.Config, env platform.Env, cwd string, startHC func(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string)) {
-	cmdSpawnPrepared(argv, ctx, env, cwd, startHC, false)
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHC, false, false)
 }
 
 // PreflightFreshSpawn observes the same preparation as a real spawn, without
 // allocating or retiring worker state. Admission is not a reservation: the
 // actual spawn must prepare and validate again after release.
 func PreflightFreshSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
-	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true)
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true, false)
 }
 
-func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd string, startHC func(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string), admissionOnly bool) {
+func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd string, startHC func(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string), admissionOnly, laneKindOverride bool) {
 	callerGatePhase := false
 	if admissionOnly {
 		defer func() {
@@ -1117,8 +1117,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 				return
 			}
 			if exit, ok := value.(*platform.ExitError); ok && exit != nil && !callerGatePhase {
-				// Preparation refusals must not trigger Run's deferred state
-				// write. Keep caller audit metadata and shared errors intact.
+				// Preparation refusals must not trigger Run's deferred state write; keep caller audit metadata and shared errors intact.
 				refusal := *exit
 				refusal.Friction = false
 				panic(&refusal)
@@ -1126,12 +1125,13 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			panic(value)
 		}()
 	}
-	var o spawnOptions
+	var o spawnOptions = spawnOptions{laneKindOverride: laneKindOverride}
 	// Explicit handoff admission and snapshot precede even warning writes,
 	// caller checks, naming and reuse. The snapshot map itself stays private.
 	explicitEnv := hasSpawnEnvOption(argv)
 	if explicitEnv {
 		o = parseArgs(argv, cwd)
+		o.laneKindOverride = laneKindOverride
 		prepareSpawnEnv(&o, ctx, env, cwd)
 	}
 	// Classify and clean up first; only the text handed to the outer CLI
@@ -1158,6 +1158,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	}
 	if !explicitEnv {
 		o = parseArgs(argv, cwd)
+		o.laneKindOverride = laneKindOverride
 	}
 	// Refuse invalid native arguments before starting a worker or writing its state.
 	early := core.ResolveRoleSettings(o.role, ctx, env, cwd, core.RoleFlags{Kind: o.kind, Model: o.model, Effort: o.effort, Approvals: o.approvals})
@@ -1226,7 +1227,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	// gone workers from the roster), before any reuse and before any pane or
 	// agent opens. It reads only the configuration. A given --pane skips the
 	// lane decision and the refusal with it.
-	if o.pane == "" && o.kindSet && o.kind != "" {
+	if o.pane == "" && o.kindSet && o.kind != "" && !o.laneKindOverride {
 		if lane, laneKind, conflict := LaneKindConflict(o.role, o.kind, ctx, env); conflict {
 			refuseLaneKind(o.role, lane, laneKind, o.kind, fmt.Sprintf("spawn: role '%s' runs in lane '%s', whose kind is %s; --kind %s would put a %s worker in it and block the lane's next spawns. Spawn with --kind %s, change lane.%s.kind, or set SOHO_LANES=off for this spawn to open it outside the lanes.", o.role, lane, laneKind, o.kind, o.kind, laneKind, lane), "spawn", ctx, env, cwd, !admissionOnly, o)
 		}
@@ -2954,4 +2955,19 @@ func freshSpawnArgs(o spawnOptions, lane, kind string, ctx *core.Config, env pla
 		core.DieFriction(fmt.Sprintf("spawn: '%s' would make %s resume an earlier session instead of starting a new one (for claude, -c is --continue: it resumes the orchestrator's conversation in this cwd). Remove it from the native args; codex-only flags belong in args.codex", resume, kind), 2, "", "")
 	}
 	return native, agentArgs
+}
+
+// CmdSpawnWithLaneKindOverride runs one spawn with the lane-kind conflict
+// check skipped for that worker only. It is a Go call open to callers that
+// already hold this package, not a CLI flag, environment variable or config
+// key: reopen uses it for the explicit --kind of its own replacement spawn.
+// A plain spawn keeps exiting 13 on a conflicting --kind.
+func CmdSpawnWithLaneKindOverride(argv []string, ctx *core.Config, env platform.Env, cwd string) {
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, false, true)
+}
+
+// PreflightFreshSpawnWithLaneKindOverride observes the same one-off admission
+// as CmdSpawnWithLaneKindOverride, without starting a worker.
+func PreflightFreshSpawnWithLaneKindOverride(argv []string, ctx *core.Config, env platform.Env, cwd string) {
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true, true)
 }
