@@ -1,0 +1,5 @@
+anthropic/claude-fable-5
+anthropic/claude-opus-4-6
+provider-abc1/qwen3.8-27b
+console-openai/gpt-6.1-terra
+opencode-go/hy4-flash-free

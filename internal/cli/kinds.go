@@ -14,7 +14,11 @@ func cmdModels(argv []string, env platform.Env) int {
 		_, _ = fmt.Fprintln(platform.Stderr, "soho: 1: kind")
 		return 1
 	}
-	ids := kinds.ModelIDs(argv[0], env)
+	ids, err := kinds.ListModels(argv[0], env)
+	if err != nil {
+		_, _ = fmt.Fprintln(platform.Stderr, "soho: models: "+argv[0]+": "+err.Error())
+		return 1
+	}
 	sorted := kinds.VersionSortDesc(ids)
 	if len(sorted) == 0 {
 		_, _ = fmt.Fprintln(platform.Stdout)

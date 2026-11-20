@@ -1,0 +1,6 @@
+provider           model                        context  max-out  thinking  images
+anthropic          claude-fable-5               1M       128K     yes       yes
+anthropic          claude-opus-4-6              1M       128K     yes       yes
+provider-abc1      qwen3.8-27b                  262.1K   41.0K    yes       yes
+console-openai     gpt-6.1-terra                1.1M     128K     yes       yes
+opencode-go        hy4-flash-free               1.0M     65.5K    yes       yes
