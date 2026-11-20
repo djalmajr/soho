@@ -377,7 +377,9 @@ func TestWakeRefusalsStartNoTerminal(t *testing.T) {
 				t.Fatalf("connects=%d runs=%d, want no terminal.run", conn.connectCount(), len(conn.runs(t)))
 			}
 			for _, argv := range f.hcArgvs(t) {
-				if len(argv) > 1 && argv[0] != "get" {
+				// The missing-roster hint makes one read-only hc ls to name a
+				// live orphan child; it starts no terminal and writes no file.
+				if len(argv) > 1 && argv[0] != "get" && !(len(argv) == 2 && argv[0] == "ls" && argv[1] == "--json") {
 					t.Fatalf("hc call %v after a refusal", argv)
 				}
 				if len(argv) > 1 && argv[1] == "wake-w1" {

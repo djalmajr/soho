@@ -14,6 +14,7 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/provider"
 	"github.com/djalmajr/soho/internal/transport"
+	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
 
 const modelSetUsage = "usage: soho model-set <worker> <provider/model> [--effort <level>] [--interrupt]"
@@ -96,7 +97,9 @@ func cmdModelSet(argv []string, ctx *core.Config, env platform.Env, cwd string) 
 	sd := core.StateDirPath(ctx, env, cwd)
 	line := core.RosterLine(sd, args.agent)
 	if line == "" {
-		core.DieFriction(fmt.Sprintf("agent '%s' is not in this skill's roster (spawn it first, or pass a name you spawned)", args.agent), 3, frictionLogPath, "model-set")
+		message := fmt.Sprintf("agent '%s' is not in this skill's roster (spawn it first, or pass a name you spawned)", args.agent)
+		message += waitpkg.RosterRefusalHint(args.agent, ctx, env, cwd)
+		core.DieFriction(message, 3, frictionLogPath, "model-set")
 	}
 	fields := strings.Split(line, "\t")
 	at := func(i int) string {

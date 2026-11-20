@@ -10,6 +10,7 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/spawn"
 	"github.com/djalmajr/soho/internal/taskreport"
+	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
 
 // cmdReopen closes the worker like release --close and reopens it with spawn --fresh,
@@ -55,7 +56,9 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	sd := core.StateDirPath(ctx, env, cwd)
 	line := core.RosterLine(sd, agent)
 	if line == "" {
-		core.DieFriction(fmt.Sprintf("agent '%s' is not in the roster", agent), 3, frictionLogPath, "reopen")
+		message := fmt.Sprintf("agent '%s' is not in the roster", agent)
+		message += waitpkg.RosterRefusalHint(agent, ctx, env, cwd)
+		core.DieFriction(message, 3, frictionLogPath, "reopen")
 	}
 	fields := strings.Split(line, "\t")
 	field := func(index int) string {

@@ -628,6 +628,7 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	}
 	doctorProjectRoles(env, cwd, s)
 	doctorOrphans(ctx, svc, env, cwd, s)
+	doctorNativeOrphanChildren(ctx, svc, env, cwd, s)
 	doctorDoneOpen(ctx, svc, env, cwd, s)
 	doctorCopiesDirAdvice(ctx, env, s)
 	doctorCopiesPressure(ctx, env, cwd, s)
@@ -1945,4 +1946,48 @@ func doctorCopiesDirProjectOnly(ctx *core.Config, env platform.Env, s *Say) {
 		return
 	}
 	s.Warning("copies_dir is a machine setting; set it with --user so workers in other repositories use it too (soho config set copies_dir <path> --user)")
+}
+
+// doctorNativeOrphanChildren warns once per live hc terminal that is a child
+// of this caller, runs a known assistant, has no roster row and is recorded
+// in the released-panes registry. Under hc a release without --close leaves
+// such a terminal alive with a registry row, the same row soho release
+// <name> --close needs; doctorOrphans above keeps its released-panes contract
+// unchanged.
+func doctorNativeOrphanChildren(ctx *core.Config, svc transport.Services, env platform.Env, cwd string, s *Say) {
+	if core.TransportMode(ctx, env) != "hc" {
+		return
+	}
+	caller := env.Get("HC_TERMINAL_ID")
+	if caller == "" {
+		return
+	}
+	listed := svc.Runtime.List(context.Background(), transport.Scope{All: true}, transport.Call{})
+	if listed.Err != nil || !listed.Valid {
+		return
+	}
+	sd := core.StateDirPath(ctx, env, cwd)
+	seen := map[string]bool{}
+	for _, terminal := range listed.Value {
+		if terminal.PaneID == "" || seen[terminal.PaneID] || terminal.Name == "" {
+			continue
+		}
+		if !terminal.ParentKnown || terminal.Parent != caller || terminal.NativeState != "live" {
+			continue
+		}
+		if kinds.KindFromProgramHints(terminal.ProgramHints) == "" || core.RosterLine(sd, terminal.Name) != "" {
+			continue
+		}
+		if !waitpkg.ReleasedPaneRegistered(terminal.Name, terminal.PaneID, ctx, env, cwd) {
+			continue
+		}
+		seen[terminal.PaneID] = true
+		name := textutil.SanitizeCause(terminal.Name)
+		state := textutil.SanitizeCause(terminal.State)
+		if state == "" {
+			state = "null"
+		}
+		s.Warning(fmt.Sprintf("orphan terminal: '%s' (%s, %s) is not in the roster; close it with: soho release %s --close",
+			name, textutil.SanitizeCause(terminal.PaneID), state, name))
+	}
 }

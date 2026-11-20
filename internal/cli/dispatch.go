@@ -177,6 +177,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		if replacement := core.RosterRenameHint(sd, agent); replacement != "" {
 			message += fmt.Sprintf("; renamed to '%s'; use the current name for dispatch", replacement)
 		}
+		message += waitpkg.RosterRefusalHint(agent, ctx, env, cwd)
 		core.DieFriction(message, 3, frictionLogPath, "dispatch")
 	}
 	rosterFields := strings.Split(line, "\t")

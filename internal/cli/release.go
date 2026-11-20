@@ -20,6 +20,7 @@ import (
 	"github.com/djalmajr/soho/internal/taskreport"
 	"github.com/djalmajr/soho/internal/text"
 	"github.com/djalmajr/soho/internal/transport"
+	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
 
 func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
@@ -59,7 +60,9 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 		if closePane && releaseOrphan(agent, force, ctx, env, cwd, svc) {
 			return 0
 		}
-		core.DieFriction(fmt.Sprintf("agent '%s' is not in the roster (state dir: %s)", agent, sd), 3, frictionLogPath, "release")
+		message := fmt.Sprintf("agent '%s' is not in the roster (state dir: %s)", agent, sd)
+		message += waitpkg.RosterRefusalHint(agent, ctx, env, cwd)
+		core.DieFriction(message, 3, frictionLogPath, "release")
 	}
 	fields := strings.Split(line, "\t")
 	field := func(index int) string {
@@ -212,7 +215,7 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 		// never registered: release --close must never close it later.
 		core.ReleasedPanesRecord(ctx, env, cwd, agent, pane, field(2))
 		if hcMode {
-			_, _ = fmt.Fprintf(platform.Stderr, "soho: release: the terminal %s stays open; close it later with: soho release %s --close\n", pane, agent)
+			_, _ = fmt.Fprintf(platform.Stderr, "soho: release: terminal %s stays open outside the roster; close it later with: soho release %s --close\n", pane, agent)
 		} else {
 			_, _ = fmt.Fprintf(platform.Stderr, "soho: release: the pane %s stays open; close it later with: soho release %s --close\n", pane, agent)
 		}
