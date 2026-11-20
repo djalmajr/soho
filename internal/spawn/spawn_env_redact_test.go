@@ -102,10 +102,10 @@ func TestSpawnEnvReflectedOutput(t *testing.T) {
 			if mode == "overlap" && !strings.Contains(public, "[redacted:SHORT_CANARY]") {
 				t.Error("missing shorter value token")
 			}
-			if wantCode == 7 && !strings.Contains(out.String(), `"status": "blocked_at_startup"`) {
+			if wantCode == 7 && !spawnJSONHasField(t, out.String(), `"status": "blocked_at_startup"`) {
 				t.Error("lost blocked classification")
 			}
-			if wantCode == 0 && !strings.Contains(out.String(), `"status": "ready"`) {
+			if wantCode == 0 && !spawnJSONHasField(t, out.String(), `"status": "ready"`) {
 				t.Error("lost ready classification")
 			}
 			for _, call := range calls {

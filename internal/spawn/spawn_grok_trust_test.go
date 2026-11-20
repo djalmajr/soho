@@ -31,7 +31,7 @@ func TestSpawnGrokTrustDialogBlocksAtStartup(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"status": "blocked_at_startup"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "blocked_at_startup"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	if !strings.Contains(stdout, "Do you trust the contents of this directory?") {
@@ -62,7 +62,7 @@ func TestSpawnGrokTrustDialogWithoutWindowBlocksAtStartup(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"status": "blocked_at_startup"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "blocked_at_startup"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	if !strings.Contains(stdout, "Do you trust the contents of this directory?") {
@@ -86,7 +86,7 @@ func TestSpawnGrokNoDialogNoWindowUnchanged(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"status": "ready"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	if strings.Contains(stdout, "context_window") {
@@ -125,7 +125,7 @@ func TestSpawnGrokTrustOnlyProceedLineIsNotDialog(t *testing.T) {
 	if n := countCallArgv(calls, "pane", "send-keys", pane, "Enter"); n != 1 {
 		t.Fatalf("Enter sent %d times: %#v", n, calls)
 	}
-	if !strings.Contains(stdout, `"status": "ready"`) || !strings.Contains(stdout, `"context_window": "500k"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "ready"`) || !spawnJSONHasField(t, stdout, `"context_window": "500k"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 }
@@ -169,7 +169,7 @@ func TestSpawnGrokTrustScreenReadBeforeTyping(t *testing.T) {
 	if len(reads) < 3 || !(reads[0] < reads[1] && reads[1] < text && text < enter && reads[2] > enter) {
 		t.Fatalf("order reads=%v text=%d enter=%d", reads, text, enter)
 	}
-	if !strings.Contains(stdout, `"status": "ready"`) || !strings.Contains(stdout, `"context_window": "500k"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "ready"`) || !spawnJSONHasField(t, stdout, `"context_window": "500k"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 }
@@ -196,7 +196,7 @@ func TestSpawnGrokGoneAfterEnterWarnsExited(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"status": "ready"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 		t.Fatalf("the status changed: spawn JSON=%q", stdout)
 	}
 	if strings.Contains(stdout, "context_window") {
@@ -281,7 +281,7 @@ func TestSpawnGrokTrustR2LateDialogWithWindowBlocks(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"status": "blocked_at_startup"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "blocked_at_startup"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	if !strings.Contains(stdout, "Do you trust the contents of this directory?") {
@@ -310,7 +310,7 @@ func TestSpawnGrokTrustR2NormalCitationNotDialog(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"status": "ready"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	if strings.Contains(stderr, "blocked during startup") {
@@ -344,7 +344,7 @@ func TestSpawnGrokTrustR2GoneAfterOneScreen(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"status": "ready"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 		t.Fatalf("the status changed: spawn JSON=%q", stdout)
 	}
 	if strings.Contains(stdout, "context_window") {

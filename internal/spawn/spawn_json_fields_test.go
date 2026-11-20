@@ -80,7 +80,7 @@ func TestSpawnJSONCarriesModelEffortAgentArgs(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		if !strings.Contains(stdout, `"created_pane": true`) {
+		if !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 			t.Fatalf("not a created pane: %s", stdout)
 		}
 		t.Logf("created-pane JSON:\n%s", stdout)
@@ -102,7 +102,7 @@ func TestSpawnJSONCarriesModelEffortAgentArgs(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		if !strings.Contains(stdout, `"placement": "given"`) {
+		if !spawnJSONHasField(t, stdout, `"placement": "given"`) {
 			t.Fatalf("not the --pane path: %s", stdout)
 		}
 		t.Logf("--pane JSON:\n%s", stdout)

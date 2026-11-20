@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/startup"
@@ -15,7 +14,7 @@ func TestReopenFreshPaneDoesNotClearShellLine(t *testing.T) {
 	setReopenRules(t, f)
 	f.env["SOHO_LAYOUT"] = "split"
 	run := f.reopen(t, "worker", "--force")
-	if run.code != 0 || !strings.Contains(run.stdout, `"created_pane": true`) {
+	if run.code != 0 || !spawnJSONHasFieldCLI(t, run.stdout, `"created_pane": true`) {
 		t.Fatalf("reopen code=%d stdout=%q stderr=%q", run.code, run.stdout, run.stderr)
 	}
 	closed, created, started := false, false, false

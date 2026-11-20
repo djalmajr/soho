@@ -130,7 +130,7 @@ func TestSpawnRotatesLaneModelsByLiveCount(t *testing.T) {
 	if code != 0 || refusal != "" {
 		t.Fatalf("exit=%d refusal=%q stdout=%q stderr=%q", code, refusal, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"model": "m2"`) || !strings.Contains(stdout, `"model_choice": "list"`) {
+	if !spawnJSONHasField(t, stdout, `"model": "m2"`) || !spawnJSONHasField(t, stdout, `"model_choice": "list"`) {
 		t.Fatalf("model choice missing from stdout=%q", stdout)
 	}
 	models := rosterModels(t, f)
@@ -184,7 +184,7 @@ func TestSpawnModelCapDoesNotCountGoneRows(t *testing.T) {
 	if code != 0 || refusal != "" {
 		t.Fatalf("exit=%d refusal=%q stdout=%q stderr=%q", code, refusal, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"model": "m1"`) {
+	if !spawnJSONHasField(t, stdout, `"model": "m1"`) {
 		t.Fatalf("a gone row consumed a slot: %q", stdout)
 	}
 }
@@ -206,7 +206,7 @@ func TestSpawnExplicitModelWarnsAndSkipsRotation(t *testing.T) {
 			if code != 0 || refusal != "" {
 				t.Fatalf("exit=%d refusal=%q stdout=%q stderr=%q", code, refusal, stdout, stderr)
 			}
-			if !strings.Contains(stdout, `"model": "m1"`) {
+			if !spawnJSONHasField(t, stdout, `"model": "m1"`) {
 				t.Fatalf("explicit model lost: %q", stdout)
 			}
 			want := "soho: warning: spawn: model 'm1' already has 2 live workers (model_cap 2)\n"
@@ -214,7 +214,7 @@ func TestSpawnExplicitModelWarnsAndSkipsRotation(t *testing.T) {
 				t.Fatalf("stderr=%q, want exactly one %q", stderr, want)
 			}
 			choice := "flag"
-			if !strings.Contains(stdout, `"model_choice": "`+choice+`"`) {
+			if !spawnJSONHasField(t, stdout, `"model_choice": "`+choice+`"`) {
 				t.Fatalf("model_choice=%q", stdout)
 			}
 			if len(herdrActs(calls)) == 0 {
@@ -233,7 +233,7 @@ func TestSpawnModelCapOffUsesFirstListedModel(t *testing.T) {
 	if code != 0 || refusal != "" {
 		t.Fatalf("exit=%d refusal=%q stdout=%q stderr=%q", code, refusal, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"model": "m1"`) || !strings.Contains(stdout, `"model_choice": "list"`) {
+	if !spawnJSONHasField(t, stdout, `"model": "m1"`) || !spawnJSONHasField(t, stdout, `"model_choice": "list"`) {
 		t.Fatalf("cap off did not use the first model: %q", stdout)
 	}
 	if strings.Contains(stderr, "already has") {
@@ -247,7 +247,7 @@ func TestSpawnModelChoiceLaneAndDefault(t *testing.T) {
 		f.ctx.Entries["lane_build_model"] = core.ConfigEntry{Value: "m1", Source: "project"}
 		f.ctx.Order = append(f.ctx.Order, "lane_build_model")
 		code, stdout, stderr, refusal, _ := runLaneModelSpawn(t, f, []string{"scouter"})
-		if code != 0 || refusal != "" || !strings.Contains(stdout, `"model_choice": "lane"`) {
+		if code != 0 || refusal != "" || !spawnJSONHasField(t, stdout, `"model_choice": "lane"`) {
 			t.Fatalf("exit=%d refusal=%q stdout=%q stderr=%q", code, refusal, stdout, stderr)
 		}
 	})
@@ -256,7 +256,7 @@ func TestSpawnModelChoiceLaneAndDefault(t *testing.T) {
 		f.ctx.Entries["role_scouter_model"] = core.ConfigEntry{Value: "m1", Source: "project"}
 		f.ctx.Order = append(f.ctx.Order, "role_scouter_model")
 		code, stdout, stderr, refusal, _ := runLaneModelSpawn(t, f, []string{"scouter"})
-		if code != 0 || refusal != "" || !strings.Contains(stdout, `"model_choice": "default"`) {
+		if code != 0 || refusal != "" || !spawnJSONHasField(t, stdout, `"model_choice": "default"`) {
 			t.Fatalf("exit=%d refusal=%q stdout=%q stderr=%q", code, refusal, stdout, stderr)
 		}
 	})
@@ -286,10 +286,10 @@ func TestSpawnReusesCappedModelBeforeRotating(t *testing.T) {
 			if code != 0 || refusal != "" {
 				t.Fatalf("exit=%d refusal=%q stdout=%q stderr=%q", code, refusal, stdout, stderr)
 			}
-			if !strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"model": "m1"`) {
+			if !spawnJSONHasField(t, stdout, `"reused": true`) || !spawnJSONHasField(t, stdout, `"model": "m1"`) {
 				t.Fatalf("the capped idle worker was not reused: %q", stdout)
 			}
-			if !strings.Contains(stdout, `"model_choice": "`+tc.choice+`"`) {
+			if !spawnJSONHasField(t, stdout, `"model_choice": "`+tc.choice+`"`) {
 				t.Fatalf("model_choice=%q, want %s", stdout, tc.choice)
 			}
 			if acts := herdrActs(calls); len(acts) != 0 {
@@ -309,10 +309,10 @@ func TestSpawnListReuseRequiresAModelFromTheList(t *testing.T) {
 	if code != 0 || refusal != "" {
 		t.Fatalf("exit=%d refusal=%q stdout=%q stderr=%q", code, refusal, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"model": "m1"`) || !strings.Contains(stdout, `"model_choice": "list"`) {
+	if !spawnJSONHasField(t, stdout, `"model": "m1"`) || !spawnJSONHasField(t, stdout, `"model_choice": "list"`) {
 		t.Fatalf("rotation did not pick the first listed model: %q", stdout)
 	}
-	if strings.Contains(stdout, `"reused": true`) {
+	if spawnJSONHasField(t, stdout, `"reused": true`) {
 		t.Fatalf("an idle worker on m3 was reused through the list path: %q", stdout)
 	}
 }
@@ -343,10 +343,10 @@ func TestListedReuseCandidateMustPassTheReuseFilters(t *testing.T) {
 			if code != 0 || refusal != "" {
 				t.Fatalf("exit=%d refusal=%q stderr=%q stdout=%q", code, refusal, stderr, stdout)
 			}
-			if !strings.Contains(stdout, `"model": "m2"`) || !strings.Contains(stdout, `"model_choice": "list"`) {
+			if !spawnJSONHasField(t, stdout, `"model": "m2"`) || !spawnJSONHasField(t, stdout, `"model_choice": "list"`) {
 				t.Fatalf("rotation to m2 missing; %s mismatch leaked into the model choice: %q (cwd %q)", tc.name, stdout, tc.wantSpec)
 			}
-			if strings.Contains(stdout, `"reused": true`) {
+			if spawnJSONHasField(t, stdout, `"reused": true`) {
 				t.Fatalf("a filter-mismatched worker was reused: %q", stdout)
 			}
 			models := rosterModels(t, f)
@@ -391,7 +391,7 @@ func TestOneBelowLaneCapacityWithMismatchedListedWorkersRotates(t *testing.T) {
 	if code != 0 || refusal != "" {
 		t.Fatalf("exit=%d refusal=%q stderr=%q stdout=%q", code, refusal, stderr, stdout)
 	}
-	if !strings.Contains(stdout, `"model": "m2"`) {
+	if !spawnJSONHasField(t, stdout, `"model": "m2"`) {
 		t.Fatalf("rotation to m2 missing: %q", stdout)
 	}
 	models := rosterModels(t, f)
@@ -423,10 +423,10 @@ func TestListedReuseCandidateGoneBetweenProbeAndReuse(t *testing.T) {
 	if code != 0 || refusal != "" {
 		t.Fatalf("exit=%d refusal=%q stderr=%q stdout=%q", code, refusal, stderr, stdout)
 	}
-	if strings.Contains(stdout, `"name": "m1-a"`) {
+	if spawnJSONHasField(t, stdout, `"name": "m1-a"`) {
 		t.Fatalf("the worker gone between the probe and reuse was reused: %q", stdout)
 	}
-	if !strings.Contains(stdout, `"model": "m1"`) {
+	if !spawnJSONHasField(t, stdout, `"model": "m1"`) {
 		t.Fatalf("the remaining listed model was lost: %q", stdout)
 	}
 	if acts := herdrActs(calls); len(acts) != 0 {
@@ -456,7 +456,7 @@ func TestProbeListedReuseMcpCanonicalDrift(t *testing.T) {
 			if code != 0 || refusal != "" {
 				t.Fatalf("exit=%d refusal=%q stderr=%q stdout=%q", code, refusal, stderr, stdout)
 			}
-			if !strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"model": "m1"`) {
+			if !spawnJSONHasField(t, stdout, `"reused": true`) || !spawnJSONHasField(t, stdout, `"model": "m1"`) {
 				t.Fatalf("the fully-matching idle m1 worker was not reused: stdout=%q", stdout)
 			}
 			if acts := herdrActs(calls); len(acts) != 0 {
@@ -479,7 +479,7 @@ func TestProbeListedReuseMcpCanonicalDriftFullLane(t *testing.T) {
 	if code != 0 || refusal != "" {
 		t.Fatalf("exit=%d refusal=%q stderr=%q stdout=%q", code, refusal, stderr, stdout)
 	}
-	if !strings.Contains(stdout, `"reused": true`) {
+	if !spawnJSONHasField(t, stdout, `"reused": true`) {
 		t.Fatalf("the fully-matching idle m1 worker was not reused: stdout=%q", stdout)
 	}
 	if acts := herdrActs(calls); len(acts) != 0 {
@@ -508,7 +508,7 @@ func TestProbeListedReuseEffortClampDrift(t *testing.T) {
 			if code != 0 || refusal != "" {
 				t.Fatalf("exit=%d refusal=%q stderr=%q stdout=%q", code, refusal, stderr, stdout)
 			}
-			if !strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"model": "m1"`) {
+			if !spawnJSONHasField(t, stdout, `"reused": true`) || !spawnJSONHasField(t, stdout, `"model": "m1"`) {
 				t.Fatalf("the fully-matching idle m1 worker was not reused: stdout=%q", stdout)
 			}
 			if acts := herdrActs(calls); len(acts) != 0 {
@@ -529,7 +529,7 @@ func TestListedReuseAcceptsRequestedCwdWithTrailingSlash(t *testing.T) {
 	if code != 0 || refusal != "" {
 		t.Fatalf("exit=%d refusal=%q stderr=%q stdout=%q", code, refusal, stderr, stdout)
 	}
-	if !strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"model": "m1"`) {
+	if !spawnJSONHasField(t, stdout, `"reused": true`) || !spawnJSONHasField(t, stdout, `"model": "m1"`) {
 		t.Fatalf("a trailing slash lost the reuse: %q", stdout)
 	}
 	if acts := herdrActs(calls); len(acts) != 0 {

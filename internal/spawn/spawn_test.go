@@ -85,7 +85,7 @@ func TestSpawnMapsConfiguredArgumentsAndWritesRoster(t *testing.T) {
 	if _, err := jsonjs.Parse([]byte(out.String())); err != nil {
 		t.Fatalf("spawn JSON: %v; %q", err, out.String())
 	}
-	if !strings.Contains(out.String(), `"status": "ready"`) || !strings.Contains(out.String(), `"placement": "split"`) {
+	if !spawnJSONHasField(t, out.String(), `"status": "ready"`) || !spawnJSONHasField(t, out.String(), `"placement": "split"`) {
 		t.Fatalf("unexpected spawn result: %s", out.String())
 	}
 	roster, err := os.ReadFile(filepath.Join(state, "ws", "agents.tsv"))
@@ -310,7 +310,7 @@ func TestBlockedTrustStartupKeepsPaneAndExitsSeven(t *testing.T) {
 		}()
 		CmdSpawn([]string{"worker", "--pane", "p-existing", "--name", "worker"}, ctx, env, cwd)
 	}()
-	if code != 7 || !strings.Contains(out.String(), `"status": "blocked_at_startup"`) || !strings.Contains(out.String(), "Trust this workspace?") {
+	if code != 7 || !spawnJSONHasField(t, out.String(), `"status": "blocked_at_startup"`) || !strings.Contains(out.String(), "Trust this workspace?") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), stderr.String())
 	}
 	roster, err := os.ReadFile(filepath.Join(state, "ws", "agents.tsv"))

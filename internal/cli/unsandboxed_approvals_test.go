@@ -30,7 +30,7 @@ func TestSpawnApprovalDefaultAndExplicitAsk(t *testing.T) {
 				mode = "ask"
 			}
 			r := runLaneKindFlag(t, env, bin, state, args...)
-			if r.code != 0 || !strings.Contains(r.stdout, `"approvals": "`+mode+`"`) {
+			if r.code != 0 || !spawnJSONHasFieldCLI(t, r.stdout, `"approvals": "`+mode+`"`) {
 				t.Fatalf("code=%d out=%s stderr=%s", r.code, r.stdout, r.stderr)
 			}
 			calls, err := fakecli.ReadCalls(filepath.Join(bin, "herdr.calls.jsonl"))
@@ -92,7 +92,7 @@ func testSpawnApprovalMode(t *testing.T, mode, wantStart string) {
 				}
 			}
 			r := runLaneKindFlag(t, env, bin, state, args...)
-			if r.code != 0 || !strings.Contains(r.stdout, `"approvals": "`+mode+`"`) {
+			if r.code != 0 || !spawnJSONHasFieldCLI(t, r.stdout, `"approvals": "`+mode+`"`) {
 				t.Fatalf("code=%d out=%s stderr=%s", r.code, r.stdout, r.stderr)
 			}
 			calls, err := fakecli.ReadCalls(filepath.Join(bin, "herdr.calls.jsonl"))

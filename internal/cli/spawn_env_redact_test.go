@@ -125,10 +125,10 @@ func TestSpawnEnvPublicCLIOutput(t *testing.T) {
 					t.Fatal("unexpected cleanup")
 				}
 			}
-			if wantCode == 7 && !strings.Contains(out, `"status": "blocked_at_startup"`) {
+			if wantCode == 7 && !spawnJSONHasFieldCLI(t, out, `"status": "blocked_at_startup"`) {
 				t.Error("lost blocked class")
 			}
-			if wantCode == 0 && !strings.Contains(out, `"status": "ready"`) {
+			if wantCode == 0 && !spawnJSONHasFieldCLI(t, out, `"status": "ready"`) {
 				t.Error("lost ready class")
 			}
 		})

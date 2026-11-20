@@ -555,7 +555,7 @@ func TestMcpListReuseFollowsTheNoneBehavior(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		if !strings.Contains(stdout, `"created_pane": true`) || strings.Contains(stdout, `"reused": true`) {
+		if !spawnJSONHasField(t, stdout, `"created_pane": true`) || spawnJSONHasField(t, stdout, `"reused": true`) {
 			t.Fatalf("the idle worker opened with another MCP was reused: %s", stdout)
 		}
 	})
@@ -564,7 +564,7 @@ func TestMcpListReuseFollowsTheNoneBehavior(t *testing.T) {
 		f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("old")}, "1")
 		f.roster(t, mcpLaneRow("old", "grok-4.7", f.cwd, "a,b"))
 		code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--mcp", "a,b"})
-		if code != 0 || !strings.Contains(stdout, `"name": "old"`) || !strings.Contains(stdout, `"reused": true`) {
+		if code != 0 || !spawnJSONHasField(t, stdout, `"name": "old"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 	})
@@ -573,7 +573,7 @@ func TestMcpListReuseFollowsTheNoneBehavior(t *testing.T) {
 		f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("old")}, "1")
 		f.roster(t, mcpLaneRow("old", "grok-4.7", f.cwd, "a,b"))
 		code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--mcp", "a, b,a"})
-		if code != 0 || !strings.Contains(stdout, `"name": "old"`) || !strings.Contains(stdout, `"reused": true`) {
+		if code != 0 || !spawnJSONHasField(t, stdout, `"name": "old"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 	})

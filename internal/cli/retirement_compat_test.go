@@ -1010,8 +1010,10 @@ func TestRetirementDispatchContract(t *testing.T) {
 					t.Fatalf("the dispatch JSON follows the spawn JSON: %q", out)
 				}
 				var spawn map[string]any
-				if err := json.Unmarshal([]byte(out[:strings.Index(out, "\n}\n")+2]), &spawn); err != nil {
-					t.Fatalf("spawn JSON: %v: %q", err, out[:strings.Index(out, "\n}\n")+2])
+				// spawn prints one JSON line; the dispatch JSON follows it.
+				first, _, _ := strings.Cut(out, "\n")
+				if err := json.Unmarshal([]byte(first), &spawn); err != nil {
+					t.Fatalf("spawn JSON: %v: %q", err, first)
 				}
 				if spawn["name"] != "build" || spawn["placement"] != "herd" {
 					t.Fatalf("spawn name/placement: %v / %v", spawn["name"], spawn["placement"])

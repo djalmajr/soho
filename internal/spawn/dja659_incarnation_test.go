@@ -292,7 +292,7 @@ func TestDJA659SourceIncarnationWindow(t *testing.T) {
 		if renamed, started := dja659AgentCalls(calls, "rename"), dja659AgentCalls(calls, "start"); renamed != 1 || started != 0 {
 			t.Fatalf("native calls for the unchanged source: renamed=%d started=%d calls=%#v", renamed, started, calls)
 		}
-		if !strings.Contains(stdout, `"name": "fresh"`) || !strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"pane_id": "p-old"`) || !strings.Contains(stdout, `"status": "ready"`) {
+		if !spawnJSONHasField(t, stdout, `"name": "fresh"`) || !spawnJSONHasField(t, stdout, `"reused": true`) || !spawnJSONHasField(t, stdout, `"pane_id": "p-old"`) || !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 			t.Fatalf("JSON=%q want the rename published with the old pane retained", stdout)
 		}
 		roster, err := os.ReadFile(filepath.Join(f.state, "ws", "agents.tsv"))
@@ -381,7 +381,7 @@ func TestDJA659SourceIncarnationWindow(t *testing.T) {
 		if !os.IsNotExist(oldErr) || newErr != nil || string(newState) != "synthetic source state" {
 			t.Fatalf("CRLF publication did not move state: old=%q err=%v new=%q err=%v", oldState, oldErr, newState, newErr)
 		}
-		if !strings.Contains(out.stdout, `"name": "fresh"`) || !strings.Contains(out.stdout, `"reused": true`) || !strings.Contains(out.stdout, `"pane_id": "p-old"`) || !strings.Contains(out.stdout, `"status": "ready"`) || !strings.Contains(out.stderr, "renamed to 'fresh'") {
+		if !spawnJSONHasField(t, out.stdout, `"name": "fresh"`) || !spawnJSONHasField(t, out.stdout, `"reused": true`) || !spawnJSONHasField(t, out.stdout, `"pane_id": "p-old"`) || !spawnJSONHasField(t, out.stdout, `"status": "ready"`) || !strings.Contains(out.stderr, "renamed to 'fresh'") {
 			t.Fatalf("CRLF publication readiness/warning: stdout=%q stderr=%q", out.stdout, out.stderr)
 		}
 	})

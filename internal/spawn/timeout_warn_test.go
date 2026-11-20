@@ -63,7 +63,7 @@ func TestSpawnShortTimeoutWarnsOnceAndKeepsTheValue(t *testing.T) { // --timeout
 	if n := strings.Count(stderr.String(), "spawn: --timeout is in milliseconds; 45 is under a second (for 45 seconds pass 45000)"); n != 1 {
 		t.Fatalf("warning count=%d stderr=%q", n, stderr.String())
 	}
-	if !strings.Contains(out.String(), `"status": "ready"`) {
+	if !spawnJSONHasField(t, out.String(), `"status": "ready"`) {
 		t.Fatalf("spawn output=%q; the spawn should proceed", out.String())
 	}
 	calls, err := fakecli.ReadCalls(filepath.Join(bin, "herdr.calls.jsonl"))

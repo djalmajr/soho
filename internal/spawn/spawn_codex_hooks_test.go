@@ -95,14 +95,14 @@ func agentSendKeys(calls []fakecli.Call) []string {
 
 func assertSpawnReady(t *testing.T, code int, stdout, stderr string) {
 	t.Helper()
-	if code != 0 || !strings.Contains(stdout, `"status": "ready"`) {
+	if code != 0 || !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
 
 func assertSpawnBlocked(t *testing.T, code int, stdout, stderr, warning string) {
 	t.Helper()
-	if code != 7 || !strings.Contains(stdout, `"status": "blocked_at_startup"`) {
+	if code != 7 || !spawnJSONHasField(t, stdout, `"status": "blocked_at_startup"`) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "Hooks need review") && !strings.Contains(stdout, "hooks need review before they can run") {
@@ -370,7 +370,7 @@ func TestSpawnCodexHooksRedrawLosesMenuSendsNoEnter(t *testing.T) {
 	// gone, so no enter — the blocked path takes it.
 	f := newCodexHooksFixture(t, []string{codexHooksMenuScreen}, "› 2. Trust all and continue\n")
 	code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker"})
-	if code != 7 || !strings.Contains(stdout, `"status": "blocked_at_startup"`) || !strings.Contains(stderr, "the approval did not take") {
+	if code != 7 || !spawnJSONHasField(t, stdout, `"status": "blocked_at_startup"`) || !strings.Contains(stderr, "the approval did not take") {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if got, want := agentSendKeys(calls), []string{"down"}; !reflect.DeepEqual(got, want) {

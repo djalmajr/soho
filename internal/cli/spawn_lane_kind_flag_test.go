@@ -123,7 +123,7 @@ func TestSpawnKindFlagDifferentFromTheLaneKindIsRefusedBeforeAnyPane(t *testing.
 
 	env, bin, state = laneKindFlagEnv(t)
 	next := runLaneKindFlag(t, env, bin, state, "spawn", "scouter")
-	if next.code != 0 || !strings.Contains(next.stdout, `"kind": "pi"`) || len(next.acts) == 0 {
+	if next.code != 0 || !spawnJSONHasFieldCLI(t, next.stdout, `"kind": "pi"`) || len(next.acts) == 0 {
 		t.Fatalf("the next spawn of the lane's kind is not the normal path: exit=%d stdout=%q stderr=%q acts=%v", next.code, next.stdout, next.stderr, next.acts)
 	}
 }

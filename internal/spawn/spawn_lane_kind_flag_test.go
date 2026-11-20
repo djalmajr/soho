@@ -127,7 +127,7 @@ func TestSpawnRefusesAKindFlagThatDiffersFromTheLaneKind(t *testing.T) {
 	for _, args := range [][]string{{"scouter"}, {"scouter", "--kind", "pi"}} {
 		g := laneKindFixture(t, "pi")
 		code, stdout, stderr, calls := runCmdSpawn(t, g, args)
-		if code != 0 || !strings.Contains(stdout, `"kind": "pi"`) || !strings.Contains(stdout, `"created_pane": true`) {
+		if code != 0 || !spawnJSONHasField(t, stdout, `"kind": "pi"`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 			t.Fatalf("%v: exit=%d stdout=%q stderr=%q", args, code, stdout, stderr)
 		}
 		if len(herdrActs(calls)) == 0 {
@@ -148,7 +148,7 @@ func TestSpawnRefusesAKindFlagThatDiffersFromTheLaneKind(t *testing.T) {
 func TestLaneKindOverrideIsOnlyAvailableToTheReopenSpawn(t *testing.T) {
 	f := laneKindFixture(t, "pi")
 	code, stdout, stderr, calls := runCmdSpawnWithLaneOverride(t, f, []string{"scouter", "--kind", "codex", "--name", "worker"})
-	if code != 0 || !strings.Contains(stdout, `"kind": "codex"`) || !strings.Contains(stdout, `"name": "worker"`) {
+	if code != 0 || !spawnJSONHasField(t, stdout, `"kind": "codex"`) || !spawnJSONHasField(t, stdout, `"name": "worker"`) {
 		t.Fatalf("override spawn: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if len(herdrActs(calls)) == 0 {
@@ -176,7 +176,7 @@ func TestLaneKindOverrideIsOnlyAvailableToTheReopenSpawn(t *testing.T) {
 
 	h := laneKindFixture(t, "pi")
 	code, stdout, stderr, _ = runCmdSpawn(t, h, []string{"scouter", "--kind", "pi"})
-	if code != 0 || !strings.Contains(stdout, `"kind": "pi"`) {
+	if code != 0 || !spawnJSONHasField(t, stdout, `"kind": "pi"`) {
 		t.Fatalf("the next lane spawn did not follow the lane: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
@@ -185,7 +185,7 @@ func TestSpawnKindFlagControlsDoNotChange(t *testing.T) {
 	t.Run("a lane without lane.<name>.kind accepts any --kind", func(t *testing.T) {
 		f := laneKindFixture(t, "")
 		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"scouter", "--kind", "codex"})
-		if code != 0 || !strings.Contains(stdout, `"kind": "codex"`) || !strings.Contains(stdout, `"created_pane": true`) {
+		if code != 0 || !spawnJSONHasField(t, stdout, `"kind": "codex"`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 		if len(herdrActs(calls)) == 0 || strings.Contains(stderr, "whose kind is") {
@@ -216,7 +216,7 @@ func TestSpawnKindFlagControlsDoNotChange(t *testing.T) {
 		f := laneKindFixture(t, "pi")
 		f.env["SOHO_LANES"] = "off"
 		code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"scouter", "--kind", "codex"})
-		if code != 0 || !strings.Contains(stdout, `"kind": "codex"`) || strings.Contains(stderr, "whose kind is") {
+		if code != 0 || !spawnJSONHasField(t, stdout, `"kind": "codex"`) || strings.Contains(stderr, "whose kind is") {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 	})
@@ -226,7 +226,7 @@ func TestSpawnKindFlagControlsDoNotChange(t *testing.T) {
 		f.ctx.Entries["lane_review_roles"] = core.ConfigEntry{Value: "reviewer", Source: "project"}
 		f.ctx.Order = append(f.ctx.Order, "lane_review_roles")
 		code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"reviewer", "--kind", "codex"})
-		if code != 0 || !strings.Contains(stdout, `"kind": "codex"`) || strings.Contains(stderr, "whose kind is") {
+		if code != 0 || !spawnJSONHasField(t, stdout, `"kind": "codex"`) || strings.Contains(stderr, "whose kind is") {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 	})

@@ -39,7 +39,7 @@ func TestReviewDJA481ClippedSpawnMCP(t *testing.T) {
 				configureSpawnFixture(t, &f)
 			}
 			code, out, errText, calls := runCmdSpawn(t, f, []string{"implementer", "--kind", "cursor"})
-			if code != 7 || !strings.Contains(out, `"status": "blocked_at_startup"`) {
+			if code != 7 || !spawnJSONHasField(t, out, `"status": "blocked_at_startup"`) {
 				t.Fatalf("47-line visible dialog exit=%d out=%s stderr=%q calls=%#v", code, out, errText, calls)
 			}
 			assertCursorSpawnEvidence(t, out, "idle", "mcp-approval")
@@ -78,7 +78,7 @@ func TestReviewDJA653CursorPartialScreenSpawnNotReady(t *testing.T) {
 			f := newSpawnFixture(t, append(cursorFreshRules(screen, false), freshSpawnRules()...))
 			configureSpawnFixture(t, &f)
 			code, out, errText, calls := runCmdSpawn(t, f, []string{"implementer", "--kind", "cursor"})
-			if code != 7 || !strings.Contains(out, `"status": "blocked_at_startup"`) {
+			if code != 7 || !spawnJSONHasField(t, out, `"status": "blocked_at_startup"`) {
 				t.Fatalf("exit=%d out=%s stderr=%q calls=%#v", code, out, errText, calls)
 			}
 			assertCursorSpawnEvidence(t, out, "idle", "screen-incomplete")
@@ -101,7 +101,7 @@ func TestReviewDJA653CursorRealScreenSpawnMCPBlocks(t *testing.T) {
 			f := newSpawnFixture(t, append(cursorFreshRules(screen, false), freshSpawnRules()...))
 			configureSpawnFixture(t, &f)
 			code, out, errText, calls := runCmdSpawn(t, f, []string{"implementer", "--kind", "cursor"})
-			if code != 7 || !strings.Contains(out, `"status": "blocked_at_startup"`) {
+			if code != 7 || !spawnJSONHasField(t, out, `"status": "blocked_at_startup"`) {
 				t.Fatalf("exit=%d out=%s stderr=%q calls=%#v", code, out, errText, calls)
 			}
 			assertCursorSpawnEvidence(t, out, "idle", "mcp-approval")

@@ -82,15 +82,15 @@ func TestSpawnLaneReuseRequiresRecordedEffort(t *testing.T) {
 				assertNoStart(t, calls)
 				return
 			}
-			if !strings.Contains(stdout, `"name": "`+tc.wantName+`"`) {
+			if !spawnJSONHasField(t, stdout, `"name": "`+tc.wantName+`"`) {
 				t.Fatalf("want name=%s stdout=%s", tc.wantName, stdout)
 			}
 			if tc.wantName == "build" {
-				if strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"created_pane": true`) {
+				if spawnJSONHasField(t, stdout, `"reused": true`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 					t.Fatalf("wanted fresh worker: %s", stdout)
 				}
 			} else {
-				if !strings.Contains(stdout, `"reused": true`) {
+				if !spawnJSONHasField(t, stdout, `"reused": true`) {
 					t.Fatalf("wanted reuse: %s", stdout)
 				}
 				assertNoStart(t, calls)
@@ -109,10 +109,10 @@ func TestSpawnA12ReuseRespectsModelAndCwd(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		if !strings.Contains(stdout, `"name": "build"`) || !strings.Contains(stdout, `"created_pane": true`) {
+		if !spawnJSONHasField(t, stdout, `"name": "build"`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 			t.Fatalf("the mismatched idle was not treated as occupied (no new pane): %s", stdout)
 		}
-		if strings.Contains(stdout, `"reused": true`) {
+		if spawnJSONHasField(t, stdout, `"reused": true`) {
 			t.Fatalf("the mismatched idle was reused: %s", stdout)
 		}
 		started, renamed := false, false
@@ -143,7 +143,7 @@ func TestSpawnA12ReuseRespectsModelAndCwd(t *testing.T) {
 		f := a12Fixture(t, append([]fakecli.Rule{idleHerdrRule("old")}, freshSpawnRules()...), "2")
 		f.roster(t, a12Row("old", "grok", "grok-4.7", other))
 		code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7"})
-		if code != 0 || !strings.Contains(stdout, `"created_pane": true`) {
+		if code != 0 || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 	})
@@ -165,7 +165,7 @@ func TestSpawnA12ReuseRespectsModelAndCwd(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		if !strings.Contains(stdout, `"name": "old"`) || !strings.Contains(stdout, `"reused": true`) {
+		if !spawnJSONHasField(t, stdout, `"name": "old"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
 		if !strings.Contains(stderr, "reusing idle lane 'build' worker 'old' as worker") {
@@ -181,7 +181,7 @@ func TestSpawnA12ReuseRespectsModelAndCwd(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		if !strings.Contains(stdout, `"name": "right"`) || !strings.Contains(stdout, `"reused": true`) {
+		if !spawnJSONHasField(t, stdout, `"name": "right"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 			t.Fatalf("the matching later idle was not picked: %s", stdout)
 		}
 	})
@@ -207,7 +207,7 @@ func TestSpawnA12NameDoesNotSwapNames(t *testing.T) {
 			if renameCalls(calls) != 0 {
 				t.Fatalf("%s: unexpected rename calls: %#v", name, calls)
 			}
-			if !strings.Contains(stdout, fmt.Sprintf(`"name": %q`, name)) || !strings.Contains(stdout, `"reused": true`) {
+			if !spawnJSONHasField(t, stdout, fmt.Sprintf(`"name": %q`, name)) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 				t.Fatalf("%s: JSON=%q", name, stdout)
 			}
 		}
@@ -255,7 +255,7 @@ func TestSpawnA12NameDoesNotSwapNames(t *testing.T) {
 		if renameCalls(calls) != 1 {
 			t.Fatalf("rename calls=%#v", calls)
 		}
-		if !strings.Contains(stdout, `"name": "a"`) || !strings.Contains(stdout, `"reused": true`) {
+		if !spawnJSONHasField(t, stdout, `"name": "a"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
 		if !strings.Contains(stderr, "renamed to 'a'") {

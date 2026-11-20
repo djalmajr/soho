@@ -437,7 +437,7 @@ func TestSpawnHcWorkersRunWithTheHerdrArgv(t *testing.T) {
 				t.Fatalf("unexpected flags in params: %v", params)
 			}
 
-			if !strings.Contains(out.String(), `"placement": "hc"`) || !strings.Contains(out.String(), `"pane_id": "t7"`) || !strings.Contains(out.String(), `"status": "ready"`) {
+			if !spawnJSONHasField(t, out.String(), `"placement": "hc"`) || !spawnJSONHasField(t, out.String(), `"pane_id": "t7"`) || !spawnJSONHasField(t, out.String(), `"status": "ready"`) {
 				t.Fatalf("unexpected spawn result: %s", out.String())
 			}
 			f := rosterRow(t, state, "sX")
@@ -629,16 +629,16 @@ func TestSpawnHcBlockedStartPreservesTerminalAndExitsSeven(t *testing.T) {
 		t.Fatalf("warning contains legacy herdr instruction: %q", wantWarn)
 	}
 	outStr := out.String()
-	if !strings.Contains(outStr, `"status": "blocked_at_startup"`) {
+	if !spawnJSONHasField(t, outStr, `"status": "blocked_at_startup"`) {
 		t.Fatalf("stdout JSON missing status blocked_at_startup: %q", outStr)
 	}
-	if !strings.Contains(outStr, `"pane_id": "t7"`) {
+	if !spawnJSONHasField(t, outStr, `"pane_id": "t7"`) {
 		t.Fatalf("stdout JSON missing pane_id t7: %q", outStr)
 	}
-	if !strings.Contains(outStr, `"placement": "hc"`) {
+	if !spawnJSONHasField(t, outStr, `"placement": "hc"`) {
 		t.Fatalf("stdout JSON missing placement hc: %q", outStr)
 	}
-	if !strings.Contains(outStr, `"created_pane": true`) {
+	if !spawnJSONHasField(t, outStr, `"created_pane": true`) {
 		t.Fatalf("stdout JSON missing created_pane true: %q", outStr)
 	}
 	if !strings.Contains(outStr, "Permission prompt on screen\n") {
@@ -684,7 +684,7 @@ func TestSpawnHcBlockedStartWithoutMsg(t *testing.T) {
 			t.Fatalf("unexpected cleanup call: %v", c.Argv)
 		}
 	}
-	if !strings.Contains(out.String(), `"status": "blocked_at_startup"`) {
+	if !spawnJSONHasField(t, out.String(), `"status": "blocked_at_startup"`) {
 		t.Fatalf("stdout missing blocked_at_startup: %q", out.String())
 	}
 	if !strings.Contains(out.String(), "Login screen\n") {
@@ -720,7 +720,7 @@ func TestSpawnHcBlockedStartReadFailurePreservesDiagnostic(t *testing.T) {
 		}
 	}
 	outStr := out.String()
-	if !strings.Contains(outStr, `"status": "blocked_at_startup"`) {
+	if !spawnJSONHasField(t, outStr, `"status": "blocked_at_startup"`) {
 		t.Fatalf("stdout missing blocked_at_startup: %q", outStr)
 	}
 	wantDiag := "agent worker is blocked during startup: Sign in required"
@@ -822,13 +822,13 @@ func TestSpawnHcBlockedStartPreservesNameConflictSuffix(t *testing.T) {
 		t.Fatalf("stderr = %q, want warning %q", stderr.String(), wantWarn)
 	}
 	outStr := out.String()
-	if !strings.Contains(outStr, `"name": "worker-2"`) {
+	if !spawnJSONHasField(t, outStr, `"name": "worker-2"`) {
 		t.Fatalf("stdout JSON missing name worker-2: %q", outStr)
 	}
-	if !strings.Contains(outStr, `"pane_id": "t7"`) {
+	if !spawnJSONHasField(t, outStr, `"pane_id": "t7"`) {
 		t.Fatalf("stdout JSON missing pane_id t7: %q", outStr)
 	}
-	if !strings.Contains(outStr, `"status": "blocked_at_startup"`) {
+	if !spawnJSONHasField(t, outStr, `"status": "blocked_at_startup"`) {
 		t.Fatalf("stdout JSON missing status blocked_at_startup: %q", outStr)
 	}
 	data, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
@@ -1292,10 +1292,10 @@ func TestSpawnOpenCodePrimary(t *testing.T) {
 		if strings.Join(strArgv, "\x00") != strings.Join(wantArgv, "\x00") {
 			t.Fatalf("argv=%q, want %q (no generated model flag)", strArgv, wantArgv)
 		}
-		if !strings.Contains(out.String(), `"launch_profile": "`+kinds.OpenCodePrimaryProfile+`"`) ||
-			!strings.Contains(out.String(), `"status": "ready"`) ||
-			!strings.Contains(out.String(), `"placement": "hc"`) ||
-			!strings.Contains(out.String(), `"model": "testprovider/testmodel"`) {
+		if !spawnJSONHasField(t, out.String(), `"launch_profile": "`+kinds.OpenCodePrimaryProfile+`"`) ||
+			!spawnJSONHasField(t, out.String(), `"status": "ready"`) ||
+			!spawnJSONHasField(t, out.String(), `"placement": "hc"`) ||
+			!spawnJSONHasField(t, out.String(), `"model": "testprovider/testmodel"`) {
 			t.Fatalf("unexpected spawn result: %s", out.String())
 		}
 		if strings.Contains(out.String(), "OPENCODE") || strings.Contains(out.String(), "no-leak-canary") {
@@ -1347,7 +1347,7 @@ func TestSpawnOpenCodePrimary(t *testing.T) {
 		if build["model"] != opencodePrimaryModel {
 			t.Fatalf("agents.build.model=%v, want %s", build["model"], opencodePrimaryModel)
 		}
-		if !strings.Contains(out.String(), `"launch_profile": "`+kinds.OpenCodePrimaryProfile+`"`) {
+		if !spawnJSONHasField(t, out.String(), `"launch_profile": "`+kinds.OpenCodePrimaryProfile+`"`) {
 			t.Fatalf("the fresh JSON does not disclose the known launch profile: %s", out.String())
 		}
 	})
@@ -1407,7 +1407,7 @@ func TestSpawnOpenCodePrimary(t *testing.T) {
 		// arg still refuses before the successful reuse it would take.
 		env["OPENCODE_CONFIG_CONTENT"] = `{"marker":"no-leak-canary"}`
 		fresh, _, _ := spawnHc(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd)
-		if !strings.Contains(fresh.String(), `"status": "ready"`) {
+		if !spawnJSONHasField(t, fresh.String(), `"status": "ready"`) {
 			t.Fatalf("the fresh primary worker did not start ready: %s", fresh.String())
 		}
 		rosterBefore, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
@@ -1422,7 +1422,7 @@ func TestSpawnOpenCodePrimary(t *testing.T) {
 		if conn.getConnectCount() != 0 {
 			t.Fatalf("connect count = %d, want 0 on the refusal", conn.getConnectCount())
 		}
-		if strings.Contains(out.String(), `"reused": true`) {
+		if spawnJSONHasField(t, out.String(), `"reused": true`) {
 			t.Fatalf("the reuse was emitted before the refusal: %s", out.String())
 		}
 		rosterAfter, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
@@ -1447,7 +1447,7 @@ func TestSpawnOpenCodePrimary(t *testing.T) {
 			t.Fatal(err)
 		}
 		fresh, _, _ := spawnHc(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd)
-		if !strings.Contains(fresh.String(), `"status": "ready"`) {
+		if !spawnJSONHasField(t, fresh.String(), `"status": "ready"`) {
 			t.Fatalf("the fresh primary worker did not start ready: %s", fresh.String())
 		}
 		rosterBefore, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
@@ -1460,8 +1460,8 @@ func TestSpawnOpenCodePrimary(t *testing.T) {
 		if conn.getConnectCount() != 0 {
 			t.Fatalf("connect count = %d, want 0 on the reuse", conn.getConnectCount())
 		}
-		if !strings.Contains(out.String(), `"reused": true`) || !strings.Contains(out.String(), `"status": "ready"`) ||
-			!strings.Contains(out.String(), `"launch_profile": "`+kinds.OpenCodePrimaryProfile+`"`) {
+		if !spawnJSONHasField(t, out.String(), `"reused": true`) || !spawnJSONHasField(t, out.String(), `"status": "ready"`) ||
+			!spawnJSONHasField(t, out.String(), `"launch_profile": "`+kinds.OpenCodePrimaryProfile+`"`) {
 			t.Fatalf("the qualified reuse did not emit ready with the profile: %s", out.String())
 		}
 		if !strings.Contains(stderr.String(), "reusing idle worker 'writer'") {
@@ -1494,7 +1494,7 @@ func TestSpawnOpenCodePrimary(t *testing.T) {
 			t.Fatal(err)
 		}
 		fresh, _, _ := spawnHc(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd)
-		if !strings.Contains(fresh.String(), `"status": "ready"`) {
+		if !spawnJSONHasField(t, fresh.String(), `"status": "ready"`) {
 			t.Fatalf("the fresh primary worker did not start ready: %s", fresh.String())
 		}
 		// The recorded call log proves the fresh setup consumed exactly
@@ -1536,7 +1536,7 @@ func TestSpawnOpenCodePrimary(t *testing.T) {
 				t.Fatalf("input or close on the refused reuse: %v", c.Argv)
 			}
 		}
-		if strings.Contains(out.String(), `"reused": true`) || strings.Contains(out.String(), `"status": "ready"`) {
+		if spawnJSONHasField(t, out.String(), `"reused": true`) || spawnJSONHasField(t, out.String(), `"status": "ready"`) {
 			t.Fatalf("the ready JSON was emitted on the refusal: %s", out.String())
 		}
 		rosterAfter, err := os.ReadFile(filepath.Join(state, "sX", "agents.tsv"))
@@ -1560,7 +1560,7 @@ func TestSpawnOpenCodePrimary(t *testing.T) {
 			t.Fatal(err)
 		}
 		fresh, _, _ := spawnHc(t, bin, []string{"writer", "--model", opencodePrimaryModel, "--approvals", "full"}, ctx, env, cwd)
-		if !strings.Contains(fresh.String(), `"status": "ready"`) {
+		if !spawnJSONHasField(t, fresh.String(), `"status": "ready"`) {
 			t.Fatalf("the fresh primary worker did not start ready: %s", fresh.String())
 		}
 		oldOut, oldErr := platform.Stdout, platform.Stderr

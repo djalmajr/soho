@@ -131,7 +131,7 @@ func TestE2EPortReleaseThenSpawnNative(t *testing.T) {
 		t.Fatalf("release code=%d out=%s stderr=%s", code, out, stderr)
 	}
 	code, out, stderr = runIn(t, []string{"spawn", "worker", "--name", "new", "--fresh", "--direction", "right"}, env, cwd)
-	if code != 0 || !strings.Contains(out, `"e2e_port": "47000"`) {
+	if code != 0 || !spawnJSONHasFieldCLI(t, out, `"e2e_port": "47000"`) {
 		t.Fatalf("spawn code=%d out=%s stderr=%s", code, out, stderr)
 	}
 	fields := strings.Split(core.RosterLine(sd, "new"), "\t")

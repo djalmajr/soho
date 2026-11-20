@@ -110,7 +110,7 @@ func TestSpawnGrokContextWindowConfirmed(t *testing.T) {
 	if reads == 0 {
 		t.Fatal("the screen was never read after the Enter (the confirmation window)")
 	}
-	if !strings.Contains(stdout, `"context_window": "500k"`) || !strings.Contains(stdout, `"status": "ready"`) {
+	if !spawnJSONHasField(t, stdout, `"context_window": "500k"`) || !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 }
@@ -177,7 +177,7 @@ func TestSpawnGrokContextWindowFromEnvironment(t *testing.T) {
 	if n := countCallArgv(calls, "pane", "send-text", pane, "/context-window 500k"); n != 1 {
 		t.Fatalf("text sent %d times: %#v", n, calls)
 	}
-	if !strings.Contains(stdout, `"context_window": "500k"`) {
+	if !spawnJSONHasField(t, stdout, `"context_window": "500k"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 }
@@ -195,7 +195,7 @@ func TestSpawnReusedGrokGetsNoContextWindowCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"reused": true`) {
+	if !spawnJSONHasField(t, stdout, `"reused": true`) {
 		t.Fatalf("expected the live grok to be reused, JSON=%q", stdout)
 	}
 	if got := sendKeysCalls(calls); len(got) != 0 {
@@ -219,7 +219,7 @@ func TestSpawnNonGrokKindIgnoresContextWindowKey(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"kind": "claude"`) {
+	if !spawnJSONHasField(t, stdout, `"kind": "claude"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	if got := sendKeysCalls(calls); len(got) != 0 {

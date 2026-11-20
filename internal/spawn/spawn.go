@@ -891,7 +891,7 @@ func emitReuse(name, role, kind, qualifiedProfile, modelChoice string, ctx *core
 	if port := core.RosterE2EPort(f); port != "" {
 		out.Set("e2e_port", port)
 	}
-	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.StringifyIndent(out, 2))
+	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(out))
 	return true
 }
 
@@ -981,7 +981,7 @@ func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config
 		out.Set("e2e_port", port)
 	}
 	out.Set("startup_evidence", jsonjs.O(startup.FieldState, state, startup.FieldReason, ev.Reason, startup.FieldSource, ev.Source))
-	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.StringifyIndent(out, 2))
+	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(out))
 	warnStartupBlocked(name, kind, state, ev, ctx, env)
 	_, _ = fmt.Fprint(platform.Stdout, agentReadText(svc.Runtime, name, "visible", nil))
 	platform.Die("", 7)
@@ -2161,7 +2161,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	if cursorGate {
 		out.Set("startup_evidence", jsonjs.O(startup.FieldState, lastState, startup.FieldReason, cursorGateEv.Reason, startup.FieldSource, cursorGateEv.Source))
 	}
-	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.StringifyIndent(o.outputObject(out), 2))
+	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(o.outputObject(out)))
 	if autoRegrid && core.Cfg(ctx, "regrid", "on", env) == "on" {
 		layout.AutoRegrid(ctx, env, cwd, "regrid after spawn failed; panes left as inserted (see friction)")
 	}

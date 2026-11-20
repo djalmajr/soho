@@ -91,7 +91,7 @@ func TestSpawnClearsShellLine(t *testing.T) {
 				args = append(args, "--pane", "w0test:p0a")
 			}
 			code, stdout, stderr, calls := runCmdSpawn(t, f, args)
-			if code != 0 || !strings.Contains(stdout, `"status": "ready"`) {
+			if code != 0 || !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 				t.Fatalf("spawn code=%d stdout=%q stderr=%q", code, stdout, stderr)
 			}
 			start, clears, creates := -1, 0, 0

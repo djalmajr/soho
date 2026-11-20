@@ -135,7 +135,7 @@ func TestMcpFlagOnSpawnAndRun(t *testing.T) {
 		if !strings.Contains(errOut, "cannot turn MCP servers off per process") || !strings.Contains(errOut, "keeps the user's MCP servers") {
 			t.Fatalf("the frontmatter mcp=none warning is missing: %q", errOut)
 		}
-		if !strings.Contains(out, `"role": "implementer"`) {
+		if !spawnJSONHasFieldCLI(t, out, `"role": "implementer"`) {
 			t.Fatalf("the run JSON=%q", out)
 		}
 	})

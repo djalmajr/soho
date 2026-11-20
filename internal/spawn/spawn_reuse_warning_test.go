@@ -89,8 +89,8 @@ func TestSpawnIdleReuseWarningDescribesRetainedContext(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		if !strings.Contains(stdout, `"name": "review-2"`) || !strings.Contains(stdout, `"reused": true`) ||
-			!strings.Contains(stdout, `"previous_role": "reviewer"`) || !strings.Contains(stdout, `"status": "ready"`) {
+		if !spawnJSONHasField(t, stdout, `"name": "review-2"`) || !spawnJSONHasField(t, stdout, `"reused": true`) ||
+			!spawnJSONHasField(t, stdout, `"previous_role": "reviewer"`) || !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
 		reuseWarn(t, stderr, "reusing idle lane 'review' worker 'review-2' as reviewer"+retainedWarning)
@@ -116,8 +116,8 @@ func TestSpawnIdleReuseWarningDescribesRetainedContext(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		if !strings.Contains(stdout, `"name": "review-2"`) || !strings.Contains(stdout, `"reused": true`) ||
-			!strings.Contains(stdout, `"previous_role": "reviewer"`) || !strings.Contains(stdout, `"status": "ready"`) {
+		if !spawnJSONHasField(t, stdout, `"name": "review-2"`) || !spawnJSONHasField(t, stdout, `"reused": true`) ||
+			!spawnJSONHasField(t, stdout, `"previous_role": "reviewer"`) || !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
 		reuseWarn(t, stderr, "reusing idle lane 'review' worker 'review-2' as reviewer"+retainedWarning)
@@ -132,7 +132,7 @@ func TestSpawnIdleReuseWarningDescribesRetainedContext(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		if strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"created_pane": true`) {
+		if spawnJSONHasField(t, stdout, `"reused": true`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 			t.Fatalf("legacy worker was reused: %s calls=%#v", stdout, calls)
 		}
 	})
@@ -148,8 +148,8 @@ func TestSpawnIdleReuseWarningDescribesRetainedContext(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		if !strings.Contains(stdout, `"name": "cross"`) || !strings.Contains(stdout, `"reused": true`) ||
-			!strings.Contains(stdout, `"previous_role": "scouter"`) || !strings.Contains(stdout, `"status": "ready"`) {
+		if !spawnJSONHasField(t, stdout, `"name": "cross"`) || !spawnJSONHasField(t, stdout, `"reused": true`) ||
+			!spawnJSONHasField(t, stdout, `"previous_role": "scouter"`) || !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
 		reuseWarn(t, stderr, "reusing idle worker 'cross' (grok, was scouter, now implementer; dispatch to 'cross')"+retainedWarning)
@@ -200,13 +200,13 @@ func TestSpawnReuseRequiresRecordedEffort(t *testing.T) {
 				t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 			}
 			if tc.reuse {
-				if !strings.Contains(stdout, `"name": "reviewer"`) || !strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"effort": "medium"`) {
+				if !spawnJSONHasField(t, stdout, `"name": "reviewer"`) || !spawnJSONHasField(t, stdout, `"reused": true`) || !spawnJSONHasField(t, stdout, `"effort": "medium"`) {
 					t.Fatalf("reuse JSON=%s", stdout)
 				}
 				reuseWarn(t, stderr, "reusing idle worker 'reviewer' ("+kind+", was reviewer, now implementer; dispatch to 'reviewer')"+retainedWarning)
 				assertNoStart(t, calls)
 			} else {
-				if strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"created_pane": true`) || !strings.Contains(stdout, `"effort": "medium"`) {
+				if spawnJSONHasField(t, stdout, `"reused": true`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) || !spawnJSONHasField(t, stdout, `"effort": "medium"`) {
 					t.Fatalf("expected fresh medium worker: %s", stdout)
 				}
 				started := false

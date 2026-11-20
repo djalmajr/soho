@@ -63,7 +63,7 @@ func TestSpawnWarnsAboutIdleReleasedOrphanBeforeOpeningThePane(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"name": "build"`) || !strings.Contains(stdout, `"created_pane": true`) {
+	if !spawnJSONHasField(t, stdout, `"name": "build"`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 		t.Fatalf("the spawn did not proceed to a new pane:\n%s", stdout)
 	}
 	want := "soho: spawn: 'build-2' is idle outside the roster (ws:p2); close it with: soho release build-2 --close\n"
@@ -109,7 +109,7 @@ func TestSpawnHasNoOrphanWarningWithoutReleasedRows(t *testing.T) {
 	f.ctx.Order = []string{"lane_build_roles", "lane_build_kind"}
 	f.roster(t)
 	code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker"})
-	if code != 0 || !strings.Contains(stdout, `"created_pane": true`) {
+	if code != 0 || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if strings.Contains(stderr, "is idle outside the roster") {
@@ -130,7 +130,7 @@ func TestSpawnLanesOffDoesNotWarnAboutRoleNamedOrphans(t *testing.T) {
 	configureSpawnFixture(t, &f)
 	f.roster(t)
 	code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker"})
-	if code != 0 || !strings.Contains(stdout, `"created_pane": true`) {
+	if code != 0 || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if strings.Contains(stderr, "is idle outside the roster") {
@@ -148,7 +148,7 @@ func TestSpawnGivenPaneReRostersRetiresTheReleasedRow(t *testing.T) {
 	f.roster(t)
 	writeReleasedPanesFixture(t, &f, "worker\tws:px\tgrok\t20261001T000000")
 	code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--pane", "ws:px"})
-	if code != 0 || !strings.Contains(stdout, `"pane_id": "ws:px"`) {
+	if code != 0 || !spawnJSONHasField(t, stdout, `"pane_id": "ws:px"`) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if n := callsTo(calls, "pane", "get", "ws:px"); n != 1 {

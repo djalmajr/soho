@@ -76,7 +76,7 @@ func TestSpawnHcLaneReuseNameRule(t *testing.T) {
 		if _, params := parseTerminalRunReq(t, conn.getWritten()); params["name"] != "b" {
 			t.Fatalf("terminal.run name=%v, want b", params["name"])
 		}
-		if !strings.Contains(out.String(), `"name": "b"`) || strings.Contains(out.String(), `"reused": true`) {
+		if !spawnJSONHasField(t, out.String(), `"name": "b"`) || spawnJSONHasField(t, out.String(), `"reused": true`) {
 			t.Fatalf("stdout=%s", out.String())
 		}
 		want := "soho: warning: spawn: idle worker 'a' was not reused as 'b' because native Core cannot rename it; starting a new worker 'b'"
@@ -111,7 +111,7 @@ func TestSpawnHcLaneReuseNameRule(t *testing.T) {
 			if n := len(conn.getWritten()); n != 0 || conn.getConnectCount() != 0 {
 				t.Fatalf("a reuse must not start a terminal: written=%d connects=%d", n, conn.getConnectCount())
 			}
-			if !strings.Contains(out.String(), `"name": "a"`) || !strings.Contains(out.String(), `"reused": true`) {
+			if !spawnJSONHasField(t, out.String(), `"name": "a"`) || !spawnJSONHasField(t, out.String(), `"reused": true`) {
 				t.Fatalf("stdout=%s", out.String())
 			}
 			if !strings.Contains(stderr.String(), "reusing idle lane 'review' worker 'a' as reviewer; existing session context is retained") || strings.Contains(stderr.String(), "was not reused") {

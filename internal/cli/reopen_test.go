@@ -119,7 +119,7 @@ func TestReopenClosesAndReopensWithRosterValues(t *testing.T) {
 		t.Fatalf("release stdout leaked into the reopen output: %q", run.stdout)
 	}
 	for _, want := range []string{`"name": "worker"`, `"kind": "grok"`, `"model": "grok-4.7"`, `"effort": "high"`, `"created_pane": true`, `"status": "ready"`, `"role": "implementer"`} {
-		if !strings.Contains(run.stdout, want) {
+		if !spawnJSONHasFieldCLI(t, run.stdout, want) {
 			t.Fatalf("spawn JSON missing %s: %s", want, run.stdout)
 		}
 	}
@@ -210,7 +210,7 @@ func TestReopenForcePassesThroughTheReleaseRefusal(t *testing.T) {
 	if run.code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", run.code, run.stdout, run.stderr)
 	}
-	if !strings.Contains(run.stdout, `"name": "worker"`) || !strings.Contains(run.stdout, `"created_pane": true`) {
+	if !spawnJSONHasFieldCLI(t, run.stdout, `"name": "worker"`) || !spawnJSONHasFieldCLI(t, run.stdout, `"created_pane": true`) {
 		t.Fatalf("spawn JSON=%s", run.stdout)
 	}
 }

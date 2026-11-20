@@ -51,10 +51,10 @@ func TestSpawnPostStartJavaScriptCases(t *testing.T) {
 				t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 			}
 			if tc.wantReady {
-				if !strings.Contains(stdout, `"status": "ready"`) {
+				if !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 					t.Fatalf("stdout=%q stderr=%q", stdout, stderr)
 				}
-			} else if strings.Contains(stdout, `"status": "ready"`) {
+			} else if spawnJSONHasField(t, stdout, `"status": "ready"`) {
 				t.Fatalf("unexpected ready state: %q", stdout)
 			}
 			roster, err := os.ReadFile(filepath.Join(f.state, "ws", "agents.tsv"))
@@ -322,7 +322,7 @@ func TestSpawnRemainingIntegrationJavaScriptCases(t *testing.T) {
 		configureSpawnFixture(t, &f)
 		f.roster(t, strings.Join([]string{"old", "p-old", "grok", "implementer", "xai", "1", f.cwd, "now"}, "\t"))
 		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"implementer", "--name", "new", "--pane", "w0test:p0a", "--fresh"})
-		if code != 0 || !strings.Contains(stdout, `"status": "ready"`) {
+		if code != 0 || !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 		lists := 0
