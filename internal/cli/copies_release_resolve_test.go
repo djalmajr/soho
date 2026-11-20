@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -228,7 +229,7 @@ func TestCopiesReleasePendingRecheckMatchesResolvedSpelling(t *testing.T) {
 		return []core.CopyRow{{Path: registered, Owner: "other", Pane: "p-other", Created: "2026-01-01T00:00:00Z", Source: "-", Origin: "add"}}, nil
 	}
 	code, out, stderr := f.run(t, f.env, "copies", "release", typed)
-	if code != 4 || !strings.Contains(stderr, "copies release: pending registration \""+registered+"\" overlaps request; nothing removed") {
+	if code != 4 || !strings.Contains(stderr, "copies release: pending registration "+strconv.Quote(registered)+" overlaps request; nothing removed") {
 		t.Fatalf("code=%d out=%q stderr=%q; want the queued registration to block the release", code, out, stderr)
 	}
 	if _, err := os.Lstat(registered); err != nil {
