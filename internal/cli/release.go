@@ -16,7 +16,9 @@ import (
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/layout"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/provider"
 	"github.com/djalmajr/soho/internal/taskreport"
+	"github.com/djalmajr/soho/internal/text"
 	"github.com/djalmajr/soho/internal/transport"
 )
 
@@ -89,7 +91,11 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 			core.DieFriction(fmt.Sprintf("agent '%s': herdr agent get failed (%s). Refusing to release; the worker may still be live. Retry when herdr answers, or pass --force.", agent, state.Cause), 4, frictionLogPath, "release")
 		}
 		if closes && report != "" && state.State == "working" {
-			core.DieFriction(fmt.Sprintf("agent '%s' is still working and has not written %s; closing now discards its work. Run 'wait %s' first, or release --close --force", agent, report, agent), 3, frictionLogPath, "release")
+			if cause, ended := releaseEndedInProviderError(sd, agent, state.State, ctx, env, svc); ended {
+				_, _ = fmt.Fprintf(platform.Stderr, "soho: release: '%s' ended in a provider error (%s); closing it without a report\n", agent, cause)
+			} else {
+				core.DieFriction(fmt.Sprintf("agent '%s' is still working and has not written %s; closing now discards its work. Run 'wait %s' first, or release --close --force", agent, report, agent), 3, frictionLogPath, "release")
+			}
 		}
 	}
 
@@ -230,6 +236,51 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 	}
 	_, _ = fmt.Fprintf(platform.Stdout, "released %s\n", agent)
 	return 0
+}
+
+// releaseEndedInProviderError reads only the released worker's own wait
+// cause and requires its current screen to show a terminal provider outcome.
+// wait writes that cause for terminal outcomes, but also before a capacity
+// retry it never clears on recovery, so the file alone cannot say the task
+// ended; dispatch clears it before every new task. A fresh read of the
+// worker's own recent screen, through the same classifier wait uses with the
+// configured provider texts, separates a live worker from one still stopped
+// at a refusal, auth error or lost connection. A failed read, no detection,
+// or a capacity-only detection keeps the working refusal. Screen text is
+// never printed: only the sanitized, bounded cause from disk is.
+func releaseEndedInProviderError(sd, agent, state string, ctx *core.Config, env platform.Env, svc transport.Services) (string, bool) {
+	wait := filepath.Join(sd, "wait")
+	raw, err := platform.ReadTextFile(filepath.Join(wait, agent+".provider-cause"))
+	if err != nil {
+		return "", false
+	}
+	cause := text.SanitizeCause(text.RedactSecrets(raw))
+	if cause == "" {
+		return "", false
+	}
+	screen, ok := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
+	if !ok || screen == "" {
+		return "", false
+	}
+	capacityTexts := core.Cfg(ctx, "provider_capacity_texts", "", env)
+	errorTexts := core.Cfg(ctx, "provider_error_texts", "", env)
+	detection := core.ProviderDetectTexts(state, screen, capacityTexts, errorTexts)
+	if detection == nil && state == "working" {
+		// The shared classifier suppresses non-lost detections while the
+		// terminal reports working. That is exactly the field case here:
+		// Herdr/hc still says working while the worker sits at a refusal or
+		// auth error, so classify the fresh screen without that guard.
+		detection = core.ProviderDetectTexts("", screen, capacityTexts, errorTexts)
+	}
+	if detection == nil {
+		return "", false
+	}
+	terminal := detection.Status == "provider-refusal" || detection.Status == "provider-error" ||
+		detection.Cause == provider.LostConnectionCause
+	if !terminal || detection.Status == "capacity" {
+		return "", false
+	}
+	return cause, true
 }
 
 // releaseOrphan closes the pane of an agent this project released without
