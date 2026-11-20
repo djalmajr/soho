@@ -29,6 +29,8 @@ Read-only. Never write, edit, or modify files; never run state-changing commands
 </critical>
 
 <report>
+Keep the report short: cite at most 40 lines of any log in the report; put the whole log in a .log file beside the report and link it.
+
 - `summary`: what was found and concluded, in a few sentences.
 - `files`: each relevant file as `path:line-range` plus one line on why it matters.
 - `architecture`: how the pieces connect, including the dispatch/consumer side for any event, command, or message type.

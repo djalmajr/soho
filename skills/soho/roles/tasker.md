@@ -38,6 +38,8 @@ Example:
 </checkpoint>
 
 <report>
+Keep the report short: cite at most 40 lines of any log in the report; put the whole log in a .log file beside the report and link it.
+
 Use [env] only when an item cannot execute in this environment because of a named sandbox or platform limit (process identity, local ports, network, native OS or browser); give the reason and the exact command the host must run. An empty [env] reason counts as [partial]. Any gap you could close, failing check or unverified behavior claim stays [partial]. An [env] item alone does not make a review verdict fail. Environment limitations are counted separately, require other proof before commit, push or release, and do not turn verdict_effective into fail.
 
 Count of files changed, each file listed in a `## Files changed` section (path + one line each), the verification command and its output, and every skipped case with the reason. The `wait` reads only the `## Files changed` section when it checks the report's changed-file claims against the recorded tree, so a file the report merely reads or cites elsewhere is never flagged.

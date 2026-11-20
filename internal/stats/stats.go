@@ -1080,6 +1080,9 @@ func CmdCollect(args []string, command CommandContext) int {
 			if verify {
 				return verifyFiles(sd, agent, report, env, cwd, logFile)
 			}
+			if warning, ok := wait.ReportSizeWarning(agent, st.Size()); ok {
+				core.Warn(warning.Message, logFile, "collect")
+			}
 			output("<!-- report: " + report + " -->\n")
 			if taskPath != "" {
 				if _, e := os.Stat(taskPath); e == nil {

@@ -47,6 +47,122 @@ var knownCommands = map[string]bool{
 	"report": true, "model-set": true,
 }
 
+// unknownCommandAliases maps a retired or natural word to the command that
+// replaces it. Keys are matched exactly: a hostile word is printed quoted and
+// cannot steer the suggestion by case folding or punctuation.
+var unknownCommandAliases = map[string]string{
+	"stop": "release <name> --close", "kill": "release <name> --close",
+	"close": "release <name> --close", "rm": "release <name> --close",
+	"start": "spawn <role>", "open": "spawn <role>", "new": "spawn <role>",
+	"send": "dispatch <name> <brief>", "prompt": "dispatch <name> <brief>",
+	"ls": "roster", "list": "roster", "ps": "roster",
+}
+
+// unknownCommandMessage keeps the exit-2 diagnostic and adds a suggestion
+// only from the fixed alias map or one unambiguous near miss. An unrelated
+// word, a short word and a tie keep the historical message unchanged.
+func unknownCommandMessage(word string) string {
+	message := "unknown command '" + word + "'"
+	suggestion, ok := unknownCommandAliases[word]
+	if !ok {
+		suggestion = nearestCommand(word)
+	}
+	if suggestion != "" {
+		message += "; did you mean: " + suggestion
+	}
+	return message
+}
+
+// nearestCommand picks a near miss only when one known command is nearest.
+// Words shorter than three characters never get a near-miss suggestion;
+// three- and four-character words allow one edit, longer words allow two.
+// A word of the same length still wins (so a transposed `stauts` names
+// `status`, not the shorter `stats`); two commands equally near mean no
+// suggestion at all, rather than an arbitrary map-order pick. A registered
+// command never suggests itself.
+func nearestCommand(word string) string {
+	limit := 2
+	if len(word) >= 3 && len(word) <= 4 {
+		limit = 1
+	}
+	if len(word) < 3 || knownCommands[word] {
+		return ""
+	}
+	best, bestDistance, bestLenDiff, tie := "", 3, 3, false
+	for command := range knownCommands {
+		lenDiff := len(word) - len(command)
+		if lenDiff < 0 {
+			lenDiff = -lenDiff
+		}
+		if lenDiff > limit {
+			continue
+		}
+		distance := boundedEditDistance(word, command, limit)
+		if distance > limit {
+			continue
+		}
+		if lenDiff < bestLenDiff || (lenDiff == bestLenDiff && distance < bestDistance) {
+			best, bestDistance, bestLenDiff, tie = command, distance, lenDiff, false
+			continue
+		}
+		if lenDiff == bestLenDiff && distance == bestDistance && best != command {
+			tie = true
+		}
+	}
+	if tie {
+		return ""
+	}
+	return best
+}
+
+// boundedEditDistance is Levenshtein distance over bytes, abandoned as soon
+// as it exceeds limit (returning limit+1), so a long hostile word cannot turn
+// a refusal into an unbounded computation.
+func boundedEditDistance(a, b string, limit int) int {
+	if a == b {
+		return 0
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	if len(b)-len(a) > limit {
+		return limit + 1
+	}
+	previous := make([]int, len(a)+1)
+	current := make([]int, len(a)+1)
+	for i := range previous {
+		previous[i] = i
+	}
+	for j := 1; j <= len(b); j++ {
+		current[0] = j
+		minimum := current[0]
+		for i := 1; i <= len(a); i++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			deletion := previous[i] + 1
+			insertion := current[i-1] + 1
+			substitution := previous[i-1] + cost
+			current[i] = deletion
+			if insertion < current[i] {
+				current[i] = insertion
+			}
+			if substitution < current[i] {
+				current[i] = substitution
+			}
+			if current[i] < minimum {
+				minimum = current[i]
+			}
+		}
+		if minimum > limit {
+			return limit + 1
+		}
+		previous, current = current, previous
+	}
+	return previous[len(a)]
+}
+
 var frictionLogPath string
 
 // version is set for release builds with -ldflags. Keep dev builds useful by
@@ -293,7 +409,7 @@ func Run(args []string, env platform.Env) (code int) {
 			args[1] = "help"
 		}
 		if args[1] != "help" && !knownCommands[args[1]] {
-			platform.Die("unknown command '"+args[1]+"'", 2)
+			platform.Die(unknownCommandMessage(args[1]), 2)
 		}
 		_, _ = io.WriteString(platform.Stdout, commandHelp(args[1]))
 		return 0
@@ -323,7 +439,7 @@ func Run(args []string, env platform.Env) (code int) {
 		return pluginpkg.PluginCommand(args[1:], env, platform.Current(), executable, input)
 	}
 	if !knownCommands[command] {
-		platform.Die("unknown command '"+command+"'", 2)
+		platform.Die(unknownCommandMessage(command), 2)
 	}
 	// The first argument after a known command asks for that command's usage
 	// lines; --help anywhere else is a regular argument (a send message may
@@ -574,7 +690,7 @@ func Run(args []string, env platform.Env) (code int) {
 	}
 	// A registered command without a native case dies with the same
 	// diagnostic as an unknown one: nothing is probed or executed.
-	platform.Die("unknown command '"+command+"'", 2)
+	platform.Die(unknownCommandMessage(command), 2)
 	return 2
 }
 

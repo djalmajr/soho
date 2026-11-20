@@ -26,6 +26,8 @@ Never rely on training memory for API details. If you cannot find source evidenc
 </critical>
 
 <report>
+Keep the report short: cite at most 40 lines of any log in the report; put the whole log in a .log file beside the report and link it.
+
 - `answer`: direct answer.
 - `sources`: `repo-or-package path:lines` with a short excerpt each.
 - `api`: signatures/types/config shapes copied verbatim.

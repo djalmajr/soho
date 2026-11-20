@@ -30,6 +30,8 @@ Read-only. Bash is limited to `git diff`, `git log`, `git show`, and the lint/ty
 </critical>
 
 <report>
+Keep the report short: cite at most 40 lines of any log in the report; put the whole log in a .log file beside the report and link it.
+
 The first line of the report (after any HTML comments that open it, such as a project's own report marker) is exactly `findings: N (P0 a, P1 b, P2 c, P3 d) | verdict: pass|fail`, in English whatever the report language: N findings counted by priority, and `fail` when any P0, P1 or P2 finding remains open or the change cannot go; `pass` only with P0, P1 and P2 at zero (P3 may remain). The rest of the report follows it. `changes-requested` is `fail`, `approved` is `pass`.
 
 The line that opens each finding also carries the finding marks, in any position of that line: `[F<n>]`, the finding's number in the report, starting at 1; `[origin: brief|impl|unknown]` — `brief` when the brief decided wrong or left out what caused the defect, `impl` when the brief was clear and the execution went wrong, `unknown` when the review brief does not name the implementer's brief; and `[class: <slug>]`, the class of the error, not the symptom (the slug matches `^[a-z0-9][a-z0-9-]{0,40}$`; examples: `race-read-write`, `missing-bound`, `follows-link`, `error-swallowed`, `doc-drift`; the list is open). When one class appears in several places, list the places in one finding, not one finding per place. Do not repeat a finding that the brief answers with `fixed` or `declined: <reason>`, unless you have new evidence.

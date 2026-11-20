@@ -138,6 +138,14 @@ func TestKnownCommandWithoutNativeCaseDiesNatively(t *testing.T) {
 func TestUnknownCommandHostileInput(t *testing.T) {
 	// Unknown input dies 2 natively, names the command verbatim, and probes
 	// no runtime even when hostile runtime env is present.
+	wants := map[string]string{
+		"nope":          "soho: unknown command 'nope'\n",
+		"nope;rm -rf /": "soho: unknown command 'nope;rm -rf /'\n",
+		"$(reboot)":     "soho: unknown command '$(reboot)'\n",
+		`back\slash`:    "soho: unknown command 'back\\slash'\n",
+		"new\nline":     "soho: unknown command 'new\nline'\n",
+		"-x":            "soho: unknown command '-x'\n",
+	}
 	for _, name := range []string{"nope", "nope;rm -rf /", "$(reboot)", `back\slash`, "new\nline", "-x"} {
 		env, records := hostileRuntimeEnv(t, "node")
 		var out, errOut bytes.Buffer
@@ -145,8 +153,8 @@ func TestUnknownCommandHostileInput(t *testing.T) {
 		platform.Stdout, platform.Stderr = &out, &errOut
 		code := Run([]string{name}, env)
 		platform.Stdout, platform.Stderr = oldOut, oldErr
-		if code != 2 || out.Len() != 0 || errOut.String() != "soho: unknown command '"+name+"'\n" {
-			t.Fatalf("name=%q code=%d out=%q err=%q", name, code, out.String(), errOut.String())
+		if code != 2 || out.Len() != 0 || errOut.String() != wants[name] {
+			t.Fatalf("name=%q code=%d out=%q err=%q, want %q", name, code, out.String(), errOut.String(), wants[name])
 		}
 		assertNoRuntimeCalled(t, records)
 	}

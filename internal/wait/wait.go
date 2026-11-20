@@ -1284,6 +1284,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					break
 				}
 				text, _ := platform.ReadTextFile(report)
+				checkReportSize(sd, agent, report)
 				partial := reportscan.PartialCount(text)
 				envCount := reportscan.EnvCount(text)
 				header := reportscan.ReviewHeader(text)
