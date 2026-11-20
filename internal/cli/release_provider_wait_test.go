@@ -141,9 +141,10 @@ func TestReleaseCloseAfterRealWaitProviderOutcome(t *testing.T) {
 	}
 }
 
-// Round-2 review P1: wait writes provider-cause before a capacity retry and
-// never clears it on recovery. Drive that real wait sequence, then prove
-// release --close still refuses the live worker on its fresh working screen.
+// Drive the real WaitFor path: a capacity retry leaves markers but no cause,
+// and the recovered working observation clears both. Release --close then
+// still refuses the live worker on its fresh working screen even with a
+// cause written directly, because that screen shows no terminal provider stop.
 func waitProviderObservation(t *testing.T, baseEnv map[string]string, cwd, sd, state, screen string, timeoutMs float64) string {
 	t.Helper()
 	waitBin := t.TempDir()
@@ -187,8 +188,9 @@ func waitProviderMarkerState(t *testing.T, sd string) (bool, string) {
 	return markerErr == nil, strings.TrimSpace(string(causeBody))
 }
 
-func TestReleaseStaleProviderCauseAfterCapacityRecoveryStillRefuses(t *testing.T) {
+func TestCapacityRecoveryClearsCauseAndReleaseRefusesStaleFile(t *testing.T) {
 	const recoveredScreen = "still working on the brief"
+	const staleCause = "stale provider cause from an earlier task\n"
 	baseEnv, cwd := commandFixture(t)
 	sd := filepath.Join(baseEnv.Get("SOHO_DIR"), "ws")
 	if err := os.MkdirAll(filepath.Join(sd, "wait"), 0o700); err != nil {
@@ -198,24 +200,32 @@ func TestReleaseStaleProviderCauseAfterCapacityRecoveryStillRefuses(t *testing.T
 		t.Fatal(err)
 	}
 
-	// The capacity stop writes both markers but does not settle the task.
+	// The capacity retry writes its markers but is not a terminal outcome, so
+	// it leaves no cause for the report or for release.
 	waitProviderObservation(t, baseEnv, cwd, sd, "idle", releaseCapacityScreen, 600)
 	hasMarker, cause := waitProviderMarkerState(t, sd)
-	if !hasMarker || cause == "" {
-		t.Fatalf("probe setup failed: want both marker files, got .provider=%v cause=%q", hasMarker, cause)
+	if !hasMarker {
+		t.Fatalf("probe setup failed: want the .provider marker, got .provider=%v cause=%q", hasMarker, cause)
+	}
+	if cause != "" {
+		t.Fatalf("a non-terminal capacity retry wrote a cause: %q", cause)
 	}
 
-	// The provider recovered and wait now observes the worker working: it
-	// clears .provider but keeps the stale capacity cause.
+	// The provider recovered: the working observation retires both markers,
+	// including any cause left by an earlier terminal outcome.
 	status := waitProviderObservation(t, baseEnv, cwd, sd, "working", recoveredScreen, 400)
 	hasMarker, cause = waitProviderMarkerState(t, sd)
 	t.Logf("after recovery to working (wait status=%q): .provider exists=%v cause=%q", status, hasMarker, cause)
 	if hasMarker {
-		t.Fatal("probe setup failed: wait did not clear .provider on the working observation")
+		t.Fatal("wait did not clear .provider on the working observation")
 	}
-	if cause == "" {
-		t.Fatal("probe setup failed: the stale cause is gone, so the finding is void")
+	if cause != "" {
+		t.Fatalf("wait left a provider-cause after recovery: %q", cause)
 	}
+
+	// Fabricate a stale cause from any source: the release guard must still
+	// refuse a live worker whose fresh screen shows no terminal provider stop.
+	writeReleaseProviderCause(t, sd, "worker", staleCause)
 
 	addReleaseReport(t, sd, "worker", true)
 	releaseBin := t.TempDir()
@@ -241,7 +251,8 @@ func TestReleaseStaleProviderCauseAfterCapacityRecoveryStillRefuses(t *testing.T
 	if len(reads) != 1 {
 		t.Fatalf("worker screen reads=%v; want one fresh 40-line read: %#v", reads, r.calls)
 	}
-	if _, err := os.ReadFile(filepath.Join(sd, "wait", "worker.provider-cause")); err != nil {
-		t.Fatalf("refused release removed the cause: %v", err)
+	kept, err := os.ReadFile(filepath.Join(sd, "wait", "worker.provider-cause"))
+	if err != nil || string(kept) != staleCause {
+		t.Fatalf("refused release changed the cause: %q err=%v, want %q", kept, err, staleCause)
 	}
 }
