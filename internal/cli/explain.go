@@ -275,6 +275,11 @@ func explainRecommendation(ctx *core.Config, env platform.Env) []string {
 	if !core.LanesEnabled(ctx, env) {
 		return append(out, "Each agent keeps its own assistant instead of sharing one panel.")
 	}
+	capN, capped := core.ModelCap(ctx, env)
+	capNote := ""
+	if capped {
+		capNote = " (model_cap " + strconv.Itoa(capN) + " live workers per model)"
+	}
 	for _, lane := range core.LaneNames(ctx, env) {
 		if lane == "" {
 			continue
@@ -283,9 +288,16 @@ func explainRecommendation(ctx *core.Config, env platform.Env) []string {
 		if kind == "" {
 			continue
 		}
+		models := core.LaneModels(ctx, lane, env)
+		if len(models) > 0 {
+			out = append(out, "Chosen for "+lane+": "+kind+", models "+strings.Join(models, ",")+capNote+".")
+			continue
+		}
 		model := core.LaneAttr(ctx, lane, "model", nil, env)
 		if model != "" {
-			out = append(out, "Chosen for "+lane+": "+kind+", model "+model+".")
+			out = append(out, "Chosen for "+lane+": "+kind+", model "+model+capNote+".")
+		} else if capNote != "" {
+			out = append(out, "Chosen for "+lane+": "+kind+capNote+".")
 		} else {
 			out = append(out, "Chosen for "+lane+": "+kind+".")
 		}

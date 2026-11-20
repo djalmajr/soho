@@ -166,3 +166,36 @@ func containsLocal(values []string, needle string) bool {
 	}
 	return false
 }
+
+func TestExplainRecommendationShowsModelListAndCap(t *testing.T) {
+	env := platform.Env{"SOHO_SKILL_DIR": testSkillDir(t), "HERDR_WORKSPACE_ID": "ws"}
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".agents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write := func(conf string) *core.Config {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, ".agents", "soho.conf"), []byte(conf), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ctx := core.LoadConfig(env, repo)
+		return &ctx
+	}
+	ctx := write("panes=4\nlane.build.kind=grok\nlane.build.models=m1,m2\nmodel_cap=2\n")
+	rec := explainRecommendation(ctx, env)
+	if !containsLocal(rec, "Chosen for build: grok, models m1,m2 (model_cap 2 live workers per model).") {
+		t.Fatalf("models/cap recommendation=%#v", rec)
+	}
+	ctx = write("panes=4\nlane.build.kind=grok\nlane.build.model=m1\n")
+	rec = explainRecommendation(ctx, env)
+	if !containsLocal(rec, "Chosen for build: grok, model m1.") {
+		t.Fatalf("single-model recommendation=%#v", rec)
+	}
+}
+
+func TestUsageExit13CoversTheModelCap(t *testing.T) {
+	want := "13 lane kind-mismatch (set lane.<name>.kind, or release the lane) or every model of a lane's models list at model_cap"
+	if !strings.Contains(usage, want) {
+		t.Fatalf("usage exit-code list lacks %q", want)
+	}
+}

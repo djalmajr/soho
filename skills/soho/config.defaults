@@ -107,6 +107,13 @@ reuse_workers=on
 panes=4
 lanes=on
 
+# Maximum live workers per model across every lane and workspace of this state
+# root. off (default) applies no cap. With model_cap=<n>, a lane that sets
+# lane.<name>.models=m1,m2,m3 spawns the first listed model with fewer than n
+# live workers, counted from the model recorded in each roster row; when all
+# are full, spawn exits 13. An explicit --model warns instead of rotating.
+model_cap=off
+
 # strict (default): no temporary worker; each lane stays within its capacity
 # (lane.<name>.panes raises it; max_workers is only the global cap and opens
 # no slot in a lane) and documentation is build work.
@@ -131,6 +138,7 @@ flex_roles=reviewer,documenter
 # lane.build.roles=implementer,designer,tasker
 # lane.build.panes=2          (capacity: workers the lane may hold at once)
 # lane.build.kind=
+# lane.build.models=          (comma list in order; wins over lane.<name>.model)
 # lane.build.model=
 # lane.build.effort=
 # lane.build.approvals=      (ask | edits | auto | full | unsandboxed)
