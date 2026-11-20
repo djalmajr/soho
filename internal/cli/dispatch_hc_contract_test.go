@@ -85,6 +85,10 @@ func TestDispatchHcAmendBusyThenWaitAndNewTask(t *testing.T) {
 	if amend["report"] == firstReport {
 		t.Fatalf("amendment reused first report: %v", amend)
 	}
+	// The accepted worker has written its first report and settled: wait
+	// must answer with that report, not with the refused amendment.
+	offset += 5 * time.Second
+	setWorker("idle", false)
 	var waitOut, waitErr bytes.Buffer
 	oldOut, oldErr := platform.Stdout, platform.Stderr
 	platform.Stdout, platform.Stderr = &waitOut, &waitErr
@@ -92,11 +96,13 @@ func TestDispatchHcAmendBusyThenWaitAndNewTask(t *testing.T) {
 		defer func() { platform.Stdout, platform.Stderr = oldOut, oldErr }()
 		return Run([]string{"wait", "worker", "--timeout", "5s"}, f.env)
 	}()
-	if waitCode != 15 || !strings.Contains(waitOut.String(), `"status":"not-received"`) || !strings.Contains(waitOut.String(), `"cause":"submission-failed"`) || !strings.Contains(waitErr.String(), "the report on disk belongs to the previous task") {
+	if waitCode != 0 || !strings.Contains(waitOut.String(), `"status":"done"`) || !strings.Contains(waitOut.String(), firstReport) || strings.Contains(waitOut.String(), "not-received") || strings.Contains(waitOut.String(), "submission-failed") || strings.Contains(waitErr.String(), "the report on disk belongs to the previous task") {
 		t.Fatalf("wait exit=%d out=%q stderr=%q", waitCode, waitOut.String(), waitErr.String())
 	}
+	if _, err := os.Stat(filepath.Join(f.sd, "wait", "worker.submit-failed")); !os.IsNotExist(err) {
+		t.Fatalf("refused amendment wrote a submit-failed marker: %v", err)
+	}
 	offset += 5 * time.Second
-	setWorker("idle", false)
 	if err := os.WriteFile(f.brief, []byte("# Goal\n\nNew task.\n# Report\n\ndone\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -147,8 +153,8 @@ func TestDispatchHcAmendBusyPreservesAttribution(t *testing.T) {
 	if err != nil || !bytes.Equal(pointer, after) {
 		t.Fatalf("pointer=%q err=%v", after, err)
 	}
-	if _, err := os.Stat(filepath.Join(f.sd, "wait", "worker.submit-failed")); err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(filepath.Join(f.sd, "wait", "worker.submit-failed")); !os.IsNotExist(err) {
+		t.Fatalf("refused amendment wrote a submit-failed marker: %v", err)
 	}
 }
 
@@ -787,8 +793,13 @@ func TestDispatchHcBusyQueueRefusalAndSendError(t *testing.T) {
 			if err != nil || !bytes.Equal(after, pointer) {
 				t.Fatalf("pointer=%s err=%v", after, err)
 			}
-			if _, err := os.Stat(filepath.Join(f.sd, "wait", "worker.submit-failed")); err != nil {
-				t.Fatal(err)
+			_, markerErr := os.Stat(filepath.Join(f.sd, "wait", "worker.submit-failed"))
+			if tc.sendError {
+				if markerErr != nil {
+					t.Fatalf("real send failure did not record the submit-failed marker: %v", markerErr)
+				}
+			} else if !os.IsNotExist(markerErr) {
+				t.Fatalf("busy refusal wrote a submit-failed marker: %v", markerErr)
 			}
 			sends := 0
 			for _, c := range f.hcCalls(t) {

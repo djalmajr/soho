@@ -1036,13 +1036,17 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		}
 	}
 
-	markSubmitFailed := func() string {
+	restoredTaskReport := func() string {
 		restoredReport := ""
 		if restored := taskreport.ReadTaskReportPointer(sd, agent); restored != nil {
 			if v, ok := restored.Get("task_report"); ok {
 				restoredReport, _ = v.(string)
 			}
 		}
+		return restoredReport
+	}
+	markSubmitFailed := func() string {
+		restoredReport := restoredTaskReport()
 		markerReport := restoredReport
 		if markerReport == "" {
 			markerReport = "-"
@@ -1066,7 +1070,15 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		// The failed sidecar records the pointer's task_report after the
 		// restoration — the task the pointer actually keeps; without a
 		// restored pointer the field is absent.
-		restoredReport := markSubmitFailed()
+		// A refused amendment or queued dispatch is not a submission: the
+		// accepted task is still running, so its submit-failed state (or
+		// absence of one) stays exactly as it was.
+		restoredReport := ""
+		if busyRefusal {
+			restoredReport = restoredTaskReport()
+		} else {
+			restoredReport = markSubmitFailed()
+		}
 		if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, restoredReport, briefSHA, "failed", "", session, role); err != nil {
 			core.Warn(fmt.Sprintf("could not record the failed submission in the attempt sidecar %s: %s", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 		}
