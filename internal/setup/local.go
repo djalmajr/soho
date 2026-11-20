@@ -16,6 +16,10 @@ import (
 
 const localInstructionFile = "CLAUDE.local.md"
 
+// implicitLocalNotice is the one stderr line printed when setup chooses the
+// local setup in a repository that tracks no soho file.
+const implicitLocalNotice = "setup: no soho file is tracked in this repository, so this wrote the local setup (files only you see); to write tracked files, run 'soho setup --target AGENTS.md'"
+
 const codexHookRel = ".codex/hooks.json"
 const piInboundRel = ".pi/extensions/soho-inbound.ts"
 
@@ -98,7 +102,57 @@ func hasCompleteSetupBlock(text string) bool {
 	return false
 }
 
-func refuseImplicitCanonicalSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
+// trackedSohoFile reports whether the repository tracks a file that belongs
+// to a soho setup: a complete instruction block, one of the hooks setup
+// writes, the project config, or a role file. Every status comes from the
+// setup-wide tracking cache; an unresolvable status keeps the old behavior.
+func trackedSohoFile(root string, env platform.Env, cache *setupTracking) bool {
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+		status := cache.status(root, name, env)
+		if status == trackingUnknown {
+			return true
+		}
+		if status != trackingTracked {
+			continue
+		}
+		text, err := platform.ReadTextFile(filepath.Join(root, name))
+		if err != nil || hasCompleteSetupBlock(text) {
+			return true
+		}
+	}
+	// The role directory is queried as one pathspec: git matches every file
+	// below it, including files no longer present in the working tree.
+	for _, rel := range []string{claudeLocalHookRel, codexHookRel, piInboundRel, ".agents/soho.conf", ".agents/soho-roles"} {
+		switch cache.status(root, rel, env) {
+		case trackingTracked:
+			return true
+		case trackingUnknown:
+			return true
+		}
+	}
+	return false
+}
+
+// implicitLocalSetup decides whether a setup call without an explicit target
+// writes the local setup because this git repository tracks no soho file.
+// An explicit setup_target (including canonical) keeps the configured choice.
+func implicitLocalSetup(root string, args []string, ctx *core.Config, env platform.Env, cache *setupTracking) bool {
+	if containsSetupArg(args, "--local") || containsSetupArg(args, "--target") {
+		return false
+	}
+	if core.Cfg(ctx, "setup_target", "canonical", env) == "local" || core.ConfigExplicit(ctx, "setup_target", env) {
+		return false
+	}
+	if !hasGitMetadata(root) {
+		return false
+	}
+	return !trackedSohoFile(root, env, cache)
+}
+
+func refuseImplicitCanonicalSetup(args []string, ctx *core.Config, env platform.Env, cwd string, implicitLocal bool) {
+	if implicitLocal {
+		return
+	}
 	if containsSetupArg(args, "--local") || containsSetupArg(args, "--target") || core.Cfg(ctx, "setup_target", "canonical", env) == "local" {
 		return
 	}

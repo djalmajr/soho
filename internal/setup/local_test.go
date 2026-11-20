@@ -54,6 +54,9 @@ func localPlanFixture(t *testing.T) (string, platform.Env, *core.Config) {
 	env["XDG_CONFIG_HOME"] = filepath.Join(home, ".config")
 	env["TMPDIR"] = tmp
 	env["SOHO_SKILL_DIR"] = filepath.Join("..", "..", "skills", "soho")
+	// Upstream CLAUDE.md alone is not a soho file: this fixture also tracks
+	// a role file so plain setup --plan keeps its canonical target.
+	trackSohoFixtureRole(t, root, env)
 	ctx := core.LoadConfig(env, root)
 	return root, env, &ctx
 }

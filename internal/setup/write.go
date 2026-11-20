@@ -377,18 +377,21 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	if wantPlan && wantProbe {
 		platform.DieFriction("setup: --probe and --plan are exclusive", 2)
 	}
+	implicitLocal := false
 	if !wantProbe && !containsSetupArg(args, "--detect") {
+		implicitLocal = implicitLocalSetup(platform.ProjectRoot(env, cwd), args, ctx, env, cache)
 		// This refusal must precede migrations, presets and hook writes.
-		refuseImplicitCanonicalSetup(args, ctx, env, cwd)
+		refuseImplicitCanonicalSetup(args, ctx, env, cwd, implicitLocal)
 	}
 	if wantPlan {
-		cmdPlan(withoutSetupArg(args, "--plan"), ctx, env, cwd, cache)
+		cmdPlan(withoutSetupArg(args, "--plan"), ctx, env, cwd, cache, implicitLocal)
+		planLocal := containsSetupArg(args, "--local") || (!containsSetupArg(args, "--target") && (core.Cfg(ctx, "setup_target", "canonical", env) == "local" || implicitLocal))
 		if !containsSetupArg(args, "--no-hooks") {
-			planExtraHooks(platform.ProjectRoot(env, cwd), containsSetupArg(args, "--guard-hooks"), containsSetupArg(args, "--local") || (!containsSetupArg(args, "--target") && core.Cfg(ctx, "setup_target", "canonical", env) == "local"), env, cache)
+			planExtraHooks(platform.ProjectRoot(env, cwd), containsSetupArg(args, "--guard-hooks"), planLocal, env, cache)
 			if containsSetupArg(args, "--guard-hooks") {
 				_, _ = fmt.Fprintln(platform.Stdout, "# guarded Codex hooks: "+setuptext.GuardedHookCodexReminder()+"; "+setuptext.GuardedHookCodexDoctor())
 			}
-			if containsSetupArg(args, "--local") || (!containsSetupArg(args, "--target") && core.Cfg(ctx, "setup_target", "canonical", env) == "local") {
+			if planLocal {
 				root := platform.ProjectRoot(env, cwd)
 				rels := append(localRels(root, ctx, env, cwd), localHookRels(root, env, cache)...)
 				if plan := preflightLocalExcludes(root, rels, env, "setup", false, false); plan != nil && plan.path != "" {
@@ -463,7 +466,10 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	// The check reads the raw --target argument (argTarget): the target
 	// defaulting below gives target a value in every run, and that is not
 	// a conflict with --local.
-	modeLocal := resolveSetupMode(local, argTarget, ctx, env, "setup")
+	if implicitLocal {
+		_, _ = fmt.Fprintln(platform.Stderr, implicitLocalNotice)
+	}
+	modeLocal := implicitLocal || resolveSetupMode(local, argTarget, ctx, env, "setup")
 	if panes != "" && panes != "2" && panes != "3" && panes != "4" {
 		platform.DieFriction("setup: --panes must be 2, 3 or 4", 2)
 	}
@@ -511,7 +517,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	for _, line := range migratePlugin(env, BuildVersion, dry) {
 		_, _ = fmt.Fprintln(platform.Stdout, line)
 	}
-	modeLocal = resolveSetupMode(local, argTarget, ctx, env, "setup")
+	modeLocal = implicitLocal || resolveSetupMode(local, argTarget, ctx, env, "setup")
 	dest = target
 	if modeLocal {
 		dest = localTarget(root)

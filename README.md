@@ -36,7 +36,7 @@ go run ./cmd/soho install --version vX.Y.Z
 
 Run `soho env` once to resolve or materialize the embedded skill. To expose the skill to your agent's skill loader, copy the resource directory printed by `env` into that agent's supported skill directory, or keep an existing installed skill tree. `SOHO_SKILL_DIR` selects an explicit resource tree. No second legacy skill is installed.
 
-Run `soho setup` once per project: it writes the delegation block and the hooks. The skill's [What each assistant gets](skills/soho/SKILL.md#what-each-assistant-gets) lists every hook per assistant and what to commit.
+Run `soho setup` once per project: it writes the delegation block and the hooks; in a git repository that tracks no soho file it writes the local setup instead (one stderr line says why, and `--target AGENTS.md` writes tracked files). The skill's [What each assistant gets](skills/soho/SKILL.md#what-each-assistant-gets) lists every hook per assistant and what to commit.
 
 Use `soho setup --guard-hooks` to make hooks quiet when soho is absent. The guard needs `sh` (on Windows, Git Bash).
 

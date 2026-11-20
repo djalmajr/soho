@@ -37,8 +37,45 @@ func setupWriteFixture(t *testing.T) (string, platform.Env, *core.Config) {
 	env["SOHO_SKILL_DIR"] = filepath.Join("..", "..", "skills", "soho")
 	delete(env, "HERDR_WORKSPACE_ID")
 	delete(env, "HERDR_ENV")
+	// A tracked role file pins the fixture as a repository that already has
+	// soho files, so plain setup keeps its canonical target. Tests for the
+	// fresh-repository choice use setupWriteUntrackedFixture.
+	trackSohoFixtureRole(t, root, env)
 	ctx := core.LoadConfig(env, root)
 	return root, env, &ctx
+}
+
+// setupWriteUntrackedFixture is a repository with no tracked soho file.
+func setupWriteUntrackedFixture(t *testing.T) (string, platform.Env, *core.Config) {
+	t.Helper()
+	root, env, ctx := setupWriteFixture(t)
+	cmd := exec.Command("git", "-C", root, "rm", "--cached", "-q", ".agents/soho-roles/fixture.md")
+	cmd.Env = env.List()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git rm --cached: %v: %s", err, out)
+	}
+	if err := os.RemoveAll(filepath.Join(root, ".agents", "soho-roles")); err != nil {
+		t.Fatal(err)
+	}
+	return root, env, ctx
+}
+
+// trackSohoFixtureRole stages a role file: git's index, not the working
+// tree, is what setup consults when it decides where to write.
+func trackSohoFixtureRole(t *testing.T, root string, env platform.Env) {
+	t.Helper()
+	rel := ".agents/soho-roles/fixture.md"
+	if err := os.MkdirAll(filepath.Join(root, ".agents", "soho-roles"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(rel)), []byte("fixture role\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "-C", root, "add", rel)
+	cmd.Env = env.List()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add %s: %v: %s", rel, err, out)
+	}
 }
 
 func runSetupWrite(args []string, ctx *core.Config, env platform.Env, cwd string) (code int, stdout string, message string) {
