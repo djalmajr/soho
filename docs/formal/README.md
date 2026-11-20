@@ -22,7 +22,7 @@ Line citations identify the source snapshot used for the experiment; the delegat
 
 | Model action | Go function and boundary abstracted |
 | --- | --- |
-| `Submit`, `NameConflict` | `internal/spawn/spawn.go:2504` `startHcAgentUsingServices`, particularly `Start` at 2413 and conflict handling at 2449-2460; `internal/hcbackend/backend.go:1419` `(*backend).Start` maps `name_taken` to `FailureConflict` at 1590. Core's atomic name uniqueness is an assumption, not a roster-lock guarantee. |
+| `Submit`, `NameConflict` | `internal/spawn/spawn.go:2503` `startHcAgentUsingServices`, particularly `Start` at 2572 and conflict handling at 2608-2620; `internal/hcbackend/backend.go:1419` `(*backend).Start` maps `name_taken` to `FailureConflict` at 1617-1618. Core's atomic name uniqueness is an assumption, not a roster-lock guarantee. |
 | `StartReply` | `internal/spawn/spawn.go:2573-2628` `startHcAgentUsingServices`: success, uncertain outcome, conflict and confirmed blocked results; `internal/hc/terminal_run.go:342-366` `(*Client).RunTerminal` classifies failures after request submission as uncertain. |
 | `PruneStale`, `Publish` | `internal/spawn/spawn.go:1964-1976` `cmdSpawnPrepared`, `internal/spawn/spawn.go:2859` `staleRosterLines`, `internal/core/state.go:394` `RosterAppend`, and `internal/core/state.go:483` `RosterRemove`. The latter calls each acquire `WithRosterLock` separately. |
 | `PreserveUnknown`, `CleanupFailed` | `internal/spawn/spawn.go:2602-2607,2625-2631` `startHcAgentUsingServices`: unknown returns without retry/close; a known failed readiness result can close its returned address. |
