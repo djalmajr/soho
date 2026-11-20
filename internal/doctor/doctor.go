@@ -656,9 +656,9 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	} else {
 		s.Ok(fmt.Sprintf("config: herd_label='%s' herd_label_max=%d", core.Cfg(ctx, "herd_label", "{roles}", env), layout.HerdLabelMax(ctx, env)))
 	}
-	checkSetup(ctx, env, cwd, s)
-	doctorValidation(ctx, env, cwd, s)
-	doctorDesign(ctx, env, cwd, s)
+	// The three setup checks share one memoized local-setup decision;
+	// each root is probed once because tracking runs several git commands.
+	doctorSetupChecks(ctx, env, cwd, s, &doctorSetupMemo{})
 	doctorPeerInbound(ctx, svc, env, cwd, s)
 	doctorFootprint(ctx, svc, env, cwd, s)
 	doctorUpdateNotice(ctx, env, cwd, out)
@@ -1699,7 +1699,7 @@ func doctorCodexNetwork(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 	}
 }
 
-func checkSetup(ctx *core.Config, env platform.Env, cwd string, s *Say) {
+func checkSetup(ctx *core.Config, env platform.Env, cwd string, s *Say, memo *doctorSetupMemo) {
 	root := platform.ProjectRoot(env, cwd)
 	target := ""
 	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
@@ -1721,7 +1721,7 @@ func checkSetup(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 	local := filepath.Join(root, "CLAUDE.local.md")
 	localRaw, _ := platform.ReadTextFile(local)
 	ln, ll := strings.Contains(localRaw, setuptext.SetupStart), strings.Contains(localRaw, setuptext.LegacySetupStart)
-	setupLocal := core.Cfg(ctx, "setup_target", "canonical", env) == "local"
+	setupLocal := memo.local(ctx, env, cwd)
 	entry := entryScript(env)
 	if tn {
 		s.Ok("instruction block present in " + filepath.Base(target))
