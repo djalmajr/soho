@@ -27,6 +27,7 @@ func TestSpawnLaneEffortWarning(t *testing.T) {
 		{name: "kind-ceiling", front: "xhigh", kind: "gemini", wantEffort: "high"},
 		{name: "max-effort-ceiling", configured: "xhigh", max: "high", wantEffort: "high"},
 		{name: "codex-model-ceiling", configured: "max", laneEffort: "xhigh", wantEffort: "xhigh"},
+		{name: "opencode-no-effort-mapping", configured: "xhigh", kind: "opencode", wantEffort: "high"},
 		{name: "no-lane", configured: "xhigh", noLane: true, wantEffort: "xhigh"},
 		{name: "reuse", front: "xhigh", reuse: true, wantSource: "role file", wantEffort: "high"},
 	}

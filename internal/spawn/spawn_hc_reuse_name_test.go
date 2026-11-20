@@ -35,6 +35,11 @@ func hcReuseFixture(t *testing.T, lanePanes string) (cwd, bin, state string, env
 		fakecli.Rule{Argv: []string{"get", "a", "--json"}, Stdout: hcIdleReusable},
 		fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcIdleReusable},
 		fakecli.Rule{Argv: []string{"get", "t8", "--json"}, Stdout: hcIdleNewWorker},
+		fakecli.Rule{Argv: []string{"get", "b", "--json"}, Stdout: hcIdleNewWorker},
+		fakecli.Rule{Argv: []string{"get", "c", "--json"}, Stdout: hcIdleNewWorker},
+		fakecli.Rule{Argv: []string{"get", "t9", "--json"}, Stdout: hcIdleNewWorker},
+		fakecli.Rule{Argv: []string{"get", "d", "--json"}, Stdout: hcIdleNewWorker},
+		fakecli.Rule{Argv: []string{"get", "td", "--json"}, Stdout: hcIdleNewWorker},
 	)
 	if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
 		t.Fatal(err)
@@ -118,6 +123,79 @@ func TestSpawnHcLaneReuseNameRule(t *testing.T) {
 				t.Fatalf("stderr=%q", stderr.String())
 			}
 		})
+	}
+}
+
+// SOH-411: the native rename note is one per state directory and lane, even
+// when the second spawn asks for a different new name.
+func TestSpawnHcIdleRenameNoteOncePerLane(t *testing.T) {
+	cwd, bin, state, env, ctx := hcReuseFixture(t, "3")
+	for i, name := range []string{"b", "c"} {
+		conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunNewWorker + "\n")
+		out, stderr, calls := spawnHcWithConn(t, bin, []string{"reviewer", "--name", name}, ctx, env, cwd, conn)
+		if !spawnJSONHasField(t, out.String(), `"name": "`+name+`"`) {
+			t.Fatalf("spawn %d: stdout=%s", i, out.String())
+		}
+		if n := hcRenameCalls(calls); n != 0 {
+			t.Fatalf("spawn %d: rename calls=%d", i, n)
+		}
+		if n := strings.Count(stderr.String(), "was not reused"); n != 1-i {
+			t.Fatalf("spawn %d: note count=%d want=%d stderr=%q", i, n, 1-i, stderr.String())
+		}
+		log, err := os.ReadFile(filepath.Join(state, "sX", "friction.log"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := strings.Count(string(log), "was not reused"); n != 1 {
+			t.Fatalf("spawn %d: friction note count=%d want=1 friction=%q", i, n, log)
+		}
+	}
+	// A different lane has its own marker and prints its own note.
+	roles := env["SOHO_ROLES"]
+	if err := os.WriteFile(filepath.Join(roles, "writer.md"), []byte("---\nkind: codex\neffort: high\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env["SOHO_LANE_DOCS_PANES"] = "2"
+	env["SOHO_LANE_DOCS_ROLES"] = "writer"
+	env["SOHO_LANE_DOCS_KIND"] = "codex"
+	roster := filepath.Join(state, "sX", "agents.tsv")
+	body, err := os.ReadFile(roster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := "d\ttd\tcodex\twriter\topenai\t1\t" + cwd + "\tnow\t\tauto\twriter\tdocs\t\t\thigh\n"
+	if err := os.WriteFile(roster, append(body, []byte(row)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conn := newFakeSpawnRPCConn(rpcHelloSuccess + "\n" + rpcRunNewWorker + "\n")
+	_, stderr, _ := spawnHcWithConn(t, bin, []string{"writer", "--name", "e"}, ctx, env, cwd, conn)
+	want := "spawn: idle worker 'd' was not reused as 'e' because native Core cannot rename it; starting a new worker 'e'"
+	if n := strings.Count(stderr.String(), want); n != 1 {
+		t.Fatalf("docs lane note count=%d stderr=%q", n, stderr.String())
+	}
+	log, err := os.ReadFile(filepath.Join(state, "sX", "friction.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(log), "was not reused"); n != 2 {
+		t.Fatalf("docs lane friction note count=%d want=2 friction=%q", n, log)
+	}
+}
+
+// The capacity refusal is a different message on a different path: it stays
+// on every attempt.
+func TestSpawnHcIdleRenameRefusalEveryTime(t *testing.T) {
+	cwd, bin, _, env, ctx := hcReuseFixture(t, "1")
+	want := "idle worker 'a' was not reused as 'b' because native Core cannot rename it, and lane 'review' has no room"
+	for i := 0; i < 2; i++ {
+		conn := newFakeSpawnRPCConn()
+		exit, out, stderr, _ := spawnHcExitWithConn(t, bin, []string{"reviewer", "--name", "b"}, ctx, env, cwd, conn)
+		if exit == nil || exit.Code != 10 {
+			t.Fatalf("attempt %d: exit=%+v out=%s stderr=%s", i, exit, out.String(), stderr.String())
+		}
+		if n := strings.Count(stderr.String(), want); n != 1 {
+			t.Fatalf("attempt %d: refusal count=%d stderr=%q", i, n, stderr.String())
+		}
 	}
 }
 

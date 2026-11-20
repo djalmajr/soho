@@ -107,6 +107,45 @@ func TestSpawnTruncatedRosterApprovalRequests(t *testing.T) {
 	}
 }
 
+// SOH-411: the spawn fallback is one note per state directory and kind.
+// Other callers of kinds.KindApprovalArgs keep their own warnings; they do
+// not go through spawn's warnOnce adapter.
+func TestSpawnSandboxNoteOncePerKind(t *testing.T) {
+	f := newSpawnFixture(t, freshSpawnRules())
+	configureSpawnFixture(t, &f)
+	if _, err := fakecli.Install(t, f.bin, "agy", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"grok", "agy"} {
+		role := "worker"
+		if kind != "grok" {
+			role = "other"
+		}
+		if err := os.WriteFile(filepath.Join(f.root, "roles", role+".md"), []byte("---\nkind: "+kind+"\n---\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, tc := range []struct {
+		role, name, kind string
+		want             int
+	}{
+		{"worker", "first", "grok", 1},
+		{"worker", "second", "grok", 0},
+		{"other", "third", "agy", 1},
+	} {
+		note := tc.kind + " has no separate sandbox switch; approvals=unsandboxed runs as full"
+		before := strings.Count(frictionLog(t, f), note)
+		code, out, stderr, _ := runCmdSpawn(t, f, []string{tc.role, "--name", tc.name, "--fresh", "--approvals", "unsandboxed"})
+		assertSpawnReady(t, code, out, stderr)
+		if n := strings.Count(stderr, note); n != tc.want {
+			t.Fatalf("spawn %d: stderr note count=%d want=%d stderr=%q", i, n, tc.want, stderr)
+		}
+		if n := strings.Count(frictionLog(t, f), note) - before; n != tc.want {
+			t.Fatalf("spawn %d: friction note count=%d want=%d friction=%q", i, n, tc.want, frictionLog(t, f))
+		}
+	}
+}
+
 func TestReuseUnsandboxedApprovalRank(t *testing.T) {
 	for _, role := range []string{"implementer", "scouter"} {
 		for _, tc := range []struct {
