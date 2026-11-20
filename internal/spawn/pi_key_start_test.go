@@ -115,7 +115,7 @@ func TestHcPiKeyStartup(t *testing.T) {
 					}
 				}
 			} else {
-				if exit != nil || !strings.Contains(out.String(), `"status": "ready"`) {
+				if exit != nil || !spawnJSONHasField(t, out.String(), `"status": "ready"`) {
 					t.Fatalf("exit=%+v out=%q stderr=%q", exit, out, stderr)
 				}
 				if killAt >= 0 || rmAt >= 0 {

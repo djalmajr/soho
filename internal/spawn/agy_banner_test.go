@@ -96,13 +96,13 @@ func TestSpawnHcAgyPromoBanner(t *testing.T) {
 				t.Fatalf("exit=%d want=%d stderr=%s out=%s", code, tc.wantExit, stderr, out)
 			}
 			if tc.wantExit == 7 {
-				if !strings.Contains(out.String(), `"status": "blocked_at_startup"`) {
+				if !spawnJSONHasField(t, out.String(), `"status": "blocked_at_startup"`) {
 					t.Fatalf("missing blocked status: %s", out)
 				}
 				if !strings.Contains(out.String(), tc.screen) {
 					t.Fatalf("screen not printed: %s", out)
 				}
-			} else if !strings.Contains(out.String(), `"status": "ready"`) {
+			} else if !spawnJSONHasField(t, out.String(), `"status": "ready"`) {
 				t.Fatalf("not ready: %s", out)
 			}
 			if got := strings.Contains(stderr.String(), bannerLine); got != tc.wantBannerLine {

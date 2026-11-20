@@ -45,7 +45,7 @@ func TestSpawnCursorMCPApprovalBlocked(t *testing.T) {
 			f := newSpawnFixture(t, append(cursorFreshRules(screen, false), freshSpawnRules()...))
 			configureSpawnFixture(t, &f)
 			code, out, errText, calls := runCmdSpawn(t, f, []string{"implementer", "--kind", "cursor"})
-			if code != 7 || !strings.Contains(out, `"status": "blocked_at_startup"`) || !strings.Contains(errText, "approval of MCP servers") {
+			if code != 7 || !spawnJSONHasField(t, out, `"status": "blocked_at_startup"`) || !strings.Contains(errText, "approval of MCP servers") {
 				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, errText)
 			}
 			assertCursorSpawnEvidence(t, out, "idle", "mcp-approval")
@@ -59,7 +59,7 @@ func TestSpawnCursorMCPApprovalHistoryReady(t *testing.T) {
 	f := newSpawnFixture(t, append(cursorFreshRules(screen, false), freshSpawnRules()...))
 	configureSpawnFixture(t, &f)
 	code, out, errText, _ := runCmdSpawn(t, f, []string{"implementer", "--kind", "cursor"})
-	if code != 0 || !strings.Contains(out, `"status": "ready"`) {
+	if code != 0 || !spawnJSONHasField(t, out, `"status": "ready"`) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, errText)
 	}
 }
@@ -127,7 +127,7 @@ func assertCursorSpawnEvidence(t *testing.T, stdout, wantState, wantReason strin
 		`"reason": "` + wantReason + `"`,
 		`"source": "visible"`,
 	} {
-		if !strings.Contains(stdout, want) {
+		if !spawnJSONHasField(t, stdout, want) {
 			t.Fatalf("spawn JSON lacks %s:\n%s", want, stdout)
 		}
 	}
@@ -146,7 +146,7 @@ func TestSpawnCursorWindowsTrustDialogBlocksAtStartup(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"status": "blocked_at_startup"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "blocked_at_startup"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	assertCursorSpawnEvidence(t, stdout, "idle", "workspace-trust")
@@ -177,7 +177,7 @@ func TestSpawnCursorWindowsLaunchOnlyBlocksAtStartup(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"status": "blocked_at_startup"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "blocked_at_startup"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	assertCursorSpawnEvidence(t, stdout, "idle", "launch-only")
@@ -239,7 +239,7 @@ func TestSpawnCursorWindowsDelayedDrawBecomesReady(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"status": "ready"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	assertCursorSpawnEvidence(t, stdout, "idle", "visible-agent-output")
@@ -262,7 +262,7 @@ func TestSpawnCursorWindowsNormalVisibleUIReady(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"status": "ready"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	assertCursorSpawnEvidence(t, stdout, "idle", "visible-agent-output")
@@ -284,7 +284,7 @@ func TestSpawnCursorNonWindowsTrustDialogBlocksAtStartup(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"status": "blocked_at_startup"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "blocked_at_startup"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	assertCursorSpawnEvidence(t, stdout, "idle", "workspace-trust")
@@ -307,7 +307,7 @@ func TestSpawnNonCursorWindowsGateOff(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"status": "ready"`) {
+	if !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	if strings.Contains(stdout, "startup_evidence") {
@@ -351,7 +351,7 @@ func TestSpawnCursorWindowsReuseTrustDialogBlocks(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"status": "blocked_at_startup"`) {
+	if !spawnJSONHasField(t, stdout, `"reused": true`) || !spawnJSONHasField(t, stdout, `"status": "blocked_at_startup"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	assertCursorSpawnEvidence(t, stdout, "idle", "workspace-trust")
@@ -374,7 +374,7 @@ func TestSpawnCursorWindowsReuseEmptyScreenBlocks(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"status": "blocked_at_startup"`) {
+	if !spawnJSONHasField(t, stdout, `"reused": true`) || !spawnJSONHasField(t, stdout, `"status": "blocked_at_startup"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	assertCursorSpawnEvidence(t, stdout, "idle", "empty-screen")
@@ -389,7 +389,7 @@ func TestSpawnCursorWindowsReuseNormalScreenReady(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"status": "ready"`) {
+	if !spawnJSONHasField(t, stdout, `"reused": true`) || !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	assertNoStart(t, calls)
@@ -406,7 +406,7 @@ func TestSpawnCursorNonWindowsReuseDialogBlocksAtStartup(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"reused": true`) || !strings.Contains(stdout, `"status": "blocked_at_startup"`) {
+	if !spawnJSONHasField(t, stdout, `"reused": true`) || !spawnJSONHasField(t, stdout, `"status": "blocked_at_startup"`) {
 		t.Fatalf("spawn JSON=%q", stdout)
 	}
 	assertCursorSpawnEvidence(t, stdout, "idle", "workspace-trust")
@@ -431,7 +431,7 @@ func TestSpawnCursorWindowsWrappedLaunchAndNarrowTrust(t *testing.T) {
 			configureSpawnFixture(t, &f)
 			f.env["SOHO_WAIT_POLL_MS"] = "50"
 			code, out, errText, calls := runCmdSpawn(t, f, []string{"implementer", "--kind", "cursor"})
-			if code != 7 || !strings.Contains(out, `"status": "blocked_at_startup"`) {
+			if code != 7 || !spawnJSONHasField(t, out, `"status": "blocked_at_startup"`) {
 				t.Fatalf("code=%d out=%s err=%s", code, out, errText)
 			}
 			assertCursorSpawnEvidence(t, out, "idle", tc.reason)
@@ -464,7 +464,7 @@ func TestSpawnCursorWindowsReuseClippedTrustRefuses(t *testing.T) {
 	}
 	f, _ := cursorReuseFixture(t, string(b), false)
 	code, out, errText, calls := runCmdSpawn(t, f, []string{"implementer", "--kind", "cursor"})
-	if code != 7 || !strings.Contains(out, `"reused": true`) {
+	if code != 7 || !spawnJSONHasField(t, out, `"reused": true`) {
 		t.Fatalf("code=%d out=%s err=%s", code, out, errText)
 	}
 	assertCursorSpawnEvidence(t, out, "idle", "screen-incomplete")

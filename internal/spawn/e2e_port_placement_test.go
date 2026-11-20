@@ -63,7 +63,7 @@ func TestE2EPortPlacementBeforeReservation(t *testing.T) {
 					t.Logf("placement=%s exit=%d probes=%d message=%q; zero pane creation/start calls", placement, code, len(probes), message)
 				} else {
 					code, out, stderr, calls := runCmdSpawn(t, f, args)
-					if code != 0 || len(probes) != 1 || probes[0] != 47000 || !strings.Contains(out, `"e2e_port": "47000"`) {
+					if code != 0 || len(probes) != 1 || probes[0] != 47000 || !spawnJSONHasField(t, out, `"e2e_port": "47000"`) {
 						t.Fatalf("code=%d out=%s stderr=%s probes=%v", code, out, stderr, probes)
 					}
 					assertE2ECreatePorts(t, calls, "47000")

@@ -55,7 +55,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		if len(renames) != 1 || strings.Join(renames[0].Argv, " ") != "agent rename w0test:p0a review" {
 			t.Fatalf("rename calls=%#v", renames)
 		}
-		if !strings.Contains(stdout, `"name": "review"`) || !strings.Contains(stdout, `"reused": true`) {
+		if !spawnJSONHasField(t, stdout, `"name": "review"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
 		roster, err := os.ReadFile(filepath.Join(f.state, "ws", "agents.tsv"))
@@ -93,7 +93,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		if renameCalls(calls) != 1 {
 			t.Fatalf("rename calls=%#v", calls)
 		}
-		if !strings.Contains(stdout, `"name": "review-2"`) {
+		if !spawnJSONHasField(t, stdout, `"name": "review-2"`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
 		roster, err := os.ReadFile(filepath.Join(f.state, "ws", "agents.tsv"))
@@ -124,7 +124,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		if renameCalls(calls) != 0 {
 			t.Fatalf("unexpected rename calls: %#v", calls)
 		}
-		if !strings.Contains(stdout, `"name": "review-2"`) {
+		if !spawnJSONHasField(t, stdout, `"name": "review-2"`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
 		want := "soho: warning: reusing idle lane 'review' worker 'review-2' as reviewer; existing session context is retained"
@@ -256,7 +256,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		if renameCalls(calls) != 1 {
 			t.Fatalf("rename calls=%#v", calls)
 		}
-		if !strings.Contains(stdout, `"name": "review"`) {
+		if !spawnJSONHasField(t, stdout, `"name": "review"`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
 		if strings.Contains(stderr, "could not move") {
@@ -336,7 +336,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
-		if !strings.Contains(stdout, `"name": "review"`) {
+		if !spawnJSONHasField(t, stdout, `"name": "review"`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
 		if !strings.Contains(stderr, "spawn: could not move 'last-report-review-2' to the name 'review':") {

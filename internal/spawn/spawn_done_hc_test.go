@@ -42,7 +42,7 @@ func TestHcDoneReviewerSpawnReuse(t *testing.T) {
 	}
 	conn := newFakeSpawnRPCConn()
 	exit, out, stderr, calls := spawnHcExitWithConn(t, bin, []string{"reviewer", "--model", "gpt-5", "--effort", "high", "--approvals", "full"}, ctx, env, cwd, conn)
-	if exit != nil || !strings.Contains(out.String(), `"reused": true`) || !strings.Contains(out.String(), `"name": "review"`) || conn.getConnectCount() != 0 {
+	if exit != nil || !spawnJSONHasField(t, out.String(), `"reused": true`) || !spawnJSONHasField(t, out.String(), `"name": "review"`) || conn.getConnectCount() != 0 {
 		t.Fatalf("exit=%+v out=%s stderr=%s calls=%#v connects=%d", exit, out.String(), stderr.String(), calls, conn.getConnectCount())
 	}
 	assertHcOnlyReads(t, bin, calls)

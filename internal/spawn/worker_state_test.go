@@ -97,7 +97,7 @@ func TestSpawnWorkerState(t *testing.T) {
 			if creations != wantCreation {
 				t.Fatalf("mode=%s creations=%d want=%d out=%s calls=%v", mode, creations, wantCreation, out, calls)
 			}
-			if mode == "reuse" && !strings.Contains(out, `"reused": true`) {
+			if mode == "reuse" && !spawnJSONHasField(t, out, `"reused": true`) {
 				t.Fatalf("did not reuse: %s", out)
 			}
 			if f.env.Get("SOHO_STATE_DIR") != originalState || f.env.Get("SOHO_REGISTRY_DIR") != "" {

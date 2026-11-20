@@ -39,7 +39,7 @@ func TestSpawnCodexUpdatePrompt(t *testing.T) {
 			if tc.wantCode == 7 {
 				status = "blocked_at_startup"
 			}
-			if code != tc.wantCode || !strings.Contains(out, `"status": "`+status+`"`) {
+			if code != tc.wantCode || !spawnJSONHasField(t, out, `"status": "`+status+`"`) {
 				t.Fatalf("exit=%d out=%q stderr=%q", code, out, stderr)
 			}
 			want := []string{}

@@ -120,7 +120,7 @@ func TestReopenKeepsWorkingWhenTheWorkerKindIsNotInConflictWithTheLane(t *testin
 				t.Fatalf("exit=%d stdout=%q stderr=%q", run.code, run.stdout, run.stderr)
 			}
 			for _, want := range []string{`"name": "worker"`, `"kind": "grok"`, `"created_pane": true`} {
-				if !strings.Contains(run.stdout, want) {
+				if !spawnJSONHasFieldCLI(t, run.stdout, want) {
 					t.Fatalf("spawn JSON missing %s: %s", want, run.stdout)
 				}
 			}

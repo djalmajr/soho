@@ -456,7 +456,7 @@ func TestSpawnHelperJavaScriptCases(t *testing.T) {
 		if !strings.Contains(string(data), "worker\tp-worker\tgrok\timplementer") || !strings.Contains(string(data), "scouter,implementer") || !strings.Contains(string(data), "grok-4.7\tfull") {
 			t.Fatalf("roster=%q", data)
 		}
-		if !strings.Contains(output.String(), `"previous_role": "scouter"`) || !strings.Contains(output.String(), `"reused": true`) {
+		if !spawnJSONHasField(t, output.String(), `"previous_role": "scouter"`) || !spawnJSONHasField(t, output.String(), `"reused": true`) {
 			t.Fatalf("JSON=%q", output.String())
 		}
 	})
@@ -707,7 +707,7 @@ func TestCmdSpawnJavaScriptCases(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		if !strings.Contains(stdout, `"status": "ready"`) {
+		if !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 			t.Fatalf("stdout=%q", stdout)
 		}
 		var started bool
@@ -873,7 +873,7 @@ func TestSpawnNameDiffersFromBase(t *testing.T) {
 		if strings.Contains(stdout, line) {
 			t.Fatalf("the line leaked to stdout: %q", stdout)
 		}
-		if !strings.Contains(stdout, `"name": "build-2"`) {
+		if !spawnJSONHasField(t, stdout, `"name": "build-2"`) {
 			t.Fatalf("spawn JSON=%q", stdout)
 		}
 	})
@@ -887,7 +887,7 @@ func TestSpawnNameDiffersFromBase(t *testing.T) {
 		if strings.Contains(stderr, "the new worker is") {
 			t.Fatalf("stderr=%q", stderr)
 		}
-		if !strings.Contains(stdout, `"name": "build"`) {
+		if !spawnJSONHasField(t, stdout, `"name": "build"`) {
 			t.Fatalf("spawn JSON=%q", stdout)
 		}
 	})
@@ -904,7 +904,7 @@ func TestSpawnNameDiffersFromBase(t *testing.T) {
 		if strings.Contains(stderr, "the new worker is") {
 			t.Fatalf("the base warning leaked on the --name path: stderr=%q", stderr)
 		}
-		if !strings.Contains(stdout, `"name": "build-2"`) {
+		if !spawnJSONHasField(t, stdout, `"name": "build-2"`) {
 			t.Fatalf("spawn JSON=%q", stdout)
 		}
 	})
@@ -925,7 +925,7 @@ func Test_init_sub_orchestrator_spawn_lazy_rename_keeps_name(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"created_pane": true`) {
+	if !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 		t.Fatalf("the spawn did not open the worker:\n%s", stdout)
 	}
 	want := "soho: spawn: this pane is 'sub-orch' in the roster (a sub-orchestrator opened by another orchestrator); keeping its name\n"

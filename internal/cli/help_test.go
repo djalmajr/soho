@@ -13,7 +13,8 @@ func TestCommandHelpFirstPositionOnly(t *testing.T) {
 		"                      [--effort low|medium|high|xhigh|max] [--model M]\n" +
 		"                      [--approvals ask|edits|auto|full|unsandboxed] [--mcp inherit|none|a,b] [--reuse|--fresh]\n" +
 		"                      [--env-from NAME]... [--tab-label TEXT] [--force] [-- <native agent args>]\n" +
-		"    --env-from NAME  Copy an explicit executor variable to a fresh native HC Pi child (repeatable; maximum 16 distinct names). Spawn backend diagnostics and printed spawn metadata replace exact handed-off values with [redacted:NAME] (minimum 4 bytes). Split, URL-encoded and base64 forms are not protected. Core admission and pressure warnings are not filtered, and the terminal address is stored in the roster as the backend returned it. Core retains overrides; this is not a vault; forward NONSECRET metadata, never API keys.\n"
+		"    --env-from NAME  Copy an explicit executor variable to a fresh native HC Pi child (repeatable; maximum 16 distinct names). Spawn backend diagnostics and printed spawn metadata replace exact handed-off values with [redacted:NAME] (minimum 4 bytes). Split, URL-encoded and base64 forms are not protected. Core admission and pressure warnings are not filtered, and the terminal address is stored in the roster as the backend returned it. Core retains overrides; this is not a vault; forward NONSECRET metadata, never API keys.\n" +
+		"                                             # prints its result as one JSON line on stdout (spawn … | tail -1 returns the whole object)\n"
 	for _, flag := range []string{"--help", "-h"} {
 		t.Run("spawn "+flag, func(t *testing.T) {
 			code, out, errOut := runIn(t, []string{"spawn", flag}, env, cwd)

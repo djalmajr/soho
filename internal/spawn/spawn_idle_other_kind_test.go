@@ -66,7 +66,7 @@ func TestSpawnWarnsOnceAboutIdleOtherKindWorkerOnTheLane(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q; the spawn must proceed", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `"created_pane": true`) || !strings.Contains(stdout, `"kind": "codex"`) {
+	if !spawnJSONHasField(t, stdout, `"created_pane": true`) || !spawnJSONHasField(t, stdout, `"kind": "codex"`) {
 		t.Fatalf("the spawn did not open the new codex worker:\n%s", stdout)
 	}
 	want := "soho: warning: lane 'build' still holds idle 'oldgrok' (grok), not the lane's kind 'codex'; release it with: soho release oldgrok --close\n"
@@ -96,7 +96,7 @@ func TestSpawnWarnsOnceAboutIdleOtherKindWorkerOnTheLane(t *testing.T) {
 func TestSpawnWarnsAboutDoneOtherKindWorker(t *testing.T) {
 	f := m1Fixture(t, "grok", "done")
 	code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--fresh"})
-	if code != 0 || !strings.Contains(stdout, `"created_pane": true`) {
+	if code != 0 || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q; the spawn must proceed", code, stdout, stderr)
 	}
 	want := "soho: warning: lane 'build' still holds idle 'oldgrok' (grok), not the lane's kind 'codex'; release it with: soho release oldgrok --close\n"
@@ -110,7 +110,7 @@ func TestSpawnWarnsAboutDoneOtherKindWorker(t *testing.T) {
 func TestSpawnDoesNotWarnAboutWorkingOtherKindWorker(t *testing.T) {
 	f := m1Fixture(t, "grok", "working")
 	code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--fresh"})
-	if code != 0 || !strings.Contains(stdout, `"created_pane": true`) {
+	if code != 0 || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q; the spawn must proceed", code, stdout, stderr)
 	}
 	if strings.Contains(stderr, "still holds idle") {
@@ -122,7 +122,7 @@ func TestSpawnDoesNotWarnAboutWorkingOtherKindWorker(t *testing.T) {
 func TestSpawnDoesNotWarnAboutIdleSameKindWorker(t *testing.T) {
 	f := m1Fixture(t, "codex", "idle")
 	code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--fresh"})
-	if code != 0 || !strings.Contains(stdout, `"created_pane": true`) {
+	if code != 0 || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q; the spawn must proceed", code, stdout, stderr)
 	}
 	if strings.Contains(stderr, "still holds idle") {
@@ -138,7 +138,7 @@ func TestSpawnWarnsOncePerIdleOtherKindWorker(t *testing.T) {
 	f := m1Fixture(t, "grok", "idle", "oldgrok2")
 	f.ctx.Entries["lane_build_panes"] = core.ConfigEntry{Value: "3", Source: "project"}
 	code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--fresh"})
-	if code != 0 || !strings.Contains(stdout, `"created_pane": true`) {
+	if code != 0 || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q; the spawn must proceed", code, stdout, stderr)
 	}
 	want1 := "soho: warning: lane 'build' still holds idle 'oldgrok' (grok), not the lane's kind 'codex'; release it with: soho release oldgrok --close"

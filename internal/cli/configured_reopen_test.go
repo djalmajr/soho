@@ -264,7 +264,7 @@ func TestConfiguredReopenPositive(t *testing.T) {
 				args = append(args, "--force")
 			}
 			code, msg, out, stderr, calls := configuredReopenRun(t, f, args...)
-			if code != 0 || msg != "" || !strings.Contains(out, `"status": "ready"`) || !strings.Contains(out, `"launch_profile": "opencode-primary-v2"`) {
+			if code != 0 || msg != "" || !spawnJSONHasFieldCLI(t, out, `"status": "ready"`) || !spawnJSONHasFieldCLI(t, out, `"launch_profile": "opencode-primary-v2"`) {
 				t.Fatalf("exit=%d message=%q out=%q stderr=%q", code, msg, out, stderr)
 			}
 			closed, started, probes := -1, 0, 0

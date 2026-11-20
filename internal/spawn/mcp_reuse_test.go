@@ -2,7 +2,6 @@ package spawn
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
@@ -30,7 +29,7 @@ func TestSpawnLaneReuseRespectsMcp(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		if !strings.Contains(stdout, `"created_pane": true`) || strings.Contains(stdout, `"reused": true`) {
+		if !spawnJSONHasField(t, stdout, `"created_pane": true`) || spawnJSONHasField(t, stdout, `"reused": true`) {
 			t.Fatalf("the idle opened with another MCP was reused: %s", stdout)
 		}
 	})
@@ -63,7 +62,7 @@ func TestSpawnLaneReuseRespectsMcp(t *testing.T) {
 			f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("old")}, "1")
 			f.roster(t, mcpLaneRow("old", "grok-4.7", f.cwd, tc.mcp))
 			code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--mcp", "none"})
-			if code != 0 || !strings.Contains(stdout, `"name": "old"`) || !strings.Contains(stdout, `"reused": true`) {
+			if code != 0 || !spawnJSONHasField(t, stdout, `"name": "old"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 				t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 			}
 		})
@@ -73,7 +72,7 @@ func TestSpawnLaneReuseRespectsMcp(t *testing.T) {
 		f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("wrong"), idleHerdrRule("right")}, "2")
 		f.roster(t, mcpLaneRow("wrong", "grok-4.7", f.cwd, "inherit"), mcpLaneRow("right", "grok-4.7", f.cwd, "none"))
 		code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--mcp", "none"})
-		if code != 0 || !strings.Contains(stdout, `"name": "right"`) || !strings.Contains(stdout, `"reused": true`) {
+		if code != 0 || !spawnJSONHasField(t, stdout, `"name": "right"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 	})

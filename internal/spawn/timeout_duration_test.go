@@ -69,7 +69,7 @@ func TestSpawnTimeoutDurationUnits(t *testing.T) {
 		if strings.Contains(stderr.String(), "fakecli: no rule") {
 			t.Fatalf("fake Herdr call failed: %s", stderr.String())
 		}
-		if !strings.Contains(out.String(), `"status": "ready"`) {
+		if !spawnJSONHasField(t, out.String(), `"status": "ready"`) {
 			t.Fatalf("spawn output=%q; the spawn should proceed", out.String())
 		}
 		if strings.Contains(stderr.String(), "--timeout is in milliseconds") {

@@ -301,7 +301,7 @@ func TestSpawnTrustCwdHerdrBlockedFolderDialog(t *testing.T) {
 			}
 			f.env["SOHO_TRUST_CWD"] = mode
 			code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--kind", "codex", "--mcp", "inherit"})
-			if code != 7 || !strings.Contains(stdout, `"status": "blocked_at_startup"`) || !strings.Contains(stdout, "Trust this folder?") {
+			if code != 7 || !spawnJSONHasField(t, stdout, `"status": "blocked_at_startup"`) || !strings.Contains(stdout, "Trust this folder?") {
 				t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 			}
 			if keys := agentSendKeys(calls); len(keys) != 0 {

@@ -136,13 +136,13 @@ func TestReopenRunsReleaseSpawnAndRedispatchUnderHc(t *testing.T) {
 		t.Fatalf("the hc entry guard refused reopen: %q", errText)
 	}
 	for _, want := range []string{`"name": "worker"`, `"kind": "claude"`, `"created_pane": true`} {
-		if !strings.Contains(out, want) {
+		if !spawnJSONHasFieldCLI(t, out, want) {
 			t.Fatalf("spawn output=%q, missing %s", out, want)
 		}
 	}
-	dispatchAt := strings.Index(out, `"agent":"worker"`)
-	if dispatchAt <= strings.Index(out, `"created_pane": true`) {
-		t.Fatalf("the dispatch JSON did not follow the spawn JSON: %q", out)
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], `"created_pane":true`) || !strings.Contains(lines[1], `"agent":"worker"`) {
+		t.Fatalf("the dispatch JSON did not follow the one-line spawn JSON: %q", out)
 	}
 	want := "soho: reopen: 'worker' was a codex worker; its native args are not passed to claude\n"
 	if strings.Count(errText, want) != 1 {

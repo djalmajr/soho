@@ -365,7 +365,7 @@ func TestFixtureIsolation(t *testing.T) {
 				}
 				setReopenRules(t, f)
 				run := f.reopen(t, "worker", "--force")
-				if run.code != 0 || !strings.Contains(run.stdout, `"name": "worker"`) {
+				if run.code != 0 || !spawnJSONHasFieldCLI(t, run.stdout, `"name": "worker"`) {
 					t.Fatalf("isolated reopen: code=%d stdout=%q stderr=%q", run.code, run.stdout, run.stderr)
 				}
 			} else {

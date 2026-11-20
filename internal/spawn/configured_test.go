@@ -409,7 +409,7 @@ func TestConfiguredSpawnConsumer(t *testing.T) {
 						t.Fatalf("private public output: %q", public)
 					}
 				}
-				if outcome == "ready" && (!strings.Contains(out, `"status": "ready"`) || !strings.Contains(out, `"launch_profile": "`+kinds.OpenCodePrimaryProfile+`"`)) {
+				if outcome == "ready" && (!spawnJSONHasField(t, out, `"status": "ready"`) || !spawnJSONHasField(t, out, `"launch_profile": "`+kinds.OpenCodePrimaryProfile+`"`)) {
 					t.Fatalf("ready result: %q", out)
 				}
 				if !managed && out != "" {
@@ -657,7 +657,7 @@ func TestConfiguredSpawnLegacyConsumer(t *testing.T) {
 			f := configuredFixture(t, []fakecli.Rule{{Argv: []string{"pane", "send-text"}, ArgvPrefix: true}})
 			f.env["SOHO_OPENCODE_TUI_PROFILE"] = selector
 			code, out, stderr, calls := runCmdSpawn(t, f, configuredArgs("p-target"))
-			if code != 0 || !strings.Contains(out, `"status": "ready"`) {
+			if code != 0 || !spawnJSONHasField(t, out, `"status": "ready"`) {
 				t.Fatalf("exit=%d out=%q stderr=%q", code, out, stderr)
 			}
 			starts := 0

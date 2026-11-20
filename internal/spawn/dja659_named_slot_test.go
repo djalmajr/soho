@@ -79,10 +79,10 @@ func TestDJA659NamedSlotCreatesNewWorker(t *testing.T) {
 	if started, renamed := dja659AgentCalls(calls, "start"), dja659AgentCalls(calls, "rename"); started != 1 || renamed != 0 {
 		t.Fatalf("native create/start vs rename: started=%d renamed=%d calls=%#v", started, renamed, calls)
 	}
-	if !strings.Contains(stdout, `"name": "fresh"`) || !strings.Contains(stdout, `"created_pane": true`) || !strings.Contains(stdout, `"pane_id": "p-new"`) || !strings.Contains(stdout, `"status": "ready"`) {
+	if !spawnJSONHasField(t, stdout, `"name": "fresh"`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) || !spawnJSONHasField(t, stdout, `"pane_id": "p-new"`) || !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 		t.Fatalf("JSON=%q want the new worker fresh in the new pane p-new, ready", stdout)
 	}
-	if strings.Contains(stdout, `"reused": true`) {
+	if spawnJSONHasField(t, stdout, `"reused": true`) {
 		t.Fatalf("the compatible idle worker was reused instead of a new one: %q", stdout)
 	}
 	if strings.Contains(stderr, "renamed to 'fresh'") || strings.Contains(stderr, "reusing idle lane") {
@@ -116,7 +116,7 @@ func TestDJA659NamedSlotControls(t *testing.T) {
 		if renamed, started := dja659AgentCalls(calls, "rename"), dja659AgentCalls(calls, "start"); renamed != 0 || started != 0 {
 			t.Fatalf("native calls for the existing name: renamed=%d started=%d calls=%#v", renamed, started, calls)
 		}
-		if !strings.Contains(stdout, `"name": "fresh"`) || !strings.Contains(stdout, `"reused": true`) {
+		if !spawnJSONHasField(t, stdout, `"name": "fresh"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
 		if !strings.Contains(stderr, "reusing idle lane 'build' worker 'fresh' as worker; existing session context is retained") {
@@ -137,7 +137,7 @@ func TestDJA659NamedSlotControls(t *testing.T) {
 		if renamed, started := dja659AgentCalls(calls, "rename"), dja659AgentCalls(calls, "start"); renamed != 0 || started != 0 {
 			t.Fatalf("native calls for the omitted name: renamed=%d started=%d calls=%#v", renamed, started, calls)
 		}
-		if !strings.Contains(stdout, `"name": "old"`) || !strings.Contains(stdout, `"reused": true`) {
+		if !spawnJSONHasField(t, stdout, `"name": "old"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
 		if !strings.Contains(stderr, "reusing idle lane 'build' worker 'old' as worker; existing session context is retained") {
@@ -165,7 +165,7 @@ func TestDJA659NamedSlotFullCapacityWarning(t *testing.T) {
 	if renamed, started := dja659AgentCalls(calls, "rename"), dja659AgentCalls(calls, "start"); renamed != 1 || started != 0 {
 		t.Fatalf("native calls at full capacity: renamed=%d started=%d calls=%#v", renamed, started, calls)
 	}
-	if !strings.Contains(stdout, `"name": "fresh"`) || !strings.Contains(stdout, `"reused": true`) {
+	if !spawnJSONHasField(t, stdout, `"name": "fresh"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 		t.Fatalf("JSON=%q", stdout)
 	}
 	roster, err := os.ReadFile(filepath.Join(f.state, "ws", "agents.tsv"))
@@ -221,7 +221,7 @@ func TestDJA659NamedSlotCapControls(t *testing.T) {
 		if renamed, started := dja659AgentCalls(calls, "rename"), dja659AgentCalls(calls, "start"); renamed != 1 || started != 0 {
 			t.Fatalf("native calls with the lane full and global room: renamed=%d started=%d calls=%#v", renamed, started, calls)
 		}
-		if !strings.Contains(stdout, `"name": "fresh"`) || !strings.Contains(stdout, `"reused": true`) {
+		if !spawnJSONHasField(t, stdout, `"name": "fresh"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
 		if !strings.Contains(stderr, "renamed to 'fresh'") {
@@ -268,7 +268,7 @@ func TestDJA659NamedSlotCapControls(t *testing.T) {
 		if renamed, started := dja659AgentCalls(calls, "rename"), dja659AgentCalls(calls, "start"); renamed != 1 || started != 0 {
 			t.Fatalf("native calls with the global cap full and lane room: renamed=%d started=%d calls=%#v", renamed, started, calls)
 		}
-		if !strings.Contains(stdout, `"name": "fresh"`) || !strings.Contains(stdout, `"reused": true`) {
+		if !spawnJSONHasField(t, stdout, `"name": "fresh"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
 		if !strings.Contains(stderr, "renamed to 'fresh'") {

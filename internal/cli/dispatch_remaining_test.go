@@ -167,7 +167,7 @@ func TestDispatchRemainingParityPortedCases(t *testing.T) {
 		h := newTM3bHarness(t, tm3bFullBrief())
 		prepareRunHarness(t, &h)
 		code, out, stderr := runForTest(t, h, "--no-wait", "--pane", "w0test:p0b")
-		if code != 0 || !strings.Contains(out, `"status": "ready"`) || !strings.Contains(out, `"wait_status":"submitted"`) || !strings.Contains(out, `"agent":"implementer"`) {
+		if code != 0 || !spawnJSONHasFieldCLI(t, out, `"status": "ready"`) || !strings.Contains(out, `"wait_status":"submitted"`) || !strings.Contains(out, `"agent":"implementer"`) {
 			t.Fatalf("run code=%d out=%s stderr=%s", code, out, stderr)
 		}
 		lines := strings.Split(strings.TrimSpace(out), "\n")

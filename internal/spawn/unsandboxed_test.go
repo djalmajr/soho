@@ -211,7 +211,7 @@ func TestSpawnLaneUnsandboxedApprovalReuse(t *testing.T) {
 				if tc.alternative {
 					want = "stronger"
 				}
-				if !strings.Contains(out, `"reused": true`) || !strings.Contains(out, `"name": "`+want+`"`) {
+				if !spawnJSONHasField(t, out, `"reused": true`) || !spawnJSONHasField(t, out, `"name": "`+want+`"`) {
 					t.Fatalf("out=%s", out)
 				}
 			}

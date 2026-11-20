@@ -162,7 +162,7 @@ func TestReopenRedispatchSendsTheLastBriefAfterTheSpawnJSON(t *testing.T) {
 		t.Fatalf("stdout=%q, want the spawn JSON then the dispatch JSON", run.stdout)
 	}
 	spawnOut, dispatchOut := run.stdout[:idx], strings.TrimSpace(run.stdout[idx+1:])
-	if !strings.Contains(spawnOut, `"name": "worker"`) || !strings.Contains(spawnOut, `"created_pane": true`) {
+	if !spawnJSONHasFieldCLI(t, spawnOut, `"name": "worker"`) || !spawnJSONHasFieldCLI(t, spawnOut, `"created_pane": true`) {
 		t.Fatalf("spawn JSON=%q", spawnOut)
 	}
 	if strings.Contains(dispatchOut, "\n") || !strings.Contains(dispatchOut, `"agent":"worker"`) {

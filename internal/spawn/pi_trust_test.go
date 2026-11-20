@@ -74,7 +74,7 @@ func TestSpawnHcPiTrustDialog(t *testing.T) {
 				t.Fatalf("exit=%d want=%d stderr=%s out=%s", code, tc.exit, stderr, out)
 			}
 			if tc.exit == 7 {
-				if !strings.Contains(out.String(), `"status": "blocked_at_startup"`) || !strings.Contains(out.String(), piTrustScreen) {
+				if !spawnJSONHasField(t, out.String(), `"status": "blocked_at_startup"`) || !strings.Contains(out.String(), piTrustScreen) {
 					t.Fatalf("missing status or screen: %s", out)
 				}
 				warning := fmt.Sprintf("spawn: pi 'reviewer' is waiting at its \"Trust project folder?\" dialog for %s; answer it in that terminal, or pass --approve after -- to trust project-local files for this run", cwd)
@@ -87,7 +87,7 @@ func TestSpawnHcPiTrustDialog(t *testing.T) {
 						t.Fatalf("unexpected call: %v", call.Argv)
 					}
 				}
-			} else if !strings.Contains(out.String(), `"status": "ready"`) {
+			} else if !spawnJSONHasField(t, out.String(), `"status": "ready"`) {
 				t.Fatalf("not ready: %s", out)
 			}
 		})
