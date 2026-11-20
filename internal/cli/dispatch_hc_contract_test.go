@@ -96,7 +96,7 @@ func TestDispatchHcAmendBusyThenWaitAndNewTask(t *testing.T) {
 		defer func() { platform.Stdout, platform.Stderr = oldOut, oldErr }()
 		return Run([]string{"wait", "worker", "--timeout", "5s"}, f.env)
 	}()
-	if waitCode != 0 || !strings.Contains(waitOut.String(), `"status":"done"`) || !strings.Contains(waitOut.String(), firstReport) || strings.Contains(waitOut.String(), "not-received") || strings.Contains(waitOut.String(), "submission-failed") || strings.Contains(waitErr.String(), "the report on disk belongs to the previous task") {
+	if waitCode != 0 || !strings.Contains(waitOut.String(), `"status":"done"`) || waitReportField(waitOut.String()) != firstReport || strings.Contains(waitOut.String(), "not-received") || strings.Contains(waitOut.String(), "submission-failed") || strings.Contains(waitErr.String(), "the report on disk belongs to the previous task") {
 		t.Fatalf("wait exit=%d out=%q stderr=%q", waitCode, waitOut.String(), waitErr.String())
 	}
 	if _, err := os.Stat(filepath.Join(f.sd, "wait", "worker.submit-failed")); !os.IsNotExist(err) {
