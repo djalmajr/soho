@@ -15,6 +15,9 @@ const (
 	EnvInstallDir = "SOHO_INSTALL_DIR"
 	// EnvReleaseBase overrides the release download base URL.
 	EnvReleaseBase = "SOHO_RELEASE_BASE"
+	// EnvReleasesAPI overrides the release list the channel resolver reads
+	// (tests point it at an httptest server).
+	EnvReleasesAPI = "SOHO_RELEASES_API"
 )
 
 // DefaultInstallDir resolves the install directory when no explicit --dir is

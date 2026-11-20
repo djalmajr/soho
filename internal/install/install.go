@@ -444,6 +444,14 @@ func installDest(dir, baseName, osName string) string {
 	return filepath.Join(dir, baseName)
 }
 
+// BinaryName is the base name of the installed binary on the running
+// platform (soho, or soho.exe on Windows): the name install.Run writes into
+// its install directory, and the only running executable a self-update may
+// replace.
+func BinaryName() string {
+	return filepath.Base(installDest("", binaryBaseName, runtime.GOOS))
+}
+
 // normalizeOS applies the host default and the supported-platform rule.
 func normalizeOS(osName string) (string, error) {
 	if osName == "" {
@@ -517,6 +525,11 @@ func normalizeReleaseBase(base string) (string, error) {
 // versionChars is the release character set the old install.sh accepted:
 // v, digits, letters, dot, underscore, and dash.
 const versionChars = "v0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-"
+
+// ValidateVersion is the release tag rule the channel resolver
+// (internal/update) applies to a tag read from the network before it is used
+// in a /download/ URL. It is the same rule Run applies to --version.
+func ValidateVersion(version string) error { return validateVersion(version) }
 
 // validateVersion keeps the old tag rule: it must begin with v and use
 // only release characters, and it must not contain ".." so a tag can never
