@@ -151,15 +151,41 @@ func ItemWarnings(agent string, partial, envCount int, header *reportscan.Review
 }
 
 // TestLayerWarnings builds the warnings of checkTestLayers in that check's
-// order. missingSection is already gated by the role and VALIDATION.md.
+// order. A brief with no declared list keeps today's rule: every non-pass
+// entry warns.
 func TestLayerWarnings(agent string, layers reportscan.TestLayersResult, validation string, hasValidation, missingSection bool) []ReportWarning {
+	return testLayerWarnings(agent, layers, nil, false, validation, hasValidation, missingSection)
+}
+
+// TestLayerWarningsWithDeclared applies the brief's declared list: a NOT RUN
+// entry of a layer the brief does not declare is not a non-pass warning. FAIL
+// and BLOCKED always warn, whatever the brief says, and the published
+// test_layers counts never change. Names are compared the way layerName
+// renders them for the warning.
+func TestLayerWarningsWithDeclared(agent string, layers reportscan.TestLayersResult, declared []string, validation string, hasValidation, missingSection bool) []ReportWarning {
+	return testLayerWarnings(agent, layers, declared, true, validation, hasValidation, missingSection)
+}
+
+func testLayerWarnings(agent string, layers reportscan.TestLayersResult, declared []string, filter bool, validation string, hasValidation, missingSection bool) []ReportWarning {
 	out := []ReportWarning{}
-	if layers.Found && len(layers.NonPass) > 0 {
-		names := make([]string, len(layers.NonPass))
-		for i, entry := range layers.NonPass {
-			names[i] = layerName(entry.Name) + " " + entry.Result
+	if layers.Found {
+		nonPass := layers.NonPass
+		if filter {
+			nonPass = make([]reportscan.LayerResult, 0, len(layers.NonPass))
+			for _, entry := range layers.NonPass {
+				if entry.Result == "NOT RUN" && !declaredLayerName(declared, entry.Name) {
+					continue
+				}
+				nonPass = append(nonPass, entry)
+			}
 		}
-		out = append(out, ReportWarning{WarningTestLayersNonPass, fmt.Sprintf("report of '%s' lists %d test layer(s) that did not pass (%s): read them before commit, push or release", agent, len(layers.NonPass), strings.Join(names, ", "))})
+		if len(nonPass) > 0 {
+			names := make([]string, len(nonPass))
+			for i, entry := range nonPass {
+				names[i] = layerName(entry.Name) + " " + entry.Result
+			}
+			out = append(out, ReportWarning{WarningTestLayersNonPass, fmt.Sprintf("report of '%s' lists %d test layer(s) that did not pass (%s): read them before commit, push or release", agent, len(nonPass), strings.Join(names, ", "))})
+		}
 	}
 	if layers.Found && layers.Unmarked > 0 {
 		reason := ""
@@ -346,8 +372,13 @@ func AnalyzeReport(ctx ReportWarningContext) ReportAnalysis {
 	out.Missing, out.Unknown = []int{}, []int{}
 
 	out.Warnings = append(out.Warnings, ItemWarnings(ctx.Agent, out.Partial, out.EnvCount, out.Header, ctx.ReviewRole)...)
-	out.Warnings = append(out.Warnings, TestLayerWarnings(ctx.Agent, out.Layers, out.Validation, out.HasValidation,
-		!out.Layers.Found && missingSectionWarns(ctx.Role, testLayersRoot(ctx.StateDir, ctx.Report)))...)
+	declaredLayers := declaredTestLayersForReport(ctx.StateDir, ctx.Report)
+	missingSection := !out.Layers.Found && missingSectionWarns(ctx.Role, testLayersRoot(ctx.StateDir, ctx.Report))
+	warnings := TestLayerWarnings(ctx.Agent, out.Layers, out.Validation, out.HasValidation, missingSection)
+	if len(declaredLayers) > 0 {
+		warnings = TestLayerWarningsWithDeclared(ctx.Agent, out.Layers, declaredLayers, out.Validation, out.HasValidation, missingSection)
+	}
+	out.Warnings = append(out.Warnings, warnings...)
 	if out.FindingMarks != nil {
 		out.Warnings = append(out.Warnings, FindingMarkWarnings(ctx.Agent, out.FindingMarks.Unmarked)...)
 	}

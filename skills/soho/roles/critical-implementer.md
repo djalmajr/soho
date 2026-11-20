@@ -96,6 +96,8 @@ When the brief declares `Reference:`, include a `## Reference parity` section wi
 
 When the project has a `VALIDATION.md`, the report carries a `## Test layers` section with one line per layer the file declares, in the form `- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a`, with `: <reason>` (or ` — <reason>` or ` – <reason>`) after FAIL, NOT RUN and BLOCKED, and an optional note after PASS or n/a using the same separators. A layer the brief reserves to the orchestrator (the app run of a `UI lifecycle` section, for example) is `n/a: reserved to the orchestrator` with the brief section that reserves it, not `NOT RUN`: `NOT RUN` is for a layer you should have run and did not. A layer line takes no item state: `- unit: [done] PASS` is a line without a result, so item states (`[done]`, `[partial]`, …) stay on the items, not on the layers; and a layer the worker did not run is `NOT RUN`, never `PASS`. The `wait` warns when a layer did not pass, a section line has no result, or the section is missing from a report of a role that declares layers — it only warns: it never blocks and never runs anything.
 
+A layer the slice does not touch is `n/a: <why>`, never `NOT RUN`: with `Test layers: unit, mutation` in the brief, write `- e2e: n/a: no browser in this slice` when there is no UI layer.
+
 When the brief names a review with a `Review:` line, the report carries a `## Review responses` section with one line per finding of that review, in one of the exact forms `- F<n>: fixed`, `- F<n>: fixed: <note>`, or `- F<n>: declined: <reason>` — silence is not an answer, `fixed` only after the proof ran, and `declined` with the reason. The `wait` counts the findings left without a response and warns; it only warns: it never blocks and never runs anything.
 </report>
 

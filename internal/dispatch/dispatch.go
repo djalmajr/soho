@@ -12,6 +12,7 @@ import (
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/wait"
 )
 
 const standingRules = "- Only you write this report, once all of the brief is done, including any part you handed to subagents or background tasks; a subagent never writes it. Before you write it, wait until every subagent and background task you started has finished, and change no file after it. Report every item as it stands in the files, not as a subagent summarized it.\n" +
@@ -78,6 +79,9 @@ func ComposePrompt(roleFile, role, agent, briefRaw, report string, ctx *core.Con
 	if lang := core.Cfg(ctx, "report_language", "", env); lang != "" {
 		fmt.Fprintf(&out, "- Write the report in %s.\n", lang)
 	}
+	if declared := wait.DeclaredTestLayers(briefRaw); len(declared) != 0 {
+		fmt.Fprintf(&out, "- Test layers that apply: %s; mark the others n/a: <why>.\n", strings.Join(declared, ", "))
+	}
 	if cooperative == "" {
 		out.WriteString("- Write the report in one go, as the last action of your work; the orchestrator treats its existence as completion. Do not message the orchestrator to announce it (no `soho send`, no notice): a busy orchestrator leaves the sender waiting, and the report file is the only signal it needs.\n")
 	}
@@ -123,6 +127,9 @@ func ComposeAmendment(raw, report, original, role string, ctx *core.Config, env 
 	}
 	if lang := core.Cfg(ctx, "report_language", "", env); lang != "" {
 		fmt.Fprintf(&out, "- Write the report in %s.\n", lang)
+	}
+	if declared := wait.DeclaredTestLayers(raw); len(declared) != 0 {
+		fmt.Fprintf(&out, "- Test layers that apply: %s; mark the others n/a: <why>.\n", strings.Join(declared, ", "))
 	}
 	if cooperative == "" {
 		out.WriteString("- Write the report in one go, as the last action of your work; the orchestrator treats its existence as completion. Do not message the orchestrator to announce it (no `soho send`, no notice): a busy orchestrator leaves the sender waiting, and the report file is the only signal it needs.\n")

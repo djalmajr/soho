@@ -15,8 +15,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
+	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/gittree"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
@@ -43,7 +45,12 @@ func checkTestLayers(sd, agent, report, text string, line *jsonjs.Object, role s
 	if prev == report {
 		return
 	}
-	warnings := TestLayerWarnings(agent, layers, validation, hasValidation, !layers.Found && missingSectionWarns(role, testLayersRoot(sd, report)))
+	declared := declaredTestLayersForReport(sd, report)
+	missingSection := !layers.Found && missingSectionWarns(role, testLayersRoot(sd, report))
+	warnings := TestLayerWarnings(agent, layers, validation, hasValidation, missingSection)
+	if len(declared) > 0 {
+		warnings = TestLayerWarningsWithDeclared(agent, layers, declared, validation, hasValidation, missingSection)
+	}
 	for _, warning := range warnings {
 		sendWarning(warning.Message)
 	}
@@ -106,6 +113,75 @@ func unmarkedExample(line string) string {
 		runes = append(runes[:unmarkedExampleMax-1], '…')
 	}
 	return fmt.Sprintf("%q", string(runes))
+}
+
+// DeclaredTestLayers reads the first `Test layers: unit, mutation` line
+// outside a fenced block of a brief, with the same fence and first-line
+// rules BriefType uses for `Type:`. A missing line, an empty list or a line
+// inside a fenced example declares nothing; names keep the brief's spelling
+// and order, and empty comma items are dropped.
+func DeclaredTestLayers(body string) []string {
+	fence := ""
+	for _, raw := range strings.Split(body, "\n") {
+		if fence != "" {
+			if close := metricsFenceClose.FindStringSubmatch(raw); close != nil && close[1][0] == fence[0] && len(close[1]) >= len(fence) {
+				fence = ""
+			}
+			continue
+		}
+		if open := metricsFenceOpen.FindStringSubmatch(raw); open != nil {
+			fence = open[1]
+			continue
+		}
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, "Test layers:") {
+			continue
+		}
+		var names []string
+		for _, part := range strings.Split(strings.TrimSpace(strings.TrimPrefix(line, "Test layers:")), ",") {
+			if name := strings.TrimSpace(part); name != "" {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
+	return nil
+}
+
+// declaredTestLayersForReport reads the composed brief of a settled task
+// through the sidecar the owned-files audit uses: the sidecar's stem, first
+// its .brief.md then its .md. A task without a sidecar falls back to the
+// brief beside the report, as the metrics brief read does.
+func declaredTestLayersForReport(sd, report string) []string {
+	stems := []string{}
+	if sidecar := gittree.Sidecar(sd, report); sidecar != "" {
+		stems = append(stems, strings.TrimSuffix(sidecar, ".dispatch.json"))
+	}
+	base := strings.TrimSuffix(filepath.Base(report), ".md")
+	stems = append(stems, filepath.Join(filepath.Dir(report), base))
+	for _, stem := range stems {
+		for _, candidate := range []string{stem + ".brief.md", stem + ".md"} {
+			data, err := core.ReadScratchReport(candidate)
+			if err != nil {
+				continue
+			}
+			return DeclaredTestLayers(string(data))
+		}
+	}
+	return nil
+}
+
+// declaredLayerName compares a report layer with the brief's declared names
+// through layerName, so an ordinary name is compared byte for byte and a
+// hostile name is compared in the same quoted, bounded form the warning uses.
+func declaredLayerName(declared []string, name string) bool {
+	want := layerName(name)
+	for _, item := range declared {
+		if layerName(item) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // layerName renders one report-supplied layer name for the non-pass warning:
