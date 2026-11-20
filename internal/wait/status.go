@@ -137,6 +137,11 @@ func CmdStatus(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		if res.notInRosterCmd != "" {
 			fmt.Fprintf(platform.Stderr, "soho: status: '%s' is not a worker of this workspace's team; %s shows its state\n", agent, res.notInRosterCmd)
 		}
+		if res.state == "not-in-roster" || res.state == "unknown-agent" {
+			if hint := ParentRosterHint("status", agent, env); hint != "" {
+				fmt.Fprintln(platform.Stderr, hint)
+			}
+		}
 		if res.unavailable {
 			core.Warn(fmt.Sprintf("agent '%s': herdr agent get failed: %s", agent, res.unavailableCause), frictionLogFile, "status")
 		}

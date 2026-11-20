@@ -1097,7 +1097,8 @@ func CmdCollect(args []string, command CommandContext) int {
 			return 0
 		}
 	}
-	if core.RosterLine(sd, agent) != "" {
+	inRoster := core.RosterLine(sd, agent) != ""
+	if inRoster {
 		stRep := svc.Runtime.Get(context.Background(), transport.Target{ID: agent}, transport.Call{Timeout: herdr.Timeout})
 		st := stRep.Value
 		cause := ""
@@ -1119,7 +1120,13 @@ func CmdCollect(args []string, command CommandContext) int {
 	}
 	core.Warn("no report file yet for '"+agent+"' (expected "+orNone(report)+"); falling back to recent terminal output", logFile, "collect")
 	if hcMode {
-		return collectRecentHC(svc, agent, lines, logFile)
+		code := collectRecentHC(svc, agent, lines, logFile)
+		if !inRoster {
+			if hint := wait.ParentRosterHint("collect", agent, env); hint != "" {
+				fmt.Fprintln(platform.Stderr, hint)
+			}
+		}
+		return code
 	}
 	r := svc.Legacy.AgentReadRaw(context.Background(), transport.Target{ID: agent}, "recent-unwrapped", lines, transport.Call{Timeout: herdr.Timeout})
 	if r.Value != "" {

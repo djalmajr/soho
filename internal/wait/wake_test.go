@@ -41,32 +41,25 @@ const (
 )
 
 func TestWaitParentRosterHint(t *testing.T) {
-	for _, holds := range []bool{true, false} {
-		t.Run(fmt.Sprintf("parent-holds-%t", holds), func(t *testing.T) {
+	for _, state := range []string{"live", "finished"} {
+		t.Run(state, func(t *testing.T) {
 			f := newHcWakeFixture(t, "1", "none")
-			parentDir := filepath.Join(f.base, "state", "parent-session")
-			if err := os.MkdirAll(parentDir, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if holds {
-				if err := os.WriteFile(filepath.Join(parentDir, "agents.tsv"), []byte("other\tp2\tclaude\trole\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
 			_, err := fakecli.Install(t, f.bin, "hc", []fakecli.Rule{
 				{Argv: []string{"get", "t1", "--json"}, Stdout: `{"address":"t1","parent":"t2","state":"live","labels":{"soho.session":"sW"}}`},
-				{Argv: []string{"get", "t2", "--json"}, Stdout: `{"address":"t2","state":"live","labels":{"soho.session":"parent-session"}}`},
+				{Argv: []string{"get", "t2", "--json"}, Stdout: fmt.Sprintf(`{"address":"t2","state":%q,"labels":{"soho.session":"parent-session"}}`, state)},
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			code, msg, _, _ := (&wakeFixture{hcWakeFixture: f}).cmd(t, "other", "--wake")
+			code, msg, out, stderr := (&wakeFixture{hcWakeFixture: f}).cmd(t, "other", "--wake")
 			base := "agent 'other' is not in the roster (state dir: " + f.sd + ")"
-			if holds {
-				base += "; this terminal (t1) is a child of t2, whose roster holds 'other': run 'soho wait other --wake' in t2's terminal (--wake creates its own child)"
+			wantMsg, wantStderr := base, ""
+			if state == "live" {
+				wantMsg = ""
+				wantStderr = "soho: " + base + "; this terminal (t1) is a child of t2: if t2 started that worker, run 'soho wait other --wake' in t2's terminal (--wake creates its own child)\n"
 			}
-			if code != 3 || msg != base {
-				t.Fatalf("code=%d msg=%q want 3 %q", code, msg, base)
+			if code != 3 || msg != wantMsg || out != "" || stderr != wantStderr {
+				t.Fatalf("code=%d msg=%q stdout=%q stderr=%q; want code=3 msg=%q empty stdout stderr=%q", code, msg, out, stderr, wantMsg, wantStderr)
 			}
 		})
 	}
