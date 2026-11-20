@@ -353,12 +353,25 @@ func assertReopenConfiguredFrame(t *testing.T, frame, dir string) {
 	}
 }
 
-func TestConfiguredReopenPublicHCGuardUnchanged(t *testing.T) {
+func TestConfiguredReopenPassesTheHcEntryGuard(t *testing.T) {
 	f := configuredReopenFixture(t, reopenCapability)
 	f.env["SOHO_TRANSPORT"] = "hc"
-	before := reopenSnapshot(t, f.state)
+	f.env["HC_TERMINAL_ID"] = "t1"
+	if _, err := fakecli.Install(t, f.fakeDir, "hc", []fakecli.Rule{{
+		Argv:   []string{"get", "t1", "--json"},
+		Stdout: `{"address":"t1","state":"live","labels":{"soho.session":"ws"}}`,
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	r := f.reopen(t, "worker", "--force")
-	if r.code != 2 || r.stdout != "" || r.stderr != "soho: reopen does not support transport=hc yet; set transport=herdr or see DJA-604\n" || len(r.calls) != 0 || !reflect.DeepEqual(before, reopenSnapshot(t, f.state)) {
-		t.Fatalf("hc guard: exit=%d stdout=%q stderr=%q calls=%+v", r.code, r.stdout, r.stderr, r.calls)
+	if strings.Contains(r.stderr, hcRefusalLine) {
+		t.Fatalf("the hc entry guard still refused reopen: exit=%d stdout=%q stderr=%q", r.code, r.stdout, r.stderr)
+	}
+	if !strings.Contains(r.stderr, "soho: release:") {
+		t.Fatalf("reopen did not reach the release half: exit=%d stdout=%q stderr=%q calls=%+v", r.code, r.stdout, r.stderr, r.calls)
+	}
+	hcCalls, err := fakecli.ReadCalls(filepath.Join(f.fakeDir, "hc.calls.jsonl"))
+	if err != nil || len(hcCalls) == 0 {
+		t.Fatalf("no hc calls after the guard: %v err=%v", hcCalls, err)
 	}
 }

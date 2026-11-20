@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -32,6 +33,29 @@ func laneKindFixture(t *testing.T, laneKind string) spawnFixture {
 	}
 	f.roster(t, strings.Join([]string{"ghost", "p-ghost", "pi", "scouter", "alibaba", "1", "/tmp/work", "now", "", "ask", "scouter", "build", "", "", ""}, "\t"))
 	return f
+}
+
+func runCmdSpawnWithLaneOverride(t *testing.T, f spawnFixture, args []string) (code int, stdout, stderr string, calls []fakecli.Call) {
+	t.Helper()
+	oldOut, oldErr := platform.Stdout, platform.Stderr
+	var out, errOut strings.Builder
+	platform.Stdout, platform.Stderr = &out, &errOut
+	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
+	code = 0
+	func() {
+		defer func() {
+			if value := recover(); value != nil {
+				if e, ok := value.(*platform.ExitError); ok {
+					code = e.Code
+					return
+				}
+				panic(value)
+			}
+		}()
+		CmdSpawnWithLaneKindOverride(args, f.ctx, f.env, f.cwd)
+	}()
+	calls, _ = fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
+	return code, out.String(), errOut.String(), calls
 }
 
 func rosterBytes(t *testing.T, f spawnFixture) string {
@@ -118,6 +142,45 @@ func TestSpawnRefusesAKindFlagThatDiffersFromTheLaneKind(t *testing.T) {
 // DJA-397: the refusal compares the flag with the lane's kind only. The
 // controls that must not change: a lane without a kind, a given --pane, the
 // lanes switched off for this invocation, and a role outside the lane.
+// The one-off lane-kind skip is a Go call made only by reopen's replacement
+// spawn: a plain spawn, an environment variable and the next lane spawn all
+// keep the DJA-397 rule.
+func TestLaneKindOverrideIsOnlyAvailableToTheReopenSpawn(t *testing.T) {
+	f := laneKindFixture(t, "pi")
+	code, stdout, stderr, calls := runCmdSpawnWithLaneOverride(t, f, []string{"scouter", "--kind", "codex", "--name", "worker"})
+	if code != 0 || !strings.Contains(stdout, `"kind": "codex"`) || !strings.Contains(stdout, `"name": "worker"`) {
+		t.Fatalf("override spawn: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if len(herdrActs(calls)) == 0 {
+		t.Fatalf("the override spawn opened nothing: %#v", calls)
+	}
+
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+	}{{"plain spawn", nil}, {"an environment variable is not an override", map[string]string{"SOHO_LANE_KIND_OVERRIDE": "1"}}} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := laneKindFixture(t, "pi")
+			for key, value := range tc.env {
+				g.env[key] = value
+			}
+			code, stdout, stderr, calls := runCmdSpawn(t, g, []string{"scouter", "--kind", "codex"})
+			if code != 13 || stdout != laneKindRefusalJSON {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			if acts := herdrActs(calls); len(acts) != 0 {
+				t.Fatalf("the refusal acted on herdr: %v", acts)
+			}
+		})
+	}
+
+	h := laneKindFixture(t, "pi")
+	code, stdout, stderr, _ = runCmdSpawn(t, h, []string{"scouter", "--kind", "pi"})
+	if code != 0 || !strings.Contains(stdout, `"kind": "pi"`) {
+		t.Fatalf("the next lane spawn did not follow the lane: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 func TestSpawnKindFlagControlsDoNotChange(t *testing.T) {
 	t.Run("a lane without lane.<name>.kind accepts any --kind", func(t *testing.T) {
 		f := laneKindFixture(t, "")

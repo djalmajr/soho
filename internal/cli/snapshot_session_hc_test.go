@@ -29,7 +29,7 @@ func TestHcCommandHelpWithoutTransport(t *testing.T) {
 	if after := fileSnapshot(t, f.root); !reflect.DeepEqual(before, after) {
 		t.Fatalf("help changed fixture: before=%v after=%v", before, after)
 	}
-	code, out, stderr := runMutationGuardHc(t, []string{"reopen", "--help", "extra"}, f.env.Clone())
+	code, out, stderr := runMutationGuardHc(t, []string{"compact", "--help", "extra"}, f.env.Clone())
 	if code != 2 || out != "" || !strings.Contains(stderr, hcRefusalLine) {
 		t.Fatalf("non-exact help: exit=%d out=%q stderr=%q", code, out, stderr)
 	}

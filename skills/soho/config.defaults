@@ -253,6 +253,9 @@ provider_retry_delay=60
 # `provider-error` respectively; a sentence that only quotes the text is not.
 # provider_capacity_texts=server busy, try later|no worker ready
 # provider_error_texts=
+# Fallback spawn for a refusal wait recognizes: `kind model effort` for edit roles / read-only roles; empty names `--kind claude` (or `--kind codex` when the refused worker runs claude).
+# fallback_edit=
+# fallback_review=
 
 # Seconds `dispatch` watches for the prompt to arrive (the agent starts
 # working or blocks, or the report appears). Text left in the input box gets

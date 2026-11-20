@@ -1370,6 +1370,12 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				if WorkerCwdGone(workerCwd) {
 					line.Set("cause", "; its working directory "+workerCwd+" no longer exists")
 				}
+				if marker, cause, next := refusalAtSettlement(sd, agent, ctx, env, cwd, TaskRole(sd, agent), svc); marker != "" {
+					line.Set("cause", cause)
+					line.Set("refused", true)
+					line.Set("next", next)
+					sendWarning(fmt.Sprintf("the provider refused the task of '%s' (%s); run: %s", agent, marker, next))
+				}
 				jsonLine(line)
 				if field(strings.Split(core.RosterLine(sd, agent), "\t"), 2) == "codex" && codexhooks.IsReview(visible) {
 					sendWarning(fmt.Sprintf("agent '%s' is on codex's hooks review screen; it never took the brief. With hooks_review=trust (now %s) the next dispatch approves the hooks first: dispatch the brief again (soho dispatch %s <brief> --resend). With hooks_review=block nothing is typed into it: answer it in the pane yourself (2. Trust all and continue), then dispatch again.", agent, core.HooksReviewMode(ctx, env), agent))
@@ -1414,7 +1420,17 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					lane = core.LaneOfRole(ctx, role, env)
 				}
 				if tag != "capacity" {
-					jsonLine(jsonjs.O("agent", agent, "status", tag, "report", report, "lane", lane, "kind", kind, "model", model, "cause", cause))
+					line := jsonjs.O("agent", agent, "status", tag, "report", report, "lane", lane, "kind", kind, "model", model, "cause", cause)
+					if tag == "provider-error" {
+						if marker, refusalCause, next := refusalAtSettlement(sd, agent, ctx, env, cwd, role, svc); marker != "" {
+							line.Set("cause", refusalCause)
+							line.Set("refused", true)
+							line.Set("next", next)
+							cause = refusalCause
+							sendWarning(fmt.Sprintf("the provider refused the task of '%s' (%s); run: %s", agent, marker, next))
+						}
+					}
+					jsonLine(line)
 					sendWarning(fmt.Sprintf("provider error: agent '%s' lane=%s kind=%s model=%s : %s", agent, showOr(lane, "?"), kind, showOr(model, "?"), cause))
 				} else {
 					retriesRaw, _ := readWaitFile(sd, agent, "capacity-retries")
