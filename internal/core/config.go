@@ -91,7 +91,7 @@ var ConfigScalarKeys = []string{
 	"setup_target", "inbound", "caller_check", "worker_messages", "metrics",
 	"pressure_disk_free_percent", "pressure_disk_free_min_gb", "pressure_swap_percent",
 	"pressure_refuse_disk_free_percent", "pressure_refuse_disk_free_min_gb", "pressure_refuse_swap_percent",
-	"footprint_warn_gb", "login_shell", "copies_dir",
+	"footprint_warn_gb", "login_shell", "copies_dir", "model_cap",
 }
 
 // jobMachineKeys are known to ConfigKeyOk. They stay out of ConfigScalarKeys
@@ -123,7 +123,7 @@ var fallbackKeys = []string{"fallback_edit", "fallback_review"}
 var KnownKinds = []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode"}
 var EffortLadder = []string{"low", "medium", "high", "xhigh", "max"}
 
-var dottedKeyRE = regexp.MustCompile(`^(?:role\.[a-z][a-z0-9_-]*\.(?:kind|model|effort|approvals|mcp|args)|lane\.[a-z][a-z0-9_-]*\.(?:roles|kind|model|effort|approvals|panes|args|mcp)|model\.[a-z][a-z0-9_.-]+|effort\.[a-z][a-z0-9_-]+|context_window\.[a-z][a-z0-9_-]+|background_patterns\.[a-z][a-z0-9_-]+|args\.[a-z][a-z0-9_-]+|worker_messages\.rules\.[a-z][a-z0-9_]*\.(?:from|to|types|scope|enabled))$`)
+var dottedKeyRE = regexp.MustCompile(`^(?:role\.[a-z][a-z0-9_-]*\.(?:kind|model|effort|approvals|mcp|args)|lane\.[a-z][a-z0-9_-]*\.(?:roles|kind|model|models|effort|approvals|panes|args|mcp)|model\.[a-z][a-z0-9_.-]+|effort\.[a-z][a-z0-9_-]+|context_window\.[a-z][a-z0-9_-]+|background_patterns\.[a-z][a-z0-9_-]+|args\.[a-z][a-z0-9_-]+|worker_messages\.rules\.[a-z][a-z0-9_]*\.(?:from|to|types|scope|enabled))$`)
 var decimalRE = regexp.MustCompile(`^[0-9]+$`)
 var positiveDecimalRE = regexp.MustCompile(`^[1-9][0-9]*$`)
 
@@ -548,6 +548,10 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 	switch {
 	case key == "copies_dir":
 		return value == "" || filepath.IsAbs(value) || strings.HasPrefix(value, "~/")
+	case key == "model_cap":
+		return value == "off" || ModelCapValueOk(value)
+	case strings.HasPrefix(key, "lane.") && strings.HasSuffix(key, ".models"):
+		return ModelListValueOk(value)
 	case key == "context_fresh_percent":
 		_, err := strconv.ParseInt(value, 10, 64)
 		return decimalRE.MatchString(value) && err == nil
@@ -1118,6 +1122,9 @@ func DottedKeyName(key string, ctx *Config, env platform.Env, cwd string) string
 }
 
 func CmdConfig(ctx *Config, env platform.Env, cwd string) {
+	for _, warning := range ModelShadowWarnings(ctx, env) {
+		_, _ = fmt.Fprintf(platform.Stderr, "soho: warning: %s\n", warning)
+	}
 	row := func(key, value, source string) string {
 		return padUTF16(key, 18) + " " + padUTF16(value, 30) + " " + source
 	}
