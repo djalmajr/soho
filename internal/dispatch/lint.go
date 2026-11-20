@@ -75,8 +75,9 @@ type BriefLintResult struct {
 	Mode           string
 	Warnings       []string
 	MissingMessage string
-	// UnseenPaths are the warnings about a path the worker cannot see, the only
-	// warnings brief_lint=strict refuses. They are also in Warnings.
+	// UnseenPaths are the warnings about a path the worker cannot see and the
+	// Owned-files-names-no-path warning, the warnings brief_lint=strict
+	// refuses. They are also in Warnings.
 	UnseenPaths []string
 }
 
@@ -527,11 +528,23 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 	// brief_lint=strict cannot refuse them. The only filesystem check is one
 	// os.Stat per bare name at the worktree root; the tree is never listed.
 	// Without a known tree the warnings stay silent.
+	ownedLines := ownedBriefSectionLines(body, aliases)
 	if lintTree != "" {
-		result.Warnings = append(result.Warnings, ownedItemLintWarnings(brief, lintTree, ownedBriefSectionLines(body, aliases))...)
+		result.Warnings = append(result.Warnings, ownedItemLintWarnings(brief, lintTree, ownedLines)...)
 	}
 	if options.PathsOnly {
 		return result
+	}
+	// SOH-415: an edit brief with an Owned files section that declares no path
+	// leaves the audit with no scope and every change outside it. An inherit
+	// directive is a scope, and an explicit no-files declaration ("- None.")
+	// is the way to own nothing, so only a section with none of the three
+	// warns; an empty section warns too. This one is a strict refusal, unlike
+	// the per-item warnings above.
+	if !options.ReadOnly && ownedLines != nil && !gittree.InheritsPrevious(body) && !gittree.OwnedSectionDeclaresScope(ownedLines, lintTree) {
+		message := fmt.Sprintf("brief %s: Owned files names no path; list paths or globs, write '- inherit: previous brief', or write '- None.' when the slice edits no file", brief)
+		result.Warnings = append(result.Warnings, message)
+		result.UnseenPaths = append(result.UnseenPaths, message)
 	}
 	badLines := EmptyCodeLines(body)
 	for _, line := range badLines[:min(3, len(badLines))] {

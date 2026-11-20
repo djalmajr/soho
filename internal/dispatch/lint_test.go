@@ -206,8 +206,11 @@ func TestEmptyCodeLines(t *testing.T) {
 			t.Fatal(err)
 		}
 		findings := BriefLintFindings(file, &core.Config{Entries: map[string]core.ConfigEntry{}}, platform.Env{}, BriefLintOptions{})
-		if len(findings.Warnings) != 4 || !strings.Contains(findings.Warnings[3], "and 1 more line(s)") {
-			t.Fatalf("warnings = %#v", findings.Warnings)
+		// This fixture has an empty Owned files section; the Go-only SOH-415
+		// warning is covered by its own test, not by this JS parity case.
+		warnings := stripOwnedNoPathWarnings(findings.Warnings)
+		if len(warnings) != 4 || !strings.Contains(warnings[3], "and 1 more line(s)") {
+			t.Fatalf("warnings = %#v", warnings)
 		}
 	})
 }
@@ -295,6 +298,20 @@ type lintCorpusRow struct {
 
 var unfilledPlaceholderBracket = regexp.MustCompile(` \[unfilled placeholder '[^']*' \(line [0-9]+\)\]`)
 
+// stripOwnedNoPathWarnings removes the SOH-415 Go-only warning before the
+// frozen JS corpus comparison; the corpus rows predate it and its own test
+// covers the warning and its strict refusal. Other warnings stay strict.
+func stripOwnedNoPathWarnings(warnings []string) []string {
+	out := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		if strings.Contains(warning, ": Owned files names no path; list paths or globs, write '- inherit: previous brief', or write '- None.' when the slice edits no file") {
+			continue
+		}
+		out = append(out, warning)
+	}
+	return out
+}
+
 // stripUnfilledPlaceholderMarks removes the Go-only unfilled placeholder
 // marks from a missing-sections message before the JS corpus comparison:
 // the corpus rows predate the feature (PLAN: new functions are Go-only
@@ -336,6 +353,8 @@ func TestLintCorpusMatchesJavaScript(t *testing.T) {
 					env["SOHO_BRIEF_LINT_ALIASES"] = row.Aliases
 				}
 				got := BriefLintFindings(row.Path, ctx, env, BriefLintOptions{})
+				got.Warnings = stripOwnedNoPathWarnings(got.Warnings)
+				got.UnseenPaths = stripOwnedNoPathWarnings(got.UnseenPaths)
 				got.MissingMessage = stripUnfilledPlaceholderMarks(got.MissingMessage)
 				if got.Mode != row.Mode || got.MissingMessage != row.Missing || strings.Join(got.Warnings, "\x00") != strings.Join(row.Warnings, "\x00") {
 					t.Fatalf("Go findings differ from JS: got=%#v want=%#v", got, row)
