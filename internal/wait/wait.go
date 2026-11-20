@@ -1896,9 +1896,14 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 	for _, agent := range agents {
 		if core.RosterLine(sd, agent) == "" {
 			message := "agent '" + agent + "' is not in the roster (state dir: " + sd + ")"
-			message += parentRosterHint(agent, ctx, env, cwd)
-			message += RosterRefusalHint(agent, ctx, env, cwd)
-			core.DieFriction(message, 3, "", "wait")
+			advice := ParentRosterHint("wait", agent, env)
+			cause := RosterRefusalHint(agent, ctx, env, cwd)
+			if advice != "" {
+				fmt.Fprintf(platform.Stderr, "soho: %s%s%s\n", message, advice, cause)
+				core.RecordFrictionError(message+cause, 3, frictionLogFile, "wait")
+				return 3
+			}
+			core.DieFriction(message+cause, 3, "", "wait")
 		}
 	}
 	if math.IsNaN(timeout) {

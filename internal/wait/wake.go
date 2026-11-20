@@ -27,9 +27,9 @@ import (
 // replace it to put a fake terminal.run connection behind the hc backend.
 var wakeServices = backend.New
 
-// parentRosterHint is advisory: an unreadable caller or parent leaves the
-// original missing-roster error unchanged.
-func parentRosterHint(agent string, cfg *core.Config, env platform.Env, cwd string) string {
+// ParentRosterHint uses the caller's live parent to suggest where to retry a
+// command after its own roster lookup failed.
+func ParentRosterHint(command, agent string, env platform.Env) string {
 	caller := env.Get("HC_TERMINAL_ID")
 	if env.Get("SOHO_TRANSPORT") != "hc" || caller == "" {
 		return ""
@@ -41,15 +41,15 @@ func parentRosterHint(agent string, cfg *core.Config, env platform.Env, cwd stri
 	}
 	parent := child.Value.Parent
 	parentRecord := svc.Runtime.Get(context.Background(), transport.Target{ID: parent}, transport.Call{})
-	session := parentRecord.Value.WorkspaceID
-	if parentRecord.Err != nil || !parentRecord.Valid || session == "" || session == "." || session == ".." || strings.ContainsAny(session, "/\\") {
+	if parentRecord.Err != nil || !parentRecord.Valid ||
+		parentRecord.Value.NativeState != "live" || parentRecord.Value.State == "gone" {
 		return ""
 	}
-	parentDir := filepath.Join(core.StateRootPath(cfg, env, cwd), session)
-	if core.RosterLine(parentDir, agent) == "" {
-		return ""
+	retry := "soho " + command + " " + agent
+	if command == "wait" {
+		return fmt.Sprintf("; this terminal (%s) is a child of %s: if %s started that worker, run '%s --wake' in %s's terminal (--wake creates its own child)", caller, parent, parent, retry, parent)
 	}
-	return fmt.Sprintf("; this terminal (%s) is a child of %s, whose roster holds '%s': run 'soho wait %s --wake' in %s's terminal (--wake creates its own child)", caller, parent, agent, agent, parent)
+	return fmt.Sprintf("soho: this terminal (%s) has no '%s' in its roster; it is a child of %s: if %s started that worker, run '%s' in %s's terminal", caller, agent, parent, parent, retry, parent)
 }
 
 // WakeName is the terminal name of the child that `wait <agents> --wake`
