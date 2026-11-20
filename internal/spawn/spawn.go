@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -30,6 +29,7 @@ import (
 	"github.com/djalmajr/soho/internal/taskreport"
 	"github.com/djalmajr/soho/internal/text"
 	"github.com/djalmajr/soho/internal/transport"
+	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
 
 var busyRetryDelay = time.Second
@@ -48,7 +48,10 @@ const (
 	contextWindowWindow = 10 * time.Second
 )
 
-var agentNameRE = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+// AgentNameRE is the agent-name rule spawn enforces. The single regexp
+// definition lives in wait, which cannot import spawn (spawn depends on wait
+// through dispatch); spawn only re-exports it.
+var AgentNameRE = waitpkg.AgentNameRE
 
 func Warn(message string, ctx *core.Config, env platform.Env, command string) {
 	core.Warn(message, filepath.Join(core.StateDirPath(ctx, env, mustGetwd()), "friction.log"), command)
@@ -1312,7 +1315,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			Warn(message, ctx, env, command)
 		}
 	}
-	if o.name != "" && !agentNameRE.MatchString(o.name) {
+	if o.name != "" && !AgentNameRE.MatchString(o.name) {
 		core.DieFriction(fmt.Sprintf("invalid agent name '%s' (must match [a-z][a-z0-9_-]{0,31})", o.name), 2, "", "")
 	}
 	info, err := os.Stat(o.cwd)
@@ -1781,7 +1784,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		if AgentNameTaken(o.name, env) {
 			taken := o.name
 			o.name = UniqueName(o.name, env)
-			if !agentNameRE.MatchString(o.name) {
+			if !AgentNameRE.MatchString(o.name) {
 				core.DieFriction(fmt.Sprintf("invalid agent name '%s' (must match [a-z][a-z0-9_-]{0,31})", o.name), 2, "", "")
 			}
 			Warn(fmt.Sprintf("agent name '%s' is taken by another pane or workspace; using '%s'", taken, o.name), ctx, env, "spawn")
@@ -1792,7 +1795,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			base = o.role
 		}
 		o.name = UniqueName(base, env)
-		if !agentNameRE.MatchString(o.name) {
+		if !AgentNameRE.MatchString(o.name) {
 			core.DieFriction(fmt.Sprintf("invalid agent name '%s' (must match [a-z][a-z0-9_-]{0,31})", o.name), 2, "", "")
 		}
 		orphanLive = liveAgents(env)

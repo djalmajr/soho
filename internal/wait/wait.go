@@ -1896,6 +1896,7 @@ func CmdWait(argv []string, ctx *core.Config, env platform.Env, cwd string) int 
 		if core.RosterLine(sd, agent) == "" {
 			message := "agent '" + agent + "' is not in the roster (state dir: " + sd + ")"
 			message += parentRosterHint(agent, ctx, env, cwd)
+			message += RosterRefusalHint(agent, ctx, env, cwd)
 			core.DieFriction(message, 3, "", "wait")
 		}
 	}
@@ -1987,3 +1988,108 @@ func appendMissingKeyHint(cause, message string) string {
 // text.SanitizeCause enforces; the cause and the hint are printable ASCII
 // here, so bytes and UTF-16 units agree.
 const maxCauseUnits = 200
+
+// AgentNameRE is the single definition of the worker-name rule spawn
+// enforces (1-32 characters: a lowercase letter, then a-z, 0-9, _ or -).
+// It is declared here, not in spawn, because spawn already depends on wait
+// through dispatch: wait cannot import spawn without an import cycle.
+// spawn re-exports it for its own callers and for the CLI.
+var AgentNameRE = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+
+// ValidAgentName reports whether name satisfies the spawn-name rule.
+func ValidAgentName(name string) bool { return AgentNameRE.MatchString(name) }
+
+// rosterNameLookupTimeout bounds the one terminal list a roster refusal
+// spends on the hc hint: an unreachable Core must not delay the exit.
+const rosterNameLookupTimeout = 1500 * time.Millisecond
+
+// RosterRefusalHint appends at most one cause to a missing-roster refusal:
+// the invalid name that spawn could never have opened, or, under hc, a live
+// terminal of the caller's own name that release left outside the roster.
+// It is advisory: an unreadable terminal list leaves the refusal unchanged.
+func RosterRefusalHint(name string, ctx *core.Config, env platform.Env, cwd string) string {
+	if reason := invalidAgentNameReason(name); reason != "" {
+		return reason
+	}
+	return releasedChildReason(name, ctx, env, cwd)
+}
+
+// invalidAgentNameReason names why spawn never opened an invalid name. The
+// name is printed only after the check and is flattened, ASCII-only and
+// bounded like the other message values, so a hostile argument cannot add a
+// line or a control byte to the refusal.
+func invalidAgentNameReason(name string) string {
+	if ValidAgentName(name) {
+		return ""
+	}
+	cause := "only a-z, 0-9, _ and - are allowed"
+	if len([]rune(name)) > 32 {
+		cause = "longer than 32 characters"
+	} else if name == "" {
+		cause = "must start with a lowercase letter"
+	} else {
+		for i, r := range name {
+			if i == 0 {
+				if r < 'a' || r > 'z' {
+					cause = "must start with a lowercase letter"
+					break
+				}
+				continue
+			}
+			if !isValidAgentNameTail(r) {
+				break
+			}
+		}
+	}
+	return "; '" + text.SanitizeCause(name) + "' is not a valid agent name (" + cause + "), so spawn never opened it"
+}
+
+func isValidAgentNameTail(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-'
+}
+
+// ReleasedPaneRegistered reports whether the released-panes registry has a
+// row for exactly this name and terminal address. That is the same identity
+// rule core.FindOrphan applies when soho release <name> --close looks up a
+// terminal, so a hint or warning backed by this check never suggests a close
+// command that would refuse. A missing or unreadable registry registers no
+// pane.
+func ReleasedPaneRegistered(name, pane string, ctx *core.Config, env platform.Env, cwd string) bool {
+	for _, row := range core.ReleasedPanes(ctx, env, cwd) {
+		if row.Name == name && row.Pane == pane {
+			return true
+		}
+	}
+	return false
+}
+
+// releasedChildReason names a live hc terminal with this name whose Core
+// parent is the caller terminal and whose name and address are recorded in
+// the released-panes registry. A same-named terminal parented elsewhere, or
+// one release never registered, adds nothing; this check never closes
+// anything.
+func releasedChildReason(name string, ctx *core.Config, env platform.Env, cwd string) string {
+	if core.TransportMode(ctx, env) != "hc" {
+		return ""
+	}
+	caller := env.Get("HC_TERMINAL_ID")
+	if caller == "" {
+		return ""
+	}
+	reply := backend.New(env).Runtime.List(context.Background(), transport.Scope{All: true}, transport.Call{Timeout: rosterNameLookupTimeout})
+	if reply.Err != nil || !reply.Valid {
+		return ""
+	}
+	for _, terminal := range reply.Value {
+		if terminal.Name != name || !terminal.ParentKnown || terminal.Parent != caller || terminal.NativeState != "live" {
+			continue
+		}
+		if !ReleasedPaneRegistered(name, terminal.PaneID, ctx, env, cwd) {
+			continue
+		}
+		safe := text.SanitizeCause(name)
+		return "; terminal " + text.SanitizeCause(terminal.PaneID) + " named '" + safe +
+			"' is still open outside the roster (released without --close); close it with: soho release " + safe + " --close"
+	}
+	return ""
+}

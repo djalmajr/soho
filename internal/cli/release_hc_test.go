@@ -167,6 +167,9 @@ func TestReleaseHcCloseIdleWorkerWithReport(t *testing.T) {
 	if !strings.Contains(out, "closed terminal t7\n") {
 		t.Fatalf("stdout=%q, want the closed terminal line", out)
 	}
+	if strings.Contains(errText, "stays open") {
+		t.Fatalf("stderr=%q, --close must not print the stays-open line", errText)
+	}
 	if row := core.RosterLine(f.sd, "worker"); row != "" {
 		t.Fatalf("roster row kept: %q", row)
 	}
@@ -307,7 +310,7 @@ func TestReleaseHcWithoutCloseKeepsTheTerminal(t *testing.T) {
 	if row := core.RosterLine(f.sd, "worker"); row != "" {
 		t.Fatalf("roster row kept: %q", row)
 	}
-	if !strings.Contains(errText, "soho: release: the terminal t7 stays open; close it later with: soho release worker --close") {
+	if !strings.Contains(errText, "soho: release: terminal t7 stays open outside the roster; close it later with: soho release worker --close") {
 		t.Fatalf("stderr=%q, want the terminal stays-open line", errText)
 	}
 	for _, verb := range []string{"kill", "rm"} {
