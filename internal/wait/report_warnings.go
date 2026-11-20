@@ -31,24 +31,25 @@ type ReportWarning struct {
 // the key "no-header", which made an acknowledged review header silence the
 // worker's own warning in the read-only projection.
 const (
-	WarningPartial            = "partial"
-	WarningEnv                = "env"
-	WarningHeaderVerdictOpen  = "verdict-open"
-	WarningHeaderFindingsSum  = "findings-sum"
-	WarningHeaderMissing      = "own-no-header"
-	WarningTestLayersNonPass  = "test-layers-non-pass"
-	WarningTestLayersUnmarked = "test-layers-unmarked"
-	WarningValidation         = "validation"
-	WarningTestLayersMissing  = "test-layers-missing"
-	WarningFindingMarks       = "finding-marks"
-	WarningReviewUnreadable   = "unreadable"
-	WarningReviewNoHeader     = "no-header"
-	WarningReviewMissing      = "missing"
-	WarningReviewUnknown      = "unknown"
-	WarningReviewResponses    = "unmarked"
-	WarningReviewUnnumbered   = "unnumbered"
-	WarningParityMissing      = "reference-parity-missing"
-	WarningParityUnmarked     = "reference-parity-unmarked"
+	WarningPartial              = "partial"
+	WarningEnv                  = "env"
+	WarningHeaderVerdictOpen    = "verdict-open"
+	WarningHeaderFindingsSum    = "findings-sum"
+	WarningHeaderMissing        = "own-no-header"
+	WarningTestLayersNonPass    = "test-layers-non-pass"
+	WarningTestLayersUnmarked   = "test-layers-unmarked"
+	WarningValidation           = "validation"
+	WarningTestLayersMissing    = "test-layers-missing"
+	WarningFindingMarks         = "finding-marks"
+	WarningReviewUnreadable     = "unreadable"
+	WarningReviewNoHeader       = "no-header"
+	WarningReviewMissing        = "missing"
+	WarningReviewUnknown        = "unknown"
+	WarningReviewResponses      = "unmarked"
+	WarningReviewSectionMissing = "section-missing"
+	WarningReviewUnnumbered     = "unnumbered"
+	WarningParityMissing        = "reference-parity-missing"
+	WarningParityUnmarked       = "reference-parity-unmarked"
 )
 
 // WarningReviewNoHeaderPublic is the public kind published for the declared
@@ -141,7 +142,7 @@ func TestLayerWarnings(agent string, layers reportscan.TestLayersResult, validat
 	if layers.Found && len(layers.NonPass) > 0 {
 		names := make([]string, len(layers.NonPass))
 		for i, entry := range layers.NonPass {
-			names[i] = entry.Name + " " + entry.Result
+			names[i] = layerName(entry.Name) + " " + entry.Result
 		}
 		out = append(out, ReportWarning{WarningTestLayersNonPass, fmt.Sprintf("report of '%s' lists %d test layer(s) that did not pass (%s): read them before commit, push or release", agent, len(layers.NonPass), strings.Join(names, ", "))})
 	}
@@ -150,7 +151,7 @@ func TestLayerWarnings(agent string, layers reportscan.TestLayersResult, validat
 		if layers.FirstUnmarkedReason != "" {
 			reason = "; " + layers.FirstUnmarkedReason
 		}
-		out = append(out, ReportWarning{WarningTestLayersUnmarked, fmt.Sprintf("report of '%s' has %d Test layers line(s) without a result; the form is '- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a', with ': <reason>' (or ' — <reason>') after FAIL, NOT RUN and BLOCKED, and an optional note after PASS (first: %s%s)", agent, layers.Unmarked, unmarkedExample(layers.FirstUnmarked), reason)})
+		out = append(out, ReportWarning{WarningTestLayersUnmarked, fmt.Sprintf("report of '%s' has %d Test layers line(s) without a result; expected '- <layer>: <RESULT>[: reason]' with one of PASS, FAIL, NOT RUN, BLOCKED or n/a, a reason after FAIL, NOT RUN and BLOCKED, an optional note after PASS or n/a, and ': ', ' — ', ' – ' or ' (' before the text (first: %s%s)", agent, layers.Unmarked, unmarkedExample(layers.FirstUnmarked), reason)})
 	}
 	if hasValidation && validation != "PASS" {
 		out = append(out, ReportWarning{WarningValidation, fmt.Sprintf("validation of '%s' is %s: read it before commit, push or release", agent, validation)})
@@ -182,17 +183,30 @@ func NoReviewHeaderWarning(agent string) ReportWarning {
 	return ReportWarning{WarningReviewNoHeader, fmt.Sprintf("review named by the brief of '%s' has no review header", agent)}
 }
 
-// ReviewResponseWarnings builds the four answer warnings in check order.
-func ReviewResponseWarnings(agent string, missing, unknown []int, unmarked, unnumbered int) []ReportWarning {
+// ReviewResponseWarnings builds the answer warnings in check order. A report
+// without a Review responses section at all warns once that the section is
+// missing, instead of counting every finding of the review as unanswered —
+// when the review has findings, numbered or not; the per-finding warning stays
+// for a section that misses a finding.
+func ReviewResponseWarnings(agent string, responses reportscan.ReviewResponsesResult, missing, unknown []int, unnumbered int) []ReportWarning {
 	out := []ReportWarning{}
+	if !responses.Found {
+		if len(missing) > 0 || unnumbered > 0 {
+			out = append(out, ReportWarning{WarningReviewSectionMissing, fmt.Sprintf("report of '%s' has no Review responses section, and the brief names a review to answer; expected '- F<n>: <fixed|declined>: <note>', one line per finding", agent)})
+		}
+		if unnumbered > 0 {
+			out = append(out, ReportWarning{WarningReviewUnnumbered, fmt.Sprintf("review named by the brief of '%s' has %d finding(s) without a number, so their responses cannot be checked", agent, unnumbered)})
+		}
+		return out
+	}
 	if len(missing) > 0 {
 		out = append(out, ReportWarning{WarningReviewMissing, fmt.Sprintf("report of '%s' leaves %d finding(s) of the review without a response (%s): read them before commit, push or release", agent, len(missing), formatFindingNumbers(missing))})
 	}
 	if len(unknown) > 0 {
 		out = append(out, ReportWarning{WarningReviewUnknown, fmt.Sprintf("report of '%s' answers %d finding(s) the review does not have (%s)", agent, len(unknown), formatFindingNumbers(unknown))})
 	}
-	if unmarked > 0 {
-		out = append(out, ReportWarning{WarningReviewResponses, fmt.Sprintf("report of '%s' has %d Review responses line(s) without a valid answer", agent, unmarked)})
+	if responses.Unmarked > 0 {
+		out = append(out, ReportWarning{WarningReviewResponses, fmt.Sprintf("report of '%s' has %d Review responses line(s) without a valid answer; expected '- F<n>: <fixed|declined>: <note>' (first: %s)", agent, responses.Unmarked, unmarkedExample(responses.FirstUnmarked))})
 	}
 	if unnumbered > 0 {
 		out = append(out, ReportWarning{WarningReviewUnnumbered, fmt.Sprintf("review named by the brief of '%s' has %d finding(s) without a number, so their responses cannot be checked", agent, unnumbered)})
@@ -341,7 +355,7 @@ func AnalyzeReport(ctx ReportWarningContext) ReportAnalysis {
 				if out.Unnumbered < 0 {
 					out.Unnumbered = 0
 				}
-				out.Warnings = append(out.Warnings, ReviewResponseWarnings(ctx.Agent, out.Missing, out.Unknown, out.Responses.Unmarked, out.Unnumbered)...)
+				out.Warnings = append(out.Warnings, ReviewResponseWarnings(ctx.Agent, out.Responses, out.Missing, out.Unknown, out.Unnumbered)...)
 			}
 		}
 	}
@@ -399,7 +413,7 @@ func markerEntry(kind string) (marker, key string) {
 		return "test-layers-warned", kind
 	case WarningFindingMarks:
 		return "finding-marks-warned", kind
-	case WarningReviewUnreadable, WarningReviewMissing, WarningReviewUnknown, WarningReviewResponses, WarningReviewUnnumbered:
+	case WarningReviewUnreadable, WarningReviewMissing, WarningReviewUnknown, WarningReviewResponses, WarningReviewSectionMissing, WarningReviewUnnumbered:
 		return "review-responses-warned", kind
 	case WarningReviewNoHeader, WarningReviewNoHeaderPublic:
 		return "review-responses-warned", WarningReviewNoHeader

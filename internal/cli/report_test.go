@@ -389,7 +389,7 @@ func TestReportRoleUsesDispatchedTaskRole(t *testing.T) {
 	if got.Kind != "pi" || got.Model != "model-x" {
 		t.Fatalf("roster kind/model: kind=%q model=%q", got.Kind, got.Model)
 	}
-	if kinds := reportWarningKinds(got); !reflect.DeepEqual(kinds, []string{"partial", "test-layers-missing", "missing"}) {
+	if kinds := reportWarningKinds(got); !reflect.DeepEqual(kinds, []string{"partial", "test-layers-missing", "section-missing"}) {
 		t.Fatalf("implementer warning kinds: %v", kinds)
 	}
 	if !reflect.DeepEqual(got.ReviewResponses.Missing, []int{1}) {

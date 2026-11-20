@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/reportscan"
@@ -44,7 +45,7 @@ func TestReportWarningStringsGolden(t *testing.T) {
 			}, "NOT RUN: host gate", true, false),
 			want: []string{
 				"report of 'worker' lists 2 test layer(s) that did not pass (unit FAIL, race NOT RUN): read them before commit, push or release",
-				"report of 'worker' has 1 Test layers line(s) without a result; the form is '- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a', with ': <reason>' (or ' — <reason>') after FAIL, NOT RUN and BLOCKED, and an optional note after PASS (first: \"- docs: x\"; unknown result word)",
+				"report of 'worker' has 1 Test layers line(s) without a result; expected '- <layer>: <RESULT>[: reason]' with one of PASS, FAIL, NOT RUN, BLOCKED or n/a, a reason after FAIL, NOT RUN and BLOCKED, an optional note after PASS or n/a, and ': ', ' — ', ' – ' or ' (' before the text (first: \"- docs: x\"; unknown result word)",
 				"validation of 'worker' is NOT RUN: host gate: read it before commit, push or release",
 			},
 		},
@@ -59,14 +60,54 @@ func TestReportWarningStringsGolden(t *testing.T) {
 			want: []string{"report of 'worker' has 2 finding(s) without an origin and a class"},
 		},
 		{
+			name: "test layers non-pass escapes a report-supplied layer name",
+			got: TestLayerWarnings("worker", reportscan.TestLayersResult{
+				Found: true, NonPass: []reportscan.LayerResult{{Name: "unit\tlocal", Result: "FAIL"}},
+			}, "", false, false),
+			want: []string{
+				`report of 'worker' lists 1 test layer(s) that did not pass ("unit\tlocal" FAIL): read them before commit, push or release`,
+			},
+		},
+		{
+			name: "test layers non-pass bounds a long layer name",
+			got: TestLayerWarnings("worker", reportscan.TestLayersResult{
+				Found: true, NonPass: []reportscan.LayerResult{{Name: strings.Repeat("é", 125) + "tail", Result: "NOT RUN"}},
+			}, "", false, false),
+			want: []string{
+				"report of 'worker' lists 1 test layer(s) that did not pass (\"" + strings.Repeat("é", 119) + "…\" NOT RUN): read them before commit, push or release",
+			},
+		},
+		{
 			name: "review responses",
-			got:  ReviewResponseWarnings("worker", []int{1, 3}, []int{7}, 2, 1),
+			got: ReviewResponseWarnings("worker", reportscan.ReviewResponsesResult{
+				Found: true, Unmarked: 2, FirstUnmarked: "- F1: FIXED",
+			}, []int{1, 3}, []int{7}, 1),
 			want: []string{
 				"report of 'worker' leaves 2 finding(s) of the review without a response (F1, F3): read them before commit, push or release",
 				"report of 'worker' answers 1 finding(s) the review does not have (F7)",
-				"report of 'worker' has 2 Review responses line(s) without a valid answer",
+				"report of 'worker' has 2 Review responses line(s) without a valid answer; expected '- F<n>: <fixed|declined>: <note>' (first: \"- F1: FIXED\")",
 				"review named by the brief of 'worker' has 1 finding(s) without a number, so their responses cannot be checked",
 			},
+		},
+		{
+			name: "review responses section missing",
+			got:  ReviewResponseWarnings("worker", reportscan.ReviewResponsesResult{}, []int{1, 2}, nil, 0),
+			want: []string{
+				"report of 'worker' has no Review responses section, and the brief names a review to answer; expected '- F<n>: <fixed|declined>: <note>', one line per finding",
+			},
+		},
+		{
+			name: "review responses section missing with an unnumbered finding only",
+			got:  ReviewResponseWarnings("worker", reportscan.ReviewResponsesResult{}, nil, nil, 1),
+			want: []string{
+				"report of 'worker' has no Review responses section, and the brief names a review to answer; expected '- F<n>: <fixed|declined>: <note>', one line per finding",
+				"review named by the brief of 'worker' has 1 finding(s) without a number, so their responses cannot be checked",
+			},
+		},
+		{
+			name: "review responses silent for a review without findings",
+			got:  ReviewResponseWarnings("worker", reportscan.ReviewResponsesResult{}, nil, nil, 0),
+			want: []string{},
 		},
 		{
 			name: "reference parity missing",

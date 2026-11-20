@@ -17,6 +17,7 @@ import (
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/taskreport"
+	"github.com/djalmajr/soho/internal/text"
 )
 
 // Legacy sidecars did not record the executable bit. Preserve their content-only comparison.
@@ -52,7 +53,7 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 	if !ok {
 		return nil
 	}
-	owned, hasOwned, scopeOK := diffEffectiveOwned(sidecar, agent, o)
+	owned, hasOwned, scopeOK := diffEffectiveOwnedRead(sidecar, agent, o, auditOwnedSeams(env))
 	if !scopeOK {
 		return nil
 	}
@@ -69,7 +70,7 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 	markerValue, _ := o.Get("git_snapshot_file")
 	incomplete := markerValue == true && !snapshotPresent
 	// An unreadable optional scope cannot suppress the existing Owned audit.
-	orchestrator, _, _ := diffEffectiveSectionRead(sidecar, agent, o, commandOwnedSeams(), "orchestrator files")
+	orchestrator, _, _ := diffEffectiveSectionRead(sidecar, agent, o, auditOwnedSeams(env), "orchestrator files")
 	if !incomplete {
 		marker, err := os.OpenFile(sidecar+".diff-checked", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err != nil {
@@ -412,7 +413,8 @@ func diffEffectiveSectionRead(sidecar, agent string, o *jsonjs.Object, seams own
 	if err != nil {
 		return nil, false, false
 	}
-	if owned, found := diffSection(text, tree, goos, section); found {
+	recordedRoots := seams.recordedRootNames(sidecar, o, tree)
+	if owned, found := diffSectionNames(text, tree, recordedRoots, goos, section); found {
 		return owned, true, true
 	}
 	task, _ := stringField(o, "task_report")
@@ -506,7 +508,7 @@ func diffEffectiveSectionRead(sidecar, agent string, o *jsonjs.Object, seams own
 						if budgetExceeded {
 							return nil, false, false
 						}
-						if owned, found := diffSection(text, tree, goos, section); found {
+						if owned, found := diffSectionNames(text, tree, recordedRoots, goos, section); found {
 							return owned, true, true
 						}
 					}
@@ -524,7 +526,7 @@ func diffEffectiveSectionRead(sidecar, agent string, o *jsonjs.Object, seams own
 			}
 			return nil, false, false
 		}
-		if owned, found := diffSection(text, tree, goos, section); found {
+		if owned, found := diffSectionNames(text, tree, recordedRoots, goos, section); found {
 			return owned, true, true
 		}
 	}
@@ -572,6 +574,12 @@ type ownedReadSeams struct {
 	pointer           func(sd, agent string) (*jsonjs.Object, bool)
 	historyMembersMax int
 	historyBytesMax   int64
+	// auditRoots marks the settle/collect audit: its root-entry exception
+	// also accepts the exact root names the dispatch recorded (the snapshot
+	// keys and the Git baseline at git_head), read with env. The lint and the
+	// dispatch overlap reader keep the live-tree lookup.
+	auditRoots bool
+	env        platform.Env
 }
 
 // commandOwnedSeams is the command's walk over the ordinary scratch
@@ -579,6 +587,53 @@ type ownedReadSeams struct {
 // behavior.
 func commandOwnedSeams() ownedReadSeams {
 	return ownedReadSeams{rawLocate: core.ReadScratchReport, rawEntry: core.ReadScratchReport, brief: core.ReadScratchReport, pointer: commandTaskPointer}
+}
+
+// auditOwnedSeams is the settle/collect audit's walk: the command's ordinary
+// reads plus the recorded dispatch root names, so a declared root entry the
+// task deleted still counts as owned scope.
+func auditOwnedSeams(env platform.Env) ownedReadSeams {
+	seams := commandOwnedSeams()
+	seams.auditRoots = true
+	seams.env = env
+	return seams
+}
+
+// recordedRootNames is the exact root-entry source the audit adds to the live
+// tree: the root names of the recorded dispatch snapshot and of the Git
+// baseline at the recorded head. A reader without auditRoots checks nothing
+// extra; a missing snapshot or a failed Git read leaves the other source.
+func (s ownedReadSeams) recordedRootNames(sidecar string, o *jsonjs.Object, tree string) map[string]bool {
+	if !s.auditRoots || tree == "" {
+		return nil
+	}
+	names := map[string]bool{}
+	if snapshot, ok := snapshotFromSidecar(sidecar, o); ok {
+		for _, name := range snapshot.Keys() {
+			if diffRootEntryName(name) {
+				names[name] = true
+			}
+		}
+	}
+	if head, _ := stringField(o, "git_head"); diffHeadRE.MatchString(head) {
+		if out, ok := gitOutput(s.env, tree, "ls-tree", "--name-only", "-z", head); ok {
+			for _, raw := range strings.Split(out, "\x00") {
+				if name := strings.TrimSuffix(raw, "/"); diffRootEntryName(name) {
+					names[name] = true
+				}
+			}
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+// diffRootEntryName reports whether a recorded path is an entry at the tree
+// root: one name with no separator.
+func diffRootEntryName(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, `/\`)
 }
 
 // readOnlyOwnedSeams is the read-only (no source) walk: the capped
@@ -926,9 +981,62 @@ func diffOwned(text, tree, goos string) ([]string, bool) {
 	return diffSection(text, tree, goos, "owned files")
 }
 
-// diffOwnedExtension is the 1-10 character extension a path-shaped plain
-// token may end with.
-var diffOwnedExtension = regexp.MustCompile(`(?i)\.[a-z0-9]{1,10}$`)
+// diffOwnedExtension is the final extension a backticked token may end
+// with: 1 to 10 lowercase letters and digits. A capital makes the token
+// prose, such as the identifier ai.openChat or the name NOTES.MD.
+var diffOwnedExtension = regexp.MustCompile(`\.[a-z0-9]{1,10}$`)
+
+// diffOwnedPlainExtension is the same extension matched case-insensitively:
+// a plain (unquoted) token keeps the grammar it had before the backticked
+// rule, so a plain NOTES.MD names a path while a backticked one is prose.
+var diffOwnedPlainExtension = regexp.MustCompile(`(?i)\.[a-z0-9]{1,10}$`)
+
+// diffOwnedGlobCharacters are the glob characters a token may carry: a
+// pattern such as src/*.go, tool? or src/[ab].ts names a path.
+const diffOwnedGlobCharacters = "/*\\[]?"
+
+// diffOwnedItemLabelRE matches the positive section label a brief may put in
+// front of an item's value, such as "Owned:" or "May edit:" with or without
+// emphasis: a colon-terminated label word, then the value.
+var diffOwnedItemLabelRE = regexp.MustCompile(`^[*_]{0,2}[\p{L}][\p{L}\p{N} ]{0,40}:[*_]{0,2}[ \t]+`)
+
+// diffOwnedLabelMarkerRE strips a list marker before a section label is read.
+var diffOwnedLabelMarkerRE = regexp.MustCompile(`^(?:[-*+]|[0-9]+[.)])[ \t]+`)
+
+// diffOwnedNegativeLabels and diffOwnedPositiveLabels are the section label
+// vocabulary the Owned readers recognize. They are the same words the
+// dispatch lint and the dispatch overlap reader apply (ownedLabel,
+// internal/dispatch): a negative label excludes its line and the lines after
+// it until a positive label, a positive label opens the items that follow.
+var diffOwnedNegativeLabels = []string{"proibido", "proibidos", "forbidden", "nao tocar", "do not touch", "fora do escopo", "out of scope"}
+var diffOwnedPositiveLabels = []string{"pode tocar", "owned", "may edit", "arquivos proprios", "arquivos de posse"}
+
+// OwnedItemLabel classifies the section label at the start of an Owned files
+// or Orchestrator files line, so the audit keeps the same positive and
+// negative labels out of (or into) the owned set as the lint and the
+// dispatch overlap reader. Names are compared folded and without marks, so
+// Nao tocar and Não tocar are the same label.
+func OwnedItemLabel(line string) (negative, positive bool) {
+	line = strings.TrimSpace(line)
+	line = diffOwnedLabelMarkerRE.ReplaceAllString(line, "")
+	line = strings.TrimLeft(line, " \t*_")
+	colon := strings.IndexByte(line, ':')
+	if colon < 0 {
+		return false, false
+	}
+	name := text.JSLower(text.StripMarksNFD(strings.TrimRight(strings.TrimSpace(line[:colon]), "*_ \t")))
+	for _, label := range diffOwnedNegativeLabels {
+		if name == label {
+			return true, false
+		}
+	}
+	for _, label := range diffOwnedPositiveLabels {
+		if name == label {
+			return false, true
+		}
+	}
+	return false, false
+}
 
 // diffOwnedPlainToken trims the prose punctuation around a plain path token.
 // A parenthesis at either end is only prose when the token's parentheses are
@@ -941,11 +1049,92 @@ func diffOwnedPlainToken(token string) string {
 	return strings.Trim(name, "()")
 }
 
-// diffOwnedLooksPath reports whether a plain token names a path: a separator,
-// a glob, or a short file extension. Prose words never qualify.
-func diffOwnedLooksPath(token string) bool {
+// ownedTokenIsPath is the one path-shape rule for a backticked Owned token: a
+// path separator, a glob character, or a final extension of 1 to 10 lowercase
+// letters and digits. Prose punctuation around the token is not part of the
+// name, so a dotfile (.env) and a name with digits in the extension (.mp4)
+// qualify while an identifier (ai.openChat, attachSelectionToChat) and an
+// uppercase extension (.MD) do not.
+func ownedTokenIsPath(token string) bool {
 	name := diffOwnedPlainToken(token)
-	return name != "" && (strings.ContainsAny(name, "/*\\") || diffOwnedExtension.MatchString(name))
+	return name != "" && (strings.ContainsAny(name, diffOwnedGlobCharacters) || diffOwnedExtension.MatchString(name))
+}
+
+// ownedPlainTokenIsPath is the one path-shape rule for a plain (unquoted)
+// Owned token, the grammar plain tokens kept before the backticked rule: a
+// separator or a final extension of 1 to 10 letters and digits, matched
+// case-insensitively. Prose words never qualify.
+func ownedPlainTokenIsPath(token string) bool {
+	name := diffOwnedPlainToken(token)
+	return name != "" && (strings.ContainsAny(name, `/*\`) || diffOwnedPlainExtension.MatchString(name))
+}
+
+// OwnedPlainPaths reports the plain (unquoted) path tokens of one Owned item
+// in item order, each trimmed of prose punctuation. The audit, the lint and
+// the dispatch overlap warning all go through this rule.
+func OwnedPlainPaths(item string) []string {
+	var out []string
+	for _, token := range strings.Fields(item) {
+		if ownedPlainTokenIsPath(token) {
+			out = append(out, diffOwnedPlainToken(token))
+		}
+	}
+	return out
+}
+
+// OwnedQuotedPaths filters the backticked tokens of one Owned item: a token
+// counts when it is path-shaped, and an item that is only one backticked token
+// keeps it even without a shape, because a bare name such as Makefile or
+// README means the file at the worktree root. A token that is not path-shaped
+// still counts when root carries an entry of exactly that name, or when the
+// recorded root names carry it (the settled audit's dispatch snapshot and Git
+// baseline); root "" and nil names (a reader without them) apply the shape
+// rule and the live root only. Every Owned reader (the audit, the lint and the
+// dispatch overlap warning) goes through this rule.
+func OwnedQuotedPaths(item string, tokens []string, root string, recordedRoots map[string]bool) []string {
+	out := make([]string, 0, len(tokens))
+	only := len(tokens) == 1 && ownedQuotedAlone(item)
+	for _, token := range tokens {
+		if only || ownedTokenIsPath(token) || ownedRootEntryExists(root, recordedRoots, token) {
+			out = append(out, token)
+		}
+	}
+	return out
+}
+
+// ownedRootEntryExists reports whether the reader's root carries an entry of
+// exactly this name: the live tree it resolved, plus the exact root names it
+// recorded at dispatch (recordedRoots). root is the declared worktree a reader
+// already resolved, never the caller's own directory; a token with a glob
+// character or a separator is a pattern and not a root name, so recordedRoots
+// never answers for a nested path.
+func ownedRootEntryExists(root string, recordedRoots map[string]bool, name string) bool {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, diffOwnedGlobCharacters) {
+		return false
+	}
+	if recordedRoots[name] {
+		return true
+	}
+	if root == "" {
+		return false
+	}
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return false
+	}
+	defer r.Close()
+	if _, err := r.Lstat(name); err != nil {
+		return false
+	}
+	return true
+}
+
+// ownedQuotedAlone reports whether the item text outside its backticked spans
+// is empty or only sentence punctuation, once a positive section label
+// ("Owned:") is stripped: the item names nothing but one token.
+func ownedQuotedAlone(item string) bool {
+	item = diffOwnedItemLabelRE.ReplaceAllString(strings.TrimSpace(item), "")
+	return strings.Trim(diffTokenRE.ReplaceAllString(item, ""), " \t.,;:") == ""
 }
 
 // diffOwnedNoFilesWords are the empty-scope words the dispatch lint already
@@ -978,9 +1167,11 @@ func diffOwnedDeclaresNoFiles(item string) bool {
 }
 
 // ownedItemLintTokens returns the path tokens of one Owned item with the
-// same rules the audit parser uses. An exempt item (empty scope, inherit,
-// new tests, or a continuation line) contributes no tokens and no warning.
-func ownedItemLintTokens(line string) ([]string, bool) {
+// same rules the audit parser uses, root being the worktree whose root the
+// reader checks ("" applies the shape rule only). An exempt item (empty
+// scope, inherit, new tests, or a continuation line) contributes no tokens
+// and no warning.
+func ownedItemLintTokens(line, root string) ([]string, bool) {
 	if strings.TrimSpace(line) == "- inherit: previous brief" || !diffBulletRE.MatchString(line) {
 		return nil, true
 	}
@@ -989,28 +1180,22 @@ func ownedItemLintTokens(line string) ([]string, bool) {
 		return nil, true
 	}
 	if matches := diffTokenRE.FindAllStringSubmatch(line, -1); len(matches) > 0 {
-		// Backticked tokens count exactly as written.
+		// Backticked tokens count exactly as written when they name a path.
 		tokens := make([]string, 0, len(matches))
 		for _, m := range matches {
 			tokens = append(tokens, m[1])
 		}
-		return tokens, false
+		return OwnedQuotedPaths(item, tokens, root, nil), false
 	}
-	var tokens []string
-	for _, token := range strings.Fields(item) {
-		if diffOwnedLooksPath(token) {
-			tokens = append(tokens, diffOwnedPlainToken(token))
-		}
-	}
-	return tokens, false
+	return OwnedPlainPaths(item), false
 }
 
 // OwnedItemLintMessages returns the short warning for an Owned section line
 // that names no path. The caller prefixes the brief path and item label.
-func OwnedItemLintMessages(lines []string) []string {
+func OwnedItemLintMessages(lines []string, root string) []string {
 	var out []string
 	for _, line := range lines {
-		tokens, skip := ownedItemLintTokens(line)
+		tokens, skip := ownedItemLintTokens(line, root)
 		if skip {
 			continue
 		}
@@ -1025,11 +1210,11 @@ func OwnedItemLintMessages(lines []string) []string {
 // OwnedBareNames returns the distinct bare names in the Owned items. A bare
 // name has no path separator and no glob character: it means the file at the
 // worktree root. The caller checks the root and decides whether to warn.
-func OwnedBareNames(lines []string) []string {
+func OwnedBareNames(lines []string, root string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, line := range lines {
-		tokens, skip := ownedItemLintTokens(line)
+		tokens, skip := ownedItemLintTokens(line, root)
 		if skip {
 			continue
 		}
@@ -1053,6 +1238,14 @@ func diffOwnedCut(value string, max int) string {
 }
 
 func diffSection(text, tree, goos, section string) ([]string, bool) {
+	return diffSectionNames(text, tree, nil, goos, section)
+}
+
+// diffSectionNames is diffSection with the exact root names a reader recorded
+// at dispatch (nil keeps the live-tree lookup only). The settled audit passes
+// the snapshot and Git-baseline names, so a tracked root entry the task
+// deleted still counts as declared scope.
+func diffSectionNames(text, tree string, recordedRoots map[string]bool, goos, section string) ([]string, bool) {
 	lines := diffMarkdown(text)
 	// A composed role may itself contain headings. Only its brief is scope.
 	for i, line := range lines {
@@ -1062,6 +1255,11 @@ func diffSection(text, tree, goos, section string) ([]string, bool) {
 		}
 	}
 	items, found, ownedLevel := []string{}, false, 0
+	// labeled is true in the two sections that share the Owned item rules;
+	// excluded carries a negative label over the following lines the way the
+	// lint's OwnedSectionLines does.
+	labeled := ownedItemRules(section)
+	excluded := false
 	for _, line := range lines {
 		if title, level := diffHeading(line); level != 0 {
 			if title == "report contract" && level == 1 {
@@ -1069,9 +1267,11 @@ func diffSection(text, tree, goos, section string) ([]string, bool) {
 			}
 			if ownedLevel > 0 && level <= ownedLevel {
 				ownedLevel = 0
+				excluded = false
 			}
 			if title == section {
 				found, ownedLevel = true, level
+				excluded = false
 			}
 			continue
 		}
@@ -1080,6 +1280,17 @@ func diffSection(text, tree, goos, section string) ([]string, bool) {
 		}
 		if section == "owned files" && strings.TrimSpace(line) == "- inherit: previous brief" {
 			items = append(items, "\x00inherit previous brief")
+			continue
+		}
+		if labeled {
+			if negative, positive := OwnedItemLabel(line); negative {
+				excluded = true
+				continue
+			} else if positive {
+				excluded = false
+			}
+		}
+		if excluded {
 			continue
 		}
 		push := func(raw string) {
@@ -1092,31 +1303,43 @@ func diffSection(text, tree, goos, section string) ([]string, bool) {
 			}
 			items = append(items, value)
 		}
+		item := strings.TrimSpace(diffBulletRE.ReplaceAllString(line, ""))
 		matches := diffTokenRE.FindAllStringSubmatch(line, -1)
 		if len(matches) > 0 {
+			tokens := make([]string, 0, len(matches))
 			for _, m := range matches {
-				push(m[1])
+				tokens = append(tokens, m[1])
 			}
-		} else if item := strings.TrimSpace(diffBulletRE.ReplaceAllString(line, "")); item != "" {
+			if labeled {
+				tokens = OwnedQuotedPaths(item, tokens, tree, recordedRoots)
+			}
+			for _, token := range tokens {
+				push(token)
+			}
+		} else if item != "" {
 			if diffNewTestsItemRE.MatchString(item) {
 				// The prose item names a kind of file, not a path: it maps
 				// to the new-tests pattern, not the first-word pattern a
 				// path item yields.
 				items = append(items, diffOwnedNewTests)
-			} else if section != "owned files" && section != "orchestrator files" {
+			} else if !labeled {
 				push(strings.Fields(item)[0])
 			} else {
 				// Both Owned files and Orchestrator files count every
 				// path-shaped plain token; prose words alone own nothing.
-				for _, token := range strings.Fields(item) {
-					if diffOwnedLooksPath(token) {
-						push(diffOwnedPlainToken(token))
-					}
+				for _, token := range OwnedPlainPaths(item) {
+					push(token)
 				}
 			}
 		}
 	}
 	return items, found
+}
+
+// ownedItemRules reports whether a section shares the Owned item rules: Owned
+// files and Orchestrator files do, every other section keeps its own.
+func ownedItemRules(section string) bool {
+	return section == "owned files" || section == "orchestrator files"
 }
 
 // diffOwnedNewTests is the Owned pattern the prose items "new tests" and

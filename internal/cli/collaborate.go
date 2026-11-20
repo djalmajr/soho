@@ -95,7 +95,7 @@ func cmdCollaborate(argv []string, cfg *core.Config, env platform.Env, cwd strin
 		if missing := dispatch.BriefMissingSections(string(raw), false, aliases); missing != "" {
 			return fail(fmt.Errorf("incomplete collaboration brief:%s", missing))
 		}
-		paths := ownedPaths(string(raw), aliases)
+		paths := concreteOwnedPaths(string(raw), aliases)
 		if len(paths) == 0 {
 			return fail(errors.New("brief needs concrete owned input files"))
 		}

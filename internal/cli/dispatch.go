@@ -1940,8 +1940,8 @@ func emitDispatchResult(agent, role, kind, composed, report, taskReport, status 
 func warnOwnedOverlap(brief, role, agent, sd string, ctx *core.Config, env platform.Env, cwd, workerCwd string) {
 	aliases, _ := dispatch.ParseBriefLintAliases(core.Cfg(ctx, "brief_lint_aliases", "", env))
 	body, _ := platform.ReadTextFile(brief)
-	mine := ownedPaths(body, aliases)
 	mineTree, _ := effectiveBriefTree(body, workerCwd)
+	mine := ownedPathsIn(body, aliases, mineTree, false)
 	if gittree.InheritsPrevious(body) {
 		if inherited, ok := dispatchPreviousOwned(sd, agent, mineTree, taskreport.ReadTaskReportPointer(sd, agent)); ok {
 			mine = append(mine, inherited...)
@@ -1978,7 +1978,7 @@ func warnOwnedOverlap(brief, role, agent, sd string, ctx *core.Config, env platf
 		if !dispatch.SamePath(peerTree, mineTree, platform.Current()) {
 			continue
 		}
-		theirs := ownedPaths(pendingBody, aliases)
+		theirs := ownedPathsIn(pendingBody, aliases, peerTree, false)
 		if gittree.InheritsPrevious(pendingBody) {
 			if resolved, ok := gittree.EffectiveOwned(gittree.Sidecar(sd, report), cols[0]); ok {
 				theirs = resolved
@@ -2099,6 +2099,12 @@ func ownedAssignmentValues(line string) (values []bool, pending bool) {
 }
 
 func ownedPaths(body string, aliases map[string][]string) []string {
+	return ownedPathsIn(body, aliases, "", false)
+}
+
+// ownedPathsIn is ownedPaths with the tree whose root settles an unshaped
+// backticked token and the grammar the caller needs (concrete: below).
+func ownedPathsIn(body string, aliases map[string][]string, tree string, concrete bool) []string {
 	lines := strings.Split(body, "\n")
 	start, level := -1, 0
 	for i, line := range lines {
@@ -2124,11 +2130,11 @@ func ownedPaths(body string, aliases map[string][]string) []string {
 		// The trailing slash is kept: it marks a directory owned in the brief,
 		// and pathsCross decides whether a glob can reach a file inside it.
 		trimmed := strings.TrimRight(p, ".,;:")
-		// A Windows drive-prefixed root (D:\a\b\c) carries no slash or dot and
-		// would be mistaken for a word: the current platform's own
-		// absoluteness rule admits it, so a tree-root entry still converts to
-		// the root overlap form (DJA-661, native Windows).
-		if trimmed == "" || strings.Contains(trimmed, " ") || ownershipStopwords[strings.ToLower(trimmed)] || !(strings.ContainsAny(trimmed, "/.") || gittree.PathEntryAbsolute(trimmed, platform.Current())) || seen[strings.TrimRight(trimmed, "/")] {
+		// The concrete-input reader also needs a shape, as it did on the base.
+		if concrete && !strings.ContainsAny(trimmed, "/.") && !gittree.PathEntryAbsolute(trimmed, platform.Current()) {
+			return
+		}
+		if trimmed == "" || strings.Contains(trimmed, " ") || ownershipStopwords[strings.ToLower(trimmed)] || seen[strings.TrimRight(trimmed, "/")] {
 			return
 		}
 		seen[strings.TrimRight(trimmed, "/")] = true
@@ -2161,14 +2167,15 @@ func ownedPaths(body string, aliases map[string][]string) []string {
 			}
 		}
 		pendingValue = nextPending
-		for i, m := range spans {
-			if skip[i] {
+		quoted := make([]string, 0, len(spans))
+		for k, m := range spans {
+			if skip[k] {
 				continue
 			}
-			push(line[m[0]+1 : m[1]-1])
+			quoted = append(quoted, line[m[0]+1:m[1]-1])
 		}
-		if regexp.MustCompile(`^\s*(?:[-*+]|\d+[.)])\s+[^` + "`" + `].*$`).MatchString(line) {
-			push(item)
+		for _, token := range ownedItemValues(line, item, quoted, len(spans), tree, concrete) {
+			push(token)
 		}
 	}
 	return out
@@ -2806,6 +2813,35 @@ func cmdRun(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 		_ = stats.CmdCollect([]string{name}, stats.CommandContext{Config: ctx, Env: env, Cwd: cwd, FrictionLog: frictionLogPath})
 	}
 	return 0
+}
+
+// concreteOwnedPaths is collaborate start's own call path for the concrete
+// input files an assignment needs. It keeps the contract that reader had
+// before the audit and the overlap warning tightened the shared grammar: a
+// value counts when it carries a separator or a dot (or the platform's own
+// absolute spelling), and a plain list item is one value, so
+// build.spec-template still names a concrete file. Nothing else calls it.
+func concreteOwnedPaths(body string, aliases map[string][]string) []string {
+	return ownedPathsIn(body, aliases, "", true)
+}
+
+// ownedItemValues is the value list of one Owned item: the shared grammar
+// (path-shaped tokens, plus the plain tokens of a plain list item), or, with
+// concrete, every remaining backticked span as written and a plain list item
+// as one value, which is the contract ownedPathsIn had on the base.
+func ownedItemValues(line, item string, quoted []string, spans int, tree string, concrete bool) []string {
+	if concrete {
+		out := append([]string{}, quoted...)
+		if regexp.MustCompile("^\\s*(?:[-*+]|\\d+[.)])\\s+[^`].*$").MatchString(line) {
+			out = append(out, item)
+		}
+		return out
+	}
+	tokens := gittree.OwnedQuotedPaths(item, quoted, tree, nil)
+	if spans == 0 && regexp.MustCompile(`^\s*(?:[-*+]|\d+[.)])\s+`).MatchString(line) {
+		tokens = append(tokens, gittree.OwnedPlainPaths(item)...)
+	}
+	return tokens
 }
 
 func splitRunArgs(argv []string) ([]string, []string, bool) {

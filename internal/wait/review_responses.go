@@ -73,7 +73,7 @@ func checkReviewResponses(sd, agent, report, reportText string, line *jsonjs.Obj
 		"unmarked", responses.Unmarked,
 		"unnumbered", unnumbered,
 	))
-	warnReviewResponses(sd, agent, report, ReviewResponseWarnings(agent, missing, unknown, responses.Unmarked, unnumbered))
+	warnReviewResponses(sd, agent, report, ReviewResponseWarnings(agent, responses, missing, unknown, unnumbered))
 }
 
 // reviewWarning is one kind of warning: the key the marker remembers, so a kind

@@ -58,7 +58,7 @@ This file invents no rename or regrid APIs and documents no terminal-level or pa
 
 ## Test layers spelling
 
-Use the exact canonical spellings `NOT RUN: reason` and `n/a: reason` in status lines and examples; do not write `N/A` or `not_run`.
+Use the exact canonical spellings `NOT RUN: reason` and `n/a: reason` in status lines and examples; do not write `N/A` or `not_run`. The same parser also accepts the text in parentheses — `NOT RUN (reason)`, `PASS (note)` — as the reason or note, after `: `, ` — `, ` – ` or ` (`.
 
 ## Open questions
 

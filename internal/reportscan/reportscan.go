@@ -179,8 +179,8 @@ type TestLayersResult struct {
 // TestLayers parses the report's ## Test layers section, outside fenced code
 // blocks: one line per layer in the exact form `- <layer>: PASS|FAIL|NOT RUN|BLOCKED|n/a`;
 // FAIL, NOT RUN and BLOCKED need a reason with at least one letter or digit
-// after ": ", " — " or " – ", and PASS and n/a accept an ignored note
-// after the same separators. Any
+// after ": ", " — ", " – " or " (", and PASS and n/a accept an ignored note
+// after the same separators. A parenthesized text closes with ")". Any
 // other list line in the section is unmarked, and the section ends at the
 // next # or ## title. The form is exact on purpose: the report is not prose,
 // so a formatted or free-text line is never a result.
@@ -287,17 +287,26 @@ func parseLayerLine(trim string, out *TestLayersResult) bool {
 }
 
 // matchLayerResult matches the exact result form: the bare result, or the
-// result followed by an accepted separator and a reason or note. Free text
-// without a separator is not the form.
+// result followed by an accepted separator and a reason or note. A
+// parenthesized text is the note or the reason, and it closes with ")". Free
+// text without a separator is not the form.
 func matchLayerResult(rest string) (result, reason string, ok bool) {
 	for _, candidate := range []string{"NOT RUN", "PASS", "FAIL", "BLOCKED", "n/a"} {
 		if rest == candidate || rest == candidate+"." {
 			return candidate, "", true
 		}
-		for _, separator := range []string{": ", " — ", " – "} {
-			if strings.HasPrefix(rest, candidate+separator) {
-				return candidate, strings.TrimSpace(rest[len(candidate)+len(separator):]), true
+		for _, separator := range []string{": ", " — ", " – ", " ("} {
+			if !strings.HasPrefix(rest, candidate+separator) {
+				continue
 			}
+			text := strings.TrimSpace(rest[len(candidate)+len(separator):])
+			if separator == " (" {
+				if !strings.HasSuffix(text, ")") {
+					return "", "", false
+				}
+				text = strings.TrimSpace(strings.TrimSuffix(text, ")"))
+			}
+			return candidate, text, true
 		}
 	}
 	return "", "", false

@@ -260,6 +260,23 @@ func TestTestLayers(t *testing.T) {
 			found: true, pass: 1, na: 1,
 		},
 		{
+			name:  "a parenthesized note and reason count",
+			text:  "## Test layers\n- typecheck: PASS (bun run typecheck, 0 erros)\n- integration: n/a (not a CLI project)\n- e2e: FAIL (the suite failed)\n- contract: NOT RUN (sh not in PATH)\n- mutation: BLOCKED (the browser is not installed)\n",
+			found: true, pass: 1, fail: 1, notRun: 1, blocked: 1, na: 1,
+			nonPass: []LayerResult{{Name: "e2e", Result: "FAIL"}, {Name: "contract", Result: "NOT RUN"}, {Name: "mutation", Result: "BLOCKED"}},
+		},
+		{
+			name:  "a parenthesized reason counts with a control character in the layer name",
+			text:  "## Test layers\n- unit\tlocal: FAIL (a reason)\n",
+			found: true, fail: 1,
+			nonPass: []LayerResult{{Name: "unit\tlocal", Result: "FAIL"}},
+		},
+		{
+			name:  "an unclosed parenthesized text is unmarked",
+			text:  "## Test layers\n- unit: PASS (bun run typecheck\n- e2e: FAIL (no closing\n",
+			found: true, unmarked: 2,
+		},
+		{
 			name: "a section inside a fenced block does not count",
 			text: "```\n## Test layers\n- unit: PASS\n```\n",
 		},
@@ -370,8 +387,14 @@ func TestTestLayersSeparators(t *testing.T) {
 				}
 			})
 		}
+		t.Run(result+" (", func(t *testing.T) {
+			got := TestLayers("## Test layers\n- unit: " + result + " (bun run typecheck, 0 erros)\n")
+			if got.Unmarked != 0 || got.Pass+got.Fail+got.NotRun+got.Blocked+got.NA != 1 {
+				t.Fatalf("result=%q parenthesized: %+v", result, got)
+			}
+		})
 	}
-	for _, value := range []string{"PASSED", "PASS!", "PASS - note", "n/a - note", "FAIL - reason", "NOT RUN - reason", "BLOCKED - reason", "FAIL", "NOT RUN", "BLOCKED", "NOT RUN — ...", "PASS—note", "PASS —note", "PASS— note"} {
+	for _, value := range []string{"PASSED", "PASS!", "PASS - note", "n/a - note", "FAIL - reason", "NOT RUN - reason", "BLOCKED - reason", "FAIL", "NOT RUN", "BLOCKED", "NOT RUN — ...", "PASS—note", "PASS —note", "PASS— note", "PASS (note", "FAIL ()", "NOT RUN ()", "BLOCKED ()"} {
 		t.Run("invalid "+value, func(t *testing.T) {
 			got := TestLayers("## Test layers\n- unit: " + value + "\n")
 			if got.Unmarked != 1 {
