@@ -242,10 +242,12 @@ func writePair(raw, key, value string) string {
 
 // CmdPlan simulates config/session writes in memory and emits the instruction/hook diffs; it never mutates the checkout.
 func CmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string) {
-	cmdPlan(args, ctx, env, cwd, &setupTracking{})
+	cache := &setupTracking{}
+	implicitLocal := implicitLocalSetup(platform.ProjectRoot(env, cwd), args, ctx, env, cache)
+	cmdPlan(args, ctx, env, cwd, cache, implicitLocal)
 }
 
-func cmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string, cache *setupTracking) {
+func cmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string, cache *setupTracking, implicitLocal bool) {
 	// The plan shows what the migration would move, without moving it.
 	// Inside the skill the previews never run: they would call herdr, and
 	// the plan's own writes keep the refusal that follows.
@@ -320,7 +322,10 @@ func cmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string, cach
 	if len(sess) > 0 && sessionFile == "" {
 		platform.DieFriction("setup --plan: --session-set needs a Herdr workspace (none resolvable here)", 2)
 	}
-	modeLocal := resolveSetupMode(local, target, ctx, env, "setup --plan")
+	if implicitLocal {
+		_, _ = fmt.Fprintln(platform.Stderr, implicitLocalNotice)
+	}
+	modeLocal := implicitLocal || resolveSetupMode(local, target, ctx, env, "setup --plan")
 	var localPlan *localExcludePlan
 	if modeLocal {
 		refuseUnignorableStateDir(root, ctx, env, cwd, "setup --plan", false)
