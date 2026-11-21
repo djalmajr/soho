@@ -71,7 +71,8 @@ func TestLintReviewWorktreeAdvisory(t *testing.T) {
 	}
 
 	// A review brief that declares the line is silent.
-	writeLintWorktreeFile(t, brief, "Worktree: "+root+"\n"+clean)
+	// Backtick-quoted, so a temporary root with a space is read whole.
+	writeLintWorktreeFile(t, brief, "Worktree: `"+root+"`\n"+clean)
 	env := base.Clone()
 	env["SOHO_BRIEF_LINT"] = "warn"
 	rc, out, errText := run([]string{"lint", brief, "--role", "reviewer"}, env)

@@ -52,13 +52,13 @@ func TestAudit539AuthorSelection(t *testing.T) {
 				}
 			}
 			base := filepath.Join(f.state, "ws", "briefs", "author-20200101T100000")
-			writeRoleFixture(t, base+".md", fmt.Sprintf("You are running as the `%s` role\nWorktree: %s\nType: backend\n", role, authorTree))
+			writeRoleFixture(t, base+".md", fmt.Sprintf("You are running as the `%s` role\nWorktree: `%s`\nType: backend\n", role, authorTree))
 			writeRoleFixture(t, base+".dispatch.json", fmt.Sprintf(`{"version":1,"submission":"accepted","kind":"pi","model":"author-model","effort":"","role":%q}`, role))
-			writeRoleFixture(t, f.brief, "Type: review\nWorktree: "+tree+"\nReview the completed change.\n")
+			writeRoleFixture(t, f.brief, "Type: review\nWorktree: `"+tree+"`\nReview the completed change.\n")
 			dispatchedRole := "reviewer"
 			if mode == "non-review" {
 				dispatchedRole = "implementer"
-				writeRoleFixture(t, f.brief, "Type: backend\nWorktree: "+tree+"\nImplement the change.\n")
+				writeRoleFixture(t, f.brief, "Type: backend\nWorktree: `"+tree+"`\nImplement the change.\n")
 			}
 			code, out, msg := f.run(t, "worker", f.brief, "--role", dispatchedRole, "--no-wait")
 			if code != 0 {

@@ -43,7 +43,7 @@ func TestReviewAuthorWarningRepository(t *testing.T) {
 			sidecar := filepath.Join(dir, "review.dispatch.json")
 			body := "Review.\n"
 			if !tc.noLine {
-				body = "Worktree: " + tc.tree + "\n"
+				body = "Worktree: `" + tc.tree + "`\n"
 			}
 			if tc.author {
 				body += "Author: orchestrator\n"

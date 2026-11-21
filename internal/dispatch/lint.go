@@ -486,6 +486,11 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 		bodyBytes = nil
 	}
 	body := strings.ToValidUTF8(string(bodyBytes), "\uFFFD")
+	// A path with spaces in Worktree: or Review: is read only up to its
+	// first field. Say so when the full path names something real and the
+	// first field does not; the parsed value is unchanged and this is never
+	// a strict refusal.
+	result.Warnings = append(result.Warnings, spacedPathHints(brief, body)...)
 	if !options.PathsOnly && !options.PreviousTask && gittree.InheritsPrevious(body) {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("brief %s inherits Owned files but the worker has no previous task in this worktree", brief))
 	}
@@ -617,6 +622,59 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 	}
 	result.MissingMessage += message
 	return result
+}
+
+// spacedPathHints names the one-line correction for an unquoted Worktree:
+// or Review: value whose full path exists while its first field does not.
+// The two fields keep their grammar: a quoted value is already whole, and
+// when the first field exists the reader's value names a real path.
+func spacedPathHints(brief, body string) []string {
+	lines := strings.Split(body, "\n")
+	fenced := briefFenceMask(lines)
+	hints := []string{}
+	for _, field := range []string{"Worktree", "Review"} {
+		prefix := field + ":"
+		seen := false
+		for i, line := range lines {
+			if seen || fenced[i] || !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			seen = true
+			value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			if value == "" || strings.HasPrefix(value, "`") {
+				break
+			}
+			fields := strings.Fields(value)
+			if len(fields) == 0 {
+				break
+			}
+			if _, err := os.Stat(fields[0]); err == nil {
+				break
+			}
+			full := value
+			if at := strings.Index(full, " ("); at >= 0 {
+				full = full[:at]
+			}
+			full = strings.TrimSpace(full)
+			if full == "" || full == fields[0] {
+				break
+			}
+			// Only an absolute spelling that can be checked as written gets a
+			// hint. A relative value can resolve to a different object when
+			// the path is cleaned, so it stays silent rather than naming one.
+			if !filepath.IsAbs(full) {
+				break
+			}
+			if _, err := os.Stat(full); err != nil {
+				break
+			}
+			// The hint names no path at all: only the escaped brief locator,
+			// the field and a literal placeholder. It cannot recommend a path
+			// that differs from the one that was checked.
+			hints = append(hints, fmt.Sprintf("brief %s line %d: the %s path contains a space and is read only up to it; write the whole path in backticks: %s: `/absolute/path`", text.QuoteControls(brief), i+1, field, field))
+		}
+	}
+	return hints
 }
 
 // lineCitesPath reports whether a brief line already spells out the absolute

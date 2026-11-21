@@ -23,6 +23,7 @@ import (
 	"github.com/djalmajr/soho/internal/job"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
+	"github.com/djalmajr/soho/internal/text"
 )
 
 // jobFix is one machine with an isolated HOME/XDG and a job_repos_root under
@@ -995,6 +996,55 @@ func TestJobUsage(t *testing.T) {
 	}
 }
 
+// jobLauncherDir returns a writable directory whose own path has no
+// spaces. t.TempDir inherits a spaced TMPDIR, but the supervisor launcher
+// must be a pane-run-safe argv[0] for the ordinary start fixtures.
+func jobLauncherDir(t *testing.T) string {
+	t.Helper()
+	base := t.TempDir()
+	for strings.ContainsAny(base, " \t\r\n") {
+		parent := filepath.Dir(base)
+		if parent == base {
+			t.Fatalf("no space-free ancestor of %q", base)
+		}
+		base = parent
+	}
+	dir, err := os.MkdirTemp(base, "soh493-launch-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// jobLauncherStub is a regular file with the platform's native binary
+// header: enough for platform.LauncherPath's stat and header check. The
+// fake Herdr never executes it; only its path is passed to pane run.
+func jobLauncherStub(t *testing.T, dir string) string {
+	t.Helper()
+	name := "soho"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(dir, name)
+	var data []byte
+	switch runtime.GOOS {
+	case "windows":
+		data = make([]byte, 0x44)
+		copy(data, "MZ")
+		data[0x3c] = 0x40
+		copy(data[0x40:], []byte{'P', 'E', 0, 0})
+	case "linux":
+		data = []byte{0x7f, 'E', 'L', 'F', 2, 1, 1, 0}
+	default:
+		data = []byte{0xfe, 0xed, 0xfa, 0xcf}
+	}
+	if err := os.WriteFile(path, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 // jobStartEE stages a non-dry-run job start: a real git on the fixture
 // PATH, a local bare remote with a main branch, an existing checkout
 // cloned from it, and fake gh and herdr binaries.
@@ -1116,10 +1166,8 @@ func newJobStartEE(t *testing.T) *jobStartEE {
 			env[key] = value
 		}
 	}
-	selfExe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("resolve the test executable: %v", err)
-	}
+	selfExe := jobLauncherStub(t, jobLauncherDir(t))
+	env["SOHO_BIN"] = selfExe
 	return &jobStartEE{f: f, env: env, gitEnv: gitEnv, bare: bare, checkout: checkout, fakeDir: fakeDir, selfExe: selfExe}
 }
 
@@ -1175,6 +1223,51 @@ func (ee *jobStartEE) confirmLaunches() func() {
 	return func() {
 		close(done)
 		<-finished
+	}
+}
+
+// A launcher herdr pane run would refuse is rejected before any workspace
+// call, checkout, worktree or job state: the diagnostic names the resolved
+// path on one line and keeps the pane-run boundary's exit code.
+func TestJobStartRefusesSpacedLauncherBeforeAnything(t *testing.T) {
+	for _, tc := range []struct {
+		name, component string
+		skipWindows     bool
+	}{
+		{"ordinary space", "soho with space", false},
+		{"repeated spaces", "soho  with  space", false},
+		{"unicode", "espaço livre", false},
+		{"over 200 characters", strings.Repeat("p", 145) + " long", false},
+		{"backtick", "soho`with`tick", false},
+		{"tab", "soho\twith tab", true},
+		{"newline", "soho\nwith line", true},
+		{"carriage return", "soho\rwith return", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" && tc.skipWindows {
+				t.Skip("Windows filenames cannot contain this control character")
+			}
+			tee := newJobStartEE(t)
+			spaced := filepath.Join(t.TempDir(), tc.component)
+			if err := os.MkdirAll(spaced, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			launcher := jobLauncherStub(t, spaced)
+			tee.env["SOHO_BIN"] = launcher
+			code, out, errOut := tee.start(t, tee.f.briefFile(t, jobStartBrief))
+			want := "soho: job: the soho executable path contains characters herdr pane run refuses (" + text.QuoteControls(launcher) + "); install soho in a directory without spaces or set SOHO_BIN to one\n"
+			if code != job.ExitHerdr || out != "" || errOut != want || strings.Count(errOut, "\n") != 1 {
+				t.Fatalf("code=%d out=%q err=%q, want exit %d and exactly %q on one line", code, out, errOut, job.ExitHerdr, want)
+			}
+			if calls := tee.herdrCalls(t); len(calls) != 0 {
+				t.Fatalf("herdr calls = %+v, want none before the refusal", calls)
+			}
+			for _, path := range []string{filepath.Join(tee.checkout, ".worktrees", "job-job-1"), filepath.Join(tee.checkout, ".soho", "jobs", "job-1")} {
+				if _, err := os.Stat(path); err == nil {
+					t.Errorf("a start side effect exists at %q", path)
+				}
+			}
+		})
 	}
 }
 

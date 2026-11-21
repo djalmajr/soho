@@ -60,10 +60,10 @@ func TestDispatchAmendKeepsWorktreeAndAuthor(t *testing.T) {
 	stable := filepath.Join(f.state, "ws", "reports", "worker-20200101T100000.current.md")
 
 	// The author's accepted edit-role brief declares the worktree.
-	writeRoleFixture(t, filepath.Join(dir, "author-20200101T100000.md"), "You are running as the `implementer` role\nType: backend\nWorktree: "+tree+"\n")
+	writeRoleFixture(t, filepath.Join(dir, "author-20200101T100000.md"), "You are running as the `implementer` role\nType: backend\nWorktree: `"+tree+"`\n")
 	writeRoleFixture(t, filepath.Join(dir, "author-20200101T100000.dispatch.json"), `{"version":1,"submission":"accepted","kind":"pi","model":"qwen-author","role":"implementer"}`)
 	// The worker's open task: a review brief that declares the same worktree.
-	writeRoleFixture(t, filepath.Join(dir, "worker-20200101T100000.md"), "You are running as the `reviewer` role\nType: review\nWorktree: "+tree+"\n")
+	writeRoleFixture(t, filepath.Join(dir, "worker-20200101T100000.md"), "You are running as the `reviewer` role\nType: review\nWorktree: `"+tree+"`\n")
 	writeRoleFixture(t, filepath.Join(dir, "worker-20200101T100000.dispatch.json"), `{"version":1,"submission":"accepted","kind":"codex","model":"rev-model","role":"reviewer"}`)
 	pointer, err := json.Marshal(map[string]any{"version": 1, "task_report": stable, "current": report, "history": []string{}})
 	if err != nil {

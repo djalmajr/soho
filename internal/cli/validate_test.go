@@ -1406,7 +1406,7 @@ func TestValidateLayerLogSwapDoesNotChangeTheResult(t *testing.T) {
 	}
 	logPath := filepath.Join(env["SOHO_DIR"], "validation", stamp, "unit.log")
 	content := "## Test layers\n" +
-		"- unit: `ln -sfn " + decoy + " " + logPath + "`\n" +
+		"- unit: `ln -sfn " + reopenShellQuote(decoy) + " " + reopenShellQuote(logPath) + "`\n" +
 		"- integration: n/a: r\n- contract: n/a: r\n- e2e: n/a: r\n- mutation: n/a: r\n"
 	writeValidationMD(t, cwd, content)
 	code, out, errOut := runIn(t, []string{"validate", "--layer", "unit"}, env, cwd)

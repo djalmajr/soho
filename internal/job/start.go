@@ -2,6 +2,7 @@ package job
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/text"
 )
 
 // start.go is the non-dry-run `job start`: it probes the Herdr server,
@@ -84,6 +86,15 @@ func NewStarter(env platform.Env, machine Machine, selfExe string, stateRoot fun
 // releases it with the process, and a later duplicate start or cancel finds
 // it free and recovers the job.
 func (s Starter) Start(req StartRequest) (State, *Store, error) {
+	// 0. The launcher is argv[0] of the supervisor pane run. The pane-run
+	// boundary refuses an unsafe argument after the workspace was created;
+	// preflight it with the same rule before any call or write, so a spaced
+	// install path leaves no checkout, job directory or workspace behind.
+	if !PaneRunArgSafe(s.SelfExe) {
+		msg := fmt.Sprintf("job: the soho executable path contains characters herdr pane run refuses (%s); install soho in a directory without spaces or set SOHO_BIN to one", text.QuoteControls(s.SelfExe))
+		return State{}, nil, herdrExit(msg)
+	}
+
 	// 1. The server must be reachable before anything is written or run;
 	// the reachability query is the only subprocess of this step.
 	if !s.Herdr.ServerReachable() {

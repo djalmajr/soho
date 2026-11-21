@@ -341,7 +341,7 @@ func reportTaskRoleFixture(t *testing.T) (platform.Env, string, string, string) 
 	review := filepath.Join(cwd, "review.md")
 	writeReportFixtureFile(t, report, "# Worker report\n- [partial] host result pending\n")
 	writeReportFixtureFile(t, review, "findings: 1 (P0 0, P1 0, P2 1, P3 0) | verdict: fail\n- [F1] [origin: brief] [class: logic] fix it\n")
-	writeReportFixtureFile(t, filepath.Join(sd, "briefs", "worker-report.md"), "Review: "+review+"\n")
+	writeReportFixtureFile(t, filepath.Join(sd, "briefs", "worker-report.md"), "Review: `"+review+"`\n")
 	writeReportFixtureFile(t, core.LastReportPath(sd, "worker"), report+"\n")
 	header := "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\n"
 	row := strings.Join([]string{"worker", "p1", "pi", "reviewer", "by model", "", cwd, "2026", "model-x", "unsandboxed", "", "build"}, "\t")
