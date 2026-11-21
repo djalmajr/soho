@@ -276,10 +276,10 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		}
 		core.DieFriction("dispatch: --when-idle cannot be combined with "+other, 2, frictionLogPath, "dispatch")
 	}
-	// One shared ceiling for every wait that --no-wait can run before it
-	// returns. The deferred recovery is the single place that turns a hit
-	// into the required stderr line and exit code; it restores an unsubmitted
-	// task so a busy worker is not left pointing at a brief it never got.
+	dispatchLiveRunPreflight(agent, brief, ctx, env, cwd)
+	// One shared ceiling for every --no-wait wait. The deferred recovery
+	// prints the required stderr line, sets the exit code and restores an
+	// unsubmitted task so a busy worker keeps its previous brief.
 	settleSecs, checkSecs := dispatchPromptBudgets(ctx, env)
 	var ceiling *dispatchWaitBudget
 	var ceilingSD, ceilingLastPath string
