@@ -1809,8 +1809,8 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			_, _ = fmt.Fprint(platform.Stderr, o.outputText(fmt.Sprintf("soho: spawn: the new worker is '%s' ('%s' is already live); dispatch to '%s'\n", o.name, base, o.name)))
 		}
 	}
-	warnLaneRoleEffort(o.name, o.role, lane, kind, o.model, o.effort, strings.HasPrefix(res.EffortFrom, "lane "), ctx, env, cwd, o)
 	native, agentArgs := freshSpawnArgs(o, lane, kind, ctx, env, cwd, false)
+	warnFreshSpawnModelOrigin(o, kind, modelSpec, lane, res, ctx, env, cwd, warn)
 	e2ePort := ""
 	var unlockE2E func()
 	defer func() {
@@ -3204,4 +3204,50 @@ func CmdSpawnReopen(argv []string, ctx *core.Config, env platform.Env, cwd strin
 // without starting a worker.
 func PreflightFreshSpawnReopen(argv []string, ctx *core.Config, env platform.Env, cwd string, laneOverride bool) {
 	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true, laneOverride, true)
+}
+
+// warnFreshSpawnModelOrigin runs on the fresh-worker path. It states only
+// what soho itself does: whether it passes a resolved model argument. It does
+// not read native arguments or launch profiles and predicts neither the
+// assistant's model nor a lane's selection. It also emits the lane-effort note
+// the call site used to emit directly, through the admission-aware closure.
+func warnFreshSpawnModelOrigin(o spawnOptions, kind, modelSpec, lane string, res core.RoleSettings, ctx *core.Config, env platform.Env, cwd string, warn func(string, *core.Config, platform.Env, string)) {
+	if o.model == "" {
+		message := fmt.Sprintf("spawn: soho passes no model to this %s worker ('%s'); it starts on the model its native arguments or the assistant's own settings choose", kind, o.role)
+		if modelSpec != "" {
+			message = fmt.Sprintf("spawn: the configured model '%s' does not resolve for %s, so soho passes no model to this worker ('%s'); it starts on the model its native arguments or the assistant's own settings choose", text.QuoteControls(modelSpec), kind, o.role)
+		}
+		if !core.LanesEnabled(ctx, env) {
+			message += laneConfigSuffix(o.role, ctx, env)
+		}
+		warn(message, ctx, env, "spawn")
+	}
+	warnLaneRoleEffort(o.name, o.role, lane, kind, o.model, o.effort, strings.HasPrefix(res.EffortFrom, "lane "), ctx, env, cwd, o)
+}
+
+// laneConfigSuffix reports the first configured lane model key for a lane
+// whose roles include this role. The value is printed as configured, with
+// control characters escaped (text.QuoteControls) so the warning stays one
+// line; nothing is resolved, rotated or drawn from the cap or the effective
+// kind.
+func laneConfigSuffix(role string, ctx *core.Config, env platform.Env) string {
+	for _, name := range core.LaneNames(ctx, env) {
+		member := false
+		for _, laneRole := range core.SplitRoles(core.LaneRolesCSV(ctx, name, env)) {
+			if laneRole == role {
+				member = true
+				break
+			}
+		}
+		if !member {
+			continue
+		}
+		for _, attr := range []string{"models", "model"} {
+			key := core.LaneKey(name, attr)
+			if value := core.Cfg(ctx, key, "", env); value != "" {
+				return fmt.Sprintf("; lanes are off: lane '%s' configures lane.%s.%s=%s; pass --model to choose", name, name, attr, text.QuoteControls(value))
+			}
+		}
+	}
+	return ""
 }
