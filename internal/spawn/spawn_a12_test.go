@@ -36,22 +36,22 @@ func a12Fixture(t *testing.T, rules []fakecli.Rule, panes string) spawnFixture {
 	return f
 }
 
-func TestSpawnLaneReuseRequiresRecordedEffort(t *testing.T) {
+func TestSpawnLaneReuseUsesOpeningEffort(t *testing.T) {
 	for _, tc := range []struct {
 		name, effort, requestedName string
 		legacy, alternative         bool
 		wantName                    string
-		wantCode                    int
+		fresh                       bool
 	}{
 		{name: "direct equal", effort: "high", wantName: "old"},
-		{name: "direct different", effort: "medium", wantName: "build"},
-		{name: "direct missing", legacy: true, wantName: "build"},
+		{name: "direct different", effort: "medium", wantName: "build", fresh: true},
+		{name: "direct missing", legacy: true, wantName: "old"},
 		{name: "named equal", effort: "high", requestedName: "old", wantName: "old"},
-		{name: "named different", effort: "medium", requestedName: "old", wantCode: 10},
-		{name: "named missing", legacy: true, requestedName: "old", wantCode: 10},
+		{name: "named different", effort: "medium", requestedName: "old", wantName: "old-2", fresh: true},
+		{name: "named missing", legacy: true, requestedName: "old", wantName: "old"},
 		{name: "alternative equal", effort: "medium", alternative: true, wantName: "right"},
-		{name: "alternative different", effort: "medium", alternative: true, wantName: "build"},
-		{name: "alternative missing", legacy: true, alternative: true, wantName: "build"},
+		{name: "alternative different", effort: "medium", alternative: true, wantName: "build", fresh: true},
+		{name: "alternative missing", legacy: true, alternative: true, wantName: "old"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := a12Fixture(t, append([]fakecli.Rule{idleHerdrRule("old"), idleHerdrRule("right")}, freshSpawnRules()...), "3")
@@ -70,22 +70,22 @@ func TestSpawnLaneReuseRequiresRecordedEffort(t *testing.T) {
 				rows = append(rows, strings.Join(right, "\t"))
 			}
 			f.roster(t, rows...)
+			before := rosterBytes(t, f)
 			args := []string{"worker", "--model", "grok-4.7"}
 			if tc.requestedName != "" {
 				args = append(args, "--name", tc.requestedName)
 			}
 			code, stdout, stderr, calls := runCmdSpawn(t, f, args)
-			if code != tc.wantCode {
-				t.Fatalf("exit=%d want=%d stdout=%s stderr=%s", code, tc.wantCode, stdout, stderr)
-			}
 			if code != 0 {
-				assertNoStart(t, calls)
-				return
+				t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout, stderr)
 			}
 			if !spawnJSONHasField(t, stdout, `"name": "`+tc.wantName+`"`) {
 				t.Fatalf("want name=%s stdout=%s", tc.wantName, stdout)
 			}
-			if tc.wantName == "build" {
+			if tc.fresh {
+				if !strings.HasPrefix(rosterBytes(t, f), before) {
+					t.Fatalf("original roster changed: %q", rosterBytes(t, f))
+				}
 				if spawnJSONHasField(t, stdout, `"reused": true`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 					t.Fatalf("wanted fresh worker: %s", stdout)
 				}
@@ -132,11 +132,9 @@ func TestSpawnA12ReuseRespectsModelAndCwd(t *testing.T) {
 	t.Run("an idle worker on another model with no slot is 13 with the exact message", func(t *testing.T) {
 		f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("old")}, "1")
 		f.roster(t, a12Row("old", "grok", "old-model", f.cwd))
-		code, message, calls := runCmdSpawnExpectError(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7"})
-		want := fmt.Sprintf("spawn: lane 'build' has no idle worker matching kind 'grok', model 'grok-4.7' and cwd '%s' (idle: 'old' runs grok old-model in %s); release it or raise the lane's panes", f.cwd, f.cwd)
-		if code != 13 || message != want {
-			t.Fatalf("exit=%d message=%q want %q calls=%#v", code, message, want, calls)
-		}
+		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7"})
+		assertGroupMismatch(t, code, stdout, stderr, "model differs (old-model vs grok-4.7)", `"session_model": "old-model"`, `"requested_model": "grok-4.7"`)
+		assertNoStart(t, calls)
 	})
 
 	t.Run("an idle worker in another cwd is not reused; the lane opens a new pane when it has a slot", func(t *testing.T) {
@@ -151,11 +149,9 @@ func TestSpawnA12ReuseRespectsModelAndCwd(t *testing.T) {
 	t.Run("an idle worker in another cwd with no slot is 13 with the exact message", func(t *testing.T) {
 		f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("old")}, "1")
 		f.roster(t, a12Row("old", "grok", "grok-4.7", other))
-		code, message, _ := runCmdSpawnExpectError(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7"})
-		want := fmt.Sprintf("spawn: lane 'build' has no idle worker matching kind 'grok', model 'grok-4.7' and cwd '%s' (idle: 'old' runs grok grok-4.7 in %s); release it or raise the lane's panes", f.cwd, other)
-		if code != 13 || message != want {
-			t.Fatalf("exit=%d message=%q want %q", code, message, want)
-		}
+		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7"})
+		assertGroupMismatch(t, code, stdout, stderr, "cwd differs ("+other+" vs "+f.cwd+")", `"session_cwd": "`+other+`"`, `"requested_cwd": "`+f.cwd+`"`)
+		assertNoStart(t, calls)
 	})
 
 	t.Run("an idle worker that matches kind, model and cwd is reused", func(t *testing.T) {
@@ -231,14 +227,12 @@ func TestSpawnA12NameDoesNotSwapNames(t *testing.T) {
 		}
 	})
 
-	t.Run("--name of an idle lane worker that does not match is the busy-lane rule (10)", func(t *testing.T) {
+	t.Run("--name of a mismatched idle in a full lane exits 13", func(t *testing.T) {
 		f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("a"), idleHerdrRule("b")}, "1")
 		// 'a' is idle but runs another model: it counts as occupied.
 		f.roster(t, a12Row("a", "grok", "old-model", f.cwd), a12Row("b", "grok", "grok-4.7", f.cwd))
 		code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--name", "a"})
-		if code != 10 || !strings.Contains(stdout, `"name":"a"`) {
-			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
-		}
+		assertGroupMismatch(t, code, stdout, stderr, "model differs (old-model vs grok-4.7)", `"name": "a"`)
 	})
 
 	t.Run("--name not on the lane still renames a candidate to it (the pre-existing flow)", func(t *testing.T) {

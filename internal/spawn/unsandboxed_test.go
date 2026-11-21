@@ -191,15 +191,15 @@ func TestSpawnLaneUnsandboxedApprovalReuse(t *testing.T) {
 		{"auto-opens-new", "edits", "auto", "2", false, false, true, 0},
 		{"auto-missing-approval-opens-new", "", "auto", "2", false, false, true, 0},
 		{"auto-unknown-approval-opens-new", "legacy", "auto", "2", false, false, true, 0},
-		{"legacy-missing-approval-still-reuses-full", "", "full", "1", false, false, false, 0},
-		{"auto-reuses-full", "full", "auto", "1", false, false, false, 0},
-		{"auto-cannot-satisfy-full", "auto", "full", "1", false, false, false, 10},
+		{"legacy-missing-approval-refuses-full", "", "full", "1", false, false, false, 13},
+		{"auto-does-not-reuse-full", "full", "auto", "1", false, false, false, 13},
+		{"auto-cannot-satisfy-full", "auto", "full", "1", false, false, false, 13},
 		{"opens-new", "full", "unsandboxed", "2", false, false, true, 0},
-		{"full-lane-refuses", "full", "unsandboxed", "1", false, false, false, 10},
-		{"named-refuses", "full", "unsandboxed", "2", true, false, false, 10},
-		{"reuses-stronger", "unsandboxed", "full", "1", false, false, false, 0},
-		{"named-reuses-stronger", "unsandboxed", "full", "1", true, false, false, 0},
-		{"picks-stronger-alternative", "full", "unsandboxed", "2", false, true, false, 0},
+		{"full-lane-refuses", "full", "unsandboxed", "1", false, false, false, 13},
+		{"named-opens-new", "full", "unsandboxed", "2", true, false, true, 0},
+		{"refuses-stronger", "unsandboxed", "full", "1", false, false, false, 13},
+		{"named-refuses-stronger", "unsandboxed", "full", "1", true, false, false, 13},
+		{"picks-matching-alternative", "full", "unsandboxed", "2", false, true, false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rules := []fakecli.Rule{idleHerdrRule("held"), idleHerdrRule("stronger")}
@@ -235,6 +235,13 @@ func TestSpawnLaneUnsandboxedApprovalReuse(t *testing.T) {
 			code, out, stderr, calls := runCmdSpawn(t, f, args)
 			if code != tc.code {
 				t.Fatalf("code=%d want=%d out=%s stderr=%s", code, tc.code, out, stderr)
+			}
+			if code == 13 {
+				assertGroupMismatch(t, code, out, stderr, "approvals differs ("+diagnosticValue(tc.held)+" vs "+tc.requested+")",
+					`"session_approvals": "`+tc.held+`"`, `"requested_approvals": "`+tc.requested+`"`)
+			}
+			if tc.fresh && tc.named && (!spawnJSONHasField(t, out, `"name": "held-2"`) || len(rosterModels(t, f)) != 2) {
+				t.Fatalf("named mismatch must preserve old worker and start a different name: stdout=%q roster=%q", out, rosterBytes(t, f))
 			}
 			started := false
 			for _, call := range calls {

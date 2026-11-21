@@ -9,7 +9,6 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
-	"github.com/djalmajr/soho/internal/spawn"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -66,49 +65,12 @@ func (f *releaseFixture) rosterFile(t *testing.T) string {
 	return string(body)
 }
 
-// DJA-397: a reopen of a worker whose kind differs from the lane's kind by
-// now is refused before the release half closes the pane or drops the roster
-// line, so no worker is lost.
-func TestReopenRefusesAWorkerOfAnotherKindThanTheLaneBeforeReleasingIt(t *testing.T) {
-	// Mutation captured: moving the check after the release half closes the
-	// pane and drops the roster line before the spawn half refuses.
-	f := reopenLaneKindFixture(t, "codex")
-	before := f.rosterFile(t)
-	run := f.reopen(t, "worker")
-	if run.code != 13 {
-		t.Fatalf("exit=%d, want 13\nstdout=%q\nstderr=%q", run.code, run.stdout, run.stderr)
-	}
-	wantJSON := `{"status":"kind-mismatch","lane":"build","role":"implementer","lane_kind":"codex","requested_kind":"grok"}` + "\n"
-	if run.stdout != wantJSON {
-		t.Fatalf("stdout=%q\nwant   %q", run.stdout, wantJSON)
-	}
-	text := "reopen: worker 'worker' runs grok, but lane 'build' is now codex; reopening would put a grok worker in it. Release it with 'soho release worker --close' and spawn the role again."
-	if want := "soho: warning: " + text + "\n"; strings.Count(run.stderr, want) != 1 || !strings.HasSuffix(run.stderr, want) {
-		t.Fatalf("stderr=%q\nwant it to end with %q once", run.stderr, want)
-	}
-	if log, _ := os.ReadFile(filepath.Join(f.state, "friction.log")); !strings.Contains(string(log), text) {
-		t.Fatalf("friction.log lacks the refusal:\n%s", log)
-	}
-	for _, c := range run.calls {
-		if len(c.Argv) >= 2 {
-			switch c.Argv[0] + " " + c.Argv[1] {
-			case "pane close", "pane split", "tab create", "agent start":
-				t.Fatalf("herdr acted before the refusal: %v (all calls %#v)", c.Argv, run.calls)
-			}
-		}
-	}
-	if after := f.rosterFile(t); after != before {
-		t.Fatalf("the roster changed\nbefore:\n%s\nafter:\n%s", before, after)
-	}
-}
-
-// DJA-397: the controls that keep reopening: the worker's kind is the
-// lane's, the lane has no kind, the lanes are off for the invocation.
-func TestReopenKeepsWorkingWhenTheWorkerKindIsNotInConflictWithTheLane(t *testing.T) {
+func TestReopenKeepsTheRecordedKindRegardlessOfGroupDefault(t *testing.T) {
 	for _, tc := range []struct {
 		name, laneKind, lanes string
 	}{
-		{"the worker kind is the lane's", "grok", "on"},
+		{"the worker kind differs from the group default", "codex", "on"},
+		{"the worker kind is the group default", "grok", "on"},
 		{"the lane has no kind", "", "on"},
 		{"lanes off for the invocation", "codex", "off"},
 	} {
@@ -132,40 +94,6 @@ func TestReopenKeepsWorkingWhenTheWorkerKindIsNotInConflictWithTheLane(t *testin
 			}
 			if !closed {
 				t.Fatalf("the old pane was not closed: %#v", run.calls)
-			}
-		})
-	}
-}
-
-// DJA-397: spawn and reopen use one helper, so for the same role, lane
-// config and kind they refuse together or not at all, with the same JSON.
-func TestSpawnAndReopenAgreeOnTheLaneKindConflict(t *testing.T) {
-	for _, tc := range []struct {
-		name, laneKind, lanes, kind string
-		conflict                    bool
-	}{
-		{"a different kind", "codex", "on", "grok", true},
-		{"the lane's kind", "grok", "on", "grok", false},
-		{"a lane without kind", "", "on", "grok", false},
-		{"lanes off", "codex", "off", "grok", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := reopenLaneKindFixture(t, tc.laneKind)
-			f.env["SOHO_LANES"] = tc.lanes
-			lane, laneKind, got := spawn.LaneKindConflict("implementer", tc.kind, &core.Config{Entries: map[string]core.ConfigEntry{}}, f.env)
-			if got != tc.conflict || (got && (lane != "build" || laneKind != tc.laneKind)) {
-				t.Fatalf("LaneKindConflict = %q %q %v, want conflict=%v in lane build", lane, laneKind, got, tc.conflict)
-			}
-			s := f.runCommand(t, "spawn", "implementer", "--kind", tc.kind, "--fresh")
-			g := reopenLaneKindFixture(t, tc.laneKind)
-			g.env["SOHO_LANES"] = tc.lanes
-			r := g.reopen(t, "worker")
-			refused := func(run releaseRun) bool { return run.code == 13 && strings.Contains(run.stdout, `"lane_kind"`) }
-			if refused(s) != tc.conflict || refused(r) != tc.conflict {
-				t.Fatalf("conflict=%v, spawn refused=%v (exit %d, %q), reopen refused=%v (exit %d, %q)", tc.conflict, refused(s), s.code, s.stdout, refused(r), r.code, r.stdout)
-			}
-			if tc.conflict && s.stdout != r.stdout {
-				t.Fatalf("different JSON\nspawn:  %q\nreopen: %q", s.stdout, r.stdout)
 			}
 		})
 	}

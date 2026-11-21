@@ -12,11 +12,11 @@ import (
 	"github.com/djalmajr/soho/internal/wait"
 )
 
-// laneReuseRow is a 14-column roster line for an idle review-lane worker on
+// laneReuseRow is a roster line for an idle review-lane worker on
 // the codex kind; the model column is empty so a flagless spawn matches the
 // session (no kind-mismatch) and the reuse path is reached.
 func laneReuseRow(name, cwd string) string {
-	return strings.Join([]string{name, "w0test:p0a", "codex", "reviewer", "openai", "1", cwd, "now", "", "auto", "reviewer", "review", "", "", "high"}, "\t")
+	return strings.Join([]string{name, "w0test:p0a", "codex", "reviewer", "openai", "1", cwd, "now", "", "auto", "reviewer", "review", "", "", "high", "none"}, "\t")
 }
 
 func renameCalls(calls []fakecli.Call) int {
@@ -187,7 +187,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 
 	t.Run("spawn: a --name with a tab on a lane reuse dies 2 without renaming", func(t *testing.T) {
 		// R2-P1, the tab variant: a tab in the name used to corrupt the roster
-		// line (15 columns) after the rename; the validation at the top of
+		// line after the rename; the validation at the top of
 		// CmdSpawn refuses it before any herdr call or roster write.
 		f := newSpawnFixture(t, []fakecli.Rule{
 			{Argv: []string{"agent", "get", "review-2"}, Stdout: `{"result":{"agent":{"name":"review-2","agent_status":"idle"}}}`},
@@ -195,6 +195,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		configureSpawnFixture(t, &f)
 		f.env["SOHO_LANES"] = "on"
 		f.roster(t, laneReuseRow("review-2", f.cwd))
+		before := rosterBytes(t, f)
 		code, message, calls := runCmdSpawnExpectError(t, f, []string{"reviewer", "--name", "rev\tiew"})
 		want := "invalid agent name 'rev\tiew' (must match [a-z][a-z0-9_-]{0,31})"
 		if code != 2 || message != want {
@@ -203,17 +204,8 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		if renameCalls(calls) != 0 {
 			t.Fatalf("herdr agent rename was called for a tab name: %#v", calls)
 		}
-		roster, err := os.ReadFile(filepath.Join(f.state, "ws", "agents.tsv"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, line := range strings.Split(strings.TrimRight(string(roster), "\n"), "\n") {
-			if len(strings.Split(line, "\t")) > 15 {
-				t.Fatalf("roster line gained columns from the tab: %q", line)
-			}
-		}
-		if !strings.Contains(string(roster), "review-2\tw0test:p0a") {
-			t.Fatalf("roster changed for a tab name: %q", roster)
+		if after := rosterBytes(t, f); after != before {
+			t.Fatalf("roster changed for a tab name: %q", after)
 		}
 	})
 

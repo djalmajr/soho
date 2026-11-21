@@ -102,17 +102,22 @@ func dja659SpawnOutcome(t *testing.T, f spawnFixture, args []string) (code int, 
 // completed: the window is open. A torn or partial log line is retried.
 func dja659WaitForRenameInFlight(t *testing.T, log string) {
 	t.Helper()
+	dja659WaitForCallInFlight(t, log, dja659WindowRename)
+}
+
+func dja659WaitForCallInFlight(t *testing.T, log string, argv []string) {
+	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		calls, err := fakecli.ReadCalls(log)
 		if err == nil && len(calls) > 0 {
 			last := calls[len(calls)-1]
-			if dja659SameArgv(last.Argv, dja659WindowRename) {
+			if dja659SameArgv(last.Argv, argv) {
 				return
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the native rename was never recorded in flight; the window never opened (calls=%#v err=%v)", calls, err)
+			t.Fatalf("the native call %v was never recorded in flight (calls=%#v err=%v)", argv, calls, err)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -314,7 +319,7 @@ func TestDJA659SourceIncarnationWindow(t *testing.T) {
 		rosterPath := filepath.Join(stateDir, "agents.tsv")
 		// ReadTextFile supports CRLF delimiters, not arbitrary whitespace
 		// trimming. Keep spaces and an empty trailing column as row data.
-		selected := a12Row("old", "grok", "grok-4.7", f.cwd) + "\t\t\t future \t"
+		selected := a12Row("old", "grok", "grok-4.7", f.cwd) + "\tinherit\t\t future \t"
 		starting := strings.ReplaceAll(dja659RosterHeader, "\n", "\r\n") + selected + "\r\n"
 		if err := os.WriteFile(rosterPath, []byte(starting), 0o600); err != nil {
 			t.Fatal(err)
@@ -418,4 +423,46 @@ func TestDJA659SourceIncarnationWindow(t *testing.T) {
 			t.Fatalf("the roster changed after the failed rename: %q", roster)
 		}
 	})
+}
+
+func TestGroupedSpawnKeepsReplacedGoneRow(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "release")
+	get := []string{"agent", "get", "stale"}
+	f := laneModelFixtureWithCapacity(t, "off", "m1", "1",
+		fakecli.Rule{Argv: get, WaitFile: marker, Code: 1, Stderr: `{"error":{"code":"agent_not_found","message":"gone"}}`})
+	appendLaneIdleRow(t, f, "stale", "m1")
+	path := filepath.Join(f.state, "ws", "agents.tsv")
+	original := rosterBytes(t, f)
+	replacement := strings.Replace(original, "stale\tp-stale\t", "stale\tp-replacement\t", 1)
+	if replacement == original {
+		t.Fatalf("replacement failed to change fixture: %s", original)
+	}
+	f.env["FAKECLI_WAIT_FILE_TIMEOUT_MS"] = "20000"
+	outcomes := make(chan dja659WindowOutcome, 1)
+	joined := make(chan struct{})
+	t.Cleanup(func() {
+		if _, err := os.Stat(marker); os.IsNotExist(err) {
+			if err := os.WriteFile(marker, nil, 0o600); err != nil {
+				t.Errorf("release blocked get: %v", err)
+			}
+		}
+		<-joined
+	})
+	go func() {
+		defer close(joined)
+		code, message, stdout, stderr, calls := dja659SpawnOutcome(t, f, []string{"scouter"})
+		outcomes <- dja659WindowOutcome{code: code, message: message, stdout: stdout, stderr: stderr, calls: calls}
+	}()
+	dja659WaitForCallInFlight(t, filepath.Join(f.bin, "herdr.calls.jsonl"), get)
+	if err := os.WriteFile(path, []byte(replacement), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := <-outcomes
+	if got := rosterBytes(t, f); got != replacement || out.code != 4 || !strings.Contains(out.message, "roster changed while checking stale worker 'stale'") ||
+		out.stdout != "" || len(herdrActs(out.calls)) != 0 {
+		t.Fatalf("replacement must survive without spawn: code=%d message=%q stdout=%q stderr=%q roster=%q", out.code, out.message, out.stdout, out.stderr, got)
+	}
 }

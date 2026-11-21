@@ -62,15 +62,15 @@ func TestRoleFilesAndFrontmatter(t *testing.T) {
 
 func TestResolveRoleSettingsLayers(t *testing.T) {
 	// JS: "roles: role.<r>.* in a config layer beats the frontmatter"
-	// JS: "roles: lane.<l>.kind/model/effort decide for the roles of the lane"
-	// JS: "roles: a role model from a layer below the effective kind shows the model that is left"
-	// JS: "roles: the frontmatter model is dropped when the kind comes from a config layer"
+	// Lane defaults apply only where the role has no configured override.
+	// A lane member keeps its configured role model across layers.
+	// A different kind drops the frontmatter model.
 	// JS: "roles: effort.<kind> and empty values (dashes, default sources)"
 	env, repo := fixture(t)
 	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lane.build.roles=implementer,designer,tasker,scouter,researcher,documenter\nlane.build.kind=pi\nlane.build.model=lane-model\nlane.build.effort=medium\nrole.implementer.model=role-model\n")
 	ctx := LoadConfig(env, repo)
 	r := ResolveRoleSettings("implementer", &ctx, env, repo, RoleFlags{})
-	if r.Lane != "build" || r.Kind != "pi" || r.KindFrom != "lane build (project)" || r.ModelSpec != "lane-model" || r.Effort != "medium" || r.Approvals != "auto" {
+	if r.Lane != "build" || r.Kind != "pi" || r.KindFrom != "lane build (project)" || r.ModelSpec != "role-model" || r.Effort != "medium" || r.Approvals != "auto" {
 		t.Fatalf("settings = %#v", r)
 	}
 	// The role model is configured at the same source rank as the lane kind;
@@ -88,16 +88,13 @@ func TestResolveRoleSettingsLayers(t *testing.T) {
 	write(t, filepath.Join(repo, ".agents", "soho.conf"), "role.implementer.kind=pi\n")
 	ctx = LoadConfig(env, repo)
 	r = ResolveRoleSettings("implementer", &ctx, env, repo, RoleFlags{})
-	if r.Kind != "pi" || r.ModelSpec == "lower-model" || r.ModelSpec == "front-model" {
-		t.Fatalf("kind-layer discard = %#v", r)
+	if r.Kind != "pi" || r.ModelSpec != "lower-model" {
+		t.Fatalf("cross-layer role model = %#v", r)
 	}
-	// A flag kind has rank 5 and drops all configured role/lane model specs.
+	// An explicit model accompanies the explicit kind.
 	r = ResolveRoleSettings("implementer", &ctx, env, repo, RoleFlags{Kind: "grok", Model: "flag-model", Effort: "high", Approvals: "full"})
 	if r.Kind != "grok" || r.KindFrom != "flag" || r.ModelSpec != "flag-model" || r.Effort != "high" || r.Approvals != "full" {
 		t.Fatalf("flag settings = %#v", r)
-	}
-	if r.KindLayer != 5 {
-		t.Fatalf("kind layer = %d", r.KindLayer)
 	}
 }
 
@@ -167,5 +164,58 @@ func TestCmdRoleAlternativesSplitOnSpacesOnly(t *testing.T) { // Mutation captur
   ]`
 	if !strings.Contains(out, want) {
 		t.Fatalf("alternatives did not match space-only parsing: %s", out)
+	}
+}
+
+func TestResolveGroupRoleOverrides(t *testing.T) {
+	env, repo := fixture(t)
+	write(t, ConfigFileFor("user", env, repo), "role.implementer.kind=pi\nrole.implementer.effort=low\nrole.implementer.approvals=ask\nrole.designer.model=own-model\n")
+	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lanes=on\nlane.build.roles=implementer,designer,tester\nlane.build.kind=grok\nlane.build.model=group-model\nlane.build.effort=high\nlane.build.approvals=full\nmodel.pi.worker=pi-worker\n")
+	ctx := LoadConfig(env, repo)
+	for _, tc := range []struct {
+		role, kind, model, effort, approvals string
+	}{
+		{"implementer", "pi", "pi-worker", "low", "ask"},
+		{"designer", "grok", "own-model", "high", "full"},
+		{"tester", "grok", "group-model", "high", "full"},
+	} {
+		t.Run(tc.role, func(t *testing.T) {
+			got := ResolveRoleSettings(tc.role, &ctx, env, repo, RoleFlags{})
+			if got.Kind != tc.kind || got.ModelSpec != tc.model || got.Effort != tc.effort || got.Approvals != tc.approvals {
+				t.Fatalf("resolved %#v, want kind=%s model=%s effort=%s approvals=%s", got, tc.kind, tc.model, tc.effort, tc.approvals)
+			}
+		})
+	}
+}
+
+func TestResolveGroupModelPairsWithEffectiveKind(t *testing.T) {
+	env, repo := fixture(t)
+	roles := filepath.Join(t.TempDir(), "roles")
+	env["SOHO_ROLES"] = roles
+	write(t, filepath.Join(roles, "implementer.md"), "---\nkind: grok\nmodel: front-model\n---\n")
+	write(t, ConfigFileFor("user", env, repo), "lane.build.model=group-model\n")
+	for _, tc := range []struct {
+		name, groupKind, roleModel, want string
+		flags                            RoleFlags
+	}{
+		{name: "other-kind", groupKind: "codex", want: "pi-worker"},
+		{name: "same-kind", groupKind: "pi", want: "group-model"},
+		{name: "empty-group-kind", want: "pi-worker"},
+		{name: "role-model-with-other-kind", groupKind: "codex", roleModel: "role-model", want: "role-model"},
+		{name: "kind-flag-without-model", groupKind: "pi", roleModel: "role-model", flags: RoleFlags{Kind: "pi"}, want: "pi-worker"},
+		{name: "frontmatter-kind-matches", groupKind: "pi", want: "front-model"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			write(t, filepath.Join(repo, ".agents", "soho.conf"), "lanes=on\nlane.build.roles=implementer\nlane.build.kind="+tc.groupKind+"\nrole.implementer.kind=pi\nrole.implementer.model="+tc.roleModel+"\nmodel.pi.worker=pi-worker\n")
+			ctx := LoadConfig(env, repo)
+			caseEnv := env.Clone()
+			if tc.name == "frontmatter-kind-matches" {
+				caseEnv["SOHO_ROLE_IMPLEMENTER_KIND"] = "grok"
+			}
+			got := ResolveRoleSettings("implementer", &ctx, caseEnv, repo, tc.flags)
+			if got.ModelSpec != tc.want {
+				t.Fatalf("model=%q from %q, want %q (kind=%q)", got.ModelSpec, got.ModelFrom, tc.want, got.Kind)
+			}
+		})
 	}
 }

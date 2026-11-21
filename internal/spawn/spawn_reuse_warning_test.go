@@ -42,11 +42,11 @@ func assertNoStart(t *testing.T, calls []fakecli.Call) {
 	}
 }
 
-// reuseLaneRow is a 15-column roster line for a review-lane worker on the
+// reuseLaneRow is a roster line for a review-lane worker on the
 // codex kind; the model column is empty so a flagless spawn matches the
 // session (no kind-mismatch) and the reuse decision is reached.
 func reuseLaneRow(name, wdir string) string {
-	return strings.Join([]string{name, "w0test:p0a", "codex", "reviewer", "openai", "1", wdir, "now", "", "auto", "reviewer", "review", "", "", "high"}, "\t")
+	return strings.Join([]string{name, "w0test:p0a", "codex", "reviewer", "openai", "1", wdir, "now", "", "auto", "reviewer", "review", "", "", "high", "none"}, "\t")
 }
 
 // reuse8Row is an 8-column roster line left by historical writers.

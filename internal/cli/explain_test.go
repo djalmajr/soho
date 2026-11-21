@@ -14,9 +14,20 @@ import (
 func TestExplainTextAndRecommendation(t *testing.T) {
 	t.Run("explainRecommendation: the 2, 3 and 4 panel texts and the lanes-off note", func(t *testing.T) { // JS: "explainRecommendation: the 2, 3 and 4 panel texts and the lanes-off note"
 		// Mutation captured: replacing the 2-panel recommendation or omitting the lanes-off note changes the asserted output.
-		env := platform.Env{"SOHO_SKILL_DIR": testSkillDir(t), "HERDR_WORKSPACE_ID": "ws"}
-		repo := t.TempDir()
+		repo, home := t.TempDir(), t.TempDir()
+		env := platform.Env{
+			"SOHO_SKILL_DIR": testSkillDir(t), "HERDR_WORKSPACE_ID": "ws",
+			"HOME": home, "USERPROFILE": home, "XDG_CONFIG_HOME": home,
+			"TMPDIR": home, "PATH": home, "SOHO_DIR": filepath.Join(home, "state"),
+		}
 		if err := os.MkdirAll(filepath.Join(repo, ".agents"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		userConfig := core.ConfigFileFor("user", env, repo)
+		if err := os.MkdirAll(filepath.Dir(userConfig), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(userConfig, []byte("lane.build.model=group-model\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		writeExplain := func(conf string) {
@@ -41,7 +52,7 @@ func TestExplainTextAndRecommendation(t *testing.T) {
 			writeExplain(conf)
 			ctx := core.LoadConfig(env, repo)
 			rec := explainRecommendation(&ctx, env)
-			if len(rec) == 0 || rec[0] != want[i] || !containsLocal(rec, "Chosen for build: grok.") {
+			if len(rec) == 0 || rec[0] != want[i] || !containsLocal(rec, "Chosen for build: grok, model group-model.") {
 				t.Fatalf("panes=%s recommendation=%#v", panes, rec)
 			}
 			if panes == "3" && !containsLocal(rec, "Chosen for review: codex.") {
@@ -194,9 +205,19 @@ func TestExplainRecommendationShowsModelListAndCap(t *testing.T) {
 }
 
 func TestUsageExit13CoversTheModelCap(t *testing.T) {
-	want := "13 lane kind-mismatch (set lane.<name>.kind, or release the lane) or every model of a lane's models list at model_cap"
-	if !strings.Contains(usage, want) {
-		t.Fatalf("usage exit-code list lacks %q", want)
+	code, help, stderr := runIn(t, []string{"--help"}, platform.Env{}, t.TempDir())
+	if code != 0 || stderr != "" {
+		t.Fatalf("--help exit=%d stderr=%q", code, stderr)
+	}
+	for _, want := range []string{
+		"10 lane busy (including a full lane with only working workers)",
+		"13 an idle worker of a full lane has different settings than the request",
+		"or opening on an inherited lane.<name>.models list with every model at model_cap",
+		"picks the first model below the cap when opening for a role that inherits the list",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("--help lacks %q", want)
+		}
 	}
 }
 

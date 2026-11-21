@@ -1,15 +1,14 @@
 package spawn
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
 // DJA-392: reuse also requires the MCP choice a worker was opened with
-// (roster column 15) to match the request; a row written before that column
-// carries no choice and matches any request, as reopen treats it.
+// (roster column 15) to match the request. A row from before that column
+// retains inherited MCP in a lane.
 
 // mcpLaneRow is a12Row with the MCP (column 15)
 // column; an empty mcp leaves the row at 15 columns.
@@ -37,36 +36,40 @@ func TestSpawnLaneReuseRespectsMcp(t *testing.T) {
 	t.Run("an idle worker opened with another MCP and no slot is 13 with the MCP message", func(t *testing.T) {
 		f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("old")}, "1")
 		f.roster(t, mcpLaneRow("old", "grok-4.7", f.cwd, "inherit"))
-		code, message, _ := runCmdSpawnExpectError(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--mcp", "none"})
-		want := "spawn: lane 'build' has no idle worker matching MCP 'none' (idle: 'old' was opened with MCP 'inherit'); release it or raise the lane's panes"
-		if code != 13 || message != want {
-			t.Fatalf("exit=%d message=%q want %q", code, message, want)
-		}
+		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--mcp", "none"})
+		assertGroupMismatch(t, code, stdout, stderr, "mcp differs (inherit vs none)", `"session_mcp": "inherit"`, `"requested_mcp": "none"`)
+		assertNoStart(t, calls)
 	})
 
-	t.Run("a model mismatch keeps its own message when the MCP also differs", func(t *testing.T) {
+	t.Run("model and MCP differences appear together", func(t *testing.T) {
 		f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("old")}, "1")
 		f.roster(t, mcpLaneRow("old", "old-model", f.cwd, "inherit"))
-		code, message, _ := runCmdSpawnExpectError(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--mcp", "none"})
-		want := fmt.Sprintf("spawn: lane 'build' has no idle worker matching kind 'grok', model 'grok-4.7' and cwd '%s' (idle: 'old' runs grok old-model in %s); release it or raise the lane's panes", f.cwd, f.cwd)
-		if code != 13 || message != want {
-			t.Fatalf("exit=%d message=%q want %q", code, message, want)
-		}
+		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--mcp", "none"})
+		assertGroupMismatch(t, code, stdout, stderr, "model differs (old-model vs grok-4.7), mcp differs (inherit vs none)", `"session_model": "old-model"`, `"requested_model": "grok-4.7"`, `"session_mcp": "inherit"`, `"requested_mcp": "none"`)
+		assertNoStart(t, calls)
 	})
 
-	for _, tc := range []struct{ name, mcp string }{
-		{"an idle worker opened with the same MCP is reused", "none"},
-		{"a row from before the MCP column is reused", ""},
+	for _, tc := range []struct{ name, mcp, request string }{
+		{"an idle worker opened with the same MCP is reused", "none", "none"},
+		{"a row from before the MCP column matches inherit", "", "inherit"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("old")}, "1")
 			f.roster(t, mcpLaneRow("old", "grok-4.7", f.cwd, tc.mcp))
-			code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--mcp", "none"})
+			code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--mcp", tc.request})
 			if code != 0 || !spawnJSONHasField(t, stdout, `"name": "old"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
 				t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 			}
 		})
 	}
+
+	t.Run("a row from before the MCP column differs from none", func(t *testing.T) {
+		f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("old")}, "1")
+		f.roster(t, mcpLaneRow("old", "grok-4.7", f.cwd, ""))
+		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--mcp", "none"})
+		assertGroupMismatch(t, code, stdout, stderr, "mcp differs ((empty) vs none)", `"session_mcp": ""`, `"requested_mcp": "none"`)
+		assertNoStart(t, calls)
+	})
 
 	t.Run("a matching later idle wins over a first idle opened with another MCP", func(t *testing.T) {
 		f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("wrong"), idleHerdrRule("right")}, "2")

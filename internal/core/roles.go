@@ -315,8 +315,11 @@ type roleTableRow struct {
 	Source string
 }
 
-func collectRoles(env platform.Env, cwd string) []roleTableRow {
-	ctx := LoadConfig(env, cwd)
+func collectRoles(ctx *Config, env platform.Env, cwd string) []roleTableRow {
+	if ctx == nil {
+		loaded := LoadConfig(env, cwd)
+		ctx = &loaded
+	}
 	rows := []roleTableRow{}
 	seen := map[string]bool{}
 	for _, dir := range RoleDirs(env, cwd) {
@@ -341,7 +344,7 @@ func collectRoles(env platform.Env, cwd string) []roleTableRow {
 				continue
 			}
 			seen[role] = true
-			rows = append(rows, roleTableRow{Role: role, File: file, Res: ResolveRoleSettings(role, &ctx, env, cwd, RoleFlags{}), Mode: FmGet(file, "mode"), Source: roleSource(role, file, env, cwd)})
+			rows = append(rows, roleTableRow{Role: role, File: file, Res: ResolveRoleSettings(role, ctx, env, cwd, RoleFlags{}), Mode: FmGet(file, "mode"), Source: roleSource(role, file, env, cwd)})
 		}
 	}
 	return rows
@@ -355,12 +358,25 @@ func CmdRoles(env platform.Env, cwd string) {
 		}
 		return value
 	}
-	for _, row := range collectRoles(env, cwd) {
+	for _, row := range collectRoles(nil, env, cwd) {
 		res := row.Res
 		from := fmt.Sprintf("source: %s; kind: %s; model: %s; effort: %s; file: %s", row.Source, res.KindFrom, res.ModelFrom, res.EffortFrom, row.File)
 		lines = append(lines, padUTF16(row.Role, 20)+" "+padUTF16(cell(res.Kind), 8)+" "+padUTF16(cell(res.ModelSpec), 24)+" "+padUTF16(cell(res.Effort), 8)+" "+padUTF16(cell(row.Mode), 10)+" "+from)
 	}
 	_, _ = fmt.Fprintln(platform.Stdout, strings.Join(lines, "\n"))
+}
+
+// roleJSONSource marks the selected key's scope. Fallbacks retain their
+// existing labels, including role file, kind-specific defaults and default.
+func roleJSONSource(from string) string {
+	switch {
+	case strings.HasPrefix(from, "lane "):
+		return "group"
+	case strings.HasPrefix(from, "role config ("):
+		return "role"
+	default:
+		return from
+	}
 }
 
 // rolesJSONArray is the single projection behind the legacy roles JSON and
@@ -376,11 +392,13 @@ func rolesJSONArray(rows []roleTableRow) []any {
 			"effort", res.Effort,
 			"mode", row.Mode,
 			"lane", res.Lane,
-			"kind_from", res.KindFrom,
-			"model_from", res.ModelFrom,
-			"effort_from", res.EffortFrom,
+			"kind_from", roleJSONSource(res.KindFrom),
+			"model_from", roleJSONSource(res.ModelFrom),
+			"effort_from", roleJSONSource(res.EffortFrom),
 			"file", row.File,
 			"source", row.Source,
+			"approvals", res.Approvals,
+			"approvals_from", roleJSONSource(res.ApprovalsFrom),
 		))
 	}
 	return roles
@@ -390,5 +408,5 @@ func rolesJSONArray(rows []roleTableRow) []any {
 // line (the plugin's read): the same roles, order and values as the text
 // table, with the empty values as "" (the "-" cells are text-only).
 func CmdRolesJSON(env platform.Env, cwd string) {
-	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O("roles", rolesJSONArray(collectRoles(env, cwd)))))
+	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O("roles", rolesJSONArray(collectRoles(nil, env, cwd)))))
 }

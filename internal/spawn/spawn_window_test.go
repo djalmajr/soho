@@ -251,12 +251,13 @@ func TestSpawnRemainingReuseJavaScriptCases(t *testing.T) {
 		}
 	})
 
-	t.Run("spawn: lanes on — lane.<lane>.args reaches every worker of the lane; role args stay ignored", func(t *testing.T) {
-		// JS: "spawn: lanes on — lane.<lane>.args reaches every worker of the lane; role args stay ignored"
+	t.Run("spawn: lanes on — lane.<lane>.args reaches a worker of the matching kind; role args stay ignored", func(t *testing.T) {
+		// JS: "spawn: lanes on — lane.<lane>.args reaches a worker of the matching kind; role args stay ignored"
 		f := newSpawnFixture(t, nil)
 		if err := os.WriteFile(filepath.Join(f.root, "roles", "worker.md"), []byte("---\nkind: grok\n---\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		f.ctx.Entries["lane_build_kind"] = core.ConfigEntry{Value: "grok", Source: "project"}
 		f.ctx.Entries["lane_build_args"] = core.ConfigEntry{Value: "--lane-only", Source: "project"}
 		f.ctx.Entries["role_worker_args"] = core.ConfigEntry{Value: "--role-only", Source: "project"}
 		if got := ConfigNativeArgs("grok", "build", "worker", f.ctx, f.env, f.cwd, nil); got != "--lane-only" {

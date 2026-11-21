@@ -223,3 +223,76 @@ func TestSpawnHcLaneReuseDifferentNameAtCapacityIsRefused(t *testing.T) {
 		t.Fatalf("the roster must be unchanged")
 	}
 }
+
+func TestHcNameAdmissionBeforeModelCap(t *testing.T) {
+	for _, tc := range []struct {
+		name, panes, requested, global string
+		stale                          bool
+		code                           int
+	}{
+		{"unnamed", "1", "", "0", true, 0},
+		{"same_name", "1", "a", "0", true, 0},
+		{"new_name_full", "1", "wanted", "0", false, 10},
+		{"stale_name_full", "1", "wanted", "0", true, 10},
+		{"stale_name_spare", "2", "wanted", "0", true, 13},
+		{"stale_name_global_full", "2", "wanted", "1", true, 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd, bin, root, env, ctx := hcSpawnFixture(t, "reviewer", "codex")
+			env["SOHO_LANES"] = "on"
+			env["SOHO_LANE_REVIEW_PANES"] = tc.panes
+			env["SOHO_LANE_REVIEW_KIND"] = "codex"
+			env["SOHO_LANE_REVIEW_MODELS"] = "m1"
+			env["SOHO_MODEL_CAP"] = "1"
+			env["SOHO_MAX_WORKERS"] = tc.global
+			rules := []fakecli.Rule{
+				{Argv: []string{"ls", "--label", "soho.session=sX", "--json"}, Stdout: `{"terminals":[{"name":"a","address":"t7","state":"live","status":{"state":"idle"}}]}`},
+			}
+			rules = append(append(rules, hcFixtureRules()...),
+				fakecli.Rule{Argv: []string{"get", "a", "--json"}, Stdout: hcIdleReusable},
+				fakecli.Rule{Argv: []string{"get", "t7", "--json"}, Stdout: hcIdleReusable},
+				fakecli.Rule{Argv: []string{"get", "wanted", "--json"}, Code: 3, Stderr: `{"error":{"kind":"not_found","message":"no such terminal"}}`},
+			)
+			if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+				t.Fatal(err)
+			}
+			sd := filepath.Join(root, "sX")
+			if err := os.MkdirAll(sd, 0700); err != nil {
+				t.Fatal(err)
+			}
+			core.RosterAppend(sd, []string{"a", "t7", "codex", "reviewer", "openai", "1", cwd, "now", "m1", "auto", "reviewer", "review", "", "", "high", "inherit"})
+			if tc.stale {
+				core.RosterAppend(sd, []string{"wanted", "t8", "codex", "reviewer", "openai", "1", cwd, "now", "m1", "auto", "reviewer", "review", "", "", "high", "inherit"})
+			}
+			argv := []string{"reviewer", "--mcp", "inherit", "--effort", "high"}
+			if tc.requested != "" {
+				argv = append(argv, "--name", tc.requested)
+			}
+			conn := newFakeSpawnRPCConn()
+			exit, out, stderr, _ := spawnHcExitWithConn(t, bin, argv, ctx, env, cwd, conn)
+			code, msg := 0, ""
+			if exit != nil {
+				code, msg = exit.Code, exit.Msg
+			}
+			t.Logf("code=%d message=%q stdout=%s stderr=%s native_writes=%d", code, msg, out.String(), stderr.String(), len(conn.getWritten()))
+			if len(conn.getWritten()) != 0 {
+				t.Fatal("expected this fixture to leave native terminal state alone")
+			}
+			if code != tc.code {
+				t.Fatalf("exit=%d want=%d: %q", code, tc.code, msg)
+			}
+			if code == 10 && (!spawnJSONHasField(t, out.String(), `"status": "busy"`) || !strings.Contains(stderr.String(), "native Core cannot rename")) {
+				t.Fatalf("wrong busy result: stdout=%s stderr=%s", out, stderr)
+			}
+			if tc.global == "1" && !strings.Contains(stderr.String(), "max_workers=1 is at capacity") {
+				t.Fatalf("busy reason did not name the global cap: %s", stderr)
+			}
+			if code == 13 && !strings.Contains(msg, "at the cap") {
+				t.Fatalf("wrong model cap result: %q", msg)
+			}
+			if code == 0 && !spawnJSONHasField(t, out.String(), `"reused": true`) {
+				t.Fatalf("expected reuse: %s", out)
+			}
+		})
+	}
+}

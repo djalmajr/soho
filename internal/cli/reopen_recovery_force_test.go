@@ -16,17 +16,14 @@ func TestReopenRecoveryCommandDropsReopensForceOnly(t *testing.T) {
 	}
 }
 
-// A kind swap in a lane pinned to another kind skipped the lane check inside
-// reopen; a plain spawn would refuse with exit 13, so the printed recovery
-// command opts out of lanes. Without the swap, or without the conflict, it
-// stays a plain spawn.
-func TestReopenRecoveryCommandOptsOutOfAPinnedLaneOnlyForTheSwap(t *testing.T) {
+// The recovery command keeps the replacement in the worker's lane.
+func TestReopenRecoveryCommandKeepsTheGroupForEitherKind(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		args []string
 		want string
 	}{
-		{"swap across the pinned lane", []string{"worker", "--kind", "claude"}, "soho: reopen: to recover, run: SOHO_LANES=off soho spawn implementer --name worker --fresh --kind claude --cwd "},
+		{"swap across the pinned lane", []string{"worker", "--kind", "claude"}, "soho: reopen: to recover, run: soho spawn implementer --name worker --fresh --kind claude --cwd "},
 		{"same kind", []string{"worker"}, "soho: reopen: to recover, run: soho spawn implementer --name worker --fresh --kind grok --cwd "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

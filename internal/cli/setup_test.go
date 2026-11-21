@@ -165,14 +165,14 @@ func TestSetupPlanLaneMigrationMatchesWrite(t *testing.T) {
 	}
 }
 
-func TestSetupIgnoredLowerLayerLaneModelWarns(t *testing.T) {
+func TestSetupMigrationStillWarnsOnDivergentLegacyRoleModels(t *testing.T) {
 	env, cwd := tm6CLIEnv(t)
 	conf := filepath.Join(cwd, ".agents", "soho.conf")
 	tm6Write(t, conf, "lane.build.kind=codex\nrole.implementer.model=legacy-one\nrole.designer.model=legacy-two\n")
 	tm6Write(t, core.ConfigFileFor("user", env, cwd), "lane.build.model=user-model\n")
 	ctx := core.LoadConfig(env, cwd)
-	if got := core.LaneAttr(&ctx, "build", "model", nil, env); got != "" {
-		t.Fatalf("effective model=%q, want empty", got)
+	if got := core.LaneAttr(&ctx, "build", "model", nil, env); got != "user-model" {
+		t.Fatalf("configured model=%q, want user-model", got)
 	}
 	code, _, stderr := runIn(t, []string{"setup", "--target", "AGENTS.md", "--no-hooks", "--panes", "4"}, env, cwd)
 	if code != 0 || !strings.Contains(stderr, "lane 'build' models differ") {

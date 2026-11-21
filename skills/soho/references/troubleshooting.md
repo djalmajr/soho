@@ -204,7 +204,7 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 ## Codex worker: `listen EPERM` on 127.0.0.1
 
 - **Cause:** with `approvals: full` a Codex worker runs `-s workspace-write`, whose sandbox denies network access — binding a local port included. A test that starts a server (`node:http` on `127.0.0.1:0`, a local database on a port, a local workers runtime) fails with `listen EPERM: operation not permitted`, and the worker can report the slice as done without ever running it (verified with `codex sandbox` 0.156: EPERM by default, `listen ok` with the key below).
-- **Do:** in the brief, say that such tests do not run in the Codex sandbox: the worker marks the item `partial` and the orchestrator runs them. If you accept network access (not only localhost), give it only to the readers: `role.<role>.args=-c sandbox_workspace_write.network_access=true` (with `lanes=off`, and only when that role is configured with kind codex — see "A claude worker resumed the orchestrator's conversation") or `lane.<name>.args=-c …` (lanes on — a lane session is shared by every role in it, so a `role.<role>.args` never applies inside a lane, and the `doctor` warns about a scoped key in a config file that the current lane mode cannot apply). `args.codex=-c sandbox_workspace_write.network_access=true` stays the option that applies to every worker of the kind.
+- **Do:** in the brief, say that such tests do not run in the Codex sandbox: the worker marks the item `partial` and the orchestrator runs them. If you accept network access (not only localhost), give it only to the readers: `role.<role>.args=-c sandbox_workspace_write.network_access=true` (with `lanes=off`, and only when that role is configured with kind codex — see "A claude worker resumed the orchestrator's conversation") or `lane.<name>.args=-c …` (lanes on, for workers whose effective kind matches the lane kind. Doctor warns about scoped keys that the current lane mode cannot apply). `args.codex=-c sandbox_workspace_write.network_access=true` stays the option that applies to every worker of the kind.
 
 ## Codex worker: `git mv` and `git checkout -- <file>` fail on `.git/index.lock`
 
@@ -220,8 +220,8 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 
 ## Roster column mix-ups
 
-- `agents.tsv` columns are: name, pane, kind, role, family, created_pane, cwd, started, and, on lines written by a current `spawn`, model, approvals, roles, lane, burst (column 13, `burst` for a temporary worker of the flex mode, else empty) and args (column 14, the configured native args the worker opened with). Old lines stop at `started` (8 columns) and are reused only for the same role. Column 4 is the current role. `roles` is a comma-separated history (`scouter,implementer`). Column 12 is the lane (`build`, `explore`, `review`, `read`). `reuse_workers` once compared the family with the cwd. Read columns by name in comments when adding code.
-- With `multi_role=on`, `spawn` may reuse an idle worker of another role when kind, cwd and resolved model match and the worker's approvals are at least the request. A worker that has edited is not reused as `reviewer`, `security-reviewer`, `ui-reviewer` or `inspector`.
+- `agents.tsv` columns are: name, pane, kind, role, family, created_pane, cwd, started, and, on lines written by a current `spawn`, model, approvals, roles, lane, burst (column 13, `burst` for a temporary worker of the flex mode, else empty) and args (column 14, the configured native args the worker opened with), followed by opening effort and MCP choice. The oldest rows stop at `started` (8 columns). Column 4 is the current role. `roles` is a comma-separated history (`scouter,implementer`). Column 12 is the lane (`build`, `explore`, `review`, `read`). `reuse_workers` once compared the family with the cwd. Read columns by name in comments when adding code.
+- With `lanes=off` and `multi_role=on`, cross-role reuse requires matching kind, cwd, resolved model, recorded opening effort and configured native args, plus a compatible MCP choice and approvals at least as high as requested. Grouped reuse requires exact approvals. A worker with edit history cannot take a review role.
 
 ## Orphan lines in the roster (a line of an agent that died)
 
@@ -259,7 +259,7 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 ## Lane busy (exit 10) and `spawn planner` (exit 12)
 
 - **Symptom:** `spawn implementer` prints `{"status":"busy","lane":"build","name":"build"}` and exits 10 while the build pane is still working.
-- **Cause:** one lane is one session. A second pane would exceed `panes`.
+- **Cause:** the lane has reached its worker capacity.
 - **Do:** `wait build`, then dispatch the next brief. `spawn planner` exits 12 on purpose: plan in the orchestrator session.
 
 ## Quota (exit 11)
@@ -284,11 +284,11 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 - **Cause:** the file has no `panes=` and `--panes` was not passed. The script does not choose a team size.
 - **Do:** on the legacy transport (`transport=herdr`), ask the user, then `doctor --fix --panes 3` or `--panes 4` (native Core workers have no panel, so `doctor` gives no pane-count advice there). That writes the preset lanes, sets `max_workers` to the lane count and `split_max_panes` to `panes`, and turns `reuse_workers` on. A destination with local `max_workers=0` keeps it and sets `split_max_panes` to `panes` plus `flex_extra` in flex mode. For each lane it resolves every role's kind and model (the value in that file, otherwise the role frontmatter). When they all agree, it writes `lane.<name>.kind` / `.model` and then removes those `role.<role>.kind` / `.model` keys. When they disagree, it leaves the keys, lists `role=kind`, and tells you to ask and run `setup --lane <name>=<kind>[:<model>[:<effort>]]`. `role.planner.*` is always removed. Full-line comments stay. `max_workers` written here does not count as the user having chosen a lane kind. `setup --panes 4 --lane build=grok:grok-4.7:high` writes the same keys plus the lane's kind, model and effort, except that for a preset (strict or flex) with local `max_workers=0` it derives the split cap at runtime instead of persisting `split_max_panes`.
 
-## Lane kind mismatch (exit 13)
+## No compatible idle worker (exit 13)
 
-- **Symptom:** `spawn` prints `{"status":"kind-mismatch",...}` with `session_kind`, `requested_kind`, and the model and effort on each side, and exits 13. The pane stays on the CLI of the role that opened it.
-- **Cause:** `lane.<name>.kind` is empty, so the first role opened the session (designer is `agy`, implementer is `grok`). A later role would otherwise keep that process.
-- **Do:** `release <name> --close` the lane, set one CLI for it with `setup --lane <name>=<kind>[:<model>[:<effort>]]` if `lane.<name>.kind` is missing, then spawn again. Setting the key alone does not retarget a running session: a live process on another CLI still exits 13 until it is released. `doctor` warns when the key is empty and the roles in the lane resolve to different kinds.
+- **Symptom.** When the lane is full and its idle workers have different settings, `spawn` exits 13 and prints `{"status":"kind-mismatch",...}` with the session and requested values. The human-readable message names the worker and where the requested values came from. After admission to open a worker, spawn exits 13 if every model in the inherited `lane.<name>.models` list is at `model_cap`. A full lane with only working workers reports busy (exit 10).
+- **Cause.** Reuse requires the recorded kind, resolved model, opening effort, approvals, MCP, cwd and configured native args to match the resolved request. A historical row missing its effort column uses the original effort precedence. When the lane has a free slot, a mismatch opens a fresh worker and prints the differences on stderr.
+- **Do.** For a full lane, release the incompatible worker with `release <name> --close` or raise `lane.<name>.panes`. For a full model list, release a worker on a capped model or raise `model_cap`.
 
 ## First run and `explain` (2026-09-23)
 

@@ -622,7 +622,6 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	}
 	if core.LanesEnabled(ctx, env) {
 		doctorLaneWarnings(ctx, env, cwd, s)
-		doctorLaneEfforts(ctx, env, cwd, s)
 	} else {
 		s.Ok("config: lanes=off (per-role reuse unchanged)")
 	}
@@ -637,7 +636,7 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	doctorNativeParentless(ctx, svc, env, cwd, s)
 	doctorDiscardedModels(ctx, env, cwd, s)
 	doctorModelPairs(ctx, env, cwd, s)
-	doctorLaneArgs(ctx, env, s)
+	doctorLaneArgs(ctx, env, cwd, s)
 	doctorContextWindow(ctx, env, s)
 	doctorBackgroundPatterns(ctx, env, s)
 	doctorApprovals(ctx, env, s)
@@ -983,17 +982,13 @@ func usedKinds(ctx *core.Config, env platform.Env, cwd string) []string {
 	set := map[string]bool{}
 	if core.LanesEnabled(ctx, env) {
 		for _, lane := range core.LaneNames(ctx, env) {
-			k := core.LaneAttr(ctx, lane, "kind", nil, env)
-			if k != "" {
-				set[k] = true
-				continue
-			}
-			for _, r := range doctorLaneRoles(core.LaneRolesCSV(ctx, lane, env)) {
-				if r != "documenter" && r != "planner" {
-					v := core.ResolvedRoleKind(r, ctx, env, cwd)
-					if v != "" {
-						set[v] = true
-					}
+			for _, role := range doctorLaneRoles(core.LaneRolesCSV(ctx, lane, env)) {
+				if role == "planner" {
+					continue
+				}
+				res := core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{})
+				if res.Kind != "" {
+					set[res.Kind] = true
 				}
 			}
 		}
@@ -1073,47 +1068,7 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 		if edit && review {
 			mixed += " " + lane
 		}
-		laneKind := core.Cfg(ctx, core.LaneKey(lane, "kind"), "", env)
-		if laneKind != "" {
-			effortKey := core.LaneKey(lane, "effort")
-			if effort := core.Cfg(ctx, effortKey, "", env); effort != "" && core.CfgLayerRank(ctx, effortKey, env) < core.CfgLayerRank(ctx, core.LaneKey(lane, "kind"), env) {
-				s.Ok(fmt.Sprintf("lanes: lane '%s' kind %s (%s); ignored lane effort %s from %s (another kind)", lane, laneKind, core.CfgSource(ctx, core.LaneKey(lane, "kind"), env), effort, core.CfgSource(ctx, effortKey, env)))
-			}
-			for _, role := range doctorLaneRoles(roles) {
-				if role == "documenter" {
-					continue
-				}
-				for _, attr := range []string{"kind", "model"} {
-					key := "role_" + strings.ReplaceAll(role, "-", "_") + "_" + attr
-					if core.ConfigExplicit(ctx, key, env) {
-						if attr == "kind" {
-							s.Warning(fmt.Sprintf("config: role.%s.kind is set and lane '%s' has kind=%s. Remove role.%s.kind (doctor --fix); the lane shares one kind.", role, lane, laneKind, role))
-						} else {
-							s.Warning(fmt.Sprintf("config: role.%s.model is set and lane '%s' has its own kind. Remove role.%s.model (doctor --fix).", role, lane, role))
-						}
-					}
-				}
-			}
-		} else {
-			values := []string{}
-			first := ""
-			different := false
-			for _, role := range doctorLaneRoles(roles) {
-				if role == "planner" || role == "documenter" {
-					continue
-				}
-				kind := core.ResolvedRoleKind(role, ctx, env, cwd)
-				values = append(values, role+"="+kind)
-				if first == "" {
-					first = kind
-				} else if kind != first {
-					different = true
-				}
-			}
-			if different {
-				s.Warning(fmt.Sprintf("lanes: lane '%s' has no lane.%s.kind and its roles disagree (%s). Orchestrator: ask the user, then run 'setup --lane %s=<kind>[:<model>[:<effort>]]'.", lane, lane, strings.Join(values, " "), lane))
-			}
-		}
+		doctorRoleOverrides(lane, doctorLaneRoles(roles), ctx, env, cwd, s)
 	}
 	if unknown != "" {
 		s.Warning("lanes: unknown roles:" + unknown + ". Use a role from 'roles', or remove it.")
@@ -1321,63 +1276,29 @@ func doctorProjectRoles(env platform.Env, cwd string, s *Say) {
 }
 
 func doctorDiscardedModels(ctx *core.Config, env platform.Env, cwd string, s *Say) {
-	// The same wording config uses: a models list wins over a lane's model.
 	for _, warning := range core.ModelShadowWarnings(ctx, env) {
 		s.Warning(warning)
 	}
-	if core.LanesEnabled(ctx, env) {
-		for _, lane := range core.LaneNames(ctx, env) {
-			kk, mk := core.LaneKey(lane, "kind"), core.LaneKey(lane, "model")
-			k, m := core.Cfg(ctx, kk, "", env), core.Cfg(ctx, mk, "", env)
-			label, effectiveKey := "model", mk
-			if models := core.Cfg(ctx, core.LaneKey(lane, "models"), "", env); models != "" {
-				label, effectiveKey, m = "models", core.LaneKey(lane, "models"), models
+	for _, role := range doctorModelRoles(ctx, env, cwd) {
+		if core.LanesEnabled(ctx, env) && core.LaneOfRole(ctx, role, env) != "" {
+			res := core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{})
+			if res.DiscardedFrontmatterModel != "" {
+				s.Warning(fmt.Sprintf("config: role file model '%s' of '%s' is ignored: effective kind %s from %s differs from its frontmatter kind", res.DiscardedFrontmatterModel, role, res.Kind, res.KindFrom))
 			}
-			if k != "" && m != "" && core.CfgLayerRank(ctx, effectiveKey, env) < core.CfgLayerRank(ctx, kk, env) {
-				s.Warning(fmt.Sprintf("config: lane.%s.%s=%s (%s) is ignored: lane.%s.kind=%s comes from a higher layer (%s) without a model", lane, label, m, core.CfgSource(ctx, effectiveKey, env), lane, k, core.CfgSource(ctx, kk, env)))
-			}
+			continue
 		}
-	}
-	seen := map[string]bool{}
-	for _, dir := range core.RoleDirs(env, cwd) {
-		entries, _ := os.ReadDir(dir)
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") || strings.HasSuffix(entry.Name(), ".append.md") {
-				continue
-			}
-			role := strings.TrimSuffix(entry.Name(), ".md")
-			if seen[role] {
-				continue
-			}
-			seen[role] = true
-			if role == "planner" {
-				continue
-			}
-			prefix := "role_" + strings.ReplaceAll(role, "-", "_") + "_"
-			kk, mk := prefix+"kind", prefix+"model"
-			kind, model := core.Cfg(ctx, kk, "", env), core.Cfg(ctx, mk, "", env)
-			lane := ""
-			if core.LanesEnabled(ctx, env) {
-				lane = core.LaneOfRole(ctx, role, env)
-			}
-			laneKind := lane != "" && core.Cfg(ctx, core.LaneKey(lane, "kind"), "", env) != ""
-			if kind != "" && model != "" && !laneKind && core.CfgLayerRank(ctx, mk, env) < core.CfgLayerRank(ctx, kk, env) {
-				s.Warning(fmt.Sprintf("config: role.%s.model=%s (%s) is ignored: role.%s.kind=%s comes from a higher layer (%s) without a model", role, model, core.CfgSource(ctx, mk, env), role, kind, core.CfgSource(ctx, kk, env)))
-			}
-			modelWins := model != "" && core.CfgLayerRank(ctx, mk, env) >= core.CfgLayerRank(ctx, kk, env)
-			if kind != "" && !laneKind && !modelWins {
-				front := core.FmGet(core.RoleFile(role, env, cwd), "model")
-				if front != "" {
-					s.Warning(fmt.Sprintf("config: role file model '%s' of '%s' is ignored: role.%s.kind=%s comes from a higher layer (%s)", front, role, role, kind, core.CfgSource(ctx, kk, env)))
-				}
-			}
-			if laneKind {
-				front := core.FmGet(core.RoleFile(role, env, cwd), "model")
-				lk := core.LaneKey(lane, "kind")
-				if front != "" && core.Cfg(ctx, core.LaneKey(lane, "model"), "", env) == "" {
-					s.Warning(fmt.Sprintf("config: role file model '%s' of '%s' is ignored: lane.%s.kind=%s comes from a higher layer (%s)", front, role, lane, core.Cfg(ctx, lk, "", env), core.CfgSource(ctx, lk, env)))
-				}
-			}
+		prefix := "role_" + strings.ReplaceAll(role, "-", "_") + "_"
+		kk, mk := prefix+"kind", prefix+"model"
+		kind, model := core.Cfg(ctx, kk, "", env), core.Cfg(ctx, mk, "", env)
+		if kind == "" {
+			continue
+		}
+		modelWins := model != "" && core.CfgLayerRank(ctx, mk, env) >= core.CfgLayerRank(ctx, kk, env)
+		if model != "" && !modelWins {
+			s.Warning(fmt.Sprintf("config: role.%s.model=%s (%s) is ignored: role.%s.kind=%s comes from a higher layer (%s) without a model", role, model, core.CfgSource(ctx, mk, env), role, kind, core.CfgSource(ctx, kk, env)))
+		}
+		if front := core.FmGet(core.RoleFile(role, env, cwd), "model"); front != "" && !modelWins {
+			s.Warning(fmt.Sprintf("config: role file model '%s' of '%s' is ignored: role.%s.kind=%s comes from a higher layer (%s)", front, role, role, kind, core.CfgSource(ctx, kk, env)))
 		}
 	}
 }
@@ -1398,63 +1319,47 @@ func unresolvedModel(kind, spec string, env platform.Env) bool {
 	return unresolved || err != nil
 }
 
-func doctorModelPairs(ctx *core.Config, env platform.Env, cwd string, s *Say) {
-	type pair struct{ unit, name, kind, spec, specLayer, kindLayer string }
-	pairs := []pair{}
+func doctorModelRoles(ctx *core.Config, env platform.Env, cwd string) []string {
+	seen := map[string]bool{"planner": true}
+	var roles []string
+	add := func(role string) {
+		if !seen[role] {
+			roles = append(roles, role)
+			seen[role] = true
+		}
+	}
 	if core.LanesEnabled(ctx, env) {
 		for _, lane := range core.LaneNames(ctx, env) {
-			kind := core.LaneAttr(ctx, lane, "kind", nil, env)
-			spec := core.LaneAttr(ctx, lane, "model", nil, env)
-			if kind == "" && spec != "" {
-				layer := core.CfgSource(ctx, core.LaneKey(lane, "model"), env)
-				seen := map[string]bool{}
-				for _, role := range doctorLaneRoles(core.LaneRolesCSV(ctx, lane, env)) {
-					if seen[role] {
-						continue
-					}
-					seen[role] = true
-					res := core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{})
-					if res.Lane != lane || res.Kind == "" || res.ModelSpec != spec || !strings.HasPrefix(res.ModelFrom, "lane "+lane+" (") {
-						continue
-					}
-					if unresolvedModel(res.Kind, spec, env) {
-						s.Warning(fmt.Sprintf("config: lane '%s' model '%s' (%s) does not resolve for kind '%s' of role '%s' (%s)", lane, spec, layer, res.Kind, role, sourceLayer(res.KindFrom)))
-					}
-				}
-				continue
-			}
-			if kind == "" || spec == "" {
-				continue
-			}
-			pairs = append(pairs, pair{"lane", lane, kind, spec, core.CfgSource(ctx, core.LaneKey(lane, "model"), env), core.CfgSource(ctx, core.LaneKey(lane, "kind"), env)})
-		}
-	} else {
-		seen := map[string]bool{}
-		for _, dir := range core.RoleDirs(env, cwd) {
-			entries, _ := os.ReadDir(dir)
-			for _, e := range entries {
-				if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") || strings.HasSuffix(e.Name(), ".append.md") {
-					continue
-				}
-				role := strings.TrimSuffix(e.Name(), ".md")
-				if seen[role] {
-					continue
-				}
-				seen[role] = true
-				if role == "planner" {
-					continue
-				}
-				res := core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{})
-				if res.Kind == "" || res.ModelSpec == "" {
-					continue
-				}
-				pairs = append(pairs, pair{"role", role, res.Kind, res.ModelSpec, sourceLayer(res.ModelFrom), sourceLayer(res.KindFrom)})
+			for _, role := range doctorLaneRoles(core.LaneRolesCSV(ctx, lane, env)) {
+				add(role)
 			}
 		}
 	}
-	for _, p := range pairs {
-		if unresolvedModel(p.kind, p.spec, env) {
-			s.Warning(fmt.Sprintf("config: %s '%s' model '%s' (%s) does not resolve for kind '%s' (%s)", p.unit, p.name, p.spec, p.specLayer, p.kind, p.kindLayer))
+	for _, dir := range core.RoleDirs(env, cwd) {
+		entries, _ := os.ReadDir(dir)
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") && !strings.HasSuffix(entry.Name(), ".append.md") {
+				add(strings.TrimSuffix(entry.Name(), ".md"))
+			}
+		}
+	}
+	return roles
+}
+
+func doctorModelPairs(ctx *core.Config, env platform.Env, cwd string, s *Say) {
+	for _, role := range doctorModelRoles(ctx, env, cwd) {
+		res := core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{})
+		if res.Kind == "" || res.ModelSpec == "" {
+			continue
+		}
+		specs := res.LaneModels
+		if len(specs) == 0 {
+			specs = []string{res.ModelSpec}
+		}
+		for _, spec := range specs {
+			if unresolvedModel(res.Kind, spec, env) {
+				s.Warning(fmt.Sprintf("config: role '%s' model '%s' (%s) does not resolve for kind '%s' (%s)", role, spec, sourceLayer(res.ModelFrom), res.Kind, sourceLayer(res.KindFrom)))
+			}
 		}
 	}
 }
@@ -1470,54 +1375,58 @@ func doctorFeedback(ctx *core.Config, env platform.Env, s *Say) {
 	}
 }
 
-func doctorLaneEfforts(ctx *core.Config, env platform.Env, cwd string, s *Say) {
-	for _, lane := range core.LaneNames(ctx, env) {
-		seen := map[string]bool{}
-		for _, role := range doctorLaneRoles(core.LaneRolesCSV(ctx, lane, env)) {
-			if seen[role] {
+func doctorRoleOverrides(lane string, roles []string, ctx *core.Config, env platform.Env, cwd string, s *Say) {
+	seen := map[string]bool{}
+	for _, role := range roles {
+		if seen[role] {
+			continue
+		}
+		seen[role] = true
+		res := core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{})
+		if res.Lane != lane {
+			continue
+		}
+		laneKind := core.Cfg(ctx, core.LaneKey(lane, "kind"), "", env)
+		for _, field := range []struct{ name, from string }{
+			{"kind", res.KindFrom}, {"model", res.ModelFrom}, {"effort", res.EffortFrom}, {"approvals", res.ApprovalsFrom},
+		} {
+			if !strings.HasPrefix(field.from, "role config (") {
 				continue
 			}
-			seen[role] = true
-			res := core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{})
-			if res.Lane != lane || !strings.HasPrefix(res.EffortFrom, "lane ") {
+			laneAttr := field.name
+			if field.name == "model" {
+				if res.Kind != laneKind {
+					continue
+				}
+				if len(core.LaneModels(ctx, lane, env)) > 0 {
+					laneAttr = "models"
+				}
+			}
+			roleKey := "role_" + strings.ReplaceAll(role, "-", "_") + "_" + field.name
+			laneKey := core.LaneKey(lane, laneAttr)
+			laneValue := core.Cfg(ctx, laneKey, "", env)
+			if laneValue == "" || core.CfgLayerRank(ctx, roleKey, env) >= core.CfgLayerRank(ctx, laneKey, env) {
 				continue
 			}
-			model := res.ModelSpec
-			if model != "" {
-				effort := kinds.ClampTo(kinds.ClampTo(res.Effort, kinds.KindEffortCeiling(res.Kind)), core.Cfg(ctx, "max_effort", "max", env))
-				model, _ = kinds.ResolveModel(res.Kind, model, effort, env, func(string) {})
-			}
-			effective := spawn.ResolveSpawnEffort(role, lane, res.Kind, res.KindLayer, ctx, env, cwd, model)
-			requested, source := spawn.LaneRoleEffortConflict(role, res.Kind, model, effective, ctx, env, cwd)
-			if requested == "" || laneEffortChosen(ctx, lane, env) && source == "role file" {
-				// A lane effort the user or project chose wins over the role
-				// file's suggestion without a warning on every doctor and
-				// session hook (SOH-299); an explicit role.<role>.effort that
-				// disagrees with the lane is still a conflict worth a line.
-				continue
-			}
-			s.Warning(fmt.Sprintf("lane %s runs %s at %s; the role asks for %s", lane, role, effective, requested))
+			fmt.Fprintf(s.Out, "doctor: role.%s.%s=%s (%s) overrides lane.%s.%s=%s (%s)\n",
+				role, field.name, core.Cfg(ctx, roleKey, "", env), core.CfgSource(ctx, roleKey, env),
+				lane, laneAttr, laneValue, core.CfgSource(ctx, laneKey, env))
 		}
 	}
 }
 
-// laneEffortChosen reports whether lane.<lane>.effort comes from a layer
-// the user controls (user, project, session file or environment), not from
-// the skill defaults or the built-in value.
-func laneEffortChosen(ctx *core.Config, lane string, env platform.Env) bool {
-	switch core.CfgSource(ctx, core.LaneKey(lane, "effort"), env) {
-	case "defaults", "builtin":
-		return false
-	}
-	return true
-}
-
-func doctorLaneArgs(ctx *core.Config, env platform.Env, s *Say) {
+func doctorLaneArgs(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 	if core.LanesEnabled(ctx, env) {
 		for _, lane := range core.LaneNames(ctx, env) {
 			for _, role := range doctorLaneRoles(core.LaneRolesCSV(ctx, lane, env)) {
 				if core.Cfg(ctx, "role_"+strings.ReplaceAll(role, "-", "_")+"_args", "", env) != "" {
-					s.Warning(fmt.Sprintf("config: role.%s.args is ignored: '%s' runs in lane '%s' (lanes=on); set lane.%s.args instead", role, role, lane, lane))
+					message := fmt.Sprintf("config: role.%s.args is ignored: '%s' runs in lane '%s' (lanes=on)", role, role, lane)
+					laneKind := core.Cfg(ctx, core.LaneKey(lane, "kind"), "", env)
+					res := core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{})
+					if laneKind != "" && res.Lane == lane && res.Kind == laneKind {
+						message += "; set lane." + lane + ".args instead"
+					}
+					s.Warning(message)
 				}
 			}
 		}

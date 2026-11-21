@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -367,23 +368,17 @@ func LaneKindLayer(ctx *Config, lane string, env platform.Env) int {
 	}
 	return CfgLayerRank(ctx, key, env)
 }
+
+// LaneAttr returns a configured value. Migration may supply a rank to
+// retain its historical rule when deciding what to copy into a lane.
 func LaneAttr(ctx *Config, lane, attr string, kindLayer *int, env platform.Env) string {
-	rank := -1
-	if kindLayer != nil {
-		rank = *kindLayer
-	} else {
-		rank = LaneKindLayer(ctx, lane, env)
-	}
 	key := LaneKey(lane, attr)
-	v := Cfg(ctx, key, "", env)
-	if v == "" {
+	if kindLayer != nil && (attr == "model" || attr == "effort") && CfgLayerRank(ctx, key, env) < *kindLayer {
 		return ""
 	}
-	if (attr == "model" || attr == "effort") && rank >= 0 && CfgLayerRank(ctx, key, env) < rank {
-		return ""
-	}
-	return v
+	return Cfg(ctx, key, "", env)
 }
+
 func SpawnKindLayer(ctx *Config, role, lane string, kindFlagSet bool, env platform.Env) int {
 	if kindFlagSet {
 		return 5
@@ -436,15 +431,23 @@ func LaneWorkers(sd, lane string) []string {
 type LaneDecision struct {
 	Decision, Name, State, Cause string
 	Gone                         []string
+	GoneRows                     []string
 	Capacity, N                  int
 	Occupants                    []string
 	Candidate                    string
 }
 
 func LaneDecide(ctx *Config, lane, role string, env platform.Env, cwd string, reuseOn bool) LaneDecision {
-	sd := StateDir(ctx, env, cwd)
+	return LaneDecideAt(ctx, lane, role, env, StateDir(ctx, env, cwd), cwd, reuseOn)
+}
+
+// LaneDecideAt observes the supplied state directory without initializing it.
+func LaneDecideAt(ctx *Config, lane, role string, env platform.Env, sd, cwd string, reuseOn bool) LaneDecision {
 	cap := LaneCapacity(ctx, lane, env)
-	rows := LaneWorkers(sd, lane)
+	var rows []string
+	if sd != "" {
+		rows = LaneWorkers(sd, lane)
+	}
 	d := LaneDecision{Capacity: cap, Gone: []string{}, Occupants: []string{}}
 	unavailableName, unavailableCause := "", ""
 	firstLocked := ""
@@ -460,6 +463,7 @@ func LaneDecide(ctx *Config, lane, role string, env platform.Env, cwd string, re
 		state := st.Value.State
 		if state == "gone" {
 			d.Gone = append(d.Gone, nm)
+			d.GoneRows = append(d.GoneRows, line)
 			continue
 		}
 		d.Occupants = append(d.Occupants, nm)
@@ -692,14 +696,28 @@ type WorkerCapacity struct {
 }
 
 func CurrentWorkerCapacity(ctx *Config, env platform.Env, cwd string) WorkerCapacity {
-	capStr := MaxWorkers(ctx, env)
-	cap, _ := strconv.Atoi(capStr)
-	result := WorkerCapacity{Limit: capStr}
+	limit := MaxWorkers(ctx, env)
+	cap, _ := strconv.Atoi(limit)
 	if cap <= 0 {
+		return WorkerCapacity{Limit: limit}
+	}
+	return workerCapacity(limit, cap, env, StateDir(ctx, env, cwd))
+}
+
+// WorkerCapacityAt observes the caller-adjusted cap using a resolved state directory.
+func WorkerCapacityAt(ctx *Config, env platform.Env, sd string, gone ...string) WorkerCapacity {
+	limit := MaxWorkers(ctx, env)
+	cap, _ := strconv.Atoi(limit)
+	return workerCapacity(limit, cap, env, sd, gone...)
+}
+
+func workerCapacity(limit string, cap int, env platform.Env, sd string, gone ...string) WorkerCapacity {
+	result := WorkerCapacity{Limit: limit}
+	if cap <= 0 || sd == "" {
 		return result
 	}
-	sd := StateDir(ctx, env, cwd)
 	names := LiveWorkerNames(sd, env)
+	names = slices.DeleteFunc(names, func(name string) bool { return slices.Contains(gone, name) })
 	result.Count, result.Names = len(names), names
 	if len(names) < cap {
 		return result
@@ -727,11 +745,14 @@ func CurrentWorkerCapacity(ctx *Config, env platform.Env, cwd string) WorkerCapa
 }
 
 func EnforceWorkerCap(ctx *Config, env platform.Env, cwd string) {
-	capacity := CurrentWorkerCapacity(ctx, env, cwd)
+	CurrentWorkerCapacity(ctx, env, cwd).Enforce()
+}
+
+func (capacity WorkerCapacity) Enforce() {
 	if !capacity.Full {
 		return
 	}
-	platform.DieFriction(fmt.Sprintf("max_workers=%s reached (%d live: %s). Release a finished worker (release <name> --close), let spawn reuse an idle one of the same role (reuse_workers=on / --reuse), or raise max_workers.", capacity.Limit, capacity.Count, strings.Join(capacity.Names, " ")), 8)
+	platform.DieFriction(fmt.Sprintf("max_workers=%s reached (%d live: %s). Release a finished worker (release <name> --close), let spawn reuse a compatible idle worker (reuse_workers=on / --reuse), or raise max_workers.", capacity.Limit, capacity.Count, strings.Join(capacity.Names, " ")), 8)
 }
 
 func FileLaneSignature(file string) string {
@@ -1209,14 +1230,20 @@ func LaneModels(ctx *Config, lane string, env platform.Env) []string {
 	return out
 }
 
-// LaneModelSpec returns the model spec a lane contributes: models wins over
-// model whenever both keys are set. The caller still resolves the spec
-// against the kind's model list before it reaches argv.
+// LaneModelSpec returns the lane's configured model spec. The first entry
+// of models represents the list; spawn can rotate that list.
 func LaneModelSpec(ctx *Config, lane string, env platform.Env) string {
-	if models := LaneModels(ctx, lane, env); len(models) > 0 {
-		return models[0]
+	value, _, _ := LaneModelConfig(ctx, lane, env)
+	return value
+}
+
+// LaneModelConfig selects the list ahead of the scalar and returns its key.
+func LaneModelConfig(ctx *Config, lane string, env platform.Env) (value, key string, models []string) {
+	if models = LaneModels(ctx, lane, env); len(models) > 0 {
+		return models[0], LaneKey(lane, "models"), models
 	}
-	return LaneAttr(ctx, lane, "model", nil, env)
+	key = LaneKey(lane, "model")
+	return Cfg(ctx, key, "", env), key, nil
 }
 
 // ModelShadowWarnings names every lane whose model key is overridden by its

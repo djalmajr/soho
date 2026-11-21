@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -105,7 +106,7 @@ func (v teamView) diff(o teamView) string {
 			return "role " + role + " lane"
 		case a.Kind != b.Kind:
 			return "role " + role + " kind"
-		case a.ModelSpec != b.ModelSpec:
+		case a.ModelSpec != b.ModelSpec || !slices.Equal(a.LaneModels, b.LaneModels):
 			return "role " + role + " model"
 		case a.Effort != b.Effort:
 			return "role " + role + " effort"
@@ -153,10 +154,14 @@ func (s *Supervisor) pinActorSession() error {
 		return errActorSession
 	}
 	want := resolveTeamView(roles, &starter, agentEnv, dir)
-	// The agents' own configuration, read-only (step 3 loads it again
-	// after the snapshot write): which team lanes' kind their own
-	// non-session layers set.
-	agentCfg := core.LoadConfig(agentEnv, dir)
+	agentCfg := core.LoadConfigThrough(agentEnv, dir, "project")
+	team := teamSessionView(pairs, roles, &starter, agentEnv, dir)
+	if conflicts := actorGroupConflicts(roles, &agentCfg, team); len(conflicts) != 0 {
+		for _, conflict := range conflicts {
+			s.frictionf(conflict)
+		}
+		return errActorSession
+	}
 	body := appendSessionLines(string(data), teamPins(pairs, want, agentLaneKinds(&agentCfg, want)))
 	if body != string(data) {
 		if !s.writeSessionFile(s.Store.Root, workspace, body, false) {
@@ -226,8 +231,7 @@ func teamRoles(pairs []core.ConfigPair) []string {
 // agents' own non-session configuration layers set: a layer that is not
 // the session and read without an error, with a non-empty entry under
 // the lane's kind key. Those are the lanes step 1 can anchor on their
-// lane kind (teamPins), so the agents' lower-layer lane kind cannot
-// outrank the session's role pins.
+// lane kind (teamPins), preserving the agreed team kind at group scope.
 func agentLaneKinds(ctx *core.Config, view teamView) map[string]bool {
 	set := map[string]bool{}
 	for _, rs := range view.roles {
@@ -248,18 +252,9 @@ func agentLaneKinds(ctx *core.Config, view teamView) map[string]bool {
 	return set
 }
 
-// teamPins are the key=value lines that make the session decide each
-// resolved team setting it does not decide yet: a value the session
-// already gives (from its lane or role key) is left alone; a lane value
-// from a lower layer is pinned on that lane key, any other source on the
-// role key; an empty value (nothing resolved it) is not pinned. When
-// agentKinds names a lane and every role of that lane resolves the same
-// non-empty kind, the lane's kind is pinned on its lane key after the
-// per-role lines: a session-layer lane kind lifts the agents' kind
-// layer, so their lower-layer lane model and effort are discarded under
-// it and the session's role pins resolve (a lane whose roles resolve
-// different kinds is not anchored, and step 3's refusal fails the job
-// closed). max_workers is pinned when the session does not set it.
+// teamPins fills settings left open by the selected session. Group values
+// are written on group keys and other values on role keys. A common lane
+// kind is also pinned when an actor's base configuration supplies one.
 func teamPins(pairs []core.ConfigPair, view teamView, agentKinds map[string]bool) []string {
 	inSession := map[string]bool{}
 	for _, pair := range pairs {

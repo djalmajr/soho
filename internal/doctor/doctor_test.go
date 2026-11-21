@@ -208,7 +208,7 @@ func TestDoctorLaneRolesSplitOnlyOnCommas(t *testing.T) {
 		t.Fatalf("usedKinds split a role at whitespace: %#v", got)
 	}
 	out.Reset()
-	doctorLaneArgs(&ctx, env, &Say{Out: &out})
+	doctorLaneArgs(&ctx, env, root, &Say{Out: &out})
 	if !strings.Contains(out.String(), "role.implementer designer.args is ignored") {
 		t.Fatalf("lane args check split a role at whitespace: %s", out.String())
 	}
@@ -606,7 +606,7 @@ func TestDoctorReportsRawPaneMode(t *testing.T) { // Mutation captured: normaliz
 	}
 }
 
-func TestDoctorReportsDiscardedLaneEffort(t *testing.T) { // Mutation captured: omitting the ignored-effort message hides a layer-precedence decision.
+func TestDoctorDoesNotReportInheritedLaneEffortAsDiscarded(t *testing.T) {
 	root := t.TempDir()
 	env := platform.Env{"SOHO_SKILL_DIR": root}
 	ctx := core.Config{
@@ -620,9 +620,8 @@ func TestDoctorReportsDiscardedLaneEffort(t *testing.T) { // Mutation captured: 
 	}
 	var out strings.Builder
 	doctorLaneWarnings(&ctx, env, root, &Say{Out: &out})
-	want := "ok     lanes: lane 'review' kind codex (project); ignored lane effort low from user (another kind)\n"
-	if !strings.Contains(out.String(), want) {
-		t.Fatalf("discarded lane effort line missing: %s", out.String())
+	if strings.Contains(out.String(), "ignored lane effort") {
+		t.Fatalf("doctor discarded a valid group default: %s", out.String())
 	}
 }
 
@@ -699,7 +698,7 @@ func TestDoctorNamesSeparateClaudeMdWithLegacyBlock(t *testing.T) { // JS: "setu
 
 func TestDoctorDiscardedModelsNameTheHigherConfigLayer(t *testing.T) {
 	for _, tc := range []struct{ name, lanes, kindKey, modelKey, want string }{
-		{"lane", "on", "lane_build_kind", "lane_build_model", "warn   config: lane.build.model=grok-4.7 (user) is ignored: lane.build.kind=codex comes from a higher layer (project) without a model\n"},
+		{"lane", "on", "lane_build_kind", "lane_build_model", ""},
 		{"role", "off", "role_implementer_kind", "role_implementer_model", "warn   config: role.implementer.model=grok-4.7 (user) is ignored: role.implementer.kind=codex comes from a higher layer (project) without a model\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -792,20 +791,19 @@ func TestDoctorDiscardedModelsUseTheEffectiveModelsList(t *testing.T) {
 	if len(shadow) != 1 {
 		t.Fatalf("ModelShadowWarnings = %#v", shadow)
 	}
-	want := "warn   " + shadow[0] + "\n" +
-		"warn   config: lane.build.models=m1,m2 (user) is ignored: lane.build.kind=codex comes from a higher layer (project) without a model\n"
+	want := "warn   " + shadow[0] + "\n"
 	var out strings.Builder
 	doctorDiscardedModels(&ctx, env, root, &Say{Out: &out})
 	if out.String() != want {
 		t.Fatalf("doctor warnings=%q\nwant      %q", out.String(), want)
 	}
 
-	// Control: without the list the original single-model warning is unchanged.
+	// A single model from a lower layer remains a group default.
 	delete(ctx.Entries, "lane_build_models")
 	ctx.Order = []string{"lanes", "panes", "lane_build_roles", "lane_build_kind", "lane_build_model"}
 	out.Reset()
 	doctorDiscardedModels(&ctx, env, root, &Say{Out: &out})
-	want = "warn   config: lane.build.model=old (user) is ignored: lane.build.kind=codex comes from a higher layer (project) without a model\n"
+	want = ""
 	if out.String() != want {
 		t.Fatalf("control warnings=%q\nwant        %q", out.String(), want)
 	}

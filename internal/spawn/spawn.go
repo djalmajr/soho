@@ -18,7 +18,6 @@ import (
 
 	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/dispatch"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/layout"
@@ -477,7 +476,14 @@ func ResolvedRoleKind(role string, ctx *core.Config, env platform.Env, cwd strin
 	return core.ResolvedRoleKind(role, ctx, env, cwd)
 }
 
-func ResolveSpawnEffort(role, lane, kind string, kindLayer int, ctx *core.Config, env platform.Env, cwd, model string) string {
+// ResolveSpawnEffort resolves the configured effort for a worker of a known kind.
+func ResolveSpawnEffort(role, lane, kind string, _ int, ctx *core.Config, env platform.Env, cwd, model string) string {
+	return clampResolvedEffort(core.ConfiguredRoleEffort(role, lane, kind, ctx, env, cwd), kind, model, ctx, env)
+}
+
+// legacyLaneSessionEffort preserves the original precedence for roster rows
+// written before opening effort was recorded.
+func legacyLaneSessionEffort(role, lane, kind string, kindLayer int, ctx *core.Config, env platform.Env, cwd, model string) string {
 	effort := ""
 	if lane != "" {
 		layer := kindLayer
@@ -515,33 +521,23 @@ func clampResolvedEffort(effort, kind, model string, ctx *core.Config, env platf
 func ChooseSpawnModel(flagModel string, res core.RoleSettings, ctx *core.Config, env platform.Env, cwd, kind, effort string, warn func(string, *core.Config, platform.Env, string)) (string, string) {
 	capN, capped := core.ModelCap(ctx, env)
 	lane := res.Lane
-	if flagModel == "" && lane != "" && core.LanesEnabled(ctx, env) {
-		models := core.LaneModels(ctx, lane, env)
-		if len(models) > 0 {
-			if !capped {
-				return models[0], "list"
-			}
-			counts := core.LiveModelCounts(ctx, env, cwd)
-			full := make([]string, 0, len(models))
-			for _, spec := range models {
-				resolved, _ := kinds.ResolveModel(kind, spec, effort, env, func(string) {})
-				count := counts[resolved]
-				if count < capN {
-					return spec, "list"
-				}
-				full = append(full, fmt.Sprintf("%s (%d)", resolved, count))
-			}
-			core.DieFriction(fmt.Sprintf("spawn: every model of lane '%s' is at the cap of %d live workers: %s; release a worker or raise model_cap", lane, capN, strings.Join(full, ", ")), 13, "", "")
+	if models := res.LaneModels; len(models) > 0 {
+		if !capped {
+			return models[0], "list"
 		}
+		counts := core.LiveModelCounts(ctx, env, cwd)
+		full := make([]string, 0, len(models))
+		for _, spec := range models {
+			resolved, _ := kinds.ResolveModel(kind, spec, effort, env, func(string) {})
+			count := counts[resolved]
+			if count < capN {
+				return spec, "list"
+			}
+			full = append(full, fmt.Sprintf("%s (%d)", resolved, count))
+		}
+		core.DieFriction(fmt.Sprintf("spawn: every model of lane '%s' is at the cap of %d live workers: %s; release a worker or raise model_cap", lane, capN, strings.Join(full, ", ")), 13, "", "")
 	}
-	spec := res.ModelSpec
-	choice := "default"
-	switch {
-	case flagModel != "":
-		choice = "flag"
-	case lane != "" && strings.HasPrefix(res.ModelFrom, "lane "):
-		choice = "lane"
-	}
+	spec, choice := modelForRequest(flagModel, res)
 	if spec != "" && capped {
 		resolved, _ := kinds.ResolveModel(kind, spec, effort, env, func(string) {})
 		if count := core.LiveModelCounts(ctx, env, cwd)[resolved]; count >= capN {
@@ -551,78 +547,17 @@ func ChooseSpawnModel(flagModel string, res core.RoleSettings, ctx *core.Config,
 	return spec, choice
 }
 
-// ReusableListedModel returns the spec from the lane's models list whose
-// resolved model is recorded on a worker that passes the very same reuse
-// predicate the lane's reuse branch applies, or "" when there is no such
-// reuse. Reuse adds no live worker, so it must be decided before the cap
-// rotates or refuses. A listed worker that fails cwd, effort, approvals, MCP
-// or native-args matching is not a reuse candidate: rotation stays in charge.
-func ReusableListedModel(flagModel string, res core.RoleSettings, req laneReuseRequest, o spawnOptions, ctx *core.Config) string {
-	env := req.env
-	if flagModel != "" || res.Lane == "" || !core.LanesEnabled(ctx, env) || o.pane != "" || o.reuse == "off" {
-		return ""
-	}
-	reuse := o.reuse
-	if reuse == "" {
-		reuse = core.Cfg(ctx, "reuse_workers", "on", env)
-	}
-	if reuse != "on" {
-		return ""
-	}
-	models := core.LaneModels(ctx, res.Lane, env)
-	if len(models) == 0 {
-		return ""
-	}
-	sd := req.sd
-	rt := backend.New(env).Runtime
-	for _, row := range core.LaneWorkers(sd, res.Lane) {
-		fields := strings.Split(row, "\t")
-		if fieldAt(fields, 0) == "" {
-			continue
-		}
-		state, _ := agentGetState(rt, fieldAt(fields, 0))
-		for _, spec := range models {
-			silent := func(string) {}
-			resolved, _ := kinds.ResolveModel(req.kind, spec, req.effort, env, silent)
-			candidate := req.forModel(resolved)
-			if candidate.accepts(fields, state) {
-				return spec
-			}
-		}
-	}
-	return ""
-}
-
-// LaneRoleEffortConflict compares a lane session's effective effort with an
-// explicit role request, excluding kind defaults and applying spawn's ceilings.
-// Callers first establish that the effort came from the lane, rather than a flag.
-func LaneRoleEffortConflict(role, kind, model, effective string, ctx *core.Config, env platform.Env, cwd string) (requested, source string) {
-	requested = core.Cfg(ctx, "role_"+strings.ReplaceAll(role, "-", "_")+"_effort", "", env)
-	source = "role." + role + ".effort"
-	if requested == "" {
-		source = "role file"
-		if file := core.RoleFile(role, env, cwd); file != "" {
-			requested = core.FmGet(file, "effort")
-		}
-	}
-	requested = clampResolvedEffort(requested, kind, model, ctx, env)
-	if requested == "" || requested == clampResolvedEffort(effective, kind, model, ctx, env) {
-		return "", ""
-	}
-	return requested, source
-}
-
-func warnLaneRoleEffort(name, role, lane, kind, model, effective string, fromLane bool, ctx *core.Config, env platform.Env, cwd string, output ...spawnOptions) {
-	// A kind without an effort ceiling has no native effort flag (the
-	// kinds effort mapping warns "no effort mapping" for it), so a lane's
-	// effort cannot be applied and the conflict note would only be noise.
-	if !fromLane || lane == "" || kinds.KindEffortCeiling(kind) == "" {
-		return
-	}
-	if requested, source := LaneRoleEffortConflict(role, kind, model, effective, ctx, env, cwd); requested != "" {
-		core.WarnOnce("lane-role-effort:"+lane+":"+role, func() string { return core.StateDirPath(ctx, env, cwd) }, env, false, func() {
-			warnSpawnOutput(output, fmt.Sprintf("spawn: '%s' runs %s at the lane's effort %s; the role asks for %s (%s) — pass --effort %s or set lane.%s.effort", name, role, effective, requested, source, requested, lane), ctx, env)
-		})
+// modelForRequest labels the unrotated model from the shared resolver.
+func modelForRequest(flagModel string, res core.RoleSettings) (string, string) {
+	switch {
+	case len(res.LaneModels) != 0:
+		return res.ModelSpec, "list"
+	case flagModel != "":
+		return res.ModelSpec, "flag"
+	case res.Lane != "" && strings.HasPrefix(res.ModelFrom, "lane "):
+		return res.ModelSpec, "lane"
+	default:
+		return res.ModelSpec, "default"
 	}
 }
 
@@ -663,9 +598,12 @@ func mcpMatches(f []string, want string) bool {
 // choice to match wantMcp (DJA-392): a session opened without the user's
 // MCP servers cannot serve a role that needs them, nor the reverse.
 func FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort string, ctx *core.Config, env platform.Env, cwd string) (string, string, bool) {
+	return findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort, ctx, env, cwd, core.StateDirPath(ctx, env, cwd))
+}
+
+func findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort string, ctx *core.Config, env platform.Env, cwd, sd string) (string, string, bool) {
 	rt := backend.New(env).Runtime
 	multi := core.Cfg(ctx, "multi_role", "on", env)
-	sd := core.StateDirPath(ctx, env, cwd)
 	blockedName, blockedCause, crossHit := "", "", ""
 	for _, line := range core.RosterRows(sd) {
 		if line == "" {
@@ -752,114 +690,10 @@ func FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, want
 	return crossHit, "", false
 }
 
-// laneReuseCandidate reports whether the lane worker row (state from
-// herdr agent get) is a reuse candidate for this spawn: idle or done, no
-// pending report, not locked for a review role, and kind, resolved model,
-// recorded opening effort (roster columns 8 and 14) and cwd (roster column 6, canonical via
-// dispatch.SamePath) all matching the request.
-func laneReuseCandidate(f []string, state, role, kind, model, effort, approvals, mcp, workerCwd, sd string, env platform.Env, cwd string) bool {
-	if state != "idle" && state != "done" {
-		return false
-	}
-	nm := fieldAt(f, 0)
-	rep := core.LastReport(sd, nm)
-	if rep != "" {
-		info, err := os.Stat(rep)
-		if err != nil || info.Size() == 0 {
-			return false
-		}
-	}
-	if core.IsReviewRole(role) && (core.RoleIsEdit(fieldAt(f, 3), env, cwd) || core.HistoryHasEdit(fieldAt(f, 10), env, cwd)) {
-		return false
-	}
-	return fieldAt(f, 2) == kind && fieldAt(f, 8) == model && effortMatches(f, effort) && laneApprovalsMatch(f, approvals) && mcpMatches(f, mcp) && dispatch.SamePath(fieldAt(f, 6), workerCwd, platform.Current())
-}
-
-// laneReuseRequest is the resolved request the early listed-model probe and
-// the lane's reuse branch both check a candidate against. One set of helpers
-// keeps the two decisions from drifting: filtersMatch is the row predicate
-// (state, report, kind, model, cwd, effort, approvals, MCP), nativeArgsMatch
-// is the opening-args predicate, and accepts is their conjunction used by the
-// probe before it can suppress cap rotation.
-type laneReuseRequest struct {
-	role, kind, model, effort, approvals, mcp, workerCwd, sd, nativeArgs string
-	env                                                                  platform.Env
-	processCwd                                                           string
-}
-
-// newLaneReuseRequest is the single construction point for both the listed
-// model probe and the lane reuse branch. Its inputs are the already resolved
-// spawn options: canonical mcp, effort clamped to the kind and max_effort,
-// resolved cwd and approvals.
-func newLaneReuseRequest(o spawnOptions, kind, sd, nativeArgs string, env platform.Env, cwd string) laneReuseRequest {
-	return laneReuseRequest{
-		role: o.role, kind: kind, model: o.model, effort: o.effort, approvals: o.approvals, mcp: o.mcp,
-		workerCwd: o.cwd, sd: sd, nativeArgs: nativeArgs, env: env, processCwd: cwd,
-	}
-}
-
-// forModel derives the request for one concrete model: codex has a
-// model-specific effort ceiling, applied by the same shared normalization the
-// spawn's own effort path uses. No other field changes.
-func (r laneReuseRequest) forModel(model string) laneReuseRequest {
-	r.model = model
-	if r.kind == "codex" && r.effort != "" {
-		r.effort = kinds.ClampTo(r.effort, kinds.CodexEffortCeiling(model, r.env))
-	}
-	return r
-}
-
-func (r laneReuseRequest) filtersMatch(f []string, state string) bool {
-	return laneReuseCandidate(f, state, r.role, r.kind, r.model, r.effort, r.approvals, r.mcp, r.workerCwd, r.sd, r.env, r.processCwd)
-}
-
-func (r laneReuseRequest) nativeArgsMatch(f []string) bool {
-	return fieldAt(f, 13) == r.nativeArgs
-}
-
-func (r laneReuseRequest) accepts(f []string, state string) bool {
-	return r.filtersMatch(f, state) && r.nativeArgsMatch(f)
-}
-
 // effortMatches requires the opening effort column, including a recorded
 // empty value when the CLI chose its default. Historical rows cannot prove it.
 func effortMatches(f []string, want string) bool {
 	return len(f) > 14 && f[14] == want
-}
-
-func laneApprovalsMatch(f []string, approvals string) bool {
-	// Apply the same historical-row rule to direct, named and alternative
-	// lane reuse; do not infer auto from the absence of column 10.
-	if len(f) < 10 {
-		return approvals == "ask"
-	}
-	approvals = defaultValue(approvals, "auto")
-	held := fieldAt(f, 9)
-	// Preserve legacy lane decisions for missing or unrecognized approval
-	// fields, but they cannot establish auto or unsandboxed capability.
-	if approvalsRank(held) == 0 && approvals != "auto" && approvals != "unsandboxed" {
-		return true
-	}
-	return approvalsRank(held) >= approvalsRank(approvals)
-}
-
-// laneReusePick scans the lane's live workers in roster order and returns the
-// first idle worker that is a reuse candidate for the request, or "" when no
-// idle worker matches (each mismatched idle then counts as occupied).
-func laneReusePick(sd, lane, role, kind, model, effort, approvals, mcp, workerCwd string, env platform.Env, cwd string) string {
-	rt := backend.New(env).Runtime
-	for _, row := range core.LaneWorkers(sd, lane) {
-		f := strings.Split(row, "\t")
-		nm := fieldAt(f, 0)
-		if nm == "" {
-			continue
-		}
-		state, _ := agentGetState(rt, nm)
-		if laneReuseCandidate(f, state, role, kind, model, effort, approvals, mcp, workerCwd, sd, env, cwd) {
-			return nm
-		}
-	}
-	return ""
 }
 
 func EmitReuse(name, role, kind string, ctx *core.Config, env platform.Env, cwd string) bool {
@@ -1106,7 +940,7 @@ func defaultValue(value, fallback string) string {
 
 type spawnOptions struct {
 	role, name, kind, direction, ratio, cwd, pane, timeout, effort, model, approvals, reuse, tabLabel, mcp, card string
-	kindSet, nameSet, cardSet, laneKindOverride                                                                  bool
+	nameSet, cardSet, cwdSet                                                                                     bool
 	force                                                                                                        bool
 	native                                                                                                       []string
 	envFrom                                                                                                      []string
@@ -1209,12 +1043,13 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 			if v == "" {
 				core.DieFriction("spawn: --kind expects a kind", 2, "", "")
 			}
-			o.kind, o.kindSet = v, true
+			o.kind = v
 		case "--direction":
 			o.direction = v
 		case "--ratio":
 			o.ratio = v
 		case "--cwd":
+			o.cwdSet = true
 			o.cwd = filepath.Clean(filepath.Join(cwd, v))
 			if filepath.IsAbs(v) {
 				o.cwd = filepath.Clean(v)
@@ -1241,17 +1076,17 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 }
 
 func cmdSpawnWithHcStarter(argv []string, ctx *core.Config, env platform.Env, cwd string, startHC func(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string)) {
-	cmdSpawnPrepared(argv, ctx, env, cwd, startHC, false, false, false)
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHC, false, false)
 }
 
 // PreflightFreshSpawn observes the same preparation as a real spawn, without
 // allocating or retiring worker state. Admission is not a reservation: the
 // actual spawn must prepare and validate again after release.
 func PreflightFreshSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
-	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true, false, false)
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true, false)
 }
 
-func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd string, startHC func(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string), admissionOnly, laneKindOverride, reopenName bool) {
+func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd string, startHC func(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string), admissionOnly, reopenName bool) {
 	callerGatePhase := false
 	if admissionOnly {
 		defer func() {
@@ -1268,14 +1103,13 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			panic(value)
 		}()
 	}
-	var o spawnOptions = spawnOptions{laneKindOverride: laneKindOverride}
+	var o spawnOptions
 	modelChoice := "default"
 	// Explicit handoff admission and snapshot precede even warning writes,
 	// caller checks, naming and reuse. The snapshot map itself stays private.
 	explicitEnv := hasSpawnEnvOption(argv)
 	if explicitEnv {
 		o = parseArgs(argv, cwd)
-		o.laneKindOverride = laneKindOverride
 		prepareSpawnEnv(&o, ctx, env, cwd)
 	}
 	// Classify and clean up first; only the text handed to the outer CLI
@@ -1302,7 +1136,6 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	}
 	if !explicitEnv {
 		o = parseArgs(argv, cwd)
-		o.laneKindOverride = laneKindOverride
 	}
 	// Refuse invalid native arguments before starting a worker or writing its state.
 	early := core.ResolveRoleSettings(o.role, ctx, env, cwd, core.RoleFlags{Kind: o.kind, Model: o.model, Effort: o.effort, Approvals: o.approvals})
@@ -1361,21 +1194,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	callerGatePhase = true
 	core.CallerGate("spawn", ctx, env, cwd)
 	callerGatePhase = false
-	// An unknown role is a usage error (exit 3) before the lane kind check
-	// below can read it as a lane member; resolving the role file only reads.
 	core.ResolveRole(o.role, env, cwd)
-	// DJA-397: a --kind that differs from lane.<lane>.kind would put a worker
-	// of another kind in the lane and block its next spawns (exit 13). It is
-	// refused here, right after the caller-pane check: before the caller is
-	// renamed to the orchestrator, before the lane decision (which may drop
-	// gone workers from the roster), before any reuse and before any pane or
-	// agent opens. It reads only the configuration. A given --pane skips the
-	// lane decision and the refusal with it.
-	if o.pane == "" && o.kindSet && o.kind != "" && !o.laneKindOverride {
-		if lane, laneKind, conflict := LaneKindConflict(o.role, o.kind, ctx, env); conflict {
-			refuseLaneKind(o.role, lane, laneKind, o.kind, fmt.Sprintf("spawn: role '%s' runs in lane '%s', whose kind is %s; --kind %s would put a %s worker in it and block the lane's next spawns. Spawn with --kind %s, change lane.%s.kind, or set SOHO_LANES=off for this spawn to open it outside the lanes.", o.role, lane, laneKind, o.kind, o.kind, laneKind, lane), "spawn", ctx, env, cwd, !admissionOnly, o)
-		}
-	}
 	if env.Get("SOHO_TRANSPORT") == "hc" {
 		// DJA-604 2b-2b: hc has no rename; the orchestrator keeps its
 		// terminal name and nothing else happens.
@@ -1420,25 +1239,26 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	// shell. Refused here, before any warning, reuse or terminal; the roster
 	// and the JSON keep the agent's own argv.
 	o.loginShell = resolveLoginShell(ctx, env, kind)
-	kindLayer := core.SpawnKindLayer(ctx, o.role, lane, o.kindSet, env)
+	var sources laneReuseSources
+	kindSetting := sources.changeSetting("kind", o.role, res)
 	if _, ok := platform.FindExecutable(kinds.KindExe(kind), env, platform.Current()); !ok {
-		msg := "executable '" + kinds.KindExe(kind) + "' not found in PATH; herdr agent start may fail"
-		if lane != "" {
-			msg += "; choose another with 'soho setup --lane " + lane + "=<kind>'"
-		}
+		msg := fmt.Sprintf("executable '%s' not found in PATH; install it or change %s to select another assistant", kinds.KindExe(kind), kindSetting)
 		warnBeforeAdmission(func() { Warn(msg, ctx, env, "spawn") })
 	}
 	if o.role == "sub-orchestrator" && kind == "codex" && !strings.Contains(core.Cfg(ctx, "args_codex", "", env), "danger-full-access") {
-		warn("sub-orchestrator on codex: its sandbox blocks the Herdr socket (every 'herdr' call fails with Operation not permitted). Use --kind claude, or set args.codex=-s danger-full-access if you accept that.", ctx, env, "spawn")
+		warn(fmt.Sprintf("sub-orchestrator on codex: its sandbox blocks the Herdr socket (every 'herdr' call fails with Operation not permitted). Change %s to claude, or set args.codex=-s danger-full-access if you accept that.", kindSetting), ctx, env, "spawn")
 	}
 	o.effort, o.model, o.approvals = res.Effort, res.ModelSpec, res.Approvals
-	modelSpec := o.model
 	if !approvalsOk(o.approvals) {
 		core.DieFriction(fmt.Sprintf("invalid approvals '%s' (ask|edits|full)", o.approvals), 2, "", "")
 	}
 	// DJA-392: the per-role MCP server choice — flag > lane.<n>.mcp >
 	// role.<r>.mcp > the role file's mcp: > inherit.
-	o.mcp = ResolveMcp(o.mcp, lane, o.role, ctx, env, cwd)
+	o.mcp, sources.mcp = resolveMcpSource(o.mcp, lane, o.role, ctx, env, cwd)
+	sources.cwd = "default (current directory)"
+	if o.cwdSet {
+		sources.cwd = "flag --cwd"
+	}
 	// DJA-693: the value may come from a layer the flag parser never saw
 	// (lane.<n>.mcp, role.<r>.mcp, the frontmatter); an invalid name exits 2
 	// before any pane is opened.
@@ -1467,45 +1287,86 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		}
 		clamped := clampSpawnEffort(o.effort, kind, core.Cfg(ctx, "max_effort", "max", env))
 		if clamped != o.effort {
-			message := fmt.Sprintf("effort '%s' clamped to '%s' (kind ceiling %s, max_effort %s)", o.effort, clamped, kinds.KindEffortCeiling(kind), core.Cfg(ctx, "max_effort", "max", env))
+			message := fmt.Sprintf("effort '%s' clamped to '%s' (kind ceiling %s, max_effort %s, requested by %s)", o.effort, clamped, kinds.KindEffortCeiling(kind), core.Cfg(ctx, "max_effort", "max", env), sources.changeSetting("effort", o.role, res))
 			warnBeforeAdmission(func() { Warn(message, ctx, env, "spawn") })
 			o.effort = clamped
 		}
 	}
-	// One normalized request value serves both the listed-model probe and the
-	// lane reuse branch. Normalization (MCP canonicalization and effort clamps)
-	// happens above, before any model choice or terminal is opened.
-	// An admission-only preflight never reads the caller's state directory
-	// (under hc it needs a caller terminal); the reuse probe is skipped there.
+	// Observe placement before applying model caps. A compatible worker
+	// may match any model in an inherited list without rotating it.
 	reuseDir := ""
 	if !admissionOnly {
-		reuseDir = core.StateDirPath(ctx, env, cwd)
+		reuseDir = core.StateDirForRead(ctx, env, cwd)
 	}
-	request := newLaneReuseRequest(o, kind, reuseDir, ConfigNativeArgs(kind, lane, o.role, ctx, env, cwd, nil), env, cwd)
-	reuseListed := ""
+	if o.reuse == "" {
+		o.reuse = core.Cfg(ctx, "reuse_workers", "on", env)
+	}
+	native, argsSource := configNativeArgsSource(kind, lane, o.role, ctx, env, cwd, nil)
+	sources.args = argsSource
+	request := newLaneReuseRequest(o, res, reuseDir, native, ctx, env, cwd)
+	modelSpec, modelChoice := modelForRequest(flagModel, res)
+	request.model, _ = kinds.ResolveModel(kind, modelSpec, o.effort, env, func(string) {})
+	var plan laneSpawnPlan
+	var capacity core.WorkerCapacity
+	var refuseParts []string
+	var reused, unavailable string
 	if !admissionOnly {
-		reuseListed = ReusableListedModel(flagModel, res, request, o, ctx)
+		if o.pane == "" && !o.force {
+			refuseParts = core.PressureRefuseParts(ctx, env, cwd)
+		}
+		if lane != "" && o.pane == "" {
+			plan = request.planLaneSpawn(o, res.LaneModels, svc.Runtime)
+		} else if lane == "" && o.reuse == "on" && o.pane == "" && reuseDir != "" {
+			fixed := request.forModel(request.model)
+			reused, unavailable, _ = findReusableMcpAt(o.role, kind, o.cwd, o.name, fixed.model, o.approvals, o.mcp, fixed.effort, ctx, env, cwd, reuseDir)
+		}
 	}
-	if reuseListed != "" {
-		res.ModelSpec, modelChoice = reuseListed, "list"
-	} else {
-		res.ModelSpec, modelChoice = ChooseSpawnModel(flagModel, res, ctx, env, cwd, kind, request.effort, warn)
+	// Fixed-model profiles can be validated before taking the global
+	// capacity snapshot. List rotation may change the profile's model, so
+	// those requests resolve admission first and then validate that model.
+	selectOpenModel := func() {
+		if admissionOnly {
+			return
+		}
+		if plan.action == "different-name" || (plan.action == "" || plan.action == "open") && reused == "" && unavailable == "" && len(refuseParts) == 0 {
+			capacity = core.WorkerCapacityAt(ctx, env, reuseDir, plan.decision.Gone...)
+		}
+		if plan.action == "different-name" {
+			plan.resolveName(o, request, capacity)
+		}
+		if plan.action == "reuse" && plan.candidate.modelSpec != "" {
+			modelSpec = plan.candidate.modelSpec
+		}
+		opens := (plan.action == "" || plan.action == "open") && reused == "" && unavailable == ""
+		nativeProfile := ""
+		if kind == "opencode" {
+			nativeProfile = kinds.OpenCodePrimaryProfile
+		}
+		canStart := env.Get("SOHO_TRANSPORT") != "hc" || kinds.NativeStatusSupported(kind, nativeProfile)
+		if opens && canStart && len(refuseParts) == 0 && !capacity.Full {
+			modelSpec, modelChoice = ChooseSpawnModel(flagModel, res, ctx, env, cwd, kind, request.effort, warn)
+		}
 	}
-	o.model, modelSpec = res.ModelSpec, res.ModelSpec
+	if len(res.LaneModels) != 0 {
+		selectOpenModel()
+	}
+	o.model = modelSpec
 	if modelSpec != "" {
-		o.model, _ = kinds.ResolveModel(kind, modelSpec, o.effort, env, func(msg string) { warnBeforeAdmission(func() { Warn(msg, ctx, env, "spawn") }) })
+		o.model, _ = kinds.ResolveModel(kind, modelSpec, o.effort, env, func(msg string) {
+			warnBeforeAdmission(func() { Warn(msg+"; check "+sources.changeSetting("model", o.role, res), ctx, env, "spawn") })
+		})
 	}
 	if kind == "codex" && o.effort != "" {
 		mc := kinds.CodexEffortCeiling(o.model, env)
 		if kinds.EffortRank(o.effort) > kinds.EffortRank(mc) {
 			if kinds.CodexModelCeiling(o.model, env) != "" {
-				warn(fmt.Sprintf("codex model %s supports up to '%s'; effort '%s' clamped", o.model, mc, o.effort), ctx, env, "spawn")
+				warn(fmt.Sprintf("codex model %s supports up to '%s'; effort '%s' clamped (requested by %s)", o.model, mc, o.effort, sources.changeSetting("effort", o.role, res)), ctx, env, "spawn")
 			} else {
 				label := o.model
 				if label == "" {
 					label = "(CLI default)"
 				}
-				warn(fmt.Sprintf("codex model %s is not in ~/.codex/models_cache.json; effort '%s' clamped to '%s'", label, o.effort, mc), ctx, env, "spawn")
+				warn(fmt.Sprintf("codex model %s is not in ~/.codex/models_cache.json; effort '%s' clamped to '%s' (requested by %s)", label, o.effort, mc, sources.changeSetting("effort", o.role, res)), ctx, env, "spawn")
 			}
 			o.effort = mc
 		}
@@ -1548,9 +1409,12 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		if profile.Name == "" {
 			// Legacy requests share their final argv preparation too, including
 			// the existing refusal of accidental resume arguments.
-			freshSpawnArgs(o, lane, kind, ctx, env, cwd, true)
+			freshSpawnArgs(o, lane, kind, ctx, env, cwd, res, true)
 		}
 		return
+	}
+	if len(res.LaneModels) == 0 {
+		selectOpenModel()
 	}
 	if deferRename {
 		EnsureOrchestratorName(ctx, env, cwd, "spawn")
@@ -1558,139 +1422,35 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	for _, emit := range admittedWarnings {
 		emit()
 	}
-	if o.reuse == "" {
-		o.reuse = core.Cfg(ctx, "reuse_workers", "on", env)
-	}
 	sd := core.StateDir(ctx, env, cwd)
-	// The worker's registration hint must be absolute (hc refuses a relative
-	// one); a relative state dir forwards nothing and the worker falls back
-	// to its own state resolution.
+	// A native registration hint must be absolute.
 	if filepath.IsAbs(sd) {
 		o.registryDir = sd
 	}
-	// DJA-392: the pressure refusal is measured once, here, so the lane
-	// cleanup below and the refusal further down see the same answer.
-	var refuseParts []string
-	if o.pane == "" && !o.force {
-		refuseParts = core.PressureRefuseParts(ctx, env, cwd)
-	}
-	burst := false
-	if lane != "" && o.pane == "" {
-		d := core.LaneDecide(ctx, lane, o.role, env, cwd, o.reuse == "on")
-		reuseReq := request
-		for _, gone := range d.Gone {
-			core.RosterRemove(sd, gone)
-			if len(refuseParts) > 0 {
-				// No pane opens under the refusal: no friction line saying so.
-				continue
+	burst := plan.burst
+	var explainMismatch func()
+	var occupiedNames []string
+	if plan.action != "" {
+		d := plan.decision
+		for _, row := range d.GoneRows {
+			fields := strings.Split(row, "\t")
+			gone := fieldAt(fields, 0)
+			removed, err := core.RosterRemoveIf(sd, fieldAt(fields, 1), row)
+			if err != nil {
+				core.DieFriction(fmt.Sprintf("spawn: could not remove stale worker '%s': %s", gone, text.SanitizeCause(err.Error())), 4, "", "")
 			}
-			Warn(fmt.Sprintf("lane '%s' worker '%s' is gone; opening a new pane", lane, gone), ctx, env, "spawn")
+			if core.RosterLine(sd, gone) != "" {
+				core.DieFriction(fmt.Sprintf("spawn: roster changed while checking stale worker '%s'; retry spawn", gone), 4, "", "")
+			}
+			if removed && len(refuseParts) == 0 {
+				Warn(fmt.Sprintf("lane '%s' worker '%s' is gone; removed its roster row", lane, gone), ctx, env, "spawn")
+			}
 		}
-		burst = core.PaneMode(ctx, env) == "flex" && has(core.SplitRoles(core.Cfg(ctx, "flex_roles", "reviewer,documenter", env)), o.role) && (d.Decision == "busy" || d.Capacity == 0 && d.Decision == "absent") && len(core.LiveBurstWorkers(sd, env)) < core.FlexExtra(ctx, env)
-		switch d.Decision {
+		line, differences := plan.candidate.line, plan.candidate.differences
+		f := strings.Split(line, "\t")
+		selected, actual := fieldAt(f, 0), fieldAt(f, 2)
+		switch plan.action {
 		case "reuse":
-			// A12: --name never swaps the names of live lane workers. A live
-			// worker already named o.name is reused as-is when it is a
-			// candidate; when it exists on the lane and is not, the busy-lane
-			// rule applies. Only when no live agent is named o.name does a
-			// different candidate get renamed to it (the rename flow below).
-			selected := ""
-			if o.name != "" {
-				named := false
-				for _, row := range core.LaneWorkers(sd, lane) {
-					rf := strings.Split(row, "\t")
-					if fieldAt(rf, 0) != o.name {
-						continue
-					}
-					named = true
-					state, _ := agentGetState(svc.Runtime, o.name)
-					if reuseReq.filtersMatch(rf, state) {
-						selected = o.name
-					}
-					break
-				}
-				if named && selected == "" {
-					busyLane(lane, o.name, "", o.role, ctx, env, cwd)
-				}
-			}
-			if selected == "" {
-				line := core.RosterLine(sd, d.Name)
-				f := strings.Split(line, "\t")
-				actual := fieldAt(f, 2)
-				if core.LaneAttr(ctx, lane, "kind", nil, env) == "" {
-					sessionModel := fieldAt(f, 8)
-					sessionEffort := ResolveSpawnEffort(fieldAt(f, 3), lane, actual, kindLayer, ctx, env, cwd, sessionModel)
-					if actual != kind || sessionEffort != o.effort {
-						mismatchLane(d.Name, lane, actual, kind, sessionModel, o.model, sessionEffort, o.effort, ctx, env, cwd)
-					}
-				} else if actual != kind {
-					mismatchSimple(d.Name, lane, actual, kind, ctx, env, cwd)
-				}
-				// A12: the resolved model (roster column 8) and the cwd
-				// (roster column 6, both canonical via dispatch.SamePath) must
-				// match the request too; a mismatched idle is not reused and
-				// the lane decision proceeds as if it were busy — a new pane
-				// when the lane has a slot, exit 13 when it does not.
-				// DJA-392: the MCP choice the worker was opened with (roster
-				// column 15) must match too, under the same rule.
-				state, _ := agentGetState(svc.Runtime, d.Name)
-				filtersOk := reuseReq.filtersMatch(f, state)
-				modelCwdOk := fieldAt(f, 8) == o.model && dispatch.SamePath(fieldAt(f, 6), o.cwd, platform.Current())
-				approvalsOk := laneApprovalsMatch(f, o.approvals)
-				effortOk := effortMatches(f, o.effort)
-				if !filtersOk {
-					selected = laneReusePick(sd, lane, o.role, kind, o.model, o.effort, o.approvals, o.mcp, o.cwd, env, cwd)
-					if selected == "" {
-						if d.N < d.Capacity {
-							break // the lane has a slot: open a new pane
-						}
-						if !approvalsOk {
-							busyLane(lane, d.Name, "", o.role, ctx, env, cwd)
-						}
-						if !modelCwdOk {
-							core.DieFriction(fmt.Sprintf("spawn: lane '%s' has no idle worker matching kind '%s', model '%s' and cwd '%s' (idle: '%s' runs %s %s in %s); release it or raise the lane's panes", lane, kind, o.model, o.cwd, d.Name, actual, fieldAt(f, 8), fieldAt(f, 6)), 13, "", "")
-						}
-						if !effortOk {
-							core.DieFriction(fmt.Sprintf("spawn: lane '%s' has no idle worker matching effort '%s' (idle: '%s' was opened with effort '%s'); release it or raise the lane's panes", lane, o.effort, d.Name, fieldAt(f, 14)), 13, "", "")
-						}
-						core.DieFriction(fmt.Sprintf("spawn: lane '%s' has no idle worker matching MCP '%s' (idle: '%s' was opened with MCP '%s'); release it or raise the lane's panes", lane, o.mcp, d.Name, fieldAt(f, 15)), 13, "", "")
-					}
-				} else {
-					selected = d.Name
-				}
-			}
-			line := core.RosterLine(sd, selected)
-			f := strings.Split(line, "\t")
-			actual := fieldAt(f, 2)
-			args := ""
-			if len(f) >= 14 {
-				args = f[13]
-			}
-			wanted := reuseReq.nativeArgs
-			if !reuseReq.nativeArgsMatch(f) {
-				obj := jsonjs.O("status", "kind-mismatch", "lane", lane, "name", selected, "session_args", args, "requested_args", wanted)
-				_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(obj))
-				Warn(fmt.Sprintf("lane '%s' worker '%s' was started with other native args ('%s'); this spawn wants '%s'. Release the lane, then spawn again.", lane, selected, args, wanted), ctx, env, "spawn")
-				platform.Die("", 13)
-			}
-			// Native Core cannot rename a terminal: a different --name never
-			// reuses the idle worker, it opens a new one as --fresh would (and
-			// is refused like --fresh when the lane or max_workers is full).
-			if env.Get("SOHO_TRANSPORT") == "hc" && o.name != "" && o.name != selected {
-				renameCapacity := core.CurrentWorkerCapacity(ctx, env, cwd)
-				if d.N >= d.Capacity || renameCapacity.Full {
-					busyLane(lane, selected, fmt.Sprintf("spawn: idle worker '%s' was not reused as '%s' because native Core cannot rename it, and lane '%s' has no room for a new worker. Dispatch to '%s', or release it.", selected, o.name, lane, selected), o.role, ctx, env, cwd, o)
-				}
-				warnOnce("hc-idle-not-reused:"+lane, fmt.Sprintf("spawn: idle worker '%s' was not reused as '%s' because native Core cannot rename it; starting a new worker '%s'", selected, o.name, o.name), ctx, env, cwd, admissionOnly, Warn)
-				break
-			}
-			var renameCapacity core.WorkerCapacity
-			if o.name != "" && o.name != selected && core.RosterLine(sd, o.name) == "" {
-				renameCapacity = core.CurrentWorkerCapacity(ctx, env, cwd)
-				if d.N < d.Capacity && !renameCapacity.Full {
-					break // A new explicit name requests a new worker when both caps allow it.
-				}
-			}
 			qualifiedProfile := gateConfiguredReuse(svc.Terminal, line, o, actual, configuredArgs, env)
 			name := selected
 			renamedTo := ""
@@ -1711,7 +1471,6 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 				renamedTo = o.name
 			}
 			gateReuse(svc, name, o.role, actual, ctx, env, cwd)
-			warnLaneRoleEffort(name, o.role, lane, actual, fieldAt(f, 8), fieldAt(f, 14), strings.HasPrefix(res.EffortFrom, "lane "), ctx, env, cwd)
 			emitReuse(name, o.role, actual, qualifiedProfile, modelChoice, ctx, env, cwd)
 			sameTreeEditors(name, o.role, fieldAt(f, 6), sd, env, cwd, ctx)
 			warnMsg := fmt.Sprintf("reusing idle lane '%s' worker '%s' as %s; existing session context is retained", lane, selected, o.role)
@@ -1721,55 +1480,54 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 				if d.N >= d.Capacity {
 					warnMsg += fmt.Sprintf("; the lane '%s' is at capacity (%d of %d), so no new pane can open until a worker is released", lane, d.N, d.Capacity)
 				}
-				if renameCapacity.Full {
-					warnMsg += fmt.Sprintf("; max_workers=%s is at capacity (%d of %s)", renameCapacity.Limit, renameCapacity.Count, renameCapacity.Limit)
+				if capacity.Full {
+					warnMsg += fmt.Sprintf("; max_workers=%s is at capacity (%d of %s)", capacity.Limit, capacity.Count, capacity.Limit)
 				}
 			}
 			Warn(warnMsg, ctx, env, "spawn")
 			return
 		case "busy":
-			if burst {
-				break
+			if plan.renameRefused {
+				constraint := fmt.Sprintf("lane '%s' has no room for a new worker", lane)
+				if d.N < d.Capacity && capacity.Full {
+					constraint = fmt.Sprintf("max_workers=%s is at capacity (%d live)", capacity.Limit, capacity.Count)
+				}
+				plan.busyHint = fmt.Sprintf("spawn: idle worker '%s' was not reused as '%s' because native Core cannot rename it, and %s. Dispatch to '%s', or release it.", selected, o.name, constraint, selected)
 			}
-			if d.Candidate != "" && o.reuse != "on" {
-				busyLane(lane, d.Candidate, fmt.Sprintf("lane '%s' already has idle worker '%s'. Release it before --fresh, or dispatch on it. Run 'wait %s', then dispatch.", lane, d.Candidate, d.Candidate), o.role, ctx, env, cwd, o)
-			}
-			if d.Capacity == 0 {
-				busyLane(lane, d.Name, "", o.role, ctx, env, cwd, o)
-			}
-			busyLane(lane, d.Name, fmt.Sprintf("lane '%s' is full (%d of %d: %s). Run 'wait %s', then dispatch.", lane, d.N, d.Capacity, strings.Join(d.Occupants, " "), d.Name), o.role, ctx, env, cwd, o)
+			busyLane(lane, plan.busyName, plan.busyHint, o.role, ctx, env, cwd, o)
+		case "mismatch":
+			request.reportMismatch(o, res, sources, line, differences, true)
 		case "open":
-		case "absent":
-			if d.Capacity == 0 && !burst {
-				busyLane(lane, d.Name, "", o.role, ctx, env, cwd, o)
+			if len(differences) != 0 {
+				occupiedNames = d.Occupants
+				explainMismatch = func() { request.reportMismatch(o, res, sources, line, request.differences(f), false) }
+			} else if line != "" && env.Get("SOHO_TRANSPORT") == "hc" && o.name != "" && o.name != selected {
+				warnOnce("hc-idle-not-reused:"+lane, fmt.Sprintf("spawn: idle worker '%s' was not reused as '%s' because native Core cannot rename it; starting a new worker '%s'", selected, o.name, o.name), ctx, env, cwd, admissionOnly, Warn)
 			}
 		case "unavailable":
 			core.DieFriction(fmt.Sprintf("lane '%s' worker '%s' matches but herdr agent get failed (%s). Not spawning a replacement; it may still be live.", lane, d.Name, d.Cause), 4, "", "")
 		case "locked":
 			core.DieFriction(fmt.Sprintf("lane '%s' worker '%s' has edited and cannot take review role '%s'.", lane, d.Name, o.role), 5, "", "")
 		default:
-			core.DieFriction(fmt.Sprintf("spawn: unexpected lane decision '%s'", d.Decision), 4, "", "")
+			core.DieFriction(fmt.Sprintf("spawn: unexpected lane decision '%s'", plan.action), 4, "", "")
 		}
 	}
-	if lane == "" && o.reuse == "on" && o.pane == "" {
-		reused, unavailable, _ := FindReusableMcp(o.role, kind, o.cwd, o.name, o.model, o.approvals, o.mcp, o.effort, ctx, env, cwd)
-		if reused != "" {
-			qualifiedProfile := gateConfiguredReuse(svc.Terminal, core.RosterLine(sd, reused), o, kind, configuredArgs, env)
-			previous := fieldAt(strings.Split(core.RosterLine(sd, reused), "\t"), 3)
-			gateReuse(svc, reused, o.role, kind, ctx, env, cwd)
-			emitReuse(reused, o.role, kind, qualifiedProfile, modelChoice, ctx, env, cwd)
-			sameTreeEditors(reused, o.role, o.cwd, sd, env, cwd, ctx)
-			if previous == o.role {
-				Warn(fmt.Sprintf("reusing idle worker '%s' (%s, %s; dispatch to '%s'); existing session context is retained", reused, kind, o.role, reused), ctx, env, "spawn")
-			} else {
-				Warn(fmt.Sprintf("reusing idle worker '%s' (%s, was %s, now %s; dispatch to '%s'); existing session context is retained", reused, kind, previous, o.role, reused), ctx, env, "spawn")
-			}
-			return
+	if reused != "" {
+		qualifiedProfile := gateConfiguredReuse(svc.Terminal, core.RosterLine(sd, reused), o, kind, configuredArgs, env)
+		previous := fieldAt(strings.Split(core.RosterLine(sd, reused), "\t"), 3)
+		gateReuse(svc, reused, o.role, kind, ctx, env, cwd)
+		emitReuse(reused, o.role, kind, qualifiedProfile, modelChoice, ctx, env, cwd)
+		sameTreeEditors(reused, o.role, o.cwd, sd, env, cwd, ctx)
+		if previous == o.role {
+			Warn(fmt.Sprintf("reusing idle worker '%s' (%s, %s; dispatch to '%s'); existing session context is retained", reused, kind, o.role, reused), ctx, env, "spawn")
+		} else {
+			Warn(fmt.Sprintf("reusing idle worker '%s' (%s, was %s, now %s; dispatch to '%s'); existing session context is retained", reused, kind, previous, o.role, reused), ctx, env, "spawn")
 		}
-		if unavailable != "" {
-			parts := strings.SplitN(unavailable, "\x00", 2)
-			core.DieFriction(fmt.Sprintf("worker '%s' matches this role, kind and cwd but herdr agent get failed (%s). Not spawning a replacement; it may still be live.", parts[0], fieldAt(parts, 1)), 4, "", "")
-		}
+		return
+	}
+	if unavailable != "" {
+		parts := strings.SplitN(unavailable, "\x00", 2)
+		core.DieFriction(fmt.Sprintf("worker '%s' matches this role, kind and cwd but herdr agent get failed (%s). Not spawning a replacement; it may still be live.", parts[0], fieldAt(parts, 1)), 4, "", "")
 	}
 	// DJA-392: the harder pressure limits refuse to open a new pane (exit
 	// 25). Both reuse paths returned above, so anything that reaches here
@@ -1781,12 +1539,24 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	if o.pane == "" && len(refuseParts) > 0 {
 		platform.Die(fmt.Sprintf("spawn: refusing to open a new pane under resource pressure: %s; close idle panes or run 'soho gc', or pass --force", strings.Join(refuseParts, "; ")), 25)
 	}
-	core.EnforceWorkerCap(ctx, env, cwd)
+	capacity.Enforce()
 	var orphanLive []transport.Terminal
+	// A worker that was just observed live still owns its name when the
+	// later list is incomplete.
+	nameTaken := func(name string) bool {
+		return has(occupiedNames, name) || AgentNameTaken(name, env)
+	}
+	uniqueName := func(base string) string {
+		name := base
+		for i := 2; nameTaken(name); i++ {
+			name = fmt.Sprintf("%s-%d", base, i)
+		}
+		return name
+	}
 	if o.name != "" {
-		if AgentNameTaken(o.name, env) {
+		if nameTaken(o.name) {
 			taken := o.name
-			o.name = UniqueName(o.name, env)
+			o.name = uniqueName(o.name)
 			if !AgentNameRE.MatchString(o.name) {
 				core.DieFriction(fmt.Sprintf("invalid agent name '%s' (must match [a-z][a-z0-9_-]{0,31})", o.name), 2, "", "")
 			}
@@ -1797,7 +1567,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		if base == "" {
 			base = o.role
 		}
-		o.name = UniqueName(base, env)
+		o.name = uniqueName(base)
 		if !AgentNameRE.MatchString(o.name) {
 			core.DieFriction(fmt.Sprintf("invalid agent name '%s' (must match [a-z][a-z0-9_-]{0,31})", o.name), 2, "", "")
 		}
@@ -1809,8 +1579,11 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			_, _ = fmt.Fprint(platform.Stderr, o.outputText(fmt.Sprintf("soho: spawn: the new worker is '%s' ('%s' is already live); dispatch to '%s'\n", o.name, base, o.name)))
 		}
 	}
-	native, agentArgs := freshSpawnArgs(o, lane, kind, ctx, env, cwd, false)
+	native, agentArgs := freshSpawnArgs(o, lane, kind, ctx, env, cwd, res, false)
 	warnFreshSpawnModelOrigin(o, kind, modelSpec, lane, res, ctx, env, cwd, warn)
+	if explainMismatch != nil {
+		explainMismatch()
+	}
 	e2ePort := ""
 	var unlockE2E func()
 	defer func() {
@@ -1858,7 +1631,9 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			if orphanLive == nil {
 				orphanLive = liveAgents(env)
 			}
-			warnLaneIdleOtherKind(sd, lane, kind, env, orphanLive)
+			if explainMismatch == nil {
+				warnLaneIdleOtherKind(sd, lane, kind, sources.requested("kind", o.role, res), core.LaneAttr(ctx, lane, "kind", nil, env), env, orphanLive)
+			}
 			// An idle pane released by this project without --close is not
 			// re-adopted: the spawn only names it (from the released-panes
 			// registry) before opening another pane. It reuses the live read
@@ -2257,16 +2032,9 @@ func warnLaneOrphans(ctx *core.Config, env platform.Env, cwd string, live []tran
 	}
 }
 
-// warnLaneIdleOtherKind notices the old workers a lane-kind change left
-// behind: when this spawn opens a new worker on the lane, each lane worker
-// that Herdr reports idle or done and whose roster kind is not the lane's
-// effective kind is named once, with the release --close remedy. It only
-// warns — the spawn proceeds, nothing is closed, nothing is waited on and
-// the exit code is unchanged — and a worker that is not live (or is
-// working, blocked, or of the lane's own kind) is not named. It reads the
-// live list the name check just made (passed in) and fetches it at most once
-// for a named spawn, so the check spends no per-worker agent get.
-func warnLaneIdleOtherKind(sd, lane, kind string, env platform.Env, live []transport.Terminal) {
+// warnLaneIdleOtherKind reports idle workers that occupy a slot and use a
+// different CLI from this spawn. It uses the existing live list when available.
+func warnLaneIdleOtherKind(sd, lane, kind, source, laneKind string, env platform.Env, live []transport.Terminal) {
 	if live == nil {
 		live = liveAgents(env)
 	}
@@ -2281,7 +2049,11 @@ func warnLaneIdleOtherKind(sd, lane, kind string, env platform.Env, live []trans
 			continue
 		}
 		if st := statusByName[name]; st == "idle" || st == "done" {
-			_, _ = fmt.Fprintf(platform.Stderr, "soho: warning: lane '%s' still holds idle '%s' (%s), not the lane's kind '%s'; release it with: soho release %s --close\n", lane, name, wk, kind, name)
+			detail := " from " + source
+			if laneKind != "" {
+				detail += ", with lane." + lane + ".kind=" + diagnosticValue(laneKind)
+			}
+			_, _ = fmt.Fprintf(platform.Stderr, "soho: warning: lane '%s' still holds idle '%s' (%s), not the requested kind '%s'%s; release it with: soho release %s --close\n", lane, name, wk, kind, detail, name)
 		}
 	}
 }
@@ -2342,25 +2114,30 @@ func buildArgs(kind, approvals, model, effort string, ctx *core.Config, env plat
 // ResolveMcp applies the per-role MCP server precedence (DJA-392): flag >
 // lane.<n>.mcp > role.<r>.mcp > the role file's mcp: > inherit.
 func ResolveMcp(flag, lane, role string, ctx *core.Config, env platform.Env, cwd string) string {
+	value, _ := resolveMcpSource(flag, lane, role, ctx, env, cwd)
+	return value
+}
+
+func resolveMcpSource(flag, lane, role string, ctx *core.Config, env platform.Env, cwd string) (value, source string) {
 	if flag != "" {
-		return flag
+		return flag, "flag --mcp"
 	}
 	if lane != "" {
 		if v := core.LaneAttr(ctx, lane, "mcp", nil, env); v != "" {
-			return v
+			return v, "lane." + lane + ".mcp"
 		}
 	}
 	if v := core.Cfg(ctx, "role_"+strings.ReplaceAll(role, "-", "_")+"_mcp", "", env); v != "" {
-		return v
+		return v, "role." + role + ".mcp"
 	}
 	if file := core.RoleFile(role, env, cwd); file != "" {
 		// DJA-693: the mcp list keeps its commas; the ordinary FmGet
-		// collapses them to spaces for the other keys.
+		// collapses them into spaces for the other keys.
 		if v := core.FmGetMcp(file); v != "" {
-			return v
+			return v, "role file"
 		}
 	}
-	return "inherit"
+	return "inherit", "default"
 }
 
 func busyLane(lane, name, hint, role string, ctx *core.Config, env platform.Env, cwd string, output ...spawnOptions) {
@@ -2394,55 +2171,6 @@ func busyLane(lane, name, hint, role string, ctx *core.Config, env platform.Env,
 	core.Warn(public.outputText(hint), filepath.Join(core.StateDirPath(ctx, env, cwd), "friction.log"), "spawn")
 	platform.Die("", 10)
 }
-func mismatchLane(name, lane, actual, want, sessionModel, requestedModel, sessionEffort, requestedEffort string, ctx *core.Config, env platform.Env, cwd string) {
-	obj := jsonjs.O("status", "kind-mismatch", "lane", lane, "name", name, "session_kind", actual, "requested_kind", want, "session_model", sessionModel, "requested_model", requestedModel, "session_effort", sessionEffort, "requested_effort", requestedEffort)
-	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(obj))
-	core.Warn(fmt.Sprintf("lane '%s' worker '%s' is %s (model %s, effort %s); this role wants %s (model %s, effort %s). Set lane.%s.kind or release the lane, then spawn again.", lane, name, actual, defaultValue(sessionModel, "?"), defaultValue(sessionEffort, "?"), want, defaultValue(requestedModel, "?"), defaultValue(requestedEffort, "?"), lane), filepath.Join(core.StateDirPath(ctx, env, cwd), "friction.log"), "spawn")
-	platform.Die("", 13)
-}
-
-// LaneKindConflict reports whether a worker of the given kind conflicts with
-// the lane of the role: lanes on, the role in a lane with lane.<lane>.kind
-// set, and a kind different from it. The spawn (for its --kind) and the
-// reopen (for the worker's kind) share it so the two checks cannot diverge.
-func LaneKindConflict(role, kind string, ctx *core.Config, env platform.Env) (lane, laneKind string, conflict bool) {
-	if kind == "" || !core.LanesEnabled(ctx, env) {
-		return "", "", false
-	}
-	lane = core.LaneOfRole(ctx, role, env)
-	if lane == "" {
-		return "", "", false
-	}
-	laneKind = core.LaneAttr(ctx, lane, "kind", nil, env)
-	return lane, laneKind, laneKind != "" && laneKind != kind
-}
-
-// RefuseLaneKind prints the kind-mismatch JSON line of a lane kind conflict,
-// logs the message to the friction log and exits 13. It runs before anything
-// opens, closes or changes.
-func RefuseLaneKind(role, lane, laneKind, requested, message, command string, ctx *core.Config, env platform.Env, cwd string) {
-	refuseLaneKind(role, lane, laneKind, requested, message, command, ctx, env, cwd, true)
-}
-
-func refuseLaneKind(role, lane, laneKind, requested, message, command string, ctx *core.Config, env platform.Env, cwd string, log bool, output ...spawnOptions) {
-	var public spawnOptions
-	if len(output) != 0 {
-		public = output[0]
-	}
-	obj := jsonjs.O("status", "kind-mismatch", "lane", lane, "role", role, "lane_kind", laneKind, "requested_kind", requested)
-	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(public.outputObject(obj)))
-	if log {
-		core.Warn(public.outputText(message), filepath.Join(core.StateDirPath(ctx, env, cwd), "friction.log"), command)
-	}
-	platform.Die("", 13)
-}
-func mismatchSimple(name, lane, actual, want string, ctx *core.Config, env platform.Env, cwd string) {
-	obj := jsonjs.O("status", "kind-mismatch", "lane", lane, "name", name, "session_kind", actual, "requested_kind", want)
-	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(obj))
-	core.Warn(fmt.Sprintf("lane '%s' worker '%s' runs %s but lane.%s.kind is %s. Release the lane ('release %s --close'), then spawn again.", lane, name, actual, lane, want, name), filepath.Join(core.StateDirPath(ctx, env, cwd), "friction.log"), "spawn")
-	platform.Die("", 13)
-}
-
 func startAgent(o spawnOptions, kind string, env platform.Env, created bool, args []string) bool {
 	svc := backend.New(env)
 	if o.launchProfile.Name != "" {
@@ -3031,7 +2759,7 @@ func reserveE2EPort(svc transport.Services, sd string, ctx *core.Config, env pla
 }
 
 // freshSpawnArgs is the shared final legacy/native argv preparation.
-func freshSpawnArgs(o spawnOptions, lane, kind string, ctx *core.Config, env platform.Env, cwd string, admissionOnly bool) (string, []string) {
+func freshSpawnArgs(o spawnOptions, lane, kind string, ctx *core.Config, env platform.Env, cwd string, res core.RoleSettings, admissionOnly bool) (string, []string) {
 	warn := func(message string, ctx *core.Config, env platform.Env, command string) {
 		if !admissionOnly {
 			Warn(o.outputText(message), ctx, env, command)
@@ -3067,6 +2795,12 @@ func freshSpawnArgs(o spawnOptions, lane, kind string, ctx *core.Config, env pla
 		if msg == sandboxNote {
 			warnOnce("unsandboxed-no-switch:"+kind, msg, ctx, env, cwd, admissionOnly, warn)
 			return
+		}
+		var sources laneReuseSources
+		if strings.HasPrefix(msg, "cursor ignores --effort without --model") {
+			msg += "; set " + sources.changeSetting("model", o.role, res)
+		} else if strings.HasPrefix(msg, "no effort mapping for kind ") {
+			msg += "; requested by " + sources.changeSetting("effort", o.role, res)
 		}
 		warn(msg, ctx, env, "spawn")
 	}
@@ -3177,40 +2911,21 @@ func freshSpawnArgs(o spawnOptions, lane, kind string, ctx *core.Config, env pla
 	return native, agentArgs
 }
 
-// CmdSpawnWithLaneKindOverride runs one spawn with the lane-kind conflict
-// check skipped for that worker only. It is a Go call open to callers that
-// already hold this package, not a CLI flag, environment variable or config
-// key: reopen uses it for the explicit --kind of its own replacement spawn.
-// A plain spawn keeps exiting 13 on a conflicting --kind.
-func CmdSpawnWithLaneKindOverride(argv []string, ctx *core.Config, env platform.Env, cwd string) {
-	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, false, true, false)
+// CmdSpawnReopen starts the replacement worker. Its recorded name does not
+// need the naming advisory for a new name.
+func CmdSpawnReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) {
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, false, true)
 }
 
-// PreflightFreshSpawnWithLaneKindOverride observes the same one-off admission
-// as CmdSpawnWithLaneKindOverride, without starting a worker.
-func PreflightFreshSpawnWithLaneKindOverride(argv []string, ctx *core.Config, env platform.Env, cwd string) {
-	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true, true, false)
-}
-
-// CmdSpawnReopen runs the spawn half of reopen. Like the other *WithLaneKindOverride
-// calls it is open only to Go callers that already hold this package, never a CLI
-// flag, env var or config key. The recorded --name of an existing worker is not a
-// new naming choice, so it gets no naming-pattern advisory.
-func CmdSpawnReopen(argv []string, ctx *core.Config, env platform.Env, cwd string, laneOverride bool) {
-	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, false, laneOverride, true)
-}
-
-// PreflightFreshSpawnReopen observes the same one-off admission as CmdSpawnReopen,
-// without starting a worker.
-func PreflightFreshSpawnReopen(argv []string, ctx *core.Config, env platform.Env, cwd string, laneOverride bool) {
-	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true, laneOverride, true)
+// PreflightFreshSpawnReopen checks the replacement without starting a worker.
+func PreflightFreshSpawnReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) {
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true, true)
 }
 
 // warnFreshSpawnModelOrigin runs on the fresh-worker path. It states only
 // what soho itself does: whether it passes a resolved model argument. It does
 // not read native arguments or launch profiles and predicts neither the
-// assistant's model nor a lane's selection. It also emits the lane-effort note
-// the call site used to emit directly, through the admission-aware closure.
+// assistant's model nor a lane's selection.
 func warnFreshSpawnModelOrigin(o spawnOptions, kind, modelSpec, lane string, res core.RoleSettings, ctx *core.Config, env platform.Env, cwd string, warn func(string, *core.Config, platform.Env, string)) {
 	if o.model == "" {
 		message := fmt.Sprintf("spawn: soho passes no model to this %s worker ('%s'); it starts on the model its native arguments or the assistant's own settings choose", kind, o.role)
@@ -3222,7 +2937,6 @@ func warnFreshSpawnModelOrigin(o spawnOptions, kind, modelSpec, lane string, res
 		}
 		warn(message, ctx, env, "spawn")
 	}
-	warnLaneRoleEffort(o.name, o.role, lane, kind, o.model, o.effort, strings.HasPrefix(res.EffortFrom, "lane "), ctx, env, cwd, o)
 }
 
 // laneConfigSuffix reports the first configured lane model key for a lane

@@ -198,6 +198,18 @@ func (s Starter) Start(req StartRequest) (State, *Store, error) {
 		}
 	}
 
+	// Resolve the selected session and the base layers at the prepared
+	// checkout before requesting a workspace or a supervisor launch.
+	pairs := core.ConfigTextPairs([]byte(teamSessionText(req.Team.Pairs)))
+	roles := teamRoles(pairs)
+	actor := core.LoadConfigThrough(s.Env, prepared.Dir, "project")
+	team := teamSessionView(pairs, roles, &actor, s.Env, prepared.Dir)
+	if conflicts := actorGroupConflicts(roles, &actor, team); len(conflicts) != 0 {
+		message := strings.Join(conflicts, "\n")
+		_, _ = store.Fail(req.ID, message, ExitUsage)
+		return State{}, store, errUsage(message)
+	}
+
 	// 7. Record the run facts; StartedAt comes from the store clock. This
 	// slice computes no deadline: the timeout budget is enforced by the
 	// supervisor slice. IntervalStart seeds the budget interval anchor
@@ -600,15 +612,15 @@ func writeSessionConf(path string, pairs []TeamPair) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	lines := make([]string, 0, len(pairs))
+	return writeAtomic0600(path, []byte(teamSessionText(pairs)))
+}
+
+func teamSessionText(pairs []TeamPair) string {
+	var body strings.Builder
 	for _, pair := range pairs {
-		lines = append(lines, pair.Key+"="+pair.Value)
+		fmt.Fprintf(&body, "%s=%s\n", pair.Key, pair.Value)
 	}
-	body := strings.Join(lines, "\n")
-	if body != "" {
-		body += "\n"
-	}
-	return writeAtomic0600(path, []byte(body))
+	return body.String()
 }
 
 // NewStartRecovery wires the production start recovery: one herdr CLI for
