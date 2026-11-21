@@ -634,9 +634,17 @@ func TestDispatchWorkingTargetStillBusyAfterTheSettleWindow(t *testing.T) {
 	}
 	// The marker carries this prompt's path, so a later wait sends Enter only
 	// when the prompt sits in the input, not for the path in the scrollback.
-	marker := strings.Fields(mustRead(t, filepath.Join(f.state, "ws", "wait", "worker.not-received")))
-	if len(marker) != 3 || !strings.HasPrefix(marker[2], filepath.Join(f.state, "ws", "briefs", "worker-")) {
-		t.Fatalf("not-received marker without the prompt path: %q", marker)
+	// The path may contain spaces: split on the first two only, and require
+	// one record whose path is this dispatch's composed brief.
+	raw := mustRead(t, filepath.Join(f.state, "ws", "wait", "worker.not-received"))
+	marker := strings.SplitN(strings.TrimSuffix(raw, "\n"), " ", 3)
+	digits := func(s string) bool { return s != "" && strings.Trim(s, "0123456789") == "" }
+	if strings.Count(raw, "\n") != 1 || !strings.HasSuffix(raw, "\n") || len(marker) != 3 || !digits(marker[0]) || !digits(marker[1]) ||
+		!strings.HasPrefix(marker[2], filepath.Join(f.state, "ws", "briefs", "worker-")) || !strings.HasSuffix(marker[2], ".md") {
+		t.Fatalf("not-received marker without the prompt path: %q", raw)
+	}
+	if info, err := os.Stat(marker[2]); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("not-received marker path %q is not the composed brief (err %v)", marker[2], err)
 	}
 	// The verdict comes only after the turn wait (prompt_settle_seconds=2).
 	if elapsed := time.Since(start); elapsed < 2*time.Second {

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -126,7 +128,16 @@ func TestHcChildRosterHint(t *testing.T) {
 				statusOut = "worker\tdone\t" + childReport + "\t"
 				collectCode, collectOut = 0, "<!-- report: "+childReport+" -->\n"+childReportBody
 				waitCode = 0
-				waitOut = fmt.Sprintf("{\"agent\":\"worker\",\"status\":\"done\",\"report\":%q,\"observe\":true}\n", childReport)
+				// The report path is JSON-encoded (no HTML escaping, as the CLI's
+				// JSON lines), so a literal U+00A0 or backslash from TMPDIR
+				// matches where %q would escape it.
+				var report bytes.Buffer
+				enc := json.NewEncoder(&report)
+				enc.SetEscapeHTML(false)
+				if err := enc.Encode(childReport); err != nil {
+					t.Fatal(err)
+				}
+				waitOut = "{\"agent\":\"worker\",\"status\":\"done\",\"report\":" + strings.TrimSuffix(report.String(), "\n") + ",\"observe\":true}\n"
 			}
 			for _, command := range []struct {
 				name, stdout string
