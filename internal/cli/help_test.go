@@ -61,6 +61,17 @@ func TestCommandHelpFirstPositionOnly(t *testing.T) {
 		}
 	})
 
+	t.Run("review-context --help prints its usage and description lines", func(t *testing.T) {
+		const want = "  soho review-context <base>[..<head>] [--cwd <dir>] [--out <file>]\n" +
+			"                                             # print the changed Go symbols of a committed range, their textual references in Go files at head and the doc lines citing changed paths; --out writes atomically and refuses an existing entry\n"
+		for _, flag := range []string{"--help", "-h"} {
+			code, out, errOut := runIn(t, []string{"review-context", flag}, env, cwd)
+			if code != 0 || out != want || errOut != "" {
+				t.Fatalf("review-context %s: code=%d out=%q err=%q; want %q", flag, code, out, errOut, want)
+			}
+		}
+	})
+
 	t.Run("gate --help prints its usage line and paragraph and stops before Durations", func(t *testing.T) {
 		code, out, errOut := runIn(t, []string{"gate", "--help"}, env, cwd)
 		lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
