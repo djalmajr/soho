@@ -123,26 +123,28 @@ func cmdWake(agents []string, timeoutMs float64, anyDone, add bool, ctx *core.Co
 		defer storage.Close()
 	}
 	caller := env.Get("HC_TERMINAL_ID")
-	var remaining, replaced []string
+	var remaining []string
+	var stopped wakeStops
 	if add {
 		var err error
 		remaining, err = uncoveredWakeAgents(svc, caller, storage, agents)
 		if err != nil {
 			core.DieFriction("wait: --wake could not check existing wakes: "+err.Error(), 4, "", "wait")
 		}
-		replaced = []string{}
 	} else {
 		var err error
-		replaced, err = stopPreviousWakes(svc, caller, storage)
+		stopped, err = stopPreviousWakes(svc, caller, storage)
 		if err != nil {
 			core.DieFriction("wait: --wake could not stop previous wakes: "+err.Error(), 4, "", "wait")
 		}
 		remaining = agents
 	}
+	replaced := stopped.terminals
 	if len(remaining) == 0 {
 		return 0
 	}
 	agents = remaining
+	unwatched := unwatchedWakeAgents(stopped.agents, agents, sd)
 	ms := int64(timeoutMs)
 	name := WakeName(agents)
 	runCtx := context.Background()
@@ -173,7 +175,12 @@ func cmdWake(agents []string, timeoutMs float64, anyDone, add bool, ctx *core.Co
 	if err := recordWake(storage, rep.Value, agents); err != nil {
 		core.DieFriction(fmt.Sprintf("wait: --wake started child '%s' but could not record its agents: %v; check it before arming again", rep.Value, err), 4, "", "wait")
 	}
-	jsonLine(jsonjs.O("wake", "armed", "agents", stringsAny(agents), "terminal", rep.Value, "name", name, "timeout_ms", ms, "replaced", stringsAny(replaced)))
+	armLine := jsonjs.O("wake", "armed", "agents", stringsAny(agents), "terminal", rep.Value, "name", name, "timeout_ms", ms, "replaced", stringsAny(replaced))
+	if len(unwatched) > 0 {
+		armLine.Set("unwatched", stringsAny(unwatched))
+		fmt.Fprintf(platform.Stderr, "soho: wait: this wake replaced the wake(s) of %s; to keep watching them, rearm with: soho wait %s --wake --add\n", strings.Join(unwatched, ", "), strings.Join(unwatched, " "))
+	}
+	jsonLine(armLine)
 	return 0
 }
 
@@ -308,38 +315,47 @@ func uncoveredWakeAgents(svc transport.Services, caller string, dir *os.Root, ag
 	return remaining, nil
 }
 
+// wakeStops is what a plain --wake stopped on this caller: the addresses
+// for the arming line and the agents those wakes recorded, in record order.
+type wakeStops struct {
+	terminals []string
+	agents    []string
+}
+
 // stopPreviousWakes closes every wake recorded in this state dir that Core
 // still reports live and parented by the caller. The kill and the remove go
 // through the transport's Close, never a shell, and no terminal is chosen by
 // name. A recorded wake Core no longer reports live has only its stale
 // record dropped; a live wake of another parent, or a live child of the
-// caller that is not recorded here, is left completely alone.
-func stopPreviousWakes(svc transport.Services, caller string, dir *os.Root) ([]string, error) {
+// caller that is not recorded here, is left completely alone. Each stopped
+// wake's record is read for its agents (an unreadable one contributes none);
+// no worker status is ever probed here.
+func stopPreviousWakes(svc transport.Services, caller string, dir *os.Root) (wakeStops, error) {
 	snapshot, err := liveWakeSnapshot(svc, caller)
 	if err != nil {
-		return nil, err
+		return wakeStops{}, err
 	}
-	stopped := []string{}
+	stopped := wakeStops{terminals: []string{}, agents: []string{}}
 	if dir == nil {
 		return stopped, nil
 	}
 	f, err := dir.Open(".")
 	if err != nil {
-		return nil, err
+		return wakeStops{}, err
 	}
 	entries, err := f.ReadDir(-1)
 	_ = f.Close()
 	if err != nil {
-		return nil, err
+		return wakeStops{}, err
 	}
 	for _, entry := range entries {
 		name := entry.Name()
 		if !validWakeAddress(name) {
-			return nil, fmt.Errorf("invalid wake record %q", name)
+			return wakeStops{}, fmt.Errorf("invalid wake record %q", name)
 		}
 		if !snapshot.live[name] {
 			if err := dir.Remove(name); err != nil {
-				return nil, err
+				return wakeStops{}, err
 			}
 			continue
 		}
@@ -348,18 +364,20 @@ func stopPreviousWakes(svc transport.Services, caller string, dir *os.Root) ([]s
 		}
 		info, err := dir.Lstat(name)
 		if err != nil {
-			return nil, err
+			return wakeStops{}, err
 		}
 		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("invalid wake record %q", name)
+			return wakeStops{}, fmt.Errorf("invalid wake record %q", name)
 		}
+		recordAgents := wakeRecordedAgents(dir, name, info)
 		if rep := svc.Runtime.Close(context.Background(), transport.Target{ID: name}, transport.Call{}); rep.Err != nil {
-			return nil, fmt.Errorf("could not close wake %s: %w", name, rep.Err)
+			return wakeStops{}, fmt.Errorf("could not close wake %s: %w", name, rep.Err)
 		}
 		if err := dir.Remove(name); err != nil {
-			return nil, err
+			return wakeStops{}, err
 		}
-		stopped = append(stopped, name)
+		stopped.terminals = append(stopped.terminals, name)
+		stopped.agents = append(stopped.agents, recordAgents...)
 	}
 	return stopped, nil
 }
@@ -476,4 +494,55 @@ func wakeRearmCommand(agents []string, timeoutMs int64, anyDone bool) string {
 	}
 	args = append(args, "--timeout", strconv.FormatInt(timeoutMs, 10))
 	return strings.Join(args, " ")
+}
+
+// wakeRecordedAgents reads the agents named in one wake record through the
+// confined root. It is deliberately lenient: an open, stat, identity or read
+// failure means the membership is unknown, contributes no agents and never
+// blocks the replacement of a record already proved to be this caller's.
+func wakeRecordedAgents(dir *os.Root, name string, info os.FileInfo) []string {
+	file, err := dir.Open(name)
+	if err != nil {
+		return nil
+	}
+	opened, statErr := file.Stat()
+	if statErr != nil || !os.SameFile(info, opened) {
+		_ = file.Close()
+		return nil
+	}
+	data, readErr := io.ReadAll(file)
+	_ = file.Close()
+	if readErr != nil {
+		return nil
+	}
+	agents := []string{}
+	for _, agent := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+		if agent != "" {
+			agents = append(agents, agent)
+		}
+	}
+	return agents
+}
+
+// unwatchedWakeAgents names the recorded agents of stopped wakes that the
+// new wake does not cover and that the current roster still accepts (the
+// same RosterLine lookup CmdWait uses to accept a name). Record order is kept
+// and a name repeated across records counts once. It probes no status and
+// claims nothing about whether an agent finished: an --add rearm is safe
+// either way, since --add only adds and a finished wake exits at once.
+func unwatchedWakeAgents(recorded, armed []string, sd string) []string {
+	covered := make(map[string]bool, len(armed))
+	for _, agent := range armed {
+		covered[agent] = true
+	}
+	seen := make(map[string]bool)
+	unwatched := []string{}
+	for _, agent := range recorded {
+		if covered[agent] || seen[agent] || core.RosterLine(sd, agent) == "" {
+			continue
+		}
+		seen[agent] = true
+		unwatched = append(unwatched, agent)
+	}
+	return unwatched
 }
