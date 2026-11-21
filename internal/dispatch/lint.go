@@ -79,6 +79,9 @@ type BriefLintResult struct {
 	// Owned-files-names-no-path warning, the warnings brief_lint=strict
 	// refuses. They are also in Warnings.
 	UnseenPaths []string
+	// MissingOwnedFiles is true when the section check itself found no
+	// Owned files section (never derived from the message text).
+	MissingOwnedFiles bool
 }
 
 // ParseBriefLintAliases parses Section=Heading1|Heading2 values. Malformed
@@ -593,6 +596,7 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 		}
 	}
 	missing := BriefMissingSections(body, options.ReadOnly, aliases)
+	result.MissingOwnedFiles = strings.Contains(missing, " [Owned files]")
 	placeholderMarks := UnfilledPlaceholders(body, briefLintPlaceholderMarkers(core.Cfg(ctx, "brief_lint_placeholders", "", env)))
 	if missing == "" && len(placeholderMarks) == 0 {
 		return result
