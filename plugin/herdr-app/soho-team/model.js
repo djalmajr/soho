@@ -786,3 +786,56 @@ export function prefsRead(prefs, folder) {
     ? prefs[folder]
     : {};
 }
+
+// The folders a panel copy watches, derived only from the paths the roles read
+// actually reported. A field absent from an older soho is treated as null. A
+// file is watched through its parent folder; a reported folder (reports) is
+// watched itself. Paths in one folder share a single watch.
+const trailingSeparators = /[\\/]+$/;
+
+function cleanPath(value) {
+  return String(value).replace(trailingSeparators, "");
+}
+
+function parentFolder(path) {
+  const split = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  if (split < 0) return "";
+  // A file at a filesystem root has a root parent: "/" on POSIX and
+  // "C:\\" (with the separator) for a drive-root file on Windows.
+  if (split === 0) return "/";
+  if (split === 2 && path[1] === ":") return path.slice(0, 3);
+  return path.slice(0, split);
+}
+
+export function watchTargets(team) {
+  const config = team?.config_files && typeof team.config_files === "object" ? team.config_files : {};
+  const teamFiles = team?.team_files && typeof team.team_files === "object" ? team.team_files : {};
+  const byFolder = new Map();
+  const add = (isFolder, value) => {
+    if (typeof value !== "string" || value === "") return;
+    const path = cleanPath(value);
+    const folder = isFolder ? path : parentFolder(path);
+    if (!folder) return;
+    const target = byFolder.get(folder) ?? { folder, files: [], dirs: [] };
+    const list = isFolder ? target.dirs : target.files;
+    if (!list.includes(path)) list.push(path);
+    byFolder.set(folder, target);
+  };
+  for (const scope of ["project", "user", "session"]) add(false, config[scope]);
+  add(false, teamFiles.roster);
+  add(true, teamFiles.reports);
+  return [...byFolder.values()];
+}
+
+// A batch naming a shown file, a path under a shown folder, or the watched
+// root itself refreshes. Sibling files in the same folder do not.
+export function watchMatches(target, paths) {
+  if (!Array.isArray(paths)) return false;
+  return paths.some((value) => {
+    // Compare the bytes the watch delivered: trimming would make a sibling
+    // named "soho.conf " match the shown "soho.conf".
+    if (typeof value !== "string" || value === "") return false;
+    if (value === target.folder || target.files.includes(value)) return true;
+    return target.dirs.some((dir) => value === dir || value.startsWith(`${dir}/`) || value.startsWith(`${dir}\\`));
+  });
+}

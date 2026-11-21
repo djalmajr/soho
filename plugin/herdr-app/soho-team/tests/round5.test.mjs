@@ -8,6 +8,7 @@ import test from "node:test";
 import { register } from "node:module";
 import * as M from "../model.js";
 import * as H from "./stubs/herdr.mjs";
+import { fakeCx, flush, tick } from "./stubs/context.mjs";
 register("./stubs/loader.mjs", import.meta.url);
 const { default: SohoPanel } = await import("../main.js");
 
@@ -43,45 +44,6 @@ function reader(overrides = {}) {
     }
     return ok({});
   };
-}
-
-const tick = () => new Promise((resolve) => setImmediate(resolve));
-
-function fakeCx() {
-  const ctx = {
-    notifies: 0,
-    tasks: [],
-    timers: { every: [], after: [] },
-    notify() { ctx.notifies += 1; },
-    focus_handle() { return { focus() {} }; },
-    timer: {
-      every(ms, callback) { ctx.timers.every.push({ ms, callback }); return { cancel() {} }; },
-      after(ms, callback) {
-        const entry = { ms, callback, cancelled: false };
-        ctx.timers.after.push(entry);
-        return { cancel() { entry.cancelled = true; } };
-      },
-    },
-    // gpui-kit calls the body in the delivering call, then adopts its promise.
-    spawn(body) {
-      const promise = Promise.resolve(body(ctx));
-      ctx.tasks.push(promise);
-      return promise;
-    },
-  };
-  return ctx;
-}
-
-async function flush(cx) {
-  // A read the test holds open must not block the drain: detach it and keep
-  // advancing the microtask queue until no new task appears.
-  for (let i = 0; i < 80; i += 1) {
-    const pending = cx.tasks.splice(0);
-    for (const task of pending) task.catch(() => {});
-    if (pending.length) await Promise.race([Promise.allSettled(pending), tick()]);
-    await tick();
-    if (!pending.length && cx.tasks.length === 0) return;
-  }
 }
 
 function useFolder(space, folder) {

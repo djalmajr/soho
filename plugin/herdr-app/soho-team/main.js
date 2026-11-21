@@ -3,7 +3,7 @@
 // effects are user actions and are guarded while `herdr-app check` loads.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState } from "gpui-base";
-import { exec, spaces, focused, theme, checking, run, openOverlay, readTextFile, nextCommand } from "herdr";
+import { exec, spaces, focused, theme, checking, run, openOverlay, readTextFile, nextCommand, watchFolder } from "herdr";
 import * as M from "./model.js";
 import { button, errorBlock, growText, markdown, notice, TEXT } from "./ui.js";
 import {
@@ -13,6 +13,7 @@ import {
 
 const NOTICE_MS = 8000;
 const REFRESH_MS = 15000;
+const WATCH_REFRESH_MS = 300;
 const EFFORTS = ["low", "medium", "high", "xhigh"];
 
 const firstLines = (text, count = 4) =>
@@ -47,6 +48,7 @@ export default class SohoPanel extends View {
     this.draftSeq = 0;
     this.undoSeq = 0;
     this.context = null;
+    this.contextVersion = 0;
     this.folderKnown = null;
     this.refreshQueued = false;
     this.firstReadDone = false;
@@ -67,6 +69,15 @@ export default class SohoPanel extends View {
     this.cleanupConfirm = null;
     this.updatedAt = null;
     this.lastVisibleAt = 0;
+    this.watches = [];
+    this.watchSignature = "";
+    this.watchGeneration = 0;
+    this.watchDirty = false;
+    this.closed = false;
+    this.pendingChange = false;
+    this.wakeChangeLoop = null;
+    this.cancelChangeDelay = null;
+    this.refreshInFlight = 0;
 
     const defaultFolder = this.currentFolder();
     this.folderKnown = defaultFolder;
@@ -75,6 +86,7 @@ export default class SohoPanel extends View {
 
     if (checking()) return;
     this.bindModelInput();
+    cx.spawn((ctx) => this.changeRefreshLoop(ctx));
     this.refresh(cx);
     // Poll only while this copy is visible (F18): the installed API has no
     // visibility call, so the last render or non-zero size is the signal.
@@ -113,7 +125,7 @@ export default class SohoPanel extends View {
   // A read's origin, taken when the read starts; its sequence tells two reads
   // of the same context apart and never decides eligibility (F1, F2).
   beginRead(context) {
-    return M.originFor(context, ++this.readSeq);
+    return { ...M.originFor(context, ++this.readSeq), contextVersion: this.contextVersion };
   }
 
   // A captured identity (origin or context) against the shown one.
@@ -215,6 +227,8 @@ export default class SohoPanel extends View {
     this.folderKnown = context.folder;
     this.applyFolderPrefs(context.folder);
     if (!changed) return false;
+    this.contextVersion += 1;
+    this.invalidateWatches();
     this.dropDatasets();
     // Capability flags belong to the context that answered: until this
     // context's own reply arrives the panel knows nothing, so Health and
@@ -245,11 +259,11 @@ export default class SohoPanel extends View {
     this.sort = state.sort;
   }
 
-  // A read is accepted only while the origin it started with is still the
-  // shown one; the read sequence is not compared, so an overlapping refresh
-  // never rejects the read that owns the result (F1, F2).
+  // Returning to the same space does not revive reads from the previous visit.
+  // Overlapping reads within the same visit can still share a result.
   alive(origin) {
-    return this.current(origin);
+    return !this.closed && this.current(origin)
+      && (origin.contextVersion ?? this.contextVersion) === this.contextVersion;
   }
 
   readPrefs() {
@@ -381,9 +395,9 @@ export default class SohoPanel extends View {
   // with its own (R4-F3).
   async runSection(cx, section, args, origin, json = true, opts = {}) {
     const bound = this.originFrom(origin);
-    if (!bound) return null;
+    if (!this.alive(bound)) return null;
     const context = M.contextOfOrigin(bound);
-    const baseKey = opts.busyKey ?? M.readBusyKey(section, bound);
+    const baseKey = `${opts.busyKey ?? M.readBusyKey(section, bound)}|visit:${bound.contextVersion ?? this.contextVersion}`;
     // A reconcile read always starts its own request, after the write it
     // reconciles, instead of joining one admitted before the write (F3).
     const busyKey = opts.fresh ? `${baseKey}|fresh|${bound.seq}` : baseKey;
@@ -426,7 +440,7 @@ export default class SohoPanel extends View {
       } finally {
         this.busy.delete(busyKey);
         this.inflight.delete(busyKey);
-        this.notifySafe(cx);
+        if (!this.closed) this.notifySafe(cx);
       }
     })();
     this.inflight.set(busyKey, task);
@@ -436,60 +450,188 @@ export default class SohoPanel extends View {
   // `options.reconcile` marks the read that follows a write: its roles request
   // starts after that write instead of joining one admitted before it (F3).
   refresh(cx, options = {}) {
-    if (checking()) return;
+    if (this.closed || checking()) return;
     const space = this.space();
+    const folder = this.folderOf(space);
+    const context = M.contextFor(space, folder);
+    this.adoptContext(context, cx);
     if (!space) {
       this.errors.team = "no space shown";
       this.firstReadDone = true;
       cx.notify();
       return;
     }
-    const folder = this.folderOf(space);
-    const context = M.contextFor(space, folder);
-    this.adoptContext(context, cx);
     const origin = this.beginRead(context);
     this.folderKnown = folder;
-    cx.spawn(async (ctx) => {
-      const capsP = this.runSection(ctx, "capabilities", ["capabilities", "--json"], origin);
-      const teamP = this.runSection(ctx, "team", ["roles", "--json"], origin, true,
-        { fresh: Boolean(options.reconcile) });
-      const rosterP = this.runSection(ctx, "roster", ["roster", "--json"], origin, true,
-        { note: M.rosterRefusal });
-      const [capsRead, teamRead, rosterRead] = await Promise.all([capsP, teamP, rosterP]);
-      if (!this.alive(origin)) return;
-      // A failed or malformed capability answer means the no-new-keys default,
-      // a visible diagnostic and the independent reads still run (F12).
-      const answer = M.capabilityAnswer(capsRead?.value ?? null);
-      const capsOrigin = capsRead?.origin ?? origin;
-      if (answer.caps) {
-        this.publish("capabilities", answer.caps, capsOrigin);
-        this.caps = M.capabilities(answer.caps);
-      } else {
-        this.publish("capabilities", null, capsOrigin);
-        this.caps = M.capabilities(null);
-        if (!this.errors.capabilities) this.diagnose("capabilities", capsOrigin, { note: "", error: answer.error });
-      }
-      if (teamRead) this.publish("team", teamRead.value, teamRead.origin);
-      if (rosterRead) this.publish("roster", M.normalizeRoster(rosterRead.value), rosterRead.origin);
-      // A hidden tab never stays selected: the fallback happens before the render
-      // that would paint it (decision 4). A detail view keeps its tab (F8).
-      this.tab = M.resolveTab(this.tab, this.caps);
-      this.firstReadDone = true;
-      this.updatedAt = Date.now();
-      ctx.notify();
+    this.refreshInFlight += 1;
+    const read = async (ctx) => {
+      try {
+        const capsP = this.runSection(ctx, "capabilities", ["capabilities", "--json"], origin);
+        const teamP = this.runSection(ctx, "team", ["roles", "--json"], origin, true,
+          { fresh: Boolean(options.reconcile) });
+        const rosterP = this.runSection(ctx, "roster", ["roster", "--json"], origin, true,
+          { note: M.rosterRefusal });
+        const [capsRead, teamRead, rosterRead] = await Promise.all([capsP, teamP, rosterP]);
+        if (!this.alive(origin)) return;
+        // A failed or malformed capability answer means the no-new-keys default,
+        // a visible diagnostic and the independent reads still run (F12).
+        const answer = M.capabilityAnswer(capsRead?.value ?? null);
+        const capsOrigin = capsRead?.origin ?? origin;
+        if (answer.caps) {
+          this.publish("capabilities", answer.caps, capsOrigin);
+          this.caps = M.capabilities(answer.caps);
+        } else {
+          this.publish("capabilities", null, capsOrigin);
+          this.caps = M.capabilities(null);
+          if (!this.errors.capabilities) this.diagnose("capabilities", capsOrigin, { note: "", error: answer.error });
+        }
+        if (teamRead) this.publish("team", teamRead.value, teamRead.origin);
+        if (rosterRead) this.publish("roster", M.normalizeRoster(rosterRead.value), rosterRead.origin);
+        this.syncWatches(context, ctx);
+        // A hidden tab never stays selected: the fallback happens before the render
+        // that would paint it (decision 4). A detail view keeps its tab (F8).
+        this.tab = M.resolveTab(this.tab, this.caps);
+        this.firstReadDone = true;
+        this.updatedAt = Date.now();
+        ctx.notify();
 
-      await this.readChoices(ctx, origin);
-      if (!this.alive(origin)) return;
-      const reads = M.sectionReads(this.data.capabilities ?? this.caps);
-      if (reads.health) {
-        const health = await this.runSection(ctx, "health", ["health", "--json"], origin);
-        if (this.alive(origin) && health) this.publish("health", health.value, health.origin);
+        await this.readChoices(ctx, origin);
+        if (!this.alive(origin)) return;
+        const reads = M.sectionReads(this.data.capabilities ?? this.caps);
+        if (reads.health) {
+          const health = await this.runSection(ctx, "health", ["health", "--json"], origin);
+          if (this.alive(origin) && health) this.publish("health", health.value, health.origin);
+        }
+        const agent = this.reportAgent
+          || (this.tab === "now" && this.band === "wide" ? this.selectedWorker : "");
+        if (agent) await this.loadReport(agent, origin, ctx);
+        if (this.alive(origin)) ctx.notify();
+      } finally {
+        this.finishRefresh();
       }
-      const agent = this.reportAgent
-        || (this.tab === "now" && this.band === "wide" ? this.selectedWorker : "");
-      if (agent) await this.loadReport(agent, origin, ctx);
-      if (this.alive(origin)) ctx.notify();
+    };
+    try {
+      cx.spawn(read);
+    } catch (error) {
+      this.finishRefresh();
+      throw error;
+    }
+  }
+
+  // One watch per folder the roles read says this context shows. A batch is
+  // matched against those paths, never against every file in the folder. Each
+  // iteration starts a fresh watch: the API releases the call on settlement.
+  syncWatches(context, cx) {
+    if (checking()) return;
+    const targets = M.watchTargets(this.data.team);
+    const signature = JSON.stringify([M.contextKey(context), targets]);
+    if (signature === this.watchSignature) return;
+    this.watchGeneration += 1;
+    this.cancelWatches();
+    const generation = this.watchGeneration;
+    this.watchSignature = signature;
+    // watchFolder has no machine argument: a remote space keeps the timer.
+    if (context?.machine) return;
+    for (const target of targets) {
+      let handle;
+      try { handle = watchFolder(target.folder); } catch { continue; }
+      if (!handle || typeof handle.then !== "function") continue;
+      this.watches.push(handle);
+      cx.spawn(async () => {
+        try {
+          for (;;) {
+            let paths;
+            try { paths = await handle; } catch { return; }
+            if (this.watchGeneration !== generation) return;
+            this.watches = this.watches.filter((w) => w !== handle);
+            if (!Array.isArray(paths) || paths.length === 0) return;
+            if (M.watchMatches(target, paths)) {
+              if (M.pollAllowed(this.lastVisibleAt)) this.requestChangeRefresh();
+              else this.watchDirty = true;
+            }
+            handle = watchFolder(target.folder);
+            this.watches.push(handle);
+          }
+        } catch {
+          // A rejected or failed watch is dropped; the 15 s timer stays.
+        }
+      });
+    }
+  }
+
+  cancelWatches() {
+    for (const handle of this.watches) {
+      try { handle.cancel?.(); } catch { /* already released */ }
+    }
+    this.watches = [];
+  }
+
+  invalidateWatches() {
+    this.watchGeneration += 1;
+    this.watchSignature = "";
+    this.cancelWatches();
+    this.watchDirty = false;
+    this.pendingChange = false;
+    this.cancelChangeDelay?.();
+    this.signalChangeLoop();
+  }
+
+  signalChangeLoop() {
+    this.wakeChangeLoop?.();
+    this.wakeChangeLoop = null;
+  }
+
+  waitForChangeSignal() {
+    return new Promise((resolve) => { this.wakeChangeLoop = resolve; });
+  }
+
+  requestChangeRefresh() {
+    this.pendingChange = true;
+    this.signalChangeLoop();
+  }
+
+  finishRefresh() {
+    this.refreshInFlight -= 1;
+    if (this.refreshInFlight === 0) this.signalChangeLoop();
+  }
+
+  changeDelay(ctx) {
+    return new Promise((resolve) => {
+      const finish = () => {
+        this.cancelChangeDelay = null;
+        resolve();
+      };
+      const timer = ctx.timer.after(WATCH_REFRESH_MS, finish);
+      this.cancelChangeDelay = () => {
+        timer.cancel();
+        finish();
+      };
     });
+  }
+
+  // Only this task handles file-change wakes. It can use its own cx after the
+  // debounce and waits for every admitted refresh before starting a fresh read.
+  async changeRefreshLoop(ctx) {
+    while (!this.closed) {
+      if (!this.pendingChange) {
+        await this.waitForChangeSignal();
+        continue;
+      }
+      const version = this.contextVersion;
+      await this.changeDelay(ctx);
+      while (!this.closed && version === this.contextVersion && this.refreshInFlight > 0) {
+        await this.waitForChangeSignal();
+      }
+      if (this.closed || version !== this.contextVersion) continue;
+      this.pendingChange = false;
+      if (M.pollAllowed(this.lastVisibleAt)) this.refresh(ctx);
+      else this.watchDirty = true;
+    }
+  }
+
+  async close() {
+    this.closed = true;
+    this.invalidateWatches();
   }
 
   async readChoices(cx, origin) {
@@ -660,8 +802,7 @@ export default class SohoPanel extends View {
 
   moreAction(id, cx) {
     this.menuOpen = "";
-    if (id === "refresh") this.refresh(cx);
-    else if (id === "grouped" || id === "list") this.setView(id, cx);
+    if (id === "grouped" || id === "list") this.setView(id, cx);
     else if (id.startsWith("sort:")) this.setSort(id.slice(5), cx);
   }
 
@@ -1220,19 +1361,21 @@ export default class SohoPanel extends View {
     // this paint (the loading state shows, not the old rows), restores that
     // folder's view and sort, and reloads it (F1, F8, F13).
     const context = M.contextFor(space, folder);
-    const changed = !checking() && Boolean(this.context) && !M.sameContext(this.context, context);
-    if (!checking()) {
-      this.adoptContext(context, cx);
+    if (!checking() && !this.closed) {
+      const changed = this.adoptContext(context, cx);
       this.pruneDatasets();
+      this.lastVisibleAt = Date.now();
       if (changed && !this.refreshQueued) {
         this.refreshQueued = true;
         cx.spawn(async (ctx) => {
           this.refreshQueued = false;
           this.refresh(ctx);
         });
+      } else if (this.watchDirty) {
+        this.watchDirty = false;
+        this.requestChangeRefresh();
       }
     }
-    if (!checking()) this.lastVisibleAt = Date.now();
     const title = this.tab === "report"
       ? (M.findWorker(this.data.roster?.agents, this.reportAgent)?.name ?? "Report")
       : this.tab === "config" ? "Config"
@@ -1254,9 +1397,7 @@ export default class SohoPanel extends View {
           button("probe-again", "Probe again",
             (ctx) => this.probeAgain({ kind: "assistants", origin: probeOrigin }, ctx),
             { small: true, disabled: this.isBusy("probe") })))
-        .when(this.band === "narrow", (el) => el.child(moreMenu(this, t, cx)))
-        .child(button("refresh", "Refresh", (ctx) => this.refresh(ctx),
-          { small: true, disabled: this.isBusy(this.busyKey("team", context)) })));
+        .when(this.band === "narrow", (el) => el.child(moreMenu(this, t, cx))));
     const project = div().h(18).flex_none().truncate().text_size(TEXT.caption).text_color(t.dim)
       .child(this.tab === "now" && space ? `${space.name} · ${folder}` : (folder || "no folder"));
 

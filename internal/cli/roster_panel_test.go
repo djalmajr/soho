@@ -326,7 +326,7 @@ func TestPanelRolesJSONFromCLI(t *testing.T) {
 		t.Fatalf("roles parse: %v", err)
 	}
 	obj := parsed.(*jsonjs.Object)
-	if keys := obj.Keys(); strings.Join(keys, ",") != "roles,lanes,unassigned_roles,team_exists,config_files" {
+	if keys := obj.Keys(); strings.Join(keys, ",") != "roles,lanes,unassigned_roles,team_exists,config_files,team_files" {
 		t.Fatalf("roles --json keys = %v", keys)
 	}
 	if value, _ := obj.Get("team_exists"); value != true {

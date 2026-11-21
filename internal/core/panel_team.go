@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -152,6 +153,18 @@ func CmdRolesPanelJSON(ctx *Config, env platform.Env, cwd string, teamExists boo
 		ctx = &loaded
 	}
 	rows := collectRoles(env, cwd)
+	// The session file is the one `soho session set` resolves for this caller;
+	// without a workspace there is neither a session nor a state dir to name.
+	session := SessionConfPath(ctx, env, cwd)
+	var roster, reports any
+	if session != "" {
+		// A passive reader never creates or dirties state: StateDirForRead
+		// resolves over a read-only env clone and requires an existing dir.
+		if dir := StateDirForRead(ctx, env, cwd); dir != "" {
+			roster = filepath.Join(dir, rosterFileName)
+			reports = filepath.Join(dir, "reports")
+		}
+	}
 	fmt.Fprintln(platform.Stdout, jsonjs.Stringify(jsonjs.O(
 		"roles", rolesJSONArray(rows),
 		"lanes", panelLaneRows(ctx, env, cwd),
@@ -160,6 +173,19 @@ func CmdRolesPanelJSON(ctx *Config, env platform.Env, cwd string, teamExists boo
 		"config_files", jsonjs.O(
 			"project", ConfigFileFor("project", env, cwd),
 			"user", ConfigFileFor("user", env, cwd),
+			"session", panelPath(session),
+		),
+		"team_files", jsonjs.O(
+			"roster", roster,
+			"reports", reports,
 		),
 	)))
+}
+
+// panelPath turns an absent path into JSON null, never an empty string.
+func panelPath(path string) any {
+	if path == "" {
+		return nil
+	}
+	return path
 }
