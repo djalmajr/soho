@@ -12,6 +12,10 @@ import (
 
 const lintUsage = "usage: lint <brief.md> [--role <role>]"
 
+// lintOwnedFilesRoleHint is appended only to the warning line of a lint run
+// that omitted --role, so the hint echoes the path exactly as the user typed it.
+const lintOwnedFilesRoleHint = "; a read-only role needs none: soho lint %s --role <role>"
+
 func cmdLint(args []string, ctx *core.Config, env platform.Env, cwd string) int {
 	brief := ""
 	if len(args) > 0 {
@@ -57,7 +61,11 @@ func cmdLint(args []string, ctx *core.Config, env platform.Env, cwd string) int 
 			fmt.Fprintf(platform.Stderr, "soho: %s (brief_lint=strict)\n", result.MissingMessage)
 			code = 2
 		} else if result.MissingMessage != "" {
-			fmt.Fprintf(platform.Stderr, "soho: warning: %s\n", result.MissingMessage)
+			message := result.MissingMessage
+			if !explicitRole && result.MissingOwnedFiles {
+				message += fmt.Sprintf(lintOwnedFilesRoleHint, brief)
+			}
+			fmt.Fprintf(platform.Stderr, "soho: warning: %s\n", message)
 			code = 1
 		} else if len(result.Warnings) > 0 {
 			code = 1
