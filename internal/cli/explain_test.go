@@ -199,3 +199,10 @@ func TestUsageExit13CoversTheModelCap(t *testing.T) {
 		t.Fatalf("usage exit-code list lacks %q", want)
 	}
 }
+
+func TestLintUsageNamesAgent(t *testing.T) {
+	want := "  soho lint <brief.md> [--role <role>] [--agent <name>]\n"
+	if !strings.Contains(usage, want) {
+		t.Fatalf("usage lacks %q", want)
+	}
+}
