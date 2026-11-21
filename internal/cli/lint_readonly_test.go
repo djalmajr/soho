@@ -63,7 +63,7 @@ func TestLintReadOnlyRoleReportsEditConflict(t *testing.T) {
 
 	// A listed path under a read-only role: the dispatch's conflict, exit 2.
 	rc, out, errText := run("lint", listed, "--role", "scouter")
-	want := "soho: lint: brief " + listed + " asks for edits (Owned files) but 'scouter' is a read-only role; the dispatch would refuse it. Lint it with --role implementer to check it as an edit role, or rename the 'Owned files' title, or drop the edit sections from the brief\n"
+	want := "soho: lint: brief " + listed + " asks for edits (Owned files: line 6: '- internal/x.go') but 'scouter' is a read-only role; the dispatch would refuse it. Lint it with --role implementer to check it as an edit role, or rename the 'Owned files' title, or drop the edit sections from the brief\n"
 	if rc != 2 || out != "" || errText != want {
 		t.Fatalf("listed owned path: rc=%d out=%q stderr=%q", rc, out, errText)
 	}
@@ -88,5 +88,27 @@ func TestLintReadOnlyRoleReportsEditConflict(t *testing.T) {
 	rc, out, errText = run("lint", typed, "--role", "implementer")
 	if rc != 1 || out != "" || strings.Contains(errText, "asks for edits") || !strings.Contains(errText, "no 'Risk markers' section") {
 		t.Fatalf("typed brief with an edit role: rc=%d out=%q stderr=%q", rc, out, errText)
+	}
+
+	// SOH-472: the closing line inside Owned files is named, and moving it
+	// under Report makes the same brief lint clean for a read-only role.
+	reported := filepath.Join(root, "reported.md")
+	reportedBody := "Type: review\nBaseline: main\nWorktree: " + root + "\n# Goal\nSurvey.\n# Expected result\nDone.\n## Owned files\n\n- None.\n\nSem commit.\n# Forbidden\nNo commit/push.\n# Report\nDone.\n"
+	if err := os.WriteFile(reported, []byte(reportedBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rc, out, errText = run("lint", reported, "--role", "validator")
+	if rc != 2 || out != "" || !strings.Contains(errText, "asks for edits (Owned files: line 12: 'Sem commit.'; that line belongs in Forbidden or Report, not in the file list) but 'validator' is a read-only role") {
+		t.Fatalf("reported brief: rc=%d out=%q stderr=%q", rc, out, errText)
+	}
+	moved := filepath.Join(root, "moved.md")
+	movedBody := strings.Replace(reportedBody, "\nSem commit.\n# Forbidden", "\n# Forbidden", 1)
+	movedBody = strings.Replace(movedBody, "# Report\nDone.\n", "# Report\nSem commit.\nDone.\n", 1)
+	if err := os.WriteFile(moved, []byte(movedBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rc, out, errText = run("lint", moved, "--role", "validator")
+	if rc != 0 || !strings.Contains(out, "brief "+moved+": ok") || strings.Contains(errText, "asks for edits") {
+		t.Fatalf("moved closing line: rc=%d out=%q stderr=%q", rc, out, errText)
 	}
 }
