@@ -635,6 +635,11 @@ The orchestrator is the first to notice when this skill gets in the way: a kind 
   - Without `feedback_to`, only the file is written.
   - It prints one JSON line. A failed notice exits 0 with the file saved (status `filed`, `notified: null`, the error, and a warning): tell the maintainer yourself.
   - Do not edit the skill, its installed copy, or another project's roles or config to work around the friction. The maintainer answers and tells you when a change needs your project's config.
+- **For the maintainer: a recurring pattern becomes an enforced check.** Read `soho friction --patterns` (and the reports peers send) for patterns that repeat across runs. A sentence in this skill does not close one: turn it into a check that fails or speaks at the moment of the mistake, in this order of preference:
+  - a brief lint rule (`soho lint`, `dispatch`), when the mistake is in what the orchestrator writes;
+  - a CLI message or command, when the mistake is in what the orchestrator runs or reads (the warning names the command that fixes it);
+  - a test that fails on the historical case, when the mistake is a behavior of soho itself.
+  Use the real case from the friction line or the report as the test fixture, not an invented one. Then run `soho friction fixed <key> "<commit or check that enforces it>"`. When a key's `after` column grows again after the fix, read the new lines: the same mistake passing unchecked means the check does not hold, so reopen it; the new check's own warning firing means it works.
 
 ## Testing the skill
 
