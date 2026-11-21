@@ -46,7 +46,11 @@ func TestAnySummaryBeforeActionableCollaboration(t *testing.T) {
 				args = append(args, "--observe")
 			}
 			code, out, stderr := runWaitCommand(t, f, func() int { return CmdWait(args, f.ctx, f.env, f.cwd) })
-			if code != 10 || !strings.Contains(out, `"status":"done"`) || !strings.Contains(out, `awaiting-orchestrator`) || !strings.Contains(out, `"unwatched":["author"]`) || !strings.Contains(out, `soho wait author --wake --any --timeout 5000`) {
+			// SOH-485: both agents reached a final state in this pass — the
+			// done report and the actionable collaboration — so nothing is
+			// left pending to name in an unwatched line. The phase still ends
+			// the wait with 10.
+			if code != 10 || !strings.Contains(out, `"status":"done"`) || !strings.Contains(out, `awaiting-orchestrator`) || strings.Contains(out, `"unwatched"`) {
 				t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 			}
 		})
