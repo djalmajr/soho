@@ -8,9 +8,10 @@ import (
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/text"
 )
 
-const lintUsage = "usage: lint <brief.md> [--role <role>]"
+const lintUsage = "usage: lint <brief.md> [--role <role>] [--agent <name>]"
 
 // lintOwnedFilesRoleHint is appended only to the warning line of a lint run
 // that omitted --role, so the hint echoes the path exactly as the user typed it.
@@ -18,18 +19,35 @@ const lintOwnedFilesRoleHint = "; a read-only role needs none: soho lint %s --ro
 
 func cmdLint(args []string, ctx *core.Config, env platform.Env, cwd string) int {
 	brief := ""
-	if len(args) > 0 {
-		brief = args[0]
+	role, agent := "implementer", ""
+	explicitRole, explicitAgent := false, false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "--role", "--agent":
+			if i+1 >= len(args) || args[i+1] == "" || strings.HasPrefix(args[i+1], "--") {
+				platform.DieFriction(lintUsage, 2)
+			}
+			duplicate := false
+			if arg == "--role" {
+				duplicate, explicitRole = explicitRole, true
+				role = args[i+1]
+			} else {
+				duplicate, explicitAgent = explicitAgent, true
+				agent = args[i+1]
+			}
+			if duplicate {
+				platform.DieFriction(lintUsage, 2)
+			}
+			i++
+		default:
+			if strings.HasPrefix(arg, "--") || brief != "" {
+				platform.DieFriction(lintUsage, 2)
+			}
+			brief = arg
+		}
 	}
-	if brief == "" || len(brief) >= 2 && brief[:2] == "--" {
-		platform.DieFriction(lintUsage, 2)
-	}
-	role := "implementer"
-	explicitRole := false
-	if len(args) == 3 && args[1] == "--role" && args[2] != "" && !(len(args[2]) >= 2 && args[2][:2] == "--") {
-		role = args[2]
-		explicitRole = true
-	} else if len(args) != 1 {
+	if brief == "" {
 		platform.DieFriction(lintUsage, 2)
 	}
 	info, err := os.Stat(brief)
@@ -49,7 +67,27 @@ func cmdLint(args []string, ctx *core.Config, env platform.Env, cwd string) int 
 			}
 		}
 	}
-	result := dispatch.BriefLintFindings(brief, ctx, env, dispatch.BriefLintOptions{ReadOnly: !core.RoleIsEdit(role, env, cwd)})
+	options := dispatch.BriefLintOptions{ReadOnly: !core.RoleIsEdit(role, env, cwd)}
+	if explicitAgent {
+		// A passive reader never creates a roster, pointer or state dir.
+		sd := core.StateDirForRead(ctx, env, cwd)
+		line := core.RosterLine(sd, agent)
+		if line == "" {
+			platform.DieFriction(fmt.Sprintf("lint: no agent '%s' in the roster", text.QuoteControls(agent)), 3)
+		}
+		workerCwd := ""
+		if fields := strings.Split(line, "\t"); len(fields) > 6 {
+			workerCwd = fields[6]
+		}
+		body, readErr := os.ReadFile(brief)
+		if readErr != nil {
+			body = nil
+		}
+		options = dispatchLintOptions(string(body), workerCwd, cwd, sd, agent, role, ctx, env)
+	} else {
+		options.LintInheritHintPath = brief
+	}
+	result := dispatch.BriefLintFindings(brief, ctx, env, options)
 	code := 0
 	if result.Mode == "off" {
 		fmt.Fprintf(platform.Stdout, "brief %s: lint off (brief_lint=off)\n", brief)

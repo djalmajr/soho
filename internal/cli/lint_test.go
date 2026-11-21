@@ -131,8 +131,8 @@ func TestLintCommandUsageAndErrors(t *testing.T) {
 			code int
 			want string
 		}{
-			{[]string{"lint"}, 2, "usage: lint <brief.md> [--role <role>]"},
-			{[]string{"lint", "--role"}, 2, "usage: lint <brief.md> [--role <role>]"},
+			{[]string{"lint"}, 2, "usage: lint <brief.md> [--role <role>] [--agent <name>]"},
+			{[]string{"lint", "--role"}, 2, "usage: lint <brief.md> [--role <role>] [--agent <name>]"},
 			{[]string{"lint", "absent.md"}, 2, "lint: brief not found: absent.md"},
 			{[]string{"lint", "missing-role.md", "--role", "unknown-role"}, 2, "lint: brief not found: missing-role.md"},
 		} {
@@ -149,7 +149,7 @@ func TestLintCommandUsageAndErrors(t *testing.T) {
 		for _, args := range [][]string{{"lint", brief, "--role"}, {"lint", brief, "--role", "--bogus"}, {"lint", brief, "--bogus"}} {
 			stdout.Reset()
 			stderr.Reset()
-			if got := Run(args, env); got != 2 || stdout.Len() != 0 || stderr.String() != "soho: usage: lint <brief.md> [--role <role>]\n" {
+			if got := Run(args, env); got != 2 || stdout.Len() != 0 || stderr.String() != "soho: usage: lint <brief.md> [--role <role>] [--agent <name>]\n" {
 				t.Errorf("invalid args %v: code=%d stdout=%q stderr=%q", args, got, stdout.String(), stderr.String())
 			}
 		}
