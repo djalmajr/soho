@@ -1108,10 +1108,10 @@ func jsonLine(value *jsonjs.Object) {
 	_, _ = platform.Stdout.Write([]byte(jsonjs.Stringify(value) + "\n"))
 }
 
-func emitUnwatched(agents []string, done map[string]bool, timeoutMs float64) {
+func emitUnwatched(agents []string, settled map[string]bool, timeoutMs float64) {
 	var unwatched []string
 	for _, agent := range agents {
-		if !done[agent] {
+		if !settled[agent] {
 			unwatched = append(unwatched, agent)
 		}
 	}
@@ -1145,6 +1145,14 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 	deadline := started.Add(time.Duration(timeoutMs * float64(time.Millisecond)))
 	remaining := append([]string(nil), agents...)
 	last := map[string]string{}
+	// Agents that reached any final state in this pass. With --any the
+	// wait ends once one does; every other still-pending agent goes in the
+	// unwatched line, and rc ranks the statuses of the settled ones.
+	settledInPass := map[string]bool{}
+	// An actionable collaboration under --any records its exit 10 here and
+	// lets the pass finish: later agents are still sampled, printed and
+	// settled before the summary and the common pass-end return.
+	actionableCollaboration := false
 	rc := 0
 	workspaceEnv := derivedWorkspaceEnv(ctx, env, cwd)
 	// The phase last announced per agent, so a phase change is reported once
@@ -1153,6 +1161,11 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 	idleAlerts := map[string]*idleAlert{}
 	queuedAlerts := map[queuedAlertIdentity]bool{}
 	idleMinutes := idleAlertMinutes(ctx, env)
+	settle := func(agent string) {
+		if anyDone {
+			settledInPass[agent] = true
+		}
+	}
 	emit := jsonLine
 	jsonLine := func(line *jsonjs.Object) {
 		agent, _ := line.Get("agent")
@@ -1169,7 +1182,6 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 	}
 	for {
 		pending := []string{}
-		observedDone := map[string]bool{}
 		for _, agent := range remaining {
 			report := core.LastReport(sd, agent)
 			report = observeReport(sd, agent, report, ctx, env, cwd)
@@ -1186,18 +1198,22 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					// off or unreadable: terminal, like unavailable — a stale
 					// report never becomes done.
 					printCollaborationStatus(agent, cs, report)
+					settle(agent)
 					if WaitRank(cs.code) > WaitRank(rc) {
 						rc = cs.code
 					}
 					continue
 				case cs.assign.Phase == collaboration.AwaitingOrchestrator || cs.assign.Phase == collaboration.Escalated:
 					// Actionable: the orchestrator has to decide; the wait ends
-					// here with 10, not with the timeout.
+					// with 10, not with the timeout. An ordinary wait keeps the
+					// historical immediate return; --any finishes the pass first.
 					printCollaborationStatus(agent, cs, report)
-					if anyDone && len(observedDone) > 0 {
-						emitUnwatched(agents, observedDone, timeoutMs)
+					settle(agent)
+					if !anyDone {
+						return 10
 					}
-					return 10
+					actionableCollaboration = true
+					continue
 				default:
 					// preparing, reviewing and fixing stay pending under the
 					// existing timeout; each phase change is reported once.
@@ -1227,6 +1243,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 						rc = 15
 					}
 				}
+				settle(agent)
 				continue
 			}
 			var sample probeScreen
@@ -1278,9 +1295,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					// warning marker, mirror, git-tree audit, task-report sync,
 					// review check or desktop notification.
 					jsonLine(jsonjs.O("agent", agent, "status", "done", "report", report, "observe", true))
-					if anyDone {
-						observedDone[agent] = true
-					}
+					settle(agent)
 					break
 				}
 				text, _ := platform.ReadTextFile(report)
@@ -1353,25 +1368,26 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				}
 				_ = core.MarkTaskDone(sd, agent, env)
 				mirrorReport(sd, agent, report, ctx, env, cwd)
-				if anyDone {
-					observedDone[agent] = true
-				}
+				settle(agent)
 			case "blocked":
 				blockedVisible, _ := readScreen(svc, agent, "visible", nil)
 				dialog := lastNonEmpty(blockedVisible, 20)
 				jsonLine(jsonjs.O("agent", agent, "status", "blocked", "report", report, "dialog", dialog))
+				settle(agent)
 				if WaitRank(7) > WaitRank(rc) {
 					rc = 7
 				}
 			case "question":
 				q, _ := readWaitFile(sd, agent, "question")
 				jsonLine(jsonjs.O("agent", agent, "status", "question", "report", report, "question", q))
+				settle(agent)
 				sendWarning("agent '" + agent + "' asked a question; nobody answers it automatically. Ask the user, then answer with herdr agent send-keys/prompt, or release the worker.")
 				if WaitRank(7) > WaitRank(rc) {
 					rc = 7
 				}
 			case "gone":
 				jsonLine(jsonjs.O("agent", agent, "status", "gone", "report", report))
+				settle(agent)
 				if WaitRank(6) > WaitRank(rc) {
 					rc = 6
 				}
@@ -1393,6 +1409,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					sendWarning(fmt.Sprintf("the provider refused the task of '%s' (%s); run: %s", agent, marker, next))
 				}
 				jsonLine(line)
+				settle(agent)
 				if field(strings.Split(core.RosterLine(sd, agent), "\t"), 2) == "codex" && codexhooks.IsReview(visible) {
 					sendWarning(fmt.Sprintf("agent '%s' is on codex's hooks review screen; it never took the brief. With hooks_review=trust (now %s) the next dispatch approves the hooks first: dispatch the brief again (soho dispatch %s <brief> --resend). With hooks_review=block nothing is typed into it: answer it in the pane yourself (2. Trust all and continue), then dispatch again.", agent, core.HooksReviewMode(ctx, env), agent))
 				}
@@ -1402,6 +1419,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			case "unavailable":
 				cause := strings.TrimPrefix(state, "unavailable\t")
 				jsonLine(jsonjs.O("agent", agent, "status", "unavailable", "report", report, "error", cause))
+				settle(agent)
 				sendWarning(fmt.Sprintf("agent '%s': herdr agent get failed: %s", agent, cause))
 				if WaitRank(4) > WaitRank(rc) {
 					rc = 4
@@ -1414,12 +1432,14 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					lane = core.LaneOfRole(ctx, role, env)
 				}
 				jsonLine(jsonjs.O("agent", agent, "status", "quota", "report", report, "lane", lane, "kind", kind, "model", model, "match", match, "renewal", renewal))
+				settle(agent)
 				sendWarning(fmt.Sprintf("quota: agent '%s' lane=%s kind=%s model=%s : %s%s", agent, showOr(lane, "?"), kind, showOr(model, "?"), match, renewalSuffix(renewal)))
 				if WaitRank(11) > WaitRank(rc) {
 					rc = 11
 				}
 			case "not-received":
 				jsonLine(jsonjs.O("agent", agent, "status", "not-received", "report", report))
+				settle(agent)
 				readHint := fmt.Sprintf("read the pane (herdr agent read %s --source visible)", agent)
 				if env.Get("SOHO_TRANSPORT") == "hc" {
 					readHint = fmt.Sprintf("read the terminal (hc read %s)", agent)
@@ -1454,6 +1474,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					jsonLine(jsonjs.O("agent", agent, "status", tag, "report", report, "lane", lane, "kind", kind, "model", model, "cause", cause, "retries", retries))
 					sendWarning(fmt.Sprintf("provider capacity: agent '%s' lane=%s kind=%s model=%s : %s", agent, showOr(lane, "?"), kind, showOr(model, "?"), cause))
 				}
+				settle(agent)
 				if WaitRank(14) > WaitRank(rc) {
 					rc = 14
 				}
@@ -1462,9 +1483,12 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				pending = append(pending, agent)
 			}
 		}
-		if anyDone && len(observedDone) > 0 {
-			emitUnwatched(agents, observedDone, timeoutMs)
-			return 0
+		if anyDone && len(settledInPass) > 0 {
+			emitUnwatched(agents, settledInPass, timeoutMs)
+			if actionableCollaboration {
+				return 10
+			}
+			return rc
 		}
 		remaining = pending
 		if len(remaining) == 0 {
