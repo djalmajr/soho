@@ -9,6 +9,7 @@ The repository contains:
 - [`skills/soho/`](skills/soho/) — the agent skill, roles, templates and resources embedded in the native Go binary.
 - [`plugin/`](plugin/) — an optional local Herdr plugin that exposes workspace-scoped actions (`doctor`, `roster`, `team`) through the same CLI, a unified session picker (`pick`) with filters, table/tree views and a read-only team view (`i`) of the selected local workspace. The read-only actions open the team panel, which inspects the focused project with the CLI running in `SOHO_NOWRITE=1`; only the panel's `x` and `g` confirmations run a write (a release or `gc --yes`), never without the on-screen confirmation.
 - [`docs/guide.md`](docs/guide.md) — usage and configuration guide.
+- [By intent](docs/guide.md#by-intent) — commands by intent in the guide.
 
 ## Install the binary and skill
 

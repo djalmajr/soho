@@ -25,6 +25,21 @@ roles/<role>.md  ──▶  spawn (pane split + agent start)  ──▶  dispatc
 - **Briefs** follow `templates/brief.md`: goal, owned files, forbidden files, local sources, applicable rules, allowed checks, report format. Workers never commit or push.
 - **Reports** are files under the state dir, per-item with three states (`[done]` / `[partial]` / `[skipped]` + reason), so collection never depends on scraping a TUI. The report path in the dispatch's composed prompt is authoritative: a brief's `# Report` section can name a different literal path (hand-written or reused), but the worker writes to the dispatch's path anyway, and the dispatch's routing (JSON, `last-report`, wait marker) never follows the brief's.
 
+## By intent
+
+Use this index to find the commands for a question and the section that explains them.
+
+| Intent | Commands | Read |
+|---|---|---|
+| Start a team | `soho setup`, `soho init`, `soho spawn` | [Skill: First run](../skills/soho/SKILL.md#first-run), [Skill: Setup: guided configuration](../skills/soho/SKILL.md#setup-guided-configuration), [Guide: The team: panels and lanes](#the-team-panels-and-lanes) |
+| Send a brief and collect the report | `soho dispatch`, `soho send`, `soho wait`, `soho collect` | [Skill: Detecting completion](../skills/soho/SKILL.md#detecting-completion-report-contract-and-active-assignments), [Guide: Waiting for workers](#waiting-for-workers), [Guide: Peer messages](#peer-messages) |
+| Review a change before push | `soho spawn`, `soho dispatch`, `soho collect` | [Skill: Orchestrator flow](../skills/soho/SKILL.md#orchestrator-flow--soho-objective), [Reference: Review severity](../skills/soho/references/review-severity.md#review-severity-levels-the-verdict-and-when-review-rounds-end) |
+| Verify a delivery | `soho validate`, `soho collect` | [Skill: Delivery contract](../skills/soho/SKILL.md#delivery-contract), [Skill: Detecting completion](../skills/soho/SKILL.md#detecting-completion-report-contract-and-active-assignments) |
+| Resume or find a session | `soho resume`, `soho find`, `soho reopen` | [Skill: Commands](../skills/soho/SKILL.md#commands), [Guide: Finding a session](#finding-a-session) |
+| See what is happening and diagnose | `soho status`, `soho explain`, `soho doctor`, `soho friction` | [Skill: Improving this skill](../skills/soho/SKILL.md#improving-this-skill-file-an-issue-when-you-hit-friction), [Guide: When something goes wrong](#when-something-goes-wrong), [Reference: Troubleshooting](../skills/soho/references/troubleshooting.md#troubleshooting-and-lessons-learned) |
+| Long unattended runs | `soho wait`, `soho status`, `soho job` | [Guide: Long unattended runs](#long-unattended-runs), [Guide: Waiting for workers](#waiting-for-workers) |
+| Clean up after a run | `soho release`, `soho clean`, `soho gc` | [Skill: Orchestrator flow](../skills/soho/SKILL.md#orchestrator-flow--soho-objective), [Guide: Commands](#commands) |
+
 ## The team: panels and lanes
 
 The other panes are **lanes**: sessions that take, in order, any role in their group, each with a capacity of workers (`lane.<name>.panes`). The preset is resolved at run time from `panes` (2|3|4, default 4): `panes` counts your pane and the fixed panels, and the `critical` panel is one more, open only when a slice needs it (four panels can reach five):
