@@ -40,7 +40,7 @@ var knownCommands = map[string]bool{
 	"send": true, "stats": true, "release": true, "clean": true, "setup": true,
 	"doctor": true, "explain": true, "init": true, "title": true, "regrid": true,
 	"roster": true, "friction": true, "feedback": true, "tab-label": true,
-	"layout-plan": true, "env": true, "mutation-guard": true, "mutation-copy": true, "gate": true, "review-snapshot": true,
+	"layout-plan": true, "env": true, "mutation-guard": true, "mutation-copy": true, "gate": true, "review-snapshot": true, "review-context": true,
 	"reopen": true, "compact": true, "metrics": true, "copies": true, "gc": true,
 	"procs": true, "install": true, "update": true, "promote": true, "validate": true,
 	"collaborate": true, "capabilities": true, "hook": true, "job": true, "inventory": true,
@@ -532,8 +532,8 @@ func Run(args []string, env platform.Env) (code int) {
 	if command == "resume" {
 		return cmdResume(args[1:], configCtx, decisionEnv, commandCwd)
 	}
-	if command == "review-snapshot" {
-		return cmdReviewSnapshot(args[1:], configCtx, decisionEnv, commandCwd)
+	if command == "review-snapshot" || command == "review-context" {
+		return reviewSnapshotOrContext(command, args, configCtx, decisionEnv, commandCwd)
 	}
 	if command == "mutation-copy" {
 		return runMutationCopy(args[1:], decisionEnv)
@@ -730,7 +730,7 @@ func hcCommandAllowed(command string) bool {
 		// hc keys accepts single characters and "space", so /model and
 		// /thinking are typed one key at a time on the worker's terminal.
 		return true
-	case "mutation-copy", "review-snapshot", "session":
+	case "mutation-copy", "review-snapshot", "session", "review-context":
 		return true
 	case "", "help", "-h", "--help":
 		return true
@@ -815,8 +815,8 @@ func nowriteReadInvocation(args []string) bool {
 	case "roster":
 		_, _, ok := rosterArgs(args[1:])
 		return ok
-	case "doctor", "explain", "copies", "procs":
-		return len(args) == 1
+	case "doctor", "explain", "copies", "procs", "review-context":
+		return nowriteBareOrReviewContext(args)
 	case "update":
 		return nowriteUpdateCheck(args[1:])
 	case "config":
