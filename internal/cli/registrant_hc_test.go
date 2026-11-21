@@ -97,7 +97,7 @@ func registrantTargets() map[string]func(t *testing.T) registrantTarget {
 			target.writeRoster(t, releaseRow("worker", registrantAgentPane, "1", "implementer", false, f.source))
 			target.run = func(t *testing.T, env platform.Env) (int, string, string, string) {
 				n++
-				dest := filepath.Join(f.root, "registered-"+strconv.Itoa(n))
+				dest := filepath.Join(f.tmp, "soho-mutation-registered-"+strconv.Itoa(n))
 				last = dest
 				f.env = env
 				code, out, errOut := runMutationCopyCmd(t, f, f.source, nil, "--source", f.source, "--dest", dest, "--print-path")
@@ -555,7 +555,7 @@ func TestRegistrationLegacyDyingLookupKeepsPreviousBehavior(t *testing.T) {
 		if err := os.MkdirAll(registry, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		dest := filepath.Join(f.root, "legacy-copy")
+		dest := filepath.Join(f.tmp, "soho-mutation-legacy-copy")
 		code, out, errOut := runMutationCopyCmd(t, f, f.source, platform.Env{"SOHO_REGISTRY_DIR": registry, "SOHO_AGENT": "worker"}, "--source", f.source, "--dest", dest, "--print-path")
 		if code != 0 || out != dest+"\n" || errOut != "mutation-copy: copy not registered (herdr pane current failed (exit 1)); remove it yourself when done\n" {
 			t.Fatalf("code=%d out=%q err=%q; want the copy printed and 'copy not registered'", code, out, errOut)

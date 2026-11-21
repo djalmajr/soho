@@ -220,7 +220,7 @@ func TestMutationCopyRegistersTheCopy(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(state, "ws", "agents.tsv"), []byte("# roster\n"+releaseRow("worker", "p-worker", "1", "implementer", false, "/tmp/work")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dest := filepath.Join(f.root, "mcopy")
+	dest := filepath.Join(f.tmp, "soho-mutation-mcopy")
 	overrides := platform.Env{"SOHO_DIR": state, "SOHO_SKILL_DIR": skill, "HERDR_WORKSPACE_ID": "ws", "HERDR_PANE_ID": "p-worker"}
 	code, out, errOut := runMutationCopyCmd(t, f, f.source, overrides, "--source", f.source, "--dest", dest)
 	if code != 0 || errOut != "" {
@@ -1537,7 +1537,7 @@ func TestMutationCopyRecordsTheOwnersTask(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte("# roster\n"+releaseRow("worker", "p-worker", "1", "implementer", false, "/tmp/work")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dest := filepath.Join(f.root, "mcopy")
+	dest := filepath.Join(f.tmp, "soho-mutation-mcopy")
 	overrides := platform.Env{"SOHO_DIR": state, "SOHO_SKILL_DIR": skill, "HERDR_WORKSPACE_ID": "ws", "HERDR_PANE_ID": "p-worker"}
 
 	// Without the owner's pointer the two columns are "-".
@@ -2359,7 +2359,7 @@ func mutationQueueSetup(t *testing.T) (mutationCopyFixture, string, platform.Env
 		t.Fatal(err)
 	}
 	overrides := platform.Env{"SOHO_DIR": state, "SOHO_SKILL_DIR": skill, "HERDR_WORKSPACE_ID": "ws", "HERDR_PANE_ID": "p-worker"}
-	return f, sd, overrides, filepath.Join(f.root, "mcopy")
+	return f, sd, overrides, filepath.Join(f.tmp, "soho-mutation-mcopy")
 }
 
 func TestMutationCopyQueuesWhenTheStateDirRefusesWrites(t *testing.T) {

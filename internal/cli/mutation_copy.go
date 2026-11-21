@@ -331,6 +331,9 @@ func runMutationCopy(args []string, env platform.Env) int {
 	if err != nil {
 		return failIO(err.Error())
 	}
+	if parsed.dest != "" {
+		warnMutationCopyDest(dest, cwd, env)
+	}
 	registerMutationCopy(env, source, dest)
 	if parsed.printPath {
 		_, _ = fmt.Fprintln(platform.Stdout, dest)
@@ -338,6 +341,25 @@ func runMutationCopy(args []string, env platform.Env) int {
 		_, _ = fmt.Fprintln(platform.Stdout, string(encoded))
 	}
 	return 0
+}
+
+// warnMutationCopyDest reports destinations that gc's unregistered scan
+// cannot reach through any prefixed entry in the caller's scan roots.
+func warnMutationCopyDest(dest, cwd string, env platform.Env) {
+	dirs := core.CopiesScanDirs(env, cwd)
+	if copyInfo, err := os.Stat(dest); err == nil && copyInfo.IsDir() {
+		found := false
+		core.VisitCopyScanEntries(dirs, func(_, _ string, info os.FileInfo) bool {
+			found = os.SameFile(copyInfo, info)
+			return !found
+		})
+		if found {
+			return
+		}
+	}
+	warning := fmt.Sprintf("mutation-copy: gc does not find --dest copies if their registry row is lost (it looks for soho-mutation-* directly under %s); release or remove %s yourself, or drop --dest to let soho place it", strings.Join(dirs, ", "), dest)
+	// JSON mode accepts line breaks in paths. Keep the warning on one line.
+	_, _ = fmt.Fprintln(platform.Stderr, strings.NewReplacer("\r", "\\r", "\n", "\\n").Replace(warning))
 }
 
 func mutationCopyPrintablePath(path string) bool {
