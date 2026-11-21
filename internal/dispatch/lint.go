@@ -3,7 +3,9 @@ package dispatch
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -648,7 +650,10 @@ func spacedPathHints(brief, body string) []string {
 			if len(fields) == 0 {
 				break
 			}
-			if _, err := os.Stat(fields[0]); err == nil {
+			// Only a first field that is absent as written gets a hint: an
+			// entry that exists (a symlink, broken or looping, included) or
+			// cannot be checked stays silent.
+			if _, err := os.Lstat(fields[0]); !errors.Is(err, fs.ErrNotExist) {
 				break
 			}
 			full := value
