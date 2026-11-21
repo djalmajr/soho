@@ -3239,9 +3239,11 @@ func concreteOwnedPaths(body string, aliases map[string][]string) []string {
 }
 
 // ownedItemValues is the value list of one Owned item: the shared grammar
-// (path-shaped tokens, plus the plain tokens of a plain list item), or, with
-// concrete, every remaining backticked span as written and a plain list item
-// as one value, which is the contract ownedPathsIn had on the base.
+// for an item with a backticked note (backticked paths, or its first plain
+// token), or, with concrete, every remaining backticked span as written and a
+// plain list item as one value, which is the contract ownedPathsIn had on the
+// base. A line without any backticked span keeps the base plain list-item
+// tokenizer, including every path before or after a prose qualifier.
 func ownedItemValues(line, item string, quoted []string, spans int, tree string, concrete bool) []string {
 	if concrete {
 		out := append([]string{}, quoted...)
@@ -3250,11 +3252,13 @@ func ownedItemValues(line, item string, quoted []string, spans int, tree string,
 		}
 		return out
 	}
-	tokens := gittree.OwnedQuotedPaths(item, quoted, tree, nil)
-	if spans == 0 && regexp.MustCompile(`^\s*(?:[-*+]|\d+[.)])\s+`).MatchString(line) {
-		tokens = append(tokens, gittree.OwnedPlainPaths(item)...)
+	if spans == 0 {
+		if regexp.MustCompile(`^\s*(?:[-*+]|\d+[.)])\s+`).MatchString(line) {
+			return gittree.OwnedPlainPaths(item)
+		}
+		return nil
 	}
-	return tokens
+	return gittree.OwnedItemPaths(item, quoted, tree, nil)
 }
 
 func splitRunArgs(argv []string) ([]string, []string, bool) {
