@@ -1,12 +1,10 @@
 package hcbackend
 
-// SOH-409: which `hc send` results prove that no byte reached the terminal.
-// Only the guarded send's exit 10 (the --if status mismatch) does: hc refuses
-// to type when the status differs from the guard. Every other failure, and
-// every Busy that soho itself synthesizes, stays uncertain.
+// SOH-409 and SOH-466: which `hc send` results prove that no byte reached the terminal.
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -61,4 +59,74 @@ func TestSendRefusedBeforeWrite(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestSendStartingRefusalBeforeWrite(t *testing.T) {
+	const unsettled = "t7 is still starting: its output has not settled"
+	const noInput = "nothing was typed; check hc read t7, then retry"
+	const resolved = `{"address":"t7","name":"worker","state":"live","status":{"state":"idle"}}`
+	for _, tc := range []struct {
+		name    string
+		exit    int
+		kind    string
+		message string
+		hint    string
+		lookup  string
+		probe   bool
+		refuse  bool
+	}{
+		{name: "structured hint", exit: 5, kind: "unavailable", message: unsettled, hint: noInput, refuse: true},
+		{name: "inline hint", exit: 5, kind: "unavailable", message: unsettled + " (" + noInput + ")", refuse: true},
+		{name: "record does not bind selector", exit: 5, kind: "unavailable", message: unsettled, hint: noInput, lookup: `{"address":"t7","name":"other","state":"live"}`},
+		{name: "finished record cannot bind an alias", exit: 5, kind: "unavailable", message: unsettled, hint: noInput, lookup: `{"address":"t7","name":"worker","state":"finished"}`},
+		{name: "unqualified selector cannot bind a remote record", exit: 5, kind: "unavailable", message: "lab/t7 is still starting: its output has not settled", hint: "nothing was typed", lookup: `{"address":"lab/t7","name":"worker","state":"live"}`},
+		{name: "missing no-write proof", exit: 5, kind: "unavailable", message: unsettled},
+		{name: "missing startup refusal", exit: 5, kind: "unavailable", message: "core went away", hint: noInput},
+		{name: "other kind", exit: 5, kind: "command", message: unsettled, hint: noInput},
+		{name: "other exit", exit: 1, kind: "unavailable", message: unsettled, hint: noInput},
+		{name: "quoted no-write phrase", exit: 5, kind: "unavailable", message: unsettled, hint: "cannot confirm that " + noInput},
+		{name: "guard probe error", exit: 5, kind: "unavailable", message: unsettled, hint: noInput, probe: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stderr, err := json.Marshal(map[string]any{"error": map[string]string{"kind": tc.kind, "message": tc.message, "hint": tc.hint}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			argv := idleSendArgv("worker", sendPrompt)
+			rules := probeRules("", sendHelpOld, schemaDoc(`"idle","working"`, true, false))
+			if tc.probe {
+				argv = []string{"schema", "--json"}
+				rules = rules[:1] // only send --help succeeds
+			} else {
+				lookup := tc.lookup
+				if lookup == "" {
+					lookup = resolved
+				}
+				rules = append(rules, fakecli.Rule{Argv: []string{"get", "worker", "--json"}, Stdout: lookup})
+			}
+			rules = append(rules, fakecli.Rule{Argv: argv, Code: tc.exit, Stderr: string(stderr)})
+			env, calls := fakeHc(t, rules)
+			b := &backend{env: env, client: hc.New(env)}
+			rep := b.Send(context.Background(), transport.Target{ID: "worker"}, transport.Send{Text: sendPrompt}, transport.Call{})
+			if rep.Err == nil || rep.Err.Kind != transport.FailureUnavailable {
+				t.Fatalf("rep=%+v, want unavailable", rep)
+			}
+			var cause *hc.Error
+			if !errors.As(rep.Err.Cause, &cause) || cause.Exit != tc.exit || cause.Kind != tc.kind || cause.Message != tc.message || cause.Hint != tc.hint {
+				t.Fatalf("cause=%+v, want the original hc error", cause)
+			}
+			if tc.probe {
+				for _, call := range calls() {
+					if len(call.Argv) > 1 && call.Argv[0] == "send" && call.Argv[1] != "--help" {
+						t.Fatalf("failed guard probe issued a send: %q", call.Argv)
+					}
+				}
+			} else if rep.Err.Message != cause.Error() || rep.Err.Cause.Error() != cause.Error() || rep.Err.Code != "" {
+				t.Fatalf("transport failure changed the hc diagnostic: %+v", rep.Err)
+			}
+			if got := SendRefusedBeforeWrite(rep.Err); got != tc.refuse {
+				t.Fatalf("SendRefusedBeforeWrite=%v, want %v (err=%+v)", got, tc.refuse, rep.Err)
+			}
+		})
+	}
 }

@@ -1018,9 +1018,9 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		}
 	}
 
-	// SOH-409: a first dispatch to a fresh codex worker whose guarded send hc
-	// refused before typing anything (the status mismatch, exit 10) sends the
-	// same prompt once more when the worker is idle with a readable empty
+	// SOH-409, SOH-466: a first dispatch to a fresh codex worker whose guarded
+	// send hc refused before typing anything (status mismatch or unsettled
+	// startup) sends the same prompt once more when idle with a readable empty
 	// composer. The task pointer, the sidecar and the composed prompt stand
 	// as the first send left them; a refusal that stands falls into the
 	// failure branch below with today's restoration and result.

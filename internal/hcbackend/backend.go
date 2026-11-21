@@ -866,9 +866,11 @@ func (b *backend) sendGuarded(ctx context.Context, target transport.Target, send
 	}
 	address := addr(target)
 	args := []string{"send", "--if", guard, "--", address, send.Text}
+	var resolved *jsonjs.Object
 	if guard == hc.GuardIdle {
 		if record, getErr := b.client.Run(shared, "get", address); getErr == nil {
 			if obj, ok := terminalObject(record); ok && nativeStateOf(obj) != "finished" {
+				resolved = obj
 				if raw, ok := obj.Get("status"); ok {
 					if status, ok := raw.(*jsonjs.Object); ok {
 						if state, ok := status.Get("state"); ok && state == "done" {
@@ -880,6 +882,9 @@ func (b *backend) sendGuarded(ctx context.Context, target transport.Target, send
 		}
 	}
 	out, err := b.client.Run(shared, args...)
+	if args[1] == "--if" && startingSendRefusedBeforeWrite(err, address, resolved) {
+		err = hcStartingSendRefusal{err}
+	}
 	return b.sendReply(target, out, err, guard)
 }
 
@@ -945,21 +950,85 @@ func (b *backend) sendReply(target transport.Target, out string, err error, guar
 	return transport.Reply[string]{Value: out, Valid: true}
 }
 
-// SendRefusedBeforeWrite reports whether a failed Send proves that no byte
-// reached the terminal: hc refused the guarded send (`--if`) because the
-// terminal's status differs from the guard (exit 10), and hc types only
-// after that check passes. Every other failure is uncertain, including the
-// capability refusals (the probes never issued a send, but a missing
-// capability does not change by waiting), a launch failure, a timeout or a
-// cancellation (the write may have happened before they surfaced), the
-// blocked and finished exits, and any Busy that soho builds itself (it
-// carries no hc exit). A nil failure proves nothing.
-func SendRefusedBeforeWrite(f *transport.Failure) bool {
-	if f == nil || f.Kind != transport.FailureBusy {
+// hcStartingSendRefusal marks a refusal from the guarded send itself, so the
+// same hc error from a capability probe cannot trigger a resend. Its text
+// and underlying hc error stay available to existing diagnostics.
+type hcStartingSendRefusal struct{ error }
+
+func (r hcStartingSendRefusal) Unwrap() error { return r.error }
+
+// startingSendRefusedBeforeWrite accepts only the complete startup refusal
+// for this terminal. Every supplied proof must independently match hc's
+// no-write statement, optionally followed by its read-and-retry advice.
+func startingSendRefusedBeforeWrite(err error, selector string, resolved *jsonjs.Object) bool {
+	var hcErr *hc.Error
+	if !errors.As(err, &hcErr) || hcErr.Exit != 5 || hcErr.Kind != "unavailable" {
 		return false
 	}
+	reason, inline, hasInline := strings.Cut(strings.TrimSpace(hcErr.Message), " (")
+	subject, ok := strings.CutSuffix(reason, " is still starting: its output has not settled")
+	if !ok || !matchesSendSubject(subject, selector, resolved) {
+		return false
+	}
+	if hcErr.Hint != "" && !sendNoWriteProof(hcErr.Hint, selector, resolved) {
+		return false
+	}
+	if !hasInline {
+		return hcErr.Hint != ""
+	}
+	proof, closed := strings.CutSuffix(inline, ")")
+	return closed && sendNoWriteProof(proof, selector, resolved)
+}
+
+func sendNoWriteProof(proof, selector string, resolved *jsonjs.Object) bool {
+	const statement = "nothing was typed"
+	if proof == statement {
+		return true
+	}
+	readTarget, ok := strings.CutPrefix(proof, statement+"; check hc read ")
+	if !ok {
+		return false
+	}
+	readTarget, ok = strings.CutSuffix(readTarget, ", then retry")
+	return ok && matchesSendSubject(readTarget, selector, resolved)
+}
+
+// matchesSendSubject accepts the exact send selector or an alias proven by
+// the get already done before an idle-guard send. A record must bind that
+// selector to its address and name before either can serve as an alias.
+func matchesSendSubject(subject, selector string, resolved *jsonjs.Object) bool {
+	if subject == "" {
+		return false
+	}
+	if subject == selector {
+		return true
+	}
+	if resolved == nil {
+		return false
+	}
+	address, name := addressOf(resolved), nameOf(resolved)
+	if address == "" || !validHcName(name) {
+		return false
+	}
+	name = addr(transport.Target{ID: name, Machine: machineOf(address)})
+	return (selector == address && subject == name) || (selector == name && subject == address)
+}
+
+// SendRefusedBeforeWrite reports whether a failed Send proves that no byte
+// reached the terminal: hc rejected its status guard (exit 10), or hc
+// refused the guarded send while starting and explicitly proved no write.
+// Capability probe failures, timeouts and synthesized busy results are
+// outside this retry contract.
+func SendRefusedBeforeWrite(f *transport.Failure) bool {
+	if f == nil {
+		return false
+	}
+	if f.Kind == transport.FailureUnavailable {
+		var refusal hcStartingSendRefusal
+		return errors.As(f.Cause, &refusal)
+	}
 	var hcErr *hc.Error
-	return errors.As(f.Cause, &hcErr) && hcErr.Exit == hc.ExitStatusMismatch
+	return f.Kind == transport.FailureBusy && errors.As(f.Cause, &hcErr) && hcErr.Exit == hc.ExitStatusMismatch
 }
 
 // Keys sends one key on the terminal's channel (hc has one channel; the
