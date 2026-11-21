@@ -16,11 +16,13 @@ import (
 
 const mutationCopyUsage = "usage: mutation-copy [--source <dir>] [--dest <dir>] [--print-path] [--exclude <glob>]... [--link <relpath>=<target>]..."
 
+const mutationCopyLinkEscape = "relpath must not escape with '..'"
+
 // mutation-copy builds the throwaway mutation copy of the repository that the
 // guard was written for, from the worktree's repository files only (never
 // .git, never ignored paths), and validates it with the guard's own checks
 // before it returns. A refusal (code 2) or a copy I/O error (code 4) removes
-// the destination this command created; a failing guard removes it and exits
+// the copy root this command created; a failing guard removes it and exits
 // with the guard's code.
 func runMutationCopy(args []string, env platform.Env) int {
 	cwd, err := os.Getwd()
@@ -62,108 +64,155 @@ func runMutationCopy(args []string, env platform.Env) int {
 		}
 	}
 
-	dest, destGiven, destCreated, reason := mutationCopyPrepareDest(parsed.dest, cwd, env, home, source, &ctx)
-	if reason != "" {
-		if destCreated {
-			_ = os.RemoveAll(dest)
+	// Read the link layout before creating even a configured copies_dir.
+	requests := make([]mutationCopyLinkRequest, 0, len(parsed.links))
+	depth := 0
+	for _, raw := range parsed.links {
+		rel, target, ok := strings.Cut(raw, "=")
+		if !ok {
+			return mutationCopyRefuse("link", raw, "expected <relpath>=<target>")
 		}
+		up, reason := mutationCopyLinkDepth(rel)
+		if reason != "" {
+			return mutationCopyRefuse("link", raw, reason)
+		}
+		if up > 0 && parsed.dest != "" {
+			return mutationCopyRefuse("link", raw, "a link above the copy needs the automatic placement (omit --dest)")
+		}
+		depth = max(depth, up)
+		requests = append(requests, mutationCopyLinkRequest{raw: raw, path: filepath.Clean(rel), target: target, up: up})
+	}
+	var suffix string
+	ancestor := source
+	for range depth {
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return mutationCopyRefuse("source", source, "not enough path components for the sibling link layout")
+		}
+		suffix = filepath.Join(filepath.Base(ancestor), suffix)
+		ancestor = parent
+	}
+
+	root, destGiven, rootCreated, reason := mutationCopyPrepareDest(parsed.dest, cwd, env, home, source, &ctx)
+	dest := filepath.Join(root, suffix)
+	var markerPath string
+	var parentDir *os.Root
+	complete := false
+	defer func() {
+		if parentDir != nil {
+			defer parentDir.Close()
+		}
+		if complete || !rootCreated {
+			return
+		}
+		removeAll, remove := os.RemoveAll, os.Remove
+		cleanupRoot, cleanupMarker := root, markerPath
+		if parentDir != nil {
+			removeAll, remove = parentDir.RemoveAll, parentDir.Remove
+			cleanupRoot = filepath.Base(root)
+			if markerPath != "" {
+				cleanupMarker = filepath.Base(markerPath)
+			}
+		}
+		if err := removeAll(cleanupRoot); err != nil {
+			_, _ = fmt.Fprintf(platform.Stderr, "mutation-copy: removing %s: %s\n", root, err)
+		}
+		if cleanupMarker != "" {
+			if err := remove(cleanupMarker); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				_, _ = fmt.Fprintf(platform.Stderr, "mutation-copy: removing %s: %s\n", markerPath, err)
+			}
+		}
+	}()
+	if reason != "" {
 		return mutationCopyRefuse("destination", destGiven, reason)
 	}
 	// A captured path must fit on one line. Check the resolved path (an
 	// alias or TMPDIR can introduce a newline), before copy/marker/registry
 	// writes, and preserve a destination the caller already owned.
 	if parsed.printPath && !mutationCopyPrintablePath(dest) {
-		if destCreated {
-			_ = os.RemoveAll(dest)
-		}
 		return mutationCopyRefuse("destination", destGiven, "--print-path cannot represent a path containing CR or LF")
 	}
 	// Refuse a repository destination before copying files, creating links
 	// or writing an origin marker. Never remove a caller-owned directory.
-	if detail := mutationRepositoryRefusal(dest, source, env); detail != "" {
-		if destCreated {
-			_ = os.RemoveAll(dest)
-		}
+	if detail := mutationRepositoryRefusal(root, source, env); detail != "" {
 		_, _ = fmt.Fprintln(platform.Stderr, "fail copy-outside-repository: "+detail)
 		return 1
 	}
-	// The origin marker goes beside automatically placed copies
-	// (no --dest: gc never scans the other paths). It is written
-	// right after the destination exists and before the file copy, so an
-	// interrupted copy already carries it; a failure never changes the
-	// command's stdout or exit code.
-	markerPath := ""
-	if parsed.dest == "" {
-		markerPath = dest + ".soho-origin"
-		if err := writeCopyOriginMarker(markerPath, source, env); err != nil {
-			_, _ = fmt.Fprintf(platform.Stderr, "mutation-copy: origin marker not written (%s); gc will not remove this copy\n", err)
-		}
-	}
-	cleanup := func() {
-		if destCreated {
-			_ = os.RemoveAll(dest)
-			if markerPath != "" {
-				_ = os.Remove(markerPath)
-			}
-		}
-	}
 	failIO := func(cause string) int {
-		cleanup()
 		_, _ = fmt.Fprintf(platform.Stderr, "mutation-copy: %s\n", cause)
 		return 4
 	}
-	refuse := func(what, value, why string) int {
-		cleanup()
-		return mutationCopyRefuse(what, value, why)
+	var linkRoot *os.Root
+	if depth > 0 {
+		parentDir, err = os.OpenRoot(filepath.Dir(root))
+		if err != nil {
+			return failIO(err.Error())
+		}
+		linkRoot, err = parentDir.OpenRoot(filepath.Base(root))
+		if err != nil {
+			return failIO(err.Error())
+		}
+		defer linkRoot.Close()
+	}
+	// The automatic directory's name identifies the lifecycle root in the
+	// marker's filename. Write it before copying so an interrupted copy
+	// already carries it; an origin marker error is advisory.
+	if parsed.dest == "" {
+		marker := originMarkerPath(root)
+		if err := writeCopyOriginMarker(marker, source, env); err != nil {
+			_, _ = fmt.Fprintf(platform.Stderr, "mutation-copy: origin marker not written (%s); gc will not remove this copy\n", err)
+		} else {
+			markerPath = marker
+		}
+	}
+	if linkRoot != nil {
+		if err := linkRoot.MkdirAll(suffix, 0o755); err != nil {
+			return failIO(err.Error())
+		}
 	}
 
 	// 2. Links: validate up front, create them after the copy.
 	links := make([]mutationCopyLink, 0, len(parsed.links))
 	explicitLinks := map[string]bool{}
-	for _, raw := range parsed.links {
-		rel, target, ok := strings.Cut(raw, "=")
-		if !ok {
-			return refuse("link", raw, "expected <relpath>=<target>")
-		}
-		if rel == "" {
-			return refuse("link", raw, "relpath is empty")
-		}
-		if strings.HasPrefix(rel, "/") || (platform.Current() == "win32" && isWindowsAbsPath(rel)) {
-			return refuse("link", raw, "relpath must be relative")
-		}
-		if rel == "." || hasDotDot(rel) {
-			return refuse("link", raw, "relpath must not escape with '..'")
+	for _, request := range requests {
+		raw, target := request.raw, request.target
+		contains := inside
+		if request.up > 0 {
+			contains = insideFilesystem
 		}
 		if target == "" {
-			return refuse("link", raw, "target is empty")
+			return mutationCopyRefuse("link", raw, "target is empty")
 		}
 		if isFilesystemRoot(target) {
-			return refuse("link", raw, "target is the filesystem root")
+			return mutationCopyRefuse("link", raw, "target is the filesystem root")
 		}
 		targetPath, err := canonicalPath(resolveRelative(cwd, target))
 		if err != nil {
-			return refuse("link", raw, "target cannot be resolved: "+err.Error())
+			return mutationCopyRefuse("link", raw, "target cannot be resolved: "+err.Error())
 		}
 		info, statErr := os.Stat(targetPath)
 		if statErr != nil || !info.IsDir() {
-			return refuse("link", raw, "target does not exist or is not a directory")
+			return mutationCopyRefuse("link", raw, "target does not exist or is not a directory")
 		}
 		if filepath.Dir(targetPath) == targetPath {
-			return refuse("link", raw, "target is the filesystem root")
+			return mutationCopyRefuse("link", raw, "target is the filesystem root")
 		}
-		if home != "" && inside(targetPath, home) {
-			return refuse("link", raw, "target is HOME or above it")
+		if home != "" && contains(targetPath, home) {
+			return mutationCopyRefuse("link", raw, "target is HOME or above it")
 		}
-		if inside(source, targetPath) {
-			return refuse("link", raw, "target is inside the source; install the dependencies in the copy instead (an offline install from the package manager's store)")
+		if contains(source, targetPath) {
+			return mutationCopyRefuse("link", raw, "target is inside the source; install the dependencies in the copy instead (an offline install from the package manager's store)")
 		}
-		// A target that is the copy, or an ancestor of it, would leave the copy
-		// holding a link loop; refuse it like the implicit links.
-		if mutationPathContains(targetPath, dest) {
-			return refuse("link", raw, "target contains the copy")
+		if mutationPathContains(targetPath, dest) || (depth > 0 && insideFilesystem(targetPath, root)) {
+			return mutationCopyRefuse("link", raw, "target contains the copy")
 		}
-		links = append(links, mutationCopyLink{Path: filepath.Clean(rel), Target: targetPath})
-		explicitLinks[filepath.Clean(rel)] = true
+		// The standalone guard scans from dest down. Validate source ancestry
+		// here for a link that can live beside or above dest.
+		if request.up > 0 && contains(targetPath, source) {
+			return mutationCopyRefuse("link", raw, "target contains the source")
+		}
+		links = append(links, mutationCopyLink{Path: request.path, Target: targetPath})
+		explicitLinks[request.path] = true
 	}
 
 	// 3. The repository's files, from the worktree's disk state.
@@ -199,7 +248,7 @@ func runMutationCopy(args []string, env platform.Env) int {
 		// a symlink to outside the source; lstat every source component before
 		// reading through it.
 		if component := mutationCopySourceDirSymlink(source, rel); component != "" {
-			return refuse("symlink", component, "symlinked directory on a listed path")
+			return mutationCopyRefuse("symlink", component, "symlinked directory on a listed path")
 		}
 		info, err := os.Lstat(srcPath)
 		if err != nil {
@@ -226,7 +275,7 @@ func runMutationCopy(args []string, env platform.Env) int {
 					return failIO("git ls-files index check failed: " + strings.TrimSpace(tracked.Stderr))
 				}
 				if tracked.Stdout != "" {
-					return refuse("symlink", rel, "absolute symlink")
+					return mutationCopyRefuse("symlink", rel, "absolute symlink")
 				}
 				reads, err := mutationGuardReadPaths(dest, env)
 				if err != nil {
@@ -234,21 +283,21 @@ func runMutationCopy(args []string, env platform.Env) int {
 				}
 				for _, readPath := range reads.paths() {
 					if mutationPathContains(dstPath, readPath) {
-						return refuse("symlink", rel, "a path the guard reads")
+						return mutationCopyRefuse("symlink", rel, "a path the guard reads")
 					}
 				}
 				resolved, err := canonicalPath(target)
 				if err != nil {
-					return refuse("symlink", rel, "absolute symlink target cannot be resolved: "+err.Error())
+					return mutationCopyRefuse("symlink", rel, "absolute symlink target cannot be resolved: "+err.Error())
 				}
 				if _, err := os.Stat(resolved); err != nil {
-					return refuse("symlink", rel, "absolute symlink target does not exist: "+err.Error())
+					return mutationCopyRefuse("symlink", rel, "absolute symlink target does not exist: "+err.Error())
 				}
 				if mutationPathContains(source, resolved) || mutationPathContains(resolved, source) {
-					return refuse("symlink", rel, "target contains the source")
+					return mutationCopyRefuse("symlink", rel, "target contains the source")
 				}
 				if mutationPathContains(resolved, dest) {
-					return refuse("symlink", rel, "target contains the copy")
+					return mutationCopyRefuse("symlink", rel, "target contains the copy")
 				}
 				// Recreate the link itself after copying regular files; never
 				// visit its target's contents, and preserve its exact text.
@@ -259,13 +308,13 @@ func runMutationCopy(args []string, env platform.Env) int {
 			// must land inside the copy, not in the source tree.
 			resolved, err := canonicalPath(filepath.Join(filepath.Dir(dstPath), target))
 			if err != nil {
-				return refuse("symlink", rel, "target cannot be resolved: "+err.Error())
+				return mutationCopyRefuse("symlink", rel, "target cannot be resolved: "+err.Error())
 			}
 			if !inside(dest, resolved) {
-				return refuse("symlink", rel, "relative target outside the copy")
+				return mutationCopyRefuse("symlink", rel, "relative target outside the copy")
 			}
 			if component := mutationCopyDestDirSymlink(dest, rel); component != "" {
-				return refuse("symlink", component, "symlinked directory on a listed path")
+				return mutationCopyRefuse("symlink", component, "symlinked directory on a listed path")
 			}
 			if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 				return failIO(err.Error())
@@ -284,7 +333,7 @@ func runMutationCopy(args []string, env platform.Env) int {
 			return failIO(err.Error())
 		}
 		if component := mutationCopyDestDirSymlink(dest, rel); component != "" {
-			return refuse("symlink", component, "symlinked directory on a listed path")
+			return mutationCopyRefuse("symlink", component, "symlinked directory on a listed path")
 		}
 		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 			return failIO(err.Error())
@@ -300,12 +349,22 @@ func runMutationCopy(args []string, env platform.Env) int {
 	}
 
 	// 4. The requested dependency links.
-	for _, link := range links {
-		dstPath := filepath.Join(dest, link.Path)
-		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+	if linkRoot == nil && len(links) > 0 {
+		linkRoot, err = os.OpenRoot(root)
+		if err != nil {
 			return failIO(err.Error())
 		}
-		if err := os.Symlink(link.Target, dstPath); err != nil {
+		defer linkRoot.Close()
+	}
+	for _, link := range links {
+		rel, err := mutationCopyRootLink(root, dest, link.Path)
+		if err != nil {
+			if depth == 0 {
+				return failIO(err.Error())
+			}
+			return mutationCopyRefuse("link", link.Path, err.Error())
+		}
+		if err := mutationCopyCreateLink(linkRoot, root, rel, link); err != nil {
 			return failIO(err.Error())
 		}
 	}
@@ -313,7 +372,6 @@ func runMutationCopy(args []string, env platform.Env) int {
 	// 5. The guard's checks, in process.
 	report := mutationGuardChecks(dest, source, env, nil)
 	if report.failed() {
-		cleanup()
 		for _, line := range report.failingLines() {
 			_, _ = fmt.Fprintln(platform.Stderr, line)
 		}
@@ -321,26 +379,96 @@ func runMutationCopy(args []string, env platform.Env) int {
 	}
 
 	// 6. The result.
-	encoded, err := json.Marshal(mutationCopyResult{
+	response := mutationCopyResult{
 		Copy:     dest,
 		Source:   source,
 		Files:    files,
 		Excluded: excluded,
 		Links:    links,
-	})
+	}
+	if depth > 0 {
+		response.Root = root
+	}
+	encoded, err := json.Marshal(response)
 	if err != nil {
 		return failIO(err.Error())
 	}
 	if parsed.dest != "" {
 		warnMutationCopyDest(dest, cwd, env)
 	}
-	registerMutationCopy(env, source, dest)
+	registerMutationCopy(env, source, root)
 	if parsed.printPath {
 		_, _ = fmt.Fprintln(platform.Stdout, dest)
 	} else {
 		_, _ = fmt.Fprintln(platform.Stdout, string(encoded))
 	}
+	complete = true
 	return 0
+}
+
+// mutationCopyRootLink returns a strict descendant of root, expressed relative
+// to the directory handle used to prepare and check it.
+func mutationCopyRootLink(root, dest, rel string) (string, error) {
+	path := filepath.Join(dest, rel)
+	if path == root || !inside(root, path) {
+		return "", errors.New("link destination is outside the automatic copy root")
+	}
+	return filepath.Rel(root, path)
+}
+
+func mutationCopyCreateLink(rootDir *os.Root, root, rel string, link mutationCopyLink) error {
+	parent := filepath.Dir(rel)
+	if err := rootDir.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	rootedParent, err := rootDir.Stat(parent)
+	if err != nil {
+		return err
+	}
+	resolvedParent, err := filepath.EvalSymlinks(filepath.Join(root, parent))
+	if err != nil {
+		return err
+	}
+	if !inside(root, resolvedParent) {
+		return fmt.Errorf("link parent is outside the automatic copy root: %s", resolvedParent)
+	}
+	pathParent, err := os.Stat(resolvedParent)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(rootedParent, pathParent) {
+		return fmt.Errorf("link parent changed: %s", resolvedParent)
+	}
+	path := filepath.Join(resolvedParent, filepath.Base(rel))
+	if _, err := rootDir.Lstat(rel); err == nil {
+		return fmt.Errorf("link destination already exists: %s", path)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	// On Windows os.Symlink inspects an absolute target to choose the
+	// directory flag. Root.Symlink cannot inspect that target. The parent
+	// checks above precede this pathname call; Symlink creates the leaf
+	// exclusively, including if it appears after Lstat.
+	if err := os.Symlink(link.Target, path); err != nil {
+		return err
+	}
+	info, err := rootDir.Lstat(rel)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("link destination is not a symlink: %s", path)
+	}
+	if !link.Implicit {
+		info, err = os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("link does not resolve to a directory: %s", path)
+		}
+	}
+	return nil
 }
 
 // warnMutationCopyDest reports destinations that gc's unregistered scan
@@ -509,8 +637,14 @@ type mutationCopyLink struct {
 	Implicit bool   `json:"implicit,omitempty"`
 }
 
+type mutationCopyLinkRequest struct {
+	raw, path, target string
+	up                int
+}
+
 type mutationCopyResult struct {
 	Copy     string             `json:"copy"`
+	Root     string             `json:"root,omitempty"`
 	Source   string             `json:"source"`
 	Files    int                `json:"files"`
 	Excluded int                `json:"excluded"`
@@ -525,7 +659,15 @@ func mutationCopyUsageError() int {
 // writeOriginMarker writes the copy's origin marker file. Tests swap it to
 // prove a write failure does not change the command's stdout or exit.
 var writeOriginMarker = func(path, content string) error {
-	return os.WriteFile(path, []byte(content), 0o600)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.WriteString(content)
+	if err := errors.Join(writeErr, file.Close()); err != nil {
+		return errors.Join(err, os.Remove(path))
+	}
+	return nil
 }
 
 // writeCopyOriginMarker writes the copy's origin marker beside it: the
@@ -647,6 +789,9 @@ func mutationCopyPrepareDest(raw, cwd string, env platform.Env, home, source str
 	}
 	resolved, err := canonicalPath(resolveRelative(cwd, raw))
 	if err != nil {
+		if created {
+			return raw, raw, true, "cannot be resolved: " + err.Error()
+		}
 		return "", raw, created, "cannot be resolved: " + err.Error()
 	}
 	if filepath.Dir(resolved) == resolved {
@@ -704,6 +849,36 @@ func hasDotDot(rel string) bool {
 		}
 	}
 	return false
+}
+
+func mutationCopyLinkDepth(rel string) (int, string) {
+	if rel == "" {
+		return 0, "relpath is empty"
+	}
+	suffix := filepath.ToSlash(rel)
+	if strings.HasPrefix(suffix, "/") || (platform.Current() == "win32" && isWindowsAbsPath(rel)) {
+		return 0, "relpath must be relative"
+	}
+	up := 0
+	for strings.HasPrefix(suffix, "../") {
+		up++
+		suffix = strings.TrimPrefix(suffix, "../")
+	}
+	if up == 0 {
+		if rel == "." || hasDotDot(rel) {
+			return 0, mutationCopyLinkEscape
+		}
+		return 0, ""
+	}
+	if up > 3 || !filepath.IsLocal(filepath.FromSlash(suffix)) {
+		return 0, mutationCopyLinkEscape
+	}
+	for _, part := range strings.Split(suffix, "/") {
+		if part == "" || part == "." || part == ".." {
+			return 0, mutationCopyLinkEscape
+		}
+	}
+	return up, ""
 }
 
 // isFilesystemRoot reports whether value is the filesystem root or a volume
