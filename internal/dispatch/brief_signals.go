@@ -19,7 +19,7 @@ func BriefType(body string) string {
 func BriefHasOwnedItems(body string, aliases map[string][]string) bool {
 	return briefHasOwnedItems(body, func(title string) bool {
 		return BriefSectionTitleMatches(title, "Owned files", aliases)
-	})
+	}) >= 0
 }
 
 // BriefHasLiteralOwnedItems is the read-only role's edit-request signal:
@@ -31,9 +31,23 @@ func BriefHasOwnedItems(body string, aliases map[string][]string) bool {
 // that declares no files ("None.", "Nenhum. Só leitura.") is not an edit
 // request either; one other item in the section still is.
 func BriefHasLiteralOwnedItems(body string) bool {
-	return briefHasOwnedItems(body, func(title string) bool {
+	line, _ := BriefFirstLiteralOwnedItem(body)
+	return line > 0
+}
+
+// BriefFirstLiteralOwnedItem returns the 1-based line number and trimmed text
+// of the first item the read-only edit signal counts. It shares the matcher
+// with BriefHasLiteralOwnedItems, so the refusal cannot name a line the signal
+// did not count. A section with no counted item returns (0, "").
+func BriefFirstLiteralOwnedItem(body string) (int, string) {
+	index := briefHasOwnedItems(body, func(title string) bool {
 		return startsWithHeadingPrefix(title, []string{"Owned files"}, false)
 	}, ownedItemDeclaresNoFiles)
+	if index < 0 {
+		return 0, ""
+	}
+	line := strings.Split(body, "\n")[index]
+	return index + 1, strings.TrimSpace(strings.TrimSuffix(line, "\r"))
 }
 
 var ownedNoneWords = []string{"none", "nenhum", "nenhuma", "nada", "nothing", "n/a"}
@@ -67,7 +81,10 @@ func ownedItemDeclaresNoFiles(item string) bool {
 	return false
 }
 
-func briefHasOwnedItems(body string, matches func(title string) bool, skip ...func(item string) bool) bool {
+// briefHasOwnedItems returns the 0-based line index of the first counted
+// item, or -1. Both the alias-aware edit-role signal and the literal
+// read-only signal use it.
+func briefHasOwnedItems(body string, matches func(title string) bool, skip ...func(item string) bool) int {
 	lines := strings.Split(body, "\n")
 	mask := briefFenceMask(lines)
 	for i := 0; i < len(lines); i++ {
@@ -90,7 +107,7 @@ func briefHasOwnedItems(body string, matches func(title string) bool, skip ...fu
 			end++
 		}
 		filtered, _ := OwnedSectionLines(lines[i+1 : end])
-		for _, line := range filtered {
+		for offset, line := range filtered {
 			if _, ok := lintHeadingPrefix(strings.TrimSuffix(line, "\r")); ok {
 				continue
 			}
@@ -99,10 +116,10 @@ func briefHasOwnedItems(body string, matches func(title string) bool, skip ...fu
 				continue
 			}
 			if len(skip) == 0 || !skip[0](item) {
-				return true
+				return i + 1 + offset
 			}
 		}
 		i = end - 1
 	}
-	return false
+	return -1
 }

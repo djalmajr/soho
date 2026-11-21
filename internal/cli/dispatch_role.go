@@ -2,12 +2,15 @@ package cli
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
+	textpkg "github.com/djalmajr/soho/internal/text"
 	waitpkg "github.com/djalmajr/soho/internal/wait"
 )
 
@@ -50,18 +53,77 @@ func readOnlyEditSignals(body string) (signals []string, suggested, remedy strin
 	// request. Edit roles keep counting the synonyms (ownedPaths, section
 	// lint), which is why this signal uses the literal matcher instead of
 	// BriefHasOwnedItems.
-	if dispatch.BriefHasLiteralOwnedItems(body) {
-		signals = append(signals, "Owned files")
+	if line, text := dispatch.BriefFirstLiteralOwnedItem(body); line > 0 {
+		signal := "Owned files: line " + strconv.Itoa(line) + ": " + quoteRefusalLine(text)
+		if ownedClosingPhrase(text) {
+			signal += "; that line belongs in Forbidden or Report, not in the file list"
+		}
+		signals = append(signals, signal)
 	}
 	if len(signals) == 0 {
 		return nil, "", ""
 	}
 	// Renaming a title cannot lift a refusal the Type line caused.
 	remedy = "or rename the 'Owned files' title, or drop the edit sections from the brief"
-	if signals[0] != "Owned files" {
+	if !strings.HasPrefix(signals[0], "Owned files") {
 		remedy = "or drop the '" + signals[0] + "' line and the edit sections from the brief"
 	}
 	return signals, suggested, remedy
+}
+
+// quoteRefusalLine makes one printable line for the refusal: control
+// characters are escaped (text.QuoteControls) and the line is cut at 80
+// characters, never inside a character, so a long Owned line stays short.
+func quoteRefusalLine(text string) string {
+	quoted := []rune(textpkg.QuoteControls(text))
+	if len(quoted) > 80 {
+		return "'" + string(quoted[:80]) + "…'"
+	}
+	return "'" + string(quoted) + "'"
+}
+
+// closingListMarkerRE is the Owned list-marker grammar of
+// internal/gittree/diffreport.go's diffOwnedLabelMarkerRE: -, * or +, or a
+// number followed by . or ), then spaces or tabs.
+var closingListMarkerRE = regexp.MustCompile(`^(?:[-*+]|[0-9]+[.)])[ \t]+`)
+
+// closingPairs are the decorations the phrase rule removes only when they
+// enclose the whole remaining line: markdown emphasis, parentheses and
+// ASCII or Unicode quotes. An unpaired mark stays, so it cannot make a line
+// that is not a closing phrase look like one.
+var closingPairs = [][2]string{{"**", "**"}, {"__", "__"}, {"*", "*"}, {"_", "_"}, {"(", ")"}, {"“", "”"}, {"‘", "’"}, {"«", "»"}, {"\"", "\""}, {"'", "'"}}
+
+// ownedClosingPhrase recognizes the lines people leave in Owned files when
+// they meant to forbid a commit or report it. A backtick span marks a path
+// item, so it is never a closing phrase; otherwise the item is reduced by the
+// Owned list-marker grammar, enclosing decoration pairs, trailing punctuation
+// and case before the whole line is compared with the phrase list.
+func ownedClosingPhrase(text string) bool {
+	line := strings.TrimSpace(text)
+	if strings.Contains(line, "`") {
+		return false
+	}
+	line = closingListMarkerRE.ReplaceAllString(line, "")
+	for {
+		before := line
+		line = strings.TrimRight(line, ".!;:")
+		for _, pair := range closingPairs {
+			if len(line) > len(pair[0])+len(pair[1]) && strings.HasPrefix(line, pair[0]) && strings.HasSuffix(line, pair[1]) {
+				line = strings.TrimSpace(line[len(pair[0]) : len(line)-len(pair[1])])
+				break
+			}
+		}
+		if line == before {
+			break
+		}
+	}
+	line = strings.ToLower(line)
+	switch line {
+	case "sem commit", "não commite", "nao commite", "no commit",
+		"do not commit", "don't commit", "never commit":
+		return true
+	}
+	return false
 }
 
 func refuseReadOnlyEditBrief(body, brief, agent, role string, explicit bool, ctx *core.Config, env platform.Env, cwd string) {

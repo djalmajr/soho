@@ -56,7 +56,7 @@ func TestLintCommandReadOnlyAndExitModes(t *testing.T) {
 		stderr.Reset()
 		// SOH-287: --role with a read-only role reports the conflict the
 		// dispatch would refuse when the brief lists owned files.
-		if code := Run([]string{"lint", brief, "--role", "reviewer"}, env); code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "asks for edits (Owned files) but 'reviewer' is a read-only role") {
+		if code := Run([]string{"lint", brief, "--role", "reviewer"}, env); code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "asks for edits (Owned files: line 6: 'src/a.go') but 'reviewer' is a read-only role") {
 			t.Fatalf("read-only role with owned files: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 		}
 

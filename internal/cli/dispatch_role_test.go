@@ -56,9 +56,9 @@ func TestDispatchRoleEditSignals(t *testing.T) {
 		name, body, explicit, signal, suggest, word string
 		refuse                                      bool
 	}{
-		{name: "roster-backend-owned", body: "Type: backend\n# Owned files\n- app.go\n", signal: "Type: backend, Owned files", suggest: "implementer", word: "runs", refuse: true},
+		{name: "roster-backend-owned", body: "Type: backend\n# Owned files\n- app.go\n", signal: "Type: backend, Owned files: line 3: '- app.go'", suggest: "implementer", word: "runs", refuse: true},
 		{name: "explicit-edit", body: "Type: backend\n# Owned files\n- app.go\n", explicit: "implementer"},
-		{name: "explicit-reviewer", body: "# Owned files\n- app.go\n", explicit: "reviewer", signal: "Owned files", suggest: "implementer", word: "was given", refuse: true},
+		{name: "explicit-reviewer", body: "# Owned files\n- app.go\n", explicit: "reviewer", signal: "Owned files: line 2: '- app.go'", suggest: "implementer", word: "was given", refuse: true},
 		{name: "ui", body: "Type: ui\n", signal: "Type: ui", suggest: "designer", word: "runs", refuse: true},
 		{name: "docs", body: "Type: docs\n", signal: "Type: docs", suggest: "documenter", word: "runs", refuse: true},
 		{name: "mechanical", body: "Type: mechanical\n", signal: "Type: mechanical", suggest: "tasker", word: "runs", refuse: true},
@@ -68,11 +68,11 @@ func TestDispatchRoleEditSignals(t *testing.T) {
 		{name: "security-scope", body: "Type: security\n## Scope\n- app.go\n## Escopo\n- other.go\n", explicit: "security-reviewer"},
 		{name: "reviewer-arquivos-scope", body: "Type: review\n## Arquivos\n- app.go\n", explicit: "reviewer"},
 		{name: "reviewer-arquivos-empty", body: "Type: review\n## Arquivos\n\n## Outro\n- x\n", explicit: "reviewer"},
-		{name: "reviewer-both-titles", body: "## Arquivos\n- a.go\n\n## Owned files\n- b.go\n", explicit: "reviewer", signal: "Owned files", suggest: "implementer", word: "was given", refuse: true},
+		{name: "reviewer-both-titles", body: "## Arquivos\n- a.go\n\n## Owned files\n- b.go\n", explicit: "reviewer", signal: "Owned files: line 5: '- b.go'", suggest: "implementer", word: "was given", refuse: true},
 		{name: "none-owned", body: "# Owned files\nNenhum. Só leitura.\n\n# Report\nDone\n"},
 		{name: "none-owned-explicit-reviewer", body: "# Owned files\n- None\n", explicit: "reviewer"},
-		{name: "none-and-path-owned", body: "# Owned files\nNone.\n- app.go\n", signal: "Owned files", suggest: "implementer", word: "runs", refuse: true},
-		{name: "listed-owned-after-none-prefix-name", body: "# Owned files\nnonexistent.go\n", signal: "Owned files", suggest: "implementer", word: "runs", refuse: true},
+		{name: "none-and-path-owned", body: "# Owned files\nNone.\n- app.go\n", signal: "Owned files: line 3: '- app.go'", suggest: "implementer", word: "runs", refuse: true},
+		{name: "listed-owned-after-none-prefix-name", body: "# Owned files\nnonexistent.go\n", signal: "Owned files: line 2: 'nonexistent.go'", suggest: "implementer", word: "runs", refuse: true},
 		{name: "empty-owned", body: "# Owned files\n\n# Report\nDone\n"},
 		{name: "fenced-owned", body: "```md\nType: backend\n# Owned files\n- app.go\n```\nType: review\n"},
 	} {
