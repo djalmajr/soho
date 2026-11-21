@@ -6,6 +6,7 @@ import test from "node:test";
 import { register } from "node:module";
 import * as M from "../model.js";
 import * as H from "./stubs/herdr.mjs";
+import { fakeCx, flush, tick, STALE_MESSAGE } from "./stubs/context.mjs";
 register("./stubs/loader.mjs", import.meta.url);
 const { default: SohoPanel } = await import("../main.js");
 
@@ -16,7 +17,6 @@ globalThis.localStorage = {
   clear() { this.store.clear(); },
 };
 
-const STALE_MESSAGE = "cx is no longer valid: it was captured during an earlier call and used later. Use cx.spawn or take cx from the callback arguments instead.";
 const ROLE = { role: "implementer", lane: "build", kind: "pi", model: "m-1", effort: "high", mode: "edit" };
 const WORKER = { name: "impl-1", pane: "%1", status: "working" };
 const CONFIG = "/w/a/.agents/soho.conf";
@@ -44,60 +44,6 @@ function execRouter(_name, args) {
   return ok({});
 }
 
-function newLog() {
-  return {
-    uses: 0, staleUses: 0, notifies: 0, expired: false,
-    tasks: [], timers: { every: [], after: [] },
-  };
-}
-
-// One shared log for the event cx and every AsyncContext it spawns, so a single
-// flush drains the whole tree of tasks.
-function makeCx(state, expiring = false) {
-  const check = () => {
-    state.uses += 1;
-    if (expiring && state.expired) {
-      state.staleUses += 1;
-      throw new Error(STALE_MESSAGE);
-    }
-  };
-  return {
-    state,
-    notify() { check(); state.notifies += 1; },
-    focus_handle() { check(); return { focus() {} }; },
-    timer: {
-      every(ms, callback) { check(); state.timers.every.push({ ms, callback }); return { cancel() {} }; },
-      after(ms, callback) {
-        check();
-        const entry = { ms, callback, cancelled: false };
-        state.timers.after.push(entry);
-        return { cancel() { entry.cancelled = true; } };
-      },
-    },
-    spawn(body) {
-      check();
-      const asyncCtx = makeCx(state);
-      const promise = Promise.resolve(body(asyncCtx));
-      state.tasks.push(promise);
-      return promise;
-    },
-    expire() { if (expiring) state.expired = true; },
-  };
-}
-
-const eventCx = () => makeCx(newLog(), true);
-const tick = () => new Promise((resolve) => setImmediate(resolve));
-
-async function flush(cx) {
-  for (let i = 0; i < 80; i += 1) {
-    const pending = cx.state.tasks.splice(0);
-    for (const task of pending) task.catch(() => {});
-    if (pending.length) await Promise.race([Promise.allSettled(pending), tick()]);
-    await tick();
-    if (!pending.length && cx.state.tasks.length === 0) return;
-  }
-}
-
 async function boot() {
   H.reset();
   localStorage.clear();
@@ -106,7 +52,7 @@ async function boot() {
   H.state.exec = execRouter;
   H.state.readText = async () => "config text";
   const panel = new SohoPanel();
-  const cx = makeCx(newLog());
+  const cx = fakeCx();
   panel.init({}, cx);
   await flush(cx);
   panel.data.team = { roles: [ROLE], config_files: { project: CONFIG } };
@@ -142,8 +88,8 @@ function assertReconciledAfter(write) {
     `the reconcile read ran after ${write}`);
 }
 
-test("stale cx: the helper expires after the call and a spawned context does not", async () => {
-  const cx = eventCx();
+test("stale cx: an event expires immediately and a spawned context lasts until its task ends", async () => {
+  const cx = fakeCx();
   let asyncCtx = null;
   cx.spawn(async (ctx) => { asyncCtx = ctx; await tick(); ctx.notify(); });
   cx.expire();
@@ -154,12 +100,13 @@ test("stale cx: the helper expires after the call and a spawned context does not
   assert.ok(asyncCtx);
   assert.equal(cx.state.staleUses, staleAfterExpire, "the spawned context added no stale use");
   assert.ok(asyncCtx.state.notifies > 0, "the AsyncContext still notifies after an await");
+  assert.throws(() => asyncCtx.notify(), (error) => error.message === STALE_MESSAGE);
 });
 
-test("stale cx: a Refresh click clears a stale team error on the task context", async () => {
+test("stale cx: a refresh clears a stale team error on the task context", async () => {
   const panel = await boot();
   panel.errors.team = STALE_MESSAGE;
-  const cx = eventCx();
+  const cx = fakeCx();
   panel.refresh(cx);
   cx.expire();
   await flush(cx);
@@ -172,7 +119,7 @@ test("stale cx: runAction still notices and reconciles after its await", async (
   const panel = await boot();
   panel.errors.team = STALE_MESSAGE;
   const capture = M.rowCapture(panel.originOf("team"), ROLE);
-  const cx = eventCx();
+  const cx = fakeCx();
   panel.runAction(cx, "close:impl-1", ["release", "impl-1", "--close"], "team",
     null, "impl-1 closed", null, capture);
   cx.expire();
@@ -187,7 +134,7 @@ test("stale cx: setEffort writes, notices and reconciles on the task context", a
   const panel = await boot();
   const capture = M.effortCapture(panel.originOf("team"), ROLE,
     { key: "role.implementer.effort", appliesTo: "role", label: "Implementer" });
-  const cx = eventCx();
+  const cx = fakeCx();
   panel.setEffort(capture, "low", cx);
   cx.expire();
   await flush(cx);
@@ -199,7 +146,7 @@ test("stale cx: setEffort writes, notices and reconciles on the task context", a
 test("stale cx: previewEdit finishes its dry runs on the task context", async () => {
   const panel = await boot();
   panel.edit = draftFor(panel);
-  const cx = eventCx();
+  const cx = fakeCx();
   const pending = panel.previewEdit(cx);
   cx.expire();
   await pending;
@@ -213,7 +160,7 @@ test("stale cx: previewEdit finishes its dry runs on the task context", async ()
 test("stale cx: saveEdit writes, notices and reconciles on the task context", async () => {
   const panel = await boot();
   panel.edit = draftFor(panel);
-  const cx = eventCx();
+  const cx = fakeCx();
   panel.saveEdit(cx, panel.edit.id, panel.edit.snapshot);
   cx.expire();
   await flush(cx);
@@ -226,12 +173,12 @@ test("stale cx: saveEdit writes, notices and reconciles on the task context", as
 test("stale cx: undoLast runs the captured plan and reconciles on the task context", async () => {
   const panel = await boot();
   panel.edit = draftFor(panel);
-  const saveCx = makeCx(newLog());
+  const saveCx = fakeCx();
   panel.saveEdit(saveCx, panel.edit.id, panel.edit.snapshot);
   await flush(saveCx);
   const captured = panel.noticeCapture();
   assert.ok(captured?.id, "the Save left an Undo plan");
-  const cx = eventCx();
+  const cx = fakeCx();
   panel.undoLast(captured, cx);
   cx.expire();
   await flush(cx);
@@ -242,7 +189,7 @@ test("stale cx: undoLast runs the captured plan and reconciles on the task conte
 
 test("stale cx: openConfig publishes the file on the task context", async () => {
   const panel = await boot();
-  const cx = eventCx();
+  const cx = fakeCx();
   panel.openConfig({ origin: panel.originOf("team"), path: CONFIG }, cx);
   cx.expire();
   await flush(cx);
@@ -254,14 +201,14 @@ test("stale cx: openConfig publishes the file on the task context", async () => 
 test("stale cx: loadReport and its Report button read on the task context", async () => {
   const panel = await boot();
   const origin = panel.originOf("roster");
-  const cx = eventCx();
+  const cx = fakeCx();
   panel.loadReport(M.workerKey(WORKER), origin, cx, true);
   cx.expire();
   await flush(cx);
   assertClean(panel, cx);
   assert.equal(panel.data.report?.agent, "impl-1");
 
-  const buttonCx = eventCx();
+  const buttonCx = fakeCx();
   panel.showWorkerReport(M.workerCapture(panel.originOf("roster"), WORKER), buttonCx);
   buttonCx.expire();
   await flush(buttonCx);
@@ -272,7 +219,7 @@ test("stale cx: loadReport and its Report button read on the task context", asyn
 test("stale cx: readChoices publishes its choices on the task context", async () => {
   const panel = await boot();
   panel.data.choices = null;
-  const cx = eventCx();
+  const cx = fakeCx();
   panel.readChoices(cx, panel.originOf("team"));
   cx.expire();
   await flush(cx);

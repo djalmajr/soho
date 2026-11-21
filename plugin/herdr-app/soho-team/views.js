@@ -462,7 +462,6 @@ export function sortMenu(app, t, cx) {
 export function moreMenu(app, t, cx) {
   const id = "more-menu";
   const choices = [
-    { id: "refresh", label: "Refresh" },
     { id: "grouped", label: "Grouped view" },
     { id: "list", label: "List view" },
   ];

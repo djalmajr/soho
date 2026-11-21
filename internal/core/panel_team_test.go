@@ -2,6 +2,7 @@ package core
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -73,6 +74,9 @@ func panelRolesFixture(t *testing.T, config string) (platform.Env, string, *Conf
 	if config != "" {
 		write(t, filepath.Join(repo, ".agents", "soho.conf"), config)
 	}
+	if err := os.MkdirAll(filepath.Join(env.Get("SOHO_DIR"), "ws"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	ctx := LoadConfig(env, repo)
 	return env, repo, &ctx
 }
@@ -83,7 +87,7 @@ func TestPanelTeamRolesJSONKeepsTheLegacyArray(t *testing.T) {
 	panelOut, _ := capture(t, func() { CmdRolesPanelJSON(ctx, env, repo, true) })
 	legacyRoles, _ := panelParseObject(t, legacyOut).Get("roles")
 	panelObj := panelParseObject(t, panelOut)
-	if keys := panelObj.Keys(); strings.Join(keys, ",") != "roles,lanes,unassigned_roles,team_exists,config_files" {
+	if keys := panelObj.Keys(); strings.Join(keys, ",") != "roles,lanes,unassigned_roles,team_exists,config_files,team_files" {
 		t.Fatalf("panel roles key order = %v", keys)
 	}
 	panelRoles, _ := panelObj.Get("roles")
@@ -175,7 +179,7 @@ func TestPanelTeamConfigFilesAreTheCommandDestinations(t *testing.T) {
 	out, _ := capture(t, func() { CmdRolesPanelJSON(ctx, env, repo, true) })
 	obj := panelParseObject(t, out)
 	files := panelObjectField(t, objValue(obj, "config_files"), "config_files")
-	if keys := files.Keys(); strings.Join(keys, ",") != "project,user" {
+	if keys := files.Keys(); strings.Join(keys, ",") != "project,user,session" {
 		t.Fatalf("config_files key order = %v", keys)
 	}
 	for _, scope := range []string{"project", "user"} {
@@ -184,14 +188,79 @@ func TestPanelTeamConfigFilesAreTheCommandDestinations(t *testing.T) {
 			t.Fatalf("config_files.%s = %v, want %v", scope, got, want)
 		}
 	}
+	if got, _ := files.Get("session"); got != SessionConfPath(ctx, env, repo) {
+		t.Fatalf("config_files.session = %v, want %v", got, SessionConfPath(ctx, env, repo))
+	}
+	tm := panelObjectField(t, objValue(obj, "team_files"), "team_files")
+	if keys := tm.Keys(); strings.Join(keys, ",") != "roster,reports" {
+		t.Fatalf("team_files key order = %v", keys)
+	}
+	state := filepath.Join(env.Get("SOHO_DIR"), "ws")
+	if got, _ := tm.Get("roster"); got != filepath.Join(state, "agents.tsv") {
+		t.Fatalf("team_files.roster = %v, want %v", got, filepath.Join(state, "agents.tsv"))
+	}
+	if got, _ := tm.Get("reports"); got != filepath.Join(state, "reports") {
+		t.Fatalf("team_files.reports = %v, want %v", got, filepath.Join(state, "reports"))
+	}
 	if value, _ := obj.Get("team_exists"); value != true {
 		t.Fatalf("team_exists = %v, want true as passed by the CLI", value)
+	}
+}
+
+func TestPanelTeamRolesReadDoesNotWriteState(t *testing.T) {
+	env, repo, _ := panelRolesFixture(t, "")
+	// An in-repo state location on a fresh checkout: reading roles must not
+	// append .gitignore, create .soho, or leave any other status entry.
+	env["SOHO_DIR"] = ".soho"
+	ctx := LoadConfig(env, repo)
+	out, _ := capture(t, func() { CmdRolesPanelJSON(&ctx, env, repo, true) })
+	obj := panelParseObject(t, out)
+	tm := panelObjectField(t, objValue(obj, "team_files"), "team_files")
+	for _, key := range []string{"roster", "reports"} {
+		if got, _ := tm.Get(key); got != nil {
+			t.Fatalf("team_files.%s with no state dir = %#v, want null", key, got)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".gitignore")); !os.IsNotExist(err) {
+		t.Fatalf("roles --json created .gitignore: err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".soho")); !os.IsNotExist(err) {
+		t.Fatalf("roles --json created .soho: err=%v", err)
+	}
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = repo
+	cmd.Env = env.List()
+	status, err := cmd.CombinedOutput()
+	if err != nil || len(status) != 0 {
+		t.Fatalf("git status after roles --json = %q, err=%v", status, err)
 	}
 }
 
 func objValue(obj *jsonjs.Object, key string) any {
 	value, _ := obj.Get(key)
 	return value
+}
+
+func TestPanelTeamSessionAndTeamFilesOutsideAWorkspaceAreNull(t *testing.T) {
+	env, repo, ctx := panelRolesFixture(t, "")
+	delete(env, "HERDR_WORKSPACE_ID")
+	out, _ := capture(t, func() { CmdRolesPanelJSON(ctx, env, repo, true) })
+	obj := panelParseObject(t, out)
+	files := panelObjectField(t, objValue(obj, "config_files"), "config_files")
+	if got, _ := files.Get("session"); got != nil {
+		t.Fatalf("config_files.session outside a workspace = %#v, want null", got)
+	}
+	tm := panelObjectField(t, objValue(obj, "team_files"), "team_files")
+	for _, key := range []string{"roster", "reports"} {
+		if got, _ := tm.Get(key); got != nil {
+			t.Fatalf("team_files.%s outside a workspace = %#v, want null", key, got)
+		}
+	}
+	for _, scope := range []string{"project", "user"} {
+		if got, _ := files.Get(scope); got != ConfigFileFor(scope, env, repo) {
+			t.Fatalf("config_files.%s outside a workspace = %v", scope, got)
+		}
+	}
 }
 
 func TestPanelTeamEmptyConfigAndLaneWithNoRoles(t *testing.T) {
