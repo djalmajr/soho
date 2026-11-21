@@ -31,7 +31,9 @@ jobs:
           - os: ${{ github.event_name == 'pull_request' && 'macos-15' || 'none' }}
             suite: race
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    # The Windows race suite takes 105-115 minutes and grows with the tests;
+    # at 120 it was cancelled twice on 2026-11-21 before finishing.
+    timeout-minutes: ${{ matrix.os == 'windows-2025' && matrix.suite == 'race' && 180 || 120 }}
     env:
       GOTOOLCHAIN: auto
       GOMAXPROCS: 2
