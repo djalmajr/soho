@@ -35,6 +35,7 @@ const (
 	firstResendDraftScreen = "OpenAI Codex\n\n› fix the failing test\n\n  gpt-5 high · Context 0% used\n"
 	firstResendMismatch    = `{"error":{"kind":"status_mismatch","message":"the terminal is not ready"}}`
 	firstResendUncertain   = `{"error":{"kind":"unavailable","message":"core went away"}}`
+	firstResendStarting    = `{"error":{"kind":"unavailable","message":"worker is still starting: its output has not settled","hint":"nothing was typed; check hc read worker, then retry"}}`
 	firstResendBusyWarning = "soho: warning: prompt submission failed (busy: worker worker is not idle; cause: hc exited 10: status_mismatch: the terminal is not ready); inspect with: hc get worker && hc read worker. Do not resend blindly."
 	firstResendFriction    = "soho: warning: the first prompt to 'worker' was refused before it was written; sent it once more"
 )
@@ -108,6 +109,188 @@ func assertSameTarget(t *testing.T, sends []fakecli.Call) {
 		if len(s.Argv) != 7 || s.Argv[5] != "worker" || s.Argv[6] != sends[0].Argv[6] {
 			t.Fatalf("send %d argv=%#v, want the first send's target and text", i, s.Argv)
 		}
+	}
+}
+
+func TestDispatchFirstResendStarting(t *testing.T) {
+	const repeated = `{"error":{"kind":"unavailable","message":"t7 is still starting: its output has not settled","hint":"nothing was typed; check hc read t7, then retry"}}`
+	for _, tc := range []struct {
+		name   string
+		first  string
+		second string
+		sends  int
+		raw    string
+	}{
+		{name: "accepted", first: firstResendStarting, sends: 2},
+		{name: "repeated", first: firstResendStarting, second: repeated, sends: 2, raw: "hc exited 5: unavailable: t7 is still starting: its output has not settled (nothing was typed; check hc read t7, then retry)"},
+		{name: "no proof", first: firstResendUncertain, sends: 1, raw: "hc exited 5: unavailable: core went away"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			firstResendPauses(t)
+			second := firstResendSendRule(2, 0, "")
+			if tc.second != "" {
+				second = firstResendSendRule(2, 5, tc.second)
+			}
+			f := newDispatchHcFixture(t, firstResendBaseRules(
+				firstResendSendRule(1, 5, tc.first), second, firstResendSendRule(3, 0, ""),
+				firstResendReadRule("0", firstResendEmptyScreen), firstResendReadRule("40", ""),
+			))
+			code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
+			calls := f.hcCalls(t)
+			sends := hcSends(calls)
+			if len(sends) != tc.sends {
+				t.Fatalf("sends=%d, want %d (code=%d out=%s stderr=%q)", len(sends), tc.sends, code, out, errText)
+			}
+			assertSameTarget(t, sends)
+			var deliveryCalls []string
+			for _, call := range calls {
+				if len(call.Argv) >= 2 && call.Argv[0] == "send" && call.Argv[1] == "--if" {
+					deliveryCalls = append(deliveryCalls, "send")
+				}
+				if len(call.Argv) >= 4 && call.Argv[0] == "read" && call.Argv[1] == "worker" && call.Argv[2] == "--lines" {
+					deliveryCalls = append(deliveryCalls, "read "+call.Argv[3])
+				}
+			}
+			wantCalls := "send"
+			if tc.sends == 2 {
+				wantCalls = "send, read 0, read 40, send"
+			}
+			// Accepted dispatches can make additional reads to prove arrival.
+			if tc.raw == "" && len(deliveryCalls) > 4 {
+				deliveryCalls = deliveryCalls[:4]
+			}
+			if got := strings.Join(deliveryCalls, ", "); got != wantCalls {
+				t.Fatalf("delivery calls=%q, want %q", got, wantCalls)
+			}
+			f.assertHcNeverTouchedHerdr(t)
+
+			obj := dispatchHcJSON(t, out)
+			sidecars, err := filepath.Glob(filepath.Join(f.sd, "briefs", "*.dispatch.json"))
+			if err != nil || len(sidecars) != 1 {
+				t.Fatalf("sidecars=%q err=%v, want one attempt sidecar", sidecars, err)
+			}
+			sidecar, err := os.ReadFile(sidecars[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			pointerPath := taskreport.TaskReportPointerPath(f.sd, "worker")
+			failedMarker := filepath.Join(f.sd, "wait", "worker.submit-failed")
+			if tc.raw != "" {
+				assertTodaysError(t, f, code, out, errText, tc.sends, tc.raw)
+				if got, _ := obj.Get("raw"); got != tc.raw {
+					t.Fatalf("raw=%q, want the last refused send's cause %q", got, tc.raw)
+				}
+				if _, err := os.Stat(pointerPath); !os.IsNotExist(err) {
+					t.Fatalf("failed dispatch must restore the absent task pointer: %v", err)
+				}
+				if _, err := os.Stat(failedMarker); err != nil {
+					t.Fatalf("failed dispatch must record the submit-failed marker: %v", err)
+				}
+				if submission, _ := dispatchHcJSON(t, string(sidecar)).Get("submission"); submission != "failed" {
+					t.Fatalf("sidecar submission=%v, want failed", submission)
+				}
+				return
+			}
+			status, _ := obj.Get("wait_status")
+			resent, _ := obj.Get("resent_first")
+			if code != 0 || status != "submitted" || resent != true {
+				t.Fatalf("code=%d out=%s stderr=%q, want submitted and resent_first", code, out, errText)
+			}
+			if strings.Count(errText, firstResendFriction) != 1 || strings.Contains(errText, "prompt submission failed") {
+				t.Fatalf("stderr=%q, want one resend warning", errText)
+			}
+			if _, err := os.Stat(failedMarker); !os.IsNotExist(err) {
+				t.Fatalf("accepted dispatch must leave no submit-failed marker: %v", err)
+			}
+			pointers, err := filepath.Glob(filepath.Join(f.sd, "task-report-*.json"))
+			if err != nil || len(pointers) != 1 || pointers[0] != pointerPath {
+				t.Fatalf("task pointers=%q err=%v, want only %q", pointers, err, pointerPath)
+			}
+			pointer := taskreport.ReadTaskReportPointer(f.sd, "worker")
+			if pointer == nil {
+				t.Fatal("accepted dispatch must keep a valid task pointer")
+			}
+			report, _ := obj.Get("report")
+			taskReport, _ := obj.Get("task_report")
+			current, _ := pointer.Get("current")
+			stable, _ := pointer.Get("task_report")
+			if report != current || taskReport != stable {
+				t.Fatalf("pointer current=%v task_report=%v, want %v and %v", current, stable, report, taskReport)
+			}
+			sidecarObj := dispatchHcJSON(t, string(sidecar))
+			submission, _ := sidecarObj.Get("submission")
+			sidecarReport, _ := sidecarObj.Get("task_report")
+			if submission != "accepted" || sidecarReport != stable {
+				t.Fatalf("sidecar submission=%v task_report=%v, want accepted and %v", submission, sidecarReport, stable)
+			}
+		})
+	}
+}
+
+func TestDispatchFirstResendStartingProof(t *testing.T) {
+	const startup = "worker is still starting: its output has not settled"
+	const statement = "nothing was typed"
+	const advice = statement + "; check hc read worker, then retry"
+	for _, tc := range []struct {
+		name, message string
+		hint          any
+		wantResend    bool
+	}{
+		{"canonical_hint", startup, advice, true},
+		{"canonical_inline", startup + " (" + advice + ")", "", true},
+		{"bare_statement", startup, statement, true},
+		{"resolved_address", "t7 is still starting: its output has not settled", statement + "; check hc read t7, then retry", true},
+		{"resolved_address_in_hint", startup, statement + "; check hc read t7, then retry", true},
+		{"consistent_proofs", startup + " (" + advice + ")", statement, true},
+		{"trimmed_message", " \t" + startup + "\n", statement, true},
+		{"other_failure", "core went away", statement, false},
+		{"missing_proof", startup, "", false},
+		{"quoted_message", "reported earlier: \"" + startup + "\"", statement, false},
+		{"quoted_hint", startup, "\"" + statement + "\"", false},
+		{"embedded_reason", "a prior report said " + startup, statement, false},
+		{"missing_subject", " is still starting: its output has not settled", statement, false},
+		{"embedded_inline_statement", startup + " (" + statement + "; old advice) (receipt unknown)", "", false},
+		{"conflicting_hint", startup + " (" + statement + ")", "input may have been delivered", false},
+		{"numeric_hint", startup + " (" + statement + ")", 5, false},
+		{"array_hint", startup + " (" + statement + ")", []string{statement}, false},
+		{"wrong_target_in_reason", "another-worker is still starting: its output has not settled", statement, false},
+		{"compound_hint", startup, advice + "; input may have been delivered", false},
+		{"compound_inline", startup + " (" + statement + "; input may have been delivered)", "", false},
+		{"wrong_target_in_hint", startup, statement + "; check hc read t8, then retry", false},
+		{"suffixed_reason", startup + ". A previous send may have written", statement, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			firstResendPauses(t)
+			stderr, err := json.Marshal(map[string]any{"error": map[string]any{
+				"kind": "unavailable", "message": tc.message, "hint": tc.hint,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := newDispatchHcFixture(t, firstResendBaseRules(
+				firstResendSendRule(1, 5, string(stderr)), firstResendSendRule(2, 0, ""),
+				firstResendReadRule("0", firstResendEmptyScreen), firstResendReadRule("40", ""),
+			))
+			code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
+			obj := dispatchHcJSON(t, out)
+			status, _ := obj.Get("wait_status")
+			sends := hcSends(f.hcCalls(t))
+			wantCode, wantStatus, wantSends := 4, "error", 1
+			if tc.wantResend {
+				wantCode, wantStatus, wantSends = 0, "submitted", 2
+			}
+			if code != wantCode || status != wantStatus || len(sends) != wantSends {
+				t.Fatalf("sends=%d code=%d status=%s, want %d/%d/%s", len(sends), code, status, wantSends, wantCode, wantStatus)
+			}
+			if tc.wantResend {
+				assertSameTarget(t, sends)
+				if v, _ := obj.Get("resent_first"); v != true {
+					t.Fatalf("resent_first=%v, want true", v)
+				}
+			} else {
+				assertTodaysError(t, f, code, out, errText, 1, tc.message)
+			}
+		})
 	}
 }
 
