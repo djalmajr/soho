@@ -1214,6 +1214,32 @@ func OwnedQuotedPaths(item string, tokens []string, root string, recordedRoots m
 	return out
 }
 
+// OwnedItemPaths is the shared path reader for a labeled Owned item that
+// carries a backticked note: backticked paths when any name one, otherwise
+// the item's first whitespace-separated token when that token is path-shaped.
+// Nothing after that first token adds scope. An item with no backticked
+// token to read (no span, or an assignment value the caller withheld) is left
+// to its caller's plain-token rule and contributes nothing here.
+func OwnedItemPaths(item string, quoted []string, root string, recordedRoots map[string]bool) []string {
+	if len(quoted) == 0 {
+		return nil
+	}
+	if paths := OwnedQuotedPaths(item, quoted, root, recordedRoots); len(paths) > 0 {
+		return paths
+	}
+	fields := strings.Fields(item)
+	if len(fields) == 0 {
+		return nil
+	}
+	first := fields[0]
+	// A first token that opens an aside (a parenthesis, bracket or quote)
+	// starts prose, not a declaration, even when a path follows the mark.
+	if open, _ := utf8.DecodeRuneInString(first); strings.ContainsRune("([{\"'“‘«", open) || !ownedPlainTokenIsPath(first) {
+		return nil
+	}
+	return []string{diffOwnedPlainToken(first)}
+}
+
 // ownedRootEntryExists reports whether the reader's root carries an entry of
 // exactly this name: the live tree it resolved, plus the exact root names it
 // recorded at dispatch (recordedRoots). root is the declared worktree a reader
@@ -1297,7 +1323,7 @@ func ownedItemLintTokens(line, root string) ([]string, bool) {
 		for _, m := range matches {
 			tokens = append(tokens, m[1])
 		}
-		return OwnedQuotedPaths(item, tokens, root, nil), false
+		return OwnedItemPaths(item, tokens, root, nil), false
 	}
 	return OwnedPlainPaths(item), false
 }
@@ -1321,7 +1347,7 @@ func OwnedSectionDeclaresScope(lines []string, root string) bool {
 			for _, m := range matches {
 				tokens = append(tokens, m[1])
 			}
-			if len(OwnedQuotedPaths(item, tokens, root, nil)) > 0 {
+			if len(OwnedItemPaths(item, tokens, root, nil)) > 0 {
 				return true
 			}
 			continue
@@ -1445,7 +1471,7 @@ func diffSectionNames(text, tree string, recordedRoots map[string]bool, goos, se
 				tokens = append(tokens, m[1])
 			}
 			if labeled {
-				tokens = OwnedQuotedPaths(item, tokens, tree, recordedRoots)
+				tokens = OwnedItemPaths(item, tokens, tree, recordedRoots)
 			}
 			for _, token := range tokens {
 				push(token)
