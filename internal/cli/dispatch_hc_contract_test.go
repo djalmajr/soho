@@ -133,7 +133,7 @@ func TestDispatchHcAmendBusyPreservesAttribution(t *testing.T) {
 		{Argv: []string{"send"}, ArgvPrefix: true, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`},
 	}...))
 	old := filepath.Join(f.sd, "reports", "previous.md")
-	pointer := []byte(fmt.Sprintf(`{"version":1,"task_report":%q,"current":%q,"history":[],"role":"implementer","pane":"t7"}`, old, old) + "\n")
+	pointer := taskPointerFixture(t, old)
 	path := taskreport.TaskReportPointerPath(f.sd, "worker")
 	if err := os.WriteFile(path, pointer, 0o600); err != nil {
 		t.Fatal(err)
@@ -777,7 +777,7 @@ func TestDispatchHcBusyQueueRefusalAndSendError(t *testing.T) {
 				t.Fatal(err)
 			}
 			old := filepath.Join(f.sd, "reports", "previous.md")
-			pointer := []byte(fmt.Sprintf(`{"version":1,"task_report":%q,"current":%q,"history":[],"role":"implementer","pane":"t7"}`, old, old) + "\n")
+			pointer := taskPointerFixture(t, old)
 			ptr := taskreport.TaskReportPointerPath(f.sd, "worker")
 			if err := os.WriteFile(ptr, pointer, 0600); err != nil {
 				t.Fatal(err)
@@ -816,6 +816,21 @@ func TestDispatchHcBusyQueueRefusalAndSendError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// taskPointerFixture writes a task pointer as the CLI does, with the report
+// path JSON-encoded (a literal U+00A0 or backslash from TMPDIR stays literal
+// where %q would escape it).
+func taskPointerFixture(t *testing.T, report string) []byte {
+	t.Helper()
+	var path bytes.Buffer
+	enc := json.NewEncoder(&path)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(report); err != nil {
+		t.Fatal(err)
+	}
+	quoted := strings.TrimSuffix(path.String(), "\n")
+	return []byte(`{"version":1,"task_report":` + quoted + `,"current":` + quoted + `,"history":[],"role":"implementer","pane":"t7"}` + "\n")
 }
 
 func TestDispatchR560Review(t *testing.T) {

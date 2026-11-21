@@ -109,7 +109,15 @@ func TestDispatchHcBusyAmendLeavesAcceptedWaitUntouched(t *testing.T) {
 	if err != nil || !bytes.Equal(ptrBefore, ptrAfter) {
 		t.Fatalf("busy amendment changed the task pointer: %q (err %v)", ptrAfter, err)
 	}
-	sidecars, err := filepath.Glob(filepath.Join(f.sd, "briefs", "worker-*.dispatch.json"))
+	// ReadDir, not Glob: a literal backslash or bracket in the temporary
+	// directory would be read as a pattern escape.
+	var sidecars []string
+	entries, err := os.ReadDir(filepath.Join(f.sd, "briefs"))
+	for _, entry := range entries {
+		if name := entry.Name(); strings.HasPrefix(name, "worker-") && strings.HasSuffix(name, ".dispatch.json") {
+			sidecars = append(sidecars, filepath.Join(f.sd, "briefs", name))
+		}
+	}
 	if err != nil || len(sidecars) != 2 {
 		t.Fatalf("attempt sidecars=%#v (err %v), want the accepted dispatch and the refused amendment", sidecars, err)
 	}

@@ -635,8 +635,19 @@ func TestDispatchHcUnknownCapabilityZeroSend(t *testing.T) {
 // briefs dir (one dispatch, one composed brief).
 func composedStampOf(f *dispatchHcFixture, t *testing.T) string {
 	t.Helper()
-	glob := filepath.Join(f.sd, "briefs", "worker-*.md")
-	files, err := filepath.Glob(glob)
+	entries, err := os.ReadDir(filepath.Join(f.sd, "briefs"))
+	var files []string
+	for _, entry := range entries {
+		name := entry.Name()
+		// Every matching entry counts, as Glob counted them; a lone match
+		// that is a directory is refused below.
+		if strings.HasPrefix(name, "worker-") && strings.HasSuffix(name, ".md") {
+			files = append(files, name)
+			if entry.IsDir() {
+				t.Fatalf("composed brief %q is a directory", name)
+			}
+		}
+	}
 	if err != nil || len(files) != 1 {
 		t.Fatalf("composed briefs = %#v (err %v), want exactly one", files, err)
 	}
