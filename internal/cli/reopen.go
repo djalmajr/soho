@@ -154,11 +154,9 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		spawnArgs = append(spawnArgs, "--")
 		spawnArgs = append(spawnArgs, strings.Fields(native)...)
 	}
-	if kindOverride != "" {
-		spawn.PreflightFreshSpawnWithLaneKindOverride(spawnArgs, ctx, env, cwd)
-	} else {
-		spawn.PreflightFreshSpawn(spawnArgs, ctx, env, cwd)
-	}
+	// Reopen only reuses the recorded name; its spawn half is marked so the
+	// naming advisory for a new explicit --name does not fire here.
+	spawn.PreflightFreshSpawnReopen(spawnArgs, ctx, env, cwd, kindOverride != "")
 
 	releaseArgs := []string{agent, "--close"}
 	if force {
@@ -274,11 +272,7 @@ func spawnReopenedWorker(agent, pane, briefPath string, redispatch bool, spawnAr
 		}
 		panic(value)
 	}()
-	if laneOverride {
-		spawn.CmdSpawnWithLaneKindOverride(spawnArgs, ctx, env, cwd)
-	} else {
-		spawn.CmdSpawn(spawnArgs, ctx, env, cwd)
-	}
+	spawn.CmdSpawnReopen(spawnArgs, ctx, env, cwd, laneOverride)
 }
 
 // reopenRecoveryCommand rebuilds the spawn the reopen would have run after

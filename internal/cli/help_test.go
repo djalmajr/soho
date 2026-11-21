@@ -8,7 +8,7 @@ import (
 func TestCommandHelpFirstPositionOnly(t *testing.T) {
 	env, cwd := commandFixture(t)
 
-	const spawnHelp = "  soho spawn <role> [--name N] [--kind K] [--direction right|down]\n" +
+	const spawnHelp = "  soho spawn <role> [--name N] [--card KEY] [--kind K] [--direction right|down]\n" +
 		"                      [--ratio F] [--cwd DIR] [--pane ID] [--timeout MS]\n" +
 		"                      [--effort low|medium|high|xhigh|max] [--model M]\n" +
 		"                      [--approvals ask|edits|auto|full|unsandboxed] [--mcp inherit|none|a,b] [--reuse|--fresh]\n" +

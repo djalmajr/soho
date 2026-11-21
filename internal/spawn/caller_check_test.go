@@ -196,7 +196,7 @@ func TestCmdSpawnCallerPaneCheck(t *testing.T) {
 		herdr.ResetCallerCheck()
 		processInfoCalls := stubCallerProcessInfo(t)
 		env, _, cwd, bin := callerSpawnFixture(t, freshSpawnRules(), forkedPS())
-		code, _, errOut := runSpawnCLI(t, env, cwd, []string{"worker", "--pane", "w0test:p0a", "--name", "worker"})
+		code, _, errOut := runSpawnCLI(t, env, cwd, []string{"worker", "--pane", "w0test:p0a", "--name", "soh467-impl"})
 		if *processInfoCalls != 1 {
 			t.Fatalf("in-memory process-info calls=%d want 1; fake process startup dependency returned", *processInfoCalls)
 		}
@@ -224,7 +224,7 @@ func TestCmdSpawnCallerPaneCheck(t *testing.T) {
 		processInfoCalls := stubCallerProcessInfo(t)
 		env, _, cwd, bin := callerSpawnFixture(t, freshSpawnRules(), forkedPS())
 		env["SOHO_CALLER_CHECK"] = "warn"
-		code, stdout, errOut := runSpawnCLI(t, env, cwd, []string{"worker", "--pane", "w0test:p0a", "--name", "worker"})
+		code, stdout, errOut := runSpawnCLI(t, env, cwd, []string{"worker", "--pane", "w0test:p0a", "--name", "soh467-impl"})
 		if *processInfoCalls != 1 {
 			t.Fatalf("in-memory process-info calls=%d want 1; fake process startup dependency returned", *processInfoCalls)
 		}
@@ -247,7 +247,7 @@ func TestCmdSpawnCallerPaneCheck(t *testing.T) {
 		processInfoCalls := stubCallerProcessInfo(t)
 		env, _, cwd, bin := callerSpawnFixture(t, freshSpawnRules(), forkedPS())
 		env["SOHO_CALLER_CHECK"] = "off"
-		code, stdout, errOut := runSpawnCLI(t, env, cwd, []string{"worker", "--pane", "w0test:p0a", "--name", "worker"})
+		code, stdout, errOut := runSpawnCLI(t, env, cwd, []string{"worker", "--pane", "w0test:p0a", "--name", "soh467-impl"})
 		if *processInfoCalls != 0 {
 			t.Fatalf("off made %d in-memory process-info calls", *processInfoCalls)
 		}

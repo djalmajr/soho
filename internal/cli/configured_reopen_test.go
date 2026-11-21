@@ -240,7 +240,7 @@ func TestConfiguredReopenNormalSpawnFrictionUnchanged(t *testing.T) {
 	var out, stderr bytes.Buffer
 	platform.Stdout, platform.Stderr = &out, &stderr
 	defer func() { platform.Stdout, platform.Stderr = oldOut, oldErr }()
-	code := Run([]string{"spawn", "implementer", "--kind", "opencode", "--name", "replacement", "--model", "provider/model", "--fresh", "--force"}, f.env)
+	code := Run([]string{"spawn", "implementer", "--kind", "opencode", "--name", "soh467-impl", "--model", "provider/model", "--fresh", "--force"}, f.env)
 	const message = "launch profile: inline configuration is not a single non-null JSON object"
 	if code != 2 || out.Len() != 0 || stderr.String() != "soho: "+message+"\n" {
 		t.Fatalf("normal spawn exit=%d out=%q stderr=%q", code, out.String(), stderr.String())
