@@ -390,7 +390,7 @@ func TestMutationCopy(t *testing.T) {
 			t.Fatal("the created destination was not removed for a refused link")
 		}
 		code, out, errOut = runMutationCopyCmd(t, f, f.root, nil, "--source", f.source, "--dest", missing, "--link", "../up="+deps)
-		if code != 2 || !strings.Contains(errOut, "refusing link") || !strings.Contains(errOut, "'..'") {
+		if code != 2 || !strings.Contains(errOut, "refusing link") || !strings.Contains(errOut, "a link above the copy needs the automatic placement (omit --dest)") {
 			t.Fatalf("escaping relpath: code=%d out=%q err=%q", code, out, errOut)
 		}
 		code, out, errOut = runMutationCopyCmd(t, f, f.root, nil, "--source", f.source, "--dest", missing, "--link", "/abs="+deps)

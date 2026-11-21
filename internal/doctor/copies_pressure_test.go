@@ -49,10 +49,14 @@ func TestDoctorCopiesPressureListing(t *testing.T) {
 
 	for i := 1; i <= 6; i++ {
 		p := filepath.Join(parent, fmt.Sprintf("soho-mutation-%d", i))
-		if err := os.Mkdir(p, 0700); err != nil {
+		payload := p
+		if i == 6 {
+			payload = filepath.Join(p, "group", "worktree")
+		}
+		if err := os.MkdirAll(payload, 0700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(p, "data"), []byte(strings.Repeat("x", i)), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(payload, "data"), []byte(strings.Repeat("x", i)), 0600); err != nil {
 			t.Fatal(err)
 		}
 		markerProject := project
@@ -99,6 +103,9 @@ func TestDoctorCopiesPressureListing(t *testing.T) {
 	}
 	if strings.Contains(out, registered) || strings.Contains(out, filepath.Join(parent, "soho-mutation-1")) || strings.Contains(out, filepath.Join(parent, "soho-mutation-2")) || !strings.Contains(out, "6 B  "+filepath.Join(parent, "soho-mutation-6")+"  this project") || !strings.Contains(out, "other project") {
 		t.Fatalf("incorrect entries: %s", out)
+	}
+	if strings.Contains(out, filepath.Join("group", "worktree")) {
+		t.Fatalf("doctor listed the nested worktree instead of the lifecycle root: %s", out)
 	}
 }
 
