@@ -319,8 +319,9 @@ func metricsMarkerCount(text, marker string) int {
 		markerRE, anyMarker = metricsSkippedMarker, metricsAnySkipped
 	}
 	count := 0
+	outside := reportscan.OutsideRuledOutFlags(text)
 	inFence, fenceChar, fenceLen := false, byte(0), 0
-	for _, line := range strings.Split(text, "\n") {
+	for index, line := range strings.Split(text, "\n") {
 		if open := metricsFenceOpen.FindStringSubmatch(line); !inFence && open != nil {
 			inFence, fenceChar, fenceLen = true, open[1][0], len(open[1])
 			continue
@@ -329,6 +330,9 @@ func metricsMarkerCount(text, marker string) int {
 			if close := metricsFenceClose.FindStringSubmatch(line); close != nil && close[1][0] == fenceChar && len(close[1]) >= fenceLen {
 				inFence = false
 			}
+			continue
+		}
+		if !outside[index] {
 			continue
 		}
 		line = metricsLower(line)
