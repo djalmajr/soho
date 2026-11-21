@@ -94,67 +94,28 @@ func runLaneKindFlag(t *testing.T, env platform.Env, bin, state string, argv ...
 	return laneKindFlagRun{code, out.String(), errOut.String(), acts, string(roster)}
 }
 
-const laneKindFlagText = "spawn: role 'scouter' runs in lane 'build', whose kind is pi; --kind codex would put a codex worker in it and block the lane's next spawns. Spawn with --kind pi, change lane.build.kind, or set SOHO_LANES=off for this spawn to open it outside the lanes."
-
-// DJA-397 through `soho spawn`: exit 13, the JSON line and the message exact,
-// no pane or agent opened, the roster file untouched, and the next spawn of
-// the lane's own kind unchanged.
-func TestSpawnKindFlagDifferentFromTheLaneKindIsRefusedBeforeAnyPane(t *testing.T) {
+func TestSpawnKindFlagDifferentFromTheGroupKindStartsTheWorker(t *testing.T) {
 	env, bin, state := laneKindFlagEnv(t)
-	before, _ := os.ReadFile(filepath.Join(state, "ws", "agents.tsv"))
 	r := runLaneKindFlag(t, env, bin, state, "spawn", "scouter", "--kind", "codex")
-	if r.code != 13 {
-		t.Fatalf("exit=%d, want 13\nstdout=%q\nstderr=%q", r.code, r.stdout, r.stderr)
-	}
-	wantJSON := `{"status":"kind-mismatch","lane":"build","role":"scouter","lane_kind":"pi","requested_kind":"codex"}` + "\n"
-	if r.stdout != wantJSON {
-		t.Fatalf("stdout=%q\nwant   %q", r.stdout, wantJSON)
-	}
-	wantErr := "soho: warning: " + laneKindFlagText + "\n"
-	if strings.Count(r.stderr, wantErr) != 1 || !strings.HasSuffix(r.stderr, wantErr) {
-		t.Fatalf("stderr=%q\nwant it to end with %q once", r.stderr, wantErr)
-	}
-	if len(r.acts) != 0 {
-		t.Fatalf("herdr acted before the refusal: %v", r.acts)
-	}
-	if r.roster != string(before) {
-		t.Fatalf("the roster changed\nbefore:\n%s\nafter:\n%s", before, r.roster)
-	}
-
-	env, bin, state = laneKindFlagEnv(t)
-	next := runLaneKindFlag(t, env, bin, state, "spawn", "scouter")
-	if next.code != 0 || !spawnJSONHasFieldCLI(t, next.stdout, `"kind": "pi"`) || len(next.acts) == 0 {
-		t.Fatalf("the next spawn of the lane's kind is not the normal path: exit=%d stdout=%q stderr=%q acts=%v", next.code, next.stdout, next.stderr, next.acts)
+	if r.code != 0 || !spawnJSONHasFieldCLI(t, r.stdout, `"kind": "codex"`) || len(r.acts) == 0 || !strings.Contains(r.roster, "\tcodex\tscouter\t") {
+		t.Fatalf("exit=%d stdout=%q stderr=%q actions=%v roster=%q", r.code, r.stdout, r.stderr, r.acts, r.roster)
 	}
 }
 
-// DJA-397 through `soho run`, which spawns first: the same refusal, the same
-// exit and message, and no pane or agent opened. run keeps the spawn JSON in
-// a buffer it drops when the spawn dies, so the refusal's JSON line is not on
-// run's stdout (the same for every spawn failure that prints JSON, such as
-// the existing kind-mismatch).
-func TestRunKindFlagDifferentFromTheLaneKindIsRefusedBeforeAnyPane(t *testing.T) {
+func TestRunKindFlagDifferentFromTheGroupKindStartsTheWorker(t *testing.T) {
 	env, bin, state := laneKindFlagEnv(t)
 	brief := filepath.Join(t.TempDir(), "brief.md")
 	if err := os.WriteFile(brief, []byte("# brief\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	before, _ := os.ReadFile(filepath.Join(state, "ws", "agents.tsv"))
 	r := runLaneKindFlag(t, env, bin, state, "run", "scouter", brief, "--kind", "codex")
-	if r.code != 13 {
-		t.Fatalf("exit=%d, want 13\nstdout=%q\nstderr=%q", r.code, r.stdout, r.stderr)
+	started := false
+	for _, act := range r.acts {
+		started = started || strings.HasPrefix(act, "agent start ")
 	}
-	wantErr := "soho: warning: " + laneKindFlagText + "\n"
-	if strings.Count(r.stderr, wantErr) != 1 || !strings.HasSuffix(r.stderr, wantErr) {
-		t.Fatalf("stderr=%q\nwant it to end with %q once", r.stderr, wantErr)
+	if r.code == 13 || !started || !strings.Contains(r.roster, "\tcodex\tscouter\t") {
+		t.Fatalf("exit=%d stdout=%q stderr=%q actions=%v roster=%q", r.code, r.stdout, r.stderr, r.acts, r.roster)
 	}
-	if len(r.acts) != 0 {
-		t.Fatalf("herdr acted before the refusal: %v", r.acts)
-	}
-	if r.roster != string(before) {
-		t.Fatalf("the roster changed\nbefore:\n%s\nafter:\n%s", before, r.roster)
-	}
-	t.Logf("run stdout on the refusal: %q", r.stdout)
 }
 
 // DJA-397 review 2: a role listed in the lane without a role file is still the

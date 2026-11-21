@@ -9,6 +9,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/spawn"
 	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
@@ -163,21 +164,21 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 			t.Fatalf("output=%s kinds=%v", out.String(), usedKinds(ctx, env, root))
 		}
 	})
-	t.Run(`doctorLaneWarnings: a lane effort from a lower layer than the lane kind is reported as ok`, func(t *testing.T) { // JS: "doctorLaneWarnings: a lane effort from a lower layer than the lane kind is reported as ok"
-		// Mutation captured: omitting layer precedence hides the ignored effort decision.
+	t.Run(`doctorLaneWarnings: a group effort from a lower layer still applies`, func(t *testing.T) { // JS: "doctorLaneWarnings: a group effort from a lower layer still applies"
+		// Group effort and kind use independent keys.
 		env, root := tm6DoctorEnv(t)
 		ctx := tm6DoctorConfig(map[string]string{"panes": "3", "lane_review_kind": "codex", "lane_review_effort": "low"}, "project")
 		ctx.Entries["lane_review_effort"] = core.ConfigEntry{Value: "low", Source: "user"}
 		var out strings.Builder
 		doctorLaneWarnings(ctx, env, root, &Say{Out: &out})
-		if !strings.Contains(out.String(), "ignored lane effort low from user (another kind)") {
+		if got := core.ResolveRoleSettings("reviewer", ctx, env, root, core.RoleFlags{}); got.Effort != "low" || strings.Contains(out.String(), "ignored lane effort") {
 			t.Fatalf("output=%s", out.String())
 		}
 	})
 	t.Run(`doctorDiscardedModels: a role model from a layer below the role kind warns (exact text, both directions)`, func(t *testing.T) { // JS: "doctorDiscardedModels: a role model from a layer below the role kind warns (exact text, both directions)"
 		// Mutation captured: reversing config-layer precedence reports the kept model and drops the ignored one.
 		env, root := tm6DoctorEnv(t)
-		ctx := tm6DoctorConfig(map[string]string{"lanes": "off", "role_reviewer_model": "opus", "role_reviewer_kind": "codex", "role_designer_kind": "claude", "role_designer_model": "sonnet"}, "user")
+		ctx := tm6DoctorConfig(map[string]string{"lanes": "off", "role_reviewer_model": "opus", "role_reviewer_kind": "codex", "role_designer_kind": "pi", "role_designer_model": "sonnet"}, "user")
 		ctx.Entries["role_reviewer_kind"] = core.ConfigEntry{Value: "codex", Source: "project"}
 		ctx.Entries["role_designer_model"] = core.ConfigEntry{Value: "sonnet", Source: "project"}
 		var out strings.Builder
@@ -201,7 +202,7 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 		}
 		out.Reset()
 		doctorDiscardedModels(ctx, env, root, &Say{Out: &out})
-		if !strings.Contains(out.String(), "lane.review.model=opus (user)") {
+		if strings.Contains(out.String(), "lane.review.model=opus (user)") {
 			t.Fatalf("output=%s", out.String())
 		}
 	})
@@ -242,10 +243,10 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 			}
 		})
 	})
-	t.Run(`doctorModelPairs: a lane model without a lane kind is judged against each role kind`, func(t *testing.T) { // JS: "doctorModelPairs: a lane model without a lane kind is judged against each role kind"
-		// Mutation captured: skipping a lane model without its own kind loses the role-specific validation.
+	t.Run(`doctorModelPairs: a group model is checked only for members that inherit it`, func(t *testing.T) { // JS: "doctorModelPairs: a group model is checked only for members that inherit it"
+		// Only the role that inherits the model should be reported.
 		env, root := tm6DoctorEnv(t)
-		ctx := tm6DoctorConfig(map[string]string{"panes": "4", "lane_review_model": "not-a-model", "role_reviewer_kind": "grok"}, "project")
+		ctx := tm6DoctorConfig(map[string]string{"panes": "4", "lane_review_roles": "reviewer,validator", "lane_review_kind": "grok", "lane_review_model": "not-a-model", "role_validator_model": "grok-4"}, "project")
 		var out strings.Builder
 		bin := t.TempDir()
 		if _, err := fakecli.Install(t, bin, "grok", []fakecli.Rule{{AnyArgs: true, Stdout: "grok-4.7\ngrok-4\ngrok-3\n"}}); err != nil {
@@ -259,7 +260,7 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 		}
 		out.Reset()
 		doctorModelPairs(ctx, fakeEnv, root, &Say{Out: &out})
-		if !strings.Contains(out.String(), "lane 'review' model 'not-a-model'") {
+		if !strings.Contains(out.String(), "role 'reviewer' model 'not-a-model'") || strings.Contains(out.String(), "role 'validator'") {
 			t.Fatalf("lane model not judged against role kind: %s", out.String())
 		}
 		t.Run("an unavailable lane model listing skips unresolved warnings", func(t *testing.T) {
@@ -282,15 +283,20 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 			t.Fatalf("output=%s", out.String())
 		}
 	})
-	t.Run(`doctorLaneWarnings: per-role kind/model under a lane kind, divergent kinds, alignment warns`, func(t *testing.T) { // JS: "doctorLaneWarnings: per-role kind/model under a lane kind, divergent kinds, alignment warns"
-		// Mutation captured: suppressing lane conflicts or worker alignment removes the corresponding diagnostics.
+	t.Run(`doctorLaneWarnings: role overrides and divergent kinds still check capacity`, func(t *testing.T) { // JS: "doctorLaneWarnings: role overrides and divergent kinds still check capacity"
+		// Group capacity still depends on panes and membership.
 		env, root := tm6DoctorEnv(t)
 		ctx := tm6DoctorConfig(map[string]string{"panes": "4", "max_workers": "9", "lane_build_roles": "implementer,designer", "lane_build_kind": "grok", "role_implementer_kind": "codex", "role_designer_model": "opus", "lane_review_roles": "reviewer,security-reviewer", "role_reviewer_kind": "codex", "role_security_reviewer_kind": "claude"}, "project")
 		var out strings.Builder
 		doctorLaneWarnings(ctx, env, root, &Say{Out: &out})
-		for _, want := range []string{"role.implementer.kind is set", "role.designer.model is set", "max_workers=9 but the lanes hold", "roles disagree"} {
+		for _, want := range []string{"max_workers=9 but the lanes hold"} {
 			if !strings.Contains(out.String(), want) {
 				t.Fatalf("missing %q in %s", want, out.String())
+			}
+		}
+		for _, old := range []string{"role.implementer.kind is set", "role.designer.model is set", "roles disagree"} {
+			if strings.Contains(out.String(), old) {
+				t.Errorf("obsolete warning %q in %s", old, out.String())
 			}
 		}
 	})
@@ -320,7 +326,7 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 	})
 	t.Run(`doctor: the native args the current lane mode ignores (lanes on: role args; lanes off: lane args)`, func(t *testing.T) { // JS: "doctor: the native args the current lane mode ignores (lanes on: role args; lanes off: lane args)"
 		// Mutation captured: removing either branch leaves ignored native args unreported.
-		env, _ := tm6DoctorEnv(t)
+		env, root := tm6DoctorEnv(t)
 		for _, tc := range []struct {
 			values map[string]string
 			want   string
@@ -329,7 +335,7 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 			{map[string]string{"lanes": "off", "lane_review_args": "--flag"}, "lane.review.args is ignored"},
 		} {
 			var out strings.Builder
-			doctorLaneArgs(tm6DoctorConfig(tc.values, "project"), env, &Say{Out: &out})
+			doctorLaneArgs(tm6DoctorConfig(tc.values, "project"), env, root, &Say{Out: &out})
 			if !strings.Contains(out.String(), tc.want) {
 				t.Fatalf("missing %q in %s", tc.want, out.String())
 			}
@@ -525,4 +531,99 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 			t.Fatalf("numeric budget treated as invalid: %s", out)
 		}
 	})
+}
+
+func TestDoctorReportsLowerLayerRoleOverridesAsInformation(t *testing.T) {
+	env, root := tm6DoctorEnv(t)
+	ctx := tm6DoctorConfig(map[string]string{
+		"lanes": "on", "lane_build_roles": "implementer,designer", "lane_build_kind": "pi",
+		"lane_build_model": "group-model", "lane_build_effort": "high", "lane_build_approvals": "full",
+		"role_designer_kind": "pi",
+	}, "project")
+	for key, value := range map[string]string{
+		"role_implementer_kind": "codex", "role_designer_model": "role-model", "role_implementer_effort": "low", "role_implementer_approvals": "ask",
+	} {
+		ctx.Entries[key] = core.ConfigEntry{Value: value, Source: "user"}
+	}
+	out := tm6DoctorOutput(t, ctx, env, root)
+	for _, msg := range []string{
+		"doctor: role.implementer.kind=codex (user) overrides lane.build.kind=pi (project)",
+		"doctor: role.designer.model=role-model (user) overrides lane.build.model=group-model (project)",
+		"doctor: role.implementer.effort=low (user) overrides lane.build.effort=high (project)",
+		"doctor: role.implementer.approvals=ask (user) overrides lane.build.approvals=full (project)",
+	} {
+		if strings.Count(out, msg) != 1 || strings.Contains(out, "warn   "+msg) {
+			t.Errorf("want one informational %q in:\n%s", msg, out)
+		}
+	}
+	if strings.Contains(out, "role.designer.kind=pi (project) overrides") || strings.Contains(out, "the role asks for") || strings.Contains(out, "shares one kind") {
+		t.Fatalf("unexpected obsolete or same-layer message:\n%s", out)
+	}
+}
+
+func TestDoctorReportsGroupedFrontmatterModelDiscard(t *testing.T) {
+	for _, tc := range []struct {
+		name, laneKind, roleKind, laneModel, laneModels, roleModel, wantModel string
+		warn                                                                  bool
+	}{
+		{name: "different_group_kind", laneKind: "pi", wantModel: "kind-default", warn: true},
+		{name: "same_group_kind", laneKind: "grok", wantModel: "fixture-front"},
+		{name: "different_role_kind_in_empty_group", roleKind: "pi", wantModel: "kind-default", warn: true},
+		{name: "frontmatter_kind_in_empty_group", wantModel: "fixture-front"},
+		{name: "replacement_role_model", laneKind: "pi", roleModel: "role-model", wantModel: "role-model"},
+		{name: "replacement_group_model", laneKind: "pi", laneModel: "group-model", wantModel: "group-model"},
+		{name: "replacement_group_model_list", laneKind: "pi", laneModels: "first,second", wantModel: "first"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, root := tm6DoctorEnv(t)
+			env["XDG_CONFIG_HOME"] = env["HOME"]
+			file := filepath.Join(env["SOHO_ROLES"], "implementer.md")
+			if err := os.WriteFile(file, []byte("---\nkind: grok\nmodel: fixture-front\n---\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx := tm6DoctorConfig(map[string]string{
+				"lanes": "on", "lane_build_roles": "implementer", "lane_build_kind": tc.laneKind,
+				"role_implementer_kind": tc.roleKind, "lane_build_model": tc.laneModel, "lane_build_models": tc.laneModels,
+				"role_implementer_model": tc.roleModel, "model_pi_worker": "kind-default",
+			}, "project")
+			res := core.ResolveRoleSettings("implementer", ctx, env, root, core.RoleFlags{})
+			out := tm6DoctorOutput(t, ctx, env, root)
+			count := strings.Count(out, "warn   config: role file model 'fixture-front' of 'implementer' is ignored")
+			wantCount := 0
+			if tc.warn {
+				wantCount = 1
+			}
+			if res.ModelSpec != tc.wantModel || count != wantCount {
+				t.Fatalf("kind=%s model=%q warnings=%d, want model=%q warnings=%d", res.Kind, res.ModelSpec, count, tc.wantModel, wantCount)
+			}
+		})
+	}
+}
+
+func TestDoctorRecommendsLaneArgsOnlyWhenRoleKindMatches(t *testing.T) {
+	for _, tc := range []struct {
+		name, laneKind, wantArgs string
+	}{
+		{"matching", "grok", "--scope-probe"},
+		{"different", "pi", ""},
+		{"unset_lane_kind", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, root := tm6DoctorEnv(t)
+			env["XDG_CONFIG_HOME"] = env["HOME"]
+			ctx := tm6DoctorConfig(map[string]string{
+				"lanes": "on", "lane_build_roles": "implementer", "lane_build_kind": tc.laneKind,
+				"role_implementer_kind": "grok", "role_implementer_args": "--scope-probe",
+			}, "project")
+			out := tm6DoctorOutput(t, ctx, env, root)
+			if !strings.Contains(out, "role.implementer.args is ignored") || strings.Contains(out, "set lane.build.args instead") != (tc.wantArgs != "") {
+				t.Fatalf("unexpected advice for lane kind %q:\n%s", tc.laneKind, out)
+			}
+			ctx.Entries["lane_build_args"] = core.ConfigEntry{Value: "--scope-probe", Source: "project"}
+			res := core.ResolveRoleSettings("implementer", ctx, env, root, core.RoleFlags{})
+			if got := spawn.ConfigNativeArgs(res.Kind, res.Lane, "implementer", ctx, env, root, nil); got != tc.wantArgs {
+				t.Fatalf("effective kind=%q, lane kind=%q: args=%q, want %q", res.Kind, tc.laneKind, got, tc.wantArgs)
+			}
+		})
+	}
 }

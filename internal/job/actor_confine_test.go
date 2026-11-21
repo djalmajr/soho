@@ -243,12 +243,11 @@ func TestActorConfineWorkspaceMode(t *testing.T) {
 	agentEnv["HERDR_WORKSPACE_ID"] = acfWorkspace
 	ctx := core.LoadConfig(agentEnv, f.co)
 	rs := core.ResolveRoleSettings("implementer", &ctx, agentEnv, f.co, core.RoleFlags{})
-	// lane.build.kind is the session's; the starter's user-layer role model
-	// was below it and discarded, so the resolved model is the pi default
-	// (none) on both sides: the snapshot adds no role model.
+	// The starter's user role model remains effective under the session
+	// lane kind and is pinned for the actor.
 	sctx := core.LoadConfigFor(agentEnv, f.co, core.UserSelection{Base: base})
 	srs := core.ResolveRoleSettings("implementer", &sctx, agentEnv, f.co, core.RoleFlags{})
-	if rs.Kind != "pi" || rs.ModelSpec != srs.ModelSpec || rs.Effort != srs.Effort {
+	if rs.Kind != "pi" || rs.ModelSpec != "model-a" || rs.ModelSpec != srs.ModelSpec || rs.Effort != srs.Effort {
 		t.Fatalf("agents %+v, starter %+v", rs, srs)
 	}
 	if got := OwnCheckoutStore(agentEnv, filepath.Join(f.co, "README.md", ".."), f.id); got == nil || !sameEntryPath(got.Root, storeRoot) {

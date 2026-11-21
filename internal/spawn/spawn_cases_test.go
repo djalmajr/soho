@@ -1,7 +1,6 @@
 package spawn
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -508,6 +507,7 @@ func TestSpawnHelperJavaScriptCases(t *testing.T) {
 		if got := ConfigNativeArgs("grok", "", "worker", f.ctx, f.env, f.cwd, nil); got != "--kind --role" {
 			t.Fatalf("args=%q", got)
 		}
+		f.ctx.Entries["lane_build_kind"] = core.ConfigEntry{Value: "grok", Source: "project"}
 		f.ctx.Entries["lane_build_args"] = core.ConfigEntry{Value: "--lane", Source: "project"}
 		if got := ConfigNativeArgs("grok", "build", "worker", f.ctx, f.env, f.cwd, nil); got != "--kind --lane" {
 			t.Fatalf("lane args=%q", got)
@@ -810,11 +810,9 @@ func TestSpawnLaneJavaScriptCases(t *testing.T) {
 		f.ctx.Order = []string{"lane_build_roles"}
 		// The recorded session model differs from the requested default model.
 		f.roster(t, strings.Join([]string{"build", "p-build", "grok", "worker", "xai", "1", f.cwd, "now", "old-model", "ask", "worker", "build"}, "\t"))
-		code, message, calls := runCmdSpawnExpectError(t, f, []string{"worker"})
-		want := fmt.Sprintf("spawn: lane 'build' has no idle worker matching kind 'grok', model 'grok-4.7' and cwd '%s' (idle: 'build' runs grok old-model in %s); release it or raise the lane's panes", f.cwd, f.cwd)
-		if code != 13 || message != want {
-			t.Fatalf("exit=%d message=%q want %q calls=%#v", code, message, want, calls)
-		}
+		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker"})
+		assertGroupMismatch(t, code, stdout, stderr, "model differs (old-model vs grok-4.7)", `"session_model": "old-model"`, `"requested_model": "grok-4.7"`)
+		assertNoStart(t, calls)
 	})
 
 	t.Run("spawn: an explicit lane kind that matches the session is reused; a different CLI is 13", func(t *testing.T) {
@@ -941,10 +939,10 @@ func Test_init_sub_orchestrator_spawn_lazy_rename_keeps_name(t *testing.T) {
 
 func TestSpawnCriticalLaneMissingExecutableAndLaneKind(t *testing.T) {
 	// DJA-686: with a lane known and the executable missing, the PATH
-	// warning gains the 'soho setup --lane <lane>=<kind>' suggestion while
+	// warning names the configured source while
 	// the failure path (exit 4, pane kept) is unchanged. A user-written
 	// lane.critical.kind resolves the spawn kind for critical-implementer.
-	t.Run("spawn: critical-implementer without codex warns the lane suggestion and still fails 4", func(t *testing.T) {
+	t.Run("spawn: critical-implementer without codex warns the role file suggestion and still fails 4", func(t *testing.T) {
 		f := newSpawnFixture(t, []fakecli.Rule{
 			{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},
 			{Argv: []string{"agent", "start"}, ArgvPrefix: true, Stderr: `{"error":{"code":"timeout","message":"timed out"}}`, Code: 1},
@@ -954,7 +952,7 @@ func TestSpawnCriticalLaneMissingExecutableAndLaneKind(t *testing.T) {
 		configureSpawnFixture(t, &f)
 		delete(f.env, "SOHO_LANES")
 		code, _, stderr, _ := runCmdSpawn(t, f, []string{"critical-implementer", "--pane", "w0test:p0a", "--fresh"})
-		want := "soho: warning: executable 'codex' not found in PATH; herdr agent start may fail; choose another with 'soho setup --lane critical=<kind>'"
+		want := "soho: warning: executable 'codex' not found in PATH; install it or change kind in the role file for critical-implementer to select another assistant"
 		if code != 4 || !strings.Contains(stderr, want) {
 			t.Fatalf("exit=%d stderr=%q; want 4 with %q", code, stderr, want)
 		}
@@ -989,4 +987,32 @@ func TestSpawnCriticalLaneMissingExecutableAndLaneKind(t *testing.T) {
 			t.Fatalf("roster kind not claude: %q", roster)
 		}
 	})
+}
+
+func TestConfigNativeArgsAgainstGroupKind(t *testing.T) {
+	f := newSpawnFixture(t, nil)
+	f.env["SOHO_LANES"] = "on"
+	f.env["SOHO_LANE_BUILD_ROLES"] = "worker"
+	f.env["SOHO_LANE_BUILD_KIND"] = "pi"
+	f.env["SOHO_LANE_BUILD_ARGS"] = "--group"
+	f.env["SOHO_ROLE_WORKER_KIND"] = "grok"
+	f.env["SOHO_ROLE_WORKER_ARGS"] = "--role"
+	f.env["SOHO_ARGS_GROK"] = "--kind"
+	if got := ConfigNativeArgs("grok", "build", "worker", f.ctx, f.env, f.cwd, nil); got != "--kind" {
+		t.Fatalf("other kind native args = %q, want --kind", got)
+	}
+	if got := ConfigNativeArgs("pi", "build", "worker", f.ctx, f.env, f.cwd, nil); got != "--group" {
+		t.Fatalf("matching kind native args = %q, want --group", got)
+	}
+}
+
+func TestSkillDocumentsGroupNativeArgsKindScope(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "skills", "soho", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "lane.<name>.args (native args for workers whose kind matches the lane's kind)"
+	if !strings.Contains(strings.ReplaceAll(string(body), "`", ""), want) {
+		t.Fatalf("missing group native-args description %q", want)
+	}
 }

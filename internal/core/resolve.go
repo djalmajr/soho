@@ -10,21 +10,24 @@ import (
 )
 
 type RoleFlags struct{ Kind, Model, Effort, Approvals string }
+
+// RoleSettings describes the effective values before CLI-specific normalization.
 type RoleSettings struct {
-	Lane          string
-	Kind          string
-	KindFrom      string
-	ModelSpec     string
-	ModelFrom     string
-	Effort        string
-	EffortFrom    string
-	Approvals     string
-	ApprovalsFrom string
-	KindLayer     int
+	Lane                      string
+	Kind                      string
+	KindFrom                  string
+	ModelSpec                 string
+	ModelFrom                 string
+	Effort                    string
+	EffortFrom                string
+	Approvals                 string
+	ApprovalsFrom             string
+	LaneModels                []string // Populated only when the lane list supplies ModelSpec.
+	DiscardedFrontmatterModel string   // Grouped role model excluded by a different effective kind.
 }
 
-// ResolvedRoleKind is the spawn default: role config (any layer), else role frontmatter.
-// It intentionally does not consult lane configuration.
+// ResolvedRoleKind reads a role's own kind from configuration or frontmatter.
+// Call ResolveRoleSettings for a worker that can inherit lane defaults.
 func ResolvedRoleKind(role string, ctx *Config, env platform.Env, cwd string) string {
 	key := "role_" + strings.ReplaceAll(role, "-", "_") + "_kind"
 	if value := Cfg(ctx, key, "", env); value != "" {
@@ -36,142 +39,125 @@ func ResolvedRoleKind(role string, ctx *Config, env platform.Env, cwd string) st
 	return ""
 }
 
-func ResolveRoleSettings(role string, ctx *Config, env platform.Env, cwd string, flags RoleFlags) RoleSettings {
-	rk := strings.ReplaceAll(role, "-", "_")
-	file := RoleFile(role, env, cwd)
-	front := func(key string) string {
-		if file == "" {
-			return ""
-		}
-		return FmGet(file, key)
+// roleOrLaneSetting resolves one configured override before any fallback. The
+// role and lane keys each retain their normal configuration layer precedence.
+func roleOrLaneSetting(role, lane, attr string, ctx *Config, env platform.Env) (string, string) {
+	if value, from := roleSetting(role, attr, ctx, env); value != "" {
+		return value, from
 	}
+	if lane != "" {
+		key := LaneKey(lane, attr)
+		if value := Cfg(ctx, key, "", env); value != "" {
+			return value, fmt.Sprintf("lane %s (%s)", lane, CfgSource(ctx, key, env))
+		}
+	}
+	return "", "default"
+}
+
+func roleSetting(role, attr string, ctx *Config, env platform.Env) (string, string) {
+	key := "role_" + strings.ReplaceAll(role, "-", "_") + "_" + attr
+	if value := Cfg(ctx, key, "", env); value != "" {
+		return value, fmt.Sprintf("role config (%s)", CfgSource(ctx, key, env))
+	}
+	return "", "default"
+}
+
+func ResolveRoleSettings(role string, ctx *Config, env platform.Env, cwd string, flags RoleFlags) RoleSettings {
+	file := RoleFile(role, env, cwd)
 	lane := ""
 	if LanesEnabled(ctx, env) {
 		lane = LaneOfRole(ctx, role, env)
 	}
-	kindLayer := SpawnKindLayer(ctx, role, lane, flags.Kind != "", env)
-	r := RoleSettings{Lane: lane, Kind: flags.Kind, KindFrom: "flag", ModelSpec: flags.Model, ModelFrom: "flag", Effort: flags.Effort, EffortFrom: "flag", Approvals: flags.Approvals, ApprovalsFrom: "flag", KindLayer: kindLayer}
-	if r.Kind == "" && lane != "" {
-		key := LaneKey(lane, "kind")
-		if v := LaneAttr(ctx, lane, "kind", nil, env); v != "" {
-			r.Kind = v
-			r.KindFrom = fmt.Sprintf("lane %s (%s)", lane, CfgSource(ctx, key, env))
-		}
-	}
+	r := RoleSettings{Lane: lane, Kind: flags.Kind, KindFrom: "flag", ModelSpec: flags.Model, ModelFrom: "flag", Effort: flags.Effort, EffortFrom: "flag", Approvals: flags.Approvals, ApprovalsFrom: "flag"}
 	if r.Kind == "" {
-		key := "role_" + rk + "_kind"
-		if v := Cfg(ctx, key, "", env); v != "" {
-			r.Kind = v
-			r.KindFrom = fmt.Sprintf("role config (%s)", CfgSource(ctx, key, env))
-		}
-	}
-	if r.Kind == "" {
-		if v := front("kind"); v != "" {
-			r.Kind = v
-			r.KindFrom = "role file"
-		}
-	}
-	if r.Kind == "" {
-		r.KindFrom = "default"
-	}
-	if r.Effort == "" && lane != "" {
-		key := LaneKey(lane, "effort")
-		if v := LaneAttr(ctx, lane, "effort", &kindLayer, env); v != "" {
-			r.Effort = v
-			r.EffortFrom = fmt.Sprintf("lane %s (%s)", lane, CfgSource(ctx, key, env))
+		r.Kind, r.KindFrom = roleOrLaneSetting(role, lane, "kind", ctx, env)
+		if r.Kind == "" {
+			if value := FmGet(file, "kind"); value != "" {
+				r.Kind, r.KindFrom = value, "role file"
+			}
 		}
 	}
 	if r.Effort == "" {
-		key := "role_" + rk + "_effort"
-		if v := Cfg(ctx, key, "", env); v != "" {
-			r.Effort = v
-			r.EffortFrom = fmt.Sprintf("role config (%s)", CfgSource(ctx, key, env))
+		r.Effort, r.EffortFrom = resolveRoleEffort(role, lane, r.Kind, file, ctx, env)
+	}
+	if r.ModelSpec == "" {
+		r.ModelSpec, r.ModelFrom, r.LaneModels, r.DiscardedFrontmatterModel = resolveRoleModel(role, lane, r.Kind, file, flags.Kind != "", ctx, env)
+	}
+	if r.Approvals == "" {
+		r.Approvals, r.ApprovalsFrom = roleOrLaneSetting(role, lane, "approvals", ctx, env)
+		if r.Approvals == "" {
+			if value := FmGet(file, "approvals"); value != "" {
+				r.Approvals, r.ApprovalsFrom = value, "role file"
+			} else if value := Cfg(ctx, "approvals", "", env); value != "" {
+				r.Approvals, r.ApprovalsFrom = value, fmt.Sprintf("approvals (%s)", CfgSource(ctx, "approvals", env))
+			} else {
+				r.Approvals = "auto"
+			}
 		}
 	}
-	if r.Effort == "" {
-		key := "effort_" + r.Kind
-		if v := Cfg(ctx, key, "", env); v != "" {
-			r.Effort = v
-			r.EffortFrom = fmt.Sprintf("effort.%s (%s)", r.Kind, CfgSource(ctx, key, env))
-		}
+	return r
+}
+
+// ConfiguredRoleEffort resolves effort for a worker whose kind is already
+// known, including workers opened before the current configuration.
+func ConfiguredRoleEffort(role, lane, kind string, ctx *Config, env platform.Env, cwd string) string {
+	effort, _ := resolveRoleEffort(role, lane, kind, RoleFile(role, env, cwd), ctx, env)
+	return effort
+}
+
+func resolveRoleEffort(role, lane, kind, file string, ctx *Config, env platform.Env) (string, string) {
+	if value, from := roleOrLaneSetting(role, lane, "effort", ctx, env); value != "" {
+		return value, from
 	}
-	if r.Effort == "" {
-		if v := front("effort"); v != "" {
-			r.Effort = v
-			r.EffortFrom = "role file"
-		}
+	key := "effort_" + kind
+	if value := Cfg(ctx, key, "", env); value != "" {
+		return value, fmt.Sprintf("effort.%s (%s)", kind, CfgSource(ctx, key, env))
 	}
-	if r.Effort == "" {
-		r.EffortFrom = "default"
+	if value := FmGet(file, "effort"); value != "" {
+		return value, "role file"
+	}
+	return "", "default"
+}
+
+func resolveRoleModel(role, lane, kind, file string, kindFlag bool, ctx *Config, env platform.Env) (spec, from string, models []string, discardedFrontmatter string) {
+	if !kindFlag {
+		// Roles outside lanes keep their existing kind-layer rule.
+		roleModelKey := "role_" + strings.ReplaceAll(role, "-", "_") + "_model"
+		kindLayer := SpawnKindLayer(ctx, role, "", false, env)
+		if value, from := roleSetting(role, "model", ctx, env); value != "" && (lane != "" || CfgLayerRank(ctx, roleModelKey, env) >= kindLayer) {
+			return value, from, nil, ""
+		}
+		if lane != "" && kind == Cfg(ctx, LaneKey(lane, "kind"), "", env) {
+			if value, key, models := LaneModelConfig(ctx, lane, env); value != "" {
+				return value, fmt.Sprintf("lane %s (%s)", lane, CfgSource(ctx, key, env)), models, ""
+			}
+		}
+		frontKindMatches := kind == FmGet(file, "kind")
+		if lane == "" {
+			frontKindMatches = kindLayer == 0
+		}
+		if value := FmGet(file, "model"); value != "" {
+			if frontKindMatches {
+				return value, "role file", nil, ""
+			}
+			if lane != "" {
+				discardedFrontmatter = value
+			}
+		}
 	}
 	position := "worker"
 	if role == "sub-orchestrator" {
 		position = "orchestrator"
 	}
-	if r.ModelSpec == "" && lane != "" {
-		key := LaneKey(lane, "model")
-		if v := LaneAttr(ctx, lane, "model", &kindLayer, env); v != "" {
-			r.ModelSpec = v
-			r.ModelFrom = fmt.Sprintf("lane %s (%s)", lane, CfgSource(ctx, key, env))
+	for _, source := range []struct{ key, display string }{
+		{"model_" + kind + "_" + position, "model." + kind + "." + position},
+		{"model_" + kind, "model." + kind},
+	} {
+		if value := Cfg(ctx, source.key, "", env); value != "" {
+			return value, fmt.Sprintf("%s (%s)", source.display, CfgSource(ctx, source.key, env)), nil, discardedFrontmatter
 		}
 	}
-	roleModelKey := "role_" + rk + "_model"
-	if r.ModelSpec == "" {
-		v := Cfg(ctx, roleModelKey, "", env)
-		if v != "" && CfgLayerRank(ctx, roleModelKey, env) >= kindLayer {
-			r.ModelSpec = v
-			r.ModelFrom = fmt.Sprintf("role config (%s)", CfgSource(ctx, roleModelKey, env))
-		}
-	}
-	if r.ModelSpec == "" {
-		if v := front("model"); v != "" && kindLayer == 0 {
-			r.ModelSpec = v
-			r.ModelFrom = "role file"
-		}
-	}
-	modelSources := []struct{ key, display string }{{"model_" + r.Kind + "_" + position, "model." + r.Kind + "." + position}, {"model_" + r.Kind, "model." + r.Kind}}
-	for _, source := range modelSources {
-		if r.ModelSpec == "" {
-			if v := Cfg(ctx, source.key, "", env); v != "" {
-				r.ModelSpec = v
-				r.ModelFrom = fmt.Sprintf("%s (%s)", source.display, CfgSource(ctx, source.key, env))
-			}
-		}
-	}
-	if r.ModelSpec == "" {
-		r.ModelFrom = "default"
-	}
-	if r.Approvals == "" && lane != "" {
-		key := LaneKey(lane, "approvals")
-		if v := LaneAttr(ctx, lane, "approvals", nil, env); v != "" {
-			r.Approvals = v
-			r.ApprovalsFrom = fmt.Sprintf("lane %s (%s)", lane, CfgSource(ctx, key, env))
-		}
-	}
-	if r.Approvals == "" {
-		key := "role_" + rk + "_approvals"
-		if v := Cfg(ctx, key, "", env); v != "" {
-			r.Approvals = v
-			r.ApprovalsFrom = fmt.Sprintf("role config (%s)", CfgSource(ctx, key, env))
-		}
-	}
-	if r.Approvals == "" {
-		if v := front("approvals"); v != "" {
-			r.Approvals = v
-			r.ApprovalsFrom = "role file"
-		}
-	}
-	if r.Approvals == "" {
-		v := Cfg(ctx, "approvals", "", env)
-		if v != "" {
-			r.Approvals = v
-			r.ApprovalsFrom = fmt.Sprintf("approvals (%s)", CfgSource(ctx, "approvals", env))
-		} else {
-			r.Approvals = "auto"
-			r.ApprovalsFrom = "default"
-		}
-	}
-	return r
+	return "", "default", nil, discardedFrontmatter
 }
 
 func RoleTimeoutMs(role string, ctx *Config, env platform.Env, cwd string) int64 {

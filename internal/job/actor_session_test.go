@@ -80,12 +80,8 @@ const asrSnapshottedStart = asrEndSession +
 	"role.implementer.effort=low\n" +
 	"max_workers=5\n"
 
-// asrLanePinnedStart is asrEndSession after the step-1 snapshot when the
-// agents' own configuration layers set the build lane's kind: the
-// role-key pins, then the lane kind pinned at the session layer (a
-// session-layer kind raises the kind layer, so the agents' lower-layer
-// lane model and effort are discarded under it and the role pins
-// resolve), then max_workers.
+// asrLanePinnedStart records the role snapshot and the lane kind that
+// the current job pinning code writes when the team's kinds agree.
 const asrLanePinnedStart = asrEndSession +
 	"role.implementer.kind=pi\n" +
 	"role.implementer.model=model-a\n" +
@@ -94,9 +90,8 @@ const asrLanePinnedStart = asrEndSession +
 	"max_workers=5\n"
 
 // asrLaneActorUser is the actors' own user configuration for the
-// lane-kind scenarios: the build lane's kind, model and effort at the
-// user layer (the lane keys that outrank the session's role pins), plus
-// approvals the pin never copies.
+// lane-kind scenarios. The session's role pins take precedence over
+// these lane defaults. The pin does not copy approvals.
 const asrLaneActorUser = "lane.build.kind=pi\n" +
 	"lane.build.model=model-b\n" +
 	"lane.build.effort=high\n" +
@@ -872,18 +867,9 @@ func TestActorSession(t *testing.T) {
 		})
 	})
 
-	t.Run("agents whose own lane keys outrank the starter's role keys get the starter's team", func(t *testing.T) {
-		// The agents' own user configuration sets the build lane's kind
-		// (any value, even the starter's pi), its model and its effort.
-		// A lane key outranks the role key the step-1 snapshot pins, and
-		// the lane's model and effort are discarded only under a higher
-		// layer's kind — the user-layer lane kind would keep the agents'
-		// own lane model and effort and outrank the session's role pins.
-		// Step 1 must pin the lane's kind at the session layer instead:
-		// the session-layer kind raises the kind layer, the agents'
-		// user-layer lane model and effort are discarded and the
-		// starter's team resolves for the agents. Approvals are never
-		// copied: the agents keep their own.
+	t.Run("the starter's role pins override the actor's group defaults", func(t *testing.T) {
+		// The job pins the starter's kind, model and effort on role keys.
+		// The actor still reads its own approvals.
 		for _, tc := range []struct {
 			name     string
 			storeRel string
@@ -1019,10 +1005,8 @@ func TestActorSession(t *testing.T) {
 		// Two roles in one build lane: the starter's selection gives
 		// each role its own kind, model and effort (the tasker's values
 		// differ from the implementer's), and the agents' own user layer
-		// sets the lane's kind, model and effort. Every role must
-		// resolve its own per-role pins through the session, with the
-		// pinned lane kind (pi: both roles resolve it in the starter's
-		// view) anchoring the kind layer above the agents' user layer.
+		// sets the lane's kind, model and effort. Each role's session
+		// pins take precedence over those defaults.
 		root := asrAbs(t, t.TempDir())
 		env, conf := asrBase(t, root)
 		co := asrCheckout(t, env, root, "co")
@@ -1059,13 +1043,9 @@ func TestActorSession(t *testing.T) {
 		}
 	})
 
-	t.Run("a lane whose roles the starter resolves to different kinds stays refused", func(t *testing.T) {
-		// The tasker resolves to codex in the starter's view, the
-		// implementer to pi: the lane's roles resolve two kinds, so no
-		// lane kind can be anchored. The agents' own lane kind (pi)
-		// still outranks the session's role pins, and step 3 must
-		// refuse the pin on the tasker's kind divergence — the
-		// fail-closed refusal stays when the lane cannot be anchored.
+	t.Run("different starter kinds in one group reach the actors", func(t *testing.T) {
+		// A group's default cannot override a role pin, even when the
+		// roles differ and the job adds no group kind to the snapshot.
 		root := asrAbs(t, t.TempDir())
 		env, conf := asrBase(t, root)
 		co := asrCheckout(t, env, root, "co")
@@ -1077,20 +1057,23 @@ func TestActorSession(t *testing.T) {
 		asrWriteStartSession(t, storeRoot, asrTwoRoleEndSession)
 		var friction []string
 		sup := asrSupervisor(store, clock, team, &friction, env, sel)
-		err := sup.pinActorSession()
-		if err != errActorSession {
-			t.Fatalf("pin error = %v, want errActorSession", err)
+		if err := sup.pinActorSession(); err != nil || len(friction) != 0 {
+			t.Fatalf("pin error=%v friction=%v", err, friction)
 		}
-		if len(friction) != 1 || friction[0] != "job: the job's agents would not resolve the job team (role tasker kind)" {
-			t.Fatalf("friction = %v, want [job: the job's agents would not resolve the job team (role tasker kind)]", friction)
-		}
-		// The step-1 snapshot was written before the step-3 refusal:
-		// the role pins and max_workers only — no lane.build.kind line
-		// (the lane's roles resolve two kinds in the starter's view, so
-		// none can be anchored).
 		data, err := os.ReadFile(filepath.Join(storeRoot, asrWS, "session.conf"))
 		if err != nil || string(data) != asrTwoRoleUnpinnedStart {
 			t.Fatalf("the start's session = %q (err %v), want the role pins and max_workers without a lane kind %q", data, err, asrTwoRoleUnpinnedStart)
+		}
+		agentEnv := env.Clone()
+		agentEnv["HERDR_WORKSPACE_ID"] = asrWS
+		cfg := core.LoadConfig(agentEnv, co)
+		for _, want := range []struct{ role, kind, model, effort string }{
+			{"implementer", "pi", "model-a", "low"}, {"tasker", "codex", "model-c", "high"},
+		} {
+			got := core.ResolveRoleSettings(want.role, &cfg, agentEnv, co, core.RoleFlags{})
+			if got.Lane != "build" || got.Kind != want.kind || got.ModelSpec != want.model || got.Effort != want.effort {
+				t.Fatalf("%s resolved %+v; want %+v in build", want.role, got, want)
+			}
 		}
 	})
 
@@ -1346,4 +1329,80 @@ func (o *asrOrderTeam) GC() error { return nil }
 
 func (o *asrOrderTeam) Roster() ([]rosterRow, error) {
 	return nil, nil
+}
+
+func TestActorSessionRefusesRoleOverridesOfGroupValues(t *testing.T) {
+	const group = asrEndSession + "lane.build.kind=pi\nlane.build.model=team-model\nlane.build.effort=low\nlane.build.approvals=ask\n"
+	for _, tc := range []struct {
+		name, actor string
+		knobs       []string
+	}{
+		{"none", "", nil},
+		{"matching", "role.implementer.kind=pi\nrole.implementer.model=team-model\nrole.implementer.effort=low\n", []string{"kind", "model", "effort"}},
+		{"kind", "role.implementer.kind=codex\n", []string{"kind"}},
+		{"model", "role.implementer.model=actor-model\n", []string{"model"}},
+		{"effort", "role.implementer.effort=high\n", []string{"effort"}},
+		{"approvals", "role.implementer.approvals=full\n", []string{"approvals"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, rootMode := range []string{"same", "custom"} {
+				t.Run(rootMode, func(t *testing.T) {
+					root := asrAbs(t, t.TempDir())
+					env, actorConf := asrBase(t, root)
+					co := asrCheckout(t, env, root, "co")
+					storeRoot := filepath.Join(co, ".soho")
+					if rootMode == "custom" {
+						storeRoot = filepath.Join(root, "starter store")
+					}
+					sel := core.UserSelection{Base: filepath.Join(root, "starter")}
+					asrWriteUserConfig(t, sel.Base, "state_dir="+storeRoot+"\nmax_workers=5\n")
+					asrWriteUserConfig(t, actorConf, tc.actor+"approvals=full\n")
+					store, clock, team := asrJob(t, storeRoot, co)
+					var friction []string
+					sup := asrSupervisor(store, clock, team, &friction, env, sel)
+					sup.actorEnv["USERPROFILE"], sup.actorEnv["TMPDIR"] = sup.actorEnv["HOME"], t.TempDir()
+					asrWriteStartSession(t, storeRoot, group)
+					if rootMode == "custom" && len(tc.knobs) > 0 {
+						// The destination's old session cannot hide a base role key.
+						asrWriteStartSession(t, filepath.Join(co, ".soho"), tc.actor)
+					}
+					err := sup.pinActorSession()
+					session := filepath.Join(storeRoot, asrWS, "session.conf")
+					body, readErr := os.ReadFile(session)
+					if len(tc.knobs) > 0 {
+						var want []string
+						for _, knob := range tc.knobs {
+							want = append(want, "job: role.implementer."+knob+" in user config overrides the team's lane.build."+knob+"; remove it or set the override in the team")
+						}
+						if err != errActorSession || !reflect.DeepEqual(friction, want) || readErr != nil || string(body) != group {
+							t.Fatalf("pin error=%v friction=%v session=%q read=%v, want unchanged session and %v", err, friction, body, readErr, want)
+						}
+						return
+					}
+					if err != nil || len(friction) != 0 {
+						t.Fatalf("pin error=%v friction=%v", err, friction)
+					}
+					if want := group + "max_workers=5\n"; readErr != nil || string(body) != want {
+						t.Fatalf("session=%q err=%v; want %q", body, readErr, want)
+					}
+					env = sup.actorEnv.Clone()
+					env["HERDR_WORKSPACE_ID"] = asrWS
+					ctx := core.LoadConfig(env, co)
+					res := core.ResolveRoleSettings("implementer", &ctx, env, co, core.RoleFlags{})
+					if res.Lane != "build" || res.Kind != "pi" || res.ModelSpec != "team-model" || res.Effort != "low" || res.Approvals != "ask" {
+						t.Fatalf("actor resolved %+v", res)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestActorSessionStillRefusesDivergentUnpinnedModel(t *testing.T) {
+	sup, friction, _, storeRoot := asrScenario(t, "", "role.implementer.model=actor-model\n", "max_workers=5\n")
+	sup.actorEnv["USERPROFILE"], sup.actorEnv["TMPDIR"] = sup.actorEnv["HOME"], t.TempDir()
+	asrWriteStartSession(t, storeRoot, asrEndSession+"lane.build.kind=pi\nlane.build.effort=low\n")
+	if err := sup.pinActorSession(); err != errActorSession || len(*friction) != 1 || (*friction)[0] != "job: the job's agents would not resolve the job team (role implementer model)" {
+		t.Fatalf("pin error=%v friction=%v", err, *friction)
+	}
 }

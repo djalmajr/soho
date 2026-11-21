@@ -85,7 +85,7 @@ func TestCmdRolesJSONMatchesTheTextTable(t *testing.T) {
 		t.Fatalf("roles JSON has %d roles, text table has %d rows:\n%s", len(arr), len(textRows), jsonOut)
 	}
 
-	wantFirst := `{"role":"custom","kind":"","model":"","effort":"","mode":"edit","lane":"","kind_from":"default","model_from":"default","effort_from":"default","file":` + jsonjs.Stringify(customFile) + `,"source":"project"}`
+	wantFirst := `{"role":"custom","kind":"","model":"","effort":"","mode":"edit","lane":"","kind_from":"default","model_from":"default","effort_from":"default","file":` + jsonjs.Stringify(customFile) + `,"source":"project","approvals":"auto","approvals_from":"approvals (defaults)"}`
 	if !strings.Contains(jsonOut, wantFirst) {
 		t.Fatalf("first JSON role does not pin the key order and the empty values as \"\":\ngot  %s\nwant it to contain %s", jsonOut, wantFirst)
 	}
@@ -98,7 +98,7 @@ func TestCmdRolesJSONMatchesTheTextTable(t *testing.T) {
 		if !ok {
 			t.Fatalf("roles[%d] is %T, want object", i, entry)
 		}
-		if keys := role.Keys(); strings.Join(keys, ",") != "role,kind,model,effort,mode,lane,kind_from,model_from,effort_from,file,source" {
+		if keys := role.Keys(); strings.Join(keys, ",") != "role,kind,model,effort,mode,lane,kind_from,model_from,effort_from,file,source,approvals,approvals_from" {
 			t.Fatalf("roles[%d] key order = %v", i, keys)
 		}
 		name, kind, model, effort, mode, from := rolesTextRow(t, textRows[i])
@@ -123,7 +123,17 @@ func TestCmdRolesJSONMatchesTheTextTable(t *testing.T) {
 			t.Fatalf("roles[%d] diverges from the text row:\ngot   role=%q kind=%q model=%q effort=%q mode=%q\nwant role=%q kind=%q model=%q effort=%q mode=%q",
 				i, got("role"), got("kind"), got("model"), got("effort"), got("mode"), name, uncell(kind), uncell(model), uncell(effort), uncell(mode))
 		}
-		if got("source") != fromFields[1] || got("kind_from") != fromFields[2] || got("model_from") != fromFields[3] || got("effort_from") != fromFields[4] || got("file") != fromFields[5] {
+		wantScope := func(from string) string {
+			switch {
+			case strings.HasPrefix(from, "lane "):
+				return "group"
+			case strings.HasPrefix(from, "role config ("):
+				return "role"
+			default:
+				return from
+			}
+		}
+		if got("source") != fromFields[1] || got("kind_from") != wantScope(fromFields[2]) || got("model_from") != wantScope(fromFields[3]) || got("effort_from") != wantScope(fromFields[4]) || got("file") != fromFields[5] {
 			t.Fatalf("roles[%d] from fields diverge:\ngot   source=%q kind_from=%q model_from=%q effort_from=%q file=%q\nwant source=%q kind_from=%q model_from=%q effort_from=%q file=%q",
 				i, got("source"), got("kind_from"), got("model_from"), got("effort_from"), got("file"), fromFields[1], fromFields[2], fromFields[3], fromFields[4], fromFields[5])
 		}

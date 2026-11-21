@@ -1,10 +1,14 @@
 package job
 
 import (
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
@@ -192,4 +196,40 @@ func hasLaneRoles(pairs []TeamPair) bool {
 
 func exitErr(code int, msg string) error {
 	return &platform.ExitError{Code: code, Msg: msg}
+}
+
+var teamRoleKnobs = [...]string{"kind", "model", "effort", "approvals"}
+
+// teamSessionView resolves the selected session over base defaults while
+// excluding actor role keys that could hide the team's group settings.
+func teamSessionView(pairs []core.ConfigPair, roles []string, base *core.Config, env platform.Env, cwd string) teamView {
+	ctx := core.Config{Entries: maps.Clone(base.Entries), Order: slices.Clone(base.Order)}
+	for _, role := range roles {
+		for _, knob := range teamRoleKnobs {
+			delete(ctx.Entries, core.NormalizeKey("role."+role+"."+knob))
+		}
+	}
+	for _, pair := range pairs {
+		ctx.Entries[pair.Key] = core.ConfigEntry{Value: pair.Value, Source: "session", Original: pair.Original}
+		ctx.Order = append(ctx.Order, pair.Key)
+	}
+	return resolveTeamView(roles, &ctx, env, cwd)
+}
+
+// actorGroupConflicts reports each effective base-layer role assignment
+// that would replace a group setting in the selected team.
+func actorGroupConflicts(roles []string, actor *core.Config, team teamView) []string {
+	var conflicts []string
+	for _, role := range roles {
+		res := team.roles[role]
+		sources := [...]string{res.KindFrom, res.ModelFrom, res.EffortFrom, res.ApprovalsFrom}
+		for field, knob := range teamRoleKnobs {
+			key := "role." + role + "." + knob
+			entry := actor.Entries[core.NormalizeKey(key)]
+			if entry.Value != "" && strings.HasPrefix(sources[field], "lane ") {
+				conflicts = append(conflicts, fmt.Sprintf("job: %s in %s config overrides the team's lane.%s.%s; remove it or set the override in the team", key, entry.Source, res.Lane, knob))
+			}
+		}
+	}
+	return conflicts
 }

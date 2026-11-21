@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -33,29 +32,6 @@ func laneKindFixture(t *testing.T, laneKind string) spawnFixture {
 	}
 	f.roster(t, strings.Join([]string{"ghost", "p-ghost", "pi", "scouter", "alibaba", "1", "/tmp/work", "now", "", "ask", "scouter", "build", "", "", ""}, "\t"))
 	return f
-}
-
-func runCmdSpawnWithLaneOverride(t *testing.T, f spawnFixture, args []string) (code int, stdout, stderr string, calls []fakecli.Call) {
-	t.Helper()
-	oldOut, oldErr := platform.Stdout, platform.Stderr
-	var out, errOut strings.Builder
-	platform.Stdout, platform.Stderr = &out, &errOut
-	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
-	code = 0
-	func() {
-		defer func() {
-			if value := recover(); value != nil {
-				if e, ok := value.(*platform.ExitError); ok {
-					code = e.Code
-					return
-				}
-				panic(value)
-			}
-		}()
-		CmdSpawnWithLaneKindOverride(args, f.ctx, f.env, f.cwd)
-	}()
-	calls, _ = fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
-	return code, out.String(), errOut.String(), calls
 }
 
 func rosterBytes(t *testing.T, f spawnFixture) string {
@@ -88,96 +64,24 @@ func frictionLog(t *testing.T, f spawnFixture) string {
 	return string(body)
 }
 
-const laneKindRefusalJSON = `{"status":"kind-mismatch","lane":"build","role":"scouter","lane_kind":"pi","requested_kind":"codex"}` + "\n"
-const laneKindRefusalText = "spawn: role 'scouter' runs in lane 'build', whose kind is pi; --kind codex would put a codex worker in it and block the lane's next spawns. Spawn with --kind pi, change lane.build.kind, or set SOHO_LANES=off for this spawn to open it outside the lanes."
-
-// DJA-397: a --kind that differs from lane.<lane>.kind is refused before any
-// Herdr call that opens or starts anything, before the lane decision drops a
-// gone worker from the roster, and before a reuse; the lane stays free for
-// the next spawn of its own kind.
-func TestSpawnRefusesAKindFlagThatDiffersFromTheLaneKind(t *testing.T) {
-	// Mutation captured: dropping the refusal opens a codex worker in the pi
-	// lane; moving it after the pane opening leaves herdr calls behind.
-	f := laneKindFixture(t, "pi")
-	before := rosterBytes(t, f)
-	code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"scouter", "--kind", "codex"})
-	if code != 13 {
-		t.Fatalf("exit=%d, want 13\nstdout=%q\nstderr=%q", code, stdout, stderr)
-	}
-	if stdout != laneKindRefusalJSON {
-		t.Fatalf("stdout=%q\nwant   %q", stdout, laneKindRefusalJSON)
-	}
-	// The caller-rename warning before it is the fixture's (the fake herdr has
-	// no caller agent); the refusal is the one line that follows it.
-	if want := "soho: warning: " + laneKindRefusalText + "\n"; strings.Count(stderr, want) != 1 || !strings.HasSuffix(stderr, want) {
-		t.Fatalf("stderr=%q\nwant it to end with %q once", stderr, want)
-	}
-	if got := frictionLog(t, f); !strings.Contains(got, laneKindRefusalText) {
-		t.Fatalf("friction.log lacks the refusal:\n%s", got)
-	}
-	if acts := herdrActs(calls); len(acts) != 0 {
-		t.Fatalf("the refusal ran after herdr acted: %v\nall calls: %#v", acts, calls)
-	}
-	if after := rosterBytes(t, f); after != before {
-		t.Fatalf("the roster changed\nbefore:\n%s\nafter:\n%s", before, after)
-	}
-
-	// The lane is free: the next spawn, with no --kind and then with the
-	// lane's own kind, takes the normal path and opens a pi worker.
-	for _, args := range [][]string{{"scouter"}, {"scouter", "--kind", "pi"}} {
-		g := laneKindFixture(t, "pi")
-		code, stdout, stderr, calls := runCmdSpawn(t, g, args)
-		if code != 0 || !spawnJSONHasField(t, stdout, `"kind": "pi"`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
-			t.Fatalf("%v: exit=%d stdout=%q stderr=%q", args, code, stdout, stderr)
-		}
-		if len(herdrActs(calls)) == 0 {
-			t.Fatalf("%v: no pane or agent was opened: %#v", args, calls)
-		}
-		if strings.Contains(stdout, "kind-mismatch") || strings.Contains(stderr, "whose kind is") {
-			t.Fatalf("%v: refused although the kind matches the lane\nstdout=%q\nstderr=%q", args, stdout, stderr)
-		}
-	}
-}
-
-// DJA-397: the refusal compares the flag with the lane's kind only. The
-// controls that must not change: a lane without a kind, a given --pane, the
-// lanes switched off for this invocation, and a role outside the lane.
-// The one-off lane-kind skip is a Go call made only by reopen's replacement
-// spawn: a plain spawn, an environment variable and the next lane spawn all
-// keep the DJA-397 rule.
-func TestLaneKindOverrideIsOnlyAvailableToTheReopenSpawn(t *testing.T) {
-	f := laneKindFixture(t, "pi")
-	code, stdout, stderr, calls := runCmdSpawnWithLaneOverride(t, f, []string{"scouter", "--kind", "codex", "--name", "worker"})
-	if code != 0 || !spawnJSONHasField(t, stdout, `"kind": "codex"`) || !spawnJSONHasField(t, stdout, `"name": "worker"`) {
-		t.Fatalf("override spawn: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
-	}
-	if len(herdrActs(calls)) == 0 {
-		t.Fatalf("the override spawn opened nothing: %#v", calls)
-	}
-
+func TestSpawnAcceptsAKindFlagThatDiffersFromTheGroupKind(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		env  map[string]string
-	}{{"plain spawn", nil}, {"an environment variable is not an override", map[string]string{"SOHO_LANE_KIND_OVERRIDE": "1"}}} {
-		t.Run(tc.name, func(t *testing.T) {
-			g := laneKindFixture(t, "pi")
-			for key, value := range tc.env {
-				g.env[key] = value
-			}
-			code, stdout, stderr, calls := runCmdSpawn(t, g, []string{"scouter", "--kind", "codex"})
-			if code != 13 || stdout != laneKindRefusalJSON {
-				t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
-			}
-			if acts := herdrActs(calls); len(acts) != 0 {
-				t.Fatalf("the refusal acted on herdr: %v", acts)
-			}
-		})
-	}
-
-	h := laneKindFixture(t, "pi")
-	code, stdout, stderr, _ = runCmdSpawn(t, h, []string{"scouter", "--kind", "pi"})
-	if code != 0 || !spawnJSONHasField(t, stdout, `"kind": "pi"`) {
-		t.Fatalf("the next lane spawn did not follow the lane: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+		args []string
+		kind string
+	}{
+		{[]string{"scouter", "--kind", "codex"}, "codex"},
+		{[]string{"scouter"}, "pi"},
+		{[]string{"scouter", "--kind", "pi"}, "pi"},
+	} {
+		f := laneKindFixture(t, "pi")
+		code, stdout, stderr, calls := runCmdSpawn(t, f, tc.args)
+		if code != 0 || !spawnJSONHasField(t, stdout, `"kind": "`+tc.kind+`"`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
+			t.Fatalf("%v: exit=%d stdout=%q stderr=%q", tc.args, code, stdout, stderr)
+		}
+		rows := core.RosterRows(filepath.Join(f.state, "ws"))
+		if len(herdrActs(calls)) == 0 || len(rows) != 1 || fieldAt(strings.Split(rows[0], "\t"), 11) != "build" {
+			t.Fatalf("%v: no new worker recorded in build: roster=%v calls=%v", tc.args, rows, calls)
+		}
 	}
 }
 
@@ -193,7 +97,7 @@ func TestSpawnKindFlagControlsDoNotChange(t *testing.T) {
 		}
 	})
 
-	t.Run("a given --pane skips the lane decision and the refusal", func(t *testing.T) {
+	t.Run("a given --pane skips the lane decision", func(t *testing.T) {
 		f := laneKindFixture(t, "pi")
 		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"scouter", "--kind", "codex", "--pane", "p-given"})
 		if code != 0 || strings.Contains(stdout, "kind-mismatch") || strings.Contains(stderr, "whose kind is") {
@@ -211,8 +115,6 @@ func TestSpawnKindFlagControlsDoNotChange(t *testing.T) {
 	})
 
 	t.Run("lanes switched off for the invocation do not refuse", func(t *testing.T) {
-		// SOHO_LANES=off is read per invocation: it is the way to spawn a role
-		// of a lane with another kind without touching the project file.
 		f := laneKindFixture(t, "pi")
 		f.env["SOHO_LANES"] = "off"
 		code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"scouter", "--kind", "codex"})

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
@@ -70,7 +71,13 @@ func TestHcDoneReviewerLaneReuse(t *testing.T) {
 			if _, err := fakecli.Install(t, bin, "hc", []fakecli.Rule{{Argv: []string{"get", "review", "--json"}, Stdout: `{"address":"t7","state":"live","status":{"state":"` + tc.state + `","app":"codex"}}`}}); err != nil {
 				t.Fatal(err)
 			}
-			got := laneReusePick(sd, "review", "reviewer", "codex", "gpt-5", "high", "full", "", cwd, env, cwd)
+			request := laneReuseRequest{role: "reviewer", kind: "codex", model: "gpt-5", effort: "high", approvals: "full", mcp: "inherit", workerCwd: cwd, sd: sd, env: env, processCwd: cwd}
+			var gone []string
+			picked := request.pick(core.LaneWorkers(sd, "review"), backend.New(env).Runtime, nil, &gone)
+			got, _, _ := strings.Cut(picked.line, "\t")
+			if len(picked.differences) != 0 {
+				t.Fatalf("unexpected differences: %+v", picked.differences)
+			}
 			if got != tc.want {
 				t.Fatalf("native state=%s got=%q want=%q calls=%#v", tc.state, got, tc.want, hcCallLog(t, bin))
 			}

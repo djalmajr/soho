@@ -123,16 +123,6 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		}
 	}
 
-	// Without an explicit --kind this is the old DJA-397 reopen: the roster's
-	// kind is carried into the lane, and a conflict is refused before the
-	// release half closes anything. With --kind it is the one-off one of the
-	// follow-up brief: only this replacement spawn skips the lane rule, and
-	// the next spawn for the lane follows it again.
-	if kindOverride == "" {
-		if lane, laneKind, conflict := spawn.LaneKindConflict(role, wkind, ctx, env); conflict {
-			spawn.RefuseLaneKind(role, lane, laneKind, wkind, fmt.Sprintf("reopen: worker '%s' runs %s, but lane '%s' is now %s; reopening would put a %s worker in it. Release it with 'soho release %s --close' and spawn the role again.", agent, wkind, lane, laneKind, wkind, agent), "reopen", ctx, env, cwd)
-		}
-	}
 	// DJA-392 fatia 2 R2: the roster's last field carries the worker's
 	// effective MCP choice; reopen forwards it so the respawn keeps the MCP
 	// it was opened with. A row without the field (predating it) passes no
@@ -156,7 +146,7 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	}
 	// Reopen only reuses the recorded name; its spawn half is marked so the
 	// naming advisory for a new explicit --name does not fire here.
-	spawn.PreflightFreshSpawnReopen(spawnArgs, ctx, env, cwd, kindOverride != "")
+	spawn.PreflightFreshSpawnReopen(spawnArgs, ctx, env, cwd)
 
 	releaseArgs := []string{agent, "--close"}
 	if force {
@@ -178,7 +168,7 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	// refuse the new pane once the old worker is gone. A spawn refusal cannot
 	// leave a redispatch behind; the warning names what release already
 	// closed before re-panicking with the spawn's own code.
-	spawnReopenedWorker(agent, pane, briefPath, redispatch, spawnArgs, kindOverride != "", ctx, env, cwd)
+	spawnReopenedWorker(agent, pane, briefPath, redispatch, spawnArgs, ctx, env, cwd)
 	if !redispatch {
 		return 0
 	}
@@ -249,7 +239,7 @@ func reopenKnownValue(list []string, value string) bool {
 	return false
 }
 
-func spawnReopenedWorker(agent, pane, briefPath string, redispatch bool, spawnArgs []string, laneOverride bool, ctx *core.Config, env platform.Env, cwd string) {
+func spawnReopenedWorker(agent, pane, briefPath string, redispatch bool, spawnArgs []string, ctx *core.Config, env platform.Env, cwd string) {
 	defer func() {
 		value := recover()
 		if value == nil {
@@ -261,46 +251,18 @@ func spawnReopenedWorker(agent, pane, briefPath string, redispatch bool, spawnAr
 		}
 		_, _ = fmt.Fprintf(platform.Stderr, "soho: warning: reopen already closed '%s' (pane %s); no replacement was spawned and no brief was redispatched: %s\n", agent, pane, exit.Msg)
 		recovery := reopenRecoveryCommand(agent, spawnArgs)
-		if laneOverride && reopenRecoveryCrossesLane(spawnArgs, ctx, env) {
-			// reopen's swap skipped the lane-kind check; a plain spawn would
-			// refuse with exit 13, so the printed command opts out of lanes.
-			recovery = "SOHO_LANES=off " + recovery
-		}
 		_, _ = fmt.Fprintf(platform.Stderr, "soho: reopen: to recover, run: %s\n", recovery)
 		if redispatch && briefPath != "" {
 			_, _ = fmt.Fprintf(platform.Stderr, "soho: reopen: then run: soho dispatch %s %s\n", reopenShellQuote(agent), reopenShellQuote(briefPath))
 		}
 		panic(value)
 	}()
-	spawn.CmdSpawnReopen(spawnArgs, ctx, env, cwd, laneOverride)
+	spawn.CmdSpawnReopen(spawnArgs, ctx, env, cwd)
 }
 
 // reopenRecoveryCommand rebuilds the spawn the reopen would have run after
 // closing the old worker. --name is printed once, next to the role, and the
 // remaining argv is the exact argv reopen handed to spawn, in the same order.
-// reopenRecoveryCrossesLane reports whether a plain spawn of these arguments
-// would refuse because the requested kind differs from the role's lane kind.
-func reopenRecoveryCrossesLane(spawnArgs []string, ctx *core.Config, env platform.Env) bool {
-	if len(spawnArgs) == 0 {
-		return false
-	}
-	kind := ""
-	for i := 1; i+1 < len(spawnArgs); i++ {
-		if spawnArgs[i] == "--" {
-			break
-		}
-		if spawnArgs[i] == "--kind" {
-			kind = spawnArgs[i+1]
-			break
-		}
-	}
-	if kind == "" {
-		return false
-	}
-	_, _, conflict := spawn.LaneKindConflict(spawnArgs[0], kind, ctx, env)
-	return conflict
-}
-
 func reopenRecoveryCommand(agent string, spawnArgs []string) string {
 	if len(spawnArgs) == 0 {
 		return "soho spawn " + reopenShellQuote(agent)

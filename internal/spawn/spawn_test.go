@@ -174,9 +174,7 @@ func TestExplicitKindDropsConfiguredModelAndEffortClampsToKindCeiling(t *testing
 	}
 }
 
-func TestLowerLayerLaneModelIsDiscardedByHigherLaneKind(t *testing.T) {
-	// JS: "resolveRoleSettings: a model from a layer below the lane kind is discarded"
-	// Mutation captured: removing the lane kind layer gate forwards a stale model to the wrong CLI configuration.
+func TestGroupModelAndKindUseIndependentLayers(t *testing.T) {
 	root := t.TempDir()
 	repo, skill, home := filepath.Join(root, "repo"), filepath.Join(root, "skill"), filepath.Join(root, "home")
 	for _, dir := range []string{repo, filepath.Join(skill, "roles"), home, filepath.Join(repo, ".agents")} {
@@ -204,8 +202,8 @@ func TestLowerLayerLaneModelIsDiscardedByHigherLaneKind(t *testing.T) {
 	env := platform.Env{"HOME": home, "SOHO_SKILL_DIR": skill}
 	ctx := core.LoadConfig(env, repo)
 	resolved := core.ResolveRoleSettings("worker", &ctx, env, repo, core.RoleFlags{})
-	if resolved.Kind != "pi" || resolved.ModelSpec != "" {
-		t.Fatalf("lower-layer lane model survived: %#v", resolved)
+	if resolved.Kind != "pi" || resolved.ModelSpec != "lower-model" {
+		t.Fatalf("lower-layer lane model did not apply: %#v", resolved)
 	}
 }
 

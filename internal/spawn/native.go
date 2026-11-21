@@ -38,32 +38,47 @@ func continueArgsError(kind string, fresh bool, args []string) string {
 
 // ConfigNativeArgs returns configured args for the CLI the worker will run.
 func ConfigNativeArgs(kind, lane, role string, ctx *core.Config, env platform.Env, cwd string, onDrop func(key, own string)) string {
-	scopedKey := "role." + role + ".args"
-	scoped := core.Cfg(ctx, "role_"+strings.ReplaceAll(role, "-", "_")+"_args", "", env)
+	args, _ := configNativeArgsSource(kind, lane, role, ctx, env, cwd, onDrop)
+	return args
+}
+
+func configNativeArgsSource(kind, lane, role string, ctx *core.Config, env platform.Env, cwd string, onDrop func(key, own string)) (args, source string) {
+	var scoped, scopedKey, own string
 	if lane != "" {
 		scopedKey = "lane." + lane + ".args"
 		scoped = core.Cfg(ctx, core.LaneKey(lane, "args"), "", env)
-	}
-	if scoped != "" {
-		own := core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{}).Kind
-		if own != kind {
-			if onDrop != nil {
-				onDrop(scopedKey, own)
-			}
-			scoped = ""
+		own = core.Cfg(ctx, core.LaneKey(lane, "kind"), "", env)
+	} else {
+		scopedKey = "role." + role + ".args"
+		scoped = core.Cfg(ctx, "role_"+strings.ReplaceAll(role, "-", "_")+"_args", "", env)
+		if scoped != "" {
+			own = core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{}).Kind
 		}
 	}
-	var tokens []string
-	for _, value := range []string{core.Cfg(ctx, "args_"+kind, "", env), scoped} {
-		if value != "" {
-			tokens = append(tokens, strings.Fields(value)...)
+	if scoped != "" && own != kind {
+		if onDrop != nil {
+			onDrop(scopedKey, own)
 		}
+		scoped = ""
+	}
+	var tokens, sources []string
+	if words := strings.Fields(core.Cfg(ctx, "args_"+kind, "", env)); len(words) != 0 {
+		tokens = words
+		sources = append(sources, "args."+kind)
+	}
+	if words := strings.Fields(scoped); len(words) != 0 {
+		tokens = append(tokens, words...)
+		sources = append(sources, scopedKey)
 	}
 	if kind == "codex" && !hasNativeToken(tokens, "--no-daemon") && !hasNativeToken(tokens, "--remote") && CodexSupportsNoDaemon(env, cwd) {
 		// An option goes before a configured "--", never into the prompt.
 		tokens = slices.Insert(tokens, optionsEnd(tokens), "--no-daemon")
+		sources = append(sources, "CLI capability default")
 	}
-	return strings.Join(tokens, " ")
+	if len(sources) == 0 {
+		sources = append(sources, "default")
+	}
+	return strings.Join(tokens, " "), strings.Join(sources, " + ")
 }
 
 // isCodexUpdateSetting is true for a "key=value" config override of

@@ -581,11 +581,9 @@ func TestMcpListReuseFollowsTheNoneBehavior(t *testing.T) {
 	t.Run("no slot and another list is 13 with the MCP message", func(t *testing.T) {
 		f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("old")}, "1")
 		f.roster(t, mcpLaneRow("old", "grok-4.7", f.cwd, "none"))
-		code, message, _ := runCmdSpawnExpectError(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--mcp", "a,b"})
-		want := "spawn: lane 'build' has no idle worker matching MCP 'a,b' (idle: 'old' was opened with MCP 'none'); release it or raise the lane's panes"
-		if code != 13 || message != want {
-			t.Fatalf("exit=%d message=%q want %q", code, message, want)
-		}
+		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--mcp", "a,b"})
+		assertGroupMismatch(t, code, stdout, stderr, "mcp differs (none vs a,b)", `"session_mcp": "none"`, `"requested_mcp": "a,b"`)
+		assertNoStart(t, calls)
 	})
 }
 

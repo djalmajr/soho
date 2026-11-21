@@ -14,8 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/spawn"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -892,5 +894,75 @@ func TestStartStorageFailureAfterRecordFails(t *testing.T) {
 	}
 	if len(fake.CreateCalls) != 0 {
 		t.Fatalf("CreateCalls = %d, want 0", len(fake.CreateCalls))
+	}
+}
+
+func TestStartRejectsActorRoleKeysThatReplaceTeamModelRotation(t *testing.T) {
+	for _, tc := range []struct {
+		name, model string
+	}{
+		{"no_override", ""},
+		{"equal_scalar", "m1"},
+		{"different_scalar", "m3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPrepareFixture(t, []fakecli.Rule{{Argv: []string{"auth", "status"}}})
+			f.env["USERPROFILE"], f.env["TMPDIR"] = f.env["HOME"], t.TempDir()
+			stateRoot := filepath.Join(f.checkout(), ".soho")
+			if tc.model != "" {
+				user := platform.UserConfigPath(platform.Current(), f.env)
+				if err := os.MkdirAll(filepath.Dir(user), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(user, []byte("role.implementer.model="+tc.model+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fake := startFake()
+			var friction []string
+			starter := startStarter(t, f, fake, stateRoot, &friction)
+			req := startRequest("main", briefA)
+			req.Team.Pairs = append(req.Team.Pairs, TeamPair{"lane.build.kind", "grok"}, TeamPair{"lane.build.models", "m1,m2"}, TeamPair{"model_cap", "1"})
+			st, store, err := starter.Start(req)
+			if tc.model != "" {
+				want := "job: role.implementer.model in user config overrides the team's lane.build.model; remove it or set the override in the team"
+				var refusal *ExitError
+				if !errors.As(err, &refusal) || refusal.Code != ExitUsage || refusal.Msg != want {
+					t.Fatalf("Start error=%v, want exit %d and %q", err, ExitUsage, want)
+				}
+				if len(fake.CreateCalls) != 0 || len(fake.RunCalls) != 0 {
+					t.Fatalf("refusal launched a workspace or supervisor: creates=%v runs=%v", fake.CreateCalls, fake.RunCalls)
+				}
+				return
+			}
+			if err != nil || store == nil || st.Status != StatusRunning || len(fake.CreateCalls) != 1 || len(fake.RunCalls) != 1 {
+				t.Fatalf("start state=%q err=%v creates=%v runs=%v", st.Status, err, fake.CreateCalls, fake.RunCalls)
+			}
+			env := f.env.Clone()
+			env["HERDR_WORKSPACE_ID"] = fake.CreateWorkspaceID
+			if _, err := fakecli.Install(t, f.fakeDir, "herdr", []fakecli.Rule{{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"name":"worker","agent_status":"working"}}}`}}); err != nil {
+				t.Fatal(err)
+			}
+			other := filepath.Join(stateRoot, "other")
+			if err := os.MkdirAll(other, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(other, "agents.tsv"), []byte("worker\tp1\tgrok\timplementer\txai\t1\t"+st.Dir+"\tnow\tm1\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			sup := Supervisor{Store: store, ID: req.ID, PrivateLaunch: true, actorEnv: env, Friction: func(msg string) { friction = append(friction, msg) }}
+			if err := sup.pinActorSession(); err != nil {
+				t.Fatalf("accepted team did not pass actor parity: %v (%v)", err, friction)
+			}
+			ctx := core.LoadConfig(env, st.Dir)
+			res := core.ResolveRoleSettings("implementer", &ctx, env, st.Dir, core.RoleFlags{})
+			if got := core.LiveModelCounts(&ctx, env, st.Dir)["m1"]; got != 1 {
+				t.Fatalf("fixture must saturate m1, count=%d, settings=%+v", got, res)
+			}
+			model, choice := spawn.ChooseSpawnModel("", res, &ctx, env, st.Dir, res.Kind, res.Effort, func(msg string, _ *core.Config, _ platform.Env, _ string) { t.Error(msg) })
+			if model != "m2" || choice != "list" {
+				t.Fatalf("rotation picked %q (%s), settings=%+v", model, choice, res)
+			}
+		})
 	}
 }

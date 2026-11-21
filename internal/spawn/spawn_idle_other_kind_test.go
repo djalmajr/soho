@@ -1,6 +1,7 @@
 package spawn
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,7 +70,7 @@ func TestSpawnWarnsOnceAboutIdleOtherKindWorkerOnTheLane(t *testing.T) {
 	if !spawnJSONHasField(t, stdout, `"created_pane": true`) || !spawnJSONHasField(t, stdout, `"kind": "codex"`) {
 		t.Fatalf("the spawn did not open the new codex worker:\n%s", stdout)
 	}
-	want := "soho: warning: lane 'build' still holds idle 'oldgrok' (grok), not the lane's kind 'codex'; release it with: soho release oldgrok --close\n"
+	want := "soho: warning: lane 'build' still holds idle 'oldgrok' (grok), not the requested kind 'codex' from lane.build.kind (project), with lane.build.kind=codex; release it with: soho release oldgrok --close\n"
 	if n := strings.Count(stderr, want); n != 1 {
 		t.Fatalf("warning count=%d, want exactly once\nstderr:\n%s", n, stderr)
 	}
@@ -99,7 +100,7 @@ func TestSpawnWarnsAboutDoneOtherKindWorker(t *testing.T) {
 	if code != 0 || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q; the spawn must proceed", code, stdout, stderr)
 	}
-	want := "soho: warning: lane 'build' still holds idle 'oldgrok' (grok), not the lane's kind 'codex'; release it with: soho release oldgrok --close\n"
+	want := "soho: warning: lane 'build' still holds idle 'oldgrok' (grok), not the requested kind 'codex' from lane.build.kind (project), with lane.build.kind=codex; release it with: soho release oldgrok --close\n"
 	if n := strings.Count(stderr, want); n != 1 {
 		t.Fatalf("warning count=%d, want exactly once for the done worker\nstderr:\n%s", n, stderr)
 	}
@@ -141,13 +142,42 @@ func TestSpawnWarnsOncePerIdleOtherKindWorker(t *testing.T) {
 	if code != 0 || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q; the spawn must proceed", code, stdout, stderr)
 	}
-	want1 := "soho: warning: lane 'build' still holds idle 'oldgrok' (grok), not the lane's kind 'codex'; release it with: soho release oldgrok --close"
-	want2 := "soho: warning: lane 'build' still holds idle 'oldgrok2' (grok), not the lane's kind 'codex'; release it with: soho release oldgrok2 --close"
+	want1 := "soho: warning: lane 'build' still holds idle 'oldgrok' (grok), not the requested kind 'codex' from lane.build.kind (project), with lane.build.kind=codex; release it with: soho release oldgrok --close"
+	want2 := "soho: warning: lane 'build' still holds idle 'oldgrok2' (grok), not the requested kind 'codex' from lane.build.kind (project), with lane.build.kind=codex; release it with: soho release oldgrok2 --close"
 	i1, i2 := strings.Index(stderr, want1), strings.Index(stderr, want2)
 	if i1 < 0 || i2 < 0 || strings.Count(stderr, want1) != 1 || strings.Count(stderr, want2) != 1 {
 		t.Fatalf("want one warning per worker:\n%s", stderr)
 	}
 	if i1 > i2 {
 		t.Fatalf("the warnings are not in roster order:\n%s", stderr)
+	}
+}
+
+func TestSpawnLaneReuseRequiresSameKind(t *testing.T) {
+	for _, oldKind := range []string{"grok", "codex"} {
+		t.Run(oldKind, func(t *testing.T) {
+			f := m1Fixture(t, oldKind, "idle")
+			f.ctx.Entries["lane_build_kind"] = core.ConfigEntry{Value: "grok", Source: "project"}
+			f.ctx.Entries["role_worker_kind"] = core.ConfigEntry{Value: "codex", Source: "user"}
+			f.roster(t, strings.Join([]string{"oldgrok", "p-oldgrok", oldKind, "tasker", "", "1", f.cwd, "now", "", "ask", "tasker", "build", "", "", "high", "inherit"}, "\t"))
+			report := filepath.Join(f.root, "complete.md")
+			if err := os.WriteFile(report, []byte("complete\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(core.LastReportPath(filepath.Join(f.state, "ws"), "oldgrok"), []byte(report+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			code, out, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--effort", "high"})
+			if code != 0 || !spawnJSONHasField(t, out, `"kind": "codex"`) {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, stderr)
+			}
+			if oldKind == "codex" {
+				if !spawnJSONHasField(t, out, `"reused": true`) || len(herdrActs(calls)) != 0 {
+					t.Fatalf("matching worker was not reused: %q; native actions=%v", out, herdrActs(calls))
+				}
+			} else if !spawnJSONHasField(t, out, `"created_pane": true`) || len(core.RosterRows(filepath.Join(f.state, "ws"))) != 2 {
+				t.Fatalf("different-kind worker was not left alone: %q; roster=%q", out, rosterBytes(t, f))
+			}
+		})
 	}
 }

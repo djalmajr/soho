@@ -84,12 +84,15 @@ regrid=on
 herd_label={roles}
 herd_label_max=16
 
-# Reuse an idle worker of the same role, kind and cwd whose last report is
-# already written instead of opening a new pane: on (default) | off.
-# `spawn --reuse` / `--fresh` override per call. A reused worker keeps its
-# existing session context: compact or clear its session before an
-# unrelated slice (SKILL.md, "One agent, one growing session"); `--fresh`
-# opens another pane. Reuse never counts against max_workers.
+# Reuse an eligible idle worker instead of opening a new pane: on (default) | off.
+# A lane worker's recorded kind, resolved model, opening effort, approvals, MCP,
+# cwd and configured native args must all match the resolved request. A row
+# missing the effort column uses the original effort precedence for that field.
+# With space, a mismatch opens a worker and names the differences. Exit 13
+# means an idle worker in a full lane differs or every model in the inherited
+# lane.<name>.models list is at model_cap when opening. A full working-only lane exits 10.
+# For a full lane with a mismatch, release the worker or raise lane.<name>.panes.
+# --reuse / --fresh override per call. Reuse retains the worker's context.
 reuse_workers=on
 
 # How many panes the team uses: `panes` counts the orchestrator and the
@@ -107,11 +110,11 @@ reuse_workers=on
 panes=4
 lanes=on
 
-# Maximum live workers per model across every lane and workspace of this state
-# root. off (default) applies no cap. With model_cap=<n>, a lane that sets
-# lane.<name>.models=m1,m2,m3 spawns the first listed model with fewer than n
-# live workers, counted from the model recorded in each roster row; when all
-# are full, spawn exits 13. An explicit --model warns instead of rotating.
+# Maximum live workers per model across this state root. off applies no cap.
+# Reuse is decided first. When opening with an inherited lane.<name>.models
+# list, choose the first model below the cap or exit 13 if every entry is full.
+# A role model or --model skips the list and only warns if its model is at cap.
+# Counts use the model recorded on each live worker's roster row.
 model_cap=off
 
 # strict (default): no temporary worker; each lane stays within its capacity
@@ -128,11 +131,12 @@ flex_roles=reviewer,documenter
 # Optional lane overrides. Any lane.<name>.roles replaces the preset.
 # The preset's `critical` lane holds only critical-implementer, so
 # doctor --fix never writes its kind: a single-role lane would freeze the
-# choice. A lane.critical.* you set is kept and decides the spawn.
-# lane.<name>.kind is the CLI for every role in that lane. When it is empty,
-# the first spawn picks the role's own kind, and a later role with a different
-# kind, model, or effort exits 13 (kind-mismatch) instead of reusing. A live
-# session on another CLI also exits 13 once the key is set: release it.
+# choice. A lane.critical.* you set remains a default for that role.
+# Lane kind, model, effort and approvals supply defaults for member roles.
+# A role key overrides the matching lane key across configuration layers.
+# The lane model or model list applies only when a worker uses the lane kind.
+# An idle worker on another CLI occupies a slot and cannot be reused for the
+# request. When the lane is full, release a worker or raise its capacity.
 # doctor --fix copies a unanimous role.<role>.kind (file, else frontmatter)
 # onto the lane before it deletes those per-role keys.
 # lane.build.roles=implementer,designer,tasker
@@ -145,7 +149,7 @@ flex_roles=reviewer,documenter
 # unsandboxed is the owner's explicit choice; doctor warns about this key.
 
 # One idle worker may also take a different role: on (default) | off. `lanes=off`
-# is what uses this. With lanes on, a lane reuses only its own pane.
+# is what uses this. With lanes on, reuse stays within the lane.
 # Same role is preferred. Cross-role reuse needs the same kind, cwd and
 # resolved model, and approvals at least the request (ask < edits < auto < full < unsandboxed).
 # A worker that has held an edit role (implementer, designer, tasker, tester,
@@ -407,13 +411,10 @@ update_check=on
 # args.pi=
 # args.opencode=
 
-# Native args for a role, with lanes=off. With lanes on every role runs in a
-# lane, a lane session is shared by every role in it, and only
-# lane.<name>.args applies (to every worker of the lane). Both are appended
-# after args.<kind>, before the native args given after `--` to spawn.
-# They reach a worker only when the spawn runs the kind configured for that role
-# or lane (a --kind flag to another kind drops them): CLI flags differ, and a
-# codex `-c` is `--continue` to claude. Example: role.scouter.args=-c a=b
+# Native args for a role, with lanes=off. With lanes on, lane.<name>.args
+# applies when the effective worker kind matches lane.<name>.kind.
+# Scoped args follow args.<kind> and precede any native args after --.
+# For example, codex accepts -c a=b and claude reads -c as --continue.
 # role.scouter.args=
 # lane.build.args=
 

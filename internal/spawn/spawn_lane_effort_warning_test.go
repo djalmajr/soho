@@ -8,18 +8,17 @@ import (
 	"testing"
 
 	"github.com/djalmajr/soho/internal/core"
-	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
-func TestSpawnLaneEffortWarning(t *testing.T) {
+func TestSpawnLaneEffortPrecedence(t *testing.T) {
 	cases := []struct {
-		name, front, configured, kindDefault, kind, max, flag, laneEffort, wantSource, wantEffort string
-		noLane, reuse                                                                             bool
+		name, front, configured, kindDefault, kind, max, flag, laneEffort, wantEffort string
+		noLane, reuse                                                                 bool
 	}{
-		{name: "role-config", configured: "xhigh", wantSource: "role.security-reviewer.effort", wantEffort: "high"},
-		{name: "role-file", front: "xhigh", wantSource: "role file", wantEffort: "high"},
-		{name: "config-before-file", configured: "xhigh", front: "medium", wantSource: "role.security-reviewer.effort", wantEffort: "high"},
+		{name: "role-config", configured: "xhigh", wantEffort: "xhigh"},
+		{name: "role-file", front: "xhigh", wantEffort: "high"},
+		{name: "config-before-file", configured: "xhigh", front: "medium", wantEffort: "xhigh"},
 		{name: "explicit-flag", configured: "xhigh", flag: "xhigh", wantEffort: "xhigh"},
 		{name: "no-request", wantEffort: "high"},
 		{name: "kind-default-only", kindDefault: "xhigh", wantEffort: "high"},
@@ -27,9 +26,9 @@ func TestSpawnLaneEffortWarning(t *testing.T) {
 		{name: "kind-ceiling", front: "xhigh", kind: "gemini", wantEffort: "high"},
 		{name: "max-effort-ceiling", configured: "xhigh", max: "high", wantEffort: "high"},
 		{name: "codex-model-ceiling", configured: "max", laneEffort: "xhigh", wantEffort: "xhigh"},
-		{name: "opencode-no-effort-mapping", configured: "xhigh", kind: "opencode", wantEffort: "high"},
+		{name: "opencode-no-effort-mapping", configured: "xhigh", kind: "opencode", wantEffort: "xhigh"},
 		{name: "no-lane", configured: "xhigh", noLane: true, wantEffort: "xhigh"},
-		{name: "reuse", front: "xhigh", reuse: true, wantSource: "role file", wantEffort: "high"},
+		{name: "reuse", front: "xhigh", reuse: true, wantEffort: "high"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,7 +69,7 @@ func TestSpawnLaneEffortWarning(t *testing.T) {
 				}
 			}
 			if tc.reuse {
-				f.roster(t, laneReuseRow("audit", f.cwd))
+				f.roster(t, strings.TrimSuffix(laneReuseRow("audit", f.cwd), "\tnone")+"\tinherit")
 			}
 			args := []string{"security-reviewer", "--name", "audit"}
 			if tc.flag != "" {
@@ -87,15 +86,7 @@ func TestSpawnLaneEffortWarning(t *testing.T) {
 			if obj["effort"] != tc.wantEffort {
 				t.Fatalf("effort=%v want=%s stderr=%s", obj["effort"], tc.wantEffort, stderr)
 			}
-			want := "spawn: 'audit' runs security-reviewer at the lane's effort high; the role asks for xhigh (" + tc.wantSource + ") — pass --effort xhigh or set lane.review.effort"
-			if tc.wantSource != "" {
-				if strings.Count(stderr, "the role asks for") != 1 || !strings.Contains(stderr, "soho: warning: "+want+"\n") {
-					t.Fatalf("stderr=%q want exact warning=%q", stderr, want)
-				}
-				if !strings.Contains(frictionLog(t, f), want) {
-					t.Fatalf("warning absent from friction: %s", frictionLog(t, f))
-				}
-			} else if strings.Contains(stderr, "the role asks for") {
+			if strings.Contains(stderr, "the role asks for") || strings.Contains(frictionLog(t, f), "the role asks for") {
 				t.Fatalf("unexpected effort warning: %s", stderr)
 			}
 			if tc.reuse {
@@ -108,51 +99,7 @@ func TestSpawnLaneEffortWarning(t *testing.T) {
 					}
 				}
 			}
-			t.Logf("effective=%s reused=%v warning=%v stderr=%s", tc.wantEffort, obj["reused"], tc.wantSource != "", stderr)
+			t.Logf("effective=%s reused=%v stderr=%s", tc.wantEffort, obj["reused"], stderr)
 		})
-	}
-}
-
-func TestLaneEffortWarningOncePerLaneAndRole(t *testing.T) {
-	f := newSpawnFixture(t, freshSpawnRules())
-	f.ctx.Entries["role_reviewer_effort"] = core.ConfigEntry{Value: "xhigh"}
-	f.ctx.Entries["role_scouter_effort"] = core.ConfigEntry{Value: "xhigh"}
-	old := platform.Stderr
-	var stderr strings.Builder
-	platform.Stderr = &stderr
-	t.Cleanup(func() { platform.Stderr = old })
-	for _, role := range []string{"reviewer", "reviewer", "scouter"} {
-		warnLaneRoleEffort("worker", role, "review", "grok", "", "high", true, f.ctx, f.env, f.cwd)
-	}
-	if got := strings.Count(stderr.String(), "the role asks for"); got != 2 {
-		t.Fatalf("want one warning per role, got %d: %s", got, stderr.String())
-	}
-}
-
-func TestSpawnLaneEffortWarningOnce(t *testing.T) {
-	f := newSpawnFixture(t, freshSpawnRules())
-	configureSpawnFixture(t, &f)
-	if _, err := fakecli.Install(t, f.bin, "codex", nil); err != nil {
-		t.Fatal(err)
-	}
-	for _, role := range []string{"reviewer", "scouter"} {
-		if err := os.WriteFile(filepath.Join(f.root, "roles", role+".md"), []byte("---\nkind: codex\neffort: xhigh\napprovals: auto\n---\n"), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	f.env["HERDR_PANE_ID"] = "p1"
-	f.env["SOHO_LANES"] = "on"
-	for key, value := range map[string]string{"lane_review_roles": "reviewer,scouter", "lane_review_kind": "codex", "lane_review_effort": "high", "lane_review_panes": "5"} {
-		f.ctx.Entries[key] = core.ConfigEntry{Value: value, Source: "project"}
-		f.ctx.Order = append(f.ctx.Order, key)
-	}
-	for i, tc := range []struct {
-		role, name string
-		want       int
-	}{{"reviewer", "first", 1}, {"reviewer", "second", 0}, {"scouter", "third", 1}} {
-		code, out, stderr, _ := runCmdSpawn(t, f, []string{tc.role, "--name", tc.name})
-		if code != 0 || strings.Count(stderr, "the role asks for") != tc.want {
-			t.Fatalf("spawn %d: exit=%d stdout=%s stderr=%s", i, code, out, stderr)
-		}
 	}
 }

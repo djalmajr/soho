@@ -80,9 +80,9 @@ func TestLaneNamesRequireNonOverlappingRoleSuffix(t *testing.T) {
 }
 
 func TestLaneLayerRulesAndSpecs(t *testing.T) {
-	// JS: "layer rule: cases 1-4, 7, 8 and the --kind flag"
+	// Migration can pass a layer cutoff explicitly. Plain lane reads use the configured value.
 	// JS: "setupLaneSpec: valid specs and every rejection (code 2)"
-	// Mutation captured: a model or effort from below the effective kind layer must be discarded, and an explicit kind flag has rank 5.
+
 	env, repo := fixture(t)
 	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lane.ops.roles=implementer\nlane.ops.kind=pi\nlane.ops.model=project-model\n")
 	ctx := LoadConfig(env, repo)
@@ -94,12 +94,12 @@ func TestLaneLayerRulesAndSpecs(t *testing.T) {
 	write(t, user, "lane.ops.model=user-model\n")
 	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lane.ops.roles=implementer\nlane.ops.kind=pi\n")
 	ctx = LoadConfig(env, repo)
-	if LaneAttr(&ctx, "ops", "model", &rank, env) != "" {
-		t.Fatal("lower-layer model was not dropped")
+	if LaneAttr(&ctx, "ops", "model", nil, env) != "user-model" || LaneAttr(&ctx, "ops", "model", &rank, env) != "" {
+		t.Fatal("the configured model and ranked migration read disagree with their contracts")
 	}
 	rank = SpawnKindLayer(&ctx, "implementer", "ops", true, env)
 	if rank != 5 || LaneAttr(&ctx, "ops", "model", &rank, env) != "" {
-		t.Fatal("flag kind did not suppress lower model")
+		t.Fatal("legacy rank calculation or ranked read changed")
 	}
 	for _, spec := range []string{"review=claude:model:high", "docs=pi::xhigh", "ops=grok:model::"} {
 		got, err := SetupLaneSpec(spec)

@@ -144,35 +144,29 @@ func TestSpawnEnvRedactorIsolationAndRepresentations(t *testing.T) {
 }
 
 func TestSpawnEnvLaneRefusalOutput(t *testing.T) {
-	for _, mode := range []string{"kind", "busy"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, kind := range []string{"pi", "codex"} {
+		t.Run("group-kind-"+kind, func(t *testing.T) {
 			cwd, bin, state, env, ctx := hcSpawnFixture(t, "worker", "pi")
-			env["SELECTED_CANARY"], env["SOHO_LANES"] = "worker", "on"
-			kind := "pi"
-			wantCode := 10
-			if mode == "kind" {
-				kind, wantCode = "codex", 13
-			}
+			// An explicitly chosen Pi worker is admitted to either group.
+			// A full group still refuses before connecting to start it.
+			env["SELECTED_CANARY"], env["SOHO_LANES"] = "full", "on"
 			for key, value := range map[string]string{"lane_build_roles": "worker", "lane_build_kind": kind, "lane_build_panes": "1"} {
 				ctx.Entries[key] = core.ConfigEntry{Value: value, Source: "project"}
 				ctx.Order = append(ctx.Order, key)
 			}
 			rules := hcFixtureRules()
-			if mode == "busy" {
-				env["SELECTED_CANARY"] = "full"
-				sd := filepath.Join(state, "sX")
-				if err := os.MkdirAll(sd, 0700); err != nil {
-					t.Fatal(err)
-				}
-				core.RosterAppend(sd, []string{"occupied", "t8", "pi", "worker", "pi", "1", cwd, "now", "", "ask", "worker", "build", "false", "", "", "inherit"})
-				rules = append(rules, fakecli.Rule{Argv: []string{"get", "occupied", "--json"}, Stdout: `{"address":"t8","state":"live","reported":true,"status":{"state":"working"}}`})
+			sd := filepath.Join(state, "sX")
+			if err := os.MkdirAll(sd, 0700); err != nil {
+				t.Fatal(err)
 			}
+			core.RosterAppend(sd, []string{"occupied", "t8", kind, "worker", "pi", "1", cwd, "now", "", "ask", "worker", "build", "false", "", "", "inherit"})
+			rules = append(rules, fakecli.Rule{Argv: []string{"get", "occupied", "--json"}, Stdout: `{"address":"t8","state":"live","reported":true,"status":{"state":"working"}}`})
 			if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
 				t.Fatal(err)
 			}
 			conn := newFakeSpawnRPCConn()
 			exit, out, stderr, _ := spawnHcExitWithConn(t, bin, []string{"worker", "--fresh", "--kind", "pi", "--env-from", "SELECTED_CANARY"}, ctx, env, cwd, conn)
-			if exit == nil || exit.Code != wantCode {
+			if exit == nil || exit.Code != 10 || !strings.Contains(out.String(), `"status":"busy"`) {
 				t.Fatalf("wrong exit: %+v; out=%s stderr=%s", exit, out, stderr)
 			}
 			public := out.String() + stderr.String()

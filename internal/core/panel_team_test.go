@@ -112,7 +112,7 @@ func TestPanelTeamLanesProjection(t *testing.T) {
 		t.Fatalf("lanes = %#v, want two configured lanes", lanesValue)
 	}
 	first := panelObjectField(t, lanes[0], "lanes[0]")
-	if keys := first.Keys(); strings.Join(keys, ",") != "name,roles,panes,kind,model,effort,approvals,kind_from,model_from,effort_from" {
+	if keys := first.Keys(); strings.Join(keys, ",") != "name,roles,panes,kind,model,effort,approvals,kind_from,model_from,effort_from,approvals_from" {
 		t.Fatalf("lanes[0] key order = %v", keys)
 	}
 	want := map[string]any{
@@ -304,79 +304,60 @@ func TestPanelTeamEmptyConfigAndLaneWithNoRoles(t *testing.T) {
 	}
 }
 
-func TestPanelTeamLaneFieldsUseTheMembersResolvedValues(t *testing.T) {
-	// One member whose own project settings outrank a user-layer lane
-	// override: the lane shows the value the member really receives.
+func TestPanelTeamShowsConfiguredGroupAndEachRoleSource(t *testing.T) {
 	env, repo := fixture(t)
-	write(t, ConfigFileFor("user", env, repo), "lane.build.model=user-model\nlane.build.effort=high\n")
-	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lanes=on\nlane.build.roles=tester\nrole.tester.kind=codex\nrole.tester.model=project-choice\nrole.tester.effort=low\n")
+	write(t, ConfigFileFor("user", env, repo), "lane.build.models=group-first,group-second\nlane.build.effort=high\nrole.tester.effort=low\n")
+	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lanes=on\nlane.build.roles=tester,designer,implementer\nlane.build.kind=pi\nlane.build.model=shadowed\nlane.build.approvals=full\nrole.tester.kind=grok\nrole.tester.model=role-model\nrole.tester.approvals=ask\n")
 	ctx := LoadConfig(env, repo)
 	out, _ := capture(t, func() { CmdRolesPanelJSON(&ctx, env, repo, true) })
 	obj := panelParseObject(t, out)
-	lanes, ok := objValue(obj, "lanes").([]any)
-	if !ok || len(lanes) != 1 {
-		t.Fatalf("lanes = %#v, want the one build lane", objValue(obj, "lanes"))
+	lanes, _ := objValue(obj, "lanes").([]any)
+	if len(lanes) != 1 {
+		t.Fatalf("lanes=%v, want one build lane", lanes)
 	}
-	lane := panelObjectField(t, lanes[0], "lanes[0]")
-	for key, want := range map[string]any{
-		"kind": "codex", "kind_from": "project",
-		"model": "project-choice", "model_from": "project",
-		"effort": "low", "effort_from": "project",
-	} {
-		if got, _ := lane.Get(key); got != want {
-			t.Fatalf("lanes[0].%s = %#v, want %#v", key, got, want)
+	check := func(row *jsonjs.Object, want map[string]any) {
+		t.Helper()
+		for key, value := range want {
+			if got, _ := row.Get(key); got != value {
+				t.Errorf("%s = %#v, want %#v", key, got, value)
+			}
 		}
 	}
-	// The member's own resolution keeps its project values.
+	check(panelObjectField(t, lanes[0], "lane"), map[string]any{
+		"kind": "pi", "kind_from": "project", "model": "group-first", "model_from": "user",
+		"effort": "high", "effort_from": "user", "approvals": "full", "approvals_from": "project",
+	})
 	roles, _ := objValue(obj, "roles").([]any)
-	var tester *jsonjs.Object
+	seen := map[string]bool{}
 	for _, value := range roles {
-		row := panelObjectField(t, value, "role row")
-		if role, _ := row.Get("role"); role == "tester" {
-			tester = row
+		row := panelObjectField(t, value, "role")
+		name, _ := row.Get("role")
+		switch name {
+		case "tester":
+			seen["tester"] = true
+			check(row, map[string]any{
+				"kind": "grok", "kind_from": "role", "model": "role-model", "model_from": "role",
+				"effort": "low", "effort_from": "role", "approvals": "ask", "approvals_from": "role",
+			})
+		case "designer":
+			seen["designer"] = true
+			check(row, map[string]any{
+				"kind": "pi", "kind_from": "group", "model": "group-first", "model_from": "group",
+				"effort": "high", "effort_from": "group", "approvals": "full", "approvals_from": "group",
+			})
 		}
 	}
-	if tester == nil {
-		t.Fatal("no tester role row")
-	}
-	for key, want := range map[string]any{"model": "project-choice", "effort": "low"} {
-		if got, _ := tester.Get(key); got != want {
-			t.Fatalf("tester.%s = %#v, want %#v", key, got, want)
-		}
+	if !seen["tester"] || !seen["designer"] {
+		t.Fatalf("missing role rows: %v", seen)
 	}
 
-	// No override and members that resolve differently: null with "mixed" for
-	// kind, model and effort alike, never one member's value or a default.
 	write(t, ConfigFileFor("user", env, repo), "")
-	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lanes=on\nlane.build.roles=tester,designer\nrole.tester.kind=codex\nrole.designer.kind=opencode\nrole.tester.model=one\nrole.designer.model=two\nrole.tester.effort=low\nrole.designer.effort=max\n")
+	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lanes=on\nlane.build.roles=tester,designer\nrole.tester.kind=codex\nrole.designer.kind=opencode\n")
 	ctx = LoadConfig(env, repo)
 	out, _ = capture(t, func() { CmdRolesPanelJSON(&ctx, env, repo, true) })
 	lanes, _ = objValue(panelParseObject(t, out), "lanes").([]any)
-	lane = panelObjectField(t, lanes[0], "lanes[0]")
-	for _, field := range []string{"kind", "model", "effort"} {
-		if got, _ := lane.Get(field); got != nil {
-			t.Fatalf("mixed lane %s = %#v, want null", field, got)
-		}
-		if got, _ := lane.Get(field + "_from"); got != "mixed" {
-			t.Fatalf("mixed lane %s_from = %#v, want mixed", field, got)
-		}
-	}
-
-	// A lane override reaches one member while the other member's own role
-	// settings give the same value: the lane shows the value, not "mixed".
-	write(t, ConfigFileFor("user", env, repo), "lane.build.model=shared-model\nlane.build.effort=high\n")
-	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lanes=on\nlane.build.roles=tester,designer\nrole.tester.kind=codex\nrole.tester.model=shared-model\nrole.tester.effort=high\n")
-	ctx = LoadConfig(env, repo)
-	out, _ = capture(t, func() { CmdRolesPanelJSON(&ctx, env, repo, true) })
-	lanes, _ = objValue(panelParseObject(t, out), "lanes").([]any)
-	lane = panelObjectField(t, lanes[0], "lanes[0]")
-	for key, want := range map[string]any{"model": "shared-model", "model_from": "user", "effort": "high", "effort_from": "user"} {
-		if got, _ := lane.Get(key); got != want {
-			t.Fatalf("agreed lane %s = %#v, want %#v", key, got, want)
-		}
-	}
-	// The kinds still differ (codex against the designer role file's agy).
-	if got, _ := lane.Get("kind"); got != nil {
-		t.Fatalf("lane kind = %#v, want null (the members resolve different kinds)", got)
-	}
+	check(panelObjectField(t, lanes[0], "lane"), map[string]any{
+		"kind": "", "kind_from": "default", "model": "", "model_from": "default",
+		"effort": "", "effort_from": "default", "approvals": "", "approvals_from": "default",
+	})
 }
