@@ -131,6 +131,49 @@ func TestBriefLintSpacedPathHint(t *testing.T) {
 			t.Fatal("the parser must still read only the first field")
 		}
 	})
+	// SOH-494: a first field that exists as an entry (a symlink, broken or
+	// looping) gets no hint.
+	spaceFree := func(t *testing.T) string {
+		t.Helper()
+		base := t.TempDir()
+		for strings.ContainsAny(base, " \t\r\n") {
+			parent := filepath.Dir(base)
+			if parent == base {
+				t.Fatalf("no space-free ancestor of %q", base)
+			}
+			base = parent
+		}
+		dir, err := os.MkdirTemp(base, "soh494-lint-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		return dir
+	}
+	for _, tc := range []struct {
+		name string
+		link func(first string) error
+	}{
+		{"a looping symlink first field needs no hint", func(first string) error { return os.Symlink(first, first) }},
+		{"a broken symlink first field needs no hint", func(first string) error { return os.Symlink(first+"-target-absent", first) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("symlink creation needs privileges on Windows")
+			}
+			dir := spaceFree(t)
+			first := filepath.Join(dir, "path")
+			full := first + " with spaces"
+			if err := os.Mkdir(full, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.link(first); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := lint(t, "brief.md", "Worktree: "+full+"\n")
+			assertNone(t, got)
+		})
+	}
 	t.Run("a missing whole path needs no hint", func(t *testing.T) {
 		got, _ := lint(t, "brief.md", "Worktree: "+filepath.Join(t.TempDir(), "absent with space")+"\n")
 		assertNone(t, got)
