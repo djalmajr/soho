@@ -1105,19 +1105,19 @@ func defaultValue(value, fallback string) string {
 }
 
 type spawnOptions struct {
-	role, name, kind, direction, ratio, cwd, pane, timeout, effort, model, approvals, reuse, tabLabel, mcp string
-	kindSet, laneKindOverride                                                                              bool
-	force                                                                                                  bool
-	native                                                                                                 []string
-	envFrom                                                                                                []string
-	envSnapshot                                                                                            map[string]string
-	registryDir                                                                                            string
-	blockedAtStartup                                                                                       bool
-	startupDiag                                                                                            string
-	hooksBlocked                                                                                           string
-	launchProfile                                                                                          kinds.LaunchProfile
-	nativeArgsSnapshot                                                                                     string
-	loginShell                                                                                             string
+	role, name, kind, direction, ratio, cwd, pane, timeout, effort, model, approvals, reuse, tabLabel, mcp, card string
+	kindSet, nameSet, cardSet, laneKindOverride                                                                  bool
+	force                                                                                                        bool
+	native                                                                                                       []string
+	envFrom                                                                                                      []string
+	envSnapshot                                                                                                  map[string]string
+	registryDir                                                                                                  string
+	blockedAtStartup                                                                                             bool
+	startupDiag                                                                                                  string
+	hooksBlocked                                                                                                 string
+	launchProfile                                                                                                kinds.LaunchProfile
+	nativeArgsSnapshot                                                                                           string
+	loginShell                                                                                                   string
 	// piStartScreen is hc's post-ready screen read, reused for the thinking
 	// footer so a fresh pi terminal keeps its established single-read start.
 	piStartScreen      string
@@ -1125,11 +1125,10 @@ type spawnOptions struct {
 	piStartScreenTried bool
 }
 
-// spawnValueOption is the authoritative option/value grammar for parsing and
-// early explicit-environment detection. Values may themselves look like flags.
+// spawnValueOption is the authoritative option/value grammar; values may look like flags.
 func spawnValueOption(arg string) bool {
 	switch arg {
-	case "--env-from", "--tab-label", "--effort", "--model", "--approvals", "--name", "--kind", "--direction", "--ratio", "--cwd", "--pane", "--timeout", "--mcp":
+	case "--env-from", "--tab-label", "--effort", "--model", "--approvals", "--name", "--card", "--kind", "--direction", "--ratio", "--cwd", "--pane", "--timeout", "--mcp":
 		return true
 	}
 	return false
@@ -1150,7 +1149,6 @@ func hasSpawnEnvOption(argv []string) bool {
 	}
 	return false
 }
-
 func parseArgs(argv []string, cwd string) spawnOptions {
 	o := spawnOptions{role: fieldAt(argv, 0), cwd: cwd}
 	if o.role == "" {
@@ -1204,7 +1202,9 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 		case "--approvals":
 			o.approvals = v
 		case "--name":
-			o.name = v
+			o.name, o.nameSet = v, true
+		case "--card":
+			o.card, o.cardSet = cardValue(o.card, o.cardSet, v), true
 		case "--kind":
 			if v == "" {
 				core.DieFriction("spawn: --kind expects a kind", 2, "", "")
@@ -1241,17 +1241,17 @@ func CmdSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
 }
 
 func cmdSpawnWithHcStarter(argv []string, ctx *core.Config, env platform.Env, cwd string, startHC func(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string)) {
-	cmdSpawnPrepared(argv, ctx, env, cwd, startHC, false, false)
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHC, false, false, false)
 }
 
 // PreflightFreshSpawn observes the same preparation as a real spawn, without
 // allocating or retiring worker state. Admission is not a reservation: the
 // actual spawn must prepare and validate again after release.
 func PreflightFreshSpawn(argv []string, ctx *core.Config, env platform.Env, cwd string) {
-	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true, false)
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true, false, false)
 }
 
-func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd string, startHC func(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string), admissionOnly, laneKindOverride bool) {
+func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd string, startHC func(ctx *core.Config, o *spawnOptions, kind string, env platform.Env, args []string), admissionOnly, laneKindOverride, reopenName bool) {
 	callerGatePhase := false
 	if admissionOnly {
 		defer func() {
@@ -1318,7 +1318,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			Warn(message, ctx, env, command)
 		}
 	}
-	if o.name != "" && !AgentNameRE.MatchString(o.name) {
+	if o.name = resolveSpawnName(o, reopenName, warn, ctx, env); o.name != "" && !AgentNameRE.MatchString(o.name) {
 		core.DieFriction(fmt.Sprintf("invalid agent name '%s' (must match [a-z][a-z0-9_-]{0,31})", o.name), 2, "", "")
 	}
 	info, err := os.Stat(o.cwd)
@@ -3183,11 +3183,25 @@ func freshSpawnArgs(o spawnOptions, lane, kind string, ctx *core.Config, env pla
 // key: reopen uses it for the explicit --kind of its own replacement spawn.
 // A plain spawn keeps exiting 13 on a conflicting --kind.
 func CmdSpawnWithLaneKindOverride(argv []string, ctx *core.Config, env platform.Env, cwd string) {
-	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, false, true)
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, false, true, false)
 }
 
 // PreflightFreshSpawnWithLaneKindOverride observes the same one-off admission
 // as CmdSpawnWithLaneKindOverride, without starting a worker.
 func PreflightFreshSpawnWithLaneKindOverride(argv []string, ctx *core.Config, env platform.Env, cwd string) {
-	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true, true)
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true, true, false)
+}
+
+// CmdSpawnReopen runs the spawn half of reopen. Like the other *WithLaneKindOverride
+// calls it is open only to Go callers that already hold this package, never a CLI
+// flag, env var or config key. The recorded --name of an existing worker is not a
+// new naming choice, so it gets no naming-pattern advisory.
+func CmdSpawnReopen(argv []string, ctx *core.Config, env platform.Env, cwd string, laneOverride bool) {
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, false, laneOverride, true)
+}
+
+// PreflightFreshSpawnReopen observes the same one-off admission as CmdSpawnReopen,
+// without starting a worker.
+func PreflightFreshSpawnReopen(argv []string, ctx *core.Config, env platform.Env, cwd string, laneOverride bool) {
+	cmdSpawnPrepared(argv, ctx, env, cwd, startHcAgent, true, laneOverride, true)
 }
