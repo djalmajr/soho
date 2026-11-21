@@ -671,6 +671,7 @@ Cursor's active MCP approval dialog — the `MCP Server Approval Required` title
 - [references/troubleshooting.md](references/troubleshooting.md) — observed failures, causes, fixes, and how to validate a kind; read before changing the script
 - [references/orchestration-contract.md](references/orchestration-contract.md) — the delegation contract this skill enforces
 - [references/orchestration.md](references/orchestration.md) — the worker collaboration cycle: the `worker_messages` policy, the assignment and its events, revisions and snapshots, delivery, finalize and recovery
+- [references/recipes.md](references/recipes.md) — brief skeletons for bug fixes, refactors, phased deliveries and investigations
 - [references/kinds.md](references/kinds.md) — kind → family table, generic kinds (pi/opencode) with config and provider examples, and install notes
 - [references/agent-profiles.md](references/agent-profiles.md) — strengths and weaknesses of each assistant per role, from real use; read before choosing a team
 - [templates/brief.md](templates/brief.md), [templates/report.md](templates/report.md)
