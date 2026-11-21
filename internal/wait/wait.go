@@ -1337,6 +1337,9 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 					line.Set("findings", header.Findings)
 					line.Set("severity", jsonjs.O("P0", header.Severity["P0"], "P1", header.Severity["P1"], "P2", header.Severity["P2"], "P3", header.Severity["P3"]))
 				}
+				if ruledOut := reportscan.RuledOutCount(text); header != nil && ruledOut > 0 {
+					line.Set("ruled_out", ruledOut)
+				}
 				if partial > 0 {
 					line.Set("partial", partial)
 				}

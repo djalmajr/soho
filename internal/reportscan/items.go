@@ -6,7 +6,7 @@ import (
 )
 
 // Item is one report line carrying an item state marker outside a fenced
-// code block and outside the Follow-ups section. Line is one-based, and Text
+// code block and outside the Follow-ups and Ruled out sections. Line is one-based, and Text
 // is the line as written, trimmed of surrounding whitespace and CR.
 type Item struct {
 	Line int
@@ -24,7 +24,7 @@ type LayerEntry struct {
 }
 
 // Items returns the item lines with the same marker, position, fence and
-// Follow-ups rules PartialCount and EnvCount use. A line yields one item per
+// section rules PartialCount and EnvCount use. A line yields one item per
 // eligible mark: a line carrying both a partial and an env mark yields both,
 // while done and skipped are exclusive (a line naming both yields neither).
 func Items(text string) []Item {
@@ -32,43 +32,10 @@ func Items(text string) []Item {
 		return []Item{}
 	}
 	items := []Item{}
-	inFence, fenceChar, fenceLen := false, byte(0), 0
-	inFollowups, inComment := false, false
+	walker := sectionWalker{}
 	for index, raw := range strings.Split(text, "\n") {
-		open := fenceOpen.FindStringSubmatch(raw)
-		if !inFence && open != nil {
-			inFence, fenceChar, fenceLen = true, open[1][0], len(open[1])
-			continue
-		}
-		if inFence {
-			close := fenceClose.FindStringSubmatch(raw)
-			if close != nil && close[1][0] == fenceChar && len(close[1]) >= fenceLen {
-				inFence = false
-			}
-			continue
-		}
-		hidden := inComment
-		if inComment {
-			if strings.Contains(raw, "-->") {
-				inComment = false
-			}
-		} else if at := strings.Index(raw, "<!--"); at >= 0 && !strings.Contains(raw[at+4:], "-->") {
-			inComment = true
-		}
-		var heading []string
-		if !hidden {
-			heading = limitHeadingRE.FindStringSubmatch(strings.TrimRight(raw, "\r"))
-		}
-		if heading != nil {
-			title := lowerASCII(strings.TrimSpace(heading[2]))
-			if len(heading[1]) == 2 && (title == "follow-ups" || title == "follow ups" || title == "followups") {
-				inFollowups = true
-				continue
-			}
-			if len(heading[1]) <= 2 {
-				inFollowups = false
-			}
-		} else if inFollowups {
+		section, content := walker.advance(raw)
+		if !content || section != sectionOutside {
 			continue
 		}
 		marks := classifyLine(raw)

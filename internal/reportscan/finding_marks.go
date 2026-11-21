@@ -25,8 +25,8 @@ var (
 	classSlugRE     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}$`)
 )
 
-// FindingMarks scans the report outside fenced code blocks for the finding
-// marks: a line counts only when it carries all three markers in the exact
+// FindingMarks scans the report outside fenced code blocks and the Ruled out
+// section for the finding marks: a line counts only when it carries all three markers in the exact
 // form — [F<n>] with n at least 1, [origin: brief|impl|unknown], and
 // [class: <slug>] with the slug matching ^[a-z0-9][a-z0-9-]{0,40}$ — in any
 // position of the line (heading, table row or list line alike). Each line
@@ -44,17 +44,11 @@ func FindingMarks(text string, header *ReviewHeaderResult) FindingMarksResult {
 		total = int(header.Findings)
 	}
 	if text != "" {
-		inFence, fenceChar, fenceLen := false, byte(0), 0
+		walker := sectionWalker{}
 		seen := map[int]bool{}
 		for _, raw := range strings.Split(text, "\n") {
-			if open := fenceOpen.FindStringSubmatch(raw); !inFence && open != nil {
-				inFence, fenceChar, fenceLen = true, open[1][0], len(open[1])
-				continue
-			}
-			if inFence {
-				if close := fenceClose.FindStringSubmatch(raw); close != nil && close[1][0] == fenceChar && len(close[1]) >= fenceLen {
-					inFence = false
-				}
+			section, content := walker.advance(raw)
+			if !content || section == sectionRuledOut {
 				continue
 			}
 			countFindingLine(raw, seen, &out)

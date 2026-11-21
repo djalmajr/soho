@@ -30,25 +30,20 @@ var (
 	// An ATX heading of level 1 or 2: up to three spaces of indentation
 	// (four is code), an optional closing sequence, and an empty title
 	// allowed. Setext headings are not recognized (R572).
-	limitHeadingRE = regexp.MustCompile(`^ {0,3}(#{1,2})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$`)
-	layerBulletRE  = regexp.MustCompile(`^[-*+][ \t]+`)
-	layerNumberRE  = regexp.MustCompile(`^[0-9]+[.)][ \t]+`)
+	limitHeadingRE   = regexp.MustCompile(`^ {0,3}(#{1,2})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$`)
+	layerBulletRE    = regexp.MustCompile(`^[-*+][ \t]+`)
+	ruledOutBulletRE = regexp.MustCompile(`^[-*+][ \t]+`)
+	layerNumberRE    = regexp.MustCompile(`^[0-9]+[.)][ \t]+`)
 )
 
-// BlockedByScope returns actionable scope markers outside fenced examples.
+// BlockedByScope returns actionable scope markers outside fenced examples
+// and the Ruled out section. Follow-ups stays on its baseline behavior here.
 func BlockedByScope(text string) []string {
 	var result []string
-	inFence, fenceChar, fenceLen := false, byte(0), 0
+	walker := sectionWalker{}
 	for _, line := range strings.Split(text, "\n") {
-		if !inFence {
-			if open := fenceOpen.FindStringSubmatch(line); open != nil {
-				inFence, fenceChar, fenceLen = true, open[1][0], len(open[1])
-				continue
-			}
-		} else {
-			if close := fenceClose.FindStringSubmatch(line); close != nil && close[1][0] == fenceChar && len(close[1]) >= fenceLen {
-				inFence = false
-			}
+		section, content := walker.advance(line)
+		if !content || section == sectionRuledOut {
 			continue
 		}
 		if match := blockedScopeRE.FindStringSubmatch(strings.TrimSpace(line)); match != nil {
@@ -71,49 +66,110 @@ func EnvCount(text string) int {
 	return env
 }
 
+type reportSection uint8
+
+const (
+	sectionOutside reportSection = iota
+	sectionFollowups
+	sectionRuledOut
+)
+
+// sectionWalker is the one fence, comment and heading walker for the
+// Follow-ups and Ruled out sections. advance reports the active section after
+// the line and whether the line is content for the scanners. Fence markers
+// and section openers are not content; every other line, including a heading
+// that closes a section, still is, so marker classification is unchanged.
+type sectionWalker struct {
+	inFence    bool
+	fenceChar  byte
+	fenceLen   int
+	inComment  bool
+	section    reportSection
+	hiddenLine bool
+}
+
+func (w *sectionWalker) advance(raw string) (reportSection, bool) {
+	w.hiddenLine = false
+	if open := fenceOpen.FindStringSubmatch(raw); !w.inFence && open != nil {
+		w.inFence, w.fenceChar, w.fenceLen = true, open[1][0], len(open[1])
+		return w.section, false
+	}
+	if w.inFence {
+		if close := fenceClose.FindStringSubmatch(raw); close != nil && close[1][0] == w.fenceChar && len(close[1]) >= w.fenceLen {
+			w.inFence = false
+		}
+		return w.section, false
+	}
+	hidden := w.inComment
+	if w.inComment {
+		if strings.Contains(raw, "-->") {
+			w.inComment = false
+		}
+	} else if at := strings.Index(raw, "<!--"); at >= 0 && !strings.Contains(raw[at+4:], "-->") {
+		w.inComment = true
+	}
+	w.hiddenLine = hidden
+	if hidden {
+		return w.section, true
+	}
+	m := limitHeadingRE.FindStringSubmatch(strings.TrimRight(raw, "\r"))
+	if m == nil {
+		return w.section, true
+	}
+	if len(m[1]) == 2 {
+		switch lowerASCII(strings.TrimSpace(m[2])) {
+		case "follow-ups", "follow ups", "followups":
+			w.section = sectionFollowups
+			return w.section, false
+		case "ruled out":
+			w.section = sectionRuledOut
+			return w.section, false
+		}
+	}
+	if len(m[1]) <= 2 {
+		w.section = sectionOutside
+	}
+	return w.section, true
+}
+
+// OutsideRuledOutFlags reports, for each line of strings.Split(text, "\n"),
+// whether the shared section walker places that line outside Ruled out.
+// Callers that keep their own line grammar can use the flags without
+// changing their fence or marker rules.
+func OutsideRuledOutFlags(text string) []bool {
+	flags := make([]bool, strings.Count(text, "\n")+1)
+	walker := sectionWalker{}
+	for index, line := range strings.Split(text, "\n") {
+		section, _ := walker.advance(line)
+		flags[index] = section != sectionRuledOut
+	}
+	return flags
+}
+
+// RuledOutCount counts visible top-level candidates in level-two
+// "## Ruled out" sections. It uses the shared section walker and counts a
+// column-zero line starting with -, * or + followed by a space or tab.
+// Indented evidence and lines hidden inside an HTML comment do not count.
+func RuledOutCount(text string) int {
+	count := 0
+	walker := sectionWalker{}
+	for _, line := range strings.Split(text, "\n") {
+		section, content := walker.advance(line)
+		if section == sectionRuledOut && content && !walker.hiddenLine && ruledOutBulletRE.MatchString(line) {
+			count++
+		}
+	}
+	return count
+}
+
 func limitCounts(text string) (partial, env int) {
 	if text == "" {
 		return
 	}
-	inFence, fenceChar, fenceLen := false, byte(0), 0
-	inFollowups, inComment := false, false
+	walker := sectionWalker{}
 	for _, line := range strings.Split(text, "\n") {
-		open := fenceOpen.FindStringSubmatch(line)
-		if !inFence && open != nil {
-			inFence, fenceChar, fenceLen = true, open[1][0], len(open[1])
-			continue
-		}
-		if inFence {
-			close := fenceClose.FindStringSubmatch(line)
-			if close != nil && close[1][0] == fenceChar && len(close[1]) >= fenceLen {
-				inFence = false
-			}
-			continue
-		}
-		// A heading inside an HTML comment neither opens nor closes the
-		// Follow-ups section (R574); how comment lines count is unchanged.
-		hidden := inComment
-		if inComment {
-			if strings.Contains(line, "-->") {
-				inComment = false
-			}
-		} else if i := strings.Index(line, "<!--"); i >= 0 && !strings.Contains(line[i+4:], "-->") {
-			inComment = true
-		}
-		var m []string
-		if !hidden {
-			m = limitHeadingRE.FindStringSubmatch(strings.TrimRight(line, "\r"))
-		}
-		if m != nil {
-			title := lowerASCII(strings.TrimSpace(m[2]))
-			if len(m[1]) == 2 && (title == "follow-ups" || title == "follow ups" || title == "followups") {
-				inFollowups = true
-				continue
-			}
-			if len(m[1]) <= 2 {
-				inFollowups = false
-			}
-		} else if inFollowups {
+		section, content := walker.advance(line)
+		if !content || section != sectionOutside {
 			continue
 		}
 		line = lowerASCII(line)

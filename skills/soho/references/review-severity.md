@@ -21,7 +21,7 @@ A normal usage path is one a user or a supported caller takes in ordinary use. A
 - internal state that only another defect or a direct write to storage produces (a supported writer that itself writes wrong state is graded by its own path);
 - a defect inside test code, such as a flaky test or a leaking mock.
 
-When the reviewer cannot tell whether a supported caller reaches the trigger on a normal usage path, it picks the lower level and names the assumption that would raise it. A trigger a supported caller is known to produce on a normal path keeps its level, however rare. A finding whose trigger depends on an assumption the reviewer cannot name from the code or the brief is at most P3. A variant of a class that an earlier round of the same slice already fixed is at most P3 unless the reviewer names the normal usage path that produces it. A missing test in a layer `VALIDATION.md` declares with a command is P2 in every round.
+When the reviewer cannot tell whether a supported caller reaches the trigger on a normal usage path, it picks the lower level and names the assumption that would raise it. A trigger a supported caller is known to produce on a normal path keeps its level, however rare. A finding whose trigger depends on an assumption the reviewer cannot name from the code or the brief is at most P3. A variant of a class that an earlier round of the same slice already fixed is at most P3 unless the reviewer names the normal usage path that produces it. A missing test in a layer `VALIDATION.md` declares with a command is P2 in every round. An availability or resource-exhaustion finding (a slowdown, a lock held too long, a queue or a disk that grows) keeps P2 only with a production scenario the reviewer names or measures: the input size, rate or duration that triggers it. Without one it is P3, with that note.
 
 ## The verdict
 
@@ -35,10 +35,31 @@ The `security-reviewer` grades by impact if the vulnerable path is reached: crit
 
 When a finding is an instance of a class (path normalization, an id format, a boundary value, a state transition), the reviewer probes the neighboring variants of that class in the same round and lists each variant it tried, with its result, in that one finding. The sweep stays on the code path the finding touches: the changed function, its callers and the code it calls. A variant it did not try, or could not run because a provider refused the probe, is named as untried, not left for the next round. The correction brief asks the implementer to sweep the same class before delivering, and to test each untried variant.
 
+When an earlier round's fix created a finding, or the finding is the opposite of an earlier one (a bound added, then the bound starving its user), the reviewer proposes the target design in the finding, not only the defect.
+
+Every review report carries a `## Ruled out` section: one bullet per candidate the reviewer checked and discarded, class-sweep variants that hold included, each with the reason and the `file:line`, or the command and its output, that proves it. A discard without proof is not ruled out. A correction brief names the earlier review, and the next reviewer does not reopen a candidate it ruled out with proof unless it cites new evidence; it names each earlier discard that has no proof.
+
 ## What the orchestrator does with each level
 
 - **P0 and P1:** fixed before push, in the same slice.
 - **P2:** fixed in the same round. A `declined:` answer in `## Review responses` closes a P0–P2 only when the reviewer agrees the finding does not apply: a false positive is dropped, and behavior identical to the `Baseline:` goes under `## Follow-ups`. A reason about scope, ownership or schedule leaves the finding open, and it keeps failing the verdict.
+- **A contested P2** (the orchestrator or the author doubts its reach or its impact, or the reviewer named no normal usage path) is verified before a fix round opens. A reviewer gets a brief with one question per finding: does a supported caller, on a normal usage path, produce this trigger, and with what impact? It answers with `file:line` across every call site. The finding stays, drops to P3, or closes as not applicable. A test-gap P2 under `VALIDATION.md` asks another question: does the file declare that layer with a command, and does the changed code lack a test in it? Answered with the file's line and the test search, it stays P2 in every round when both hold; a caller path is not required for it. A verification is not a review round. The brief needs no more than this:
+
+  ```text
+  # Brief — Verify F<n> of <review report>
+  Type: review
+  Baseline: <the slice's Baseline>
+  Worktree: <path>
+  ## Goal
+  F<n> says <one line>. Answer one question: does a supported caller, on a normal usage path, produce this trigger, and with what impact? Trace every call site; cite file:line for each.
+  (For a test-gap P2: does VALIDATION.md declare this layer with a command, and does the changed code lack a test in it? Cite the file's line and the search you ran.)
+  ## Expected result
+  First line: findings: N (P0 a, P1 b, P2 c, P3 d) | verdict: pass|fail, with F<n> at the level the evidence supports, or 0 findings when it does not apply.
+  ## Forbidden
+  Editing files, commits, pushes, PRs, spawning agents.
+  ## Report
+  Write it to the report path dispatch gives you. Do not commit.
+  ```
 - **P3:** never opens a round. A P3 about behavior becomes a tracked card with an owner. A P3 about wording or a citation is fixed in the same slice without a new full review round, and the fix is named in the delivery.
 - **Behavior identical to the `Baseline:`** goes under `## Follow-ups` and becomes a card when it is worth doing, even when the change passes near it.
 - **A defect in test code that breaks a gate** (the test suite or CI fails because of a test or a mock) is fixed by the orchestrator before push, without a review round.
@@ -53,7 +74,7 @@ When a finding is an instance of a class (path normalization, an id format, a bo
   - a reviewer checks only that delta, answering one question per finding: is it fixed, and does the delta add a defect?
   - this check is not a full round. If it fails, the slice stops.
 - When the third review leaves a P0 or P1 open, or a P2 whose fix is not small, the slice stops without being accepted and the orchestrator tells the owner. A simplified version (the part that keeps producing edge cases dropped, or an existing rule reused instead of a new one) is a new slice, with its own brief and its own review count. Only P3 findings may be left as cards: an open P0, P1 or P2 never lets a slice finalize.
-- Inside a `collaborate` assignment the engine runs the rounds (`orchestration.md`). It counts only its own reviews, and its default of 3 would allow a fourth. Start one only at a slice's first review, with `--max-rounds 2` (the engine then escalates a blocker at the third review, and its approval refuses an open P0–P2) and with an assignment brief that already asks for the class sweep and tells the third reviewer to read the earlier findings reports listed by `collaborate status <id> --json`, name their classes and sweep them even when the earlier instances are fixed, since no later brief reaches the reviewer during the assignment. There a wording or citation P3 becomes a card instead of an edit, because an edit changes the inputs the assignment binds. When an assignment ends or is replaced before the slice is accepted, the remaining reviews go through ordinary dispatch and count the reviews already done; a point fix after the third review also goes through dispatch.
+- Inside a `collaborate` assignment the engine runs the rounds (`orchestration.md`). It counts only its own reviews, and its default of 3 would allow a fourth. Start one only at a slice's first review, with `--max-rounds 2` (the engine then escalates a blocker at the third review, and its approval refuses an open P0–P2) and with an assignment brief that already asks for the class sweep and tells the third reviewer to read the earlier findings reports listed by `collaborate status <id> --json`, name their classes and sweep them even when the earlier instances are fixed, since no later brief reaches the reviewer during the assignment. The same brief tells every reviewer after the first to read those earlier reports' `## Ruled out` sections and not reopen a proven discard without new evidence, since no correction brief carries a `Review:` line there. The engine opens the fix round as soon as findings arrive, so a contested P2 gets no separate verification inside an assignment: the author answers it with a `declined:` reason, and the next reviewer accepts or keeps it. A finding from the assignment's last review has no next reviewer: the assignment is escalated and waits for the orchestrator, who ends it with `collaborate finalize <assignment> --verdict reject` and, when the author disputes the finding, verifies it through ordinary dispatch with the one-question brief above, which is not a round. A finding the verification keeps follows the stop or point-fix rule; one it drops to P3 or closes no longer blocks the slice, which continues through dispatch. There a wording or citation P3 becomes a card instead of an edit, because an edit changes the inputs the assignment binds. When an assignment ends or is replaced before the slice is accepted, the remaining reviews go through ordinary dispatch and count the reviews already done; a point fix after the third review also goes through dispatch.
 
 ## Where soho departs from the sources
 
