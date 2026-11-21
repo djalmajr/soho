@@ -39,6 +39,9 @@ func prepareDetailEnv(t *testing.T, ee *jobStartEE) platform.Env {
 			env[key] = value
 		}
 	}
+	// This env replaces ee.env, so it needs the same no-space launcher the
+	// start fixture chose; otherwise the preflight refuses before gh.
+	env["SOHO_BIN"] = ee.selfExe
 	return env
 }
 

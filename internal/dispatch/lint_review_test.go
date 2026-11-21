@@ -56,7 +56,7 @@ func TestBriefLintReviewLine(t *testing.T) {
 	})
 	t.Run("an absent Review: file warns names-a-file-that-does-not-exist", func(t *testing.T) {
 		review := filepath.Join(t.TempDir(), "absent.md")
-		file := writeBrief(t, wellFormed+"Review: "+review+"\n")
+		file := writeBrief(t, wellFormed+"Review: `"+review+"`\n")
 		got := BriefLintFindings(file, ctx, platform.Env{}, BriefLintOptions{})
 		want := "brief " + file + " has a Review: line that names a file that does not exist: " + review
 		if len(got.Warnings) != 1 || got.Warnings[0] != want {
@@ -71,7 +71,7 @@ func TestBriefLintReviewLine(t *testing.T) {
 		if err := os.WriteFile(review, []byte("findings: 0 (p0 0, p1 0, p2 0, p3 0) | verdict: pass\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		file := writeBrief(t, wellFormed+"Review: "+review+"\n")
+		file := writeBrief(t, wellFormed+"Review: `"+review+"`\n")
 		got := BriefLintFindings(file, ctx, platform.Env{}, BriefLintOptions{})
 		for _, warning := range got.Warnings {
 			if strings.Contains(warning, "Review:") {

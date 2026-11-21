@@ -187,7 +187,7 @@ func TestDispatchUnseenCheckoutConditionalWarning(t *testing.T) {
 		dir := filepath.Join(f.state, "ws", "briefs")
 		report := filepath.Join(f.state, "ws", "reports", "worker-20200101T100000.md")
 		stable := filepath.Join(f.state, "ws", "reports", "worker-20200101T100000.current.md")
-		writeRoleFixture(t, filepath.Join(dir, "worker-20200101T100000.md"), "You are running as the `implementer` role\nWorktree: "+original+"\n")
+		writeRoleFixture(t, filepath.Join(dir, "worker-20200101T100000.md"), "You are running as the `implementer` role\nWorktree: `"+original+"`\n")
 		pointer, err := json.Marshal(map[string]any{"version": 1, "task_report": stable, "current": report, "history": []string{}})
 		if err != nil {
 			t.Fatal(err)
@@ -225,7 +225,7 @@ func TestDispatchUnseenCheckoutConditionalWarning(t *testing.T) {
 		own := t.TempDir()
 		amend := filepath.Join(f.root, "amend.md")
 		amendment(t, f, main)
-		writeRoleFixture(t, amend, "# Amendment\n\nWorktree: "+own+"\n\nRead `"+cited+"`.\n")
+		writeRoleFixture(t, amend, "# Amendment\n\nWorktree: `"+own+"`\n\nRead `"+cited+"`.\n")
 		before := promptCalls(t, f)
 		code, _, stderr := f.run(t, "worker", amend, "--amend", "--no-wait")
 		if code != 2 || !strings.Contains(stderr, "which the worker in "+own) {

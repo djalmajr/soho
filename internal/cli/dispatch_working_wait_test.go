@@ -115,7 +115,10 @@ func TestDispatchBlockingWaitsForTheReportWhenAWorkingTargetShowsNoPrompt(t *tes
 	if titles := paneTitleCalls(t, f); len(titles) == 0 || titles[0] != wantTitle {
 		t.Fatalf("pane titles=%q: the first must be %q", titles, wantTitle)
 	}
-	if fields := strings.Fields(seen); len(fields) != 3 || !strings.HasPrefix(fields[2], filepath.Join(sd, "briefs", "worker-")) {
+	// The path is the rest of the marker after the first two fields: a
+	// spaced TMPDIR keeps spaces inside the composed brief's path.
+	fields := strings.SplitN(strings.TrimSpace(seen), " ", 3)
+	if len(fields) != 3 || !strings.HasPrefix(fields[2], filepath.Join(sd, "briefs", "worker-")) {
 		t.Fatalf("not-received marker without the prompt path: %q", seen)
 	}
 	sidecars, err := filepath.Glob(filepath.Join(sd, "briefs", "worker-*.dispatch.json"))

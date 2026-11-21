@@ -28,7 +28,7 @@ func TestLintSameRepositoryPathWarnings(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			brief := filepath.Join(t.TempDir(), "brief.md")
-			if err := os.WriteFile(brief, []byte("Worktree: "+tc.tree+"\nRead `messages`.\n"), 0600); err != nil {
+			if err := os.WriteFile(brief, []byte("Worktree: `"+tc.tree+"`\nRead `messages`.\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			got := BriefLintFindings(brief, &core.Config{Entries: map[string]core.ConfigEntry{}}, env, BriefLintOptions{WorkerCwd: tc.tree, OrchestratorCwd: main, PathsOnly: true})

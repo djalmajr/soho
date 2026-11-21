@@ -13,7 +13,12 @@ import (
 func TestComposeAmendmentKeepsOriginalWorktree(t *testing.T) {
 	ctx := &core.Config{Entries: map[string]core.ConfigEntry{}}
 	// Absolute on the platform running the test, Windows included.
-	slice, amended := filepath.Join(t.TempDir(), "slice"), filepath.Join(t.TempDir(), "amend")
+	// The unquoted cases here are about line preservation, not about
+	// spaces; keep their paths space-free when TMPDIR has one. The dedicated
+	// spaced case below stays quoted.
+	spaceFree := func(p string) string { return strings.ReplaceAll(p, " ", "_") }
+	slice := spaceFree(filepath.Join(t.TempDir(), "slice"))
+	amended := spaceFree(filepath.Join(t.TempDir(), "amend"))
 	spaced := filepath.Join(t.TempDir(), "my slice")
 
 	// The original declares the worktree and the amendment does not: the

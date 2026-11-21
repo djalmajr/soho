@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,9 @@ import (
 func TestDeclaredReview(t *testing.T) {
 	abs := filepath.Join(t.TempDir(), "review with spaces.md")
 	other := filepath.Join(t.TempDir(), "other.md")
+	// The bare cases pin first-field parsing, so their path must stay
+	// unquoted and free of spaces even when TMPDIR itself has one.
+	bare := strings.ReplaceAll(other, " ", "_")
 	for _, tc := range []struct {
 		name, body, want string
 	}{
@@ -20,7 +24,7 @@ func TestDeclaredReview(t *testing.T) {
 		{name: "relative", body: "Review: ../review.md"},
 		{name: "case-sensitive", body: "review: /a/b.md"},
 		{name: "native-quoted-spaces", body: "Review: `" + abs + "`", want: abs},
-		{name: "native-bare", body: "Review: " + other + " (the last round)", want: other},
+		{name: "native-bare", body: "Review: " + bare + " (the last round)", want: bare},
 		{name: "backtick-fence", body: "```\nReview: `" + other + "`\n```\nReview: `" + abs + "`", want: abs},
 		{name: "tilde-fence", body: "~~~\nReview: `" + other + "`\n~~~"},
 		{name: "fence-closed-with-tab", body: "```\nReview: `" + other + "`\n```\t\nReview: `" + abs + "`", want: abs},
@@ -33,7 +37,7 @@ func TestDeclaredReview(t *testing.T) {
 		{name: "unclosed-quote", body: "Review: `" + abs},
 		{name: "crlf", body: "```\r\nReview: `" + other + "`\r\n```\r\nReview: `" + abs + "`\r\n", want: abs},
 		{name: "windows-drive", body: "Review: `C:\\repo\\review.md`", want: `C:\repo\review.md`},
-		{name: "bare-then-backticks", body: "Review: " + other + " (see `the report` for detail)", want: other},
+		{name: "bare-then-backticks", body: "Review: " + bare + " (see `the report` for detail)", want: bare},
 		{name: "quoted-then-backticks", body: "Review: `" + abs + "` (branch `feat/x`)", want: abs},
 		{name: "no-review-line", body: "Worktree: /a/b\n\n## Goal\n"},
 	} {

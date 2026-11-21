@@ -76,16 +76,51 @@ func TestUseLaunchSelectionLineage(t *testing.T) {
 	check("input", env)
 }
 
+// wakeSelf returns this test binary at a whitespace-free path. The
+// production reader of WakeHook.Cmd splits the command with strings.Fields
+// (internal/job/wake.go), so a spaced TMPDIR would cut the test binary's
+// path into two argv tokens. JOB_ENV_DUMP is different: the helper reads it
+// raw with os.Getenv (internal/job/managed_helper_test.go), so its path can
+// keep the spaces and needs no quoting.
+func wakeSelf(t *testing.T) string {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Dir(exe)
+	for strings.ContainsAny(base, " \t\r\n") {
+		parent := filepath.Dir(base)
+		if parent == base {
+			t.Fatalf("no whitespace-free ancestor of %q", exe)
+		}
+		base = parent
+	}
+	dir, err := os.MkdirTemp(base, "soh493-wake-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	target := filepath.Join(dir, filepath.Base(exe))
+	if err := os.Link(exe, target); err != nil {
+		data, readErr := os.ReadFile(exe)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if writeErr := os.WriteFile(target, data, 0o755); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	return target
+}
+
 // TestWakeHookEnvironmentIsTheServers: the wake command a bound supervisor
 // runs is a real process whose environment has no private name and every
 // generic selector exactly as the server's — the hook gets the environment
 // cli.Run built without the names (WithoutLaunchLocators), and binding the
 // supervisor to the selection does not touch it.
 func TestWakeHookEnvironmentIsTheServers(t *testing.T) {
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	self := wakeSelf(t)
 	root := t.TempDir()
 	store := Open(root)
 	if _, err := store.Start("job-1", []byte(supTestBrief)); err != nil {

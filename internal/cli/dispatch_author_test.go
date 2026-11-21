@@ -20,7 +20,7 @@ func TestDispatchAuthor(t *testing.T) {
 			}
 			write := func(name, stamp, role, kind, model, submission, worktree string) {
 				base := filepath.Join(dir, name+"-"+stamp)
-				writeRoleFixture(t, base+".md", fmt.Sprintf("You are running as the `%s` role\nWorktree: %s\nType: backend\n", role, worktree))
+				writeRoleFixture(t, base+".md", fmt.Sprintf("You are running as the `%s` role\nWorktree: `%s`\nType: backend\n", role, worktree))
 				roleField := fmt.Sprintf(",\"role\":%q", role)
 				if mode == "legacy-role" {
 					roleField = ""
@@ -41,7 +41,7 @@ func TestDispatchAuthor(t *testing.T) {
 			}
 			body := "Type: review\nReview the slice.\n"
 			if mode != "no-worktree" {
-				body += "Worktree: " + tree + "\n"
+				body += "Worktree: `" + tree + "`\n"
 			}
 			writeRoleFixture(t, f.brief, body)
 			code, out, msg := f.run(t, "worker", f.brief, "--role", "reviewer", "--no-wait")

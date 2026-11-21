@@ -9,6 +9,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -17,7 +18,13 @@ import (
 
 func dja661OverlapFixture(t *testing.T, mine, theirs func(root string) string) string {
 	t.Helper()
-	root := t.TempDir()
+	return dja661OverlapFixtureAt(t, t.TempDir(), mine, theirs)
+}
+
+// dja661OverlapFixtureAt fixes the tree root so a case can put the space
+// in the root itself, not only in an entry below it.
+func dja661OverlapFixtureAt(t *testing.T, root string, mine, theirs func(root string) string) string {
+	t.Helper()
 	h := newTM3bHarnessAt(t, root, strings.Replace(tm3bFullBrief(), "internal/a.go", mine(root), 1))
 	for _, dir := range []string{filepath.Join(h.ws, "briefs"), filepath.Join(h.ws, "reports")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -77,6 +84,15 @@ func TestDJA661AbsoluteOwnedOverlap(t *testing.T) {
 			func(string) string { return "- internal/a.go" })
 		if strings.Contains(got, "owns files") {
 			t.Fatalf("outside-tree entry crossed the tree: %q", got)
+		}
+	})
+	// SOH-493: an entry with a control character is compared raw and shown
+	// escaped, so the warning stays on one line.
+	t.Run("a tab in an overlapping entry is shown escaped", func(t *testing.T) {
+		entry := func(string) string { return "`internal/a\tb.go`" }
+		got := dja661OverlapFixture(t, entry, entry)
+		if !strings.Contains(got, `owns files that 'peer' is still editing: internal/a\tb.go`) || strings.Contains(got, "\t") {
+			t.Fatalf("tab entry not shown escaped on one line: %q", got)
 		}
 	})
 	// Control: the relative overlap the DJA-636 fixture guards still warns.
@@ -145,4 +161,83 @@ func TestOwnedPathForOverlapBackslashFolder(t *testing.T) {
 	if got := ownedPathForOverlap(`C:\work\repo\src\a.go`, `c:/work/repo`, "win32"); got != `src/a.go` {
 		t.Fatalf("backslash file entry = %q; want src/a.go", got)
 	}
+}
+
+// A space inside a quoted Owned entry is part of the path. The overlap
+// reader must keep it through the absolute-to-relative conversion, the
+// folder marker and the tree-root case; a plain token keeps its grammar.
+func TestDJA661OwnedOverlapPathsWithSpaces(t *testing.T) {
+	const dir = "dir with space"
+	q := func(path string) string { return string([]byte{0x60}) + path + string([]byte{0x60}) }
+	qdir := func(path string) string { return string([]byte{0x60}) + path + "/" + string([]byte{0x60}) }
+	wantFor := func(tail string) string { return "owns files that 'peer' is still editing: " + tail }
+	t.Run("absolute file with a space crosses its relative spelling", func(t *testing.T) {
+		got := dja661OverlapFixture(t,
+			func(root string) string { return q(filepath.Join(root, dir, "a.go")) },
+			func(string) string { return q(dir + "/a.go") })
+		if !strings.Contains(got, wantFor(dir+"/a.go")) {
+			t.Fatalf("absolute spaced file did not cross: %q", got)
+		}
+	})
+	t.Run("absolute folder with a space keeps the folder marker", func(t *testing.T) {
+		got := dja661OverlapFixture(t,
+			func(root string) string { return qdir(filepath.Join(root, dir)) },
+			func(string) string { return q(dir + "/") })
+		if !strings.Contains(got, wantFor(dir+"/")) {
+			t.Fatalf("absolute spaced folder did not cross: %q", got)
+		}
+	})
+	t.Run("absolute root with a space covers the tree", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "tree with spaces")
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		got := dja661OverlapFixtureAt(t, root,
+			func(root string) string { return q(root) },
+			func(string) string { return "- internal/a.go" })
+		if !strings.Contains(got, wantFor(".")) {
+			t.Fatalf("spaced tree root did not cover the tree: %q", got)
+		}
+	})
+	t.Run("relative names with spaces cross in either spelling", func(t *testing.T) {
+		got := dja661OverlapFixture(t,
+			func(string) string { return q(dir + "/a.go") },
+			func(string) string { return q(dir + "/a.go") })
+		if !strings.Contains(got, wantFor(dir+"/a.go")) {
+			t.Fatalf("relative spaced names did not cross: %q", got)
+		}
+	})
+	t.Run("quoted space only is admitted and still crosses", func(t *testing.T) {
+		got := dja661OverlapFixture(t,
+			func(string) string { return q(dir + "/a.go") },
+			func(string) string { return q(dir + "/a.go") })
+		if !strings.Contains(got, wantFor(dir+"/a.go")) {
+			t.Fatalf("a quoted path with a space was dropped: %q", got)
+		}
+	})
+	t.Run("quoted space and tab is not admitted", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows filenames cannot contain a tab")
+		}
+		name := "with\ttab.go"
+		got := dja661OverlapFixture(t,
+			func(root string) string { return q(filepath.Join(root, dir, name)) },
+			func(string) string { return q(dir + "/" + name) })
+		if strings.Contains(got, "owns files") {
+			t.Fatalf("a quoted token with a control character reached the warning: %q", got)
+		}
+	})
+	t.Run("plain tokens keep the first-field grammar", func(t *testing.T) {
+		// An unquoted entry still splits on spaces: only the last field is
+		// path-shaped, so the whole spaced name never reaches the warning.
+		got := dja661OverlapFixture(t,
+			func(string) string { return "- " + dir + "/a.go" },
+			func(string) string { return "- " + dir + "/a.go" })
+		if strings.Contains(got, dir+"/a.go") {
+			t.Fatalf("an unquoted spaced token entered the overlap set: %q", got)
+		}
+		if !strings.Contains(got, wantFor("space/a.go")) {
+			t.Fatalf("the plain-token grammar changed: %q", got)
+		}
+	})
 }

@@ -2,12 +2,16 @@ package dispatch
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestDeclaredWorktree(t *testing.T) {
 	abs := filepath.Join(t.TempDir(), "tree with spaces")
 	other := filepath.Join(t.TempDir(), "other")
+	// The bare cases pin first-field parsing, so their path must stay
+	// unquoted and free of spaces even when TMPDIR itself has one.
+	bare := strings.ReplaceAll(other, " ", "_")
 	for _, tc := range []struct {
 		name, body, want string
 	}{
@@ -16,7 +20,7 @@ func TestDeclaredWorktree(t *testing.T) {
 		{name: "relative", body: "Worktree: .worktrees/x"},
 		{name: "case-sensitive", body: "worktree: /a/b"},
 		{name: "native-quoted-spaces", body: "Worktree: `" + abs + "` (branch y)", want: abs},
-		{name: "native-bare", body: "Worktree: " + other + " (branch y)", want: other},
+		{name: "native-bare", body: "Worktree: " + bare + " (branch y)", want: bare},
 		{name: "backtick-fence", body: "```md\nWorktree: `" + other + "`\n```\nWorktree: `" + abs + "`", want: abs},
 		{name: "tilde-fence", body: "~~~md\nWorktree: `" + other + "`\n~~~"},
 		{name: "fence-closed-with-tab", body: "```md\nWorktree: `" + other + "`\n```\t\nWorktree: `" + abs + "`", want: abs},
@@ -30,7 +34,7 @@ func TestDeclaredWorktree(t *testing.T) {
 		{name: "crlf", body: "```md\r\nWorktree: `" + other + "`\r\n```\r\nWorktree: `" + abs + "`\r\n", want: abs},
 		{name: "windows-drive", body: "Worktree: `C:\\repo\\worktree`", want: `C:\repo\worktree`},
 		{name: "windows-unc", body: "Worktree: `\\\\server\\share\\tree`", want: `\\server\share\tree`},
-		{name: "bare-then-backticks", body: "Worktree: " + other + " (branch `feat/x`, commit `a4224d0`, on `main`). Work only in `web/`.", want: other},
+		{name: "bare-then-backticks", body: "Worktree: " + bare + " (branch `feat/x`, commit `a4224d0`, on `main`). Work only in `web/`.", want: bare},
 		{name: "quoted-then-backticks", body: "Worktree: `" + abs + "` (branch `feat/x`)", want: abs},
 		{name: "relative-then-backticks", body: "Worktree: .worktrees/x (branch `feat/x`)"},
 	} {

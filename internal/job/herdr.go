@@ -306,6 +306,14 @@ func parsePanes(out string) ([]herdrPane, bool) {
 // %...%, which stays refused.
 var safePaneRunArg = regexp.MustCompile(`^(?:[A-Za-z0-9._/:\\=-]|[A-Za-z0-9]~[0-9]+)+$`)
 
+// PaneRunArgSafe is the single admission rule for `herdr pane run` arguments
+// and pane ids. Callers that launch a supervisor preflight their launcher
+// with it before they create anything; Run applies it again at the boundary.
+// It never widens what pane run accepts.
+func PaneRunArgSafe(arg string) bool {
+	return safePaneRunArg.MatchString(arg)
+}
+
 // Run starts an argv in an existing pane:
 // `herdr pane run <paneID> <argv...>`. It refuses an empty paneID or any
 // empty or unsafe argument with exit 4 before anything runs, because
@@ -314,11 +322,11 @@ var safePaneRunArg = regexp.MustCompile(`^(?:[A-Za-z0-9._/:\\=-]|[A-Za-z0-9]~[0-
 //
 // TODO(DJA-194): verify that herdr pane run passes argv to a pane at a shell prompt without shell re-interpretation (premise 3).
 func (c *herdrCLI) Run(paneID string, argv []string) error {
-	if !safePaneRunArg.MatchString(paneID) {
+	if !PaneRunArgSafe(paneID) {
 		return herdrExit("job: herdr pane run refused an unsafe argument")
 	}
 	for _, arg := range argv {
-		if !safePaneRunArg.MatchString(arg) {
+		if !PaneRunArgSafe(arg) {
 			return herdrExit("job: herdr pane run refused an unsafe argument")
 		}
 	}

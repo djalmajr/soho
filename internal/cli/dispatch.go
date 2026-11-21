@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/collaboration"
@@ -31,6 +32,7 @@ import (
 	"github.com/djalmajr/soho/internal/startup"
 	"github.com/djalmajr/soho/internal/stats"
 	"github.com/djalmajr/soho/internal/taskreport"
+	"github.com/djalmajr/soho/internal/text"
 	"github.com/djalmajr/soho/internal/transcript"
 	"github.com/djalmajr/soho/internal/transport"
 	waitpkg "github.com/djalmajr/soho/internal/wait"
@@ -2399,9 +2401,15 @@ func warnOwnedOverlap(brief, role, agent, sd string, ctx *core.Config, env platf
 		if len(hits) > 5 {
 			hits = hits[:5]
 		}
-		message := fmt.Sprintf("brief %s owns files that '%s' is still editing: %s", brief, cols[0], strings.Join(hits, ", "))
+		// Paths are compared raw and shown escaped, so a control character
+		// in a brief name or an Owned entry stays on one line.
+		shown := make([]string, len(hits))
+		for i, hit := range hits {
+			shown[i] = text.QuoteControls(hit)
+		}
+		message := fmt.Sprintf("brief %s owns files that '%s' is still editing: %s", text.QuoteControls(brief), cols[0], strings.Join(shown, ", "))
 		if !core.RoleIsEdit(role, env, cwd) {
-			message = fmt.Sprintf("reviewing files that '%s' is still editing: %s", cols[0], strings.Join(hits, ", "))
+			message = fmt.Sprintf("reviewing files that '%s' is still editing: %s", cols[0], strings.Join(shown, ", "))
 		}
 		core.Warn(message, frictionLogPath, "dispatch")
 	}
@@ -2519,7 +2527,12 @@ func ownedPathsIn(body string, aliases map[string][]string, tree string, concret
 		return nil
 	}
 	out, seen := []string{}, map[string]bool{}
-	push := func(raw string) {
+	// A backticked Owned entry is one token even when its path has a space,
+	// but only when the warning can render that token on one line: a literal
+	// control would reach stderr raw. A plain token keeps the baseline's
+	// literal-space rejection; shape, deduplication and containment stay
+	// identical for both.
+	push := func(raw string, quoted bool) {
 		p := strings.TrimSpace(raw)
 		for strings.HasPrefix(p, "./") {
 			p = strings.TrimPrefix(p, "./")
@@ -2531,7 +2544,10 @@ func ownedPathsIn(body string, aliases map[string][]string, tree string, concret
 		if concrete && !strings.ContainsAny(trimmed, "/.") && !gittree.PathEntryAbsolute(trimmed, platform.Current()) {
 			return
 		}
-		if trimmed == "" || strings.Contains(trimmed, " ") || ownershipStopwords[strings.ToLower(trimmed)] || seen[strings.TrimRight(trimmed, "/")] {
+		if trimmed == "" || (!quoted && strings.Contains(trimmed, " ")) || ownershipStopwords[strings.ToLower(trimmed)] || seen[strings.TrimRight(trimmed, "/")] {
+			return
+		}
+		if quoted && strings.Contains(trimmed, " ") && strings.IndexFunc(trimmed, unicode.IsControl) >= 0 {
 			return
 		}
 		seen[strings.TrimRight(trimmed, "/")] = true
@@ -2572,7 +2588,7 @@ func ownedPathsIn(body string, aliases map[string][]string, tree string, concret
 			quoted = append(quoted, line[m[0]+1:m[1]-1])
 		}
 		for _, token := range ownedItemValues(line, item, quoted, len(spans), tree, concrete) {
-			push(token)
+			push(token, !concrete && len(spans) > 0)
 		}
 	}
 	return out
