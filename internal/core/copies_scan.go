@@ -26,6 +26,25 @@ func UnregisteredCopies(dirs []string, rows []CopyRow, now time.Time, threshold 
 		}
 	}
 	var out []UnregisteredCopy
+	VisitCopyScanEntries(dirs, func(path, resolved string, info os.FileInfo) bool {
+		if registered[resolved] {
+			return true
+		}
+		age := now.Sub(info.ModTime())
+		if age <= threshold {
+			return true
+		}
+		out = append(out, UnregisteredCopy{Path: path, Age: age})
+		return true
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// VisitCopyScanEntries visits direct soho-mutation-* entries that resolve
+// to directories. The callback receives the scanned path, resolved path
+// and target metadata. Returning false stops the scan.
+func VisitCopyScanEntries(dirs []string, visit func(path, resolved string, info os.FileInfo) bool) {
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -41,18 +60,14 @@ func UnregisteredCopies(dirs []string, rows []CopyRow, now time.Time, threshold 
 				continue
 			}
 			resolved, err := filepath.EvalSymlinks(path)
-			if err != nil || registered[resolved] {
+			if err != nil {
 				continue
 			}
-			age := now.Sub(info.ModTime())
-			if age <= threshold {
-				continue
+			if !visit(path, resolved, info) {
+				return
 			}
-			out = append(out, UnregisteredCopy{Path: path, Age: age})
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out
 }
 
 // ReadCopyOriginMarker validates the marker used by gc and doctor.

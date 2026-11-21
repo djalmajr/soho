@@ -54,7 +54,7 @@ func TestWorkerStateRegistryValues(t *testing.T) {
 				if value == "valid" || value == "queued" {
 					want, owner = target, "registry-worker"
 				}
-				copyDir := filepath.Join(f.root, "registered-copy")
+				copyDir := filepath.Join(f.tmp, "soho-mutation-registered-copy")
 				args := []string{command}
 				pid := 987654321 // simulated, never inspected by native ps or killed
 				switch command {

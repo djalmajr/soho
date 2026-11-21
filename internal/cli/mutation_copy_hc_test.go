@@ -289,7 +289,7 @@ func TestMutationCopyHCRegistrationFallback(t *testing.T) {
 				cause = os.ErrPermission
 			}
 			refuseCopiesRegistry(t, cause)
-			dest := filepath.Join(f.root, "copy")
+			dest := filepath.Join(f.tmp, "soho-mutation-copy")
 			code, out, stderr := runMutationCopyCmd(t, f, f.source, nil, "--source", f.source, "--dest", dest, "--print-path")
 			want := "mutation-copy: copy not registered (disk full); remove it yourself when done\n"
 			if queued {
