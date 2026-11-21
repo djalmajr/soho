@@ -6,7 +6,7 @@ import "testing"
 // command after help is the unknown-command error.
 func TestHelpCommandPrintsTheCommandLines(t *testing.T) {
 	env, cwd := commandFixture(t)
-	for _, command := range []string{"gc", "friction", "spawn", "kinds", "gate", "mutation-guard"} {
+	for _, command := range []string{"gc", "friction", "spawn", "kinds", "gate", "mutation-guard", "review-context"} {
 		code, out, errOut := runIn(t, []string{"help", command}, env, cwd)
 		wantCode, want, _ := runIn(t, []string{command, "--help"}, env, cwd)
 		if code != 0 || wantCode != 0 || out != want || out == usage || errOut != "" {

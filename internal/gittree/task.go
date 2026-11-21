@@ -27,8 +27,10 @@ func git(env platform.Env, tree string, args ...string) (string, bool) {
 	return strings.TrimSpace(out), ok
 }
 
-// gitOutput is the shared read-only runner, preserving raw stat/path output.
-func gitOutput(env platform.Env, tree string, args ...string) (string, bool) {
+// CleanGitEnv drops the repository-targeting selectors from a child Git
+// environment and disables optional locks. Exported so read-only Git callers
+// outside this package share one cleaned environment with gitOutput.
+func CleanGitEnv(env platform.Env) platform.Env {
 	clean := platform.Env{}
 	for k, v := range env {
 		switch strings.ToUpper(k) {
@@ -38,7 +40,12 @@ func gitOutput(env platform.Env, tree string, args ...string) (string, bool) {
 		clean[k] = v
 	}
 	clean["GIT_OPTIONAL_LOCKS"] = "0"
-	r := platform.RunCli("git", append([]string{"-C", tree}, args...), platform.RunOptions{Env: clean, TimeoutMs: 5000})
+	return clean
+}
+
+// gitOutput is the shared read-only runner, preserving raw stat/path output.
+func gitOutput(env platform.Env, tree string, args ...string) (string, bool) {
+	r := platform.RunCli("git", append([]string{"-C", tree}, args...), platform.RunOptions{Env: CleanGitEnv(env), TimeoutMs: 5000})
 	return r.Stdout, r.Status != nil && *r.Status == 0 && !r.TimedOut && r.Error == ""
 }
 
