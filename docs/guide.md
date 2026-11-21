@@ -343,6 +343,29 @@ Review reports open with the fixed first line `findings: N (P0 a, P1 b, P2 c, P3
 
 The `dispatch` JSON is one line with `wait_status` first (`dispatch … | tail -1` returns the whole JSON). When an amendment re-pointed the report mid-wait, it gains `settled_report` (right after `report`), and `report_exists` qualifies that report. Before the send, `dispatch` warns when the new brief owns files another worker is still editing (advisory, up to five paths). When two briefs declare different absolute paths in `Worktree:` lines, they are in different trees, so neither the owned-files warning nor the shared-tree note is added. The `Worktree:` line also feeds review author measurement (`soho stats --by author-model`): declare it in both the review's and the implementer's brief, the project root when the slice has no worktree of its own; an amendment without the line keeps the original's, and a review dispatch that cannot be tied to an author gets one advisory warning and never a refusal. A codex worker's composed prompt carries the sandbox notes — no writing under `.git`, no network (local ports included) — unless its opening args grant the access; the network note tells the worker to still write the integration tests the brief asks for — marked `[partial]`, with a test seam when the code depends on a fixed value. An `unavailable` that is a `herdr agent get` killed by a signal (exit ≥ 128, e.g. 137 under load) is retried (after 1 s, then 2 s) before counting; the cause then names the signal (`herdr agent get was killed (exit <rc>, <signal>: memory pressure or an external kill)`).
 
+## Long unattended runs
+
+This is an index, not a command sequence: each item names one decision or check and points to the authority that owns its syntax.
+
+### Before leaving
+
+- Write the finish condition in the brief: the expected result, acceptance criteria and the command that proves each one ([skill: Briefs are contracts](../skills/soho/SKILL.md#briefs-are-contracts)).
+- State the effective `approvals` level the workers will run with ([Configuration](#configuration)).
+- Set the limit you accept for a blocked worker: `soho wait` reports `blocked` (exit 7), and a question is never answered for the worker ([Waiting for workers](#waiting-for-workers)).
+- Stop at a clean point: integrate and review the current slice, then commit it yourself; workers never commit or push ([skill: Orchestrator flow](../skills/soho/SKILL.md#orchestrator-flow--soho-objective)).
+- On native Core, arm a wake and end the turn: `soho wait <agent> --wake` arms exactly the named agents and replaces this caller's earlier wakes; with `--add`, agents already covered by a live wake of this caller are skipped and the rest get their own wake ([skill: Commands](../skills/soho/SKILL.md#commands)).
+- On the legacy TUI `--wake` is refused (exit 2): wait in the foreground with `soho wait <agent>` ([Waiting for workers](#waiting-for-workers)).
+
+### In the morning
+
+- Team runs: `soho status` gives the non-blocking state of each worker and its report path when it has one ([Waiting for workers](#waiting-for-workers)).
+- Team runs: `soho explain` gives a plain-text view of what is running ([skill: Commands](../skills/soho/SKILL.md#commands)).
+- Ephemeral jobs run with `transport=herdr`: under `transport=hc` every `soho job` command is refused (exit 2), so prefix them with `SOHO_TRANSPORT=herdr`.
+- Ephemeral jobs: `soho job status --id <id>` gives state, event count, pending decisions and partial collaborations ([job contract](job-contract.md#status)).
+- Ephemeral jobs: `soho job events --id <id> --since <seq>` reads the event log from the last seq you handled ([job contract](job-contract.md#events)).
+- Ephemeral jobs: `soho job collect --id <id> --md` reads the stored Markdown report when there is one, and exits 4 when there is none ([job contract](job-contract.md)).
+- Read decisions that need an answer first: the report's open questions (`## Open questions for the orchestrator` in the [report template](../skills/soho/templates/report.md)).
+
 ## Reusing workers
 
 For `spawn --cwd <worktree>`, Codex must preserve the pane's `SOHO_REGISTRY_DIR` for resource registration: when a role or lane uses Codex, `doctor` checks the user config's `[shell_environment_policy] include_only` and warns if no pattern allows it; add `"SOHO_*"` to that list yourself (Soho does not edit Codex configuration).

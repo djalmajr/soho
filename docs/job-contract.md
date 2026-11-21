@@ -268,6 +268,8 @@ A job in worktree mode that would end `done` must have a verified final publicat
 }
 ```
 
+The `resumo` is the short orientation from `job collect`; follow `eventos` (`total`, `ultimo_seq`) and the [event log](#events) for what happened.
+
 - `done`: every item `[done]` or `[skipped]` with a reason (items under a `## Follow-ups` heading may stay visibly `[partial]`), the acceptance checks pass, the review passes when code changed, and `sincronizado` is true. For a publishing (worktree) job, a new `done` is announced only after the supervisor captured and durably saved a verified final publication (see Final publication); a Git-free workspace job has no publication to verify and keeps its own `done` semantics (no git runs and `sincronizado` is false). When the job orchestrator completed but a collaboration was still partial after the graceful closure, the job is still `done` (exit 0) and says so explicitly: `partial: true` and the collaboration IDs in `partial_collaborations`, with the detail in `colaboracoes`. A dispatcher must read those fields; `done` alone does not mean every collaboration finished.
 - `failed`: partial items with no pending decision (not counting items under a `## Follow-ups` heading), a failed check or review, or a job orchestrator that settled without a report or disappeared.
 - `blocked`: an unresolved question, dialog, quota or provider error; the question goes in `perguntas`.
