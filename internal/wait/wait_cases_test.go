@@ -150,6 +150,7 @@ func TestWaitJavaScriptStateProbeCases(t *testing.T) {
 	t.Run("wait: quota wins over a provider stop on the same screen", func(t *testing.T) { // JS: "wait: quota wins over a provider stop on the same screen"
 		// Mutation captured: prioritizing the Connection error on this screen returns provider-error (14), not quota (11).
 		f := newQueuedProbeFixture(t, "idle", "5", "Individual quota reached\nError: Connection error.\n", nil)
+		f.ctx.Entries["panes"] = core.ConfigEntry{Value: "4"}
 		f.env["SOHO_DIR"] = filepath.Dir(f.sd)
 		f.env["HERDR_WORKSPACE_ID"] = filepath.Base(f.sd)
 		oldOut, oldErr := platform.Stdout, platform.Stderr
@@ -157,7 +158,7 @@ func TestWaitJavaScriptStateProbeCases(t *testing.T) {
 		platform.Stdout, platform.Stderr = &out, &errOut
 		t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
 		code := CmdWait([]string{"worker", "--timeout", "100"}, f.ctx, f.env, "")
-		if code != 11 || !strings.Contains(errOut.String(), "warning: quota: agent 'worker' lane=build kind=claude model=? : Individual quota reached") {
+		if code != 11 || !strings.Contains(errOut.String(), "warning: quota: agent 'worker' lane=builders kind=claude model=? : Individual quota reached") {
 			t.Fatalf("wait code=%d stderr=%q", code, errOut.String())
 		}
 		if !strings.Contains(out.String(), `"status":"quota"`) || !strings.Contains(out.String(), `"match":"Individual quota reached"`) {
