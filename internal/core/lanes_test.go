@@ -572,7 +572,7 @@ func TestMigrateLaneModelUsesLastKindAlias(t *testing.T) {
 			write(t, file, "lane.review.kind=agy\nlane_review_kind="+tc.last+"\n")
 			write(t, filepath.Join(cwd, ".agents", "soho-roles", "reviewer.md"), "---\nkind: agy\nmodel: sonnet\n---\n")
 			acc := &laneMigration{}
-			MigrateLaneAttr(file, "review", "reviewer", "model", acc, env, cwd, "project", false, false)
+			MigrateLaneAttr(file, "review", "reviewer", "model", acc, env, cwd, "project", false, false, false)
 			data, err := os.ReadFile(file)
 			if err != nil {
 				t.Fatal(err)

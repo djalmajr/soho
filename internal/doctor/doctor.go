@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -292,14 +293,8 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 	before, _ := platform.ReadTextFile(dest)
 	before = strings.TrimRight(before, "\n")
 	hadOwnLayout := core.FileKeyValue(dest, "panes") != "" || core.FileLaneSignature(dest) != ""
-	repairEnv := platform.Env{}
-	for key, value := range env {
-		if !core.LayoutCapacityOverride(key) {
-			repairEnv[key] = value
-		}
-	}
-	selected := core.LoadConfigThrough(repairEnv, cwd, where)
-	if !core.IsPresetLaneSignature(core.FileLaneSignature(dest), core.PaneMode(&selected, repairEnv)) {
+	repairEnv := core.PresetRepairEnv(env)
+	if !doctorCanRepairPreset(dest, where, repairEnv, cwd) {
 		fmt.Fprintf(platform.Stderr, "doctor --fix: custom group roles in %s; left the file unchanged.\n", textutil.QuoteControls(dest))
 		return
 	}
@@ -1031,6 +1026,11 @@ func usedKinds(ctx *core.Config, env platform.Env, cwd string) []string {
 	return out
 }
 
+func doctorCanRepairPreset(dest, where string, env platform.Env, cwd string) bool {
+	selected := core.LoadConfigThrough(env, cwd, where)
+	return core.IsPresetLaneSignature(core.FileLaneSignature(dest), core.PaneMode(&selected, nil))
+}
+
 func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) {
 	src := core.CfgSource(ctx, "panes", env)
 	p := core.Cfg(ctx, "panes", "4", env)
@@ -1038,6 +1038,8 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 		s.Warning(fmt.Sprintf("config: lanes='%s' is not on|off", v))
 	}
 	entry := entryScript(env)
+	eff := core.EffectiveLaneSignature(ctx, env)
+	custom := !core.IsPresetLaneSignature(eff, core.PaneMode(ctx, env))
 	// Native Core workers have no panel: the pane-count advice (ask for 2, 3
 	// or 4 panes) and the split_max_panes alignment below are legacy-TUI
 	// layout advice and stay off with transport=hc.
@@ -1046,12 +1048,20 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 		// no pane-count line on native Core
 	} else if p == "2" || p == "3" || p == "4" {
 		if src == "defaults" || src == "builtin" {
-			s.Warning(fmt.Sprintf("config: panes is not set in the project or user file (default %s). Ask the user for 2, 3 or 4 panes, then run '%s doctor --fix --panes <n>' with their answer.", p, entry))
+			message := fmt.Sprintf("config: panes is not set in the project or user file (default %s).", p)
+			if doctorCanRepairPreset(core.ConfigFileFor("project", env, cwd), "project", env, cwd) {
+				message += fmt.Sprintf(" Ask the user for 2, 3 or 4 panes, then run '%s doctor --fix --panes <n>' with their answer.", entry)
+			}
+			s.Warning(message)
 		} else {
 			s.Ok(fmt.Sprintf("config: panes=%s (%s)", p, src))
 		}
 	} else {
-		s.Warning(fmt.Sprintf("config: panes='%s' is not 2, 3 or 4 (doctor --fix --panes 2|3|4 writes a preset)", p))
+		message := fmt.Sprintf("config: panes='%s' is not 2, 3 or 4.", p)
+		if command := core.PresetRepairCommand(ctx, src); !custom && command != "" {
+			message += fmt.Sprintf(" Use '%s' for the %s preset.", command, src)
+		}
+		s.Warning(message)
 	}
 	mode := core.Cfg(ctx, "pane_mode", "strict", env)
 	if mode == "strict" {
@@ -1063,8 +1073,6 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 	}
 	unknown, dups, mixed := "", "", ""
 	seen := map[string]bool{}
-	eff := core.EffectiveLaneSignature(ctx, env)
-	custom := !core.IsPresetLaneSignature(eff, core.PaneMode(ctx, env))
 	for _, lane := range core.LaneNames(ctx, env) {
 		roles := core.LaneRolesCSV(ctx, lane, env)
 		edit, review := false, false
@@ -1122,7 +1130,7 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 				name, _, _ := strings.Cut(line, "=")
 				names = append(names, name)
 			}
-			s.Warning(fmt.Sprintf("lanes: the lanes come from an old preset (%s); run '%s doctor --fix --panes %s' to move to the current groups.", strings.Join(names, ", "), entry, core.PanesValue(ctx, env)))
+			s.Warning(fmt.Sprintf("lanes: the lanes come from an old preset (%s).", strings.Join(names, ", ")))
 			break
 		}
 	}
@@ -1153,7 +1161,12 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 		if value == "" || knownLanes[lane] || (!core.CustomLanesPresent(ctx, env) && lane == "reviewers") {
 			continue
 		}
-		s.Warning(fmt.Sprintf("config: lane.%s.%s=%s (%s) sets a lane that does not exist (lanes: %s). doctor --fix removes it.", lane, attr, textutil.QuoteControls(value), core.CfgSource(ctx, key, env), strings.Join(lanesForOrphans, " ")))
+		source := core.CfgSource(ctx, key, env)
+		message := fmt.Sprintf("config: lane.%s.%s=%s (%s) sets a lane that does not exist (lanes: %s).", lane, attr, textutil.QuoteControls(value), source, strings.Join(lanesForOrphans, " "))
+		if command := core.PresetRepairCommand(ctx, source); command != "" && !slices.Contains(core.PresetLaneNamesFor("4", "strict"), lane) {
+			message += " '" + command + "' removes the old key."
+		}
+		s.Warning(message)
 	}
 	lanes := core.LaneNames(ctx, env)
 	caps := []string{}
@@ -1212,7 +1225,11 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 			}
 		}
 		if e == nil && n > ref {
-			s.Warning(fmt.Sprintf("config: split_max_panes=%s is greater than 1 + max_workers=%d. Set split_max_panes=%d (doctor --fix aligns it).", sp, mw, ref))
+			message := fmt.Sprintf("config: split_max_panes=%s is greater than 1 + max_workers=%d. Set split_max_panes=%d.", sp, mw, ref)
+			if command := core.PresetRepairCommand(ctx, core.CfgSource(ctx, "split_max_panes", env)); !custom && command != "" {
+				message += " '" + command + "' aligns it."
+			}
+			s.Warning(message)
 		}
 		if core.LanesEnabled(ctx, env) && e == nil && n < ref {
 			s.Warning(fmt.Sprintf("config: split_max_panes=%s leaves no room for the whole team (1 + max_workers=%d); the last workers will open in a herd tab. Remove split_max_panes or set %d.", sp, mw, ref))
@@ -1228,7 +1245,11 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 	for _, key := range plannerKeys {
 		source := core.CfgSource(ctx, key, env)
 		if source == "user" || source == "project" || source == "env" || source == "session" {
-			s.Warning(fmt.Sprintf("config: %s is set (%s) but the planner is the orchestrator and opens no pane. Remove it (doctor --fix).", key, source))
+			message := fmt.Sprintf("config: %s is set (%s) but the planner is the orchestrator and opens no pane. Remove it.", key, source)
+			if command := core.PresetRepairCommand(ctx, source); command != "" && strings.HasPrefix(ctx.Entries[key].Original, "role.planner.") {
+				message += " '" + command + "' removes it."
+			}
+			s.Warning(message)
 		}
 	}
 }

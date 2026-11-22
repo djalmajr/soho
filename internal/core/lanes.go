@@ -143,11 +143,10 @@ func LegacyPresetSignature(p string) string {
 }
 
 // legacyPresetShapes are the lane role lists that earlier soho versions wrote
-// as the panes preset, from oldest to newest: a strict pair without tester
-// and validator, the strict two-panel build-only shapes, and the strict
-// and flex layouts before and after the dedicated critical lane.
+// as the panes preset. Older shapes retain their mode restriction. The last
+// three entries match the immediate predecessor in either destination mode.
 type legacyPresetShape struct {
-	mode  string
+	mode  string // Empty permits either destination mode.
 	lanes map[string]string
 }
 
@@ -157,9 +156,9 @@ var legacyPresetShapes = []legacyPresetShape{
 	{"flex", map[string]string{"build": "implementer,designer,tasker,scouter,researcher", "review": "reviewer,security-reviewer,ui-reviewer,inspector", "docs": "documenter"}},
 	{"strict", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,documenter,tester", "review": "reviewer,security-reviewer,ui-reviewer,inspector,validator"}},
 	{"flex", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,tester", "review": "reviewer,security-reviewer,ui-reviewer,inspector,validator", "docs": "documenter"}},
-	{"strict", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,documenter,tester"}},
-	{"strict", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,documenter,tester", "critical": "critical-implementer", "review": "reviewer,security-reviewer,ui-reviewer,inspector,validator"}},
-	{"flex", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,tester", "critical": "critical-implementer", "review": "reviewer,security-reviewer,ui-reviewer,inspector,validator", "docs": "documenter"}},
+	{"", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,documenter,tester"}},
+	{"", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,documenter,tester", "critical": "critical-implementer", "review": "reviewer,security-reviewer,ui-reviewer,inspector,validator"}},
+	{"", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,tester", "critical": "critical-implementer", "review": "reviewer,security-reviewer,ui-reviewer,inspector,validator", "docs": "documenter"}},
 }
 
 func legacyPresetSignature(s legacyPresetShape) string {
@@ -172,16 +171,13 @@ func legacyPresetSignature(s legacyPresetShape) string {
 }
 
 // IsLegacyPresetSignature reports whether sig — in the FileLaneSignature
-// format — is one of the preset shapes an earlier soho version wrote, for
-// the given pane mode. The match is on mode and shape: the panes value is
-// what the caller writes, so the old two-panel build-only shape also
-// migrates when the owner moves the same file to three panels.
+// format — is a preset an earlier soho version wrote.
 func IsLegacyPresetSignature(sig, mode string) bool {
 	if sig == "" {
 		return false
 	}
 	for _, s := range legacyPresetShapes {
-		if s.mode == mode && legacyPresetSignature(s) == sig {
+		if (s.mode == "" || s.mode == mode) && legacyPresetSignature(s) == sig {
 			return true
 		}
 	}
@@ -813,6 +809,13 @@ func ConfigDropLegacy(file string, opts DropLegacyOptions) error {
 	if err != nil {
 		return &platform.ExitError{Code: 4, Msg: fmt.Sprintf("could not rewrite %s (file left untouched)", file)}
 	}
+	if err := platform.AtomicWrite(file, configDropLegacyText(raw, opts)); err != nil {
+		return &platform.ExitError{Code: 4, Msg: fmt.Sprintf("could not rewrite %s (file left untouched)", file)}
+	}
+	return nil
+}
+
+func configDropLegacyText(raw string, opts DropLegacyOptions) string {
 	kinds, models := map[string]bool{}, map[string]bool{}
 	for _, v := range opts.DropKind {
 		kinds[v] = true
@@ -847,14 +850,10 @@ func ConfigDropLegacy(file string, opts DropLegacyOptions) error {
 			out = append(out, line)
 		}
 	}
-	content := ""
 	if len(out) > 0 {
-		content = strings.Join(out, "\n") + "\n"
+		return strings.Join(out, "\n") + "\n"
 	}
-	if err := platform.AtomicWrite(file, content); err != nil {
-		return &platform.ExitError{Code: 4, Msg: fmt.Sprintf("could not rewrite %s (file left untouched)", file)}
-	}
-	return nil
+	return ""
 }
 func FileRoleResolved(file, role, attr string, env platform.Env, cwd string) string {
 	v := FileKeyValue(file, "role."+role+"."+attr)
@@ -868,7 +867,7 @@ func FileRoleResolved(file, role, attr string, env platform.Env, cwd string) str
 
 type laneMigration struct{ DropKind, DropModel, Lines []string }
 
-func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env platform.Env, cwd, through string, decided, explicitKind bool) {
+func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env platform.Env, cwd, through string, decided, explicitKind, preserveBuilders bool) {
 	ctx := LoadConfigThrough(env, cwd, through)
 	key := "lane." + lane + "." + attr
 	kindLayer := LaneKindLayer(&ctx, lane, env)
@@ -892,13 +891,14 @@ func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env 
 		kindLayer = destinationRank
 	}
 	// A decided lane wins over roles; preserve the role keys without migrating them.
-	if decided || LaneAttr(&ctx, lane, attr, &kindLayer, env) != "" || (localValue(key) != "" && (attr != "model" || kindLayer <= destinationRank)) {
+	if decided || (preserveBuilders && attr == "model" && explicitKind) || LaneAttr(&ctx, lane, attr, &kindLayer, env) != "" || (localValue(key) != "" && (attr != "model" || kindLayer <= destinationRank)) {
 		return
 	}
 	laneKind := FileKeyValue(file, "lane."+lane+".kind")
 	first, have, agree := "", false, true
 	vals := []string{}
-	for _, role := range SplitRoles(rolesCSV) {
+	roles := SplitRoles(rolesCSV)
+	for _, role := range roles {
 		if role == "planner" || role == "documenter" || role == "critical-implementer" {
 			continue
 		}
@@ -931,18 +931,26 @@ func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env 
 		return
 	}
 	if agree && first != "" {
-		ConfigWritePair(file, "lane."+lane+"."+attr, first, env, cwd)
-		acc.Lines = append(acc.Lines, "set lane."+lane+"."+attr+"="+first)
-		for _, role := range SplitRoles(rolesCSV) {
+		drop := DropLegacyOptions{DropKind: slices.Clone(acc.DropKind), DropModel: slices.Clone(acc.DropModel)}
+		for _, role := range roles {
 			if role == "planner" || role == "documenter" || role == "critical-implementer" {
 				continue
 			}
 			if attr == "kind" {
-				acc.DropKind = append(acc.DropKind, role)
+				drop.DropKind = append(drop.DropKind, role)
 			} else {
-				acc.DropModel = append(acc.DropModel, role)
+				drop.DropModel = append(drop.DropModel, role)
 			}
 		}
+		if preserveBuilders {
+			pending := DropLegacyOptions{DropKind: acc.DropKind, DropModel: acc.DropModel}
+			if !builderPromotionPreservesSettings(file, lane, roles, attr, first, pending, drop, &ctx, env, cwd, through) {
+				return
+			}
+		}
+		ConfigWritePair(file, key, first, env, cwd)
+		acc.Lines = append(acc.Lines, "set "+key+"="+first)
+		acc.DropKind, acc.DropModel = drop.DropKind, drop.DropModel
 		return
 	}
 	if !agree {
@@ -1039,8 +1047,9 @@ func ApplyLaneFileThrough(file, panes string, env platform.Env, cwd, through str
 				modelDecided = lane.Model != ""
 			}
 		}
-		MigrateLaneAttr(file, pair[0], pair[1], "kind", &acc, env, cwd, through, kindDecided, kindDecided)
-		MigrateLaneAttr(file, pair[0], pair[1], "model", &acc, env, cwd, through, modelDecided, kindDecided)
+		preserveBuilders := isPreset && pair[0] == "builders"
+		MigrateLaneAttr(file, pair[0], pair[1], "kind", &acc, env, cwd, through, kindDecided, kindDecided, preserveBuilders)
+		MigrateLaneAttr(file, pair[0], pair[1], "model", &acc, env, cwd, through, modelDecided, kindDecided, preserveBuilders)
 	}
 	if err := ConfigDropLegacy(file, DropLegacyOptions{acc.DropKind, acc.DropModel, isPreset}); err != nil {
 		panic(err)

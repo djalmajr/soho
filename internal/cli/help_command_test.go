@@ -1,6 +1,9 @@
 package cli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // SOH-307: help <command> prints what <command> --help prints; an unknown
 // command after help is the unknown-command error.
@@ -23,5 +26,14 @@ func TestHelpCommandPrintsTheCommandLines(t *testing.T) {
 	code, out, errOut := runIn(t, []string{"help", "nope"}, env, cwd)
 	if code != 2 || out != "" || errOut != "soho: unknown command 'nope'\n" {
 		t.Fatalf("help nope: code=%d out=%q err=%q", code, out, errOut)
+	}
+}
+
+func TestSetupPlanHelpListsBothSelectors(t *testing.T) {
+	env, cwd := commandFixture(t)
+	code, out, stderr := runIn(t, []string{"--help"}, env, cwd)
+	const flags = "--plan [--panes 2|3|4] [--lane name=kind[:model[:effort]]] [--role name=kind[:model[:effort]]]"
+	if code != 0 || !strings.Contains(out, flags) {
+		t.Fatalf("help: code=%d out=%q stderr=%q; missing %q", code, out, stderr, flags)
 	}
 }

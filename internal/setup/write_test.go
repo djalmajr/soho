@@ -1022,3 +1022,29 @@ func TestSetupRepairsExistingManagedFiles(t *testing.T) {
 		})
 	}
 }
+
+func TestSetupRunsShippedBuilderProviderExample(t *testing.T) {
+	root, env, ctx := setupWriteFixture(t)
+	raw, err := os.ReadFile(filepath.Join(env.Get("SOHO_SKILL_DIR"), "config.defaults"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tail, ok := strings.Cut(string(raw), "(setup --lane ")
+	spec, _, closed := strings.Cut(tail, "):")
+	if !ok || !closed || strings.Contains(spec, "\n") {
+		t.Fatal("missing runnable provider example in config.defaults")
+	}
+	code, out, stderr := runSetupWrite([]string{"--no-hooks", "--panes", "4", "--lane", spec}, ctx, env, root)
+	if code != 0 {
+		t.Fatalf("setup: code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	conf := filepath.Join(root, ".agents", "soho.conf")
+	for _, attr := range []struct{ key, value string }{{"kind", "pi"}, {"model", "my-provider/my-model"}, {"effort", "high"}} {
+		if got := core.FileKeyValue(conf, "lane.builders."+attr.key); got != attr.value {
+			t.Errorf("lane.builders.%s=%q want=%q", attr.key, got, attr.value)
+		}
+		if got := core.FileKeyValue(conf, "lane.build."+attr.key); got != "" {
+			t.Errorf("obsolete lane.build.%s=%q", attr.key, got)
+		}
+	}
+}

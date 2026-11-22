@@ -3,12 +3,103 @@ package core
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/djalmajr/soho/internal/platform"
 	textutil "github.com/djalmajr/soho/internal/text"
 )
+
+// Check the destination-preset builders before promoting a candidate. The
+// role pins being removed, inherited pins, and model rotation all affect
+// whether the resulting setting is equivalent to the per-role defaults.
+func builderPromotionPreservesSettings(file, lane string, roles []string, attr, value string, pending, promote DropLegacyOptions, ctx *Config, env platform.Env, cwd, through string) bool {
+	raw, err := platform.ReadTextFile(file)
+	if err != nil {
+		platform.Die(fmt.Sprintf("could not read %s to compare builder settings (file left untouched): %v", file, err), 4)
+	}
+	before := configWithRepairDestination(ctx, through, configDropLegacyText(raw, pending))
+	if attr == "kind" && builderKindMayActivateGroupSettings(&before, lane, env, cwd, through) {
+		return false
+	}
+	assignment := "lane." + lane + "." + attr + "=" + value
+	after := configWithRepairDestination(ctx, through, configDropLegacyText(raw, promote)+assignment+"\n")
+	if !LanesEnabled(&before, env) {
+		lane = ""
+	}
+	for _, role := range roles {
+		a := resolveRoleSettingsInLane(role, lane, &before, env, cwd, RoleFlags{})
+		b := resolveRoleSettingsInLane(role, lane, &after, env, cwd, RoleFlags{})
+		if a.Kind != b.Kind || a.ModelSpec != b.ModelSpec || a.Effort != b.Effort || a.Approvals != b.Approvals || !slices.Equal(a.LaneModels, b.LaneModels) {
+			return false
+		}
+	}
+	return true
+}
+
+// This private key carries only presence through the repair's environment map.
+// Its name is outside the SOHO_* configuration namespace.
+const repairBuilderGroupSettings = "soho.repair.builder-group-settings"
+
+// PresetRepairEnv keeps layout overrides out of the file repair and carries
+// the presence of kind-dependent builder overrides to the inference guard.
+func PresetRepairEnv(env platform.Env) platform.Env {
+	repair := platform.Env{}
+	for key, value := range env {
+		if key != repairBuilderGroupSettings && !LayoutCapacityOverride(key) {
+			repair[key] = value
+		}
+	}
+	if hasKindDependentGroupSettings(func(attr string) string {
+		return env.Get(configEnvName(LaneKey("builders", attr)))
+	}) {
+		repair[repairBuilderGroupSettings] = "1"
+	}
+	return repair
+}
+
+func hasKindDependentGroupSettings(value func(attr string) string) bool {
+	return strings.TrimSpace(value("args")) != "" || value("model") != "" || len(splitLaneModels(value("models"))) > 0
+}
+
+// A group kind can activate dormant arguments or model settings in the
+// destination or in higher layers that could inherit the new kind.
+func builderKindMayActivateGroupSettings(ctx *Config, lane string, env platform.Env, cwd, through string) bool {
+	if env.Get(repairBuilderGroupSettings) == "1" || hasKindDependentGroupSettings(func(attr string) string {
+		return Cfg(ctx, LaneKey(lane, attr), "", env)
+	}) {
+		return true
+	}
+	if through != "session" {
+		for _, layer := range LoadConfig(env, cwd).Layers {
+			higher := layer.Source == "session" || (through == "user" && layer.Source == "project")
+			if higher && hasKindDependentGroupSettings(func(attr string) string {
+				return layer.Entries[LaneKey(lane, attr)].Value
+			}) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Setup's plan applies to a temporary file. Use the destination file as it
+// stands in the repair, together with all of its lower configuration layers.
+func configWithRepairDestination(ctx *Config, through, raw string) Config {
+	merged := Config{Entries: map[string]ConfigEntry{}}
+	for _, layer := range ctx.Layers {
+		if layer.Source == through {
+			break
+		}
+		for key, entry := range layer.Entries {
+			merged.Entries[key] = entry
+		}
+	}
+	target := ConfigLayer{Source: through, Entries: map[string]ConfigEntry{}}
+	applyConfigText(raw, &target, &merged)
+	return merged
+}
 
 var presetLaneKeyRE = regexp.MustCompile(`^lane_([A-Za-z0-9_]+)_(roles|kind|model|models|effort|approvals|panes|args|mcp)$`)
 
@@ -54,6 +145,57 @@ func legacyPresetTarget(group, attr, prefix string) string {
 
 type PresetGroupWarning struct{ Key, Message string }
 
+// PresetRepairCommand names the file that doctor will actually repair.
+// Pane mode and the destination's own roles come from the persisted layers,
+// as they do during the repair.
+func PresetRepairCommand(ctx *Config, source string) string {
+	command := "soho doctor --fix"
+	switch source {
+	case "project":
+	case "user", "session":
+		command += " --" + source
+	default:
+		return ""
+	}
+	mode, panes := "strict", "4"
+	for _, layer := range ctx.Layers {
+		if entry, ok := layer.Entries["pane_mode"]; ok {
+			mode = "strict"
+			if entry.Value == "flex" {
+				mode = "flex"
+			}
+		}
+		if entry, ok := layer.Entries["panes"]; ok {
+			panes = repairPaneCount(entry.Value)
+		}
+		if layer.Source != source {
+			continue
+		}
+		var lines []string
+		for key, entry := range layer.Entries {
+			if lane, ok := laneRolesName(key, "lane_", "_roles"); ok && lane != "" {
+				lines = append(lines, lane+"="+entry.Value)
+			}
+		}
+		textutil.SortUTF16(lines)
+		if layer.ReadError != nil || !IsPresetLaneSignature(strings.Join(lines, "\n"), mode) {
+			return ""
+		}
+		if local := layer.Entries["panes"].Value; local != "2" && local != "3" && local != "4" {
+			command += " --panes " + panes
+		}
+		return command
+	}
+	return ""
+}
+
+func repairPaneCount(value string) string {
+	if value == "2" || value == "3" {
+		return value
+	}
+	return "4"
+}
+
 // LegacyPresetGroupWarnings is shared by doctor and spawn. An empty role
 // requests every warning. Only file keys can be repaired by doctor --fix.
 func LegacyPresetGroupWarnings(ctx *Config, env platform.Env, role string) []PresetGroupWarning {
@@ -63,9 +205,11 @@ func LegacyPresetGroupWarnings(ctx *Config, env platform.Env, role string) []Pre
 	var warnings []PresetGroupWarning
 	keys := append([]string(nil), ctx.Order...)
 	textutil.SortUTF16(keys)
+	activeLanes := LaneNames(ctx, env)
 	for _, key := range keys {
 		match := presetLaneKeyRE.FindStringSubmatch(key)
-		if match == nil || CfgSource(ctx, key, env) == "env" {
+		source := CfgSource(ctx, key, env)
+		if match == nil || source == "env" {
 			continue
 		}
 		group, attr := match[1], match[2]
@@ -75,14 +219,19 @@ func LegacyPresetGroupWarnings(ctx *Config, env platform.Env, role string) []Pre
 		}
 		old := "lane." + group + "." + attr
 		target := legacyPresetTarget(group, attr, prefix)
-		message := old + " no longer applies. "
-		switch {
-		case target == "":
-			message += "Run 'soho doctor --fix' to remove it."
-		case group == "critical" && attr == "panes":
-			message += "'soho doctor --fix' adds it to an explicit " + target + " or removes it."
-		default:
-			message += "'soho doctor --fix' moves it to " + target + "."
+		message := old + " no longer applies."
+		if contains(activeLanes, group) {
+			message = old + " still applies to the old preset."
+		}
+		if command := PresetRepairCommand(ctx, source); command != "" {
+			switch {
+			case target == "":
+				message += " Run '" + command + "' to remove it."
+			case group == "critical" && attr == "panes":
+				message += " '" + command + "' adds it to an explicit " + target + " or removes it."
+			default:
+				message += " '" + command + "' moves it to " + target + "."
+			}
 		}
 		warnings = append(warnings, PresetGroupWarning{key, message})
 	}

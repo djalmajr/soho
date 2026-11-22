@@ -325,3 +325,48 @@ func TestDispatchRoleWithoutModeAcceptsEditBrief(t *testing.T) {
 		t.Fatalf("refused a role without a declared mode: %q", msg)
 	}
 }
+
+func TestDispatchSecurityAdvisoryTracksPersistedWorker(t *testing.T) {
+	const security = "Type: security\nCheck the patch.\n"
+	for _, tc := range []struct {
+		name, roster, selected string
+		amend                  bool
+		warnings               int
+	}{
+		{"builder with review prompt", "implementer", "security-reviewer", false, 1},
+		{"reviewer with builder prompt", "security-reviewer", "implementer", false, 0},
+		{"builder with inherited review prompt", "implementer", "security-reviewer", true, 1},
+		{"reviewer with inherited builder prompt", "security-reviewer", "implementer", true, 0},
+		{"same-role builder", "implementer", "implementer", false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := roleDispatchFixture(t)
+			roster := filepath.Join(f.state, "ws", "agents.tsv")
+			record := strings.ReplaceAll(mustRead(t, roster), "\tscouter\t", "\t"+tc.roster+"\t")
+			writeRoleFixture(t, roster, record)
+			args := []string{"worker", f.brief, "--role", tc.selected, "--no-wait"}
+			if tc.amend {
+				writeRoleFixture(t, f.brief, "Type: review\nRead the notes.\n")
+				if code, out, stderr := f.run(t, args...); code != 0 {
+					t.Fatalf("initial dispatch: code=%d out=%q stderr=%q", code, out, stderr)
+				}
+				args = []string{"worker", filepath.Join(f.root, "security-amend.md"), "--amend", "--no-wait"}
+			}
+			writeRoleFixture(t, args[1], security)
+			code, out, stderr := f.run(t, args...)
+			if code != 0 {
+				t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+			}
+			if count := strings.Count(stderr, "declares Type: security"); count != tc.warnings {
+				t.Errorf("security advisory count=%d want=%d stderr=%q", count, tc.warnings, stderr)
+			}
+			prompt, _ := dispatchOutputField(t, out, "composed_prompt")
+			if !strings.Contains(mustRead(t, prompt), "You are running as the `"+tc.selected+"` role") {
+				t.Fatalf("prompt did not use selected role %s", tc.selected)
+			}
+			if mustRead(t, roster) != record {
+				t.Fatal("dispatch changed the roster")
+			}
+		})
+	}
+}

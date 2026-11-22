@@ -540,7 +540,7 @@ func TestDoctorWarnsWhenSplitCapExceedsTheTeam(t *testing.T) { // A9: the refere
 	var out strings.Builder
 	s := &Say{Out: &out}
 	doctorLaneWarnings(&ctx, env, root, s)
-	if !strings.Contains(out.String(), "split_max_panes=8 is greater than 1 + max_workers=4. Set split_max_panes=5 (doctor --fix aligns it).") {
+	if !strings.Contains(out.String(), "split_max_panes=8 is greater than 1 + max_workers=4. Set split_max_panes=5.") {
 		t.Fatalf("split cap mismatch warning missing: %s", out.String())
 	}
 }
@@ -558,7 +558,7 @@ func TestDoctorSplitCapChecksTheWholeTeam(t *testing.T) { // A9: an explicit spl
 			""},
 		{"split_max_panes=9 is greater than 1 + max_workers=7",
 			map[string]string{"lane_builders_panes": "5", "lane_reviewers_panes": "1", "split_max_panes": "9"},
-			"config: split_max_panes=9 is greater than 1 + max_workers=7. Set split_max_panes=8 (doctor --fix aligns it)."},
+			"config: split_max_panes=9 is greater than 1 + max_workers=7. Set split_max_panes=8."},
 		{"split_max_panes=3 leaves no room for a team of six",
 			map[string]string{"lane_builders_panes": "4", "lane_reviewers_panes": "1", "split_max_panes": "3"},
 			"config: split_max_panes=3 leaves no room for the whole team (1 + max_workers=6); the last workers will open in a herd tab. Remove split_max_panes or set 7."},
