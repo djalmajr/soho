@@ -91,7 +91,8 @@ func gitRepo(t *testing.T, home, repo, worktree string) {
 	git(t, home, repo, "config", "user.email", "fixture@example.invalid")
 	writeFile(t, filepath.Join(repo, "README.md"), "fixture project\n")
 	git(t, home, repo, "add", ".")
-	git(t, home, repo, "commit", "-m", "fixture")
+	// Keep background Git maintenance out of the fixture tree snapshots.
+	git(t, home, repo, "-c", "maintenance.auto=false", "commit", "-m", "fixture")
 	if worktree != "" {
 		git(t, home, repo, "worktree", "add", worktree)
 	}
