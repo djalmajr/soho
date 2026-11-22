@@ -16,7 +16,7 @@ func TestDoctorFixDestinationLayers(t *testing.T) {
 	tm6Write(t, filepath.Join(cwd, ".agents", "soho.conf"), "pane_mode=strict\n")
 	code, out, stderr := runIn(t, []string{"doctor", "--fix", "--user", "--panes", "2"}, env, cwd)
 	data, err := os.ReadFile(user)
-	if err != nil || code != 0 || !strings.Contains(string(data), "lane.review.panes=3\n") || !strings.Contains(string(data), "max_workers=5\n") {
+	if err != nil || code != 0 || !strings.Contains(string(data), "lane.reviewers.panes=3\n") || !strings.Contains(string(data), "max_workers=6\n") {
 		t.Fatalf("code=%d out=%q stderr=%q config=%q err=%v", code, out, stderr, data, err)
 	}
 }
@@ -28,7 +28,7 @@ func TestDoctorFixUserMigratesKindThroughDestination(t *testing.T) {
 	tm6Write(t, filepath.Join(cwd, ".agents", "soho.conf"), "pane_mode=strict\nlane.review.kind=codex\n")
 	code, out, stderr := runIn(t, []string{"doctor", "--fix", "--user", "--panes", "2"}, env, cwd)
 	data, err := os.ReadFile(user)
-	if err != nil || code != 0 || !strings.Contains(string(data), "lane.review.kind=claude\n") {
+	if err != nil || code != 0 || !strings.Contains(string(data), "lane.reviewers.kind=claude\n") {
 		t.Fatalf("code=%d out=%q stderr=%q config=%q err=%v", code, out, stderr, data, err)
 	}
 }
@@ -44,7 +44,7 @@ func TestDoctorFixUserPreservesNormalizedLaneModel(t *testing.T) {
 	tm6Write(t, filepath.Join(cwd, ".agents", "soho.conf"), "pane_mode=strict\nlane.review.kind=codex\n")
 	code, out, stderr := runIn(t, []string{"doctor", "--fix", "--user", "--panes", "2"}, env, cwd)
 	ctx := core.LoadConfigThrough(env, cwd, "user")
-	if got := core.LaneAttr(&ctx, "review", "model", nil, env); code != 0 || got != "opus" {
+	if got := core.LaneAttr(&ctx, "reviewers", "model", nil, env); code != 0 || got != "opus" {
 		t.Fatalf("code=%d out=%q stderr=%q model=%q", code, out, stderr, got)
 	}
 }
@@ -71,10 +71,10 @@ func TestDoctorFixLocalUnlimited(t *testing.T) {
 						want = "split_max_panes=3\n"
 					}
 					if layout == "custom" {
-						want = "split_max_panes=4\n"
-						if mode == "flex" {
-							want = "split_max_panes=5\n"
+						if err != nil || code != 0 || string(data) != input || !strings.Contains(stderr, "left the file unchanged") {
+							t.Fatalf("custom file changed: code=%d out=%q stderr=%q config=%q err=%v", code, out, stderr, data, err)
 						}
+						return
 					}
 					if err != nil || code != 0 || !strings.Contains(string(data), "max_workers="+zero+"\n") || !strings.Contains(string(data), want) {
 						t.Fatalf("code=%d out=%q stderr=%q config=%q err=%v", code, out, stderr, data, err)

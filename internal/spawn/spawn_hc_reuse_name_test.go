@@ -26,7 +26,7 @@ func hcReuseFixture(t *testing.T, lanePanes string) (cwd, bin, state string, env
 	t.Helper()
 	cwd, bin, state, env, ctx = hcSpawnFixture(t, "reviewer", "codex")
 	env["SOHO_LANES"] = "on"
-	env["SOHO_LANE_REVIEW_PANES"] = lanePanes
+	env["SOHO_LANE_REVIEWERS_PANES"] = lanePanes
 	roles := env["SOHO_ROLES"]
 	if err := os.WriteFile(filepath.Join(roles, "reviewer.md"), []byte("---\nkind: codex\neffort: high\n---\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestSpawnHcLaneReuseNameRule(t *testing.T) {
 			if !spawnJSONHasField(t, out.String(), `"name": "a"`) || !spawnJSONHasField(t, out.String(), `"reused": true`) {
 				t.Fatalf("stdout=%s", out.String())
 			}
-			if !strings.Contains(stderr.String(), "reusing idle lane 'review' worker 'a' as reviewer; existing session context is retained") || strings.Contains(stderr.String(), "was not reused") {
+			if !strings.Contains(stderr.String(), "reusing idle lane 'reviewers' worker 'a' as reviewer; existing session context is retained") || strings.Contains(stderr.String(), "was not reused") {
 				t.Fatalf("stderr=%q", stderr.String())
 			}
 		})
@@ -186,7 +186,7 @@ func TestSpawnHcIdleRenameNoteOncePerLane(t *testing.T) {
 // on every attempt.
 func TestSpawnHcIdleRenameRefusalEveryTime(t *testing.T) {
 	cwd, bin, _, env, ctx := hcReuseFixture(t, "1")
-	want := "idle worker 'a' was not reused as 'b' because native Core cannot rename it, and lane 'review' has no room"
+	want := "idle worker 'a' was not reused as 'b' because native Core cannot rename it, and lane 'reviewers' has no room"
 	for i := 0; i < 2; i++ {
 		conn := newFakeSpawnRPCConn()
 		exit, out, stderr, _ := spawnHcExitWithConn(t, bin, []string{"reviewer", "--name", "b"}, ctx, env, cwd, conn)
@@ -216,7 +216,7 @@ func TestSpawnHcLaneReuseDifferentNameAtCapacityIsRefused(t *testing.T) {
 	if len(conn.getWritten()) != 0 || conn.getConnectCount() != 0 {
 		t.Fatalf("a refused spawn must not start a terminal")
 	}
-	if !strings.Contains(out.String(), `"status":"busy"`) || !strings.Contains(stderr.String(), "idle worker 'a' was not reused as 'b' because native Core cannot rename it, and lane 'review' has no room") {
+	if !strings.Contains(out.String(), `"status":"busy"`) || !strings.Contains(stderr.String(), "idle worker 'a' was not reused as 'b' because native Core cannot rename it, and lane 'reviewers' has no room") {
 		t.Fatalf("stdout=%s stderr=%q", out.String(), stderr.String())
 	}
 	if core.RosterLine(filepath.Join(state, "sX"), "a") == "" || core.RosterLine(filepath.Join(state, "sX"), "b") != "" {
@@ -240,9 +240,9 @@ func TestHcNameAdmissionBeforeModelCap(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cwd, bin, root, env, ctx := hcSpawnFixture(t, "reviewer", "codex")
 			env["SOHO_LANES"] = "on"
-			env["SOHO_LANE_REVIEW_PANES"] = tc.panes
-			env["SOHO_LANE_REVIEW_KIND"] = "codex"
-			env["SOHO_LANE_REVIEW_MODELS"] = "m1"
+			env["SOHO_LANE_REVIEWERS_PANES"] = tc.panes
+			env["SOHO_LANE_REVIEWERS_KIND"] = "codex"
+			env["SOHO_LANE_REVIEWERS_MODELS"] = "m1"
 			env["SOHO_MODEL_CAP"] = "1"
 			env["SOHO_MAX_WORKERS"] = tc.global
 			rules := []fakecli.Rule{

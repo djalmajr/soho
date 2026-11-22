@@ -19,7 +19,7 @@ func TestGroupReuseIdenticalOpeningEffort(t *testing.T) {
 		{"same kind flag keeps group effort", "", "high", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := laneModelFixtureWithCapacity(t, "off", "", "2", idleHerdrRule("build"))
+			f := laneModelFixtureWithCapacity(t, "off", "", "2", idleHerdrRule("scouter"))
 			for key, value := range map[string]string{
 				"lane_build_kind": "", "lane_build_effort": "high", "role_scouter_kind": "grok",
 				"role_scouter_effort": tc.roleEffort, "effort_grok": "low",
@@ -147,18 +147,18 @@ func assertFreshForMismatch(t *testing.T, stdout, stderr, worker, detail string)
 
 func TestGroupReuseListedModelMismatchDiagnostics(t *testing.T) {
 	t.Run("second listed model opened before effort change", func(t *testing.T) {
-		f := laneModelFixtureWithCapacity(t, "2", "m1,m2", "1", idleHerdrRule("build"), idleHerdrRule("other-a"), idleHerdrRule("other-b"))
+		f := laneModelFixtureWithCapacity(t, "2", "m1,m2", "1", idleHerdrRule("scouter"), idleHerdrRule("other-a"), idleHerdrRule("other-b"))
 		appendRosterRow(t, f, "other-a", "m1", "other")
 		appendRosterRow(t, f, "other-b", "m1", "other")
 
 		code, out, stderr, refusal, calls := runLaneModelSpawn(t, f, []string{"scouter", "--mcp", "none", "--effort", "low"})
 		t.Logf("initial spawn exit=%d stdout=%s", code, out)
-		if code != 0 || !spawnJSONHasField(t, out, `"name": "build"`) ||
+		if code != 0 || !spawnJSONHasField(t, out, `"name": "scouter"`) ||
 			!spawnJSONHasField(t, out, `"created_pane": true`) || !spawnJSONHasField(t, out, `"model": "m2"`) ||
 			!spawnJSONHasField(t, out, `"effort": "low"`) || !spawnJSONHasField(t, out, `"model_choice": "list"`) {
 			t.Fatalf("first spawn must open m2 at low effort: exit=%d stdout=%q stderr=%q refusal=%q", code, out, stderr, refusal)
 		}
-		record := strings.Split(core.RosterLine(filepath.Join(f.state, "ws"), "build"), "\t")
+		record := strings.Split(core.RosterLine(filepath.Join(f.state, "ws"), "scouter"), "\t")
 		if fieldAt(record, 8) != "m2" || fieldAt(record, 14) != "low" {
 			t.Fatalf("opening model or effort missing from roster: %q", record)
 		}

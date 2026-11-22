@@ -132,19 +132,18 @@ func burstAgentStarts(calls []fakecli.Call) []string {
 }
 
 func TestSpawnBurstContract(t *testing.T) {
-	t.Run("flex docs capacity 0 opens a burst worker with the exact 16-column roster row", func(t *testing.T) {
-		// (a) the docs lane holds no resident worker (capacity 0): the
-		// documenter opens a temporary (burst) worker.
-		f := burstFixture(t, nil)
-		burstConfig(&f, "pane_mode", "flex")
-		f.roster(t)
+	t.Run("flex full builders opens a documenter burst with the exact 16-column roster row", func(t *testing.T) {
+		// (a) At panes=2 the busy builder holds the only regular builders slot.
+		f := burstFixture(t, []burstLive{{"implementer", "p-implementer", "working"}})
+		burstConfig(&f, "pane_mode", "flex", "panes", "2")
+		f.roster(t, burst12Row("implementer", "implementer", "builders"))
 		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"documenter"})
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 		obj := burstJSON(t, stdout, "a")
-		if got := burstJSONString(t, obj, "name", "a"); got != "docs" {
-			t.Fatalf("name=%q, want docs; %s", got, stdout)
+		if got := burstJSONString(t, obj, "name", "a"); got != "documenter" {
+			t.Fatalf("name=%q, want documenter; %s", got, stdout)
 		}
 		v, ok := obj.Get("burst")
 		if !ok || v != true {
@@ -152,20 +151,20 @@ func TestSpawnBurstContract(t *testing.T) {
 		}
 		effort := burstJSONString(t, obj, "effort", "a")
 		rows := burstRosterRows(t, f)
-		if len(rows) != 1 {
-			t.Fatalf("the roster gained %d rows, want exactly one: %v", len(rows), rows)
+		if len(rows) != 2 {
+			t.Fatalf("the roster has %d rows, want exactly two: %v", len(rows), rows)
 		}
-		fields := strings.Split(rows[0], "\t")
+		fields := strings.Split(rows[1], "\t")
 		// DJA-392 fatia 2 R2: the last column is the effective MCP choice
 		// (the documenter frontmatter mcp: none).
 		if len(fields) != 16 {
-			t.Fatalf("the burst row has %d columns, want 16 (13 present even when empty): %q", len(fields), rows[0])
+			t.Fatalf("the burst row has %d columns, want 16 (13 present even when empty): %q", len(fields), rows[1])
 		}
-		if fields[0] != "docs" || fields[11] != "docs" {
-			t.Fatalf("lane column: %q", rows[0])
+		if fields[0] != "documenter" || fields[11] != "builders" {
+			t.Fatalf("lane column: %q", rows[1])
 		}
 		if fields[12] != "burst" {
-			t.Fatalf("roster column 13 is not the burst marker: %q", rows[0])
+			t.Fatalf("roster column 13 is not the burst marker: %q", rows[1])
 		}
 		if fields[13] != "" {
 			t.Fatalf("roster column 14 (native args) must be empty here, got %q", fields[13])
@@ -181,15 +180,34 @@ func TestSpawnBurstContract(t *testing.T) {
 			t.Fatalf("roster column 16 (MCP) %q is not the documenter frontmatter none", fields[15])
 		}
 		starts := burstAgentStarts(calls)
-		if len(starts) != 1 || starts[0] != "docs" {
-			t.Fatalf("agent start calls=%v, want exactly [docs]", starts)
+		if len(starts) != 1 || starts[0] != "documenter" {
+			t.Fatalf("agent start calls=%v, want exactly [documenter]", starts)
 		}
 	})
 
-	t.Run("strict full build lane refuses 10 with no new row and no start", func(t *testing.T) {
+	t.Run("flex uses an available builders slot for the documenter", func(t *testing.T) {
+		f := burstFixture(t, nil)
+		burstConfig(&f, "pane_mode", "flex", "panes", "2")
+		f.roster(t)
+		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"documenter"})
+		if code != 0 {
+			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		obj := burstJSON(t, stdout, "free builders")
+		if _, present := obj.Get("burst"); present {
+			t.Fatalf("free builders slot opened a temporary worker: %s", stdout)
+		}
+		rows := burstRosterRows(t, f)
+		if len(rows) != 1 || !strings.Contains(rows[0], "\tdocumenter\tbuilders\t\t") || len(burstAgentStarts(calls)) != 1 {
+			t.Fatalf("unexpected roster or starts: rows=%v starts=%v", rows, burstAgentStarts(calls))
+		}
+	})
+
+	t.Run("strict full builders refuses 10 with no new row and no start", func(t *testing.T) {
 		// (b) the strict mode (the default) never opens a burst: the
-		// documenter sits in the build lane, and a full build lane is busy 10.
+		// documenter sits in builders, and a full group is busy 10.
 		f := burstFixture(t, []burstLive{{"build", "p-build", "working"}, {"build-2", "p-build2", "working"}})
+		burstConfig(&f, "panes", "3")
 		f.roster(t, burst12Row("build", "implementer", "build"), burst12Row("build-2", "tasker", "build"))
 		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"documenter"})
 		if code != 10 {
@@ -199,13 +217,13 @@ func TestSpawnBurstContract(t *testing.T) {
 		if got := burstJSONString(t, obj, "status", "b"); got != "busy" {
 			t.Fatalf("status=%q, want busy; %s", got, stdout)
 		}
-		if got := burstJSONString(t, obj, "lane", "b"); got != "build" {
-			t.Fatalf("lane=%q, want build; %s", got, stdout)
+		if got := burstJSONString(t, obj, "lane", "b"); got != "builders" {
+			t.Fatalf("lane=%q, want builders; %s", got, stdout)
 		}
 		if got := burstJSONString(t, obj, "name", "b"); got != "build" {
 			t.Fatalf("name=%q, want build; %s", got, stdout)
 		}
-		if !strings.Contains(stderr, "lane 'build' is full (2 of 2: build build-2)") {
+		if !strings.Contains(stderr, "lane 'builders' is full (2 of 2: build build-2)") {
 			t.Fatalf("stderr=%q", stderr)
 		}
 		rows := burstRosterRows(t, f)
@@ -217,19 +235,19 @@ func TestSpawnBurstContract(t *testing.T) {
 		}
 	})
 
-	t.Run("flex full review lane opens the review-2 burst", func(t *testing.T) {
+	t.Run("flex full review lane opens the reviewer-2 burst", func(t *testing.T) {
 		// (c) a full review lane (capacity 1, no idle) opens a temporary
 		// reviewer (the reviewer is a default flex role).
-		f := burstFixture(t, []burstLive{{"review", "p-review", "working"}})
+		f := burstFixture(t, []burstLive{{"reviewer", "p-reviewer", "working"}})
 		burstConfig(&f, "pane_mode", "flex")
-		f.roster(t, burst12Row("review", "reviewer", "review"))
+		f.roster(t, burst12Row("reviewer", "reviewer", "reviewers"))
 		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"reviewer"})
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 		obj := burstJSON(t, stdout, "c")
-		if got := burstJSONString(t, obj, "name", "c"); got != "review-2" {
-			t.Fatalf("name=%q, want review-2; %s", got, stdout)
+		if got := burstJSONString(t, obj, "name", "c"); got != "reviewer-2" {
+			t.Fatalf("name=%q, want reviewer-2; %s", got, stdout)
 		}
 		if v, ok := obj.Get("burst"); !ok || v != true {
 			t.Fatalf("the JSON does not mark the temporary worker: %s", stdout)
@@ -239,21 +257,21 @@ func TestSpawnBurstContract(t *testing.T) {
 			t.Fatalf("roster rows=%d, want 2: %v", len(rows), rows)
 		}
 		fields := strings.Split(rows[1], "\t")
-		if fields[0] != "review-2" || fields[12] != "burst" || fields[11] != "review" {
-			t.Fatalf("the review-2 roster row lacks the burst marker or lane: %q", rows[1])
+		if fields[0] != "reviewer-2" || fields[12] != "burst" || fields[11] != "reviewers" {
+			t.Fatalf("the reviewer-2 roster row lacks the burst marker or lane: %q", rows[1])
 		}
 		starts := burstAgentStarts(calls)
-		if len(starts) != 1 || starts[0] != "review-2" {
-			t.Fatalf("agent start calls=%v, want exactly [review-2]", starts)
+		if len(starts) != 1 || starts[0] != "reviewer-2" {
+			t.Fatalf("agent start calls=%v, want exactly [reviewer-2]", starts)
 		}
 	})
 
 	t.Run("flex_extra 1 with a live burst refuses 10", func(t *testing.T) {
 		// (d) one temporary worker is already live and flex_extra is 1 (the
 		// default): the burst slot is taken, the lane is busy 10.
-		f := burstFixture(t, []burstLive{{"review", "p-review", "working"}, {"review-2", "p-review2", "working"}})
+		f := burstFixture(t, []burstLive{{"reviewer", "p-reviewer", "working"}, {"reviewer-2", "p-reviewer2", "working"}})
 		burstConfig(&f, "pane_mode", "flex")
-		f.roster(t, burst12Row("review", "reviewer", "review"), burst13Row("review-2", "reviewer", "review"))
+		f.roster(t, burst12Row("reviewer", "reviewer", "reviewers"), burst13Row("reviewer-2", "reviewer", "reviewers"))
 		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"reviewer"})
 		if code != 10 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
@@ -262,13 +280,13 @@ func TestSpawnBurstContract(t *testing.T) {
 		if got := burstJSONString(t, obj, "status", "d"); got != "busy" {
 			t.Fatalf("status=%q, want busy; %s", got, stdout)
 		}
-		if got := burstJSONString(t, obj, "lane", "d"); got != "review" {
-			t.Fatalf("lane=%q, want review; %s", got, stdout)
+		if got := burstJSONString(t, obj, "lane", "d"); got != "reviewers" {
+			t.Fatalf("lane=%q, want reviewers; %s", got, stdout)
 		}
-		if got := burstJSONString(t, obj, "name", "d"); got != "review" {
-			t.Fatalf("name=%q, want review; %s", got, stdout)
+		if got := burstJSONString(t, obj, "name", "d"); got != "reviewer" {
+			t.Fatalf("name=%q, want reviewer; %s", got, stdout)
 		}
-		if !strings.Contains(stderr, "lane 'review' is full (2 of 1: review review-2)") {
+		if !strings.Contains(stderr, "lane 'reviewers' is full (2 of 1: reviewer reviewer-2)") {
 			t.Fatalf("stderr=%q", stderr)
 		}
 		rows := burstRosterRows(t, f)
@@ -283,33 +301,33 @@ func TestSpawnBurstContract(t *testing.T) {
 	t.Run("flex_extra 2 allows the second temporary worker", func(t *testing.T) {
 		// (d2) with the same live temporary worker, flex_extra=2 opens the
 		// second temporary worker.
-		f := burstFixture(t, []burstLive{{"review", "p-review", "working"}, {"review-2", "p-review2", "working"}})
+		f := burstFixture(t, []burstLive{{"reviewer", "p-reviewer", "working"}, {"reviewer-2", "p-reviewer2", "working"}})
 		burstConfig(&f, "pane_mode", "flex", "flex_extra", "2")
-		f.roster(t, burst12Row("review", "reviewer", "review"), burst13Row("review-2", "reviewer", "review"))
+		f.roster(t, burst12Row("reviewer", "reviewer", "reviewers"), burst13Row("reviewer-2", "reviewer", "reviewers"))
 		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"reviewer"})
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 		obj := burstJSON(t, stdout, "d2")
-		if got := burstJSONString(t, obj, "name", "d2"); got != "review-3" {
-			t.Fatalf("name=%q, want review-3; %s", got, stdout)
+		if got := burstJSONString(t, obj, "name", "d2"); got != "reviewer-3" {
+			t.Fatalf("name=%q, want reviewer-3; %s", got, stdout)
 		}
 		if v, ok := obj.Get("burst"); !ok || v != true {
 			t.Fatalf("the JSON does not mark the temporary worker: %s", stdout)
 		}
 		starts := burstAgentStarts(calls)
-		if len(starts) != 1 || starts[0] != "review-3" {
-			t.Fatalf("agent start calls=%v, want exactly [review-3]", starts)
+		if len(starts) != 1 || starts[0] != "reviewer-3" {
+			t.Fatalf("agent start calls=%v, want exactly [reviewer-3]", starts)
 		}
 	})
 
 	t.Run("a role outside flex_roles refuses 10 with the role hint", func(t *testing.T) {
 		// (e) a role outside flex_roles may not use the temporary panel: the
-		// capacity-0 docs lane refuses it with the role message (busy 10).
+		// capacity-0 reviewers group refuses it with the role message (busy 10).
 		f := burstFixture(t, nil)
-		burstConfig(&f, "pane_mode", "flex", "flex_roles", "reviewer")
+		burstConfig(&f, "pane_mode", "flex", "panes", "2", "flex_roles", "documenter")
 		f.roster(t)
-		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"documenter"})
+		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"reviewer"})
 		if code != 10 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
@@ -317,13 +335,13 @@ func TestSpawnBurstContract(t *testing.T) {
 		if got := burstJSONString(t, obj, "status", "e"); got != "busy" {
 			t.Fatalf("status=%q, want busy; %s", got, stdout)
 		}
-		if got := burstJSONString(t, obj, "lane", "e"); got != "docs" {
-			t.Fatalf("lane=%q, want docs; %s", got, stdout)
+		if got := burstJSONString(t, obj, "lane", "e"); got != "reviewers" {
+			t.Fatalf("lane=%q, want reviewers; %s", got, stdout)
 		}
 		if got := burstJSONString(t, obj, "name", "e"); got != "" {
 			t.Fatalf("name=%q, want empty; %s", got, stdout)
 		}
-		if !strings.Contains(stderr, "role 'documenter' may not use the temporary panel (flex_roles=reviewer)") {
+		if !strings.Contains(stderr, "role 'reviewer' may not use the temporary panel (flex_roles=documenter)") {
 			t.Fatalf("stderr=%q", stderr)
 		}
 		if rows := burstRosterRows(t, f); len(rows) != 0 {
@@ -338,20 +356,20 @@ func TestSpawnBurstContract(t *testing.T) {
 		// (f) flex_extra=0: no temporary panel at all (the lane message with
 		// no live temporary workers).
 		f := burstFixture(t, nil)
-		burstConfig(&f, "pane_mode", "flex", "flex_extra", "0")
+		burstConfig(&f, "pane_mode", "flex", "panes", "2", "flex_extra", "0")
 		f.roster(t)
-		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"documenter"})
+		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"reviewer"})
 		if code != 10 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 		obj := burstJSON(t, stdout, "f")
-		if got := burstJSONString(t, obj, "lane", "f"); got != "docs" {
-			t.Fatalf("lane=%q, want docs; %s", got, stdout)
+		if got := burstJSONString(t, obj, "lane", "f"); got != "reviewers" {
+			t.Fatalf("lane=%q, want reviewers; %s", got, stdout)
 		}
 		if got := burstJSONString(t, obj, "name", "f"); got != "" {
 			t.Fatalf("name=%q, want empty; %s", got, stdout)
 		}
-		if !strings.Contains(stderr, "lane 'docs' only takes a temporary worker (pane_mode=flex) and none is free: flex_extra=0, live temporary workers: none. Raise flex_extra.") {
+		if !strings.Contains(stderr, "lane 'reviewers' only takes a temporary worker (pane_mode=flex) and none is free: flex_extra=0, live temporary workers: none. Raise flex_extra.") {
 			t.Fatalf("stderr=%q", stderr)
 		}
 		if rows := burstRosterRows(t, f); len(rows) != 0 {
@@ -366,20 +384,20 @@ func TestSpawnBurstContract(t *testing.T) {
 		// (f2) the burst slot is taken by live temporary workers: the lane
 		// message lists them (all lanes) and names the first one for release.
 		f := burstFixture(t, []burstLive{{"docs", "p-docs", "working"}, {"review-2", "p-review2", "working"}})
-		burstConfig(&f, "pane_mode", "flex")
-		f.roster(t, burst13Row("docs", "documenter", "docs"), burst13Row("review-2", "reviewer", "review"))
-		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"documenter"})
+		burstConfig(&f, "pane_mode", "flex", "panes", "2")
+		f.roster(t, burst13Row("docs", "documenter", "builders"), burst13Row("review-2", "reviewer", "review"))
+		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"reviewer"})
 		if code != 10 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 		obj := burstJSON(t, stdout, "f2")
-		if got := burstJSONString(t, obj, "lane", "f2"); got != "docs" {
-			t.Fatalf("lane=%q, want docs; %s", got, stdout)
+		if got := burstJSONString(t, obj, "lane", "f2"); got != "reviewers" {
+			t.Fatalf("lane=%q, want reviewers; %s", got, stdout)
 		}
-		if got := burstJSONString(t, obj, "name", "f2"); got != "docs" {
-			t.Fatalf("name=%q, want docs; %s", got, stdout)
+		if got := burstJSONString(t, obj, "name", "f2"); got != "review-2" {
+			t.Fatalf("name=%q, want review-2; %s", got, stdout)
 		}
-		if !strings.Contains(stderr, "lane 'docs' only takes a temporary worker (pane_mode=flex) and none is free: flex_extra=1, live temporary workers: docs, review-2. Release one (release docs), or raise flex_extra.") {
+		if !strings.Contains(stderr, "lane 'reviewers' only takes a temporary worker (pane_mode=flex) and none is free: flex_extra=1, live temporary workers: docs, review-2. Release one (release docs), or raise flex_extra.") {
 			t.Fatalf("stderr=%q", stderr)
 		}
 		if rows := burstRosterRows(t, f); len(rows) != 2 {
@@ -391,13 +409,13 @@ func TestSpawnBurstContract(t *testing.T) {
 	})
 
 	t.Run("an idle burst worker is reused without a burst key or new worker", func(t *testing.T) {
-		// (g) an idle temporary worker is reused, not re-burst: the docs lane
+		// (g) an idle temporary worker is reused, not re-burst: builders
 		// with an idle burst documenter reuses it (no new pane, no burst key).
 		// The row makes the compatible cwd, kind, model, effort and approvals
 		// explicit so the reuse gates line up with the request.
 		f := burstFixture(t, []burstLive{{"docs", "p-docs", "idle"}})
 		burstConfig(&f, "pane_mode", "flex")
-		f.roster(t, strings.Join([]string{"docs", "p-docs", "grok", "documenter", "xai", "1", f.cwd, "now", "", "auto", "documenter", "docs", "burst", "", "high", "none"}, "\t"))
+		f.roster(t, strings.Join([]string{"docs", "p-docs", "grok", "documenter", "xai", "1", f.cwd, "now", "", "auto", "documenter", "builders", "burst", "", "high", "none"}, "\t"))
 		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"documenter", "--kind", "grok"})
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
@@ -442,7 +460,7 @@ func TestSpawnBurstContract(t *testing.T) {
 		}
 	})
 
-	t.Run("a custom ops lane with max_workers 2 opens the ops-2 burst", func(t *testing.T) {
+	t.Run("a custom ops lane with max_workers 2 opens the documenter burst", func(t *testing.T) {
 		// (h2) with the sum + flex_extra the lane file now writes, the burst
 		// opens inside the custom lane.
 		f := burstFixture(t, []burstLive{{"ops", "p-ops", "working"}})
@@ -453,8 +471,8 @@ func TestSpawnBurstContract(t *testing.T) {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 		obj := burstJSON(t, stdout, "h2")
-		if got := burstJSONString(t, obj, "name", "h2"); got != "ops-2" {
-			t.Fatalf("name=%q, want ops-2; %s", got, stdout)
+		if got := burstJSONString(t, obj, "name", "h2"); got != "documenter" {
+			t.Fatalf("name=%q, want documenter; %s", got, stdout)
 		}
 		if v, ok := obj.Get("burst"); !ok || v != true {
 			t.Fatalf("the JSON does not mark the temporary worker: %s", stdout)
@@ -464,12 +482,12 @@ func TestSpawnBurstContract(t *testing.T) {
 			t.Fatalf("roster rows=%d, want 2: %v", len(rows), rows)
 		}
 		fields := strings.Split(rows[1], "\t")
-		if fields[0] != "ops-2" || fields[12] != "burst" || fields[11] != "ops" {
-			t.Fatalf("the ops-2 roster row lacks the burst marker or lane: %q", rows[1])
+		if fields[0] != "documenter" || fields[12] != "burst" || fields[11] != "ops" {
+			t.Fatalf("the documenter roster row lacks the burst marker or lane: %q", rows[1])
 		}
 		starts := burstAgentStarts(calls)
-		if len(starts) != 1 || starts[0] != "ops-2" {
-			t.Fatalf("agent start calls=%v, want exactly [ops-2]", starts)
+		if len(starts) != 1 || starts[0] != "documenter" {
+			t.Fatalf("agent start calls=%v, want exactly [documenter]", starts)
 		}
 	})
 }

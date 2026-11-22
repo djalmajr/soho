@@ -853,7 +853,7 @@ func TestWaitRemainingExitCases(t *testing.T) {
 			{Argv: []string{"agent", "read", "worker", "--source", "recent-unwrapped", "--lines", "40"}, Stdout: "Error: 401 Unauthorized: invalid API key\n"},
 		})
 		code, out, _ := f.runWait(t, "worker", "--timeout", "200")
-		for _, field := range []string{`"status":"provider-error"`, `"lane":"build"`, `"kind":"claude"`, `"model":"model-x"`, `"cause":"Error: 401 Unauthorized: invalid API key"`} {
+		for _, field := range []string{`"status":"provider-error"`, `"lane":"builders"`, `"kind":"claude"`, `"model":"model-x"`, `"cause":"Error: 401 Unauthorized: invalid API key"`} {
 			if !strings.Contains(out, field) {
 				t.Errorf("provider result lacks %s: %q", field, out)
 			}

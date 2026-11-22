@@ -39,21 +39,21 @@ func TestModelListKeysAndValidation(t *testing.T) {
 		}
 	}
 	ctx := &Config{Entries: map[string]ConfigEntry{
-		"lane_build_models": {Value: " m1 , , m2,m1:fast ,", Source: "project"},
-		"lane_build_model":  {Value: "old", Source: "user"},
-	}, Order: []string{"lane_build_models", "lane_build_model"}}
+		"lane_builders_models": {Value: " m1 , , m2,m1:fast ,", Source: "project"},
+		"lane_builders_model":  {Value: "old", Source: "user"},
+	}, Order: []string{"lane_builders_models", "lane_builders_model"}}
 	env := platform.Env{"SOHO_LANES": "on"}
-	if got := LaneModels(ctx, "build", env); len(got) != 3 || got[0] != "m1" || got[1] != "m2" || got[2] != "m1:fast" {
+	if got := LaneModels(ctx, "builders", env); len(got) != 3 || got[0] != "m1" || got[1] != "m2" || got[2] != "m1:fast" {
 		t.Fatalf("LaneModels = %#v", got)
 	}
-	if got := LaneModelSpec(ctx, "build", env); got != "m1" {
+	if got := LaneModelSpec(ctx, "builders", env); got != "m1" {
 		t.Fatalf("LaneModelSpec = %q, want the list's first model", got)
 	}
 	warnings := ModelShadowWarnings(ctx, env)
-	if len(warnings) != 1 || warnings[0] != "config: lane.build.model=old is ignored: lane.build.models= m1 , , m2,m1:fast , wins" {
+	if len(warnings) != 1 || warnings[0] != "config: lane.builders.model=old is ignored: lane.builders.models= m1 , , m2,m1:fast , wins" {
 		t.Fatalf("warnings = %#v", warnings)
 	}
-	if got := LaneModels(ctx, "build", platform.Env{"SOHO_LANES": "on", "SOHO_LANE_BUILD_MODELS": "only"}); len(got) != 1 || got[0] != "only" {
+	if got := LaneModels(ctx, "builders", platform.Env{"SOHO_LANES": "on", "SOHO_LANE_BUILDERS_MODELS": "only"}); len(got) != 1 || got[0] != "only" {
 		t.Fatalf("environment list = %#v", got)
 	}
 }

@@ -76,72 +76,48 @@ func laneEnvName(k string) string {
 }
 
 func PresetLaneNamesFor(p, mode string) []string {
-	if mode == "flex" {
-		return []string{"build", "critical", "review", "docs"}
+	if p == "2" && mode != "flex" {
+		return []string{"builders", "planners"}
 	}
-	if p == "2" {
-		return []string{"build"}
-	}
-	return []string{"build", "critical", "review"}
+	return []string{"builders", "reviewers", "planners"}
 }
 func PresetLaneNames(ctx *Config, env platform.Env) []string {
 	return PresetLaneNamesFor(PanesValue(ctx, env), PaneMode(ctx, env))
 }
 func PresetLaneCount(p, mode string) int { return len(PresetLaneNamesFor(p, mode)) }
 func PresetLaneRoles(lane, p, mode string) string {
-	if mode == "flex" {
-		switch lane {
-		case "build":
-			return "implementer,designer,tasker,scouter,researcher,tester"
-		case "critical":
-			return "critical-implementer"
-		case "review":
+	switch lane {
+	case "builders":
+		return "implementer,critical-implementer,designer,tasker,tester,scouter,researcher,documenter"
+	case "reviewers":
+		if p != "2" || mode == "flex" {
 			return "reviewer,security-reviewer,ui-reviewer,inspector,validator"
-		case "docs":
-			return "documenter"
 		}
-		return ""
-	}
-	switch p + ":" + lane {
-	case "2:build", "3:build", "4:build":
-		return "implementer,designer,tasker,scouter,researcher,documenter,tester"
-	case "3:critical", "4:critical":
-		return "critical-implementer"
-	case "3:review", "4:review":
-		return "reviewer,security-reviewer,ui-reviewer,inspector,validator"
+	case "planners":
+		return "planner,sub-orchestrator,job-orchestrator"
 	}
 	return ""
 }
 func PresetLaneCapacity(lane, p, mode string) int {
-	found := false
-	for _, n := range PresetLaneNamesFor(p, mode) {
-		if n == lane {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return 0
-	}
-	if mode == "flex" {
-		if lane == "build" {
-			if p == "4" {
-				return 2
-			}
+	switch lane {
+	case "builders":
+		switch p {
+		case "4":
+			return 3
+		case "3":
+			return 2
+		default:
 			return 1
 		}
-		if lane == "docs" {
-			return 0
-		}
-		if (lane == "review" || lane == "critical") && p == "2" {
+	case "reviewers":
+		if p == "2" {
 			return 0
 		}
 		return 1
+	case "planners":
+		return 1
 	}
-	if p == "4" && lane == "build" {
-		return 2
-	}
-	return 1
+	return 0
 }
 func PresetRolesFlat(p, mode string) string {
 	vals := []string{}
@@ -168,11 +144,8 @@ func LegacyPresetSignature(p string) string {
 
 // legacyPresetShapes are the lane role lists that earlier soho versions wrote
 // as the panes preset, from oldest to newest: a strict pair without tester
-// and validator, the strict two-panel build-only shape, the flex shapes,
-// and the pre-critical strict/flex pairs. A config file whose lane.*.roles
-// lines match one of them for the effective pane mode is a preset file, not
-// a custom one: the migration drops the roles and applies the current
-// preset (which is what gives critical-implementer its slot).
+// and validator, the strict two-panel build-only shapes, and the strict
+// and flex layouts before and after the dedicated critical lane.
 type legacyPresetShape struct {
 	mode  string
 	lanes map[string]string
@@ -184,6 +157,9 @@ var legacyPresetShapes = []legacyPresetShape{
 	{"flex", map[string]string{"build": "implementer,designer,tasker,scouter,researcher", "review": "reviewer,security-reviewer,ui-reviewer,inspector", "docs": "documenter"}},
 	{"strict", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,documenter,tester", "review": "reviewer,security-reviewer,ui-reviewer,inspector,validator"}},
 	{"flex", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,tester", "review": "reviewer,security-reviewer,ui-reviewer,inspector,validator", "docs": "documenter"}},
+	{"strict", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,documenter,tester"}},
+	{"strict", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,documenter,tester", "critical": "critical-implementer", "review": "reviewer,security-reviewer,ui-reviewer,inspector,validator"}},
+	{"flex", map[string]string{"build": "implementer,designer,tasker,scouter,researcher,tester", "critical": "critical-implementer", "review": "reviewer,security-reviewer,ui-reviewer,inspector,validator", "docs": "documenter"}},
 }
 
 func legacyPresetSignature(s legacyPresetShape) string {
@@ -290,9 +266,17 @@ func LaneCapacity(ctx *Config, lane string, env platform.Env) int {
 	return 1
 }
 
-// LaneOnDemand identifies a lane reserved solely for critical slices.
+// LaneOnDemand identifies a nonempty lane reserved for orchestration roles.
 func LaneOnDemand(ctx *Config, lane string, env platform.Env) bool {
-	return strings.TrimSpace(LaneRolesCSV(ctx, lane, env)) == "critical-implementer"
+	roles := SplitRoles(LaneRolesCSV(ctx, lane, env))
+	for _, role := range roles {
+		switch role {
+		case "planner", "sub-orchestrator", "job-orchestrator":
+		default:
+			return false
+		}
+	}
+	return len(roles) != 0
 }
 
 func AlwaysOpenLaneCapacitySum(ctx *Config, env platform.Env) int {
@@ -406,8 +390,23 @@ func LaneOfRole(ctx *Config, role string, env platform.Env) string {
 	return ""
 }
 
-func LaneWorkers(sd, lane string) []string {
+// RosterLaneName interprets an existing roster column in the current layout.
+// Custom groups retain their configured names and stored membership.
+func RosterLaneName(recorded string, preset bool) string {
+	if preset {
+		switch recorded {
+		case "build", "critical":
+			return "builders"
+		case "review":
+			return "reviewers"
+		}
+	}
+	return recorded
+}
+
+func LaneWorkers(sd, lane string, ctx *Config, env platform.Env) []string {
 	out := []string{}
+	preset := !CustomLanesPresent(ctx, env)
 	for _, line := range RosterRows(sd) {
 		if line == "" {
 			continue
@@ -419,7 +418,7 @@ func LaneWorkers(sd, lane string) []string {
 			name = f[0]
 		}
 		if len(f) >= 12 {
-			col = f[11]
+			col = RosterLaneName(f[11], preset)
 		}
 		if col == lane || (col == "" && name == lane) {
 			out = append(out, line)
@@ -446,7 +445,7 @@ func LaneDecideAt(ctx *Config, lane, role string, env platform.Env, sd, cwd stri
 	cap := LaneCapacity(ctx, lane, env)
 	var rows []string
 	if sd != "" {
-		rows = LaneWorkers(sd, lane)
+		rows = LaneWorkers(sd, lane, ctx, env)
 	}
 	d := LaneDecision{Capacity: cap, Gone: []string{}, Occupants: []string{}}
 	unavailableName, unavailableCause := "", ""
@@ -551,13 +550,21 @@ func LaneDecideAt(ctx *Config, lane, role string, env platform.Env, sd, cwd stri
 type LaneSpec struct{ Name, Kind, Model, Effort string }
 
 func SetupLaneSpec(spec string) (LaneSpec, error) {
+	return setupAssignmentSpec(spec, "lane")
+}
+
+func SetupRoleSpec(spec string) (LaneSpec, error) {
+	return setupAssignmentSpec(spec, "role")
+}
+
+func setupAssignmentSpec(spec, scope string) (LaneSpec, error) {
 	i := strings.IndexByte(spec, '=')
 	if i < 0 {
-		return LaneSpec{}, &platform.ExitError{Code: 2, Msg: "setup: --lane expects name=kind[:model[:effort]]"}
+		return LaneSpec{}, &platform.ExitError{Code: 2, Msg: "setup: --" + scope + " expects name=kind[:model[:effort]]"}
 	}
 	name := spec[:i]
 	if !laneNameRE.MatchString(name) {
-		return LaneSpec{}, &platform.ExitError{Code: 2, Msg: fmt.Sprintf("setup: invalid lane name '%s'", name)}
+		return LaneSpec{}, &platform.ExitError{Code: 2, Msg: fmt.Sprintf("setup: invalid %s name '%s'", scope, textutil.QuoteControls(name))}
 	}
 	rest := strings.SplitN(spec[i+1:], "\n", 2)[0]
 	parts := strings.Split(rest, ":")
@@ -576,19 +583,19 @@ func SetupLaneSpec(spec string) (LaneSpec, error) {
 		extra = strings.TrimRight(strings.Join(parts[3:], ":"), ":")
 	}
 	if extra != "" {
-		return LaneSpec{}, &platform.ExitError{Code: 2, Msg: fmt.Sprintf("setup: --lane '%s' has too many ':' fields", spec)}
+		return LaneSpec{}, &platform.ExitError{Code: 2, Msg: fmt.Sprintf("setup: --%s '%s' has too many ':' fields", scope, textutil.QuoteControls(spec))}
 	}
 	if kind == "" {
-		return LaneSpec{}, &platform.ExitError{Code: 2, Msg: fmt.Sprintf("setup: --lane '%s' needs a kind", spec)}
+		return LaneSpec{}, &platform.ExitError{Code: 2, Msg: fmt.Sprintf("setup: --%s '%s' needs a kind", scope, textutil.QuoteControls(spec))}
 	}
 	if !contains(KnownKinds, kind) {
-		return LaneSpec{}, &platform.ExitError{Code: 2, Msg: fmt.Sprintf("setup: unknown kind '%s'", kind)}
+		return LaneSpec{}, &platform.ExitError{Code: 2, Msg: fmt.Sprintf("setup: unknown kind '%s'", textutil.QuoteControls(kind))}
 	}
 	if effort != "" && !contains(EffortLadder, effort) {
-		return LaneSpec{}, &platform.ExitError{Code: 2, Msg: fmt.Sprintf("setup: invalid effort '%s'", effort)}
+		return LaneSpec{}, &platform.ExitError{Code: 2, Msg: fmt.Sprintf("setup: invalid effort '%s'", textutil.QuoteControls(effort))}
 	}
 	if strings.Contains(kind+model+effort, "#") {
-		return LaneSpec{}, &platform.ExitError{Code: 2, Msg: "setup: --lane value cannot contain #"}
+		return LaneSpec{}, &platform.ExitError{Code: 2, Msg: "setup: --" + scope + " value cannot contain #"}
 	}
 	return LaneSpec{name, kind, model, effort}, nil
 }
@@ -756,24 +763,11 @@ func (capacity WorkerCapacity) Enforce() {
 }
 
 func FileLaneSignature(file string) string {
-	raw, err := platform.ReadTextFile(file)
-	if err != nil {
-		return ""
-	}
+	pairs, _ := ReadConfigFilePairs(file)
 	lines := []string{}
-	for _, line := range splitLines(raw) {
-		body, _ := splitTrailingComment(line)
-		s := trimJSWhitespace(body)
-		if s == "" || strings.HasPrefix(s, "#") {
-			continue
-		}
-		eq := strings.IndexByte(s, '=')
-		if eq < 0 {
-			continue
-		}
-		key := trimJSWhitespace(s[:eq])
-		if regexp.MustCompile(`^lane\.[A-Za-z0-9_-]+\.roles$`).MatchString(key) {
-			lines = append(lines, strings.TrimSuffix(strings.TrimPrefix(key, "lane."), ".roles")+"="+trimJSWhitespace(s[eq+1:]))
+	for _, pair := range pairs {
+		if lane, ok := laneRolesName(pair.Key, "lane_", "_roles"); ok && lane != "" {
+			lines = append(lines, lane+"="+pair.Value)
 		}
 	}
 	textutil.SortUTF16(lines)
@@ -957,7 +951,6 @@ func MigrateLaneAttr(file, lane, rolesCSV, attr string, acc *laneMigration, env 
 	}
 }
 
-var laneAttrRE = regexp.MustCompile(`^lane\.([A-Za-z0-9_-]+)\.(kind|model|effort|approvals|panes|args)$`)
 var laneRolesRE = regexp.MustCompile(`^lane\.[A-Za-z0-9_-]+\.roles$`)
 
 func fileKeyPresent(file, key string) bool {
@@ -973,101 +966,6 @@ func fileKeyPresent(file, key string) bool {
 	return false
 }
 
-// fileLastAssignmentTail returns the raw text after the '=' of the last line
-// that assigns key (any spelling NormalizeKey treats as the same key, with
-// the key parsed the way the loader parses it), or "" when none does.
-func fileLastAssignmentTail(file, key string) string {
-	raw, err := platform.ReadTextFile(file)
-	if err != nil {
-		return ""
-	}
-	want := NormalizeKey(key)
-	tail := ""
-	for _, rawLine := range splitLines(raw) {
-		body, _, _ := strings.Cut(rawLine, "#")
-		eq := strings.IndexByte(body, '=')
-		if eq < 0 || NormalizeKey(trimJSWhitespace(body[:eq])) != want {
-			continue
-		}
-		tail = rawLine[strings.IndexByte(rawLine, '=')+1:]
-	}
-	return tail
-}
-
-func dropPresetFileExtras(file, panes string, lines *[]string, mode string, keepZero bool) {
-	raw, e := platform.ReadTextFile(file)
-	if e != nil {
-		platform.Die(fmt.Sprintf("could not rewrite %s (file left untouched)", file), 4)
-	}
-	preset := map[string]bool{}
-	for _, lane := range PresetLaneNamesFor(panes, mode) {
-		preset[lane] = true
-	}
-	out := []string{}
-	moved := map[string]bool{}
-	for _, rawLine := range splitLines(raw) {
-		body, _ := splitTrailingComment(rawLine)
-		s := trimJSWhitespace(body)
-		if s == "" || strings.HasPrefix(s, "#") {
-			out = append(out, rawLine)
-			continue
-		}
-		eq := strings.IndexByte(s, '=')
-		if eq < 0 {
-			out = append(out, rawLine)
-			continue
-		}
-		key, value := trimJSWhitespace(s[:eq]), trimJSWhitespace(s[eq+1:])
-		if laneRolesRE.MatchString(key) {
-			continue
-		}
-		if key == "max_workers" {
-			if keepZero {
-				out = append(out, rawLine)
-				continue
-			}
-			*lines = append(*lines, "removed max_workers="+value+" (derived from the lanes)")
-			continue
-		}
-		if key == "split_max_panes" {
-			*lines = append(*lines, "removed split_max_panes="+value+" (derived from panes)")
-			continue
-		}
-		m := laneAttrRE.FindStringSubmatch(key)
-		if m != nil && !preset[m[1]] {
-			lane, attr := m[1], m[2]
-			if lane == "read" && preset["review"] {
-				target := "lane.review." + attr
-				if fileKeyPresent(file, target) || moved[attr] {
-					*lines = append(*lines, fmt.Sprintf("removed lane.read.%s=%s (%s is already set)", attr, value, target))
-					continue
-				}
-				// The winning assignment moves as written (value and any
-				// comment, byte for byte); only its key changes, so the
-				// reload decodes it exactly once, as before the move.
-				effective := FileKeyValue(file, "lane.read."+attr)
-				out = append(out, target+"="+fileLastAssignmentTail(file, "lane.read."+attr))
-				moved[attr] = true
-				*lines = append(*lines, fmt.Sprintf("moved lane.read.%s=%s to %s", attr, effective, target))
-				continue
-			}
-			if lane == "explore" {
-				*lines = append(*lines, fmt.Sprintf("removed lane.explore.%s=%s (research runs on the build lane now)", attr, value))
-				continue
-			}
-			*lines = append(*lines, fmt.Sprintf("removed lane.%s.%s=%s (no lane '%s' in the panes=%s preset)", lane, attr, value, lane, panes))
-			continue
-		}
-		out = append(out, rawLine)
-	}
-	content := ""
-	if len(out) > 0 {
-		content = strings.Join(out, "\n") + "\n"
-	}
-	if e := platform.AtomicWrite(file, content); e != nil {
-		platform.Die(fmt.Sprintf("could not rewrite %s (file left untouched)", file), 4)
-	}
-}
 func ApplyLaneFile(file, panes string, env platform.Env, cwd string, lanes ...LaneSpec) []string {
 	return ApplyLaneFileThrough(file, panes, env, cwd, "project", lanes...)
 }
@@ -1103,16 +1001,10 @@ func ApplyLaneFileThrough(file, panes string, env platform.Env, cwd, through str
 		}
 	}
 	sig := FileLaneSignature(file)
-	presetSigs := map[string]bool{}
-	for _, p := range []string{"2", "3", "4"} {
-		for _, mode := range []string{"strict", "flex"} {
-			presetSigs[PresetSignature(p, mode)] = true
-		}
-	}
 	ctx := LoadConfigThrough(env, cwd, through)
 	keepZero := LocalUnlimitedWorkers(file)
 	mode := PaneMode(&ctx, env)
-	isPreset := sig == "" || presetSigs[sig] || IsLegacyPresetSignature(sig, mode) || sig == LegacyPresetSignature("3") || sig == LegacyPresetSignature("4")
+	isPreset := IsPresetLaneSignature(sig, mode)
 	lines := []string{}
 	if !isPreset {
 		_, _ = fmt.Fprintf(platform.Stderr, "soho: warning: lane roles in %s are custom; left in place. Remove them to restore the panes=%s preset.\n", file, panes)
@@ -1137,6 +1029,9 @@ func ApplyLaneFileThrough(file, panes string, env platform.Env, cwd, through str
 		}
 	}
 	for _, pair := range pairs {
+		if isPreset && pair[0] == "planners" {
+			continue
+		}
 		kindDecided, modelDecided := false, false
 		for _, lane := range lanes {
 			if lane.Name == pair[0] {
@@ -1217,7 +1112,10 @@ func ModelCap(ctx *Config, env platform.Env) (int, bool) {
 // LaneModels is the configured model list in order: whitespace around an item
 // is ignored and empty items are dropped, while duplicates keep their places.
 func LaneModels(ctx *Config, lane string, env platform.Env) []string {
-	value := Cfg(ctx, LaneKey(lane, "models"), "", env)
+	return splitLaneModels(Cfg(ctx, LaneKey(lane, "models"), "", env))
+}
+
+func splitLaneModels(value string) []string {
 	if value == "" {
 		return nil
 	}

@@ -93,7 +93,7 @@ func TestSpawnIdleReuseWarningDescribesRetainedContext(t *testing.T) {
 			!spawnJSONHasField(t, stdout, `"previous_role": "reviewer"`) || !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
-		reuseWarn(t, stderr, "reusing idle lane 'review' worker 'review-2' as reviewer"+retainedWarning)
+		reuseWarn(t, stderr, "reusing idle lane 'reviewers' worker 'review-2' as reviewer"+retainedWarning)
 		assertNoStart(t, calls)
 		roster, err := os.ReadFile(filepath.Join(f.state, "ws", "agents.tsv"))
 		if err != nil {
@@ -120,7 +120,7 @@ func TestSpawnIdleReuseWarningDescribesRetainedContext(t *testing.T) {
 			!spawnJSONHasField(t, stdout, `"previous_role": "reviewer"`) || !spawnJSONHasField(t, stdout, `"status": "ready"`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
-		reuseWarn(t, stderr, "reusing idle lane 'review' worker 'review-2' as reviewer"+retainedWarning)
+		reuseWarn(t, stderr, "reusing idle lane 'reviewers' worker 'review-2' as reviewer"+retainedWarning)
 		assertNoStart(t, calls)
 	})
 

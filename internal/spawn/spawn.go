@@ -1226,6 +1226,9 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		}
 	}
 	lane, kind := res.Lane, res.Kind
+	for _, warning := range core.LegacyPresetGroupWarnings(ctx, env, o.role) {
+		warnBeforeAdmission(func() { warn("spawn: "+warning.Message, ctx, env, "spawn") })
+	}
 	if lane == "" && core.LanesEnabled(ctx, env) {
 		if core.PanesValue(ctx, env) == "2" && core.IsReviewRole(o.role) && !core.CustomLanesPresent(ctx, env) {
 			core.DieFriction(fmt.Sprintf("spawn: with panes=2 the orchestrator reviews (pick its model family by hand); role '%s' has no lane. Use panes=3 or 4, or pane_mode=flex for a temporary reviewer.", o.role), 3, "", "")
@@ -1252,8 +1255,8 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	if !approvalsOk(o.approvals) {
 		core.DieFriction(fmt.Sprintf("invalid approvals '%s' (ask|edits|full)", o.approvals), 2, "", "")
 	}
-	// DJA-392: the per-role MCP server choice — flag > lane.<n>.mcp >
-	// role.<r>.mcp > the role file's mcp: > inherit.
+	// MCP settings follow the flag, the role and then the group, before
+	// falling back to the role frontmatter or inherit.
 	o.mcp, sources.mcp = resolveMcpSource(o.mcp, lane, o.role, ctx, env, cwd)
 	sources.cwd = "default (current directory)"
 	if o.cwdSet {
@@ -1563,10 +1566,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			Warn(fmt.Sprintf("agent name '%s' is taken by another pane or workspace; using '%s'", taken, o.name), ctx, env, "spawn")
 		}
 	} else {
-		base := lane
-		if base == "" {
-			base = o.role
-		}
+		base := o.role
 		o.name = uniqueName(base)
 		if !AgentNameRE.MatchString(o.name) {
 			core.DieFriction(fmt.Sprintf("invalid agent name '%s' (must match [a-z][a-z0-9_-]{0,31})", o.name), 2, "", "")
@@ -1632,7 +1632,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 				orphanLive = liveAgents(env)
 			}
 			if explainMismatch == nil {
-				warnLaneIdleOtherKind(sd, lane, kind, sources.requested("kind", o.role, res), core.LaneAttr(ctx, lane, "kind", nil, env), env, orphanLive)
+				warnLaneIdleOtherKind(sd, lane, kind, sources.requested("kind", o.role, res), core.LaneAttr(ctx, lane, "kind", nil, env), ctx, env, orphanLive)
 			}
 			// An idle pane released by this project without --close is not
 			// re-adopted: the spawn only names it (from the released-panes
@@ -2034,7 +2034,7 @@ func warnLaneOrphans(ctx *core.Config, env platform.Env, cwd string, live []tran
 
 // warnLaneIdleOtherKind reports idle workers that occupy a slot and use a
 // different CLI from this spawn. It uses the existing live list when available.
-func warnLaneIdleOtherKind(sd, lane, kind, source, laneKind string, env platform.Env, live []transport.Terminal) {
+func warnLaneIdleOtherKind(sd, lane, kind, source, laneKind string, ctx *core.Config, env platform.Env, live []transport.Terminal) {
 	if live == nil {
 		live = liveAgents(env)
 	}
@@ -2042,7 +2042,7 @@ func warnLaneIdleOtherKind(sd, lane, kind, source, laneKind string, env platform
 	for _, a := range live {
 		statusByName[a.Name] = a.State
 	}
-	for _, row := range core.LaneWorkers(sd, lane) {
+	for _, row := range core.LaneWorkers(sd, lane, ctx, env) {
 		f := strings.Split(row, "\t")
 		name, wk := fieldAt(f, 0), fieldAt(f, 2)
 		if name == "" || wk == "" || wk == kind {
@@ -2112,7 +2112,7 @@ func buildArgs(kind, approvals, model, effort string, ctx *core.Config, env plat
 }
 
 // ResolveMcp applies the per-role MCP server precedence (DJA-392): flag >
-// lane.<n>.mcp > role.<r>.mcp > the role file's mcp: > inherit.
+// role.<r>.mcp > lane.<n>.mcp > the role file's mcp: > inherit.
 func ResolveMcp(flag, lane, role string, ctx *core.Config, env platform.Env, cwd string) string {
 	value, _ := resolveMcpSource(flag, lane, role, ctx, env, cwd)
 	return value
@@ -2122,13 +2122,13 @@ func resolveMcpSource(flag, lane, role string, ctx *core.Config, env platform.En
 	if flag != "" {
 		return flag, "flag --mcp"
 	}
+	if v := core.Cfg(ctx, "role_"+strings.ReplaceAll(role, "-", "_")+"_mcp", "", env); v != "" {
+		return v, "role." + role + ".mcp"
+	}
 	if lane != "" {
 		if v := core.LaneAttr(ctx, lane, "mcp", nil, env); v != "" {
 			return v, "lane." + lane + ".mcp"
 		}
-	}
-	if v := core.Cfg(ctx, "role_"+strings.ReplaceAll(role, "-", "_")+"_mcp", "", env); v != "" {
-		return v, "role." + role + ".mcp"
 	}
 	if file := core.RoleFile(role, env, cwd); file != "" {
 		// DJA-693: the mcp list keeps its commas; the ordinary FmGet

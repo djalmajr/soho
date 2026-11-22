@@ -69,7 +69,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		if hint := core.RosterRenameHint(sd, "review-2"); hint != "review" {
 			t.Fatalf("diagnostic history=%q want review", hint)
 		}
-		want := "soho: warning: reusing idle lane 'review' worker 'review-2' as reviewer, renamed to 'review'; existing session context is retained"
+		want := "soho: warning: reusing idle lane 'reviewers' worker 'review-2' as reviewer, renamed to 'review'; existing session context is retained"
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr=%q want %q", stderr, want)
 		}
@@ -103,7 +103,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		if !strings.Contains(string(roster), "review-2\tw0test:p0a") || strings.Contains(string(roster), "review\tw0test:p0a") {
 			t.Fatalf("roster=%q", roster)
 		}
-		want := "soho: warning: reusing idle lane 'review' worker 'review' as reviewer, renamed to 'review-2'; existing session context is retained"
+		want := "soho: warning: reusing idle lane 'reviewers' worker 'review' as reviewer, renamed to 'review-2'; existing session context is retained"
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr=%q want %q", stderr, want)
 		}
@@ -127,7 +127,7 @@ func TestSpawnLaneReuseRenameJavaScriptCases(t *testing.T) {
 		if !spawnJSONHasField(t, stdout, `"name": "review-2"`) {
 			t.Fatalf("JSON=%q", stdout)
 		}
-		want := "soho: warning: reusing idle lane 'review' worker 'review-2' as reviewer; existing session context is retained"
+		want := "soho: warning: reusing idle lane 'reviewers' worker 'review-2' as reviewer; existing session context is retained"
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr=%q want %q", stderr, want)
 		}

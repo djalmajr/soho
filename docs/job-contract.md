@@ -84,7 +84,7 @@ JSON on stdin (or a file). Required fields: `schema`, `id`, `origem`, `repo`, `o
   "decisoes": ["names, formats and texts the job must not choose"],
   "restricoes": ["do not touch internal/plugin/**"],
   "nao_objetivos": ["..."],
-  "equipe": { "lane.review.effort": "high" },
+  "equipe": { "lane.reviewers.effort": "high" },
   "prazo": { "timeout_min": 90 },
   "budget": { "max_workers": 2 },
   "memoria": { "escopos": ["example-workspace/example-project"] },
@@ -110,7 +110,7 @@ The team is configured per machine, not in the repository, because the same proj
 
 Resolution at `job start`: the repository file; else the machine default; else the repository's `.agents/soho.conf` when it sets at least one `lane.*.roles`; else exit 2. A job never falls back to the built-in 2/3/4-pane presets. The resolved file, plus the brief's `equipe` overrides, is written into the job workspace's `session.conf`, and `report.json` records the source. Before it starts the job orchestrator, the supervisor completes that `session.conf` with the team settings the starting user's configuration resolves and the team file leaves open: for each role of the team's lanes, its `kind`, `model` and `effort`, on the lane key when a lane decided it and on the role key otherwise, plus that lane's kind when the job's agents' own configuration sets a kind for a team lane whose roles all resolve the same kind for the starting user (a group kind supplies the default), and `max_workers`. Approvals are never copied: a job's agents get the team file's approvals, and otherwise their own configuration's. For a grouped role, a `role.<role>.<knob>` key takes precedence over the group's default regardless of the layer. When the selected team inherits a group kind, model, effort or approvals, a conflicting base-layer role key causes exit 2 before workspace creation for the configuration visible at start. This includes a scalar model equal to the first model in a group list because it suppresses rotation. Move intentional role overrides into the team. The supervisor rechecks the configuration visible to the actors before spawning an agent. The agents of the job workspace read that `session.conf`; when their own environment resolves its session file under another state directory (a `state_dir` that differs between the starting user's configuration and the Herdr server's), the supervisor writes that session file too, with the same team and a `state_dir` naming the job's state directory, so the job orchestrator's own team and `job` commands use the job's team, roster and state. When that session file lies inside the checkout, its directory is added to the checkout's local `.git/info/exclude` (never to a tracked file). It never copies other user settings, machine keys or credentials. The supervisor then resolves the team and state directory as the starting user and as the job's agents, and the job fails before the job orchestrator starts when they differ, or when the session file is needed but cannot be written safely: a state directory path with `#` or a line break, which a configuration line cannot hold; a location inside a job worktree or tracked by Git; a link or another kind of file in its path; an unreadable or oversized session or exclude file. Settings outside the team (for example approvals, arguments or other roles) still come from each agent's own user configuration: put a job team's settings in its team file.
 
-Example team shapes: implementer only (`panes=2`, `lane.build.roles=implementer`); implementer and reviewer (`panes=3`, adds `lane.review.roles=reviewer`); implementer, reviewer and security reviewer (`panes=4`, adds `lane.sec.roles=security-reviewer`, `lane.sec.panes=1`).
+Example team shapes: implementer only (`panes=2`, `lane.builders.roles=implementer`); implementer and reviewer (`panes=3`, adds `lane.reviewers.roles=reviewer`); implementer, reviewer and security reviewer (`panes=4`, sets `lane.reviewers.roles=reviewer,security-reviewer` and `lane.reviewers.panes=2`).
 
 ## Machine configuration
 
@@ -259,7 +259,7 @@ A job in worktree mode that would end `done` must have a verified final publicat
     "projeto": [{ "tipo": "decision", "seq": 9, "resumo": "...", "motivo": "...", "refs": {} }],
     "decisions_total": 2, "decisions_acked_seq": 0
   },
-  "equipe": { "fonte": "teams/example-org/example-repo.conf", "override_brief": ["lane.review.effort"] },
+  "equipe": { "fonte": "teams/example-org/example-repo.conf", "override_brief": ["lane.reviewers.effort"] },
   "eventos": { "total": 42, "ultimo_seq": 42, "arquivo": "<abs>/events.jsonl" },
   "custo": { "inicio": "<ISO 8601 with offset>", "fim": "<ISO 8601 with offset>", "duracao_s": 2710, "workers": 3 },
   "logs": { "report_md": "<abs>", "state_dir": "<abs>", "friction": "<abs>" },

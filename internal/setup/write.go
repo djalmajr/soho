@@ -13,6 +13,7 @@ import (
 	"github.com/djalmajr/soho/internal/dispatch"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/setuptext"
+	textutil "github.com/djalmajr/soho/internal/text"
 )
 
 var inlineConfigComment = regexp.MustCompile(`[ \t]#.*$`)
@@ -410,12 +411,12 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		return
 	}
 	var target, panes, argTarget string
-	var lanes []string
+	var lanes, roles []string
 	local, hooks, dry, detect, guard := false, true, false, false, false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch a {
-		case "--target", "--panes", "--lane":
+		case "--target", "--panes", "--lane", "--role":
 			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
 				platform.DieFriction("setup: "+a+" expects a value", 2)
 			}
@@ -426,6 +427,8 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 				argTarget = v
 			} else if a == "--panes" {
 				panes = v
+			} else if a == "--role" {
+				roles = append(roles, v)
 			} else {
 				lanes = append(lanes, v)
 			}
@@ -462,7 +465,7 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		platform.DieFriction(core.StateInSkillMessage("setup", root, skill), 2)
 	}
 	// The argument-only checks come first: --local with --target, --panes,
-	// --lane. Nothing on disk may change before they can refuse.
+	// --lane and --role. Nothing on disk may change before they can refuse.
 	// The check reads the raw --target argument (argTarget): the target
 	// defaulting below gives target a value in every run, and that is not
 	// a conflict with --local.
@@ -480,6 +483,14 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			platform.DieFriction(err.Error(), 2)
 		}
 		parsed = append(parsed, lane)
+	}
+	roleSpecs := make([]core.LaneSpec, 0, len(roles))
+	for _, spec := range roles {
+		role, err := core.SetupRoleSpec(spec)
+		if err != nil {
+			platform.DieFriction(err.Error(), 2)
+		}
+		roleSpecs = append(roleSpecs, role)
 	}
 	if target == "" {
 		target = setupTargetExisting(root)
@@ -528,7 +539,10 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			_, _ = fmt.Fprintf(platform.Stdout, "# would set panes=%s and the preset lanes in %s\n", panes, conf)
 		}
 		for _, spec := range lanes {
-			_, _ = fmt.Fprintf(platform.Stdout, "# would apply --lane %s\n", spec)
+			_, _ = fmt.Fprintf(platform.Stdout, "# would apply --lane %s\n", textutil.QuoteControls(spec))
+		}
+		for _, spec := range roles {
+			_, _ = fmt.Fprintf(platform.Stdout, "# would apply --role %s\n", textutil.QuoteControls(spec))
 		}
 	}
 	if dry {
@@ -604,8 +618,9 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 			applySetupPreset(conf, panes, parsed, env, cwd)
 		} else if len(parsed) > 0 {
 			// --lane without --panes applies the lanes on their own.
-			writeSetupLanes(conf, parsed, env, cwd)
+			writeSetupAssignments(conf, "lane", parsed, env, cwd)
 		}
+		writeSetupAssignments(conf, "role", roleSpecs, env, cwd)
 	}
 	if modeLocal {
 		rels := localRels(root, ctx, env, cwd)
@@ -633,8 +648,9 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		if panes != "" {
 			applySetupPreset(conf, panes, parsed, env, cwd)
 		} else if len(parsed) > 0 {
-			writeSetupLanes(conf, parsed, env, cwd)
+			writeSetupAssignments(conf, "lane", parsed, env, cwd)
 		}
+		writeSetupAssignments(conf, "role", roleSpecs, env, cwd)
 		stateShown := classifyLocalState(root, ctx, env, cwd).shown
 		if path == "" {
 			_, _ = fmt.Fprintf(platform.Stdout, "state dir not ignored: outside a git work tree, no git exclusion was installed for %s\n", stateShown)
@@ -742,30 +758,34 @@ func applySetupPreset(conf, panes string, lanes []core.LaneSpec, env platform.En
 	for _, line := range core.ApplyLaneFile(conf, panes, env, cwd, lanes...) {
 		_, _ = fmt.Fprintln(platform.Stdout, line)
 	}
-	writeSetupLanes(conf, lanes, env, cwd)
+	writeSetupAssignments(conf, "lane", lanes, env, cwd)
 }
 
-// writeSetupLanes writes the --lane values on their own, without the panes
-// preset: --lane applies even when --panes is absent, in canonical and in
-// local mode.
-func writeSetupLanes(conf string, lanes []core.LaneSpec, env platform.Env, cwd string) {
-	if len(lanes) == 0 {
+func setupAssignmentPairs(scope string, specs []core.LaneSpec) [][2]string {
+	var pairs [][2]string
+	for _, spec := range specs {
+		prefix := scope + "." + spec.Name + "."
+		pairs = append(pairs, [2]string{prefix + "kind", spec.Kind})
+		if spec.Model != "" {
+			pairs = append(pairs, [2]string{prefix + "model", spec.Model})
+		}
+		if spec.Effort != "" {
+			pairs = append(pairs, [2]string{prefix + "effort", spec.Effort})
+		}
+	}
+	return pairs
+}
+
+func writeSetupAssignments(conf, scope string, specs []core.LaneSpec, env platform.Env, cwd string) {
+	if len(specs) == 0 {
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(conf), 0o755); err != nil {
 		platform.DieFriction(fmt.Sprintf("config set: could not rewrite %s (file left untouched)", conf), 4)
 	}
-	for _, lane := range lanes {
-		core.ConfigWritePair(conf, "lane."+lane.Name+".kind", lane.Kind, env, cwd)
-		_, _ = fmt.Fprintf(platform.Stdout, "set lane.%s.kind=%s\n", lane.Name, lane.Kind)
-		if lane.Model != "" {
-			core.ConfigWritePair(conf, "lane."+lane.Name+".model", lane.Model, env, cwd)
-			_, _ = fmt.Fprintf(platform.Stdout, "set lane.%s.model=%s\n", lane.Name, lane.Model)
-		}
-		if lane.Effort != "" {
-			core.ConfigWritePair(conf, "lane."+lane.Name+".effort", lane.Effort, env, cwd)
-			_, _ = fmt.Fprintf(platform.Stdout, "set lane.%s.effort=%s\n", lane.Name, lane.Effort)
-		}
+	for _, pair := range setupAssignmentPairs(scope, specs) {
+		core.ConfigWritePair(conf, pair[0], pair[1], env, cwd)
+		_, _ = fmt.Fprintf(platform.Stdout, "set %s=%s\n", pair[0], textutil.QuoteControls(pair[1]))
 	}
 }
 
@@ -807,7 +827,7 @@ func promptConfigNotice(ctx *core.Config, conf string, local bool) {
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		subject = "this project has no config file (" + path + " does not exist), so it"
 	}
-	core.Warn(fmt.Sprintf("%s sets neither multi_role, any lane.<name>.kind, nor any role.<role>.kind. max_workers alone is not that choice. Orchestrator: run 'setup --detect', ask the user in their language how many agents at once (4 recommended, 3, or 2) and which detected assistant should implement, review, and research — do not say lane, kind, or panes to them — then run 'setup %s--panes 2|3|4 [--lane name=kind:model:effort]'. If doctor reports a missing or legacy config, finish with 'doctor --fix --panes 2|3|4'.", subject, flag), "", "setup")
+	core.Warn(fmt.Sprintf("%s sets neither multi_role, any lane.<name>.kind, nor any role.<role>.kind. max_workers alone is not that choice. Orchestrator: run 'setup --detect', ask the user in their language how many panels (4 recommended, 3, or 2) and which assistant should build, review, research, and handle risky code, then run 'setup %s--panes 2|3|4 [--lane builders=kind:model:effort] [--lane reviewers=kind:model:effort] [--role researcher=kind:model:effort] [--role critical-implementer=kind:model:effort]'. If doctor reports a missing or legacy config, finish with 'doctor --fix --panes 2|3|4'.", subject, flag), "", "setup")
 }
 
 func writeCanonicalStateIgnore(ctx *core.Config, env platform.Env, cwd string, cache *setupTracking) {

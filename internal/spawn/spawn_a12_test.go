@@ -44,13 +44,13 @@ func TestSpawnLaneReuseUsesOpeningEffort(t *testing.T) {
 		fresh                       bool
 	}{
 		{name: "direct equal", effort: "high", wantName: "old"},
-		{name: "direct different", effort: "medium", wantName: "build", fresh: true},
+		{name: "direct different", effort: "medium", wantName: "worker", fresh: true},
 		{name: "direct missing", legacy: true, wantName: "old"},
 		{name: "named equal", effort: "high", requestedName: "old", wantName: "old"},
 		{name: "named different", effort: "medium", requestedName: "old", wantName: "old-2", fresh: true},
 		{name: "named missing", legacy: true, requestedName: "old", wantName: "old"},
 		{name: "alternative equal", effort: "medium", alternative: true, wantName: "right"},
-		{name: "alternative different", effort: "medium", alternative: true, wantName: "build", fresh: true},
+		{name: "alternative different", effort: "medium", alternative: true, wantName: "worker", fresh: true},
 		{name: "alternative missing", legacy: true, alternative: true, wantName: "old"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -116,7 +116,7 @@ func TestSpawnA12ReuseRespectsModelAndCwd(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		if !spawnJSONHasField(t, stdout, `"name": "build"`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
+		if !spawnJSONHasField(t, stdout, `"name": "worker"`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 			t.Fatalf("the mismatched idle was not treated as occupied (no new pane): %s", stdout)
 		}
 		if spawnJSONHasField(t, stdout, `"reused": true`) {

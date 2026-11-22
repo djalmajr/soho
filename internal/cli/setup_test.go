@@ -119,18 +119,18 @@ func TestSetupLaneDecisionSuppressesMigrationWarning(t *testing.T) {
 			roles := "role.implementer.kind=grok\nrole.designer.kind=agy\n"
 			tm6Write(t, conf, roles)
 			if tc.user {
-				tm6Write(t, core.ConfigFileFor("user", env, cwd), "lane.build.kind=codex\n")
+				tm6Write(t, core.ConfigFileFor("user", env, cwd), "lane.builders.kind=codex\n")
 			}
 			args := []string{"setup", "--target", "AGENTS.md", "--no-hooks", "--panes", "4"}
 			if tc.lane {
-				args = append(args, "--lane", "build=codex")
+				args = append(args, "--lane", "builders=codex")
 			}
 			code, out, stderr := runIn(t, args, env, cwd)
 			data, err := os.ReadFile(conf)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if code != 0 || strings.Contains(stderr, "lane 'build' kinds differ") != tc.warning || !strings.Contains(string(data), "role.implementer.kind=grok") || !strings.Contains(string(data), "role.designer.kind=agy") || (tc.user && strings.Contains(string(data), "lane.build.kind=")) || (tc.lane && !strings.Contains(string(data), "lane.build.kind=codex")) {
+			if code != 0 || strings.Contains(stderr, "lane 'builders' kinds differ") != tc.warning || !strings.Contains(string(data), "role.implementer.kind=grok") || !strings.Contains(string(data), "role.designer.kind=agy") || (tc.user && strings.Contains(string(data), "lane.builders.kind=")) || (tc.lane && !strings.Contains(string(data), "lane.builders.kind=codex")) {
 				t.Fatalf("code=%d out=%q stderr=%q config=%q", code, out, stderr, data)
 			}
 		})
@@ -142,7 +142,7 @@ func TestSetupPlanLaneMigrationMatchesWrite(t *testing.T) {
 	conf := filepath.Join(cwd, ".agents", "soho.conf")
 	roles := []string{"implementer", "designer", "tasker"}
 	tm6Write(t, conf, "role.implementer.kind=grok\nrole.designer.kind=grok\nrole.tasker.kind=grok\n")
-	args := []string{"setup", "--target", "AGENTS.md", "--no-hooks", "--panes", "4", "--lane", "build=codex"}
+	args := []string{"setup", "--target", "AGENTS.md", "--no-hooks", "--panes", "4", "--lane", "builders=codex"}
 	code, plan, stderr := runIn(t, append(append([]string{}, args...), "--plan"), env, cwd)
 	if code != 0 {
 		t.Fatalf("plan code=%d stderr=%s", code, stderr)
@@ -160,7 +160,7 @@ func TestSetupPlanLaneMigrationMatchesWrite(t *testing.T) {
 			t.Errorf("%s: plan removed=%v write present=%v\nplan=%s\nconfig=%s", key, removed, present, plan, data)
 		}
 	}
-	if !strings.Contains(string(data), "lane.build.kind=codex") || !strings.Contains(plan, "lane.build.kind") {
+	if !strings.Contains(string(data), "lane.builders.kind=codex") || !strings.Contains(plan, "lane.builders.kind") {
 		t.Fatalf("lane missing: plan=%s config=%s", plan, data)
 	}
 }
@@ -168,14 +168,14 @@ func TestSetupPlanLaneMigrationMatchesWrite(t *testing.T) {
 func TestSetupMigrationStillWarnsOnDivergentLegacyRoleModels(t *testing.T) {
 	env, cwd := tm6CLIEnv(t)
 	conf := filepath.Join(cwd, ".agents", "soho.conf")
-	tm6Write(t, conf, "lane.build.kind=codex\nrole.implementer.model=legacy-one\nrole.designer.model=legacy-two\n")
-	tm6Write(t, core.ConfigFileFor("user", env, cwd), "lane.build.model=user-model\n")
+	tm6Write(t, conf, "lane.builders.kind=codex\nrole.implementer.model=legacy-one\nrole.designer.model=legacy-two\n")
+	tm6Write(t, core.ConfigFileFor("user", env, cwd), "lane.builders.model=user-model\n")
 	ctx := core.LoadConfig(env, cwd)
-	if got := core.LaneAttr(&ctx, "build", "model", nil, env); got != "user-model" {
+	if got := core.LaneAttr(&ctx, "builders", "model", nil, env); got != "user-model" {
 		t.Fatalf("configured model=%q, want user-model", got)
 	}
 	code, _, stderr := runIn(t, []string{"setup", "--target", "AGENTS.md", "--no-hooks", "--panes", "4"}, env, cwd)
-	if code != 0 || !strings.Contains(stderr, "lane 'build' models differ") {
+	if code != 0 || !strings.Contains(stderr, "lane 'builders' models differ") {
 		t.Fatalf("code=%d stderr=%s", code, stderr)
 	}
 	data, err := os.ReadFile(conf)

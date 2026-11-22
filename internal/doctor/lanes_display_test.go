@@ -9,10 +9,10 @@ import (
 
 func TestDoctorOnDemandLaneAndFix(t *testing.T) {
 	env, root := tm6DoctorEnv(t)
-	ctx := tm6DoctorConfig(map[string]string{"panes": "4", "max_workers": "3"}, "project")
+	ctx := tm6DoctorConfig(map[string]string{"panes": "4", "max_workers": "4"}, "project")
 	var out strings.Builder
 	doctorLaneWarnings(ctx, env, root, &Say{Out: &out})
-	if strings.Contains(out.String(), "but the lanes hold") || !strings.Contains(out.String(), "note   config: max_workers=3 allows creating a new worker in an on-demand lane only when a slot is free") {
+	if strings.Contains(out.String(), "but the lanes hold") || !strings.Contains(out.String(), "note   config: max_workers=4 allows creating a new worker in an on-demand lane only when a slot is free") {
 		t.Fatalf("unexpected diagnostics: %s", out.String())
 	}
 	file := filepath.Join(root, ".agents", "soho.conf")
@@ -27,7 +27,7 @@ func TestDoctorOnDemandLaneAndFix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), "max_workers=4\n") {
+	if !strings.Contains(string(raw), "max_workers=5\n") {
 		t.Fatalf("fix: %s", raw)
 	}
 }
@@ -45,8 +45,8 @@ func TestDoctorUnlimitedOnDemandLane(t *testing.T) {
 
 func TestDoctorCapacityWarningNamesLayer(t *testing.T) {
 	for _, tc := range []struct{ source, fix string }{
-		{"user", "soho config set max_workers 4 --user"},
-		{"project", "soho config set max_workers 4"},
+		{"user", "soho config set max_workers 5 --user"},
+		{"project", "soho config set max_workers 5"},
 	} {
 		t.Run(tc.source, func(t *testing.T) {
 			env, root := tm6DoctorEnv(t)
@@ -73,7 +73,7 @@ func TestDoctorLaneCapacityRange(t *testing.T) {
 	} {
 		t.Run(tc.limit, func(t *testing.T) {
 			env, root := tm6DoctorEnv(t)
-			ctx := tm6DoctorConfig(map[string]string{"max_workers": tc.limit, "lane_build_roles": "implementer", "lane_build_panes": "7", "lane_critical_roles": "critical-implementer", "lane_critical_panes": "2"}, "project")
+			ctx := tm6DoctorConfig(map[string]string{"max_workers": tc.limit, "lane_build_roles": "implementer", "lane_build_panes": "7", "lane_planning_roles": "sub-orchestrator,job-orchestrator", "lane_planning_panes": "2"}, "project")
 			var out strings.Builder
 			doctorLaneWarnings(ctx, env, root, &Say{Out: &out})
 			got := out.String()

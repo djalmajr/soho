@@ -43,17 +43,15 @@ func ConfigNativeArgs(kind, lane, role string, ctx *core.Config, env platform.En
 }
 
 func configNativeArgsSource(kind, lane, role string, ctx *core.Config, env platform.Env, cwd string, onDrop func(key, own string)) (args, source string) {
-	var scoped, scopedKey, own string
-	if lane != "" {
+	scopedKey := "role." + role + ".args"
+	scoped := core.Cfg(ctx, core.NormalizeKey(scopedKey), "", env)
+	var own string
+	if scoped != "" {
+		own = core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{}).Kind
+	} else if lane != "" {
 		scopedKey = "lane." + lane + ".args"
 		scoped = core.Cfg(ctx, core.LaneKey(lane, "args"), "", env)
 		own = core.Cfg(ctx, core.LaneKey(lane, "kind"), "", env)
-	} else {
-		scopedKey = "role." + role + ".args"
-		scoped = core.Cfg(ctx, "role_"+strings.ReplaceAll(role, "-", "_")+"_args", "", env)
-		if scoped != "" {
-			own = core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{}).Kind
-		}
 	}
 	if scoped != "" && own != kind {
 		if onDrop != nil {

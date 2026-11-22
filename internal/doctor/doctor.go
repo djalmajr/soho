@@ -99,7 +99,17 @@ func ProjectHasRoster(ctx *core.Config, env platform.Env, cwd string) bool {
 }
 
 func setupUnifiedDiff(before, after, label string) string {
+	before = quoteConfigDiffLines(before)
+	after = quoteConfigDiffLines(after)
 	return setupcmd.UnifiedDiff(before, after, label)
+}
+
+func quoteConfigDiffLines(contents string) string {
+	lines := strings.Split(contents, "\n")
+	for i, line := range lines {
+		lines[i] = textutil.QuoteControls(line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func CmdInit(ctx *core.Config, env platform.Env, cwd string) {
@@ -287,6 +297,11 @@ func doctorFix(where, panes string, ctx *core.Config, env platform.Env, cwd stri
 		if !core.LayoutCapacityOverride(key) {
 			repairEnv[key] = value
 		}
+	}
+	selected := core.LoadConfigThrough(repairEnv, cwd, where)
+	if !core.IsPresetLaneSignature(core.FileLaneSignature(dest), core.PaneMode(&selected, repairEnv)) {
+		fmt.Fprintf(platform.Stderr, "doctor --fix: custom group roles in %s; left the file unchanged.\n", textutil.QuoteControls(dest))
+		return
 	}
 	keepZero := core.LocalUnlimitedWorkers(dest)
 	oldSplit := core.FileKeyValue(dest, "split_max_panes")
@@ -636,7 +651,7 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	doctorNativeParentless(ctx, svc, env, cwd, s)
 	doctorDiscardedModels(ctx, env, cwd, s)
 	doctorModelPairs(ctx, env, cwd, s)
-	doctorLaneArgs(ctx, env, cwd, s)
+	doctorLaneArgs(ctx, env, s)
 	doctorContextWindow(ctx, env, s)
 	doctorBackgroundPatterns(ctx, env, s)
 	doctorApprovals(ctx, env, s)
@@ -1040,7 +1055,7 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 	}
 	mode := core.Cfg(ctx, "pane_mode", "strict", env)
 	if mode == "strict" {
-		s.Ok(fmt.Sprintf("config: pane_mode=strict (never more than %s panels)", core.PanesValue(ctx, env)))
+		s.Ok(fmt.Sprintf("config: pane_mode=strict (%s panels before on-demand work)", core.PanesValue(ctx, env)))
 	} else if mode == "flex" {
 		s.Ok(fmt.Sprintf("config: pane_mode=flex (+%d temporary panel for %s)", core.FlexExtra(ctx, env), core.Cfg(ctx, "flex_roles", "reviewer,documenter", env)))
 	} else {
@@ -1048,6 +1063,8 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 	}
 	unknown, dups, mixed := "", "", ""
 	seen := map[string]bool{}
+	eff := core.EffectiveLaneSignature(ctx, env)
+	custom := !core.IsPresetLaneSignature(eff, core.PaneMode(ctx, env))
 	for _, lane := range core.LaneNames(ctx, env) {
 		roles := core.LaneRolesCSV(ctx, lane, env)
 		edit, review := false, false
@@ -1061,7 +1078,7 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 			seen[r] = true
 			edit = edit || core.RoleIsEdit(r, env, cwd)
 			review = review || core.IsReviewRole(r)
-			if r == "planner" {
+			if r == "planner" && custom {
 				s.Warning(fmt.Sprintf("lanes: '%s' includes planner. The orchestrator is the planner and opens no pane; remove it from the lane.", lane))
 			}
 		}
@@ -1081,11 +1098,22 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 		s.Ok("lanes: no role is in two lanes")
 	}
 	if mixed != "" {
-		s.Warning("lanes:" + mixed + " mix an edit role with a review role (a session must not review code it wrote). Split them the way panes=4 separates build from review.")
+		s.Warning("lanes:" + mixed + " mix an edit role with a review role (a session must not review code it wrote). Split them the way panes=4 separates builders from reviewers.")
 	} else {
 		s.Ok("lanes: edit and review roles are separated")
 	}
-	eff := core.EffectiveLaneSignature(ctx, env)
+	if custom && core.LanesEnabled(ctx, env) {
+		for _, role := range core.SplitRoles(core.PresetRolesFlat("4", "strict")) {
+			if role != "planner" && !seen[role] {
+				s.Warning(fmt.Sprintf("role %s is outside every group. Add it to a group with lane.<group>.roles.", role))
+			}
+		}
+	}
+	legacyKeys := map[string]bool{}
+	for _, warning := range core.LegacyPresetGroupWarnings(ctx, env, "") {
+		s.Warning(warning.Message)
+		legacyKeys[warning.Key] = true
+	}
 	for _, preset := range []string{"4", "3"} {
 		signature := core.LegacyPresetSignature(preset)
 		if eff == signature {
@@ -1094,7 +1122,7 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 				name, _, _ := strings.Cut(line, "=")
 				names = append(names, name)
 			}
-			s.Warning(fmt.Sprintf("lanes: the lanes come from an old preset (%s); run '%s doctor --fix --panes %s' to move to the new ones (research joins the build lane).", strings.Join(names, ", "), entry, core.PanesValue(ctx, env)))
+			s.Warning(fmt.Sprintf("lanes: the lanes come from an old preset (%s); run '%s doctor --fix --panes %s' to move to the current groups.", strings.Join(names, ", "), entry, core.PanesValue(ctx, env)))
 			break
 		}
 	}
@@ -1106,12 +1134,12 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 	orphanKeys := append([]string(nil), ctx.Order...)
 	textutil.SortUTF16(orphanKeys)
 	for _, key := range orphanKeys {
-		if !strings.HasPrefix(key, "lane_") {
+		if !strings.HasPrefix(key, "lane_") || legacyKeys[key] {
 			continue
 		}
 		rest := strings.TrimPrefix(key, "lane_")
 		attr := ""
-		for _, candidate := range []string{"roles", "kind", "model", "effort", "approvals", "panes", "args"} {
+		for _, candidate := range []string{"roles", "kind", "model", "models", "effort", "approvals", "panes", "args", "mcp"} {
 			if strings.HasSuffix(rest, "_"+candidate) {
 				attr = candidate
 				break
@@ -1122,10 +1150,10 @@ func doctorLaneWarnings(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 		}
 		lane := strings.TrimSuffix(rest, "_"+attr)
 		value := core.Cfg(ctx, key, "", env)
-		if value == "" || knownLanes[lane] {
+		if value == "" || knownLanes[lane] || (!core.CustomLanesPresent(ctx, env) && lane == "reviewers") {
 			continue
 		}
-		s.Warning(fmt.Sprintf("config: lane.%s.%s=%s (%s) sets a lane that does not exist (lanes: %s). doctor --fix removes it.", lane, attr, value, core.CfgSource(ctx, key, env), strings.Join(lanesForOrphans, " ")))
+		s.Warning(fmt.Sprintf("config: lane.%s.%s=%s (%s) sets a lane that does not exist (lanes: %s). doctor --fix removes it.", lane, attr, textutil.QuoteControls(value), core.CfgSource(ctx, key, env), strings.Join(lanesForOrphans, " ")))
 	}
 	lanes := core.LaneNames(ctx, env)
 	caps := []string{}
@@ -1386,6 +1414,11 @@ func doctorRoleOverrides(lane string, roles []string, ctx *core.Config, env plat
 		if res.Lane != lane {
 			continue
 		}
+		roleArgs := "role." + role + ".args"
+		groupArgs := "lane." + lane + ".args"
+		if core.Cfg(ctx, core.NormalizeKey(roleArgs), "", env) != "" && core.Cfg(ctx, core.NormalizeKey(groupArgs), "", env) != "" {
+			printRoleOverride(roleArgs, groupArgs, ctx, env, s)
+		}
 		laneKind := core.Cfg(ctx, core.LaneKey(lane, "kind"), "", env)
 		for _, field := range []struct{ name, from string }{
 			{"kind", res.KindFrom}, {"model", res.ModelFrom}, {"effort", res.EffortFrom}, {"approvals", res.ApprovalsFrom},
@@ -1408,28 +1441,20 @@ func doctorRoleOverrides(lane string, roles []string, ctx *core.Config, env plat
 			if laneValue == "" || core.CfgLayerRank(ctx, roleKey, env) >= core.CfgLayerRank(ctx, laneKey, env) {
 				continue
 			}
-			fmt.Fprintf(s.Out, "doctor: role.%s.%s=%s (%s) overrides lane.%s.%s=%s (%s)\n",
-				role, field.name, core.Cfg(ctx, roleKey, "", env), core.CfgSource(ctx, roleKey, env),
-				lane, laneAttr, laneValue, core.CfgSource(ctx, laneKey, env))
+			printRoleOverride("role."+role+"."+field.name, "lane."+lane+"."+laneAttr, ctx, env, s)
 		}
 	}
 }
 
-func doctorLaneArgs(ctx *core.Config, env platform.Env, cwd string, s *Say) {
+func printRoleOverride(role, group string, ctx *core.Config, env platform.Env, s *Say) {
+	roleKey, groupKey := core.NormalizeKey(role), core.NormalizeKey(group)
+	fmt.Fprintf(s.Out, "doctor: %s=%s (%s) overrides %s=%s (%s)\n",
+		role, textutil.QuoteControls(core.Cfg(ctx, roleKey, "", env)), core.CfgSource(ctx, roleKey, env),
+		group, textutil.QuoteControls(core.Cfg(ctx, groupKey, "", env)), core.CfgSource(ctx, groupKey, env))
+}
+
+func doctorLaneArgs(ctx *core.Config, env platform.Env, s *Say) {
 	if core.LanesEnabled(ctx, env) {
-		for _, lane := range core.LaneNames(ctx, env) {
-			for _, role := range doctorLaneRoles(core.LaneRolesCSV(ctx, lane, env)) {
-				if core.Cfg(ctx, "role_"+strings.ReplaceAll(role, "-", "_")+"_args", "", env) != "" {
-					message := fmt.Sprintf("config: role.%s.args is ignored: '%s' runs in lane '%s' (lanes=on)", role, role, lane)
-					laneKind := core.Cfg(ctx, core.LaneKey(lane, "kind"), "", env)
-					res := core.ResolveRoleSettings(role, ctx, env, cwd, core.RoleFlags{})
-					if laneKind != "" && res.Lane == lane && res.Kind == laneKind {
-						message += "; set lane." + lane + ".args instead"
-					}
-					s.Warning(message)
-				}
-			}
-		}
 		return
 	}
 	keys := []string{}
@@ -1600,7 +1625,7 @@ func doctorCodexNetwork(ctx *core.Config, env platform.Env, cwd string, s *Say) 
 		args := spawn.ConfigNativeArgs("codex", res.Lane, role, ctx, env, cwd, nil)
 		if len(dispatch.SandboxNotes("codex", args, res.Approvals)) > 1 {
 			key := "role." + role + ".args"
-			if res.Lane != "" {
+			if res.Lane != "" && core.Cfg(ctx, core.NormalizeKey(key), "", env) == "" {
 				key = "lane." + res.Lane + ".args"
 			}
 			s.Warning(fmt.Sprintf("config: %s runs on codex without network: it cannot open a local port, so the UI and e2e tests do not run (listen EPERM); set %s=-c sandbox_workspace_write.network_access=true, or run the e2e yourself", role, key))
