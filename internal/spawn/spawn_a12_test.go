@@ -102,6 +102,13 @@ func TestSpawnLaneReuseUsesOpeningEffort(t *testing.T) {
 func TestSpawnA12ReuseRespectsModelAndCwd(t *testing.T) {
 	other := filepath.Join("sibling", "worktree")
 
+	t.Run("decoded JSON fields keep Windows backslashes and ampersands literal", func(t *testing.T) {
+		line := `{"session_cwd":"C:\\work\\tree","requested_cwd":"Build & QA"}`
+		obj := parseSpawnJSONLineText(t, line)
+		spawnOneLineField(t, obj, "session_cwd", `C:\work\tree`)
+		spawnOneLineField(t, obj, "requested_cwd", `Build & QA`)
+	})
+
 	t.Run("an idle worker on another model is not reused; the lane opens a new pane when it has a slot", func(t *testing.T) {
 		f := a12Fixture(t, append([]fakecli.Rule{idleHerdrRule("old")}, freshSpawnRules()...), "2")
 		f.roster(t, a12Row("old", "grok", "old-model", f.cwd))
@@ -150,7 +157,10 @@ func TestSpawnA12ReuseRespectsModelAndCwd(t *testing.T) {
 		f := a12Fixture(t, []fakecli.Rule{idleHerdrRule("old")}, "1")
 		f.roster(t, a12Row("old", "grok", "grok-4.7", other))
 		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7"})
-		assertGroupMismatch(t, code, stdout, stderr, "cwd differs ("+other+" vs "+f.cwd+")", `"session_cwd": "`+other+`"`, `"requested_cwd": "`+f.cwd+`"`)
+		assertGroupMismatch(t, code, stdout, stderr, "cwd differs ("+other+" vs "+f.cwd+")")
+		obj := parseSpawnJSONLineText(t, strings.SplitN(stdout, "\n", 2)[0])
+		spawnOneLineField(t, obj, "session_cwd", other)
+		spawnOneLineField(t, obj, "requested_cwd", f.cwd)
 		assertNoStart(t, calls)
 	})
 

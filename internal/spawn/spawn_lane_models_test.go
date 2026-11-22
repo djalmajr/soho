@@ -371,7 +371,10 @@ func TestFullLaneWithMismatchedListedWorkersRefuses(t *testing.T) {
 	if code != 13 {
 		t.Fatalf("exit=%d refusal=%q stderr=%q stdout=%q", code, refusal, stderr, stdout)
 	}
-	assertGroupMismatch(t, code, stdout, stderr, "cwd differs ("+elsewhere+" vs "+f.cwd+")", `"session_cwd": "`+elsewhere+`"`, `"requested_cwd": "`+f.cwd+`"`)
+	assertGroupMismatch(t, code, stdout, stderr, "cwd differs ("+elsewhere+" vs "+f.cwd+")")
+	obj := parseSpawnJSONLineText(t, strings.SplitN(stdout, "\n", 2)[0])
+	spawnOneLineField(t, obj, "session_cwd", elsewhere)
+	spawnOneLineField(t, obj, "requested_cwd", f.cwd)
 	if spawnJSONHasField(t, stdout, `"requested_model": "m2"`) {
 		t.Fatalf("full lane rotated the inherited list: %q", stdout)
 	}
