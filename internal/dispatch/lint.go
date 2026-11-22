@@ -67,9 +67,9 @@ type BriefLintOptions struct {
 	PathsOnly       bool
 	WorkerCwd       string
 	OrchestratorCwd string
-	// LintInheritHintPath is set only by standalone lint without --agent. It
-	// replaces the no-previous-task warning with the hint that names --agent;
-	// dispatch leaves it empty and keeps its own warning byte-for-byte.
+	// LintInheritHintPath is set only by standalone lint without --agent. The
+	// CLI supplies a shell-quoted argument. If escaping for display would
+	// change it, the hint asks the caller to reuse the original invocation.
 	LintInheritHintPath string
 	// InheritedWorktree is the tree of the original brief, for an amendment:
 	// one that declares no Worktree: line of its own keeps the original's.
@@ -500,8 +500,13 @@ func BriefLintFindings(brief string, ctx *core.Config, env platform.Env, options
 	if !options.PathsOnly && !options.PreviousTask && gittree.InheritsPrevious(body) {
 		warning := fmt.Sprintf("brief %s inherits Owned files but the worker has no previous task in this worktree", brief)
 		if hintPath := options.LintInheritHintPath; hintPath != "" {
-			escaped := text.QuoteControls(hintPath)
-			warning = fmt.Sprintf("brief %s inherits Owned files from the worker's previous task; lint cannot check that without the worker: soho lint %s --agent <name> (dispatch checks it)", escaped, escaped)
+			displayPath := hintPath
+			retry := "soho lint " + hintPath + " --agent <name>"
+			if escaped := text.QuoteControls(hintPath); escaped != hintPath {
+				displayPath = text.QuoteControls(brief)
+				retry = "rerun the original invocation with --agent <name>"
+			}
+			warning = fmt.Sprintf("brief %s inherits Owned files from the worker's previous task; lint cannot check that without the worker: %s (dispatch checks it)", displayPath, retry)
 		}
 		result.Warnings = append(result.Warnings, warning)
 	}
