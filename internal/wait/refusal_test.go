@@ -107,6 +107,7 @@ func TestWaitProviderErrorRefusalPrintsTheFallbackCommand(t *testing.T) {
 func TestWaitProviderErrorWithoutAMarkerKeepsTheOldLine(t *testing.T) {
 	f := newHcWakeFixture(t, "1", "none")
 	f.ctx = &core.Config{Entries: map[string]core.ConfigEntry{
+		"panes":           {Value: "4"},
 		"settled_grace":   {Value: "0"},
 		"fallback_edit":   {Value: "codex gpt-5 high"},
 		"fallback_review": {Value: "claude sonnet low"},
@@ -119,7 +120,7 @@ func TestWaitProviderErrorWithoutAMarkerKeepsTheOldLine(t *testing.T) {
 	if code != 14 {
 		t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 	}
-	want := `{"agent":"worker","status":"provider-error","report":"","lane":"build","kind":"claude","model":"","cause":"the assistant reported an error"}` + "\n"
+	want := `{"agent":"worker","status":"provider-error","report":"","lane":"builders","kind":"claude","model":"","cause":"the assistant reported an error"}` + "\n"
 	if out != want {
 		t.Fatalf("out=%q\nwant %q", out, want)
 	}
