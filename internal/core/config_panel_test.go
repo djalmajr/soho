@@ -815,17 +815,17 @@ func TestPanelConfigPreviewPresetLaneRolesUseTheListingRow(t *testing.T) {
 	listing, _ := capture(t, func() { CmdConfig(&ctx, env, repo) })
 	wantValue, wantSource := "", ""
 	for _, line := range strings.Split(listing, "\n") {
-		if fields := strings.Fields(line); len(fields) >= 3 && fields[0] == "lane.build.roles" {
+		if fields := strings.Fields(line); len(fields) >= 3 && fields[0] == "lane.builders.roles" {
 			wantValue, wantSource = fields[1], strings.Join(fields[2:], " ")
 		}
 	}
-	const preset = "implementer,designer,tasker,scouter,researcher,documenter,tester"
+	const preset = "implementer,critical-implementer,designer,tasker,tester,scouter,researcher,documenter"
 	if wantValue != preset || wantSource != "skill default" {
-		t.Fatalf("listing lane.build.roles row = (%q, %q), want the skill default's preset", wantValue, wantSource)
+		t.Fatalf("listing lane.builders.roles row = (%q, %q), want the skill default's preset", wantValue, wantSource)
 	}
 
 	out, _ := capture(t, func() {
-		CmdConfigSet([]string{"lane.build.roles=tester", "--project", "--dry-run", "--json"}, &ctx, env, repo)
+		CmdConfigSet([]string{"lane.builders.roles=tester", "--project", "--dry-run", "--json"}, &ctx, env, repo)
 	})
 	obj := panelParseObject(t, out)
 	prev := panelObjectField(t, objValue(obj, "previous"), "previous")
@@ -839,17 +839,17 @@ func TestPanelConfigPreviewPresetLaneRolesUseTheListingRow(t *testing.T) {
 		t.Fatalf("previous.effective_source = %#v, want the listing's %q", got, wantSource)
 	}
 	applies := panelStringArray(t, objValue(obj, "applies_to_roles"), "applies_to_roles")
-	if len(applies) != 7 || applies[0] != "implementer" || applies[6] != "tester" {
+	if len(applies) != 8 || applies[0] != "implementer" || applies[7] != "documenter" {
 		t.Fatalf("applies_to_roles = %v, want the preset membership", applies)
 	}
 
 	// A lane key spelled with underscores is the lane's own key too: the
 	// configured value wins in the preview and the listing has no preset row
 	// for that lane (review round 3, F2).
-	write(t, file, "lanes=on\nlane_build_roles=tester\n")
+	write(t, file, "lanes=on\nlane_builders_roles=tester\n")
 	ctx = LoadConfig(env, repo)
 	out, _ = capture(t, func() {
-		CmdConfigSet([]string{"lane.build.roles=designer", "--project", "--dry-run", "--json"}, &ctx, env, repo)
+		CmdConfigSet([]string{"lane.builders.roles=designer", "--project", "--dry-run", "--json"}, &ctx, env, repo)
 	})
 	prev = panelObjectField(t, objValue(panelParseObject(t, out), "previous"), "previous")
 	if got, _ := prev.Get("effective"); got != "tester" {
@@ -864,10 +864,10 @@ func TestPanelConfigPreviewPresetLaneRolesUseTheListingRow(t *testing.T) {
 	}
 
 	// A lane with a key of its own never gets the synthesized row.
-	write(t, file, "lanes=on\nlane.build.panes=2\n")
+	write(t, file, "lanes=on\nlane.builders.panes=2\n")
 	ctx = LoadConfig(env, repo)
 	out, _ = capture(t, func() {
-		CmdConfigSet([]string{"lane.build.roles=tester", "--project", "--dry-run", "--json"}, &ctx, env, repo)
+		CmdConfigSet([]string{"lane.builders.roles=tester", "--project", "--dry-run", "--json"}, &ctx, env, repo)
 	})
 	prev = panelObjectField(t, objValue(panelParseObject(t, out), "previous"), "previous")
 	if got, _ := prev.Get("effective"); got != "" {

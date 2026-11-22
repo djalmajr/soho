@@ -95,18 +95,15 @@ herd_label_max=16
 # --reuse / --fresh override per call. Reuse retains the worker's context.
 reuse_workers=on
 
-# How many panes the team uses: `panes` counts the orchestrator and the
-# fixed panels; the critical slot's panel is one more, open only when a
-# risky slice needs it (four panels can reach five). 4 (default) =
-# orchestrator + build (2 workers: implementer, designer, tasker, tester,
-# scouter, researcher) + critical (1: critical-implementer) + review
-# (reviewer, security-reviewer, ui-reviewer, inspector, validator); 3 =
-# orchestrator + build (1) + critical (1) + review; 2 = orchestrator +
-# build (1), and the orchestrator reviews (no critical lane: spawn
-# critical-implementer exits 3, like a review role). The preset is resolved
-# at run time; when max_workers and split_max_panes are left at their
-# defaults they follow it. `lanes=off` keeps one pane per role and the
-# multi_role reuse from before lanes existed.
+# Preset: builders takes implementer, critical-implementer, designer, tasker,
+# tester, scouter, researcher and documenter. Reviewers takes reviewer,
+# security-reviewer, ui-reviewer, inspector and validator. Planners takes
+# planner, sub-orchestrator and job-orchestrator. The caller is the planner.
+# panes=4: builders 3 and reviewers 1; panes=3: builders 2 and reviewers 1.
+# panes=2: builders 1; strict leaves out reviewers, flex gives it capacity 0.
+# Planners has one on-demand slot, included in max_workers. The default
+# split_max_panes counts the caller and the workers, including the flex extra.
+# lanes=off uses multi_role reuse. Workers are named after their roles.
 panes=4
 lanes=on
 
@@ -117,21 +114,18 @@ lanes=on
 # Counts use the model recorded on each live worker's roster row.
 model_cap=off
 
-# strict (default): no temporary worker; each lane stays within its capacity
-# (lane.<name>.panes raises it; max_workers is only the global cap and opens
-# no slot in a lane) and documentation is build work.
-# flex: up to flex_extra temporary workers above `panes`, only for the roles
-# in flex_roles — a second reviewer, or the documenter (lane `docs`). With
-# one slot the review comes first. A temporary worker is `burst` in the
-# roster and `release` closes its pane.
+# strict (default): each group stays within its capacity.
+# flex: up to flex_extra temporary workers for flex_roles when the role's
+# group is full or has capacity 0. Documenter uses a builders slot first.
+# With one temporary slot, review has priority. A temporary worker is
+# marked burst in the roster, and release closes its pane.
 pane_mode=strict
 flex_extra=1
 flex_roles=reviewer,documenter
 
-# Optional lane overrides. Any lane.<name>.roles replaces the preset.
-# The preset's `critical` lane holds only critical-implementer, so
-# doctor --fix never writes its kind: a single-role lane would freeze the
-# choice. A lane.critical.* you set remains a default for that role.
+# Optional group overrides. Any lane.<name>.roles replaces the preset.
+# Use role.critical-implementer.* for the risky-code role's settings.
+# doctor --fix moves old preset group defaults and keeps explicit targets.
 # Lane kind, model, effort and approvals supply defaults for member roles.
 # A role key overrides the matching lane key across configuration layers.
 # The lane model or model list applies only when a worker uses the lane kind.
@@ -139,13 +133,13 @@ flex_roles=reviewer,documenter
 # request. When the lane is full, release a worker or raise its capacity.
 # doctor --fix copies a unanimous role.<role>.kind (file, else frontmatter)
 # onto the lane before it deletes those per-role keys.
-# lane.build.roles=implementer,designer,tasker
-# lane.build.panes=2          (capacity: workers the lane may hold at once)
-# lane.build.kind=
-# lane.build.models=          (comma list in order; wins over lane.<name>.model)
-# lane.build.model=
-# lane.build.effort=
-# lane.build.approvals=      (ask | edits | auto | full | unsandboxed)
+# lane.builders.roles=implementer,critical-implementer,designer,tasker,tester,scouter,researcher,documenter
+# lane.builders.panes=2          (capacity: workers the lane may hold at once)
+# lane.builders.kind=
+# lane.builders.models=          (comma list in order; wins over lane.<name>.model)
+# lane.builders.model=
+# lane.builders.effort=
+# lane.builders.approvals=      (ask | edits | auto | full | unsandboxed)
 # unsandboxed is the owner's explicit choice; doctor warns about this key.
 
 # One idle worker may also take a different role: on (default) | off. `lanes=off`
@@ -411,12 +405,14 @@ update_check=on
 # args.pi=
 # args.opencode=
 
-# Native args for a role, with lanes=off. With lanes on, lane.<name>.args
-# applies when the effective worker kind matches lane.<name>.kind.
+# Native args for a role replace lane.<name>.args when set. Role args apply
+# to the configured role kind. Group args require a matching group kind.
 # Scoped args follow args.<kind> and precede any native args after --.
 # For example, codex accepts -c a=b and claude reads -c as --continue.
 # role.scouter.args=
-# lane.build.args=
+# lane.builders.args=
+# MCP settings follow --mcp, role.<role>.mcp, lane.<name>.mcp, role frontmatter
+# and then inherit, in order from highest to lowest priority.
 
 # Kind override per role without copying the role file. Example: role.reviewer.kind=grok
 # role.reviewer.kind=
@@ -464,9 +460,9 @@ model.grok.worker=grok
 # effort.pi=max
 # model.opencode.worker=my-provider/my-model
 # Or point a whole lane at one of them (setup --lane build=pi:my-provider/my-model:high):
-# lane.build.kind=pi
-# lane.build.model=my-provider/my-model
-# lane.build.effort=high
+# lane.builders.kind=pi
+# lane.builders.model=my-provider/my-model
+# lane.builders.effort=high
 
 # Ephemeral job settings for this machine. machine_label is compared with brief.maquina when that field is present. job_orgs is the comma-separated list of organizations a job may check out; empty means none. job_repos_root is the checkout root (a leading ~ expands to the home directory, which is %USERPROFILE% on Windows). job_timeout is the default job budget in minutes, from 1 to 1440. job_wake_cmd is an optional wake-hook argv string, split on spaces, with no shell.
 machine_label=

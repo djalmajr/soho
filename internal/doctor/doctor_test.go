@@ -207,11 +207,6 @@ func TestDoctorLaneRolesSplitOnlyOnCommas(t *testing.T) {
 	if got := usedKinds(&ctx, env, root); len(got) != 0 {
 		t.Fatalf("usedKinds split a role at whitespace: %#v", got)
 	}
-	out.Reset()
-	doctorLaneArgs(&ctx, env, root, &Say{Out: &out})
-	if !strings.Contains(out.String(), "role.implementer designer.args is ignored") {
-		t.Fatalf("lane args check split a role at whitespace: %s", out.String())
-	}
 	if got := doctorLaneRoles("  implementer\u00a0, designer\ufeff "); len(got) != 2 || got[0] != "implementer" || got[1] != "designer" {
 		t.Fatalf("role trim does not match JavaScript trim: %#v", got)
 	}
@@ -513,8 +508,8 @@ func TestDoctorCodexUIWarningsFollowNetworkToken(t *testing.T) {
 			check(map[string]string{"lanes": "off", "role_designer_kind": "codex", "role_inspector_kind": "codex", "args_codex": token}, "")
 		}
 		check(map[string]string{"lanes": "off", "role_designer_kind": "codex", "role_inspector_kind": "codex", "role_designer_args": "-c sandbox_workspace_write.network_access=true"}, exact("inspector", "role.inspector.args"))
-		check(map[string]string{"panes": "4", "lane_build_kind": "codex", "lane_review_kind": "codex"}, exact("designer", "lane.build.args")+exact("inspector", "lane.review.args"))
-		check(map[string]string{"panes": "4", "lane_build_kind": "codex", "lane_review_kind": "codex", "lane_review_args": "-c sandbox_workspace_write.network_access=true", "role_designer_args": "-c sandbox_workspace_write.network_access=true"}, exact("designer", "lane.build.args"))
+		check(map[string]string{"panes": "4", "lane_builders_kind": "codex", "lane_reviewers_kind": "codex"}, exact("designer", "lane.builders.args")+exact("inspector", "lane.reviewers.args"))
+		check(map[string]string{"panes": "4", "lane_builders_kind": "codex", "lane_reviewers_kind": "codex", "lane_reviewers_args": "-c sandbox_workspace_write.network_access=true", "role_designer_args": "-c sandbox_workspace_write.network_access=true"}, "")
 	})
 }
 
@@ -545,7 +540,7 @@ func TestDoctorWarnsWhenSplitCapExceedsTheTeam(t *testing.T) { // A9: the refere
 	var out strings.Builder
 	s := &Say{Out: &out}
 	doctorLaneWarnings(&ctx, env, root, s)
-	if !strings.Contains(out.String(), "split_max_panes=8 is greater than 1 + max_workers=3. Set split_max_panes=4 (doctor --fix aligns it).") {
+	if !strings.Contains(out.String(), "split_max_panes=8 is greater than 1 + max_workers=4. Set split_max_panes=5 (doctor --fix aligns it).") {
 		t.Fatalf("split cap mismatch warning missing: %s", out.String())
 	}
 }
@@ -559,13 +554,13 @@ func TestDoctorSplitCapChecksTheWholeTeam(t *testing.T) { // A9: an explicit spl
 		want   string
 	}{
 		{"a team of seven fits under split_max_panes=8 without a split cap warning",
-			map[string]string{"lane_build_panes": "5", "lane_review_panes": "1", "split_max_panes": "8"},
+			map[string]string{"lane_builders_panes": "5", "lane_reviewers_panes": "1", "split_max_panes": "8"},
 			""},
 		{"split_max_panes=9 is greater than 1 + max_workers=7",
-			map[string]string{"lane_build_panes": "5", "lane_review_panes": "1", "split_max_panes": "9"},
+			map[string]string{"lane_builders_panes": "5", "lane_reviewers_panes": "1", "split_max_panes": "9"},
 			"config: split_max_panes=9 is greater than 1 + max_workers=7. Set split_max_panes=8 (doctor --fix aligns it)."},
 		{"split_max_panes=3 leaves no room for a team of six",
-			map[string]string{"lane_build_panes": "4", "lane_review_panes": "1", "split_max_panes": "3"},
+			map[string]string{"lane_builders_panes": "4", "lane_reviewers_panes": "1", "split_max_panes": "3"},
 			"config: split_max_panes=3 leaves no room for the whole team (1 + max_workers=6); the last workers will open in a herd tab. Remove split_max_panes or set 7."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -611,12 +606,12 @@ func TestDoctorDoesNotReportInheritedLaneEffortAsDiscarded(t *testing.T) {
 	env := platform.Env{"SOHO_SKILL_DIR": root}
 	ctx := core.Config{
 		Entries: map[string]core.ConfigEntry{
-			"panes":              {Value: "4", Source: "project"},
-			"lane_review_roles":  {Value: "reviewer", Source: "project"},
-			"lane_review_kind":   {Value: "codex", Source: "project"},
-			"lane_review_effort": {Value: "low", Source: "user"},
+			"panes":                 {Value: "4", Source: "project"},
+			"lane_reviewers_roles":  {Value: "reviewer", Source: "project"},
+			"lane_reviewers_kind":   {Value: "codex", Source: "project"},
+			"lane_reviewers_effort": {Value: "low", Source: "user"},
 		},
-		Order: []string{"panes", "lane_review_roles", "lane_review_kind", "lane_review_effort"},
+		Order: []string{"panes", "lane_reviewers_roles", "lane_reviewers_kind", "lane_reviewers_effort"},
 	}
 	var out strings.Builder
 	doctorLaneWarnings(&ctx, env, root, &Say{Out: &out})
@@ -640,6 +635,163 @@ func TestDoctorNamesAllLegacyPresetLanes(t *testing.T) { // Mutation captured: r
 	doctorLaneWarnings(&ctx, env, root, &Say{Out: &out})
 	if !strings.Contains(out.String(), "old preset (build, read)") {
 		t.Fatalf("legacy preset lane names missing: %s", out.String())
+	}
+}
+
+func TestDoctorFixMovesCriticalGroupToRole(t *testing.T) {
+	home, root, skill := t.TempDir(), t.TempDir(), t.TempDir()
+	env := platform.Env{"HOME": home, "USERPROFILE": home, "XDG_CONFIG_HOME": home, "TMPDIR": home, "PATH": home, "SOHO_SKILL_DIR": skill, "SOHO_LIB": "1"}
+	conf := filepath.Join(root, ".agents", "soho.conf")
+	if err := os.MkdirAll(filepath.Dir(conf), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := "panes=4\nlane.build.panes=2\nlane.critical.panes=1\nlane.critical.models= , primary,secondary\nlane.critical.model=old-scalar\n"
+	before += "lane.review.model=old-review\nlane_reviewers_model=kept\n"
+	before += "lane.build.kind=codex\nlane_build_kind=pi # winning alias\n"
+	moves := [][3]string{
+		{"lane.build.kind", "lane.builders.kind", "pi"},
+		{"lane.build.panes", "lane.builders.panes", "3"},
+		{"lane.build.model", "lane.builders.model", "builder"},
+		{"lane.build.models", "lane.builders.models", "b1,b2"},
+		{"lane.build.effort", "lane.builders.effort", "high"},
+		{"lane.build.approvals", "lane.builders.approvals", "ask"},
+		{"lane.build.args", "lane.builders.args", "--builder"},
+		{"lane.build.mcp", "lane.builders.mcp", "none"},
+		{"lane.review.kind", "lane.reviewers.kind", "codex"},
+		{"lane.review.model", "lane.reviewers.model", "kept"},
+		{"lane.review.models", "lane.reviewers.models", "r1,r2"},
+		{"lane.review.effort", "lane.reviewers.effort", "medium"},
+		{"lane.review.approvals", "lane.reviewers.approvals", "ask"},
+		{"lane.review.args", "lane.reviewers.args", "--reviewers"},
+		{"lane.review.mcp", "lane.reviewers.mcp", "none"},
+		{"lane.review.panes", "lane.reviewers.panes", "2"},
+		{"lane.critical.kind", "role.critical-implementer.kind", "claude"},
+		{"lane.critical.effort", "role.critical-implementer.effort", "high"},
+		{"lane.critical.approvals", "role.critical-implementer.approvals", "edits"},
+		{"lane.critical.args", "role.critical-implementer.args", "--critical \"two words\""},
+		{"lane.critical.mcp", "role.critical-implementer.mcp", "none"},
+		{"lane.docs.kind", "role.documenter.kind", "codex"},
+		{"lane.docs.model", "role.documenter.model", "docs-model"},
+		{"lane.docs.effort", "role.documenter.effort", "low"},
+		{"lane.docs.approvals", "role.documenter.approvals", "task"},
+		{"lane.docs.args", "role.documenter.args", "--docs"},
+		{"lane.docs.mcp", "role.documenter.mcp", "none"},
+	}
+	for _, move := range moves {
+		if !strings.Contains(before, move[0]+"=") {
+			before += move[0] + "=" + move[2] + "\n"
+		}
+	}
+	if err := os.WriteFile(conf, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr strings.Builder
+	oldOut, oldErr := platform.Stdout, platform.Stderr
+	platform.Stdout, platform.Stderr = &stdout, &stderr
+	t.Cleanup(func() { platform.Stdout, platform.Stderr = oldOut, oldErr })
+	ctx := core.LoadConfig(env, root)
+	doctorLaneWarnings(&ctx, env, root, &Say{Out: &stdout})
+	for _, move := range moves {
+		want := move[0] + " no longer applies. 'soho doctor --fix' moves it to " + move[1] + "."
+		if strings.Count(stdout.String(), want) != 1 {
+			t.Errorf("expected one warning %q", want)
+		}
+	}
+	stdout.Reset()
+	CmdDoctor([]string{"--fix"}, &ctx, env, root)
+	for _, move := range append(moves,
+		[3]string{"lane.critical.models", "role.critical-implementer.model", "primary"},
+		[3]string{"lane.critical.model", "role.critical-implementer.model", "primary"},
+		[3]string{"lane.critical.panes", "lane.builders.panes", "3"},
+	) {
+		old, dest, want := move[0], move[1], move[2]
+		if got := core.FileKeyValue(conf, dest); got != want {
+			t.Errorf("%s = %q, want %q", dest, got, want)
+		}
+		if got := core.FileKeyValue(conf, old); got != "" {
+			t.Errorf("old key %s remains: %q", old, got)
+		}
+		if strings.Count(stderr.String(), old+" → "+dest) != 1 {
+			t.Errorf("missing or repeated %s → %s on stderr", old, dest)
+		}
+	}
+	for _, want := range []string{"rotation lists belong to a group", "lane.review.model → lane.reviewers.model (kept existing target)", "lane.critical.panes → lane.builders.panes (added to explicit capacity)"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr missing %q", want)
+		}
+	}
+	raw, err := os.ReadFile(conf)
+	if err != nil || !strings.Contains(string(raw), "lane.builders.kind=pi # winning alias") {
+		t.Fatalf("winning assignment not preserved: %s (err=%v)", raw, err)
+	}
+	t.Logf("stderr:\n%s", stderr.String())
+	stdout.Reset()
+	stderr.Reset()
+	ctx = core.LoadConfig(env, root)
+	CmdDoctor([]string{"--fix"}, &ctx, env, root)
+	after, err := os.ReadFile(conf)
+	if err != nil || string(raw) != string(after) || strings.Contains(stderr.String(), " → ") || !strings.Contains(stdout.String(), "no changes") {
+		t.Fatalf("repair is not idempotent: stdout=%q stderr=%q file=%s err=%v", stdout.String(), stderr.String(), after, err)
+	}
+}
+
+func TestDoctorGroupWarningsAndPresetCapacityFallback(t *testing.T) {
+	env, root := tm6DoctorEnv(t)
+	ctx := tm6DoctorConfig(map[string]string{"lane_build_roles": "implementer", "lane_build_kind": "pi", "lane_reviews_kind": "codex\x1b[0m"}, "project")
+	var out strings.Builder
+	doctorLaneWarnings(ctx, env, root, &Say{Out: &out})
+	for _, want := range []string{"role critical-implementer is outside every group", "role job-orchestrator is outside every group", "lane.<group>.roles", `codex\x1b[0m`} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q in %s", want, out.String())
+		}
+	}
+	for _, forbidden := range []string{"role planner is outside", "role implementer is outside", "lane.build.kind no longer applies", "\x1b"} {
+		if strings.Contains(out.String(), forbidden) {
+			t.Errorf("unexpected %q in %s", forbidden, out.String())
+		}
+	}
+	conf := filepath.Join(root, ".agents", "soho.conf")
+	if err := os.MkdirAll(filepath.Dir(conf), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(conf, []byte("panes=4\nlane.critical.panes=6\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	doctorFix("project", "4", ctx, env, root)
+	fresh := core.LoadConfig(env, root)
+	if core.FileKeyValue(conf, "lane.critical.panes") != "" || core.FileKeyValue(conf, "lane.builders.panes") != "" || core.LaneCapacity(&fresh, "builders", env) != 3 {
+		t.Fatalf("critical capacity changed the default builders slot count: %v", core.LaneCapacity(&fresh, "builders", env))
+	}
+}
+
+func TestDoctorFixTouchesOnlySelectedPresetFile(t *testing.T) {
+	env, root := tm6DoctorEnv(t)
+	env["SOHO_LIB"] = "1"
+	user := core.ConfigFileFor("user", env, root)
+	project := core.ConfigFileFor("project", env, root)
+	const userBefore = "panes=3\nlane.build.kind=pi\n"
+	const projectBefore = "panes=4\nlane.build.roles=implementer\nlane.build.kind=codex\nlane.critical.mcp=none\nmax_workers=8\n"
+	for file, conf := range map[string]string{user: userBefore, project: projectBefore} {
+		if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte(conf), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := core.LoadConfig(env, root)
+	CmdDoctor([]string{"--fix"}, &ctx, env, root)
+	data, err := os.ReadFile(project)
+	if err != nil || string(data) != projectBefore {
+		t.Fatalf("custom project was modified: %s (err=%v)", data, err)
+	}
+	CmdDoctor([]string{"--fix", "--user"}, &ctx, env, root)
+	if got := core.FileKeyValue(user, "lane.builders.kind"); got != "pi" || core.FileKeyValue(user, "lane.build.kind") != "" {
+		t.Fatalf("user preset not moved: lane.builders.kind=%q", got)
+	}
+	data, err = os.ReadFile(project)
+	if err != nil || string(data) != projectBefore {
+		t.Fatalf("project changed during user repair: %s (err=%v)", data, err)
 	}
 }
 

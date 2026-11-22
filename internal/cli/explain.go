@@ -212,6 +212,7 @@ func explainCollectRows(sd string, ctx *core.Config, env platform.Env, cwd strin
 		return nil
 	}
 	rows := []explainRow{}
+	preset := core.LanesEnabled(ctx, env) && !core.CustomLanesPresent(ctx, env)
 	for _, line := range strings.Split(raw, "\n") {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -230,7 +231,7 @@ func explainCollectRows(sd string, ctx *core.Config, env platform.Env, cwd strin
 			}
 			return ""
 		}
-		lane, role, kind, model := get(11), get(3), get(2), get(8)
+		lane, role, kind, model := core.RosterLaneName(get(11), preset), get(3), get(2), get(8)
 		if lane == "" {
 			lane = core.LaneOfRole(ctx, role, env)
 		}
@@ -268,12 +269,15 @@ func explainRecommendation(ctx *core.Config, env platform.Env) []string {
 	case "2":
 		out = append(out, "Recommendation: 2 panels - one writes code (research included) and the review happens here. The lightest choice. 3 panels add a reviewer panel.")
 	case "3":
-		out = append(out, "Recommendation: 3 panels - one writes code (research included) and one reviews. Lighter on quota. 4 panels add a second writer; with 2 panels the review happens here. A panel for risky code (auth, money, real data or concurrency) opens only when a slice needs it.")
+		out = append(out, "Recommendation: 3 panels - two builders and one reviewer. With 2 panels the review happens here.")
 	default:
-		out = append(out, "Recommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here. A panel for risky code (auth, money, real data or concurrency) opens only when a slice needs it.")
+		out = append(out, "Recommendation: 4 panels - three builders and one reviewer. With 3 panels there is room for two builders and one reviewer.")
 	}
 	if !core.LanesEnabled(ctx, env) {
 		return append(out, "Each agent keeps its own assistant instead of sharing one panel.")
+	}
+	if !core.CustomLanesPresent(ctx, env) {
+		out = append(out, "Builders write code, research, and document. Reviewers check the work. Planners help coordinate on demand while you lead and plan here.")
 	}
 	capN, capped := core.ModelCap(ctx, env)
 	capNote := ""
@@ -306,22 +310,11 @@ func explainRecommendation(ctx *core.Config, env platform.Env) []string {
 }
 func explainPrintRunning(rows []explainRow, stateDir string, ctx *core.Config, env platform.Env, cwd string) []string {
 	flex := core.LanesEnabled(ctx, env) && core.PaneMode(ctx, env) == "flex"
-	// The risky-code panel is one more pane than `panes`: it exists in the
-	// preset (not a custom team) and has capacity (strict panes=2 and flex
-	// panes=2 do not). With lanes=off or a custom team the old header stays.
-	risky := core.LanesEnabled(ctx, env) && !core.CustomLanesPresent(ctx, env) && core.LaneUsable(ctx, "critical", env)
-	var head string
-	switch {
-	case flex && risky:
-		head = "Panels: " + core.PanesValue(ctx, env) + " (+1 for risky code, +" + strconv.Itoa(core.FlexExtra(ctx, env)) + " temporary)."
-	case flex:
-		head = "Panels: " + core.PanesValue(ctx, env) + " (+" + strconv.Itoa(core.FlexExtra(ctx, env)) + " temporary)."
-	case risky:
-		head = "Panels: " + core.PanesValue(ctx, env) + " (+1 for risky code)."
-	default:
-		head = "Panels: " + core.PanesValue(ctx, env) + "."
+	head := "Panels: " + core.PanesValue(ctx, env)
+	if flex {
+		head += " (+" + strconv.Itoa(core.FlexExtra(ctx, env)) + " temporary)"
 	}
-	out := []string{head}
+	out := []string{head + "."}
 	lanes := core.LaneNames(ctx, env)
 	if core.LanesEnabled(ctx, env) {
 		known := map[string]bool{}
@@ -364,5 +357,5 @@ func explainPrintRunning(rows []explainRow, stateDir string, ctx *core.Config, e
 	return out
 }
 func explainIdleParagraph() []string {
-	return []string{"soho runs a small team of agents in Herdr panels. You stay in this panel and lead. Each other panel is one agent with one job: writing code (research included) or reviewing. Those agents never commit or push. You can watch a panel or close it. Each assistant spends the quota of its own account. Nothing is running yet. To start, describe the work here. The first time, you are asked how many panels to open and which assistant each job should use, and nothing opens until you agree. Four panels are recommended: two write code in parallel and one reviews; that uses more quota. Three panels are lighter: one writes and one reviews. With two panels one writes and the review happens here."}
+	return []string{"soho runs a small team of agents in Herdr panels. You stay in this panel and lead. Builders write code, research, and document. Reviewers check the work. Planners help coordinate on demand while you lead and plan here. The agents never commit or push. You can watch a panel or close it. Each assistant spends the quota of its own account. Nothing is running yet. To start, describe the work here. The first time, you are asked how many panels to open and which assistant each job should use, and nothing opens until you agree. Four panels are recommended: three builders and one reviewer. Three panels give room for two builders and one reviewer. With two panels one builder works and the review happens here."}
 }

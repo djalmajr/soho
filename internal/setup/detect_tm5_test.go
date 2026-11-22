@@ -336,7 +336,7 @@ func TestSetupDetectTM5PolicyCases(t *testing.T) {
 
 func TestSetupDetectMaxWorkersDerived(t *testing.T) {
 	// DJA-686 round 2: config.max_workers reports the derived core.MaxWorkers
-	// (4 on a clean strict four-panel project) instead of the raw config value,
+	// (5 on a clean strict four-panel project) instead of the raw config value,
 	// keeping the source the entry comes from.
 	maxWorkers := func(t *testing.T, doc map[string]any) (string, string) {
 		t.Helper()
@@ -346,8 +346,8 @@ func TestSetupDetectMaxWorkersDerived(t *testing.T) {
 	t.Run("clean project: the derived limit", func(t *testing.T) {
 		root, _, env, ctx := tm5DetectFixture(t)
 		value, source := maxWorkers(t, tm5DetectDoc(t, ctx, env, root))
-		if value != "4" || source == "" {
-			t.Fatalf("max_workers value=%q source=%q, want 4 with its source", value, source)
+		if value != "5" || source == "" {
+			t.Fatalf("max_workers value=%q source=%q, want 5 with its source", value, source)
 		}
 	})
 	t.Run("project max_workers=2: the explicit value with the project source", func(t *testing.T) {
@@ -364,4 +364,37 @@ func TestSetupDetectMaxWorkersDerived(t *testing.T) {
 			t.Fatalf("max_workers value=%q source=%q, want 2 with the project source", value, source)
 		}
 	})
+}
+
+func TestSetupDetectPresetGroups(t *testing.T) {
+	for _, mode := range []string{"strict", "flex"} {
+		t.Run(mode, func(t *testing.T) {
+			root, _, env, _ := tm5DetectFixture(t)
+			env["SOHO_PANE_MODE"] = mode
+			ctx := core.LoadConfig(env, root)
+			conf := tm5DetectDoc(t, &ctx, env, root)["config"].(map[string]any)
+			presets := conf["presets"].(map[string]any)
+			for _, panes := range []string{"2", "3", "4"} {
+				want := "builders reviewers planners"
+				if panes == "2" && mode == "strict" {
+					want = "builders planners"
+				}
+				got := detectGroupNames(presets[panes])
+				if got != want {
+					t.Errorf("presets[%q]=%q want %q", panes, got, want)
+				}
+			}
+			if got := detectGroupNames(conf["effective_lanes"]); got != "builders reviewers planners" {
+				t.Fatalf("effective_lanes=%q", got)
+			}
+		})
+	}
+}
+
+func detectGroupNames(value any) string {
+	var names []string
+	for _, row := range value.([]any) {
+		names = append(names, row.(map[string]any)["name"].(string))
+	}
+	return strings.Join(names, " ")
 }

@@ -85,9 +85,9 @@ func TestTM9CoreCases(t *testing.T) {
 			t.Fatalf("env max workers=%q", got)
 		}
 	})
-	t.Run("maxWorkers: the sum of the lane capacities (4/3/1 for panes 4/3/2)", func(t *testing.T) { // JS: "maxWorkers: the sum of the lane capacities (3/2/1 for panes 4/3/2)"; DJA-686: the preset gained the critical lane, so the strict sums are 4/3/1
+	t.Run("maxWorkers: the sum of the lane capacities (5/4/2 for panes 4/3/2)", func(t *testing.T) { // JS: "maxWorkers: the sum of the lane capacities (3/2/1 for panes 4/3/2)"; SOH-497: include the on-demand planners slot
 		env, repo := fixture(t)
-		for _, tc := range []struct{ panes, want string }{{"4", "4"}, {"3", "3"}, {"2", "1"}} {
+		for _, tc := range []struct{ panes, want string }{{"4", "5"}, {"3", "4"}, {"2", "2"}} {
 			env["SOHO_PANES"] = tc.panes
 			ctx := LoadConfig(env, repo)
 			if got := MaxWorkers(&ctx, env); got != tc.want {
@@ -140,29 +140,29 @@ func TestTM9CoreCases(t *testing.T) {
 		env["SOHO_FAKECLI_CONFIG"] = bin
 		env["HERDR_SOCKET_PATH"] = filepath.Join(t.TempDir(), "missing.sock")
 		ctx := LoadConfig(env, repo)
-		if got := LaneDecide(&ctx, "build", "implementer", env, repo, true).Decision; got != "absent" {
+		if got := LaneDecide(&ctx, "builders", "implementer", env, repo, true).Decision; got != "absent" {
 			t.Fatalf("empty lane=%q", got)
 		}
 		state := StateDir(&ctx, env, repo)
 		RosterAppend(state, []string{"worker", "p1", "grok", "implementer", "xai", "p1", repo, "now", "grok-4.7", "full", "implementer", "build"})
-		if got := LaneDecide(&ctx, "build", "implementer", env, repo, true); got.Decision != "reuse" || got.Name != "worker" {
+		if got := LaneDecide(&ctx, "builders", "implementer", env, repo, true); got.Decision != "reuse" || got.Name != "worker" {
 			t.Fatalf("idle candidate=%#v", got)
 		}
-		if got := LaneDecide(&ctx, "build", "implementer", env, repo, false); got.Decision != "open" {
+		if got := LaneDecide(&ctx, "builders", "implementer", env, repo, false); got.Decision != "open" {
 			t.Fatalf("capacity open=%#v", got)
 		}
 		rows := "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\n" + "gone\tp2\tgrok\timplementer\txai\tp2\t" + repo + "\tnow\tgrok-4.7\tfull\timplementer\tbuild\n"
 		if err := os.WriteFile(filepath.Join(state, "agents.tsv"), []byte(rows), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if got := LaneDecide(&ctx, "build", "implementer", env, repo, true); got.Decision != "open" || strings.Join(got.Gone, ",") != "gone" {
+		if got := LaneDecide(&ctx, "builders", "implementer", env, repo, true); got.Decision != "open" || strings.Join(got.Gone, ",") != "gone" {
 			t.Fatalf("gone worker decision=%#v", got)
 		}
 		rows = strings.Replace(rows, "gone\tp2", "unavailable\tp2", 1)
 		if err := os.WriteFile(filepath.Join(state, "agents.tsv"), []byte(rows), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if got := LaneDecide(&ctx, "build", "implementer", env, repo, true); got.Decision != "unavailable" || got.Name != "unavailable" {
+		if got := LaneDecide(&ctx, "builders", "implementer", env, repo, true); got.Decision != "unavailable" || got.Name != "unavailable" {
 			t.Fatalf("unavailable worker decision=%#v", got)
 		}
 	})
@@ -238,7 +238,7 @@ func TestTM9LiveWorkerCases(t *testing.T) {
 		if len(LiveWorkerNames(state, env)) != 0 {
 			t.Fatal("gone roster row counted as live")
 		}
-		if got := MaxWorkers(&ctx, env); got != "4" {
+		if got := MaxWorkers(&ctx, env); got != "5" {
 			t.Fatalf("default cap=%q", got)
 		}
 	})

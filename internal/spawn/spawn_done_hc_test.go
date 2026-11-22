@@ -52,7 +52,7 @@ func TestHcDoneReviewerSpawnReuse(t *testing.T) {
 func TestHcDoneReviewerLaneReuse(t *testing.T) {
 	for _, tc := range []struct{ state, want string }{{"done", "review"}, {"idle", "review"}, {"working", ""}} {
 		t.Run(tc.state, func(t *testing.T) {
-			cwd, bin, state, env, _ := hcSpawnFixture(t, "reviewer", "codex")
+			cwd, bin, state, env, ctx := hcSpawnFixture(t, "reviewer", "codex")
 			sd := filepath.Join(state, "sX")
 			if err := os.MkdirAll(sd, 0o700); err != nil {
 				t.Fatal(err)
@@ -73,7 +73,7 @@ func TestHcDoneReviewerLaneReuse(t *testing.T) {
 			}
 			request := laneReuseRequest{role: "reviewer", kind: "codex", model: "gpt-5", effort: "high", approvals: "full", mcp: "inherit", workerCwd: cwd, sd: sd, env: env, processCwd: cwd}
 			var gone []string
-			picked := request.pick(core.LaneWorkers(sd, "review"), backend.New(env).Runtime, nil, &gone)
+			picked := request.pick(core.LaneWorkers(sd, "reviewers", ctx, env), backend.New(env).Runtime, nil, &gone)
 			got, _, _ := strings.Cut(picked.line, "\t")
 			if len(picked.differences) != 0 {
 				t.Fatalf("unexpected differences: %+v", picked.differences)

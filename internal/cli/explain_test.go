@@ -27,7 +27,7 @@ func TestExplainTextAndRecommendation(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(userConfig), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(userConfig, []byte("lane.build.model=group-model\n"), 0o600); err != nil {
+		if err := os.WriteFile(userConfig, []byte("lane.builders.model=group-model\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		writeExplain := func(conf string) {
@@ -38,27 +38,27 @@ func TestExplainTextAndRecommendation(t *testing.T) {
 		}
 		want := []string{
 			"Recommendation: 2 panels - one writes code (research included) and the review happens here. The lightest choice. 3 panels add a reviewer panel.",
-			"Recommendation: 3 panels - one writes code (research included) and one reviews. Lighter on quota. 4 panels add a second writer; with 2 panels the review happens here. A panel for risky code (auth, money, real data or concurrency) opens only when a slice needs it.",
-			"Recommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here. A panel for risky code (auth, money, real data or concurrency) opens only when a slice needs it.",
+			"Recommendation: 3 panels - two builders and one reviewer. With 2 panels the review happens here.",
+			"Recommendation: 4 panels - three builders and one reviewer. With 3 panels there is room for two builders and one reviewer.",
 		}
 		for i, panes := range []string{"2", "3", "4"} {
-			conf := "panes=" + panes + "\nlane.build.kind=grok\n"
+			conf := "panes=" + panes + "\nlane.builders.kind=grok\n"
 			if panes != "2" {
-				conf += "lane.review.kind=codex\n"
+				conf += "lane.reviewers.kind=codex\n"
 			}
 			if panes == "4" {
-				conf += "lane.review.model=gpt-5\n"
+				conf += "lane.reviewers.model=gpt-5\n"
 			}
 			writeExplain(conf)
 			ctx := core.LoadConfig(env, repo)
 			rec := explainRecommendation(&ctx, env)
-			if len(rec) == 0 || rec[0] != want[i] || !containsLocal(rec, "Chosen for build: grok, model group-model.") {
+			if len(rec) == 0 || rec[0] != want[i] || !containsLocal(rec, "Chosen for builders: grok, model group-model.") {
 				t.Fatalf("panes=%s recommendation=%#v", panes, rec)
 			}
-			if panes == "3" && !containsLocal(rec, "Chosen for review: codex.") {
+			if panes == "3" && !containsLocal(rec, "Chosen for reviewers: codex.") {
 				t.Fatalf("3-panel recommendation=%#v", rec)
 			}
-			if panes == "4" && !containsLocal(rec, "Chosen for review: codex, model gpt-5.") {
+			if panes == "4" && !containsLocal(rec, "Chosen for reviewers: codex, model gpt-5.") {
 				t.Fatalf("4-panel recommendation=%#v", rec)
 			}
 		}
@@ -75,27 +75,27 @@ func TestExplainTextAndRecommendation(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(repo, ".agents"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(repo, ".agents", "soho.conf"), []byte("panes=4\nlane.build.kind=grok\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(repo, ".agents", "soho.conf"), []byte("panes=4\nlane.builders.kind=grok\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		ctx := core.LoadConfig(env, repo)
 		rows := []explainRow{
-			{lane: "build", role: "implementer", kind: "grok", model: "grok-4.7", activity: "working"},
-			{lane: "review", role: "reviewer", kind: "codex", model: "gpt-5", activity: "idle"},
+			{lane: "builders", role: "implementer", kind: "grok", model: "grok-4.7", activity: "working"},
+			{lane: "reviewers", role: "reviewer", kind: "codex", model: "gpt-5", activity: "idle"},
 		}
 		lines := explainPrintRunning(rows, "", &ctx, env, "")
-		for _, line := range []string{"Panels: 4 (+1 for risky code).", "build: implementer, grok, model grok-4.7, working", "review: reviewer, codex, model gpt-5, idle"} {
+		for _, line := range []string{"Panels: 4.", "builders: implementer, grok, model grok-4.7, working", "reviewers: reviewer, codex, model gpt-5, idle"} {
 			if !containsLocal(lines, line) {
 				t.Fatalf("running explanation missing %q: %#v", line, lines)
 			}
 		}
 		headers := []struct{ conf, want string }{
-			{conf: "panes=3\nlane.build.kind=grok\n", want: "Panels: 3 (+1 for risky code)."},
-			{conf: "panes=2\nlane.build.kind=grok\n", want: "Panels: 2."},
-			{conf: "panes=2\nlane.critical.panes=1\nlane.build.kind=grok\n", want: "Panels: 2."},
-			{conf: "panes=4\npane_mode=flex\nlane.build.kind=grok\n", want: "Panels: 4 (+1 for risky code, +1 temporary)."},
-			{conf: "panes=2\npane_mode=flex\nlane.build.kind=grok\n", want: "Panels: 2 (+1 temporary)."},
-			{conf: "panes=4\nlane.build.roles=implementer\nlane.review.roles=reviewer\n", want: "Panels: 4."},
+			{conf: "panes=3\nlane.builders.kind=grok\n", want: "Panels: 3."},
+			{conf: "panes=2\nlane.builders.kind=grok\n", want: "Panels: 2."},
+			{conf: "panes=2\nlane.critical.panes=1\nlane.builders.kind=grok\n", want: "Panels: 2."},
+			{conf: "panes=4\npane_mode=flex\nlane.builders.kind=grok\n", want: "Panels: 4 (+1 temporary)."},
+			{conf: "panes=2\npane_mode=flex\nlane.builders.kind=grok\n", want: "Panels: 2 (+1 temporary)."},
+			{conf: "panes=4\nlane.builders.roles=implementer\nlane.reviewers.roles=reviewer\n", want: "Panels: 4."},
 			{conf: "lanes=off\npanes=4\n", want: "Panels: 4."},
 		}
 		for _, h := range headers {
@@ -150,14 +150,14 @@ func TestExplainCommandRosterActivity(t *testing.T) {
 		tm6Write(t, filepath.Join(sd, "agents.tsv"), "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\n"+
 			"build\tp1\tgrok\timplementer\txai\t1\t/work\tt1\tgrok-4.7\tfull\timplementer\tbuild\n"+
 			"review\tp2\tcodex\treviewer\topenai\t1\t/work\tt2\tgpt-5\ttask\treviewer\treview\n")
-		check("build: implementer, grok, model grok-4.7, working", "review: reviewer, codex, model gpt-5, idle", "Panels: 4 (+1 for risky code).", "Recommendation: 4 panels")
+		check("builders: implementer, grok, model grok-4.7, working", "reviewers: reviewer, codex, model gpt-5, idle", "Panels: 4.", "Recommendation: 4 panels", "Planners help coordinate on demand", "planners: not started")
 		tm6Write(t, filepath.Join(sd, "agents.tsv"), "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\nqueued\tp1\tgrok\timplementer\txai\t1\t/work\tt1\tgrok-4.7\tfull\timplementer\tbuild\n")
 		tm6Write(t, filepath.Join(sd, "last-report-queued"), filepath.Join(sd, "reports", "queued.md")+"\n")
-		check("build: implementer, grok, model grok-4.7, waiting for report")
+		check("builders: implementer, grok, model grok-4.7, waiting for report")
 		tm6Write(t, filepath.Join(sd, "agents.tsv"), "# name\tpane\tkind\trole\tfamily\tcreated_pane\tcwd\tstarted\tmodel\tapprovals\troles\tlane\n"+
 			"capped\tp2\tcodex\treviewer\topenai\t1\t/work\tt2\tgpt-5\ttask\treviewer\treview\n")
 		_ = os.Remove(filepath.Join(sd, "last-report-capped"))
-		check("review: reviewer, codex, model gpt-5, out of quota")
+		check("reviewers: reviewer, codex, model gpt-5, out of quota")
 	})
 	t.Run("parity: explain --json dies 2 (test-friendly.sh)", func(t *testing.T) { // JS: "parity: explain --json dies 2 (test-friendly.sh)"
 		root := t.TempDir()
@@ -192,14 +192,14 @@ func TestExplainRecommendationShowsModelListAndCap(t *testing.T) {
 		ctx := core.LoadConfig(env, repo)
 		return &ctx
 	}
-	ctx := write("panes=4\nlane.build.kind=grok\nlane.build.models=m1,m2\nmodel_cap=2\n")
+	ctx := write("panes=4\nlane.builders.kind=grok\nlane.builders.models=m1,m2\nmodel_cap=2\n")
 	rec := explainRecommendation(ctx, env)
-	if !containsLocal(rec, "Chosen for build: grok, models m1,m2 (model_cap 2 live workers per model).") {
+	if !containsLocal(rec, "Chosen for builders: grok, models m1,m2 (model_cap 2 live workers per model).") {
 		t.Fatalf("models/cap recommendation=%#v", rec)
 	}
-	ctx = write("panes=4\nlane.build.kind=grok\nlane.build.model=m1\n")
+	ctx = write("panes=4\nlane.builders.kind=grok\nlane.builders.model=m1\n")
 	rec = explainRecommendation(ctx, env)
-	if !containsLocal(rec, "Chosen for build: grok, model m1.") {
+	if !containsLocal(rec, "Chosen for builders: grok, model m1.") {
 		t.Fatalf("single-model recommendation=%#v", rec)
 	}
 }

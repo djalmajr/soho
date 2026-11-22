@@ -361,6 +361,33 @@ func TestPanelRolesJSONFromCLI(t *testing.T) {
 	}
 }
 
+func TestPanelRolesJSONUsesPresetGroups(t *testing.T) {
+	f := newCopiesFixture(t, nil)
+	panelWrite(t, filepath.Join(f.repo, ".agents", "soho.conf"), "panes=4\n")
+	code, out, stderr := f.run(t, f.env, "roles", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("roles --json exit=%d out=%q stderr=%q", code, out, stderr)
+	}
+	parsed, err := jsonjs.Parse([]byte(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj := parsed.(*jsonjs.Object)
+	laneField, _ := obj.Get("lanes")
+	var names []string
+	for _, lane := range laneField.([]any) {
+		name, _ := lane.(*jsonjs.Object).Get("name")
+		names = append(names, name.(string))
+	}
+	if got := strings.Join(names, " "); got != "builders reviewers planners" {
+		t.Fatalf("group names=%q", got)
+	}
+	unassigned, _ := obj.Get("unassigned_roles")
+	if roles := unassigned.([]any); len(roles) != 0 {
+		t.Fatalf("preset left roles unassigned: %v", roles)
+	}
+}
+
 func TestPanelRosterEmptyAndLegacyRows(t *testing.T) {
 	rules := []fakecli.Rule{
 		{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},

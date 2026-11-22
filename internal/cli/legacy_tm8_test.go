@@ -28,13 +28,13 @@ func TestTM8FormerCLI(t *testing.T) {
 	t.Run(`config: the former project file is not read and not shown`, func(t *testing.T) {
 		env, repo := tm8CommandFixture(t)
 		legacy := filepath.Join(repo, ".agents", "herdr-soho.conf")
-		tm8File(t, legacy, "max_workers=5\n")
+		tm8File(t, legacy, "max_workers=17\n")
 		code, out, errOut := runIn(t, []string{"config"}, env, repo)
 		if code != 0 || errOut != "" || strings.Contains(out, legacy) {
 			t.Fatalf("config code=%d out=%q err=%q; want no trace of the former project file", code, out, errOut)
 		}
 		for _, line := range strings.Split(out, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), "max_workers") && strings.Contains(line, " 5") {
+			if strings.HasPrefix(strings.TrimSpace(line), "max_workers") && strings.Contains(line, " 17") {
 				t.Fatalf("config read the former project file: %s", line)
 			}
 		}

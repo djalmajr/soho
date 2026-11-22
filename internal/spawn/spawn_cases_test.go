@@ -496,8 +496,8 @@ func TestSpawnHelperJavaScriptCases(t *testing.T) {
 		}
 	})
 
-	t.Run("the native args the current lane mode ignores (lanes on: role args; lanes off: lane args)", func(t *testing.T) {
-		// JS: "the native args the current lane mode ignores (lanes on: role args; lanes off: lane args)"
+	t.Run("native args prefer role settings and use group defaults when unset", func(t *testing.T) {
+		// JS: "native args prefer role settings and use group defaults when unset"
 		f := newSpawnFixture(t, nil)
 		if err := os.WriteFile(filepath.Join(f.root, "roles", "worker.md"), []byte("---\nkind: grok\n---\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -509,15 +509,19 @@ func TestSpawnHelperJavaScriptCases(t *testing.T) {
 		}
 		f.ctx.Entries["lane_build_kind"] = core.ConfigEntry{Value: "grok", Source: "project"}
 		f.ctx.Entries["lane_build_args"] = core.ConfigEntry{Value: "--lane", Source: "project"}
+		if got := ConfigNativeArgs("grok", "build", "worker", f.ctx, f.env, f.cwd, nil); got != "--kind --role" {
+			t.Fatalf("role should replace group args: %q", got)
+		}
+		delete(f.ctx.Entries, "role_worker_args")
 		if got := ConfigNativeArgs("grok", "build", "worker", f.ctx, f.env, f.cwd, nil); got != "--kind --lane" {
-			t.Fatalf("lane args=%q", got)
+			t.Fatalf("group fallback args=%q", got)
 		}
 	})
 }
 
 func TestCmdSpawnJavaScriptCases(t *testing.T) {
-	t.Run("spawn: planner is 12, unknown role 3, sub-orchestrator not in a lane 3, usage 2", func(t *testing.T) {
-		// JS: "spawn: planner is 12, unknown role 3, sub-orchestrator not in a lane 3, usage 2"
+	t.Run("spawn: planner is 12, unknown role 3, sub-orchestrator outside a custom group 3, usage 2", func(t *testing.T) {
+		// JS: "spawn: planner is 12, unknown role 3, sub-orchestrator outside a custom group 3, usage 2"
 		f := newSpawnFixture(t, freshSpawnRules())
 		configureSpawnFixture(t, &f)
 		code, _, _, _ := runCmdSpawn(t, f, []string{"planner"})
@@ -529,6 +533,7 @@ func TestCmdSpawnJavaScriptCases(t *testing.T) {
 			t.Fatalf("unknown role exit=%d", code)
 		}
 		f.env["SOHO_LANES"] = "on"
+		f.env["SOHO_LANE_BUILD_ROLES"] = "implementer"
 		code, _, _, _ = runCmdSpawn(t, f, []string{"sub-orchestrator"})
 		if code != 3 {
 			t.Fatalf("lane-less role exit=%d", code)
@@ -941,7 +946,7 @@ func TestSpawnCriticalLaneMissingExecutableAndLaneKind(t *testing.T) {
 	// DJA-686: with a lane known and the executable missing, the PATH
 	// warning names the configured source while
 	// the failure path (exit 4, pane kept) is unchanged. A user-written
-	// lane.critical.kind resolves the spawn kind for critical-implementer.
+	// role.critical-implementer.kind resolves the spawn kind for critical-implementer.
 	t.Run("spawn: critical-implementer without codex warns the role file suggestion and still fails 4", func(t *testing.T) {
 		f := newSpawnFixture(t, []fakecli.Rule{
 			{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},
@@ -957,15 +962,15 @@ func TestSpawnCriticalLaneMissingExecutableAndLaneKind(t *testing.T) {
 			t.Fatalf("exit=%d stderr=%q; want 4 with %q", code, stderr, want)
 		}
 	})
-	t.Run("spawn: lane.critical.kind=claude resolves the spawn kind", func(t *testing.T) {
+	t.Run("spawn: role.critical-implementer.kind=claude resolves the spawn kind", func(t *testing.T) {
 		f := newSpawnFixture(t, freshSpawnRules())
 		configureSpawnFixture(t, &f)
 		delete(f.env, "SOHO_LANES")
 		// The fixture's ctx is what CmdSpawn sees (it does not load repo
-		// files): the project layer's lane.critical.kind enters through the
+		// files): the project layer's role.critical-implementer.kind enters through the
 		// same key a file would set.
-		f.ctx.Entries["lane_critical_kind"] = core.ConfigEntry{Value: "claude", Source: "project"}
-		f.ctx.Order = []string{"lane_critical_kind"}
+		f.ctx.Entries["role_critical_implementer_kind"] = core.ConfigEntry{Value: "claude", Source: "project"}
+		f.ctx.Order = []string{"role_critical_implementer_kind"}
 		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"critical-implementer", "--pane", "w0test:p0a", "--fresh"})
 		if code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
@@ -998,9 +1003,16 @@ func TestConfigNativeArgsAgainstGroupKind(t *testing.T) {
 	f.env["SOHO_ROLE_WORKER_KIND"] = "grok"
 	f.env["SOHO_ROLE_WORKER_ARGS"] = "--role"
 	f.env["SOHO_ARGS_GROK"] = "--kind"
-	if got := ConfigNativeArgs("grok", "build", "worker", f.ctx, f.env, f.cwd, nil); got != "--kind" {
-		t.Fatalf("other kind native args = %q, want --kind", got)
+	if got := ConfigNativeArgs("grok", "build", "worker", f.ctx, f.env, f.cwd, nil); got != "--kind --role" {
+		t.Fatalf("configured kind native args = %q, want --kind --role", got)
 	}
+	var dropped string
+	if got := ConfigNativeArgs("pi", "build", "worker", f.ctx, f.env, f.cwd, func(key, own string) {
+		dropped = key + " belongs to " + own
+	}); got != "" || dropped != "role.worker.args belongs to grok" {
+		t.Fatalf("explicit kind native args=%q, dropped=%q", got, dropped)
+	}
+	delete(f.env, "SOHO_ROLE_WORKER_ARGS")
 	if got := ConfigNativeArgs("pi", "build", "worker", f.ctx, f.env, f.cwd, nil); got != "--group" {
 		t.Fatalf("matching kind native args = %q, want --group", got)
 	}

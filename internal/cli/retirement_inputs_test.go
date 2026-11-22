@@ -87,10 +87,10 @@ var retirementInvocations = map[string]map[string][]retireStep{
 			{Args: []string{"dispatch", "build", "brief.md", "--no-wait"}, RC: 0, JSON: []map[string]interface{}{{"agent": "build", "kind": "grok", "role": "implementer", "wait_status": "submitted"}}},
 		},
 		"run-no-wait": {
-			{Args: []string{"run", "implementer", "brief.md", "--no-wait"}, RC: 0, JSON: []map[string]interface{}{{"kind": "grok", "model": "grok", "name": "build", "placement": "herd", "role": "implementer"}, {"agent": "build", "kind": "grok", "role": "implementer", "wait_status": "submitted"}}},
+			{Args: []string{"run", "implementer", "brief.md", "--no-wait"}, RC: 0, JSON: []map[string]interface{}{{"kind": "grok", "model": "grok", "name": "implementer", "placement": "herd", "role": "implementer"}, {"agent": "implementer", "kind": "grok", "role": "implementer", "wait_status": "submitted"}}},
 		},
 		"run-wait": {
-			{Args: []string{"run", "implementer", "brief.md", "--timeout", "5000"}, RC: 0, JSON: []map[string]interface{}{{"kind": "grok", "model": "grok", "name": "build", "placement": "herd", "role": "implementer"}, {"agent": "build", "kind": "grok", "role": "implementer", "wait_status": "done"}}},
+			{Args: []string{"run", "implementer", "brief.md", "--timeout", "5000"}, RC: 0, JSON: []map[string]interface{}{{"kind": "grok", "model": "grok", "name": "implementer", "placement": "herd", "role": "implementer"}, {"agent": "implementer", "kind": "grok", "role": "implementer", "wait_status": "done"}}},
 		},
 	},
 }

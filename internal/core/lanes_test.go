@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -12,35 +13,9 @@ import (
 )
 
 func TestLanePresetsCapacityAndNames(t *testing.T) {
-	// JS: "presets 2/3/4: lanes, roles, capacities, and custom lanes"
-	// Mutation captured: changing the 4-panel build lane capacity or moving review roles into the build lane changes these observable assignments.
+	// Explicit roles replace the built-in groups, including for environment-supplied groups.
 	env, repo := fixture(t)
 	ctx := LoadConfig(env, repo)
-	if got := LaneNames(&ctx, env); len(got) != 3 || got[0] != "build" || got[1] != "critical" || got[2] != "review" {
-		t.Fatalf("preset lanes = %#v", got)
-	}
-	if got := LaneRolesCSV(&ctx, "build", env); got != "implementer,designer,tasker,scouter,researcher,documenter,tester" {
-		t.Fatalf("build roles = %q", got)
-	}
-	if got := LaneRolesCSV(&ctx, "critical", env); got != "critical-implementer" {
-		t.Fatalf("critical roles = %q", got)
-	}
-	if LaneCapacity(&ctx, "build", env) != 2 || LaneCapacity(&ctx, "critical", env) != 1 || LaneCapacity(&ctx, "review", env) != 1 || MaxWorkers(&ctx, env) != "4" {
-		t.Fatal("4-panel capacity derivation changed")
-	}
-	write(t, filepath.Join(repo, ".agents", "soho.conf"), "panes=2\n")
-	ctx = LoadConfig(env, repo)
-	if got := LaneNames(&ctx, env); len(got) != 1 || LaneOfRole(&ctx, "reviewer", env) != "" || LaneOfRole(&ctx, "critical-implementer", env) != "" || LaneCapacity(&ctx, "build", env) != 1 || MaxWorkers(&ctx, env) != "1" {
-		t.Fatalf("2-panel preset invalid: lanes=%v reviewer=%q critical=%q max=%s", got, LaneOfRole(&ctx, "reviewer", env), LaneOfRole(&ctx, "critical-implementer", env), MaxWorkers(&ctx, env))
-	}
-	write(t, filepath.Join(repo, ".agents", "soho.conf"), "panes=2\npane_mode=flex\n")
-	ctx = LoadConfig(env, repo)
-	if got := LaneNames(&ctx, env); len(got) != 4 || LaneCapacity(&ctx, "critical", env) != 0 || LaneCapacity(&ctx, "review", env) != 0 || LaneCapacity(&ctx, "docs", env) != 0 || MaxWorkers(&ctx, env) != "2" {
-		t.Fatalf("flex preset invalid: lanes=%v max=%s", got, MaxWorkers(&ctx, env))
-	}
-	if PresetSignature("2", "flex") != PresetSignature("4", "flex") || PresetRolesFlat("3", "flex") != "implementer,designer,tasker,scouter,researcher,tester,critical-implementer,reviewer,security-reviewer,ui-reviewer,inspector,validator,documenter" {
-		t.Fatal("flex preset signature/role flattening changed")
-	}
 	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lane.ops.roles=implementer tasker\nlane.ops.panes=3\n")
 	ctx = LoadConfig(env, repo)
 	if LaneOfRole(&ctx, "tasker", env) != "ops" || LaneOfRole(&ctx, "scouter", env) != "" || LaneCapacity(&ctx, "ops", env) != 3 {
@@ -53,17 +28,28 @@ func TestLanePresetsCapacityAndNames(t *testing.T) {
 	}
 }
 
+func TestPresetPlannersCapacity(t *testing.T) {
+	env, repo := fixture(t)
+	ctx := LoadConfig(env, repo)
+	if got := AlwaysOpenLaneCapacitySum(&ctx, env); got != 4 {
+		t.Errorf("always-open capacity = %d, want 4", got)
+	}
+	if got := MaxWorkers(&ctx, env); got != "5" {
+		t.Errorf("max_workers = %s, want 5", got)
+	}
+}
+
 func TestLaneNamesRequireNonOverlappingRoleSuffix(t *testing.T) {
 	// Mutation captured: prefix/suffix matching without a middle lane name suppresses preset lanes.
 	env, repo := fixture(t)
 	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lane.roles=x\n")
 	ctx := LoadConfig(env, repo)
-	if got := LaneNames(&ctx, env); strings.Join(got, ",") != "build,critical,review" {
+	if got := LaneNames(&ctx, env); strings.Join(got, ",") != "builders,reviewers,planners" {
 		t.Fatalf("overlapping file key lanes=%v", got)
 	}
 	env["SOHO_LANE_ROLES"] = "x"
 	ctx = LoadConfig(env, repo)
-	if got := LaneNames(&ctx, env); strings.Join(got, ",") != "build,critical,review" {
+	if got := LaneNames(&ctx, env); strings.Join(got, ",") != "builders,reviewers,planners" {
 		t.Fatalf("overlapping env key lanes=%v", got)
 	}
 	write(t, filepath.Join(repo, ".agents", "soho.conf"), "lane.build.roles=x\n")
@@ -116,7 +102,7 @@ func TestLaneLayerRulesAndSpecs(t *testing.T) {
 
 func TestLaneFileMigrationAndSignatures(t *testing.T) {
 	// JS: "applyLaneFile: a preset file drops the roles, the old lanes and the derived keys"
-	// JS: "applyLaneFile: lane.read.<attr> moves to lane.review.<attr>, an existing one wins"
+	// JS: "applyLaneFile: lane.read.<attr> moves to lane.reviewers.<attr>, an existing one wins"
 	// JS: "applyLaneFile: a custom file keeps its lanes and aligns max_workers to the capacities"
 	// JS: "applyLaneFile: any other lane outside the preset is removed, comments stay"
 	// JS: "applyLaneFile: the old presets are treated as preset files (not custom)"
@@ -127,7 +113,7 @@ func TestLaneFileMigrationAndSignatures(t *testing.T) {
 	lines := ApplyLaneFile(file, "3", env, repo)
 	raw, _ := os.ReadFile(file)
 	text := string(raw)
-	if FileLaneCount(file) != 0 || FileLaneSignature(file) != "" || !containsString(lines, "set panes=3") || containsText(text, "lane.build.roles=") || !containsText(text, "lane.review.kind=codex") || containsText(text, "max_workers=") || !containsText(text, "# keep") {
+	if FileLaneCount(file) != 0 || FileLaneSignature(file) != "" || !containsString(lines, "set panes=3") || containsText(text, "lane.build.roles=") || !containsText(text, "lane.reviewers.kind=codex") || containsText(text, "max_workers=") || !containsText(text, "# keep") {
 		t.Fatalf("preset migration failed: lines=%v file=%s", lines, text)
 	}
 	write(t, file, "lane.ops.roles=implementer,tasker\nlane.ops.panes=2\n")
@@ -150,13 +136,13 @@ func TestLegacyPresetSignaturesMigrate(t *testing.T) {
 		name, panes, file string
 		keep              []string
 	}{
-		{name: "a: strict old roles", panes: "3", file: "pane_mode=strict\npanes=3\nlane.build.roles=implementer,designer,tasker,scouter,researcher,documenter\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector\nlane.build.kind=grok\nlane.review.kind=codex\n", keep: []string{"lane.build.kind=grok", "lane.review.kind=codex"}},
+		{name: "a: strict old roles", panes: "3", file: "pane_mode=strict\npanes=3\nlane.build.roles=implementer,designer,tasker,scouter,researcher,documenter\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector\nlane.build.kind=grok\nlane.review.kind=codex\n", keep: []string{"lane.builders.kind=grok", "lane.reviewers.kind=codex"}},
 		{name: "a: strict old roles, panes 4", panes: "4", file: "pane_mode=strict\npanes=4\nlane.build.roles=implementer,designer,tasker,scouter,researcher,documenter\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector\n"},
-		{name: "b: strict two-panel shape", panes: "3", file: "pane_mode=strict\npanes=2\nlane.build.roles=implementer,designer,tasker,scouter,researcher,documenter\nlane.build.kind=grok\n", keep: []string{"lane.build.kind=grok"}},
-		{name: "c: flex old roles", panes: "3", file: "pane_mode=flex\npanes=3\nlane.build.roles=implementer,designer,tasker,scouter,researcher\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector\nlane.docs.roles=documenter\nlane.build.kind=grok\nlane.review.kind=codex\n", keep: []string{"lane.build.kind=grok", "lane.review.kind=codex"}},
-		{name: "d: the pre-critical preset (old fixture)", panes: "3", file: "panes=4\nlane.build.roles=implementer,designer,tasker,scouter,researcher,documenter,tester\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector,validator\nlane.read.kind=codex\n", keep: []string{"lane.review.kind=codex"}},
-		{name: "e: flex pre-critical roles", panes: "3", file: "pane_mode=flex\npanes=4\nlane.build.roles=implementer,designer,tasker,scouter,researcher,tester\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector,validator\nlane.docs.roles=documenter\nlane.build.kind=grok\nlane.review.kind=codex\n", keep: []string{"lane.build.kind=grok", "lane.review.kind=codex"}},
-		{name: "a: strict old roles with a lane capacity", panes: "3", file: "pane_mode=strict\npanes=3\nlane.build.roles=implementer,designer,tasker,scouter,researcher,documenter\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector\nlane.build.panes=2\n", keep: []string{"lane.build.panes=2"}},
+		{name: "b: strict two-panel shape", panes: "3", file: "pane_mode=strict\npanes=2\nlane.build.roles=implementer,designer,tasker,scouter,researcher,documenter\nlane.build.kind=grok\n", keep: []string{"lane.builders.kind=grok"}},
+		{name: "c: flex old roles", panes: "3", file: "pane_mode=flex\npanes=3\nlane.build.roles=implementer,designer,tasker,scouter,researcher\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector\nlane.docs.roles=documenter\nlane.build.kind=grok\nlane.review.kind=codex\n", keep: []string{"lane.builders.kind=grok", "lane.reviewers.kind=codex"}},
+		{name: "d: the pre-critical preset (old fixture)", panes: "3", file: "panes=4\nlane.build.roles=implementer,designer,tasker,scouter,researcher,documenter,tester\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector,validator\nlane.read.kind=codex\n", keep: []string{"lane.reviewers.kind=codex"}},
+		{name: "e: flex pre-critical roles", panes: "3", file: "pane_mode=flex\npanes=4\nlane.build.roles=implementer,designer,tasker,scouter,researcher,tester\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector,validator\nlane.docs.roles=documenter\nlane.build.kind=grok\nlane.review.kind=codex\n", keep: []string{"lane.builders.kind=grok", "lane.reviewers.kind=codex"}},
+		{name: "a: strict old roles with a lane capacity", panes: "3", file: "pane_mode=strict\npanes=3\nlane.build.roles=implementer,designer,tasker,scouter,researcher,documenter\nlane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector\nlane.build.panes=2\n", keep: []string{"lane.builders.panes=2"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, repo := fixture(t)
@@ -187,7 +173,7 @@ func TestLegacyPresetSignaturesMigrate(t *testing.T) {
 				t.Fatalf("panes was not written: lines=%v", lines)
 			}
 			ctx := LoadConfig(env, repo)
-			if got := LaneCapacity(&ctx, "critical", env); got != 1 {
+			if got := LaneCapacity(&ctx, "builders", env); got == 0 {
 				t.Fatalf("critical-implementer has no slot after the migration: capacity=%d file=%s", got, text)
 			}
 		})
@@ -301,26 +287,25 @@ func TestReviewLaneLocksAnEditor(t *testing.T) {
 }
 
 func TestLaneOfRoleForTesterAndValidatorPresets(t *testing.T) {
-	// DJA-695: the tester sits in the build lane and the validator in the review
-	// lane of every preset that has those lanes (strict and flex, panes 2/3/4);
+	// DJA-695: the tester sits in builders and the validator in reviewers of every preset that has those lanes (strict and flex, panes 2/3/4);
 	// the strict 2-panel preset has no review lane, so the validator stays out
 	// of the lanes exactly like the other review roles.
 	env, repo := fixture(t)
 	for _, tc := range []struct {
 		panes, mode, role, want string
 	}{
-		{"4", "strict", "tester", "build"},
-		{"4", "strict", "validator", "review"},
-		{"3", "strict", "tester", "build"},
-		{"3", "strict", "validator", "review"},
-		{"2", "strict", "tester", "build"},
+		{"4", "strict", "tester", "builders"},
+		{"4", "strict", "validator", "reviewers"},
+		{"3", "strict", "tester", "builders"},
+		{"3", "strict", "validator", "reviewers"},
+		{"2", "strict", "tester", "builders"},
 		{"2", "strict", "validator", ""},
-		{"4", "flex", "tester", "build"},
-		{"4", "flex", "validator", "review"},
-		{"3", "flex", "tester", "build"},
-		{"3", "flex", "validator", "review"},
-		{"2", "flex", "tester", "build"},
-		{"2", "flex", "validator", "review"},
+		{"4", "flex", "tester", "builders"},
+		{"4", "flex", "validator", "reviewers"},
+		{"3", "flex", "tester", "builders"},
+		{"3", "flex", "validator", "reviewers"},
+		{"2", "flex", "tester", "builders"},
+		{"2", "flex", "validator", "reviewers"},
 	} {
 		t.Run(tc.panes+"/"+tc.mode+"/"+tc.role, func(t *testing.T) {
 			conf := "panes=" + tc.panes
@@ -369,66 +354,61 @@ func TestReviewLaneLocksAnEditorForTheValidator(t *testing.T) {
 	}
 }
 
-func TestCriticalLanePresetsMatrix(t *testing.T) {
-	// DJA-686: the critical lane ships with the strict 3- and 4-panel presets
-	// and with every flex preset, holding only critical-implementer at
-	// capacity 1 (0 in flex panes=2, the review rule). Strict panes=2 keeps
-	// the minimal team: the lane is absent there, and MaxWorkers follows the
-	// capacities without any explicit value.
+func TestPresetGroupsMatrix(t *testing.T) {
 	env, repo := fixture(t)
 	for _, tc := range []struct {
-		panes, mode string
-		present     bool
-		capacity    int
-		workers     string
+		panes, mode, workers string
+		builders, reviewers  int
+		names                []string
 	}{
-		{"4", "strict", true, 1, "4"},
-		{"3", "strict", true, 1, "3"},
-		{"2", "strict", false, 0, "1"},
-		{"4", "flex", true, 1, "5"},
-		{"3", "flex", true, 1, "4"},
-		{"2", "flex", true, 0, "2"},
+		{"4", "strict", "5", 3, 1, []string{"builders", "reviewers", "planners"}},
+		{"3", "strict", "4", 2, 1, []string{"builders", "reviewers", "planners"}},
+		{"2", "strict", "2", 1, 0, []string{"builders", "planners"}},
+		{"4", "flex", "6", 3, 1, []string{"builders", "reviewers", "planners"}},
+		{"3", "flex", "5", 2, 1, []string{"builders", "reviewers", "planners"}},
+		{"2", "flex", "3", 1, 0, []string{"builders", "reviewers", "planners"}},
 	} {
 		t.Run(tc.panes+"/"+tc.mode, func(t *testing.T) {
-			conf := "panes=" + tc.panes
-			if tc.mode == "flex" {
-				conf += "\npane_mode=flex"
-			}
-			write(t, filepath.Join(repo, ".agents", "soho.conf"), conf)
+			write(t, filepath.Join(repo, ".agents", "soho.conf"), "panes="+tc.panes+"\npane_mode="+tc.mode+"\n")
 			ctx := LoadConfig(env, repo)
-			found := ""
-			for _, lane := range LaneNames(&ctx, env) {
-				if lane == "critical" {
-					found = lane
+			if got := LaneNames(&ctx, env); !slices.Equal(got, tc.names) {
+				t.Fatalf("groups=%v want %v", got, tc.names)
+			}
+			reviewRoles := "reviewer,security-reviewer,ui-reviewer,inspector,validator"
+			if !slices.Contains(tc.names, "reviewers") {
+				reviewRoles = ""
+			}
+			for _, group := range []struct {
+				name, roles string
+				capacity    int
+			}{
+				{"builders", "implementer,critical-implementer,designer,tasker,tester,scouter,researcher,documenter", tc.builders},
+				{"reviewers", reviewRoles, tc.reviewers},
+				{"planners", "planner,sub-orchestrator,job-orchestrator", 1},
+				{"critical", "", 0},
+				{"docs", "", 0},
+			} {
+				if roles, capacity := LaneRolesCSV(&ctx, group.name, env), LaneCapacity(&ctx, group.name, env); roles != group.roles || capacity != group.capacity {
+					t.Errorf("%s has roles=%q capacity=%d want %q/%d", group.name, roles, capacity, group.roles, group.capacity)
+				}
+				for _, role := range SplitRoles(group.roles) {
+					if got := LaneOfRole(&ctx, role, env); got != group.name {
+						t.Errorf("role %s in %q, want %q", role, got, group.name)
+					}
 				}
 			}
-			if (found != "") != tc.present {
-				t.Fatalf("critical lane present=%v lanes=%v", found != "", LaneNames(&ctx, env))
-			}
-			if got := LaneOfRole(&ctx, "critical-implementer", env); tc.present && got != "critical" {
-				t.Fatalf("LaneOfRole(critical-implementer)=%q want critical", got)
-			}
-			if tc.present {
-				if got := LaneRolesCSV(&ctx, "critical", env); got != "critical-implementer" {
-					t.Fatalf("critical roles=%q", got)
-				}
-				if got := LaneCapacity(&ctx, "critical", env); got != tc.capacity {
-					t.Fatalf("critical capacity=%d want %d", got, tc.capacity)
-				}
+			if got := AlwaysOpenLaneCapacitySum(&ctx, env); got != tc.builders+tc.reviewers {
+				t.Errorf("always-open capacity=%d want %d", got, tc.builders+tc.reviewers)
 			}
 			if got := MaxWorkers(&ctx, env); got != tc.workers {
-				t.Fatalf("MaxWorkers=%q want %q", got, tc.workers)
+				t.Errorf("MaxWorkers=%q want %q", got, tc.workers)
 			}
 		})
 	}
 }
 
 func TestCriticalLaneFileMigrationAndKindResolution(t *testing.T) {
-	// DJA-686: the critical lane is single-role, so MigrateLaneAttr treats
-	// critical-implementer like planner and documenter: doctor --fix / setup
-	// never write lane.critical.* for it on a clean project (first_run stays
-	// true), and a user-written lane.critical.kind survives the fix and
-	// resolves the spawn kind.
+	// A clean preset does not create a risky-code override. Repair keeps an explicit old choice as a role setting.
 	env, repo := fixture(t)
 	file := filepath.Join(repo, ".agents", "soho.conf")
 	clean := ApplyLaneFile(file, "4", env, repo)
@@ -448,7 +428,7 @@ func TestCriticalLaneFileMigrationAndKindResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsText(string(raw), "lane.critical.kind=claude") {
+	if !containsText(string(raw), "role.critical-implementer.kind=claude") || containsText(string(raw), "lane.critical.kind") {
 		t.Fatalf("user-set lane.critical.kind removed: file=%s lines=%v", raw, lines)
 	}
 	for _, line := range lines {
@@ -458,7 +438,7 @@ func TestCriticalLaneFileMigrationAndKindResolution(t *testing.T) {
 	}
 	ctx := LoadConfig(env, repo)
 	res := ResolveRoleSettings("critical-implementer", &ctx, env, repo, RoleFlags{})
-	if res.Lane != "critical" || res.Kind != "claude" || !strings.HasPrefix(res.KindFrom, "lane critical") {
+	if res.Lane != "builders" || res.Kind != "claude" || !strings.HasPrefix(res.KindFrom, "role config (") {
 		t.Fatalf("resolved settings=%+v", res)
 	}
 }
@@ -618,15 +598,15 @@ func TestFileKeyPresentNormalizesAndParses(t *testing.T) {
 	}
 }
 
-// R549: lane.read.<attr> moves to lane.review.<attr> as written, so the
+// R549: lane.read.<attr> moves to lane.reviewers.<attr> as written, so the
 // reload decodes the value once (quotes) and an attached comment survives.
 func TestReadLaneMoveKeepsTheWinningAssignment(t *testing.T) {
 	for _, tc := range []struct {
 		name, file, wantLine, wantValue string
 	}{
-		{"quoted value", "lane.read.args=\"\"--example value\"\"\n", "lane.review.args=\"\"--example value\"\"", "\"--example value\""},
-		{"attached comment", "lane.read.args=--example# preserve this comment\n", "lane.review.args=--example# preserve this comment", "--example"},
-		{"last assignment wins", "lane.read.args=--old\nlane.read.args=--new # note\n", "lane.review.args=--new # note", "--new"},
+		{"quoted value", "lane.read.args=\"\"--example value\"\"\n", "lane.reviewers.args=\"\"--example value\"\"", "\"--example value\""},
+		{"attached comment", "lane.read.args=--example# preserve this comment\n", "lane.reviewers.args=--example# preserve this comment", "--example"},
+		{"last assignment wins", "lane.read.args=--old\nlane.read.args=--new # note\n", "lane.reviewers.args=--new # note", "--new"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isolateConfigAliasTestEnv(t)
@@ -642,7 +622,7 @@ func TestReadLaneMoveKeepsTheWinningAssignment(t *testing.T) {
 			if string(data) != tc.wantLine+"\n" {
 				t.Fatalf("file = %q, want %q", data, tc.wantLine+"\n")
 			}
-			if got := FileKeyValue(file, "lane.review.args"); got != tc.wantValue {
+			if got := FileKeyValue(file, "lane.reviewers.args"); got != tc.wantValue {
 				t.Fatalf("reloaded value = %q, want %q", got, tc.wantValue)
 			}
 		})

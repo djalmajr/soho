@@ -3,12 +3,45 @@ package spawn
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
+
+func TestSpawnGroupRoleMcpOverride(t *testing.T) {
+	for _, tc := range []struct {
+		name, roleMcp, flag, want string
+	}{
+		{"group fallback", "", "", "inherit"},
+		{"role replaces group", "none", "", "none"},
+		{"explicit flag", "none", "inherit", "inherit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := mcpListFixture(t)
+			f.env["SOHO_LANES"] = "on"
+			f.ctx.Entries["lane_builders_kind"] = core.ConfigEntry{Value: "pi", Source: "project"}
+			f.ctx.Entries["lane_builders_mcp"] = core.ConfigEntry{Value: "inherit", Source: "project"}
+			f.ctx.Entries["role_implementer_mcp"] = core.ConfigEntry{Value: tc.roleMcp, Source: "user"}
+			args := []string{"implementer"}
+			if tc.flag != "" {
+				args = append(args, "--mcp", tc.flag)
+			}
+			code, out, stderr, _ := runCmdSpawn(t, f, args)
+			if code != 0 {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, stderr)
+			}
+			argv := startTail(t, f)
+			row := strings.Split(core.RosterLine(filepath.Join(f.state, "ws"), "implementer"), "\t")
+			if slices.Contains(argv, "--no-mcp") != (tc.want == "none") || fieldAt(row, 15) != tc.want {
+				t.Fatalf("start argv=%q roster=%q, want mcp=%q", argv, row, tc.want)
+			}
+			t.Logf("start argv=%q mcp=%s", argv, row[15])
+		})
+	}
+}
 
 // DJA-693: the mcp choice is inherit, none, or a comma-separated list of
 // server names. A list keeps the named servers and turns the others off,
@@ -111,8 +144,8 @@ func TestResolveMcpListPrecedence(t *testing.T) {
 	f.ctx.Entries["role_worker_mcp"] = core.ConfigEntry{Value: "c,d", Source: "user"}
 	f.ctx.Entries["lane_build_mcp"] = core.ConfigEntry{Value: "e,f", Source: "user"}
 
-	if got := ResolveMcp("", "build", "worker", f.ctx, f.env, f.cwd); got != "e,f" {
-		t.Fatalf("lane got=%q, want e,f", got)
+	if got := ResolveMcp("", "build", "worker", f.ctx, f.env, f.cwd); got != "c,d" {
+		t.Fatalf("grouped role config got=%q, want c,d", got)
 	}
 	if got := ResolveMcp("", "", "worker", f.ctx, f.env, f.cwd); got != "c,d" {
 		t.Fatalf("role config got=%q, want c,d", got)
@@ -121,6 +154,9 @@ func TestResolveMcpListPrecedence(t *testing.T) {
 		t.Fatalf("flag got=%q, want a,b", got)
 	}
 	delete(f.ctx.Entries, "role_worker_mcp")
+	if got := ResolveMcp("", "build", "worker", f.ctx, f.env, f.cwd); got != "e,f" {
+		t.Fatalf("group fallback got=%q, want e,f", got)
+	}
 	if got := ResolveMcp("", "", "worker", f.ctx, f.env, f.cwd); got != "a,b" {
 		t.Fatalf("frontmatter got=%q, want a,b", got)
 	}

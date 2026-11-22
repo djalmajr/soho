@@ -161,7 +161,7 @@ func TestExplainCommandFootprintLine(t *testing.T) {
 		lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
 		laneIdx, footIdx := -1, -1
 		for i, line := range lines {
-			if line == "review: not started" { // the last lane line
+			if line == "planners: not started" { // the last group line
 				laneIdx = i
 			}
 			if strings.HasPrefix(line, "Footprint: ") {
@@ -233,14 +233,14 @@ func TestExplainCommandFootprintLine(t *testing.T) {
 		}
 	})
 
-	t.Run("nothing registered and below the limit: byte-identical to today", func(t *testing.T) {
+	t.Run("nothing registered and below the limit: only groups and recommendation", func(t *testing.T) {
 		_ = os.RemoveAll(sd)
 		tm6Write(t, filepath.Join(sd, "agents.tsv"), agentsTsvBuild)
 		code, out, stderr := runIn(t, []string{"explain"}, env, cwd)
 		if code != 0 {
 			t.Fatalf("explain exit=%d stderr=%q", code, stderr)
 		}
-		want := "Panels: 4 (+1 for risky code).\nbuild: implementer, grok, model grok-4.7, idle\ncritical: not started\nreview: not started\n\nRecommendation: 4 panels - two write code (research included) in parallel and one reviews. Uses more quota. 3 panels are lighter: one writes and one reviews. With 2 panels one writes and the review happens here. A panel for risky code (auth, money, real data or concurrency) opens only when a slice needs it.\n"
+		want := "Panels: 4.\nbuilders: implementer, grok, model grok-4.7, idle\nreviewers: not started\nplanners: not started\n\nRecommendation: 4 panels - three builders and one reviewer. With 3 panels there is room for two builders and one reviewer.\nBuilders write code, research, and document. Reviewers check the work. Planners help coordinate on demand while you lead and plan here.\n"
 		if out != want {
 			t.Fatalf("out:\n%s\nwant:\n%s", out, want)
 		}

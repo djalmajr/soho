@@ -244,8 +244,8 @@ func TestResolveMcpPrecedenceChain(t *testing.T) {
 	if got := ResolveMcp("", "", "worker", f.ctx, f.env, f.cwd); got != "inherit" {
 		t.Fatalf("no flag, no lane: role config got=%q, want inherit (frontmatter is last)", got)
 	}
-	if got := ResolveMcp("", "build", "worker", f.ctx, f.env, f.cwd); got != "none" {
-		t.Fatalf("lane beat the role config: got=%q, want none", got)
+	if got := ResolveMcp("", "build", "worker", f.ctx, f.env, f.cwd); got != "inherit" {
+		t.Fatalf("role config should beat group config: got=%q, want inherit", got)
 	}
 	if got := ResolveMcp("inherit", "build", "worker", f.ctx, f.env, f.cwd); got != "inherit" {
 		t.Fatalf("the flag beat the lane: got=%q, want inherit", got)

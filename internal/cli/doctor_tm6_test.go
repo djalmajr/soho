@@ -165,16 +165,16 @@ func TestDoctorTM6CLIAndParity(t *testing.T) {
 }
 
 func TestDoctorTM6FixTargets(t *testing.T) {
-	t.Run("session fix reads lanes from selected state root", func(t *testing.T) {
+	t.Run("session fix moves a preset from the selected state root", func(t *testing.T) {
 		env, cwd := tm6CLIEnv(t)
 		env["SOHO_DIR"] = filepath.Join(t.TempDir(), "selected-state")
 		env["HERDR_WORKSPACE_ID"] = "ws"
 		path := filepath.Join(env.Get("SOHO_DIR"), "ws", "session.conf")
 		tm6Write(t, filepath.Join(cwd, ".agents", "soho.conf"), "panes=4\npane_mode=strict\n")
-		tm6Write(t, path, "panes=4\nlane.build.roles=implementer\nlane.build.panes=7\nmax_workers=9\nsplit_max_panes=10\n")
+		tm6Write(t, path, "panes=4\nlane.build.panes=7\nmax_workers=8\nsplit_max_panes=10\n")
 		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--session", "--panes", "4"}, env, cwd)
 		data, err := os.ReadFile(path)
-		if err != nil || code != 0 || !strings.Contains(string(data), "max_workers=7\n") || !strings.Contains(string(data), "split_max_panes=8\n") {
+		if err != nil || code != 0 || !strings.Contains(string(data), "max_workers=9\n") || !strings.Contains(string(data), "lane.builders.panes=7\n") || strings.Contains(string(data), "lane.build.panes=") || !strings.Contains(stderr, "lane.build.panes → lane.builders.panes") {
 			t.Fatalf("code=%d out=%q stderr=%q conf=%q err=%v", code, out, stderr, data, err)
 		}
 	})
@@ -187,7 +187,7 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 		env["SOHO_PANE_MODE"] = "strict"
 		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--panes", "2"}, env, cwd)
 		data, err := os.ReadFile(conf)
-		if err != nil || code != 0 || !strings.Contains(string(data), "lane.review.panes=3\n") || !strings.Contains(string(data), "max_workers=5\n") {
+		if err != nil || code != 0 || !strings.Contains(string(data), "lane.reviewers.panes=3\n") || !strings.Contains(string(data), "max_workers=6\n") {
 			t.Fatalf("code=%d out=%q stderr=%q conf=%q err=%v", code, out, stderr, data, err)
 		}
 	})
@@ -198,7 +198,7 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 		tm6Write(t, filepath.Join(cwd, ".agents", "soho.conf"), "panes=2\n")
 		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--user", "--panes", "4"}, env, cwd)
 		data, err := os.ReadFile(user)
-		if err != nil || code != 0 || !strings.Contains(string(data), "max_workers=4\n") {
+		if err != nil || code != 0 || !strings.Contains(string(data), "max_workers=5\n") {
 			t.Fatalf("code=%d out=%q stderr=%q user=%q err=%v", code, out, stderr, data, err)
 		}
 	})
@@ -208,10 +208,10 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 		conf := filepath.Join(cwd, ".agents", "soho.conf")
 		tm6Write(t, conf, "panes=4\nmax_workers=9\n")
 		env["SOHO_PANES"] = "2"
-		env["SOHO_LANE_BUILD_PANES"] = "1"
+		env["SOHO_LANE_BUILDERS_PANES"] = "1"
 		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--panes", "4"}, env, cwd)
 		data, err := os.ReadFile(conf)
-		if err != nil || code != 0 || !strings.Contains(string(data), "max_workers=4\n") {
+		if err != nil || code != 0 || !strings.Contains(string(data), "max_workers=5\n") {
 			t.Fatalf("code=%d out=%q stderr=%q conf=%q err=%v", code, out, stderr, data, err)
 		}
 	})
@@ -221,7 +221,7 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 		tm6Write(t, user, "panes=2\nmax_workers=1\n")
 		tm6Write(t, filepath.Join(cwd, ".agents", "soho.conf"), "panes=4\n")
 		code, out, stderr := runIn(t, []string{"doctor"}, env, cwd)
-		command := "soho config set max_workers 4 --user"
+		command := "soho config set max_workers 5 --user"
 		if code != 0 || !strings.Contains(out, "in the user layer ("+command+")") {
 			t.Fatalf("before code=%d out=%q stderr=%q", code, out, stderr)
 		}
@@ -270,7 +270,7 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if code != 0 || !strings.Contains(stderr, "lane 'review' kinds differ") || !strings.Contains(string(data), "role.reviewer.kind=codex") || !strings.Contains(string(data), "role.security-reviewer.kind=claude") {
+		if code != 0 || !strings.Contains(stderr, "lane 'reviewers' kinds differ") || !strings.Contains(string(data), "role.reviewer.kind=codex") || !strings.Contains(string(data), "role.security-reviewer.kind=claude") {
 			t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
 		}
 	})
@@ -301,7 +301,7 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if code != 0 || strings.Contains(stderr, "custom") || strings.Contains(string(data), "lane.build.roles") || strings.Contains(string(data), "lane.review.roles") || !strings.Contains(string(data), "lane.review.kind=codex") || !strings.Contains(out, "set panes=3") {
+		if code != 0 || strings.Contains(stderr, "custom") || strings.Contains(string(data), "lane.build.roles") || strings.Contains(string(data), "lane.review.roles") || !strings.Contains(string(data), "lane.reviewers.kind=codex") || !strings.Contains(out, "set panes=3") {
 			t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
 		}
 	})
@@ -318,7 +318,7 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 			t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
 		}
 	})
-	t.Run(`doctorFix: a user-set lane.critical.kind survives the fix`, func(t *testing.T) { // DJA-686: an explicit lane.critical.* key is the owner's choice; the fix keeps it
+	t.Run(`doctorFix: a user-set lane.critical.kind moves to the role`, func(t *testing.T) { // DJA-686: an explicit lane.critical.* key is the owner's choice; the fix keeps it
 		// Mutation captured: treating the critical lane as an orphan removes the user's explicit choice.
 		env, cwd := tm6CLIEnv(t)
 		conf := filepath.Join(cwd, ".agents", "soho.conf")
@@ -328,24 +328,22 @@ func TestDoctorTM6FixTargets(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if code != 0 || !strings.Contains(string(data), "lane.critical.kind=claude") || strings.Contains(out, "removed lane.critical") {
+		if code != 0 || !strings.Contains(string(data), "role.critical-implementer.kind=claude") || strings.Contains(string(data), "lane.critical.kind=") || !strings.Contains(stderr, "lane.critical.kind → role.critical-implementer.kind") {
 			t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
 		}
 	})
-	t.Run(`doctorFix: a custom critical lane (Kashes shape) stays custom with derived limits`, func(t *testing.T) { // DJA-686: lane.critical.roles makes the team custom; the preset must not touch it
+	t.Run(`doctorFix: a custom critical lane keeps its own layout and limits`, func(t *testing.T) {
 		// Mutation captured: letting the preset rewrite a custom critical lane changes a project that already runs the lane.
 		env, cwd := tm6CLIEnv(t)
 		conf := filepath.Join(cwd, ".agents", "soho.conf")
-		tm6Write(t, conf, "panes=4\nlane.build.roles=implementer,designer,tasker\nlane.critical.roles=critical-implementer\nlane.critical.panes=2\nlane.critical.kind=codex\nlane.review.roles=reviewer,security-reviewer\nmax_workers=9\nsplit_max_panes=10\n")
+		before := "panes=4\nlane.build.roles=implementer,designer,tasker\nlane.critical.roles=critical-implementer\nlane.critical.panes=2\nlane.critical.kind=codex\nlane.review.roles=reviewer,security-reviewer\nmax_workers=9\nsplit_max_panes=10\n"
+		tm6Write(t, conf, before)
 		code, out, stderr := runIn(t, []string{"doctor", "--fix", "--panes", "4"}, env, cwd)
 		data, err := os.ReadFile(conf)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(out, "set max_workers=2\n") || strings.Contains(out, "set split_max_panes=3\n") || !strings.Contains(out, "set max_workers=4\n") || !strings.Contains(out, "set split_max_panes=5\n") {
-			t.Fatalf("intermediate or missing final values: %q", out)
-		}
-		if code != 0 || !strings.Contains(string(data), "lane.critical.roles=critical-implementer") || !strings.Contains(string(data), "lane.critical.panes=2") || !strings.Contains(string(data), "lane.critical.kind=codex") || !strings.Contains(string(data), "max_workers=4") || !strings.Contains(string(data), "split_max_panes=5") {
+		if code != 0 || string(data) != before || !strings.Contains(stderr, "left the file unchanged") || strings.Contains(out, "doctor --fix: updated") {
 			t.Fatalf("code=%d out=%q stderr=%q conf=%q", code, out, stderr, data)
 		}
 	})
@@ -416,7 +414,7 @@ func TestDoctorCapacityAdviceSessionAndEnvironment(t *testing.T) {
 		file := filepath.Join(base, env.Get("HERDR_WORKSPACE_ID"), "session.conf")
 		tm6Write(t, file, "max_workers=1\nstate_dir=.other-state\n")
 		code, out, stderr := runIn(t, []string{"doctor"}, env, cwd)
-		if code != 0 || !strings.Contains(out, "set max_workers=4 in "+file) || strings.Contains(out, "soho session set max_workers") {
+		if code != 0 || !strings.Contains(out, "set max_workers=5 in "+file) || strings.Contains(out, "soho session set max_workers") {
 			t.Fatalf("code=%d out=%q stderr=%q file=%q", code, out, stderr, file)
 		}
 	})
@@ -425,10 +423,10 @@ func TestDoctorCapacityAdviceSessionAndEnvironment(t *testing.T) {
 		tm6Write(t, filepath.Join(cwd, ".agents", "soho.conf"), "panes=4\nmax_workers=1\n")
 		env["SOHO_MAX_WORKERS"] = "2"
 		code, out, stderr := runIn(t, []string{"doctor"}, env, cwd)
-		if code != 0 || !strings.Contains(out, "SOHO_MAX_WORKERS=2 overrides the files: set it to 4") || strings.Contains(out, "unset SOHO_MAX_WORKERS") {
+		if code != 0 || !strings.Contains(out, "SOHO_MAX_WORKERS=2 overrides the files: set it to 5") || strings.Contains(out, "unset SOHO_MAX_WORKERS") {
 			t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 		}
-		env["SOHO_MAX_WORKERS"] = "4"
+		env["SOHO_MAX_WORKERS"] = "5"
 		code, out, stderr = runIn(t, []string{"doctor"}, env, cwd)
 		if code != 0 || strings.Contains(out, "but the lanes hold") {
 			t.Fatalf("after code=%d out=%q stderr=%q", code, out, stderr)

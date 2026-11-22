@@ -262,11 +262,11 @@ func cmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string, cach
 	var panes, target string
 	local, hooks, guard := false, true, false
 	var proj, user, sess [][2]string
-	var laneSpecs []core.LaneSpec
+	var laneSpecs, roleSpecs []core.LaneSpec
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch a {
-		case "--panes", "--lane", "--target":
+		case "--panes", "--lane", "--role", "--target":
 			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
 				platform.DieFriction("setup --plan: "+a+" expects a value", 2)
 			}
@@ -275,6 +275,12 @@ func cmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string, cach
 				panes = args[i]
 			} else if a == "--target" {
 				target = args[i]
+			} else if a == "--role" {
+				spec, err := core.SetupRoleSpec(args[i])
+				if err != nil {
+					panic(err)
+				}
+				roleSpecs = append(roleSpecs, spec)
 			} else {
 				spec, err := core.SetupLaneSpec(args[i])
 				if err != nil {
@@ -370,7 +376,7 @@ func cmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string, cach
 		file, source string
 		pairs        [][2]string
 		touched      bool
-	}{{file: projectFile, source: projectFile, pairs: proj, touched: panes != "" || len(laneSpecs) > 0 || len(proj) > 0}, {file: userFile, source: userFile, pairs: user, touched: len(user) > 0}, {file: sessionFile, source: sessionFile, pairs: sess, touched: len(sess) > 0}}
+	}{{file: projectFile, source: projectFile, pairs: proj, touched: panes != "" || len(laneSpecs) > 0 || len(roleSpecs) > 0 || len(proj) > 0}, {file: userFile, source: userFile, pairs: user, touched: len(user) > 0}, {file: sessionFile, source: sessionFile, pairs: sess, touched: len(sess) > 0}}
 	sectionAfter := make([]string, len(sections))
 	tempNames := []string{"proj.conf", "user.conf", "session.conf"}
 	for i, section := range sections {
@@ -386,14 +392,8 @@ func cmdPlan(args []string, ctx *core.Config, env platform.Env, cwd string, cach
 			core.ApplyLaneFile(tmp, panes, env, cwd, laneSpecs...)
 		}
 		if i == 0 {
-			for _, s := range laneSpecs {
-				core.ConfigWritePair(tmp, "lane."+s.Name+".kind", s.Kind, env, cwd)
-				if s.Model != "" {
-					core.ConfigWritePair(tmp, "lane."+s.Name+".model", s.Model, env, cwd)
-				}
-				if s.Effort != "" {
-					core.ConfigWritePair(tmp, "lane."+s.Name+".effort", s.Effort, env, cwd)
-				}
+			for _, pair := range append(setupAssignmentPairs("lane", laneSpecs), setupAssignmentPairs("role", roleSpecs)...) {
+				core.ConfigWritePair(tmp, pair[0], pair[1], env, cwd)
 			}
 		}
 		for _, p := range section.pairs {

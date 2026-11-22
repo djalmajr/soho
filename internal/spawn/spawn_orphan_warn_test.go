@@ -63,7 +63,7 @@ func TestSpawnWarnsAboutIdleReleasedOrphanBeforeOpeningThePane(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !spawnJSONHasField(t, stdout, `"name": "build"`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
+	if !spawnJSONHasField(t, stdout, `"name": "worker"`) || !spawnJSONHasField(t, stdout, `"created_pane": true`) {
 		t.Fatalf("the spawn did not proceed to a new pane:\n%s", stdout)
 	}
 	want := "soho: spawn: 'build-2' is idle outside the roster (ws:p2); close it with: soho release build-2 --close\n"
@@ -92,7 +92,7 @@ func TestSpawnWarnsAboutIdleReleasedOrphanBeforeOpeningThePane(t *testing.T) {
 	}
 	// The orphan is not re-adopted: the roster holds only the new worker.
 	rows := core.RosterRows(filepath.Join(f.state, "ws"))
-	if len(rows) != 1 || !strings.HasPrefix(rows[0], "build\t") {
+	if len(rows) != 1 || !strings.HasPrefix(rows[0], "worker\t") {
 		t.Fatalf("the orphan was adopted into the roster: %#v", rows)
 	}
 }

@@ -3,12 +3,67 @@ package spawn
 import (
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
+
+func TestSpawnGroupRoleArgsOverride(t *testing.T) {
+	for _, tc := range []struct {
+		name, roleArgs, want string
+		native               []string
+	}{
+		{"group fallback", "", "--thinking minimal", nil},
+		{"role replaces group", "--thinking high", "--thinking high", nil},
+		{"trailing native flag", "--thinking high", "--thinking high --thinking low", []string{"--", "--thinking", "low"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := mcpListFixture(t)
+			f.env["SOHO_LANES"] = "on"
+			f.ctx.Entries["lane_builders_kind"] = core.ConfigEntry{Value: "pi", Source: "project"}
+			f.ctx.Entries["lane_builders_args"] = core.ConfigEntry{Value: "--thinking minimal", Source: "project"}
+			f.ctx.Entries["role_implementer_args"] = core.ConfigEntry{Value: tc.roleArgs, Source: "user"}
+			code, out, stderr, _ := runCmdSpawn(t, f, append([]string{"implementer"}, tc.native...))
+			if code != 0 {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, stderr)
+			}
+			got, want := startTail(t, f), strings.Fields(tc.want)
+			if len(got) < len(want) || !slices.Equal(got[len(got)-len(want):], want) || (tc.roleArgs != "" && slices.Contains(got, "minimal")) {
+				t.Fatalf("start argv=%q, want tail %q with only the selected scoped args", got, want)
+			}
+			t.Logf("start argv=%q", got)
+		})
+	}
+}
+
+func TestSpawnUsesMigratedCriticalArgsAndMcp(t *testing.T) {
+	f := mcpListFixture(t)
+	f.env["SOHO_LANES"] = "on"
+	conf := filepath.Join(f.cwd, ".agents", "soho.conf")
+	if err := os.MkdirAll(filepath.Dir(conf), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := "panes=4\nlane.build.kind=pi\nlane.build.args=--thinking minimal\nlane.build.mcp=inherit\nlane.critical.args=--thinking high\nlane.critical.kind=pi\nlane.critical.mcp=none\n"
+	if err := os.WriteFile(conf, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	core.ApplyLaneFile(conf, "4", f.env, f.cwd)
+	ctx := core.LoadConfig(f.env, f.cwd)
+	f.ctx = &ctx
+	code, out, stderr, _ := runCmdSpawn(t, f, []string{"critical-implementer"})
+	if code != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	got := startTail(t, f)
+	if !containsArgPair(got, "--thinking", "high") || slices.Contains(got, "minimal") || !slices.Contains(got, "--no-mcp") {
+		t.Fatalf("start argv=%q, want the migrated role's args and MCP", got)
+	}
+	t.Logf("start argv=%q", got)
+}
 
 func TestConfigNativeArgsCombinesKindAndRoleArgs(t *testing.T) {
 	stubCodexHelp(t, false)

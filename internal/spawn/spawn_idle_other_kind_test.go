@@ -87,7 +87,7 @@ func TestSpawnWarnsOnceAboutIdleOtherKindWorkerOnTheLane(t *testing.T) {
 	// The old worker is left on the lane; the roster holds it plus the new
 	// worker.
 	rows := core.RosterRows(filepath.Join(f.state, "ws"))
-	if len(rows) != 2 || !strings.HasPrefix(rows[0], "oldgrok\t") || !strings.HasPrefix(rows[1], "build\t") {
+	if len(rows) != 2 || !strings.HasPrefix(rows[0], "oldgrok\t") || !strings.HasPrefix(rows[1], "worker\t") {
 		t.Fatalf("the roster lost the old worker: %#v", rows)
 	}
 }

@@ -989,8 +989,8 @@ func TestRetirementDispatchContract(t *testing.T) {
 				{Argv: []string{"tab", "get", "t-herd"}, Stdout: `{"result":{"tab":{"tab_id":"t-herd","label":"herd"},"root_pane":{"pane_id":"p-root"}}}`},
 				{Argv: []string{"agent", "start"}, ArgvPrefix: true, Stdout: `{"result":{"started":true}}`},
 				{Argv: []string{"agent", "rename"}, ArgvPrefix: true, Stdout: `{"result":{}}`},
-				retireAgentGetRule("build", "idle"),
-				retireScreenRule("build", "terminal-fallback"),
+				retireAgentGetRule("implementer", "idle"),
+				retireScreenRule("implementer", "terminal-fallback"),
 			},
 			stepEnv: []map[string]string{{"SOHO_LAYOUT": "tab"}},
 			seed: func(f *retirementFixture) {
@@ -1002,7 +1002,7 @@ func TestRetirementDispatchContract(t *testing.T) {
 					f.t.Fatal(err)
 				}
 			},
-			role: "implementer", agent: "build", brief: retireFullBrief,
+			role: "implementer", agent: "implementer", brief: retireFullBrief,
 			extra: func(t *testing.T, f *retirementFixture, stepOuts []string, final map[string]string) {
 				out := stepOuts[0]
 				at := strings.Index(out, `{"wait_status":`)
@@ -1015,7 +1015,7 @@ func TestRetirementDispatchContract(t *testing.T) {
 				if err := json.Unmarshal([]byte(first), &spawn); err != nil {
 					t.Fatalf("spawn JSON: %v: %q", err, first)
 				}
-				if spawn["name"] != "build" || spawn["placement"] != "herd" {
+				if spawn["name"] != "implementer" || spawn["placement"] != "herd" {
 					t.Fatalf("spawn name/placement: %v / %v", spawn["name"], spawn["placement"])
 				}
 			},
@@ -1068,15 +1068,15 @@ func runRetirementRunWait(t *testing.T) {
 		{Argv: []string{"tab", "get", "t-herd"}, Stdout: `{"result":{"tab":{"tab_id":"t-herd","label":"herd"},"root_pane":{"pane_id":"p-root"}}}`},
 		{Argv: []string{"agent", "start"}, ArgvPrefix: true, Stdout: `{"result":{"started":true}}`},
 		{Argv: []string{"agent", "rename"}, ArgvPrefix: true, Stdout: `{"result":{}}`},
-		{Argv: []string{"agent", "get", "build"}, Stdout: `{"result":{"agent":{"name":"build","agent_status":"idle"}}}`},
-		{Argv: []string{"agent", "read", "build"}, ArgvPrefix: true, Stdout: "terminal-fallback"},
-		{Argv: []string{"agent", "prompt", "build"}, ArgvPrefix: true, WaitFile: marker, Stdout: `{"result":{"submitted":true}}`},
+		{Argv: []string{"agent", "get", "implementer"}, Stdout: `{"result":{"agent":{"name":"implementer","agent_status":"idle"}}}`},
+		{Argv: []string{"agent", "read", "implementer"}, ArgvPrefix: true, Stdout: "terminal-fallback"},
+		{Argv: []string{"agent", "prompt", "implementer"}, ArgvPrefix: true, WaitFile: marker, Stdout: `{"result":{"submitted":true}}`},
 		{Argv: []string{"pane", "report-metadata"}, ArgvPrefix: true, Stdout: ``},
 	}
 	sc := retireDispatchCase{
 		rules:   rules,
 		role:    "implementer",
-		agent:   "build",
+		agent:   "implementer",
 		brief:   retireFullBrief,
 		sidecar: [3]string{"grok", "grok", "xhigh"},
 		stepEnv: []map[string]string{{"SOHO_LAYOUT": "tab"}},

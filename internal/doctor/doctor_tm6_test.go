@@ -9,7 +9,6 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
-	"github.com/djalmajr/soho/internal/spawn"
 	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
@@ -104,7 +103,7 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 			values map[string]string
 			want   string
 		}{
-			{map[string]string{"panes": "2"}, "pane_mode=strict (never more than 2 panels)"},
+			{map[string]string{"panes": "2"}, "pane_mode=strict (2 panels before on-demand work)"},
 			{map[string]string{"panes": "3", "pane_mode": "flex", "flex_roles": "documenter"}, "pane_mode=flex (+1 temporary panel for documenter)"},
 			{map[string]string{"pane_mode": "bad"}, "pane_mode='bad' is not strict|flex"},
 		} {
@@ -124,17 +123,17 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 		}{
 			{map[string]string{"panes": "4", "pane_mode": "flex", "split_max_panes": "4"}, "leaves no room for the whole team"},
 			{map[string]string{"panes": "4", "pane_mode": "flex", "split_max_panes": "5"}, "leaves no room for the whole team"},
-			{map[string]string{"panes": "4", "pane_mode": "flex", "split_max_panes": "6"}, "no split cap diagnostic"},
-			{map[string]string{"panes": "4", "pane_mode": "flex", "split_max_panes": "7"}, "greater than 1 + max_workers=5"},
-			{map[string]string{"panes": "4", "split_max_panes": "5"}, ""},
-			{map[string]string{"panes": "4", "split_max_panes": "6"}, "greater than 1 + max_workers=4"},
+			{map[string]string{"panes": "4", "pane_mode": "flex", "split_max_panes": "7"}, "no split cap diagnostic"},
+			{map[string]string{"panes": "4", "pane_mode": "flex", "split_max_panes": "8"}, "greater than 1 + max_workers=6"},
+			{map[string]string{"panes": "4", "split_max_panes": "6"}, ""},
+			{map[string]string{"panes": "4", "split_max_panes": "7"}, "greater than 1 + max_workers=5"},
 		} {
 			var out strings.Builder
 			doctorLaneWarnings(tm6DoctorConfig(tc.values, "project"), env, root, &Say{Out: &out})
 			if tc.want != "" && tc.want != "no split cap diagnostic" && !strings.Contains(out.String(), tc.want) {
 				t.Fatalf("missing %q in %s", tc.want, out.String())
 			}
-			if tc.want == "no split cap diagnostic" && strings.Contains(out.String(), "split_max_panes=6") {
+			if tc.want == "no split cap diagnostic" && strings.Contains(out.String(), "split_max_panes=7") {
 				t.Fatalf("unexpected exact-cap warning: %s", out.String())
 			}
 			if tc.want == "" && strings.Contains(out.String(), "leaves no room") {
@@ -167,8 +166,8 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 	t.Run(`doctorLaneWarnings: a group effort from a lower layer still applies`, func(t *testing.T) { // JS: "doctorLaneWarnings: a group effort from a lower layer still applies"
 		// Group effort and kind use independent keys.
 		env, root := tm6DoctorEnv(t)
-		ctx := tm6DoctorConfig(map[string]string{"panes": "3", "lane_review_kind": "codex", "lane_review_effort": "low"}, "project")
-		ctx.Entries["lane_review_effort"] = core.ConfigEntry{Value: "low", Source: "user"}
+		ctx := tm6DoctorConfig(map[string]string{"panes": "3", "lane_reviewers_kind": "codex", "lane_reviewers_effort": "low"}, "project")
+		ctx.Entries["lane_reviewers_effort"] = core.ConfigEntry{Value: "low", Source: "user"}
 		var out strings.Builder
 		doctorLaneWarnings(ctx, env, root, &Say{Out: &out})
 		if got := core.ResolveRoleSettings("reviewer", ctx, env, root, core.RoleFlags{}); got.Effort != "low" || strings.Contains(out.String(), "ignored lane effort") {
@@ -324,21 +323,13 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 			t.Fatalf("legacy signature not detected: %s", out.String())
 		}
 	})
-	t.Run(`doctor: the native args the current lane mode ignores (lanes on: role args; lanes off: lane args)`, func(t *testing.T) { // JS: "doctor: the native args the current lane mode ignores (lanes on: role args; lanes off: lane args)"
-		// Mutation captured: removing either branch leaves ignored native args unreported.
-		env, root := tm6DoctorEnv(t)
-		for _, tc := range []struct {
-			values map[string]string
-			want   string
-		}{
-			{map[string]string{"role_reviewer_args": "--flag"}, "role.reviewer.args is ignored"},
-			{map[string]string{"lanes": "off", "lane_review_args": "--flag"}, "lane.review.args is ignored"},
-		} {
-			var out strings.Builder
-			doctorLaneArgs(tm6DoctorConfig(tc.values, "project"), env, root, &Say{Out: &out})
-			if !strings.Contains(out.String(), tc.want) {
-				t.Fatalf("missing %q in %s", tc.want, out.String())
-			}
+	t.Run("doctor: lane args are ignored with lanes off", func(t *testing.T) {
+		env, _ := tm6DoctorEnv(t)
+		ctx := tm6DoctorConfig(map[string]string{"lanes": "off", "lane_review_args": "--flag"}, "project")
+		var out strings.Builder
+		doctorLaneArgs(ctx, env, &Say{Out: &out})
+		if !strings.Contains(out.String(), "lane.review.args is ignored") {
+			t.Fatalf("output=%s", out.String())
 		}
 	})
 	t.Run(`doctorFeedbackWarnings: feedback=local warns on an empty or missing feedback_dir; nothing otherwise`, func(t *testing.T) { // JS: "doctorFeedbackWarnings: feedback=local warns on an empty or missing feedback_dir; nothing otherwise"
@@ -379,7 +370,7 @@ func TestDoctorTM6LaneWarnings(t *testing.T) {
 		if got := usedKinds(ctx, env, root); len(got) != 0 {
 			t.Fatalf("planner contributed kinds: %v", got)
 		}
-		ctx = tm6DoctorConfig(map[string]string{"panes": "2", "lane_build_kind": "grok"}, "project")
+		ctx = tm6DoctorConfig(map[string]string{"panes": "2", "lane_builders_kind": "grok", "lane_planners_kind": "grok"}, "project")
 		if got := usedKinds(ctx, env, root); len(got) != 1 || got[0] != "grok" {
 			t.Fatalf("lane kind wins: %v", got)
 		}
@@ -600,29 +591,26 @@ func TestDoctorReportsGroupedFrontmatterModelDiscard(t *testing.T) {
 	}
 }
 
-func TestDoctorRecommendsLaneArgsOnlyWhenRoleKindMatches(t *testing.T) {
+func TestDoctorReportsRoleArgsOverride(t *testing.T) {
 	for _, tc := range []struct {
-		name, laneKind, wantArgs string
+		name, groupArgs string
+		want            int
 	}{
-		{"matching", "grok", "--scope-probe"},
-		{"different", "pi", ""},
-		{"unset_lane_kind", "", ""},
+		{"group and role args", "--group", 1},
+		{"role args only", "", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, root := tm6DoctorEnv(t)
 			env["XDG_CONFIG_HOME"] = env["HOME"]
 			ctx := tm6DoctorConfig(map[string]string{
-				"lanes": "on", "lane_build_roles": "implementer", "lane_build_kind": tc.laneKind,
-				"role_implementer_kind": "grok", "role_implementer_args": "--scope-probe",
+				"lanes": "on", "lane_build_roles": "implementer", "lane_build_kind": "grok",
+				"lane_build_args": tc.groupArgs,
 			}, "project")
+			ctx.Entries["role_implementer_args"] = core.ConfigEntry{Value: "--role\x1b[0m", Source: "user"}
 			out := tm6DoctorOutput(t, ctx, env, root)
-			if !strings.Contains(out, "role.implementer.args is ignored") || strings.Contains(out, "set lane.build.args instead") != (tc.wantArgs != "") {
-				t.Fatalf("unexpected advice for lane kind %q:\n%s", tc.laneKind, out)
-			}
-			ctx.Entries["lane_build_args"] = core.ConfigEntry{Value: "--scope-probe", Source: "project"}
-			res := core.ResolveRoleSettings("implementer", ctx, env, root, core.RoleFlags{})
-			if got := spawn.ConfigNativeArgs(res.Kind, res.Lane, "implementer", ctx, env, root, nil); got != tc.wantArgs {
-				t.Fatalf("effective kind=%q, lane kind=%q: args=%q, want %q", res.Kind, tc.laneKind, got, tc.wantArgs)
+			want := `doctor: role.implementer.args=--role\x1b[0m (user) overrides lane.build.args=--group (project)`
+			if strings.Count(out, want) != tc.want || strings.Contains(out, "role.implementer.args is ignored") || strings.Contains(out, "\x1b") {
+				t.Fatalf("unexpected args advice:\n%s", out)
 			}
 		})
 	}

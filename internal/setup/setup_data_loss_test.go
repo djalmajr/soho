@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/setuptext"
 )
 
@@ -502,6 +503,61 @@ func TestSetupStandaloneLane(t *testing.T) {
 			t.Fatalf("code=%d out=%q msg=%q", code, out, msg)
 		}
 	})
+}
+
+func TestSetupStandaloneRole(t *testing.T) {
+	root, env, ctx := codexSetupFixture(t)
+	code, out, msg := runSetupWrite([]string{"--target", "AGENTS.md", "--role", "critical-implementer=codex:gpt-5:high", "--no-hooks"}, ctx, env, root)
+	if code != 0 {
+		t.Fatalf("code=%d out=%q msg=%q", code, out, msg)
+	}
+	conf := mustReadFile(t, filepath.Join(root, ".agents", "soho.conf"))
+	for _, want := range []string{"role.critical-implementer.kind=codex", "role.critical-implementer.model=gpt-5", "role.critical-implementer.effort=high"} {
+		if !strings.Contains(conf, want+"\n") || !strings.Contains(out, "set "+want) {
+			t.Errorf("missing %q: file=%q out=%q", want, conf, out)
+		}
+	}
+}
+
+func TestSetupRolePreviewsAndValidates(t *testing.T) {
+	for _, mode := range []string{"--dry-run", "--plan", "--local"} {
+		t.Run(mode, func(t *testing.T) {
+			root, env, ctx := codexSetupFixture(t)
+			args := []string{mode, "--panes", "3", "--role", "critical-implementer=codex:gpt-5:high", "--no-hooks"}
+			code, out, msg := runSetupWrite(args, ctx, env, root)
+			if code != 0 {
+				t.Fatalf("exit=%d out=%q msg=%q", code, out, msg)
+			}
+			conf := filepath.Join(root, ".agents", "soho.conf")
+			switch mode {
+			case "--dry-run":
+				if !strings.Contains(out, "# would apply --role critical-implementer=codex:gpt-5:high") {
+					t.Fatalf("dry-run output=%q", out)
+				}
+			case "--plan":
+				if !strings.Contains(out, "role.critical-implementer.kind") || !strings.Contains(out, "gpt-5") {
+					t.Fatalf("plan output=%q", out)
+				}
+			case "--local":
+				if got := core.FileKeyValue(conf, "role.critical-implementer.effort"); got != "high" {
+					t.Fatalf("local role effort=%q", got)
+				}
+			}
+			if mode != "--local" {
+				if _, err := os.Stat(conf); !os.IsNotExist(err) {
+					t.Fatalf("preview changed config: %v", err)
+				}
+			}
+		})
+	}
+	root, env, ctx := codexSetupFixture(t)
+	code, out, msg := runSetupWrite([]string{"--target", "AGENTS.md", "--panes", "3", "--role", "critical-implementer=codex:gpt-5:bogus", "--no-hooks"}, ctx, env, root)
+	if code != 2 || out != "" || !strings.Contains(msg, "invalid effort 'bogus'") {
+		t.Fatalf("invalid role: exit=%d out=%q msg=%q", code, out, msg)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".agents", "soho.conf")); !os.IsNotExist(err) {
+		t.Fatalf("invalid role wrote a config file: %v", err)
+	}
 }
 
 // DJA-701 decision 6: a refusal that is only known after the migrations
