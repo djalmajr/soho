@@ -124,7 +124,7 @@ func TestSpawnWarnsOnlyForAffectedPresetGroupSettings(t *testing.T) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "soho.conf"), []byte("lane.build.kind=pi\nlane.review.kind=claude\nlane.critical.args=\x1b[0m\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "soho.conf"), []byte("panes=4\nlane.build.kind=pi\nlane.review.kind=claude\nlane.critical.args=\x1b[0m\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ctx := core.LoadConfig(f.env, f.cwd)
@@ -290,5 +290,28 @@ func TestSpawnCardAdmissionOnlyStaysSilent(t *testing.T) {
 	PreflightFreshSpawn([]string{"implementer", "--name", "build"}, f.ctx, f.env, f.cwd)
 	if errOut.Len() != 0 || out.Len() != 0 {
 		t.Fatalf("admission-only out=%q stderr=%q", out.String(), errOut.String())
+	}
+}
+
+func TestSpawnReportsActivePredecessorGroupSetting(t *testing.T) {
+	f := cardSpawnFixture(t, "")
+	f.env["SOHO_LANES"] = "on"
+	root := filepath.Join(f.cwd, ".agents")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	input := "panes=4\nlane.build.kind=grok\n" +
+		"lane.build.roles=implementer,designer,tasker,scouter,researcher,documenter,tester\n" +
+		"lane.critical.roles=critical-implementer\n" +
+		"lane.review.roles=reviewer,security-reviewer,ui-reviewer,inspector,validator\n"
+	if err := os.WriteFile(filepath.Join(root, "soho.conf"), []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := core.LoadConfig(f.env, f.cwd)
+	f.ctx = &ctx
+	code, stdout, stderr, _ := runCmdSpawn(t, f, []string{"implementer"})
+	if code != 0 || !strings.Contains(stderr, "lane.build.kind still applies") ||
+		!strings.Contains(stderr, "'soho doctor --fix' moves it to lane.builders.kind.") || !spawnJSONHasField(t, stdout, `"kind": "grok"`) {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }

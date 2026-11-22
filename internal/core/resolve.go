@@ -63,11 +63,15 @@ func roleSetting(role, attr string, ctx *Config, env platform.Env) (string, stri
 }
 
 func ResolveRoleSettings(role string, ctx *Config, env platform.Env, cwd string, flags RoleFlags) RoleSettings {
-	file := RoleFile(role, env, cwd)
 	lane := ""
 	if LanesEnabled(ctx, env) {
 		lane = LaneOfRole(ctx, role, env)
 	}
+	return resolveRoleSettingsInLane(role, lane, ctx, env, cwd, flags)
+}
+
+func resolveRoleSettingsInLane(role, lane string, ctx *Config, env platform.Env, cwd string, flags RoleFlags) RoleSettings {
+	file := RoleFile(role, env, cwd)
 	r := RoleSettings{Lane: lane, Kind: flags.Kind, KindFrom: "flag", ModelSpec: flags.Model, ModelFrom: "flag", Effort: flags.Effort, EffortFrom: "flag", Approvals: flags.Approvals, ApprovalsFrom: "flag"}
 	if r.Kind == "" {
 		r.Kind, r.KindFrom = roleOrLaneSetting(role, lane, "kind", ctx, env)
