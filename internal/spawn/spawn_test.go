@@ -192,14 +192,26 @@ func TestGroupModelAndKindUseIndependentLayers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, ".agents", "soho.conf"), []byte(project), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	configDir := filepath.Join(home, ".config", "soho")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
+	// The user layer must be the test's own directory on every OS. The
+	// resolver honours XDG_CONFIG_HOME everywhere, then USERPROFILE/HOME or
+	// APPDATA, so set the isolated home variables too and write the file at
+	// the path the resolver actually reads instead of a hard-coded Unix path.
+	env := platform.Env{
+		"HOME":            home,
+		"USERPROFILE":     home,
+		"XDG_CONFIG_HOME": filepath.Join(home, "config"),
+		"SOHO_SKILL_DIR":  skill,
+	}
+	userConfig := platform.UserConfigPath(platform.Current(), env)
+	if !strings.HasPrefix(userConfig, home+string(os.PathSeparator)) {
+		t.Fatalf("user config %q escaped the isolated home %q", userConfig, home)
+	}
+	if err := os.MkdirAll(filepath.Dir(userConfig), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(configDir, "config"), []byte("lane.build.model=lower-model\n"), 0o600); err != nil {
+	if err := os.WriteFile(userConfig, []byte("lane.build.model=lower-model\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	env := platform.Env{"HOME": home, "SOHO_SKILL_DIR": skill}
 	ctx := core.LoadConfig(env, repo)
 	resolved := core.ResolveRoleSettings("worker", &ctx, env, repo, core.RoleFlags{})
 	if resolved.Kind != "pi" || resolved.ModelSpec != "lower-model" {
