@@ -21,8 +21,8 @@ func TestInheritPreviousLintHintOption(t *testing.T) {
 	if len(defaultResult.Warnings) != 1 || defaultResult.Warnings[0] != wantDefault {
 		t.Fatalf("dispatch warning=%q; want %q", defaultResult.Warnings, wantDefault)
 	}
-	hintResult := BriefLintFindings(file, &core.Config{}, platform.Env{}, BriefLintOptions{LintInheritHintPath: "with\nnewline.md"})
-	wantHint := "brief with\\nnewline.md inherits Owned files from the worker's previous task; lint cannot check that without the worker: soho lint with\\nnewline.md --agent <name> (dispatch checks it)"
+	hintResult := BriefLintFindings(file, &core.Config{}, platform.Env{}, BriefLintOptions{LintInheritHintPath: "'brief.md'"})
+	wantHint := "brief 'brief.md' inherits Owned files from the worker's previous task; lint cannot check that without the worker: soho lint 'brief.md' --agent <name> (dispatch checks it)"
 	if len(hintResult.Warnings) != 1 || hintResult.Warnings[0] != wantHint {
 		t.Fatalf("lint hint warning=%q; want %q", hintResult.Warnings, wantHint)
 	}
