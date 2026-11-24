@@ -282,8 +282,102 @@ func TestReadOnlyGitignoreStateRecovery(t *testing.T) {
 		t.Fatalf("status SOHO_DIR=%q code=%d stdout=%q stderr=%q", env["SOHO_DIR"], code, out, stderr)
 	}
 	code, out, stderr = runIn(t, []string{"doctor"}, env, repo)
-	if code != 0 || !strings.Contains(out, "warn   state ignore update failed:") || !strings.Contains(out, ignore) || !strings.Contains(out, "first_run:") || !strings.Contains(out, "state dir writable: "+state) {
+	if code != 0 || strings.Contains(out, "warn   state ignore update failed:") || !strings.Contains(out, "first_run:") || !strings.Contains(out, "state dir writable: "+state) {
 		t.Fatalf("doctor SOHO_DIR=%q code=%d stdout=%q stderr=%q", env["SOHO_DIR"], code, out, stderr)
+	}
+	data, err := os.ReadFile(ignore)
+	if err != nil || string(data) != "# fixture\n" {
+		t.Fatalf("doctor changed .gitignore: %q err=%v", data, err)
+	}
+}
+
+func doctorAgentEnv(t *testing.T, base platform.Env, bin string) platform.Env {
+	t.Helper()
+	env := platform.Env{}
+	for _, item := range fakecli.Env(base.List(), bin, fakecli.EnvOptions{IncludeBasePath: true}) {
+		if key, value, ok := strings.Cut(item, "="); ok {
+			env[key] = value
+		}
+	}
+	return env
+}
+
+func writeDoctorWorkspaceState(t *testing.T, repo, roster string, released ...string) {
+	t.Helper()
+	state := filepath.Join(repo, "state", "ws")
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "agents.tsv"), []byte(roster), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rows := "# name\tpane\tkind\treleased\n"
+	if len(released) > 0 {
+		rows += strings.Join(released, "\n") + "\n"
+	}
+	if err := os.WriteFile(filepath.Join(state, "released-panes.tsv"), []byte(rows), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDoctorLegacyWorkspaceDoesNotWriteIgnore(t *testing.T) {
+	env, repo := commandFixture(t)
+	bin := t.TempDir()
+	rules := []fakecli.Rule{
+		{Argv: []string{"--version"}, Stdout: "herdr 1.2.3\n"},
+		{Argv: []string{"status", "server"}, Stdout: "server 1.2.3\n"},
+		{Argv: []string{"pane", "get", "ws:p1"}, Stdout: `{"result":{"pane":{"pane_id":"ws:p1","workspace_id":"ws"}}}`},
+		{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"review-3","pane_id":"ws:p2","agent_status":"idle"}]}}`},
+		{Argv: []string{"pane", "list", "--workspace", "ws"}, Stdout: `{"result":{"panes":[{"pane_id":"ws:p1"},{"pane_id":"ws:p2"}]}}`},
+	}
+	if _, err := fakecli.Install(t, bin, "herdr", rules); err != nil {
+		t.Fatal(err)
+	}
+	env = doctorAgentEnv(t, env, bin)
+	env["SOHO_DIR"] = filepath.Join(repo, "state")
+	env["HERDR_ENV"] = "1"
+	env["HERDR_WORKSPACE_ID"] = "ws"
+	env["HERDR_PANE_ID"] = "ws:p1"
+	writeDoctorWorkspaceState(t, repo, "orchestrator\tws:p1\tclaude\torchestrator\n", "review-3\tws:p2\tgrok\tnow")
+
+	code, out, stderr := runIn(t, []string{"doctor"}, env, repo)
+	if code != 0 || !strings.Contains(out, "orphan pane: 'review-3'") || !strings.Contains(out, "first_run:") {
+		t.Fatalf("legacy doctor code=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".gitignore")); !os.IsNotExist(err) {
+		t.Fatalf("legacy doctor wrote .gitignore: %v", err)
+	}
+}
+
+func TestDoctorHcWorkspaceDoesNotWriteIgnore(t *testing.T) {
+	env, repo := commandFixture(t)
+	bin := t.TempDir()
+	listing := `{"terminals":[{"address":"t2","name":"child-assistant","state":"live","parent":"t1","labels":{"soho.session":"ws"},"status":{"state":"idle","app":"claude-code"}}]}`
+	if _, err := fakecli.Install(t, bin, "hc", []fakecli.Rule{
+		{Argv: []string{"--version", "--json"}, Stdout: "hc 0.1.22\n"},
+		{Argv: []string{"get", "t1", "--json"}, Stdout: `{"address":"t1","state":"live","labels":{"soho.session":"ws"}}`},
+		{Argv: []string{"ls", "--json"}, Stdout: listing},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	env = doctorAgentEnv(t, env, bin)
+	env["SOHO_DIR"] = filepath.Join(repo, "state")
+	env["SOHO_TRANSPORT"] = "hc"
+	env["HC_TERMINAL_ID"] = "t1"
+	writeDoctorWorkspaceState(t, repo, "rostered\tt6\tclaude\timplementer\n", "child-assistant\tt2\tcodex\tnow")
+	ignore := filepath.Join(repo, ".gitignore")
+	original := []byte("# existing\n")
+	if err := os.WriteFile(ignore, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out, stderr := runIn(t, []string{"doctor"}, env, repo)
+	if code != 0 || !strings.Contains(out, "orphan terminal: 'child-assistant'") || !strings.Contains(out, "first_run:") {
+		t.Fatalf("hc doctor code=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	data, err := os.ReadFile(ignore)
+	if err != nil || string(data) != string(original) {
+		t.Fatalf("hc doctor changed .gitignore: %q err=%v", data, err)
 	}
 }
 
