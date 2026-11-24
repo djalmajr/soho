@@ -23,15 +23,20 @@ const ProbePrompt = "Reply with exactly ok"
 const timeoutRetryHint = " (a timeout does not prove the assistant is unavailable; retry with --timeout 90)"
 
 // probeKindDefaultTimeout is the window a kind probes with when neither
-// --timeout nor SOHO_PROBE_TIMEOUT is set: codex gets 60 s (its
-// Windows cold start timed out at the 20 s window, a false negative), every
-// other kind stays at 20 s.
+// --timeout nor SOHO_PROBE_TIMEOUT is set: codex and agy get 60 s (codex's
+// Windows cold start and a reported agy setup probe exhausted the 20 s
+// window while the same model subsequently started), every other kind stays
+// at 20 s. The agy duration is reported, not measured here.
 func probeKindDefaultTimeout(kind string) int {
-	if kind == "codex" {
+	if kind == "codex" || kind == "agy" {
 		return 60
 	}
 	return 20
 }
+
+// probeRunCLI is the bounded command runner used by the probe. Tests replace
+// it to record the effective timeout without waiting for a real CLI.
+var probeRunCLI = platform.RunCli
 
 var noAuthRE = regexp.MustCompile(`(?i)not logged in|not (yet )?authenticated|please (log|sign) ?in|log ?in (to|first)|unauthorized|unauthenticated|(missing|no|invalid) (api )?key|api key (is )?(missing|required)|authentication (failed|required|error)|access denied|no (valid )?credentials`)
 
@@ -80,7 +85,7 @@ func probeOne(ctx *core.Config, k, m, source string, timeout int, env platform.E
 	if _, ok := platform.FindExecutable(exe, env, platform.Current()); !ok {
 		return Probe{k, m, "error", "not installed", source}
 	}
-	r := platform.RunCli(exe, probeArgs(k, m), platform.RunOptions{Env: env, Cwd: cwd, TimeoutMs: timeout * 1000, OutputFiles: true})
+	r := probeRunCLI(exe, probeArgs(k, m), platform.RunOptions{Env: env, Cwd: cwd, TimeoutMs: timeout * 1000, OutputFiles: true})
 	combined := r.Stdout + r.Stderr
 	if r.TimedOut || (r.Status == nil && r.Signal != "") {
 		return Probe{k, m, "error", fmt.Sprintf("timeout after %ds%s", timeout, timeoutRetryHint), source}

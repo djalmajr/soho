@@ -206,7 +206,7 @@ Traps seen when a generic kind runs a reasoning model served by your own OpenAI-
 
 ## Probing a kind (`setup --probe`)
 
-`setup --probe [--kind K --model M] [--timeout SECONDS]` answers "is this kind/model actually usable right now?" with one tiny non-interactive prompt per kind/model — no pane, no Herdr, no TTY, short timeout (`SOHO_PROBE_TIMEOUT` or `--timeout`, whole seconds ≥ 1, default 20 s; 0 is a usage error). Flags confirmed with each CLI's `--help` on 2026-09-23:
+`setup --probe [--kind K --model M] [--timeout SECONDS]` answers "is this kind/model actually usable right now?" with one tiny non-interactive prompt per kind/model — no pane, no Herdr, no TTY, short timeout (`SOHO_PROBE_TIMEOUT` or `--timeout`, whole seconds ≥ 1, default 20 s; codex and agy default to 60 s; 0 is a usage error). Flags confirmed with each CLI's `--help` on 2026-09-23:
 
 | Kind | Probe command | Notes |
 |---|---|---|

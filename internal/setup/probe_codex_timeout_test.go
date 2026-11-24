@@ -12,19 +12,64 @@ import (
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
-// D8 (infra, Windows): `setup --probe --kind codex` timed out at the 20 s
-// default (a false negative; --timeout 60 gave ready). Without --timeout nor
-// SOHO_PROBE_TIMEOUT the codex default is now 60 s (every other kind
-// keeps 20 s), and a timeout cause carries the fixed retry hint.
+func TestProbeAgyEffectiveTimeoutAndOverrides(t *testing.T) {
+	bin := t.TempDir()
+	if _, err := fakecli.Install(t, bin, "agy", []fakecli.Rule{{AnyArgs: true}}); err != nil {
+		t.Fatal(err)
+	}
+	env := fakeEnv(t, bin)
+	env["SOHO_SKILL_DIR"] = filepath.Join("..", "..", "skills", "soho")
+	delete(env, "SOHO_PROBE_TIMEOUT")
+	ctx := &core.Config{Entries: map[string]core.ConfigEntry{}, Order: []string{}}
+	oldOut := platform.Stdout
+	var out bytes.Buffer
+	platform.Stdout = &out
+	t.Cleanup(func() { platform.Stdout = oldOut })
+
+	var timeouts []int
+	saved := probeRunCLI
+	probeRunCLI = func(_ string, _ []string, opts platform.RunOptions) platform.RunResult {
+		timeouts = append(timeouts, opts.TimeoutMs)
+		status := 0
+		return platform.RunResult{Status: &status, Stdout: "ok\n"}
+	}
+	t.Cleanup(func() { probeRunCLI = saved })
+
+	assertWindow := func(from int, want int, label string) {
+		t.Helper()
+		if len(timeouts) <= from {
+			t.Fatalf("%s: no probe recorded: %v", label, timeouts)
+		}
+		for _, got := range timeouts[from:] {
+			if got != want {
+				t.Fatalf("%s: timeouts=%v, want %d ms from index %d", label, timeouts, want, from)
+			}
+		}
+	}
+	CmdProbe([]string{"--kind", "agy"}, ctx, env, t.TempDir())
+	assertWindow(0, 60000, "agy default")
+	env["SOHO_PROBE_TIMEOUT"] = "7"
+	before := len(timeouts)
+	CmdProbe([]string{"--kind", "agy"}, ctx, env, t.TempDir())
+	assertWindow(before, 7000, "env override")
+	before = len(timeouts)
+	CmdProbe([]string{"--kind", "agy", "--timeout", "9"}, ctx, env, t.TempDir())
+	assertWindow(before, 9000, "flag override")
+}
+
+// A 20-second timeout on the Codex probe was followed by a ready result at
+// 60 seconds. Pin the extended defaults and the timeout retry hint.
 func TestProbeCodexTimeout(t *testing.T) {
 	const wantCause = "timeout after 1s (a timeout does not prove the assistant is unavailable; retry with --timeout 90)"
-	t.Run("probe_codex_timeout_defaults_are_60s_codex_20s_rest", func(t *testing.T) {
-		// Mutation captured: a single 20 s default (or a codex 20 s) fails
+	t.Run("probe_codex_timeout_defaults_are_60s_codex_and_agy_20s_rest", func(t *testing.T) {
+		// Mutation captured: a single 20 s default (or a codex/agy 20 s) fails
 		// here; the per-kind default lives in probeKindDefaultTimeout.
-		if n := probeKindDefaultTimeout("codex"); n != 60 {
-			t.Fatalf("codex default=%d, want 60", n)
+		for _, kind := range []string{"codex", "agy"} {
+			if n := probeKindDefaultTimeout(kind); n != 60 {
+				t.Fatalf("%s default=%d, want 60", kind, n)
+			}
 		}
-		for _, kind := range []string{"claude", "grok", "agy", "gemini", "cursor", "pi", "opencode"} {
+		for _, kind := range []string{"claude", "grok", "gemini", "cursor", "pi", "opencode"} {
 			if n := probeKindDefaultTimeout(kind); n != 20 {
 				t.Fatalf("%s default=%d, want 20", kind, n)
 			}

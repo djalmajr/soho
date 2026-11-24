@@ -26,11 +26,13 @@ func TestSetupProbeJavaScriptCases(t *testing.T) {
 		name string
 		run  func(*testing.T)
 	}{
-		{"probeTimeout: the defaults are 60 s for codex and 20 s for the rest", func(t *testing.T) {
-			if n := probeKindDefaultTimeout("codex"); n != 60 {
-				t.Fatalf("codex default=%d, want 60", n)
+		{"probeTimeout: codex and agy get 60 s, other kinds get 20 s", func(t *testing.T) {
+			for _, kind := range []string{"codex", "agy"} {
+				if n := probeKindDefaultTimeout(kind); n != 60 {
+					t.Fatalf("%s default=%d, want 60", kind, n)
+				}
 			}
-			for _, kind := range []string{"claude", "grok", "agy", "gemini", "cursor", "pi", "opencode"} {
+			for _, kind := range []string{"claude", "grok", "gemini", "cursor", "pi", "opencode"} {
 				if n := probeKindDefaultTimeout(kind); n != 20 {
 					t.Fatalf("%s default=%d, want 20", kind, n)
 				}
