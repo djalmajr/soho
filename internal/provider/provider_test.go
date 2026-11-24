@@ -880,3 +880,49 @@ func TestRetryLineErrorTailNeedsCounterOrDeadline(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderDetectResponseStoppedArriving(t *testing.T) {
+	const phrase = "The response stopped arriving"
+	positive := []struct {
+		name, state, screen, cause string
+	}{
+		{"settled api error with neutral tail", "idle", "API Error: " + phrase + ". Please try again.\n❯\n", "API Error: " + phrase + ". Please try again."},
+		{"settled error glyph", "idle", "■ Error: " + phrase + "\n", "Error: " + phrase},
+		{"Claude screen", "idle", "● API Error: " + phrase + ". The response above may be incomplete.\n❯\n", "API Error: " + phrase + ". The response above may be incomplete."},
+		{"redacted cause", "idle", "API Error: " + phrase + " token=sk_live_fakekey000\n", "API Error: " + phrase + " token=[redacted]"},
+	}
+	for _, c := range positive {
+		t.Run(c.name, func(t *testing.T) {
+			got := ProviderDetect(c.state, c.screen)
+			if got == nil || got.Status != "provider-error" || got.Auth || got.Cause != c.cause {
+				t.Errorf("ProviderDetect(%q, %q) = %#v, want provider-error cause %q", c.state, c.screen, got, c.cause)
+			}
+		})
+	}
+
+	if got := ProviderDetect("idle", "Error: "+phrase+"; 529 at capacity"); got == nil || got.Status != "capacity" {
+		t.Errorf("capacity precedence = %#v", got)
+	}
+	if got := ProviderDetect("idle", "Error: "+phrase+" 401"); got == nil || got.Status != "provider-error" || !got.Auth {
+		t.Errorf("auth precedence = %#v", got)
+	}
+
+	negative := []struct {
+		name, state, screen string
+	}{
+		{"working", "working", "API Error: " + phrase + ". Please try again.\n"},
+		{"active retry on the same line", "idle", "API Error: " + phrase + ". Retrying in 5 seconds\n"},
+		{"quoted code", "idle", `const msg = "API Error: The response stopped arriving"`},
+		{"error diagnostic quoting the message", "idle", `Error: expected "The response stopped arriving" in the fixture`},
+		{"output bullet quoting the message", "idle", `● Error: expected "The response stopped arriving" in the fixture`},
+		{"phrase inside a longer word", "idle", "Error: " + phrase + "ly"},
+		{"model description", "idle", "I saw " + phrase + " in the log\n"},
+	}
+	for _, c := range negative {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ProviderDetect(c.state, c.screen); got != nil {
+				t.Errorf("ProviderDetect(%q, %q) = %#v, want nil", c.state, c.screen, got)
+			}
+		})
+	}
+}

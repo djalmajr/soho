@@ -45,6 +45,7 @@ var (
 		regexp.MustCompile(`\b(internal server error|bad gateway|service unavailable|gateway time-?out)\b`),
 		regexp.MustCompile(`unexpected status`),
 		regexp.MustCompile(`stream disconnected before completion`),
+		regexp.MustCompile(`^` + jsWhitespace + `*([■✗✘×⚠●•⎿]` + jsWhitespace + `+)?(api error|error):` + jsWhitespace + `+the response stopped arriving\b`),
 		regexp.MustCompile(`socket hang up`),
 		regexp.MustCompile(`fetch failed`),
 	}
