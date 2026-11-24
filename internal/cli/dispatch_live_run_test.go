@@ -456,21 +456,79 @@ func TestDispatchLiveRunBlockingPreflight(t *testing.T) {
 	}
 }
 
+// liveRunCeilingClock advances logical time only at distinct fake hc
+// milestones read from the fixture's call log: the unfiltered advisory list
+// before the shared ceiling, the first worker Get, and the first arrival Get
+// after the guarded send. No wall-clock sleep drives any transition.
+func liveRunCeilingClock(t *testing.T, f *dispatchHcFixture, base time.Time) func() time.Time {
+	t.Helper()
+	return func() time.Time {
+		var listed, preGets, arrivalGets int
+		sent := false
+		for _, call := range f.hcCalls(t) {
+			if len(call.Argv) == 0 {
+				continue
+			}
+			switch call.Argv[0] {
+			case "ls":
+				labeled := false
+				for _, arg := range call.Argv {
+					if arg == "--label" {
+						labeled = true
+					}
+				}
+				if !labeled {
+					listed++
+				}
+			case "get":
+				if len(call.Argv) > 1 && call.Argv[1] == "worker" {
+					if sent {
+						arrivalGets++
+					} else {
+						preGets++
+					}
+				}
+			case "send":
+				for _, arg := range call.Argv {
+					if arg == "--if" {
+						sent = true
+					}
+				}
+			}
+		}
+		spent := time.Duration(0)
+		if listed > 0 {
+			spent += 1600 * time.Millisecond
+		}
+		if preGets > 0 {
+			spent += 1150 * time.Millisecond
+		}
+		if arrivalGets > 0 {
+			spent += 850 * time.Millisecond
+		}
+		return base.Add(spent)
+	}
+}
+
 func TestDispatchLiveRunSoftCeilingPreflight(t *testing.T) {
-	// The review's unproven fresh send, scaled to a 1 s fixed margin. A slow
-	// first status read binds the arrival window to the common ceiling. The
-	// 1.6 s listing would spend the remaining arrival window if charged to it.
+	// The review's unproven fresh send, scaled to a 1 s fixed margin. The
+	// 1.6 s advisory list is credited before the shared ceiling starts; the
+	// first worker Get consumes 1.15 s inside it, leaving 850 ms for one
+	// arrival Get before the ceiling binds. Fake hc milestones drive time.
 	zeroCeilingMargin(t)
 	dispatchCeilingMargin = time.Second
 	f := newDispatchHcFixture(t, append(guardProbeRules(), []fakecli.Rule{
-		{Argv: []string{"get", "worker", "--json"}, Call: 1, Delay: 1150, Stdout: hcWorkerGet(7, "idle")},
+		{Argv: []string{"get", "worker", "--json"}, Call: 1, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
 		{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":false}`},
 	}...))
 	f.env["SOHO_PROMPT_SETTLE_SECONDS"], f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0", "1"
 	setLiveRunWorkerCwd(t, f)
 	listing := fmt.Sprintf(`{"terminals":[{"address":"t9","name":"gate-run","state":"live","parent":"t1","cwd":%q}]}`, f.root)
-	addFakeHcListRule(t, f, listing, 0, 1600)
+	addFakeHcListRule(t, f, listing, 0)
+	oldCeilingNow := dispatchCeilingNow
+	dispatchCeilingNow = liveRunCeilingClock(t, f, time.Now())
+	t.Cleanup(func() { dispatchCeilingNow = oldCeilingNow })
 
 	code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
 	if code != 15 || dispatchHcOutputStatus(t, out) != "not-received" {

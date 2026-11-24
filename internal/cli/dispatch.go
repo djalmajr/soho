@@ -63,11 +63,17 @@ func dispatchPromptBudgets(ctx *core.Config, env platform.Env) (settleSecs, chec
 // without holding a fixture for ten seconds.
 var dispatchCeilingMargin = 10 * time.Second
 
+// dispatchCeilingNow is the clock of the shared --no-wait ceiling only.
+// Production keeps real time; a fixture can replace it so the ceiling
+// advances at fake transport milestones without sleeping.
+var dispatchCeilingNow = time.Now
+
 // dispatchWaitBudget is the shared wall-clock ceiling of one --no-wait
-// dispatch. It uses time.Now, not platform.Now: the bound is a real limit on
-// how long the orchestrator's prompt stays blocked, while the individual wait
-// windows keep their existing clocks. A budget of zero forbids waiting but
-// does not interrupt a state that needs no wait at all.
+// dispatch. It uses dispatchCeilingNow (time.Now in production), not
+// platform.Now: the bound is a real limit on how long the orchestrator's
+// prompt stays blocked, while the individual wait windows keep their existing
+// clocks. A budget of zero forbids waiting but does not interrupt a state that
+// needs no wait at all.
 type dispatchWaitBudget struct {
 	start       time.Time
 	deadline    time.Time
@@ -79,7 +85,7 @@ type dispatchWaitBudget struct {
 
 func newDispatchWaitBudget(settleSecs, checkSecs int, agent string, env platform.Env) *dispatchWaitBudget {
 	total := time.Duration(max(settleSecs, 0)+max(checkSecs, 0))*time.Second + dispatchCeilingMargin
-	now := time.Now()
+	now := dispatchCeilingNow()
 	return &dispatchWaitBudget{start: now, deadline: now.Add(total), total: total, agent: agent, env: env}
 }
 
@@ -87,7 +93,7 @@ func newDispatchWaitBudget(settleSecs, checkSecs int, agent string, env platform
 // from the wait that reached it: 10 when nothing was submitted, 15 when a
 // prompt went out but receipt could not be proved.
 func (b *dispatchWaitBudget) abort(phase string, code int) {
-	if b == nil || time.Now().Before(b.deadline) {
+	if b == nil || dispatchCeilingNow().Before(b.deadline) {
 		return
 	}
 	panic(&dispatchCeilingHit{phase: phase, code: code, ceiling: b.total})
@@ -114,7 +120,7 @@ func (b *dispatchWaitBudget) window(duration time.Duration, phase string, code i
 	// The wait keeps its own deadline; only the guard is shared. Shortening
 	// the window itself would move a fake-clock test's deadline without
 	// moving the clock the wait reads.
-	w.bounded = duration > b.deadline.Sub(time.Now())
+	w.bounded = duration > b.deadline.Sub(dispatchCeilingNow())
 	return w
 }
 
@@ -137,7 +143,7 @@ func (w dispatchWaitWindow) abort() bool {
 // normal not-received result, so the JSON and the reason for the uncertainty
 // are not lost.
 func (b *dispatchWaitBudget) softHit(phase string) bool {
-	if b == nil || time.Now().Before(b.deadline) {
+	if b == nil || dispatchCeilingNow().Before(b.deadline) {
 		return false
 	}
 	if !b.softPrinted {
