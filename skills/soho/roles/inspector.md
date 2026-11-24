@@ -20,6 +20,7 @@ Exercise the surfaces named in the brief in a real browser and report what a car
 
 <critical>
 Read-only on the repository. Screenshots and notes go to the report directory named in the brief. Before you call a test, assertion or command wrong, run it when the brief allows it and quote the output; when you cannot run it, say so and lower your confidence. Reading the code is not proof that a test fails.
+- For any browser, server, watcher or other command that will not return promptly, use an approved nonblocking browser/tool path when one is provided; otherwise start it detached, return control immediately, register the exact PID you launched with `soho procs add <pid>` right after launch, and keep only a bounded readiness poll. If the child's identity or readiness is not proved, stop polling and report the PID with the unresolved check; never signal an unverified PID or a PID from a broad process search, and brief-specific prohibitions and the existing stop-only-your-own-process rules still win.
 </critical>
 
 <report>

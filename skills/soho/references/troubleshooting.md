@@ -185,6 +185,12 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 - **Now:** `background_patterns.claude` (shipped; one RE2 regular expression per kind) is checked right before `wait` would return `settled-no-report`: when any of the last 15 non-empty lines of the visible screen matches, alone or joined to the next one by a space (a wrapped line; this applies to every kind's pattern), the wait keeps waiting for the report until `--timeout`, and prints once per `wait` and agent `'<agent>' is idle with a background task still running ("<match>"); waiting for its report`. `status` is unchanged.
 - **Do:** other kinds have no pattern: wait for the report file (a `settled-no-report` is not proof that the worker ended), or set `background_patterns.<kind>` for the text that kind prints. An expression that does not compile is ignored and `doctor` warns. Workers should wait for their own background gates before ending the turn.
 
+## A foreground browser or server blocks a worker
+
+- **Symptom:** the worker stays `working`, the pane shows browser or server output, and `wait` may report that the screen has stayed the same. The output suggests where to look but cannot identify the process to stop.
+- **Inspect:** read the worker screen with `herdr agent read <agent> --source visible` or, under `transport=hc`, `hc read <terminal-address>` using the worker's address from the roster. Use `soho procs` to check any PID the worker registered for this task.
+- **Recover:** if the worker can act, have it stop its own registered child with `soho procs stop <pid>`. Keep the worker tracked while investigating. If you decide to abandon the slice, follow the [abandon flow](#a-worker-sits-stuck-without-a-report-the-abandon-flow). Leave unverified PIDs alone. Retry with an approved nonblocking tool or a detached process, immediate PID registration, and a bounded readiness check.
+
 ## Codex worker: `wait` returned `settled-no-report` and the pane shows `Hooks need review` or the hooks table
 
 - **Now:** with `hooks_review=trust` (default) `spawn`, `dispatch` and `send` approve the screen before typing (`<command>: trusted <n> codex hook(s) …` on stderr); with `hooks_review=block` they type nothing and exit 7 (`spawn`, `dispatch`) or 17 (`send`); a `wait` that still ends `settled-no-report` carries the screen in `screen` and says `agent '<agent>' is on codex's hooks review screen; …` — answer it (`2. Trust all and continue`) or set `hooks_review=trust`, then dispatch again.
@@ -357,7 +363,7 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 - **Symptom:** a worker is `working` for many minutes (a high-effort model thinking) without writing anything; two `ctrl+c` presses queue answers instead of interrupting, and the lane stays stuck.
 - **Cause:** the model is inside one long reasoning or tool phase; keys are queued, not injected.
 - **Now:** after `stuck_warn_minutes` (20) of an unchanged screen (apart from counters) while `working`, the wait logs one friction line ("may be stuck in one tool call") and goes on; nothing is sent and nothing is killed automatically.
-- **Do:** interrupt with `herdr agent send-keys <agent> esc` (or `ctrl+c`), release the slot with `release <agent> --close --force`, and log what happened with `friction add "<text>"`.
+- **Do:** try `hc interrupt <terminal-address>` under `transport=hc`, using the worker's roster address. In legacy Herdr, use `herdr agent send-keys <agent> esc` (or `ctrl+c`). Check the worker after the attempt. If you still need to abandon the task, close a SoHo-created worker with `soho release <agent> --close --force` and log what happened with `soho friction add "<text>"`.
 
 ## Exit 137 with no cause: the skill's own process was killed from outside
 
