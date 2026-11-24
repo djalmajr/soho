@@ -227,6 +227,22 @@ func TestKindRules(t *testing.T) {
 			t.Fatal("generic family mapping")
 		}
 	})
+	t.Run("agy family follows model with google fallback", func(t *testing.T) {
+		for model, want := range map[string]string{
+			"claude-sonnet-4-6": "anthropic",
+			"gemini-3.8-flash":  "google",
+			"gpt-5":             "openai",
+			"mystery-model":     "google",
+			"":                  "google",
+		} {
+			if got := AgentFamily("agy", model); got != want {
+				t.Errorf("agy %q = %s, want %s", model, got, want)
+			}
+		}
+		if got := KindFamilyDisplay("agy"); got != "by model" {
+			t.Fatalf("agy family display = %q, want by model", got)
+		}
+	})
 }
 
 func TestModelRules(t *testing.T) {

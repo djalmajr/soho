@@ -27,7 +27,7 @@ func KindFamily(kind string) string {
 }
 
 func KindFamilyDisplay(kind string) string {
-	if kind == "cursor" || kind == "pi" || kind == "opencode" {
+	if kind == "agy" || kind == "cursor" || kind == "pi" || kind == "opencode" {
 		return "by model"
 	}
 	return KindFamily(kind)
@@ -35,7 +35,7 @@ func KindFamilyDisplay(kind string) string {
 
 func AgentFamily(kind, model string) string {
 	fam := KindFamily(kind)
-	if fam != "unknown" || model == "" {
+	if model == "" || (kind != "agy" && fam != "unknown") {
 		return fam
 	}
 	parts := strings.Split(model, "/")
@@ -59,7 +59,7 @@ func AgentFamily(kind, model string) string {
 	case strings.HasPrefix(last, "gemini-"):
 		return "google"
 	default:
-		return "unknown"
+		return fam
 	}
 }
 
