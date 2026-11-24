@@ -55,7 +55,7 @@ func TestDiffCollectOnceThenWaitSilent(t *testing.T) {
 	diffWrite(t, filepath.Join(f.tree, "outside.txt"), "new\n")
 	var stderr bytes.Buffer
 	code, out := diffRound2Run(t, f, &stderr, "collect", "worker")
-	if code != 0 || !strings.Contains(out, "Completed") || !strings.Contains(stderr.String(), "changed files outside its Owned files: outside.txt") || !strings.Contains(stderr.String(), "cites files the tree shows unchanged: src/a.go") {
+	if code != 0 || !strings.Contains(out, "Completed") || !strings.Contains(stderr.String(), "outside its Owned files: outside.txt") || !strings.Contains(stderr.String(), "cites files the tree shows unchanged: src/a.go") {
 		t.Fatalf("collect code=%d out=%s stderr=%s", code, out, stderr.String())
 	}
 	artifact := strings.TrimSuffix(f.report, ".md") + ".diff-stat.txt"

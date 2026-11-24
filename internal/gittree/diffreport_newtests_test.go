@@ -67,7 +67,7 @@ func TestDiffReportNewTestsOwnedItem(t *testing.T) {
 	if value["cited_unchanged"] != nil {
 		t.Fatalf("unexpected cited=%v", value)
 	}
-	if !strings.Contains(stderr, "'worker' changed files outside its Owned files: x.go, y_test.go") || strings.Contains(stderr, "x_test.go") {
+	if !strings.Contains(stderr, "worktree files changed during the task for 'worker' outside its Owned files: x.go, y_test.go") || strings.Contains(stderr, "x_test.go") {
 		t.Fatalf("stderr=%q", stderr)
 	}
 }

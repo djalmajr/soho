@@ -258,7 +258,7 @@ func DiffReport(sidecar, agent, report string, env platform.Env, logFile, comman
 	}
 	if len(outside) > 0 {
 		out.Set("outside_owned", outside)
-		core.Warn(fmt.Sprintf("'%s' changed files outside its Owned files: %s", agent, diffNames(outside)), logFile, command)
+		core.Warn(fmt.Sprintf("worktree files changed during the task for '%s' outside its Owned files: %s", agent, diffNames(outside)), logFile, command)
 	}
 	if len(cited) > 0 {
 		out.Set("cited_unchanged", cited)
