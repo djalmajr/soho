@@ -33,7 +33,7 @@ func TestDiffReportOwnedItemBareNamesRootOnly(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("outside_owned=%q want %q stderr=%q", got, want, stderr)
 	}
-	if !strings.Contains(stderr, "changed files outside its Owned files") {
+	if !strings.Contains(stderr, "outside its Owned files:") {
 		t.Fatalf("missing outside warning: stderr=%q", stderr)
 	}
 }
@@ -105,7 +105,7 @@ func TestDiffReportOwnedItemQualifiedRootFile(t *testing.T) {
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("outside_owned=%q want %q stderr=%q", got, want, stderr)
 			}
-			if len(want) > 0 && !strings.Contains(stderr, "changed files outside its Owned files") {
+			if len(want) > 0 && !strings.Contains(stderr, "outside its Owned files:") {
 				t.Fatalf("missing outside warning: stderr=%q", stderr)
 			}
 		})
@@ -197,7 +197,7 @@ func TestDiffReportOwnedItemLiteralMatching(t *testing.T) {
 			if len(tc.wantOutside) == 0 && stderr != "" {
 				t.Fatalf("stderr=%q", stderr)
 			}
-			if len(tc.wantOutside) > 0 && !strings.Contains(stderr, "changed files outside its Owned files") {
+			if len(tc.wantOutside) > 0 && !strings.Contains(stderr, "outside its Owned files:") {
 				t.Fatalf("missing outside warning: stderr=%q", stderr)
 			}
 			got, want := ownedOutside(value), append([]string{}, tc.wantOutside...)

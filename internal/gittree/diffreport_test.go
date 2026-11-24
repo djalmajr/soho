@@ -320,7 +320,7 @@ func TestDiffReportSettle(t *testing.T) {
 					t.Fatalf("unexpected cited=%v", value)
 				}
 				if outside != nil {
-					if !strings.Contains(stderr, "'worker' changed files outside its Owned files: "+outside[0].(string)) {
+					if !strings.Contains(stderr, "worktree files changed during the task for 'worker' outside its Owned files: "+outside[0].(string)) {
 						t.Fatal(stderr)
 					}
 				} else if name != "cited" && stderr != "" {
