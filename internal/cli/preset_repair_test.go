@@ -267,6 +267,8 @@ func TestDoctorRepairKeepsBuilderNativeArgv(t *testing.T) {
 			env, cwd := tm6CLIEnv(t)
 			bin := t.TempDir()
 			env["PATH"], env["SOHO_FAKECLI_CONFIG"] = bin, bin
+			// Re-executed fake CLIs do not need the detector's exit delay.
+			env["GORACE"] = fakecli.RaceOptions(env.List())
 			env["HERDR_ENV"], env["HERDR_PANE_ID"] = "1", "p1"
 			env["SOHO_CALLER_CHECK"], env["SOHO_TRUST_CWD"] = "off", "off"
 			env["SOHO_NO_UPDATE_CHECK"], env["SOHO_WAIT_POLL_MS"] = "1", "1"
