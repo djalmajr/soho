@@ -223,6 +223,10 @@ func PaneRead(env platform.Env, pane, source string, lines *int) (string, bool) 
 	return r.Stdout, true
 }
 func AgentState(target string, env platform.Env, timeout time.Duration, retryPauses []time.Duration, callCtx ...context.Context) AgentStateResult {
+	return agentState(target, env, timeout, retryPauses, nil, callCtx...)
+}
+
+func agentState(target string, env platform.Env, timeout time.Duration, retryPauses []time.Duration, workingClaudeReply *string, callCtx ...context.Context) AgentStateResult {
 	if timeout <= 0 {
 		timeout = Timeout
 	}
@@ -268,6 +272,9 @@ func AgentState(target string, env platform.Env, timeout time.Duration, retryPau
 		status := str(get(ag, "agent_status"))
 		empty.Seq = jsSequence(get(ag, "state_change_seq"))
 		if status != "" {
+			if workingClaudeReply != nil && status == "working" && str(get(ag, "agent")) == "claude" {
+				*workingClaudeReply = r.Stdout
+			}
 			empty.State = status
 			return empty
 		}

@@ -275,10 +275,11 @@ func sendWarning(message string) { core.Warn(message, frictionLogFile, "wait") }
 // reported state, the unavailable cause, the reported status message and
 // the rendered state_change_seq ("" when the read carries none).
 type stateProbe struct {
-	State string
-	Cause string
-	Msg   string
-	Seq   string
+	State                    string
+	Cause                    string
+	Msg                      string
+	Seq                      string
+	legacyWorkingClaudeReply string
 }
 
 // readScreen runs the agent's screen read through the transport with the
@@ -300,7 +301,7 @@ func readState(svc transport.Services, agent string) stateProbe {
 	if rep.Err != nil {
 		cause = rep.Err.Message
 	}
-	return stateProbe{State: rep.Value.State, Cause: cause, Msg: rep.Value.Msg, Seq: seqText(rep.Value.Sequence)}
+	return stateProbe{State: rep.Value.State, Cause: cause, Msg: rep.Value.Msg, Seq: seqText(rep.Value.Sequence), legacyWorkingClaudeReply: rep.Value.LegacyWorkingClaudeReply}
 }
 
 // seqText renders the transported state_change_seq as jsString rendered the
@@ -589,7 +590,10 @@ type claudeStreamWorker struct {
 	pane, session, sequence string
 }
 
-func readClaudeStreamWorker(svc transport.Services, agent, pane, sequence string) claudeStreamWorker {
+func claudeStreamIdentity(raw, agent, pane, sequence string) claudeStreamWorker {
+	if raw == "" || pane == "" || !uintPattern.MatchString(sequence) {
+		return claudeStreamWorker{}
+	}
 	var record struct {
 		Error  json.RawMessage
 		Result struct {
@@ -606,8 +610,7 @@ func readClaudeStreamWorker(svc transport.Services, agent, pane, sequence string
 			}
 		}
 	}
-	reply := svc.Legacy.AgentGetRaw(context.Background(), transport.Target{ID: agent}, transport.Call{Timeout: herdr.Timeout})
-	if !reply.Valid || reply.Err != nil || json.Unmarshal([]byte(reply.Value), &record) != nil || len(record.Error) != 0 {
+	if json.Unmarshal([]byte(raw), &record) != nil || len(record.Error) != 0 {
 		return claudeStreamWorker{}
 	}
 	worker := record.Result.Agent
@@ -616,6 +619,11 @@ func readClaudeStreamWorker(svc transport.Services, agent, pane, sequence string
 		return claudeStreamWorker{}
 	}
 	return claudeStreamWorker{pane: pane, session: worker.Session.Value, sequence: sequence}
+}
+
+func confirmClaudeStreamWorker(svc transport.Services, agent string, worker claudeStreamWorker) bool {
+	reply := svc.Legacy.AgentGetRaw(context.Background(), transport.Target{ID: agent}, transport.Call{Timeout: herdr.Timeout})
+	return reply.Valid && reply.Err == nil && claudeStreamIdentity(reply.Value, agent, worker.pane, worker.sequence) == worker
 }
 
 // claudeStreamProbe is kept only for consecutive polls of one wait invocation.
@@ -772,7 +780,9 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 	// dialog and exits 7). A launch-only or blank screen does not block the
 	// wait: the guard acts only on the active dialog, so no TUI banner is
 	// demanded and ordinary in-progress output is never inferred away.
-	probeKind := field(strings.Split(core.RosterLine(sd, agent), "\t"), 2)
+	probeRow := core.RosterLine(sd, agent)
+	probeFields := strings.Split(probeRow, "\t")
+	probeKind := field(probeFields, 2)
 	if startup.Enabled(probeKind) {
 		cursorScreen, cursorScreenOK := readScreen(svc, agent, "visible", nil)
 		capture(cursorScreen, cursorScreenOK)
@@ -915,28 +925,27 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 		removeWaitFile(sd, agent, "compacting")
 	}
 	if st.State == "working" {
-		var claudeWorker claudeStreamWorker
-		var claudeRow string
-		if sample != nil && env.Get("SOHO_TRANSPORT") != "hc" && probeKind == "claude" && uintPattern.MatchString(st.Seq) {
-			claudeRow = core.RosterLine(sd, agent)
-			fields := strings.Split(claudeRow, "\t")
-			if pane := field(fields, 1); pane != "" && field(fields, 2) == "claude" {
-				claudeWorker = readClaudeStreamWorker(svc, agent, pane, st.Seq)
-			}
-		}
 		text := visible()
 		if p := provider.LostConnection(text); p != nil {
 			writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
 			return "provider-error"
 		}
-		if claudeWorker != (claudeStreamWorker{}) && screenOK &&
-			readClaudeStreamWorker(svc, agent, claudeWorker.pane, st.Seq) == claudeWorker &&
-			core.RosterLine(sd, agent) == claudeRow && !reportNonEmpty(report) {
-			next, cause := previousClaudeStream.observe(claudeWorker, claudeRow, report, text)
-			sample.claudeStream = next
-			if cause != "" {
-				writeWaitFile(sd, agent, "provider-cause", cause+"\n")
-				return "provider-error"
+		if sample != nil && env.Get("SOHO_TRANSPORT") != "hc" && probeKind == "claude" && screenOK {
+			worker := claudeStreamIdentity(st.legacyWorkingClaudeReply, agent, field(probeFields, 1), st.Seq)
+			if worker != (claudeStreamWorker{}) {
+				next, cause := previousClaudeStream.observe(worker, probeRow, report, text)
+				// The ordinary state read binds the clean anchor. The next
+				// poll must match it. A possible stop also needs a fresh
+				// identity check after each error frame before it can count.
+				if (next.size != 0 || cause != "") &&
+					(!(next.candidate || cause != "") || confirmClaudeStreamWorker(svc, agent, worker)) &&
+					core.RosterLine(sd, agent) == probeRow && !reportNonEmpty(report) {
+					sample.claudeStream = next
+					if cause != "" {
+						writeWaitFile(sd, agent, "provider-cause", cause+"\n")
+						return "provider-error"
+					}
+				}
 			}
 		}
 		hash := strconv.FormatUint(uint64(CksumField(NormalizeScreen(text))), 10)

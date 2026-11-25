@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -77,22 +78,29 @@ func TestWaitClaudeStreamStopProbes(t *testing.T) {
 		edit   func([]string)
 		report bool
 		stop   bool
+		calls  []string
 	}{
-		{name: "new stable stop", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame}, stop: true},
+		{name: "new stable stop", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame}, stop: true, calls: []string{"get", "read", "get", "read", "get", "get", "read", "get"}},
+		{name: "healthy with real identity", frames: []string{claudeStreamPrior, "another working frame", "more healthy output"}, calls: []string{"get", "read", "get", "read", "get", "read"}},
 		{name: "historic from first read", frames: []string{claudeStreamFrame, claudeStreamFrame, claudeStreamFrame}},
 		{name: "active output after error", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame + "● more tokens\n"}},
 		{name: "quoted error", frames: []string{claudeStreamPrior, claudeStreamPrior + "\n> " + claudeStreamError + claudeStreamDone, claudeStreamPrior + "\n> " + claudeStreamError + claudeStreamDone}},
 		{name: "changed history", frames: []string{claudeStreamPrior, "old output\n" + claudeStreamError + claudeStreamDone, "old output\n" + claudeStreamError + claudeStreamDone}},
-		{name: "vanished after visible read", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame}, edit: func(gets []string) { gets[8] = "gone" }},
-		{name: "replaced after visible read", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame}, edit: func(gets []string) { gets[8] = claudeStreamGet("17", claudeStreamReplacement) }},
-		{name: "sequence advanced after visible read", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame}, edit: func(gets []string) { gets[8] = claudeStreamGet("18", claudeStreamSession) }},
-		{name: "missing sequence on confirmation", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame}, edit: func(gets []string) { gets[6] = claudeStreamGet("", claudeStreamSession) }},
-		{name: "missing identity on confirmation", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame}, edit: func(gets []string) { gets[8] = claudeStreamGet("17", "") }},
+		{name: "vanished after visible read", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame}, edit: func(gets []string) { gets[4] = "gone" }},
+		{name: "replaced after visible read", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame}, edit: func(gets []string) { gets[4] = claudeStreamGet("17", claudeStreamReplacement) }},
+		{name: "sequence advanced after visible read", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame}, edit: func(gets []string) { gets[4] = claudeStreamGet("18", claudeStreamSession) }},
+		{name: "missing sequence on confirmation", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame}, edit: func(gets []string) { gets[2] = claudeStreamGet("", claudeStreamSession) }},
+		{name: "replaced before the candidate poll", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame}, edit: func(gets []string) {
+			for i := 1; i < len(gets); i++ {
+				gets[i] = claudeStreamGet("17", claudeStreamReplacement)
+			}
+		}},
+		{name: "missing identity on confirmation", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame}, edit: func(gets []string) { gets[4] = claudeStreamGet("17", "") }},
 		{name: "unavailable frame breaks corroboration", frames: []string{claudeStreamPrior, claudeStreamFrame, "unavailable"}},
 		{name: "report takes precedence", frames: []string{claudeStreamPrior, claudeStreamFrame, claudeStreamFrame}, report: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			gets := make([]string, 9)
+			gets := make([]string, 5)
 			for i := range gets {
 				gets[i] = record
 			}
@@ -128,18 +136,18 @@ func TestWaitClaudeStreamStopProbes(t *testing.T) {
 			} else if !os.IsNotExist(err) {
 				t.Fatalf("unexpected provider cause = %q (%v)", cause, err)
 			}
-			if tc.stop {
+			if tc.calls != nil {
 				calls := f.calls()
-				if len(calls) != 12 {
-					t.Fatalf("recorded %d transport calls, want 12", len(calls))
+				if len(calls) != len(tc.calls) {
+					t.Fatalf("recorded %d transport calls, want %v", len(calls), tc.calls)
 				}
 				for i, call := range calls {
-					want := "get"
-					if i%4 == 2 {
-						want = "read"
+					want := []string{"agent", tc.calls[i], "worker"}
+					if tc.calls[i] == "read" {
+						want = append(want, "--source", "visible")
 					}
-					if len(call.Argv) < 3 || call.Argv[0] != "agent" || call.Argv[1] != want || call.Argv[2] != "worker" {
-						t.Fatalf("call %d = %v, want agent %s worker", i+1, call.Argv, want)
+					if !slices.Equal(call.Argv, want) {
+						t.Fatalf("call %d = %v, want %v", i+1, call.Argv, want)
 					}
 				}
 			}
@@ -150,7 +158,7 @@ func TestWaitClaudeStreamStopProbes(t *testing.T) {
 
 func TestWaitClaudeStreamStopExit14(t *testing.T) {
 	record := claudeStreamGet("17", claudeStreamSession)
-	gets := make([]string, 9)
+	gets := make([]string, 5)
 	for i := range gets {
 		gets[i] = record
 	}

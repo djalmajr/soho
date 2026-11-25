@@ -151,6 +151,10 @@ type Terminal struct {
 	PaneID   string
 	State    string
 	Sequence json.RawMessage
+	// LegacyWorkingClaudeReply carries the same successful Herdr agent get
+	// response used for State and Sequence. Wait uses it for strict identity
+	// corroboration without issuing a second pre-screen command.
+	LegacyWorkingClaudeReply string `json:"-"`
 	// NativeState is the terminal record's actual string lifecycle as
 	// reported by the backend (e.g. hc record's actual "live" or "finished";
 	// missing/non-string stays empty), independent of mapped agent activity
