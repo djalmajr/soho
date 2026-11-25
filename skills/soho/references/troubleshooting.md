@@ -364,6 +364,10 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 - **Now:** after `stuck_warn_minutes` (20) of an unchanged screen (apart from counters) while `working`, the wait logs one friction line ("may be stuck in one tool call") and goes on; nothing is sent and nothing is killed automatically.
 - **Do:** try `hc interrupt <terminal-address>` under `transport=hc`, using the worker's roster address. In legacy Herdr, use `herdr agent send-keys <agent> esc` (or `ctrl+c`). Check the worker after the attempt. If you still need to abandon the task, close a SoHo-created worker with `soho release <agent> --close --force` and log what happened with `soho friction add "<text>"`.
 
+## Pi compact reports a terminal failure before dispatch
+
+A fresh Pi compaction failure under legacy Herdr can produce a warning followed by the normal dispatch result. That branch requires completed phase cleanup and a new check of the same idle session and empty composer. If dispatch instead reports that the brief was unsent, inspect the worker before retrying. A compact timeout does not authorize sending.
+
 ## Exit 137 with no cause: the skill's own process was killed from outside
 
 Before sending `/compact`, `--compact` skips a codex worker whose readable pre-send context footer is below 10%, because the footer-drop proof requires a base of at least 10%.

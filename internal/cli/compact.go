@@ -400,6 +400,19 @@ func compactEndings(kind string) []compactEnding {
 	return compactEndingsByKind[kind]
 }
 
+func compactPiTerminalFailure(screen, line string) bool {
+	if !strings.HasPrefix(line, "Error: Compaction failed:") && !strings.HasPrefix(line, "Compaction failed:") {
+		return false
+	}
+	start, end, recognized := provider.ComposerRegionBounds("pi", screen)
+	for i, candidate := range compactLines(screen) {
+		if strings.TrimSpace(candidate) == line && (!recognized || i < start || i >= end) {
+			return true
+		}
+	}
+	return false
+}
+
 func cmdCompact(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	agent := ""
 	// Without --timeout the compact_timeout key sets the limit; the flag
@@ -491,8 +504,17 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 }
 
 type compactStepResult struct {
-	Code    int
-	Screens string
+	Code               int
+	Screens            string
+	PiFailure          *compactPiFailure
+	PhaseMarkerRemoved bool
+}
+
+type compactPiFailure struct {
+	Line     string
+	JSON     string
+	Worker   compactPiWorker
+	Deadline time.Time
 }
 
 // compactRunWithScreens carries the local diagnostic path to dispatch without
@@ -561,6 +583,14 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 		// Without the screen before the send, an earlier compaction still on screen
 		// would read as this one's proof: send nothing.
 		core.DieFriction(fmt.Sprintf("compact: could not read the screen of '%s' before sending; nothing was sent", agent), 4, frictionLogPath, "compact")
+	}
+	// Capture the worker incarnation before issuing /compact. A failed
+	// identity read only disables dispatch's recovery from a proved Pi error.
+	var piWorker compactPiWorker
+	if inDispatch && kind == "pi" {
+		identityCtx, cancel := context.WithTimeout(budgetCtx, time.Second)
+		piWorker = readCompactPiWorker(identityCtx, budget.svc, agent, pane)
+		cancel()
 	}
 	// opencode proves the compaction with the done-line regex instead of a
 	// substring, and counts a screen whose count of proof lines grew (it does
@@ -816,6 +846,11 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 			}
 		}
 	}
+	// The normal compact result keeps its existing matcher. Dispatch recovery
+	// additionally requires an actual Pi error line outside the input box.
+	if inDispatch && kind == "pi" && endStatus == "failed" && !compactPiTerminalFailure(budget.screen, endLine) {
+		piWorker = compactPiWorker{}
+	}
 	elapsed := platform.Now().Sub(start).Milliseconds()
 	budget.ctx = budgetCtx
 	thinkingRestored := false
@@ -843,6 +878,15 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 		return jsonjs.Stringify(jsonjs.O(pairs...))
 	}
 	if endStatus != "" {
+		if inDispatch && kind == "pi" && endStatus == "failed" {
+			deadline, _ := budgetCtx.Deadline()
+			// Hold the compact output until dispatch decides whether it can
+			// continue with its own single result or must return this failure.
+			return compactStepResult{Code: 9, PiFailure: &compactPiFailure{
+				Line: text.SanitizeCause(text.RedactSecrets(endLine)),
+				JSON: resultJSON(endStatus), Worker: piWorker, Deadline: deadline,
+			}}
+		}
 		if endStatus == "failed" {
 			// Cite the screen line that matched the failure (claude and pi),
 			// sanitized and redacted, so the warning shows what the CLI reported.

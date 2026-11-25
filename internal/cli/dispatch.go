@@ -580,24 +580,18 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		compactTimeoutMS := core.CompactTimeoutMS(ctx, env)
 		if compactProof(kind) == "" {
 			core.Warn(fmt.Sprintf("dispatch: --compact skipped: kind '%s' has no verified compact command", kind), frictionLogPath, "dispatch")
-		} else if result := dispatchCompactPhase(compactPhaseDispatchOptions{
-			Agent: agent, Pane: at(1), Kind: kind, Role: role, Lane: lane, Model: model,
-			Brief: brief, SD: sd, TimeoutMS: compactTimeoutMS, Ctx: ctx, Env: env, Cwd: cwd,
-		}); result.Code != 0 {
-			code := result.Code
-			// The compaction phase did not finish: say so, and that this brief was
-			// not sent, so the orchestrator does not look for it on the screen.
-			fmt.Fprintf(platform.Stderr, "soho: dispatch: the compact step of '%s' did not finish (exit %d); the brief was not sent\n", agent, code)
-			if code == 9 {
-				// 9 is the compact phase's timeout exit (compactRun): the limit
-				// is the effective compact_timeout, in the numberSeconds form.
-				warning := fmt.Sprintf("dispatch: compact of '%s' timed out after %ss (compact_timeout=%d); the brief was not sent", agent, compactTimeoutSeconds(compactTimeoutMS), compactTimeoutMS)
-				if result.Screens != "" {
-					warning += "; screens saved to " + result.Screens
+		} else {
+			result := dispatchCompactPhase(compactPhaseDispatchOptions{
+				Agent: agent, Pane: at(1), Kind: kind, Role: role, Lane: lane, Model: model,
+				Brief: brief, SD: sd, TimeoutMS: compactTimeoutMS, Ctx: ctx, Env: env, Cwd: cwd,
+			})
+			if result.Code != 0 {
+				if result.PiFailure == nil || !result.PhaseMarkerRemoved ||
+					!compactPiFallbackReady(result.PiFailure, svc, sd, agent, at(1), line, ceiling) {
+					return dispatchCompactFailure(agent, compactTimeoutMS, result)
 				}
-				core.Warn(warning, frictionLogPath, "dispatch")
+				core.Warn(fmt.Sprintf("dispatch: compact of '%s' failed (%q); continuing with the brief because the Pi worker is idle with an empty composer", agent, result.PiFailure.Line), frictionLogPath, "dispatch")
 			}
-			return code
 		}
 	}
 	// Context check after any compact step (a compaction is the remedy for a
@@ -1488,13 +1482,141 @@ func compactPhaseDispatch(opts compactPhaseDispatchOptions) compactStepResult {
 		}()
 		return compactDispatchStep(opts.Agent, opts.Pane, opts.Kind, opts.Role, opts.Lane, opts.Model, opts.TimeoutMS, opts.Ctx, opts.Env, opts.Cwd)
 	}()
+	// CompactPhaseRemove treats absence as success for ordinary cleanup.
+	// Recovery requires evidence that our own marker was still present.
+	markerVerified := false
+	if result.PiFailure != nil {
+		marker, err := core.CompactPendingReadInspect(core.CompactPendingPath(opts.SD, opts.Agent))
+		markerVerified = err == nil && marker.Token == token
+	}
 	if err := removeMarker(); err != nil {
 		core.Warn(fmt.Sprintf("dispatch: the compact-phase marker of '%s' was not removed: %v", opts.Agent, err), frictionLogPath, "dispatch")
 		if result.Code == 0 {
 			core.DieFriction(fmt.Sprintf("dispatch: the compact phase of '%s' finished, but its marker could not be removed (%v); the brief was not sent", opts.Agent, err), 4, frictionLogPath, "dispatch")
 		}
+	} else {
+		result.PhaseMarkerRemoved = markerVerified
 	}
 	return result
+}
+
+func dispatchCompactFailure(agent string, timeoutMS int64, result compactStepResult) int {
+	if result.PiFailure != nil {
+		core.Warn(fmt.Sprintf("compact: '%s' reported %q; nothing was compacted", agent, result.PiFailure.Line), frictionLogPath, "compact")
+		fmt.Fprintln(platform.Stdout, result.PiFailure.JSON)
+	}
+	fmt.Fprintf(platform.Stderr, "soho: dispatch: the compact step of '%s' did not finish (exit %d); the brief was not sent\n", agent, result.Code)
+	if result.Code == 9 && result.PiFailure == nil {
+		warning := fmt.Sprintf("dispatch: compact of '%s' timed out after %ss (compact_timeout=%d); the brief was not sent", agent, compactTimeoutSeconds(timeoutMS), timeoutMS)
+		if result.Screens != "" {
+			warning += "; screens saved to " + result.Screens
+		}
+		core.Warn(warning, frictionLogPath, "dispatch")
+	}
+	return result.Code
+}
+
+// compactPiWorker carries only the observed identity and readiness fields.
+// Runtime.Get projects away the identity that the fallback needs.
+type compactPiWorker struct {
+	SessionKind  string
+	SessionValue string
+	Terminal     string
+	Idle         bool
+}
+
+func readCompactPiWorker(ctx context.Context, svc transport.Services, agent, pane string) compactPiWorker {
+	rep := svc.Legacy.AgentGetRaw(ctx, transport.Target{ID: agent}, transport.Call{Timeout: herdr.Timeout})
+	if !rep.Valid || rep.Err != nil || ctx.Err() != nil {
+		return compactPiWorker{}
+	}
+	var response struct {
+		Result struct {
+			Agent struct {
+				Name     string `json:"name"`
+				Pane     string `json:"pane_id"`
+				Kind     string `json:"agent"`
+				State    string `json:"agent_status"`
+				Terminal string `json:"terminal_id"`
+				Ready    *bool  `json:"interactive_ready"`
+				Session  struct {
+					Kind  string `json:"kind"`
+					Value string `json:"value"`
+				} `json:"agent_session"`
+			} `json:"agent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(rep.Value), &response); err != nil {
+		return compactPiWorker{}
+	}
+	live := response.Result.Agent
+	if live.Name != agent || pane == "" || live.Pane != pane || live.Kind != "pi" ||
+		live.Session.Kind == "" || live.Session.Value == "" {
+		return compactPiWorker{}
+	}
+	return compactPiWorker{
+		SessionKind: live.Session.Kind, SessionValue: live.Session.Value, Terminal: live.Terminal,
+		Idle: live.State == "idle" && (live.Ready == nil || *live.Ready),
+	}
+}
+
+func compactPiFallbackReady(failure *compactPiFailure, svc transport.Services, sd, agent, pane, rosterRow string, ceiling *dispatchWaitBudget) bool {
+	initial := failure.Worker
+	if !initial.Idle || failure.Deadline.IsZero() {
+		return false
+	}
+	deadline := failure.Deadline
+	if limit := time.Now().Add(herdr.Timeout); limit.Before(deadline) {
+		deadline = limit
+	}
+	if ceiling != nil && ceiling.deadline.Before(deadline) {
+		deadline = ceiling.deadline
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	stateClear := func() bool {
+		if ctx.Err() != nil || core.RosterLine(sd, agent) != rosterRow {
+			return false
+		}
+		paths := []string{core.CompactPendingPath(sd, agent)}
+		for _, suffix := range []string{".queued", ".not-received", ".submit-failed"} {
+			paths = append(paths, filepath.Join(sd, "wait", agent+suffix))
+		}
+		for _, path := range paths {
+			if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+				return false
+			}
+		}
+		return ctx.Err() == nil
+	}
+	if !stateClear() || readCompactPiWorker(ctx, svc, agent, pane) != initial {
+		return false
+	}
+	screen := svc.Runtime.Read(ctx, transport.Target{ID: agent}, transport.Read{Source: "visible"}, transport.Call{Timeout: herdr.Timeout})
+	return screen.Valid && screen.Err == nil && compactPiEmptyScreen(screen.Value) &&
+		readCompactPiWorker(ctx, svc, agent, pane) == initial && stateClear()
+}
+
+func compactPiEmptyScreen(screen string) bool {
+	start, end, ok := provider.ComposerRegionBounds("pi", screen)
+	if !ok || provider.DialogUI("pi", screen) != "" {
+		return false
+	}
+	lines := strings.Split(strings.ReplaceAll(screen, "\r\n", "\n"), "\n")
+	// Unlike the general Pi composer recognizer, recovery accepts only
+	// plain borders. A spinner or another activity label denies reception.
+	for _, border := range []string{lines[start-1], lines[end]} {
+		if strings.Trim(strings.TrimSpace(border), "─") != "" {
+			return false
+		}
+	}
+	for _, line := range provider.LastNonEmptyLines(screen, 15) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Steering:") || strings.HasPrefix(line, "Follow-up:") || strings.HasPrefix(line, "↳") {
+			return false
+		}
+	}
+	return dispatchComposerEmpty("pi", lines[start:end])
 }
 
 // writeDispatchSidecarWithTask records the attempt and its durable task report
