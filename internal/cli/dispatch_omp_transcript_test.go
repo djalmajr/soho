@@ -54,7 +54,7 @@ func TestDispatchOMPTranscriptArrival(t *testing.T) {
 		name, sessionKind, changeFrom, changeTo, probeEvent, fileKind string
 		compact                                                       string
 		add                                                           []string
-		wantCode, wantPaneGets                                        int
+		wantCode, wantPaneGets, wantStates, wantScreens               int
 		noCheck, rejectAtStart                                        bool
 	}{
 		{name: "one fresh user line", add: []string{"metadata", "user"}, wantPaneGets: 2},
@@ -87,10 +87,21 @@ func TestDispatchOMPTranscriptArrival(t *testing.T) {
 		{name: "budget exhausted during verification", add: []string{"user"}, probeEvent: "during", wantCode: 15, wantPaneGets: 2},
 		{name: "late working state does not prove arrival", probeEvent: "late-state", wantCode: 15, wantPaneGets: 1},
 		{name: "late report does not prove arrival", probeEvent: "late-report", wantCode: 15, wantPaneGets: 1},
+		{name: "timely report below subprocess floor proves arrival", probeEvent: "sub-ms-report", wantPaneGets: 1},
 		{name: "transient state kill cannot retry beyond ceiling", probeEvent: "retry", wantCode: 15, wantPaneGets: 1},
 		{name: "submillisecond state budget skips launch", probeEvent: "sub-ms", wantCode: 15, wantPaneGets: 1},
 		{name: "submillisecond raw identity budget skips launch", add: []string{"user"}, probeEvent: "sub-ms-identity", wantCode: 15, wantPaneGets: 1},
 		{name: "submillisecond diagnostic budget keeps proved receipt", add: []string{"user"}, probeEvent: "sub-ms-diagnostic", wantPaneGets: 2},
+		{name: "fallback auth state expiry skips remaining reads", probeEvent: "fallback-auth", wantCode: 15, wantPaneGets: 1, wantStates: 3, wantScreens: 1},
+		{name: "fallback screen expiry skips state read", probeEvent: "fallback-screen", wantCode: 15, wantPaneGets: 1, wantStates: 3, wantScreens: 2},
+		{name: "fallback submillisecond screen budget skips launch", probeEvent: "fallback-sub-ms", wantCode: 15, wantPaneGets: 1, wantStates: 3, wantScreens: 1},
+		{name: "fallback timely report below subprocess floor proves arrival", probeEvent: "fallback-sub-ms-report", wantPaneGets: 1, wantStates: 2},
+		{name: "fallback late working state does not prove arrival", probeEvent: "fallback-state", wantCode: 15, wantPaneGets: 1, wantStates: 4, wantScreens: 2},
+		{name: "fallback transient state kill cannot retry beyond ceiling", probeEvent: "fallback-retry", wantCode: 15, wantPaneGets: 1, wantStates: 4, wantScreens: 2},
+		{name: "fallback late report does not prove arrival", probeEvent: "fallback-late-report", wantCode: 15, wantPaneGets: 1, wantStates: 4, wantScreens: 2},
+		{name: "fallback timely report proves arrival", probeEvent: "fallback-report", wantPaneGets: 1, wantStates: 4, wantScreens: 2},
+		{name: "fallback timely working state proves arrival", probeEvent: "fallback-working", wantPaneGets: 1, wantStates: 5, wantScreens: 2},
+		{name: "fallback timely provider stop is reported", probeEvent: "fallback-stop", wantCode: 14, wantPaneGets: 1, wantStates: 2, wantScreens: 1},
 		{name: "confirmation disabled", add: []string{"user"}, noCheck: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -129,6 +140,29 @@ func TestDispatchOMPTranscriptArrival(t *testing.T) {
 				{Argv: []string{"agent", "prompt", "worker"}, ArgvPrefix: true, WaitFile: gate, Stdout: `{"result":{"submitted":true}}`},
 			}
 			stateGet := []string{"agent", "get", "worker"}
+			visibleRead := []string{"agent", "read", "worker", "--source", "visible"}
+			if strings.HasPrefix(tc.probeEvent, "fallback-") {
+				rules = append(rules,
+					fakecli.Rule{Argv: stateGet, Call: 3, Stdout: compactStateJSON("idle", 2)},
+					fakecli.Rule{Argv: stateGet, Call: 4, Stdout: compactStateJSON("idle", 2)},
+				)
+				switch tc.probeEvent {
+				case "fallback-stop":
+					rules = append(rules, fakecli.Rule{Argv: visibleRead, Call: 2, Stdout: "■ Server connection could not be restored"})
+				case "fallback-report", "fallback-late-report":
+					rules = append(rules, fakecli.Rule{Argv: stateGet, Call: 5, Stdout: compactStateJSON("idle", 2)})
+				case "fallback-retry":
+					rules = append(rules,
+						fakecli.Rule{Argv: stateGet, Call: 5, Code: 137},
+						fakecli.Rule{Argv: stateGet, Call: 6, Stdout: compactStateJSON("working", 3)},
+					)
+				default:
+					rules = append(rules,
+						fakecli.Rule{Argv: stateGet, Call: 5, Stdout: compactStateJSON("working", 3)},
+						fakecli.Rule{Argv: stateGet, Call: 6, Stdout: compactStateJSON("working", 3)},
+					)
+				}
+			}
 			switch tc.probeEvent {
 			case "late-state", "sub-ms":
 				rules = append(rules, fakecli.Rule{Argv: stateGet, Call: 2, Stdout: compactStateJSON("working", 2)})
@@ -232,8 +266,67 @@ func TestDispatchOMPTranscriptArrival(t *testing.T) {
 			}
 			verified, preflightChecks, postSendChecks := false, 0, 0
 			var postSendStarted time.Time
+			writeReport := func() {
+				report := filepath.Join(base.state, "ws", "reports", "worker-"+piTranscriptStamp+".md")
+				if err := os.WriteFile(report, []byte("fixture report\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			countAfterPrompt := func(calls []fakecli.Call, argv []string) int {
+				for i, call := range calls {
+					if len(call.Argv) >= 3 && slices.Equal(call.Argv[:3], []string{"agent", "prompt", "worker"}) {
+						return countArgv(calls[i+1:], argv)
+					}
+				}
+				return 0
+			}
 			dispatchCeilingNow = func() time.Time {
 				switch tc.probeEvent {
+				case "fallback-auth", "fallback-screen", "fallback-state":
+					calls := readCalls()
+					if tc.probeEvent == "fallback-auth" && countAfterPrompt(calls, stateGet) >= 3 ||
+						tc.probeEvent == "fallback-screen" && countAfterPrompt(calls, visibleRead) >= 2 ||
+						tc.probeEvent == "fallback-state" && countAfterPrompt(calls, stateGet) >= 4 {
+						return ceilingEnd
+					}
+				case "fallback-retry":
+					if countAfterPrompt(readCalls(), visibleRead) >= 2 {
+						if postSendStarted.IsZero() {
+							postSendStarted = time.Now()
+						}
+						return ceilingEnd.Add(time.Since(postSendStarted) - 750*time.Millisecond)
+					}
+				case "fallback-sub-ms":
+					if countAfterPrompt(readCalls(), stateGet) >= 3 {
+						postSendChecks++
+						if postSendChecks >= 4 {
+							return ceilingEnd
+						}
+						if postSendChecks == 3 {
+							return ceilingEnd.Add(-500 * time.Microsecond)
+						}
+					}
+				case "fallback-sub-ms-report":
+					if countAfterPrompt(readCalls(), stateGet) >= 2 {
+						postSendChecks++
+						if postSendChecks == 2 {
+							writeReport()
+						}
+						if postSendChecks >= 2 {
+							return ceilingEnd.Add(-500 * time.Microsecond)
+						}
+					}
+				case "fallback-report", "fallback-late-report":
+					if countAfterPrompt(readCalls(), stateGet) >= 4 {
+						postSendChecks++
+						// Stage a report between the last state check and report lookup.
+						if postSendChecks == 2 {
+							writeReport()
+						}
+						if tc.probeEvent == "fallback-late-report" && postSendChecks >= 3 {
+							return ceilingEnd
+						}
+					}
 				case "retry":
 					if countDispatchCalls(readCalls(), "prompt") != 0 {
 						if postSendStarted.IsZero() {
@@ -241,20 +334,22 @@ func TestDispatchOMPTranscriptArrival(t *testing.T) {
 						}
 						return ceilingEnd.Add(time.Since(postSendStarted) - 750*time.Millisecond)
 					}
-				case "late-report", "sub-ms":
+				case "late-report", "sub-ms", "sub-ms-report":
 					if countDispatchCalls(readCalls(), "prompt") != 0 {
 						postSendChecks++
-						if postSendChecks >= 4 {
+						expireAt := 4
+						if tc.probeEvent == "sub-ms-report" {
+							expireAt = 5
+						}
+						if postSendChecks >= expireAt {
 							return ceilingEnd
 						}
-						if tc.probeEvent == "sub-ms" {
-							return ceilingEnd.Add(-500 * time.Microsecond)
+						if tc.probeEvent == "late-report" && postSendChecks == 3 ||
+							tc.probeEvent == "sub-ms-report" && postSendChecks == 1 {
+							writeReport()
 						}
-						if postSendChecks == 3 {
-							report := filepath.Join(base.state, "ws", "reports", "worker-"+piTranscriptStamp+".md")
-							if err := os.WriteFile(report, []byte("late report\n"), 0o600); err != nil {
-								t.Fatal(err)
-							}
+						if tc.probeEvent != "late-report" {
+							return ceilingEnd.Add(-500 * time.Microsecond)
 						}
 						return ceilingEnd.Add(-750 * time.Millisecond)
 					}
@@ -363,6 +458,12 @@ func TestDispatchOMPTranscriptArrival(t *testing.T) {
 			if tc.wantCode == 15 {
 				wantStatus = "not-received"
 			}
+			if tc.wantCode == 14 {
+				wantStatus = "provider-error"
+				if !strings.Contains(out, "codex lost its server connection") {
+					t.Errorf("missing provider stop cause: %s", out)
+				}
+			}
 			if code != tc.wantCode || dispatchOutputStatus(t, out) != wantStatus {
 				t.Errorf("exit=%d want=%d status=%q want=%q stderr=%q", code, tc.wantCode, dispatchOutputStatus(t, out), wantStatus, stderr)
 			}
@@ -387,10 +488,26 @@ func TestDispatchOMPTranscriptArrival(t *testing.T) {
 			if (tc.probeEvent == "before" || tc.probeEvent == "during") && postSendStateReads != 1 {
 				t.Errorf("state reads after send=%d want=1 with no state reads past expired receipt ceiling", postSendStateReads)
 			}
+			if strings.HasPrefix(tc.probeEvent, "fallback-") {
+				postSendScreens := countAfterPrompt(calls, visibleRead)
+				if postSendStateReads != tc.wantStates || postSendScreens != tc.wantScreens {
+					t.Errorf("post-send reads state=%d visible=%d want state=%d visible=%d", postSendStateReads, postSendScreens, tc.wantStates, tc.wantScreens)
+				}
+				if tc.wantCode == 15 {
+					if strings.Count(stderr, "--no-wait gave up after") != 1 {
+						t.Errorf("expected a single ceiling warning: %q", stderr)
+					}
+					marker := filepath.Join(base.state, "ws", "wait", "worker.not-received")
+					fields := strings.Fields(mustRead(t, marker))
+					if len(fields) != 2 || fields[1] != "2" {
+						t.Errorf("not-received marker=%q want last timely sequence 2", fields)
+					}
+				}
+			}
 			switch tc.probeEvent {
-			case "late-report", "sub-ms", "late-state", "retry", "sub-ms-identity", "sub-ms-diagnostic":
+			case "late-report", "sub-ms", "sub-ms-report", "late-state", "retry", "sub-ms-identity", "sub-ms-diagnostic":
 				wantReads := 1
-				if tc.probeEvent == "late-report" || tc.probeEvent == "sub-ms" {
+				if tc.probeEvent == "late-report" || tc.probeEvent == "sub-ms" || tc.probeEvent == "sub-ms-report" {
 					wantReads = 0
 				}
 				if postSendStateReads != wantReads {

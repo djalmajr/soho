@@ -1187,7 +1187,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			arrived, arrivalState := hcTurnArrival(time.Duration(checkSecs)*time.Second, env, svc, agent, sendTurn, sendTurnOK, ceiling)
 			if !arrived {
 				if provider.StartupStopKind(kind) && (arrivalState == "idle" || arrivalState == "done") && !nonEmpty(report) {
-					frame := readDispatchObservation(svc, agent, "visible", nil, ceiling)
+					frame := readDispatchObservation(svc, agent, "visible", nil, ceiling, false)
 					if visible, ok := provider.StartupStopScreen(frame, true); ok {
 						if d := provider.StartupProviderStop(kind, arrivalState, visible); d != nil && !nonEmpty(report) {
 							return providerStopResult(d)
@@ -1198,58 +1198,54 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			}
 		}
 	} else if checkOn {
-		notReceived := func(why string, knownSeq ...string) int {
+		boundedOMP := ompJournalArmed && ceiling != nil
+		lastArrivalSeq := preSeq
+		notReceived := func(why string) int {
 			finishAgyDelivery()
-			return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, why, knownSeq...)
+			if boundedOMP {
+				return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, why, lastArrivalSeq)
+			}
+			return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, why)
 		}
 		window := time.Duration(checkSecs) * time.Second
 		arrivalState := preState.State
-		lastArrivalSeq := preSeq
-		sampleArrival := func(sampleCtx context.Context, call transport.Call, sampleCeiling *dispatchWaitBudget) bool {
+		arrivalStateRead := func() stateProbe {
+			if !boundedOMP {
+				return readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
+			}
+			st := readOMPDispatchState(svc, agent, ceiling)
+			if st.Seq != "" {
+				lastArrivalSeq = st.Seq
+			}
+			return st
+		}
+		arrived := func() bool {
+			if boundedOMP && !ompDispatchEvidenceCurrent(context.Background(), ceiling) {
+				return false
+			}
 			reportExists := nonEmpty(report)
-			if !ompDispatchEvidenceCurrent(sampleCtx, sampleCeiling) {
+			if boundedOMP && !ompDispatchEvidenceCurrent(context.Background(), ceiling) {
 				return false
 			}
 			if reportExists {
 				return true
 			}
-			st := stateFromReply(svc.Runtime.Get(sampleCtx, transport.Target{ID: agent}, call))
-			if !ompDispatchEvidenceCurrent(sampleCtx, sampleCeiling) {
-				return false
-			}
-			arrivalState = st.State
-			if st.Seq != "" {
-				lastArrivalSeq = st.Seq
+			st := arrivalStateRead()
+			if !boundedOMP || st.State != "" {
+				arrivalState = st.State
 			}
 			return (st.State == "working" || st.State == "blocked") && preSeq != "" && st.Seq != "" && st.Seq != preSeq
-		}
-		arrived := func() bool {
-			return sampleArrival(context.Background(), transport.Call{Timeout: herdr.Timeout}, nil)
-		}
-		initialStateArrival := arrived
-		if ompJournalArmed && ceiling != nil {
-			initialStateArrival = func() bool {
-				call, ok := ompDispatchObservationCall(ceiling)
-				if !ok {
-					return false
-				}
-				sampleCtx, cancel := context.WithTimeout(context.Background(), call.Timeout)
-				defer cancel()
-				return sampleArrival(sampleCtx, call, ceiling)
-			}
 		}
 		promptEvidence := func() bool {
 			screen, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
 			return provider.PromptEvidence(screen, composed)
 		}
-		if !wasWorking && !waitDispatchArrivalExtra(window, env, initialStateArrival, initialArrival, ceiling) {
-			frame := readDispatchObservation(svc, agent, "visible", nil, ceiling)
-			if ceiling.softHit("prompt arrival") {
-				const reason = "no arrival proof before the --no-wait ceiling"
-				if ompJournalArmed {
-					return notReceived(reason, lastArrivalSeq)
-				}
-				return notReceived(reason)
+		if !wasWorking && !waitDispatchArrivalExtra(window, env, arrived, initialArrival, ceiling) {
+			const ceilingReason = "no arrival proof before the --no-wait ceiling"
+			ceilingHit := func() bool { return ceiling.softHit("prompt arrival") }
+			frame := readDispatchObservation(svc, agent, "visible", nil, ceiling, boundedOMP)
+			if ceilingHit() {
+				return notReceived(ceilingReason)
 			}
 			screen := frame.Value
 			if code, refused := refuseAgyLogin(screen, frame.Valid && frame.Err == nil); refused {
@@ -1259,7 +1255,11 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			// Enter nor a resend can change the subscription's model settings.
 			// Reuse the arrival state and the existing visible frame so this
 			// check does not advance observation before the composer retry.
-			if !nonEmpty(report) {
+			reportExists := nonEmpty(report)
+			if boundedOMP && ceilingHit() {
+				return notReceived(ceilingReason)
+			}
+			if !reportExists {
 				d := core.ProviderDetectTexts(arrivalState, screen, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
 				if d != nil {
 					if !core.IsModelPlanError(d.Cause) && d.Status != "provider-refusal" && d.Cause != provider.LostConnectionCause {
@@ -1268,11 +1268,17 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				} else if visible, ok := provider.StartupStopScreen(frame, false); ok {
 					d = provider.StartupProviderStop(kind, arrivalState, visible, lastVisible, priorRecent)
 				}
+				if boundedOMP && ceilingHit() {
+					return notReceived(ceilingReason)
+				}
 				if d != nil {
 					return providerStopResult(d)
 				}
 			}
-			if firstEnterReady(kind, screen, composed) {
+			if boundedOMP && reportExists {
+				// A timely report already proves arrival, even if no screen
+				// subprocess fit in the remainder of the no-wait budget.
+			} else if firstEnterReady(kind, screen, composed) {
 				// A recognized composer still holds this exact composed prompt
 				// path: the prompt is typed and not sent. A report, a read, the
 				// history or a dialog never authorizes the Enter on an empty or
@@ -1299,18 +1305,36 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 					core.Warn(fmt.Sprintf("prompt to '%s' sat in the input box; its Enter failed", agent), frictionLogPath, "dispatch")
 					return notReceived("a failed Enter on the text left in its input box")
 				}
-			} else if staleAuthBlock(agent, svc, H0, preSeq, enterSent, resent) {
-				return notReceived("its block on a provider auth error")
 			} else {
+				readVisible := func() (string, bool) {
+					if !boundedOMP {
+						return readScreen(svc, agent, "visible", nil)
+					}
+					frame := readDispatchObservation(svc, agent, "visible", nil, ceiling, true)
+					return frame.Value, frame.Valid && frame.Err == nil
+				}
+				staleAuth := staleAuthBlock(arrivalStateRead, readVisible, H0, preSeq, enterSent, resent)
+				if boundedOMP && ceilingHit() {
+					return notReceived(ceilingReason)
+				}
+				if staleAuth {
+					return notReceived("its block on a provider auth error")
+				}
 				// The text can land in the composer between the first arrival
 				// check and this retry: re-read the actual input region right
 				// before the retry and act only on a recognized composer.
-				resendScreen, resendScreenOK := readScreen(svc, agent, "visible", nil)
+				resendScreen, resendScreenOK := readVisible()
+				if boundedOMP && ceilingHit() {
+					return notReceived(ceilingReason)
+				}
 				if code, refused := refuseAgyLogin(resendScreen, resendScreenOK); refused {
 					return code
 				}
 				H0 = strconv.FormatUint(uint64(waitpkg.CksumField(resendScreen)), 10)
-				resendState := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
+				resendState := arrivalStateRead()
+				if boundedOMP && ceilingHit() {
+					return notReceived(ceilingReason)
+				}
 				if blocked, ev, st := cursorStartupRefusal(kind, agent, svc); blocked {
 					// The dialog appeared before the resend: the resend would
 					// type into it — refuse with the blocked result.
@@ -1331,10 +1355,14 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 					return notReceived("its block on a dialog")
 				}
 				region, recognized := provider.ComposerRegion(kind, resendScreen)
-				if !resendScreenOK {
+				reportExists := (resendScreenOK || boundedOMP) && nonEmpty(report)
+				if boundedOMP && ceilingHit() {
+					return notReceived(ceilingReason)
+				}
+				if !resendScreenOK && !reportExists {
 					return notReceived("an unreadable input region")
 				}
-				if nonEmpty(report) || transcriptArrival() || ((resendState.State == "working" || resendState.State == "blocked") && preSeq != "" && resendState.Seq != "" && preSeq != resendState.Seq) {
+				if reportExists || transcriptArrival() || ((resendState.State == "working" || resendState.State == "blocked") && preSeq != "" && resendState.Seq != "" && preSeq != resendState.Seq) {
 					// Receipt can arrive between the deadline and this final read.
 					// Preserve the original sequence baseline; never resend it.
 				} else if recognized && provider.ComposerHoldsPathFor(kind, region, composed) {
@@ -3373,18 +3401,18 @@ func authCauses(screen string) []string {
 	return causes
 }
 
-func staleAuthBlock(agent string, svc transport.Services, h0, preSeq string, enterSent, resent bool) bool {
+func staleAuthBlock(readState func() stateProbe, readVisible func() (string, bool), h0, preSeq string, enterSent, resent bool) bool {
 	if enterSent || resent {
 		return false
 	}
-	st := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
+	st := readState()
 	if st.State != "blocked" {
 		return false
 	}
 	if preSeq != "" && st.Seq != "" && st.Seq != preSeq {
 		return false
 	}
-	screen, _ := readScreen(svc, agent, "visible", nil)
+	screen, _ := readVisible()
 	if strconv.FormatUint(uint64(waitpkg.CksumField(screen)), 10) != h0 {
 		return false
 	}
@@ -3402,15 +3430,23 @@ func dispatchObservationCall(ceiling *dispatchWaitBudget) (transport.Call, bool)
 	return transport.Call{Timeout: timeout}, timeout > 0
 }
 
-func readDispatchObservation(svc transport.Services, agent, source string, lines *int, ceiling *dispatchWaitBudget) transport.Reply[string] {
-	call, ok := dispatchObservationCall(ceiling)
+func readDispatchObservation(svc transport.Services, agent, source string, lines *int, ceiling *dispatchWaitBudget, boundedOMP bool) transport.Reply[string] {
+	observationCall := dispatchObservationCall
+	if boundedOMP {
+		observationCall = ompDispatchObservationCall
+	}
+	call, ok := observationCall(ceiling)
 	if !ok {
 		return transport.Reply[string]{}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), call.Timeout)
 	defer cancel()
 	reply := svc.Runtime.Read(ctx, transport.Target{ID: agent}, transport.Read{Source: source, Lines: lines}, call)
-	if _, ok := dispatchObservationCall(ceiling); !ok {
+	checkCtx := context.Background()
+	if boundedOMP {
+		checkCtx = ctx
+	}
+	if !ompDispatchEvidenceCurrent(checkCtx, ceiling) {
 		return transport.Reply[string]{}
 	}
 	return reply
@@ -3420,28 +3456,23 @@ func noWaitObservation(agent, role, kind, lane, model, report string, env platfo
 	if nonEmpty(report) {
 		return "submitted", nil
 	}
-	observationCall := dispatchObservationCall
+	var st stateProbe
 	if ompJournalArmed {
-		observationCall = ompDispatchObservationCall
-	}
-	call, ok := observationCall(ceiling)
-	if !ok {
-		return "submitted", nil
-	}
-	sampleCtx := context.Background()
-	if ompJournalArmed {
-		var cancel context.CancelFunc
-		sampleCtx, cancel = context.WithTimeout(sampleCtx, call.Timeout)
-		defer cancel()
-	}
-	st := stateFromReply(svc.Runtime.Get(sampleCtx, transport.Target{ID: agent}, call))
-	if ompJournalArmed && !ompDispatchEvidenceCurrent(sampleCtx, ceiling) {
-		return "submitted", nil
+		st = readOMPDispatchState(svc, agent, ceiling)
+		if st.State == "" {
+			return "submitted", nil
+		}
+	} else {
+		call, ok := dispatchObservationCall(ceiling)
+		if !ok {
+			return "submitted", nil
+		}
+		st = readState(svc, agent, call)
 	}
 	if st.State == "working" || st.State == "unavailable" {
 		return "submitted", nil
 	}
-	visible20 := readDispatchObservation(svc, agent, "visible", intPtr(20), ceiling).Value
+	visible20 := readDispatchObservation(svc, agent, "visible", intPtr(20), ceiling, ompJournalArmed).Value
 	if q := provider.QuotaDetect(st.State, visible20); q != nil {
 		if lane == "" {
 			lane = core.LaneOfRole(ctx, role, env)
@@ -3451,11 +3482,11 @@ func noWaitObservation(agent, role, kind, lane, model, report string, env platfo
 	if line := provider.DiskFullDetect(st.State, visible20); line != "" {
 		fmt.Fprintf(platform.Stderr, "soho: warning: worker '%s' hit a disk error: %s; free space (soho gc removes registered copies) and dispatch again\n", agent, line)
 	}
-	visible40 := readDispatchObservation(svc, agent, "visible", intPtr(40), ceiling).Value
+	visible40 := readDispatchObservation(svc, agent, "visible", intPtr(40), ceiling, ompJournalArmed).Value
 	if provider.DialogKind(kind, visible40) == "question" {
 		return "submitted", nil
 	}
-	recent := readDispatchObservation(svc, agent, "recent-unwrapped", intPtr(40), ceiling).Value
+	recent := readDispatchObservation(svc, agent, "recent-unwrapped", intPtr(40), ceiling, ompJournalArmed).Value
 	d := core.ProviderDetectTexts(st.State, recent, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
 	if d != nil && d.Status == "provider-error" && ((d.Auth && !priorAuth[d.Cause]) || core.IsModelPlanError(d.Cause)) {
 		if lane == "" {
@@ -3606,6 +3637,20 @@ func ompDispatchObservationCall(ceiling *dispatchWaitBudget) (transport.Call, bo
 
 func ompDispatchEvidenceCurrent(ctx context.Context, ceiling *dispatchWaitBudget) bool {
 	return ctx.Err() == nil && (ceiling == nil || dispatchCeilingNow().Before(ceiling.deadline))
+}
+
+func readOMPDispatchState(svc transport.Services, agent string, ceiling *dispatchWaitBudget) stateProbe {
+	call, ok := ompDispatchObservationCall(ceiling)
+	if !ok {
+		return stateProbe{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), call.Timeout)
+	defer cancel()
+	st := stateFromReply(svc.Runtime.Get(ctx, transport.Target{ID: agent}, call))
+	if !ompDispatchEvidenceCurrent(ctx, ceiling) {
+		return stateProbe{}
+	}
+	return st
 }
 
 func readOMPDispatchIdentity(svc transport.Services, pane string, ceiling *dispatchWaitBudget) ompDispatchIdentity {
