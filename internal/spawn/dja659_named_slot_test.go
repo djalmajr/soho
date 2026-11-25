@@ -10,38 +10,8 @@ import (
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
-// DJA659 stage 1: consumer regressions for an explicit --name against a
-// compatible idle lane worker, written against the pre-fix production code.
-// The red tests (TestDJA659NamedSlotCreatesNewWorker and
-// TestDJA659NamedSlotFullCapacityWarning) assert the next authorized defect
-// fix: a genuinely new explicit name opens a spare slot instead of renaming
-// the compatible idle worker when both the lane and the caller-adjusted
-// global capacity permit it, and the full-capacity rename warning says the
-// old name ceased to work, suggests --fresh and acknowledges its capacity
-// requirement. The control tests assert the established reuse behavior the
-// fix must keep: an already existing requested name is reused as-is, and an
-// omitted name keeps the reuse preference even when a slot is free.
-// TestDJA659NamedSlotCapControls separates the two capacity conditions:
-// the lane at its panes limit with global room, and the caller-adjusted
-// global cap reached with the lane still holding a slot. F3 closes the
-// oracle gap: each separated case now positively requires the actually
-// limiting cap's phrase (the lane statement for a full lane, the
-// max_workers statement for a full global cap) together with the old-name
-// and --fresh lines, while still forbidding the inapplicable cap claim;
-// the both-full case requires both reasons. Those controls passed on the
-// pre-fix code when they only forbade the false claim; with the positive
-// reasons pinned they are red on the pre-fix code, whose warning carries
-// only the established base phrase, and that transition is recorded
-// honestly. The fixtures are the existing a12 lane machinery
-// (lane build, role worker, kind grok) with the lane panes pinning the
-// capacity: the global cap is the sum of the lane capacities, so panes=1
-// with one live occupant fills the lane and the global cap together, and
-// panes=2 with one live occupant leaves spare capacity in both.
-
-// dja659NamedSlotRules is the herdr surface of a lane holding the one idle
-// 'old' worker: 'old' is live (so the global cap counts it), 'old' reports
-// idle, and the rename the pre-fix code takes is available so the red run
-// fails on the assertions, not on a missing rule.
+// These fixtures expose a compatible idle worker and the old rename endpoint.
+// An unexpected rename must reach the fixture so it fails the no-rename assertion.
 func dja659NamedSlotRules() []fakecli.Rule {
 	rules := []fakecli.Rule{
 		{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"old","pane_id":"p-old","agent_status":"idle"}]}}`},
@@ -146,150 +116,64 @@ func TestDJA659NamedSlotControls(t *testing.T) {
 	})
 }
 
-func TestDJA659NamedSlotFullCapacityWarning(t *testing.T) {
-	// RED on the pre-fix code. The lane is at its panes limit and the
-	// caller-adjusted global cap is reached by the same occupant (one
-	// slot, one live worker): opening is not permitted, so the compatible
-	// rename stays, but the warning must say the old name ceased to work,
-	// suggest --fresh and acknowledge BOTH actually limiting caps — the
-	// lane and the caller-adjusted global cap. The believable regression
-	// that makes it fail: suppressing the extended warning, or either of
-	// the two capacity acknowledgements, from the full-capacity rename.
-	f := a12Fixture(t, dja659NamedSlotRules(), "1")
-	f.roster(t, a12Row("old", "grok", "grok-4.7", f.cwd))
-	code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--name", "fresh"})
-	if code != 0 {
-		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+func TestDJA659NamedSlotFullCapacityRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name, panes, laneLimit, globalLimit  string
+		globalRoom, extraLive, explicitReuse bool
+	}{
+		{name: "both limits", panes: "1", laneLimit: "lane 'build' has no room for a new worker (1 of 1)", globalLimit: "max_workers=1 is at capacity (1 of 1)"},
+		{name: "lane limit only", panes: "1", laneLimit: "lane 'build' has no room for a new worker (1 of 1)", globalRoom: true},
+		{name: "global limit only", panes: "2", globalLimit: "max_workers=2 is at capacity (2 of 2)", extraLive: true},
+		{name: "explicit reuse still preserves the name", panes: "1", laneLimit: "lane 'build' has no room for a new worker (1 of 1)", globalLimit: "max_workers=1 is at capacity (1 of 1)", explicitReuse: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rules := dja659NamedSlotRules()
+			if tc.extraLive {
+				rules = append([]fakecli.Rule{{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"old","pane_id":"p-old","agent_status":"idle"},{"name":"stale","pane_id":"p-stale","agent_status":"idle"}]}}`}}, rules[1:]...)
+			}
+			f := a12Fixture(t, rules, tc.panes)
+			if tc.globalRoom {
+				f.ctx.Entries["lane_review_roles"] = core.ConfigEntry{Value: "reviewer", Source: "project"}
+				f.ctx.Order = append(f.ctx.Order, "lane_review_roles")
+			}
+			rows := []string{a12Row("old", "grok", "grok-4.7", f.cwd)}
+			if tc.extraLive {
+				stale := strings.Split(a12Row("stale", "grok", "grok-4.7", f.cwd), "\t")
+				stale[11] = "gone" // Counts globally but belongs to a retired lane.
+				rows = append(rows, strings.Join(stale, "\t"))
+			}
+			f.roster(t, rows...)
+			roster := filepath.Join(f.state, "ws", "agents.tsv")
+			before, err := os.ReadFile(roster)
+			if err != nil {
+				t.Fatal(err)
+			}
+			argv := []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--name", "fresh"}
+			if tc.explicitReuse {
+				argv = append(argv, "--reuse")
+			}
+			code, stdout, stderr, calls := runCmdSpawn(t, f, argv)
+			if code != 10 || !spawnJSONHasField(t, stdout, `"status": "busy"`) || !spawnJSONHasField(t, stdout, `"name": "old"`) {
+				t.Fatalf("exit=%d stdout=%q stderr=%q, want busy on old", code, stdout, stderr)
+			}
+			if renamed, started := dja659AgentCalls(calls, "rename"), dja659AgentCalls(calls, "start"); renamed != 0 || started != 0 {
+				t.Fatalf("capacity refusal called rename %d times, start %d times: %#v", renamed, started, calls)
+			}
+			after, err := os.ReadFile(roster)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatalf("roster changed: before=%q after=%q", before, after)
+			}
+			for _, want := range []string{"idle worker 'old' was not reused as 'fresh'", "reuse it by its existing name", "release a slot before retrying with --fresh", tc.laneLimit, tc.globalLimit} {
+				if want != "" && !strings.Contains(stderr, want) {
+					t.Fatalf("stderr=%q is missing %q", stderr, want)
+				}
+			}
+			if tc.laneLimit == "" && strings.Contains(stderr, "has no room for a new worker") || tc.globalLimit == "" && strings.Contains(stderr, "max_workers") {
+				t.Fatalf("stderr names a limit that still has room: %q", stderr)
+			}
+		})
 	}
-	// Full capacity keeps the rename path: one rename, no create.
-	if renamed, started := dja659AgentCalls(calls, "rename"), dja659AgentCalls(calls, "start"); renamed != 1 || started != 0 {
-		t.Fatalf("native calls at full capacity: renamed=%d started=%d calls=%#v", renamed, started, calls)
-	}
-	if !spawnJSONHasField(t, stdout, `"name": "fresh"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
-		t.Fatalf("JSON=%q", stdout)
-	}
-	roster, err := os.ReadFile(filepath.Join(f.state, "ws", "agents.tsv"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(roster), "fresh\tp-old\tgrok\tworker") || strings.Contains(string(roster), "old\tp-old") {
-		t.Fatalf("the roster rename did not keep the old pane: %q", roster)
-	}
-	// The established warning stays, and gains the required parts: the old
-	// name ceased to work, --fresh is suggested, and both actually limiting
-	// caps are acknowledged with their positive phrases.
-	if !strings.Contains(stderr, "reusing idle lane 'build' worker 'old' as worker, renamed to 'fresh'; existing session context is retained") {
-		t.Fatalf("stderr=%q missed the established rename warning", stderr)
-	}
-	if !strings.Contains(stderr, "the old name 'old' no longer works") {
-		t.Fatalf("stderr=%q does not say the old name ceased to work", stderr)
-	}
-	if !strings.Contains(stderr, "use --fresh to open a new worker") {
-		t.Fatalf("stderr=%q does not suggest --fresh", stderr)
-	}
-	if !strings.Contains(stderr, "the lane 'build' is at capacity (1 of 1), so no new pane can open until a worker is released") {
-		t.Fatalf("stderr=%q does not acknowledge the full lane cap", stderr)
-	}
-	if !strings.Contains(stderr, "max_workers=1 is at capacity (1 of 1)") {
-		t.Fatalf("stderr=%q does not acknowledge the full caller-adjusted global cap", stderr)
-	}
-}
-
-func TestDJA659NamedSlotCapControls(t *testing.T) {
-	// F1 + F3: two small controls separating the lane and global capacity
-	// conditions, so neither can disappear unnoticed. Both keep the
-	// compatible rename (no create) on the pre-fix code. F3 closes the
-	// oracle gap: each case now positively requires the actually limiting
-	// cap's phrase and the old-name/--fresh lines, in addition to keeping
-	// the rename behavior, the established warning and the ban on claiming
-	// the cap that has room. RED on the pre-fix code: its warning carries
-	// only the established base phrase.
-
-	t.Run("lane full with global room keeps the rename and does not claim the global cap", func(t *testing.T) {
-		// The build lane is at its panes limit (1 of 1); a second
-		// configured lane gives the caller-adjusted global cap room
-		// (max_workers is the sum of the lane capacities: 2, with one
-		// live occupant).
-		f := a12Fixture(t, dja659NamedSlotRules(), "1")
-		f.ctx.Entries["lane_review_roles"] = core.ConfigEntry{Value: "reviewer", Source: "project"}
-		f.ctx.Order = append(f.ctx.Order, "lane_review_roles")
-		f.roster(t, a12Row("old", "grok", "grok-4.7", f.cwd))
-		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--name", "fresh"})
-		if code != 0 {
-			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
-		}
-		if renamed, started := dja659AgentCalls(calls, "rename"), dja659AgentCalls(calls, "start"); renamed != 1 || started != 0 {
-			t.Fatalf("native calls with the lane full and global room: renamed=%d started=%d calls=%#v", renamed, started, calls)
-		}
-		if !spawnJSONHasField(t, stdout, `"name": "fresh"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
-			t.Fatalf("JSON=%q", stdout)
-		}
-		if !strings.Contains(stderr, "renamed to 'fresh'") {
-			t.Fatalf("stderr=%q lost the established rename warning", stderr)
-		}
-		// The lane is full (1 of 1): the warning must carry the lane's
-		// positive reason, and the old-name and --fresh lines the both-full
-		// case pins.
-		if !strings.Contains(stderr, "the lane 'build' is at capacity (1 of 1), so no new pane can open until a worker is released") {
-			t.Fatalf("stderr=%q does not acknowledge the full lane cap", stderr)
-		}
-		if !strings.Contains(stderr, "the old name 'old' no longer works") {
-			t.Fatalf("stderr=%q does not say the old name ceased to work", stderr)
-		}
-		if !strings.Contains(stderr, "use --fresh to open a new worker") {
-			t.Fatalf("stderr=%q does not suggest --fresh", stderr)
-		}
-		// The global cap has room (1 live of 2): no warning may claim it;
-		// max_workers is the token the established global refusal uses.
-		if strings.Contains(stderr, "max_workers") {
-			t.Fatalf("the warning claims the global cap, which has room: %q", stderr)
-		}
-	})
-
-	t.Run("global full with lane room keeps the rename and does not claim the lane is full", func(t *testing.T) {
-		// The build lane has a free slot (1 of 2); a live worker whose
-		// roster line names a lane that is no longer configured fills the
-		// caller-adjusted global cap (the cap counts roster names that are
-		// live in the agent list: 2 of max_workers 2).
-		rules := []fakecli.Rule{
-			{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"old","pane_id":"p-old","agent_status":"idle"},{"name":"stale","pane_id":"p-stale","agent_status":"idle"}]}}`},
-			idleHerdrRule("old"),
-			{Argv: []string{"agent", "rename", "p-old", "fresh"}, Stdout: `{"result":{}}`},
-		}
-		rules = append(rules, freshSpawnRules()...)
-		f := a12Fixture(t, rules, "2")
-		stale := strings.Split(a12Row("stale", "grok", "grok-4.7", f.cwd), "\t")
-		stale[11] = "gone" // a roster line whose lane no longer exists
-		f.roster(t, a12Row("old", "grok", "grok-4.7", f.cwd), strings.Join(stale, "\t"))
-		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--name", "fresh"})
-		if code != 0 {
-			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
-		}
-		if renamed, started := dja659AgentCalls(calls, "rename"), dja659AgentCalls(calls, "start"); renamed != 1 || started != 0 {
-			t.Fatalf("native calls with the global cap full and lane room: renamed=%d started=%d calls=%#v", renamed, started, calls)
-		}
-		if !spawnJSONHasField(t, stdout, `"name": "fresh"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
-			t.Fatalf("JSON=%q", stdout)
-		}
-		if !strings.Contains(stderr, "renamed to 'fresh'") {
-			t.Fatalf("stderr=%q lost the established rename warning", stderr)
-		}
-		// The caller-adjusted global cap is full (2 live of max_workers 2):
-		// the warning must carry the global positive reason with the actual
-		// caller-adjusted counts, and the old-name and --fresh lines.
-		if !strings.Contains(stderr, "max_workers=2 is at capacity (2 of 2)") {
-			t.Fatalf("stderr=%q does not acknowledge the full global cap", stderr)
-		}
-		if !strings.Contains(stderr, "the old name 'old' no longer works") {
-			t.Fatalf("stderr=%q does not say the old name ceased to work", stderr)
-		}
-		if !strings.Contains(stderr, "use --fresh to open a new worker") {
-			t.Fatalf("stderr=%q does not suggest --fresh", stderr)
-		}
-		// The lane is not full (1 of 2): no warning may claim it is, using
-		// the phrase the both-full case pins as the lane-full statement.
-		if strings.Contains(stderr, "the lane 'build' is at capacity") {
-			t.Fatalf("the warning claims the lane is full, which it is not: %q", stderr)
-		}
-	})
 }

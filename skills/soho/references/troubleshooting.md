@@ -231,9 +231,8 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 
 ## Orphan lines in the roster (a line of an agent that died)
 
-- **Named lane spawn:** a new explicit name opens a new worker only when both caps allow it. Existing or omitted names retain reuse; when capacity requires a compatible rename, the warning lists the actual limiting caps and says the old name no longer works. `--fresh` still requires capacity.
-- **Dispatch after a rename:** an old name exits 3 and sends nothing. Valid bounded history may suggest the current name; stale, released, replaced or recreated names have no suggestion. Use the current roster name explicitly.
-- **Rename reconciliation:** native rename can succeed before registry publication detects a changed source or a persistence error. Spawn then exits 4 before moving per-name state or claiming readiness. Reconcile the native worker with the roster before retrying; there is no automatic reversal or second rename.
+- **Named lane spawn:** when a compatible idle worker has a different name, a new explicit name requires room in both the lane and the caller-adjusted `max_workers`. At capacity, spawn preserves the existing worker and reports the binding limits. Dispatch to the existing worker, request reuse by its current name, or release a slot before retrying with `--fresh`.
+- **Dispatch after an older rename:** an old name exits 3 and sends nothing. Valid bounded history may suggest the current name. Use the current roster name explicitly.
 
 - **Symptom:** `roster` shows a line whose pane is dead or whose name is used by another live agent; the worker count seems off.
 - **Cause:** a worker exited without `release`; its roster line stayed.

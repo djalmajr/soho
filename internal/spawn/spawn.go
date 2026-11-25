@@ -844,93 +844,6 @@ func gateConfiguredReuse(rt transport.Runtime, line string, o spawnOptions, kind
 	return ""
 }
 
-// renameLaneWorker renames the reused worker's agent to newName with the same
-// herdr agent rename call EnsureOrchestratorName uses; it returns the cause
-// extracted from the result when the rename failed, empty on success.
-func renameLaneWorker(svc transport.Services, newName, pane string) string {
-	rep := svc.Legacy.Rename(context.Background(), transport.Target{ID: pane}, newName, transport.Call{})
-	if rep.Value {
-		return ""
-	}
-	r := rep.Process
-	raw := r.Stderr
-	if raw == "" {
-		raw = r.Stdout
-	}
-	if code, msg := renameErrorInfo(raw); code != "" {
-		if cause := text.SanitizeCause(code + ": " + msg); cause != "" {
-			return cause
-		}
-	}
-	rc := 1
-	if r.NotFound {
-		rc = 127
-	} else if r.Status != nil {
-		rc = *r.Status
-	}
-	if cause := text.SanitizeCause(raw); cause != "" {
-		return cause
-	}
-	return fmt.Sprintf("herdr agent rename failed (exit %d)", rc)
-}
-
-func renameErrorInfo(raw string) (string, string) {
-	v, err := jsonjs.Parse([]byte(raw))
-	if err != nil {
-		return "", ""
-	}
-	o, ok := v.(*jsonjs.Object)
-	if !ok {
-		return "", ""
-	}
-	e, ok := o.Get("error")
-	if !ok {
-		return "", ""
-	}
-	eo, ok := e.(*jsonjs.Object)
-	if !ok {
-		return "", ""
-	}
-	code, _ := eo.Get("code")
-	msg, _ := eo.Get("message")
-	cs, _ := code.(string)
-	ms, _ := msg.(string)
-	if cs == "" {
-		return "", ""
-	}
-	return cs, ms
-}
-
-// moveNameStateFiles moves the per-agent state files from oldName to newName
-// after a successful lane rename, so the worker's earlier session is read back
-// under the new name: the last-report pointer (core.LastReportPath), the task
-// title file ("task-" plus the name, as internal/core reads and writes it),
-// the task report pointer (taskreport.TaskReportPointerPath) and every wait
-// marker the wait package stores as wait/<agent>.<marker>. Missing files are
-// not an error; a failing rename becomes a warning and the spawn continues.
-func moveNameStateFiles(sd, oldName, newName string, ctx *core.Config, env platform.Env) {
-	move := func(display, from, to string) {
-		if _, err := os.Stat(from); err != nil {
-			return
-		}
-		if err := os.Rename(from, to); err != nil {
-			Warn(fmt.Sprintf("spawn: could not move '%s' to the name '%s': %s", display, newName, text.SanitizeCause(err.Error())), ctx, env, "spawn")
-		}
-	}
-	move("last-report-"+oldName, core.LastReportPath(sd, oldName), core.LastReportPath(sd, newName))
-	move("task-"+oldName, filepath.Join(sd, "task-"+oldName), filepath.Join(sd, "task-"+newName))
-	oldPointer := taskreport.TaskReportPointerPath(sd, oldName)
-	move(filepath.Base(oldPointer), oldPointer, taskreport.TaskReportPointerPath(sd, newName))
-	if entries, err := os.ReadDir(filepath.Join(sd, "wait")); err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasPrefix(entry.Name(), oldName+".") {
-				continue
-			}
-			rest := strings.TrimPrefix(entry.Name(), oldName+".")
-			move("wait/"+entry.Name(), filepath.Join(sd, "wait", entry.Name()), filepath.Join(sd, "wait", newName+"."+rest))
-		}
-	}
-}
 func defaultValue(value, fallback string) string {
 	if value == "" {
 		return fallback
@@ -1335,7 +1248,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			capacity = core.WorkerCapacityAt(ctx, env, reuseDir, plan.decision.Gone...)
 		}
 		if plan.action == "different-name" {
-			plan.resolveName(o, request, capacity)
+			plan.resolveName(capacity)
 		}
 		if plan.action == "reuse" && plan.candidate.modelSpec != "" {
 			modelSpec = plan.candidate.modelSpec
@@ -1455,54 +1368,34 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		switch plan.action {
 		case "reuse":
 			qualifiedProfile := gateConfiguredReuse(svc.Terminal, line, o, actual, configuredArgs, env)
-			name := selected
-			renamedTo := ""
-			if o.name != "" && o.name != selected {
-				if cause := renameLaneWorker(svc, o.name, fieldAt(f, 1)); cause != "" {
-					core.DieFriction(fmt.Sprintf("spawn: could not rename worker '%s' to '%s': %s", selected, o.name, cause), 4, "", "")
-				}
-				published, err := core.RosterRenameIf(sd, selected, o.name, line)
-				if err != nil || !published {
-					cause := "the selected source row changed or disappeared"
-					if err != nil {
-						cause = err.Error()
-					}
-					core.DieFriction(fmt.Sprintf("spawn: native rename of '%s' to '%s' succeeded, but roster publication failed: %s. Reconcile the native worker and roster before retrying; no automatic reversal was attempted.", selected, o.name, text.SanitizeCause(cause)), 4, "", "")
-				}
-				moveNameStateFiles(sd, selected, o.name, ctx, env)
-				name = o.name
-				renamedTo = o.name
-			}
-			gateReuse(svc, name, o.role, actual, ctx, env, cwd)
-			emitReuse(name, o.role, actual, qualifiedProfile, modelChoice, ctx, env, cwd)
-			sameTreeEditors(name, o.role, fieldAt(f, 6), sd, env, cwd, ctx)
-			warnMsg := fmt.Sprintf("reusing idle lane '%s' worker '%s' as %s; existing session context is retained", lane, selected, o.role)
-			if renamedTo != "" {
-				warnMsg = fmt.Sprintf("reusing idle lane '%s' worker '%s' as %s, renamed to '%s'; existing session context is retained", lane, selected, o.role, renamedTo)
-				warnMsg += fmt.Sprintf("; the old name '%s' no longer works; use --fresh to open a new worker when capacity permits", selected)
-				if d.N >= d.Capacity {
-					warnMsg += fmt.Sprintf("; the lane '%s' is at capacity (%d of %d), so no new pane can open until a worker is released", lane, d.N, d.Capacity)
-				}
-				if capacity.Full {
-					warnMsg += fmt.Sprintf("; max_workers=%s is at capacity (%d of %s)", capacity.Limit, capacity.Count, capacity.Limit)
-				}
-			}
-			Warn(warnMsg, ctx, env, "spawn")
+			gateReuse(svc, selected, o.role, actual, ctx, env, cwd)
+			emitReuse(selected, o.role, actual, qualifiedProfile, modelChoice, ctx, env, cwd)
+			sameTreeEditors(selected, o.role, fieldAt(f, 6), sd, env, cwd, ctx)
+			Warn(fmt.Sprintf("reusing idle lane '%s' worker '%s' as %s; existing session context is retained", lane, selected, o.role), ctx, env, "spawn")
 			return
 		case "busy":
-			if plan.renameRefused {
-				constraint := fmt.Sprintf("lane '%s' has no room for a new worker", lane)
-				if d.N < d.Capacity && capacity.Full {
-					constraint = fmt.Sprintf("max_workers=%s is at capacity (%d live)", capacity.Limit, capacity.Count)
+			if plan.newNameRefused {
+				var limits []string
+				if d.N >= d.Capacity {
+					limits = append(limits, fmt.Sprintf("lane '%s' has no room for a new worker (%d of %d)", lane, d.N, d.Capacity))
 				}
-				plan.busyHint = fmt.Sprintf("spawn: idle worker '%s' was not reused as '%s' because native Core cannot rename it, and %s. Dispatch to '%s', or release it.", selected, o.name, constraint, selected)
+				if capacity.Full {
+					limits = append(limits, fmt.Sprintf("max_workers=%s is at capacity (%d of %s)", capacity.Limit, capacity.Count, capacity.Limit))
+				}
+				reason := "an explicit new name requires a new worker"
+				if env.Get("SOHO_TRANSPORT") == "hc" {
+					reason = "native Core cannot rename it"
+				}
+				plan.busyHint = fmt.Sprintf("spawn: idle worker '%s' was not reused as '%s' because %s, and %s. Dispatch to '%s' or reuse it by its existing name, or release a slot before retrying with --fresh.", selected, o.name, reason, strings.Join(limits, " and "), selected)
 			}
 			busyLane(lane, plan.busyName, plan.busyHint, o.role, ctx, env, cwd, o)
 		case "mismatch":
 			request.reportMismatch(o, res, sources, line, differences, true)
 		case "open":
-			if len(differences) != 0 {
+			if line != "" {
 				occupiedNames = d.Occupants
+			}
+			if len(differences) != 0 {
 				explainMismatch = func() { request.reportMismatch(o, res, sources, line, request.differences(f), false) }
 			} else if line != "" && env.Get("SOHO_TRANSPORT") == "hc" && o.name != "" && o.name != selected {
 				warnOnce("hc-idle-not-reused:"+lane, fmt.Sprintf("spawn: idle worker '%s' was not reused as '%s' because native Core cannot rename it; starting a new worker '%s'", selected, o.name, o.name), ctx, env, cwd, admissionOnly, Warn)

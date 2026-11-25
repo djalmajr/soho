@@ -257,12 +257,12 @@ type laneSpawnPlan struct {
 	candidate          laneCandidate
 	action             string
 	busyName, busyHint string
-	renameRefused      bool
+	newNameRefused     bool
 	burst              bool
 }
 
 // planLaneSpawn applies the lane and transport admission rules before model
-// rotation. The global cap is also used to choose rename versus creation.
+// rotation. A different name requires a new slot.
 func (r laneReuseRequest) planLaneSpawn(o spawnOptions, models []string, rt transport.Transport) laneSpawnPlan {
 	d := core.LaneDecideAt(r.ctx, r.lane, r.role, r.env, r.sd, r.processCwd, o.reuse == "on")
 	p := laneSpawnPlan{decision: d, action: d.Decision}
@@ -342,20 +342,12 @@ func (r laneReuseRequest) planLaneSpawn(o spawnOptions, models []string, rt tran
 	return p
 }
 
-// resolveName decides if an otherwise compatible worker can serve an
-// explicitly different name, or if that request needs a new terminal.
-func (p *laneSpawnPlan) resolveName(o spawnOptions, r laneReuseRequest, capacity core.WorkerCapacity) {
-	full := p.decision.N >= p.decision.Capacity || capacity.Full
+// resolveName applies both limits to a request for a different worker name.
+func (p *laneSpawnPlan) resolveName(capacity core.WorkerCapacity) {
 	p.action = "open"
-	if r.env.Get("SOHO_TRANSPORT") == "hc" {
-		if full {
-			p.action = "busy"
-			p.busyName, _, _ = strings.Cut(p.candidate.line, "\t")
-			p.renameRefused = true
-		}
-		return
-	}
-	if full || core.RosterLine(r.sd, o.name) != "" && !has(p.decision.Gone, o.name) {
-		p.action = "reuse"
+	if p.decision.N >= p.decision.Capacity || capacity.Full {
+		p.action = "busy"
+		p.busyName, _, _ = strings.Cut(p.candidate.line, "\t")
+		p.newNameRefused = true
 	}
 }
