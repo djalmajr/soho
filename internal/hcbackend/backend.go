@@ -21,10 +21,8 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -82,10 +80,10 @@ type backend struct {
 	sessionValue string
 	sessionErr   error
 
-	abs            func(string) (string, error)
-	readyRemaining func(time.Time) time.Duration
-	readyContext   func(context.Context, time.Duration) (context.Context, context.CancelFunc)
-	envDropUtility func() *transport.Failure
+	abs               func(string) (string, error)
+	readyRemaining    func(time.Time) time.Duration
+	readyContext      func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	envDropExecutable func() (string, error)
 }
 
 func (b *backend) readinessRemaining(deadline time.Time) time.Duration {
@@ -1602,17 +1600,20 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 	}
 
 	if len(envDrop) > 0 {
-		// env treats an operand containing '=' as an assignment even
-		// after '--', so such a path cannot name the final program.
-		if strings.ContainsRune(program, '=') {
-			return transport.Reply[string]{Err: invalidEnvDrop("environment removal requires a worker executable path without '='")}
+		// The worker must be an absolute executable before any PATH entry is
+		// removed; a bare name could only be resolved by a wrapper.
+		if !filepath.IsAbs(program) {
+			return transport.Reply[string]{Err: &transport.Failure{
+				Kind:    transport.FailureUnavailable,
+				Message: "environment removal requires an absolute worker executable path",
+			}}
 		}
-		filtered := make([]string, 0, 2*len(envDrop)+2+len(args))
-		for _, name := range envDrop {
-			filtered = append(filtered, "-u", name)
+		helper, failure := b.workerEnvExecProgram()
+		if failure != nil {
+			return transport.Reply[string]{Err: failure}
 		}
-		filtered = append(filtered, "--", program)
-		program, args = envDropProgram, append(filtered, args...)
+		argv := platform.WorkerEnvExecArgv(envDrop, program, args)
+		program, args = helper, append([]string{platform.WorkerEnvExecMode}, argv...)
 	}
 	if start.LoginShell != "" {
 		program, args = loginShellLaunch(start.LoginShell, program, args)
@@ -2332,44 +2333,50 @@ func hcKeyName(keys string) (string, bool) {
 	return "", false
 }
 
-const (
-	envDropProgram  = "/usr/bin/env"
-	maxEnvDropNames = 16
-)
-
-var portableEnvDropName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+const maxEnvDropNames = platform.WorkerEnvExecMaxNames
 
 func (b *backend) preflightEnvDrop(names []string, overrides map[string]string) *transport.Failure {
 	for _, name := range names {
-		if !portableEnvDropName.MatchString(name) {
+		switch platform.WorkerEnvDropNameProblem(name) {
+		case platform.WorkerEnvDropNameInvalid:
 			return invalidEnvDrop("environment removal requires portable environment names")
-		}
-		upper := strings.ToUpper(name)
-		if strings.HasPrefix(upper, "SOHO_") || strings.HasPrefix(upper, "HC_") || strings.HasPrefix(upper, "HERDR_") {
+		case platform.WorkerEnvDropNameReserved:
 			return invalidEnvDrop("environment removal cannot remove reserved routing names")
 		}
 		if _, present := overrides[name]; present {
 			return invalidEnvDrop("environment removal cannot remove a name supplied by an environment override")
 		}
 	}
-	if b.envDropUtility != nil {
-		return b.envDropUtility()
+	if _, failure := b.workerEnvExecProgram(); failure != nil {
+		return failure
 	}
-	return envDropUtilityFailure(platform.Current(), envDropProgram)
+	return nil
+}
+
+// workerEnvExecProgram resolves the current soho executable that runs the
+// internal helper. The seam keeps the refusal testable without depending on
+// the test binary's own location.
+func (b *backend) workerEnvExecProgram() (string, *transport.Failure) {
+	if !platform.WorkerEnvExecSupported() {
+		return "", &transport.Failure{
+			Kind:    transport.FailureUnsupported,
+			Message: "environment removal requires a macOS or Linux Core host",
+		}
+	}
+	resolve := b.envDropExecutable
+	if resolve == nil {
+		resolve = platform.WorkerExecutable
+	}
+	path, err := resolve()
+	if err != nil || path == "" || !filepath.IsAbs(path) {
+		return "", &transport.Failure{
+			Kind:    transport.FailureUnavailable,
+			Message: "environment removal requires a usable absolute soho executable on the Core host",
+		}
+	}
+	return path, nil
 }
 
 func invalidEnvDrop(message string) *transport.Failure {
 	return &transport.Failure{Kind: transport.FailureCommand, Message: message}
-}
-
-func envDropUtilityFailure(osName, utility string) *transport.Failure {
-	if osName != "darwin" && osName != "linux" {
-		return &transport.Failure{Kind: transport.FailureUnsupported, Message: "environment removal requires a macOS or Linux Core host"}
-	}
-	if info, err := os.Stat(utility); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
-		if _, err := exec.LookPath(utility); err == nil {
-			return nil
-		}
-	}
-	return &transport.Failure{Kind: transport.FailureUnavailable, Message: "environment removal requires executable /usr/bin/env on the Core host"}
 }
