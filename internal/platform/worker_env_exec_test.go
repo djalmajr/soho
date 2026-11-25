@@ -1,4 +1,4 @@
-//go:build darwin || linux
+//go:build (darwin && !ios) || (linux && !android)
 
 package platform
 
@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -15,18 +16,30 @@ import (
 // environment: a mutant that drops the whole environment must not be able to
 // disable the probe.
 var (
-	envExecChildFlag = flag.Bool("soho-env-exec-child", false, "internal worker env exec helper child")
-	envExecProbeFlag = flag.Bool("soho-env-exec-probe", false, "internal worker env exec probe child")
+	envExecChildFlag    = flag.Bool("soho-env-exec-child", false, "internal worker env exec helper child")
+	envExecProbeFlag    = flag.Bool("soho-env-exec-probe", false, "internal worker env exec probe child")
+	envExecDropPathFlag = flag.Bool("soho-env-exec-probe-drop-path", false, "probe expects PATH removed")
 )
 
 // The executed helper runs in a child test process: it replaces that child
 // with an inert Go probe, so the parent can observe exact presence/absence
 // without any provider, shell or interpreter.
 const (
-	envExecSpecVar  = "SOHO_TEST_WORKER_ENV_EXEC_SPEC"
-	envExecDropName = "TEST_DROP_ME"
-	envExecKeepName = "TEST_KEEP_ME"
+	envExecSpecVar      = "SOHO_TEST_WORKER_ENV_EXEC_SPEC"
+	envExecDropName     = "TEST_DROP_ME"
+	envExecKeepName     = "TEST_KEEP_ME"
+	envExecLoaderExpect = "TEST_LOADER_EXPECTED"
 )
+
+// loaderEnvName is the real dynamic-loader variable of this platform: the
+// protected-wrapper regression stripped it, so a committed fixture must
+// prove it survives the helper.
+func loaderEnvName() string {
+	if runtime.GOOS == "darwin" {
+		return "DYLD_LIBRARY_PATH"
+	}
+	return "LD_LIBRARY_PATH"
+}
 
 // TestWorkerEnvExecHelperChild executes WorkerEnvExec from the NUL-joined
 // spec in its environment. On success it never returns.
@@ -56,15 +69,22 @@ func TestWorkerEnvExecProbeIsInert(t *testing.T) {
 	if value, present := os.LookupEnv(envExecKeepName); !present || value != "synthetic-keep" {
 		t.Fatalf("unrelated name %s was not preserved byte for byte", envExecKeepName)
 	}
-	if _, present := os.LookupEnv("PATH"); !present {
+	if *envExecDropPathFlag {
+		if _, present := os.LookupEnv("PATH"); present {
+			t.Fatal("requested PATH removal kept PATH")
+		}
+	} else if _, present := os.LookupEnv("PATH"); !present {
 		t.Fatal("unrelated PATH was lost")
 	}
-	if value := os.Getenv("TEST_DYNAMIC_UNRELATED"); value != "/synthetic/empty-dir" {
-		t.Fatalf("unrelated dynamic-loader-shaped name = %q, want it preserved", value)
+	if value, present := os.LookupEnv(loaderEnvName()); !present || value != os.Getenv(envExecLoaderExpect) || value == "" {
+		t.Fatal("the owned dynamic-loader directory was not preserved")
 	}
 }
 
-func TestWorkerEnvExecFiltersOnlyChosenNames(t *testing.T) {
+// runEnvExecHelper runs the helper in an inert child with the given removal
+// names and returns the child's combined output.
+func runEnvExecHelper(t *testing.T, drop []string, probeArgs ...string) string {
+	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -73,15 +93,16 @@ func TestWorkerEnvExecFiltersOnlyChosenNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := strings.Join([]string{
-		envExecDropName, "--", exe, "-test.run=^TestWorkerEnvExecProbeIsInert$", "-soho-env-exec-probe",
-	}, "\x1f")
+	loaderDir := t.TempDir()
+	probe := append([]string{"-test.run=^TestWorkerEnvExecProbeIsInert$", "-soho-env-exec-probe"}, probeArgs...)
+	spec := strings.Join(append(append(append([]string(nil), drop...), "--", exe), probe...), "\x1f")
 
 	env := append(os.Environ(),
 		envExecSpecVar+"="+spec,
 		envExecDropName+"=synthetic-drop",
 		envExecKeepName+"=synthetic-keep",
-		"TEST_DYNAMIC_UNRELATED=/synthetic/empty-dir",
+		loaderEnvName()+"="+loaderDir,
+		envExecLoaderExpect+"="+loaderDir,
 	)
 	cmd := exec.Command(exe, "-test.run=^TestWorkerEnvExecHelperChild$", "-soho-env-exec-child")
 	cmd.Env = env
@@ -93,6 +114,18 @@ func TestWorkerEnvExecFiltersOnlyChosenNames(t *testing.T) {
 	if !strings.Contains(string(out), "PASS") && !strings.Contains(string(out), "ok ") {
 		t.Fatalf("exec'd probe did not report success:\n%s", out)
 	}
+	return string(out)
+}
+
+func TestWorkerEnvExecFiltersOnlyChosenNames(t *testing.T) {
+	runEnvExecHelper(t, []string{envExecDropName})
+}
+
+// TestWorkerEnvExecRemovesPathWithAbsoluteWorker is the PATH-removal case:
+// the helper execs the worker by absolute path, so dropping PATH must not
+// prevent the exec while the owned loader directory still survives.
+func TestWorkerEnvExecRemovesPathWithAbsoluteWorker(t *testing.T) {
+	runEnvExecHelper(t, []string{envExecDropName, "PATH"}, "-soho-env-exec-probe-drop-path")
 }
 
 func TestWorkerEnvExecRejectsMalformedInvocation(t *testing.T) {
