@@ -28,6 +28,9 @@ const (
 	envExecSpecVar      = "SOHO_TEST_WORKER_ENV_EXEC_SPEC"
 	envExecDropName     = "TEST_DROP_ME"
 	envExecKeepName     = "TEST_KEEP_ME"
+	envExecKeepValue    = " synthetic=keep \né\t"
+	envExecEmptyName    = "TEST_KEEP_EMPTY"
+	envExecAmbientName  = "TEST_WORKER_ENV_EXEC_AMBIENT"
 	envExecLoaderExpect = "TEST_LOADER_EXPECTED"
 )
 
@@ -41,13 +44,17 @@ func loaderEnvName() string {
 	return "LD_LIBRARY_PATH"
 }
 
-// TestWorkerEnvExecHelperChild executes WorkerEnvExec from the NUL-joined
+// TestWorkerEnvExecHelperChild executes WorkerEnvExec from the unit-separator-joined
 // spec in its environment. On success it never returns.
 func TestWorkerEnvExecHelperChild(t *testing.T) {
 	if !*envExecChildFlag {
 		t.Skip("helper child only")
 	}
-	spec := os.Getenv(envExecSpecVar)
+	env := EnvFromOS()
+	if _, present := env.Lookup(envExecAmbientName); present {
+		t.Fatal("helper child inherited a parent-only variable")
+	}
+	spec := env.Get(envExecSpecVar)
 	if spec == "" {
 		t.Fatalf("helper child has no exec spec")
 	}
@@ -63,20 +70,25 @@ func TestWorkerEnvExecProbeIsInert(t *testing.T) {
 	if !*envExecProbeFlag {
 		t.Skip("probe child only")
 	}
-	if _, present := os.LookupEnv(envExecDropName); present {
+	env := EnvFromOS()
+	if _, present := env.Lookup(envExecDropName); present {
 		t.Fatalf("dropped name %s survived the helper", envExecDropName)
 	}
-	if value, present := os.LookupEnv(envExecKeepName); !present || value != "synthetic-keep" {
+	if value, present := env.Lookup(envExecKeepName); !present || value != envExecKeepValue {
 		t.Fatalf("unrelated name %s was not preserved byte for byte", envExecKeepName)
 	}
+	if value, present := env.Lookup(envExecEmptyName); !present || value != "" {
+		t.Fatalf("unrelated empty name %s was not preserved", envExecEmptyName)
+	}
+	path, pathPresent := env.Lookup("PATH")
 	if *envExecDropPathFlag {
-		if _, present := os.LookupEnv("PATH"); present {
+		if pathPresent {
 			t.Fatal("requested PATH removal kept PATH")
 		}
-	} else if _, present := os.LookupEnv("PATH"); !present {
-		t.Fatal("unrelated PATH was lost")
+	} else if !pathPresent || path != filepath.Join(env.Get("HOME"), "bin") {
+		t.Fatal("unrelated PATH was not preserved")
 	}
-	if value, present := os.LookupEnv(loaderEnvName()); !present || value != os.Getenv(envExecLoaderExpect) || value == "" {
+	if value, present := env.Lookup(loaderEnvName()); !present || value != env.Get(envExecLoaderExpect) || value == "" {
 		t.Fatal("the owned dynamic-loader directory was not preserved")
 	}
 }
@@ -93,20 +105,27 @@ func runEnvExecHelper(t *testing.T, drop []string, probeArgs ...string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaderDir := t.TempDir()
+	root, loaderDir := t.TempDir(), t.TempDir()
 	probe := append([]string{"-test.run=^TestWorkerEnvExecProbeIsInert$", "-soho-env-exec-probe"}, probeArgs...)
 	spec := strings.Join(append(append(append([]string(nil), drop...), "--", exe), probe...), "\x1f")
 
-	env := append(os.Environ(),
-		envExecSpecVar+"="+spec,
-		envExecDropName+"=synthetic-drop",
-		envExecKeepName+"=synthetic-keep",
-		loaderEnvName()+"="+loaderDir,
-		envExecLoaderExpect+"="+loaderDir,
-	)
+	t.Setenv(envExecAmbientName, "parent-only")
+	env := Env{
+		"HOME":              root,
+		"USERPROFILE":       root,
+		"XDG_CONFIG_HOME":   root,
+		"TMPDIR":            root,
+		"PATH":              filepath.Join(root, "bin"),
+		envExecSpecVar:      spec,
+		envExecDropName:     "synthetic-drop",
+		envExecKeepName:     envExecKeepValue,
+		envExecEmptyName:    "",
+		loaderEnvName():     loaderDir,
+		envExecLoaderExpect: loaderDir,
+	}
 	cmd := exec.Command(exe, "-test.run=^TestWorkerEnvExecHelperChild$", "-soho-env-exec-child")
-	cmd.Env = env
-	cmd.Dir = t.TempDir()
+	cmd.Env = env.List()
+	cmd.Dir = root
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("helper child failed: %v\n%s", err, out)
