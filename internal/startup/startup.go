@@ -1,12 +1,7 @@
-// Package startup is the shared cursor startup assessment on every
-// platform (issue #59). Herdr reports a cursor agent ready (agent_status
-// idle, interactive_ready true) while its TUI has not drawn: the verified
-// case is the Workspace Trust Required dialog on the visible screen, and
-// the historical case from the issue is a screen holding only the shell
-// launch line. The spawn, dispatch and wait consumers all take their verdict from
-// this one assessment; it never grants trust, never answers a dialog and
-// never changes a public status or exit code — the consumers map a
-// refusing verdict onto their existing blocked paths.
+// Package startup assesses legacy agent screens for startup barriers. The
+// Cursor assessment is shared by spawn, dispatch and wait on every platform.
+// Spawn and dispatch also recognize the Agy sign-in selector. Consumers map
+// refusing verdicts onto their existing blocked paths.
 package startup
 
 import (
@@ -45,6 +40,7 @@ const (
 	VerdictUnverified = "unverified"
 
 	ReasonWorkspaceTrust    = "workspace-trust"
+	ReasonSignInRequired    = "sign-in-required"
 	ReasonEmptyScreen       = "empty-screen"
 	ReasonScreenUnavailable = "screen-unavailable"
 	ReasonScreenIncomplete  = "screen-incomplete"
@@ -63,10 +59,8 @@ type Evaluation struct {
 	answerKey, answerOption string
 }
 
-// Refuses reports whether the assessment refuses the start or the send:
-// a blocked (verified trust dialog) or unverified (blank, unreadable,
-// launch-only, state unreadable) screen. Consumers map a refusal onto
-// their existing blocked path; an observed verdict proceeds unchanged.
+// Refuses reports whether an assessment found a block or could not verify
+// startup under the applicable kind-specific policy.
 func (e Evaluation) Refuses() bool {
 	return e.Verdict == VerdictBlocked || e.Verdict == VerdictUnverified
 }
@@ -267,4 +261,29 @@ func Evaluate(kind, goos, state, screen string, screenOK bool) Evaluation {
 		return Evaluation{Verdict: VerdictUnverified, Reason: ReasonLaunchOnly, Source: SourceVisible}
 	}
 	return Evaluation{Verdict: VerdictObserved, Reason: ReasonVisibleOutput, Source: SourceVisible}
+}
+
+// EvaluateAgyLogin classifies a successful visible read from legacy Agy.
+// The selector must end the visible frame. An OAuth error or a historical
+// login transcript alone is insufficient to refuse input.
+func EvaluateAgyLogin(screen string, screenOK bool) Evaluation {
+	observed := Evaluation{Verdict: VerdictObserved, Reason: ReasonVisibleOutput, Source: SourceVisible}
+	if !screenOK {
+		return observed
+	}
+	var last [3]string
+	for _, line := range strings.Split(screen, "\n") {
+		line = strings.Join(strings.Fields(text.ASCIILower(line)), " ")
+		if line != "" {
+			last = [3]string{last[1], last[2], line}
+		}
+	}
+	if last == [3]string{
+		"welcome to the antigravity cli. you are currently not signed in.",
+		"select login method:",
+		"> 1. google oauth",
+	} {
+		return Evaluation{Verdict: VerdictBlocked, Reason: ReasonSignInRequired, Source: SourceVisible}
+	}
+	return observed
 }

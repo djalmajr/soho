@@ -739,16 +739,16 @@ func fieldAt(values []string, i int) string {
 	return ""
 }
 
-// warnStartupBlocked prints the precise warning of the cursor/Windows
-// startup gate: the reason the start is refused (the verified workspace
-// trust dialog, or the unverified screen the assessment ended on) and that
-// nothing was typed or sent — the pane stays open for the user to read
-// and answer; the spawn never answers the dialog itself.
+// warnStartupBlocked prints the reason the start was refused and leaves the
+// pane open for the operator.
 func warnStartupBlocked(name, kind, state string, ev startup.Evaluation, ctx *core.Config, env platform.Env) {
 	what := "the startup is unverified"
 	switch {
 	case ev.Reason == "mcp-approval":
 		what = "Cursor requires approval of MCP servers; the operator must answer in the pane"
+	case ev.Reason == startup.ReasonSignInRequired:
+		Warn(fmt.Sprintf("agent '%s' (%s) startup is not ready: Agy requires Google OAuth sign-in (state %s); no input was sent; complete sign-in in the pane", name, kind, state), ctx, env, "spawn")
+		return
 	case ev.Verdict == startup.VerdictBlocked:
 		what = "it is showing the workspace trust dialog"
 	case ev.Reason == startup.ReasonEmptyScreen:
@@ -767,15 +767,8 @@ func warnStartupBlocked(name, kind, state string, ev startup.Evaluation, ctx *co
 	Warn(fmt.Sprintf("agent '%s' (%s) startup is not ready: %s (state %s); no input was sent — read the pane (herdr agent read %s --source visible) and answer it yourself (herdr agent send-keys %s <keys>; herdr agent wait %s --timeout 60000)", name, kind, what, state, name, name, name), ctx, env, "spawn")
 }
 
-// gateReuse assesses the visible screen of a reused cursor session on
-// Windows before the spawn emits ready for it (issue #59). The reuse
-// decision itself (identity, capacity, model, family, history) is
-// untouched: this only refuses to call a blocked or unverified session
-// ready, with the same evidence and result as a fresh start
-// (blocked_at_startup, the precise warning, the screen printed, exit 7).
-// Every other kind or platform skips it without any herdr read, and a
-// name without a roster row is left to the fresh path (emitReuse says the
-// same and returns false).
+// gateReuse assesses the visible screen before an eligible reuse emits ready.
+// A refusal keeps the existing roster registration and pane.
 func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config, env platform.Env, cwd string) {
 	// SOH-201 phase B: a reusable native opencode worker is qualified by its
 	// own terminal record, never by its display name. One Get on the
@@ -797,7 +790,8 @@ func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config
 		}
 		return
 	}
-	if !startup.Enabled(kind) {
+	agyGate := kind == "agy" && env.Get("SOHO_TRANSPORT") != "hc"
+	if !startup.Enabled(kind) && !agyGate {
 		return
 	}
 	sd := core.StateDirPath(ctx, env, cwd)
@@ -809,6 +803,9 @@ func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config
 	reply := svc.Runtime.Read(context.Background(), transport.Target{ID: name}, transport.Read{Source: "visible"}, transport.Call{})
 	screen, screenOK := reply.Value, reply.Err == nil
 	ev := EvaluateCursorStartup(kind, state, screen, screenOK)
+	if agyGate {
+		ev = startup.EvaluateAgyLogin(screen, screenOK && reply.Valid)
+	}
 	if !ev.Refuses() {
 		return
 	}
@@ -820,7 +817,10 @@ func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config
 	out.Set("startup_evidence", jsonjs.O(startup.FieldState, state, startup.FieldReason, ev.Reason, startup.FieldSource, ev.Source))
 	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(out))
 	warnStartupBlocked(name, kind, state, ev, ctx, env)
-	_, _ = fmt.Fprint(platform.Stdout, agentReadText(svc.Runtime, name, "visible", nil))
+	if !agyGate {
+		screen = agentReadText(svc.Runtime, name, "visible", nil)
+	}
+	_, _ = fmt.Fprint(platform.Stdout, screen)
 	platform.Die("", 7)
 }
 
@@ -1718,8 +1718,8 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	// claims ready for those cases and never types or answers the dialog.
 	// Every other kind or platform keeps the window's verdict and the JSON
 	// without the evidence field.
-	cursorGate := false
-	cursorGateEv := startup.Evaluation{}
+	startupGate := false
+	startupGateEv := startup.Evaluation{}
 	if !blocked && startup.Enabled(kind) {
 		screen, screenOK := lastScreen, true
 		if screen == "" {
@@ -1728,11 +1728,23 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			reply := svc.Runtime.Read(context.Background(), transport.Target{ID: o.name}, transport.Read{Source: "visible"}, transport.Call{})
 			screen, screenOK = reply.Value, reply.Err == nil
 		}
-		cursorGateEv = EvaluateCursorStartup(kind, lastState, screen, screenOK)
-		cursorGate = true
-		if cursorGateEv.Refuses() {
-			warnStartupBlocked(o.name, kind, lastState, cursorGateEv, ctx, env)
+		startupGateEv = EvaluateCursorStartup(kind, lastState, screen, screenOK)
+		startupGate = true
+		if startupGateEv.Refuses() {
+			warnStartupBlocked(o.name, kind, lastState, startupGateEv, ctx, env)
 			blocked = true
+		}
+	}
+	agyLoginScreen := ""
+	if kind == "agy" && env.Get("SOHO_TRANSPORT") != "hc" {
+		reply := svc.Runtime.Read(context.Background(), transport.Target{ID: o.name}, transport.Read{Source: "visible"}, transport.Call{})
+		if ev := startup.EvaluateAgyLogin(reply.Value, reply.Err == nil && reply.Valid); ev.Refuses() {
+			if lastState == "" {
+				lastState, _ = agentGetState(svc.Runtime, o.name)
+			}
+			agyLoginScreen = reply.Value
+			startupGate, startupGateEv, blocked = true, ev, true
+			warnStartupBlocked(o.name, kind, lastState, ev, ctx, env)
 		}
 	}
 	contextWindow := ""
@@ -1829,20 +1841,20 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	if burst {
 		out.Set("burst", true)
 	}
-	if cursorGate {
-		out.Set("startup_evidence", jsonjs.O(startup.FieldState, lastState, startup.FieldReason, cursorGateEv.Reason, startup.FieldSource, cursorGateEv.Source))
+	if startupGate {
+		out.Set("startup_evidence", jsonjs.O(startup.FieldState, lastState, startup.FieldReason, startupGateEv.Reason, startup.FieldSource, startupGateEv.Source))
 	}
 	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(o.outputObject(out)))
 	if autoRegrid && core.Cfg(ctx, "regrid", "on", env) == "on" {
 		layout.AutoRegrid(ctx, env, cwd, "regrid after spawn failed; panes left as inserted (see friction)")
 	}
 	if blocked {
-		if o.launchProfile.Name != "" && env.Get("SOHO_TRANSPORT") != "hc" {
+		if o.launchProfile.Name != "" && env.Get("SOHO_TRANSPORT") != "hc" && agyLoginScreen == "" {
 			core.DieFriction("spawn: configured launch not ready; target remains managed", 7, "", "")
 		}
 		if hooksBlocked != "" {
 			Warn(hooksBlocked, ctx, env, "spawn")
-		} else if !cursorGate {
+		} else if !startupGate {
 			// The gate already printed the precise warning when it refused
 			// the start; the generic line names the other startup dialogs.
 			if env.Get("SOHO_TRANSPORT") == "hc" {
@@ -1858,7 +1870,9 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			lines = nil
 		}
 		var screen string
-		if env.Get("SOHO_TRANSPORT") == "hc" {
+		if agyLoginScreen != "" {
+			screen = agyLoginScreen
+		} else if env.Get("SOHO_TRANSPORT") == "hc" {
 			reply := svc.Runtime.Read(context.Background(), transport.Target{ID: o.pane}, transport.Read{Source: "visible", Lines: lines}, transport.Call{})
 			if reply.Err != nil || !reply.Valid {
 				screen = o.outputText(o.startupDiag)

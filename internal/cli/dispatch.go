@@ -468,24 +468,18 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			scratchRefusal(err)
 		}
 	}
-	// F11: before any state change or send, the recorded compact phase decides
-	// the dispatch: a live or unverifiable owner for this pane refuses the
-	// send, and a proven-dead owner's or a switched-pane's record is removed.
-	// The cursor/Windows startup preflight (issue #59) sits before it: before
-	// any prompt, compaction or report/sidecar mutation — independent of
-	// prompt_check_seconds, --queue, --resend and --amend — a blocked (the
-	// verified workspace trust dialog) or unverified (blank, unreadable or
-	// launch-only screen) cursor start on Windows refuses the dispatch with
-	// the existing blocked result (exit 7, the cause naming the reason):
-	// nothing is typed and no task pointer, report or sidecar is touched.
-	// Every other kind or platform skips the check without an extra herdr
-	// read, and a safe screen proceeds to the duplicate handling and the
-	// send below, unchanged.
-	if startup.Enabled(kind) {
-		st, screen, screenOK := cursorStartupScreen(agent, svc)
+	// Check the current UI before compaction, task writes or prompt input.
+	agyStartupGate := !hcMode && kind == "agy"
+	agyStartupState := ""
+	if startup.Enabled(kind) || agyStartupGate {
+		st, screen, screenOK := dispatchStartupScreen(agent, svc)
 		ev := spawn.EvaluateCursorStartup(kind, st.State, screen, screenOK)
+		if agyStartupGate {
+			agyStartupState = st.State
+			ev = startup.EvaluateAgyLogin(screen, screenOK)
+		}
 		if ev.Refuses() {
-			return dispatchCursorStartupRefusal(agent, role, kind, "", "", "", st.State, ev, sd)
+			return dispatchStartupRefusal(agent, role, kind, "", "", "", st.State, ev, sd)
 		}
 	}
 	core.CompactPhaseCheck(sd, agent, at(1), env)
@@ -796,8 +790,18 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			_ = os.Remove(filepath.Join(sd, "wait", agent+"."+name))
 		}
 	}
-	if kind != "cursor" {
+	if kind != "cursor" && !agyStartupGate {
 		clearDispatchWait()
+	}
+	// Agy may still refuse at a retry boundary. Leave old delivery markers
+	// in place until there is no further startup decision in this dispatch.
+	finishAgyDelivery := func() {
+		if agyStartupGate {
+			clearDispatchWait()
+			if ceilingSubmitted {
+				_ = os.Remove(filepath.Join(sd, "wait", agent+".submit-failed"))
+			}
+		}
 	}
 	text := fmt.Sprintf("Read the file %s in full and execute it. It contains your role, your brief, and your report contract. When finished, write your report to %s and reply with exactly that path and nothing else.", composed, report)
 	if amend {
@@ -908,7 +912,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// with the blocked result.
 	if blocked, ev, st := cursorStartupRefusal(kind, agent, svc); blocked {
 		_ = restoreTaskDispatch(sd, agent, lastPath, lastData, priorPointer)
-		return dispatchCursorStartupRefusal(agent, role, kind, composed, report, taskReport, st.State, ev, sd)
+		return dispatchStartupRefusal(agent, role, kind, composed, report, taskReport, st.State, ev, sd)
 	}
 	// Hooks review follows the owner's explicit policy, unlike approval
 	// dialogs that dispatch never answers. Reuse the screen already read.
@@ -984,9 +988,35 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	sendReachedCeiling := func(rep transport.Reply[string]) bool {
 		return rep.Err != nil && sendWindow.abort()
 	}
+	refuseAgyLogin := func(screen string, screenOK bool) (int, bool) {
+		if !agyStartupGate {
+			return 0, false
+		}
+		ev := startup.EvaluateAgyLogin(screen, screenOK)
+		if !ev.Refuses() {
+			return 0, false
+		}
+		_ = restoreTaskDispatch(sd, agent, lastPath, lastData, priorPointer)
+		state := preState.State
+		if state == "" {
+			state = agyStartupState
+		}
+		return dispatchStartupRefusal(agent, role, kind, composed, report, taskReport, state, ev, sd), true
+	}
+	checkAgyLogin := func() (int, bool) {
+		if !agyStartupGate {
+			return 0, false
+		}
+		screen, screenOK := readScreen(svc, agent, "visible", nil)
+		return refuseAgyLogin(screen, screenOK)
+	}
+	if code, refused := checkAgyLogin(); refused {
+		return code
+	}
 	// Decide at the delivery boundary, even if the earlier sample was working.
 	promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue && !hcMode}, sendCall)
 	if sendReachedCeiling(promptRep) {
+		finishAgyDelivery()
 		return sendNotReceivedAtCeiling()
 	}
 
@@ -1068,6 +1098,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		return emitDispatchResult(agent, role, kind, composed, report, taskReport, "blocked", false, jsonjs.O("cause", "hc-blocked"), 0, sd, false, false)
 	}
 	if promptRep.Err != nil {
+		finishAgyDelivery()
 		_ = restoreTaskDispatch(sd, agent, lastPath, lastData, priorPointer)
 		// The failed sidecar records the pointer's task_report after the
 		// restoration — the task the pointer actually keeps; without a
@@ -1098,7 +1129,9 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// Only an accepted submission ends the failed-submission protection: a
 	// dispatch that stops before sending (a hooks review block, a restore)
 	// keeps the marker, so wait still refuses the previous report.
-	_ = os.Remove(filepath.Join(sd, "wait", agent+".submit-failed"))
+	if !agyStartupGate {
+		_ = os.Remove(filepath.Join(sd, "wait", agent+".submit-failed"))
+	}
 	// The review author warning fires once per dispatched review, after the
 	// accepted write settled the author fields: advisory, never a refusal.
 	if warning := reviewAuthorWarning(brief, role, sidecar, authorContext); warning != "" {
@@ -1143,6 +1176,10 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			}
 		}
 	} else if checkOn {
+		notReceived := func(why string) int {
+			finishAgyDelivery()
+			return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, why)
+		}
 		window := time.Duration(checkSecs) * time.Second
 		arrivalState := preState.State
 		arrived := func() bool {
@@ -1158,7 +1195,10 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			return provider.PromptEvidence(screen, composed)
 		}
 		if !wasWorking && !waitDispatchArrivalExtra(window, env, arrived, transcriptArrival, ceiling) {
-			screen, _ := readScreen(svc, agent, "visible", nil)
+			screen, screenOK := readScreen(svc, agent, "visible", nil)
+			if code, refused := refuseAgyLogin(screen, screenOK); refused {
+				return code
+			}
 			// A plan refusal leaves the pointer in the composer. Neither an
 			// Enter nor a resend can change the subscription's model settings.
 			// Reuse the arrival state and the existing visible frame so this
@@ -1166,6 +1206,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			if !nonEmpty(report) {
 				d := core.ProviderDetectTexts(arrivalState, screen, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
 				if d != nil && (core.IsModelPlanError(d.Cause) || d.Status == "provider-refusal" || d.Cause == provider.LostConnectionCause) {
+					finishAgyDelivery()
 					recordDispatchTask(sd, agent, role, brief, amend, env)
 					return emitDispatchResult(agent, role, kind, composed, report, taskReport, d.Status, amend, jsonjs.O("status", d.Status, "lane", lane, "model", model, "cause", d.Cause), 14, sd, false, false)
 				}
@@ -1178,38 +1219,41 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				if blocked, ev, st := cursorStartupRefusal(kind, agent, svc); blocked {
 					// The dialog appeared after the send: the Enter would be
 					// its input — refuse with the blocked result, no key sent.
-					return dispatchCursorStartupRefusal(agent, role, kind, composed, report, taskReport, st.State, ev, sd)
+					return dispatchStartupRefusal(agent, role, kind, composed, report, taskReport, st.State, ev, sd)
 				}
 				if ui := provider.DialogUI(kind, screen); ui != "" {
 					// A known trust/approval/question UI is up: the Enter would
 					// be its input — no key, delivery not-received.
-					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "its "+ui+" dialog")
+					return notReceived("its " + ui + " dialog")
 				}
 				if sendAgentKey(svc, agent, "enter") {
 					enterSent = true
 					core.Warn(fmt.Sprintf("prompt to '%s' sat in the input box; sent Enter", agent), frictionLogPath, "dispatch")
 					if !waitDispatchArrival(window, env, arrived, ceiling) {
-						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an Enter on the text left in its input box")
+						return notReceived("an Enter on the text left in its input box")
 					}
 				} else {
 					// The send-key call failed: the input is failed and
 					// unverified — do not claim the Enter sent.
 					core.Warn(fmt.Sprintf("prompt to '%s' sat in the input box; its Enter failed", agent), frictionLogPath, "dispatch")
-					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "a failed Enter on the text left in its input box")
+					return notReceived("a failed Enter on the text left in its input box")
 				}
 			} else if staleAuthBlock(agent, svc, H0, preSeq, enterSent, resent) {
-				return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "its block on a provider auth error")
+				return notReceived("its block on a provider auth error")
 			} else {
 				// The text can land in the composer between the first arrival
 				// check and this retry: re-read the actual input region right
 				// before the retry and act only on a recognized composer.
 				resendScreen, resendScreenOK := readScreen(svc, agent, "visible", nil)
+				if code, refused := refuseAgyLogin(resendScreen, resendScreenOK); refused {
+					return code
+				}
 				H0 = strconv.FormatUint(uint64(waitpkg.CksumField(resendScreen)), 10)
 				resendState := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
 				if blocked, ev, st := cursorStartupRefusal(kind, agent, svc); blocked {
 					// The dialog appeared before the resend: the resend would
 					// type into it — refuse with the blocked result.
-					return dispatchCursorStartupRefusal(agent, role, kind, composed, report, taskReport, st.State, ev, sd)
+					return dispatchStartupRefusal(agent, role, kind, composed, report, taskReport, st.State, ev, sd)
 				}
 				if ui := provider.DialogUI(kind, resendScreen); ui != "" {
 					// A known trust/approval/question UI on the screen: it
@@ -1217,17 +1261,17 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 					// and no repeated prompt — keep the delivery uncertain and
 					// leave the pane to be read; the wait phase owns the dialog
 					// (question result or the opt-in auto-approve).
-					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "its "+ui+" dialog")
+					return notReceived("its " + ui + " dialog")
 				}
 				if resendState.State == "blocked" && !(preSeq != "" && resendState.Seq != "" && preSeq != resendState.Seq) {
 					// A blocked target is on a dialog the screen rules could
 					// not name: it takes no Enter from here and no repeated
 					// prompt — end not-received and leave the pane to be read.
-					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "its block on a dialog")
+					return notReceived("its block on a dialog")
 				}
 				region, recognized := provider.ComposerRegion(kind, resendScreen)
 				if !resendScreenOK {
-					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an unreadable input region")
+					return notReceived("an unreadable input region")
 				}
 				if nonEmpty(report) || transcriptArrival() || ((resendState.State == "working" || resendState.State == "blocked") && preSeq != "" && resendState.Seq != "" && preSeq != resendState.Seq) {
 					// Receipt can arrive between the deadline and this final read.
@@ -1240,13 +1284,13 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 						enterSent = true
 						core.Warn(fmt.Sprintf("prompt to '%s' reached its input after the arrival check; sent Enter without resending", agent), frictionLogPath, "dispatch")
 						if !waitDispatchArrival(window, env, arrived, ceiling) {
-							return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an Enter on the text left in its input box")
+							return notReceived("an Enter on the text left in its input box")
 						}
 					} else {
 						// The send-key call failed: the input is failed and
 						// unverified — do not claim the Enter sent.
 						core.Warn(fmt.Sprintf("prompt to '%s' reached its input after the arrival check; its Enter failed", agent), frictionLogPath, "dispatch")
-						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "a failed Enter on the text left in its input box")
+						return notReceived("a failed Enter on the text left in its input box")
 					}
 				} else if provider.ScreenShowsPath(resendScreen, composed) || !recognized || !dispatchComposerEmpty(kind, region) || (resendState.State != "idle" && resendState.State != "done") {
 					// This path is visible on the screen but outside the
@@ -1254,30 +1298,31 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 					// unrelated composer, or on a screen whose input region is
 					// not recognized: the delivery is uncertain. No Enter and
 					// no repeated text; read the pane instead.
-					return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an unconfirmed input region")
+					return notReceived("an unconfirmed input region")
 				} else {
 					// Repeating text requires a readable, recognized empty
 					// composer and no trace in the readable recent screen.
 					// Failed or clipped reads never prove nondelivery.
 					recent, recentOK := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
 					if !recentOK || provider.ScreenShowsPath(recent, composed) {
-						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "an unconfirmed recent screen")
+						return notReceived("an unconfirmed recent screen")
 					}
 					if behavior.noResend {
-						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "unconfirmed arrival without a resend")
+						return notReceived("unconfirmed arrival without a resend")
 					}
 					core.Warn(fmt.Sprintf("prompt to '%s' did not arrive; sending it once more", agent), frictionLogPath, "dispatch")
 					if svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text}, transport.Call{}).Err == nil {
 						resent = true
 						if !waitDispatchArrivalExtra(window, env, arrived, transcriptArrival, ceiling) {
-							return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "one resend")
+							return notReceived("one resend")
 						}
 					} else {
-						return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "one resend")
+						return notReceived("one resend")
 					}
 				}
 			}
 		}
+		finishAgyDelivery()
 		if wasWorking {
 			ok := waitDispatchArrivalExtra(window, env, arrived, func() bool {
 				return promptEvidence() || transcriptArrival()
@@ -1317,6 +1362,8 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				fmt.Fprintf(platform.Stderr, "soho: prompt queued: '%s' is working; it takes the prompt when its turn ends\n", agent)
 			}
 		}
+	} else {
+		finishAgyDelivery()
 	}
 	recordDispatchTask(sd, agent, role, brief, amend, env)
 	gittree.Preserve(sidecar, gitFields)
@@ -2083,10 +2130,8 @@ func writeDispatchError(agent, role, kind, composed, report, taskReport, sd, raw
 	return code
 }
 
-// cursorStartupScreen reads the agent's state and the visible screen once
-// for the cursor/Windows startup checks (issue #59): the shared runner's
-// calls, the same reads the consumers already spend on safe screens.
-func cursorStartupScreen(agent string, svc transport.Services) (stateProbe, string, bool) {
+// dispatchStartupScreen reads the state and current visible screen for startup admission.
+func dispatchStartupScreen(agent string, svc transport.Services) (stateProbe, string, bool) {
 	st := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
 	screen, screenOK := readScreen(svc, agent, "visible", nil)
 	return st, screen, screenOK
@@ -2199,21 +2244,24 @@ func cursorStartupRefusal(kind, agent string, svc transport.Services) (bool, sta
 	if !startup.Enabled(kind) {
 		return false, startup.Evaluation{}, stateProbe{}
 	}
-	st, screen, screenOK := cursorStartupScreen(agent, svc)
+	st, screen, screenOK := dispatchStartupScreen(agent, svc)
 	ev := spawn.EvaluateCursorStartup(kind, st.State, screen, screenOK)
 	return ev.Refuses(), ev, st
 }
 
-// warnCursorStartupRefusal prints the precise refusal warning: the reason
+// warnDispatchStartupRefusal prints the precise refusal warning: the reason
 // the dispatch was refused before any input (the verified workspace trust
 // dialog, or the unverified screen the assessment ended on) and that
 // nothing was typed or sent — the pane stays open for the user to read
 // and answer.
-func warnCursorStartupRefusal(agent, kind, state string, ev startup.Evaluation) {
+func warnDispatchStartupRefusal(agent, kind, state string, ev startup.Evaluation) {
 	what := "the startup is unverified"
 	switch {
 	case ev.Reason == "mcp-approval":
 		what = "Cursor requires approval of MCP servers; the operator must answer in the pane"
+	case ev.Reason == startup.ReasonSignInRequired:
+		core.Warn(fmt.Sprintf("dispatch: '%s' (%s) startup is not ready: Agy requires Google OAuth sign-in; complete sign-in in the pane before dispatching again", agent, kind), frictionLogPath, "dispatch")
+		return
 	case ev.Verdict == startup.VerdictBlocked:
 		what = "it is on the cursor workspace trust dialog"
 	case ev.Reason == startup.ReasonEmptyScreen:
@@ -2232,16 +2280,20 @@ func warnCursorStartupRefusal(agent, kind, state string, ev startup.Evaluation) 
 	core.Warn(fmt.Sprintf("dispatch: '%s' (%s) startup is not ready: %s (state %s); nothing was typed or sent — read the pane (herdr agent read %s --source visible) and answer it yourself, then dispatch again", agent, kind, what, state, agent), frictionLogPath, "dispatch")
 }
 
-// dispatchCursorStartupRefusal ends the dispatch without typing anything:
+// dispatchStartupRefusal ends the dispatch without typing anything:
 // the existing blocked result (wait_status "blocked", exit 7) with the
 // cause naming the startup reason and the startup_evidence carrying the
 // state, the reason and the visible source. On the initial preflight
 // refusal the composed prompt, report and task report do not exist yet
 // (empty); the task pointer and last-report are restored by the caller
 // when the send was already claimed.
-func dispatchCursorStartupRefusal(agent, role, kind, composed, report, taskReport, state string, ev startup.Evaluation, sd string) int {
-	warnCursorStartupRefusal(agent, kind, state, ev)
-	last := jsonjs.O("cause", startup.EvidencePrefix+ev.Reason, "startup_evidence", jsonjs.O(startup.FieldState, state, startup.FieldReason, ev.Reason, startup.FieldSource, ev.Source))
+func dispatchStartupRefusal(agent, role, kind, composed, report, taskReport, state string, ev startup.Evaluation, sd string) int {
+	warnDispatchStartupRefusal(agent, kind, state, ev)
+	prefix := startup.EvidencePrefix
+	if ev.Reason == startup.ReasonSignInRequired {
+		prefix = "agy-startup-"
+	}
+	last := jsonjs.O("cause", prefix+ev.Reason, "startup_evidence", jsonjs.O(startup.FieldState, state, startup.FieldReason, ev.Reason, startup.FieldSource, ev.Source))
 	return emitDispatchResult(agent, role, kind, composed, report, taskReport, "blocked", false, last, 0, sd, false, false)
 }
 

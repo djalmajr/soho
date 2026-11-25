@@ -265,3 +265,35 @@ func TestStartupClippedMacOSTrustWithMCPChoice(t *testing.T) {
 		t.Fatal("three extra choice lines between trust and Quit are not this dialog")
 	}
 }
+
+func TestEvaluateAgyLogin(t *testing.T) {
+	const banner = "Welcome to the Antigravity CLI. You are currently not signed in."
+	const selector = "Select login method:"
+	const option = "> 1. Google OAuth"
+	const frame = banner + "\n" + selector + "\n" + option + "\n"
+	for _, tc := range []struct {
+		name, screen  string
+		read, blocked bool
+	}{
+		{"selector", frame, true, true},
+		{"normalized", "  " + strings.ToUpper(banner) + "\r\n\r\n\t" + selector + "\r\n >   1. Google OAuth \r\n  ", true, true},
+		{"after exchange error", "token exchange failed: invalid_grant\n" + frame, true, true},
+		{"error alone", "token exchange failed: invalid_grant", true, false},
+		{"quoted", "> " + banner + "\n> " + selector + "\n> " + option, true, false},
+		{"fenced", "```text\n" + frame + "```", true, false},
+		{"partial", selector + "\n" + option, true, false},
+		{"order", selector + "\n" + banner + "\n" + option, true, false},
+		{"unselected", banner + "\n" + selector + "\n1. Google OAuth", true, false},
+		{"history", frame + "Agy ready\n❯ ", true, false},
+		{"promo", "Discover Antigravity\nesc to dismiss", true, false},
+		{"read failure", frame, false, false},
+		{"empty", "", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EvaluateAgyLogin(tc.screen, tc.read)
+			if got.Refuses() != tc.blocked || (tc.blocked && (got.Verdict != VerdictBlocked || got.Reason != ReasonSignInRequired || got.Source != SourceVisible)) {
+				t.Fatalf("EvaluateAgyLogin(%q, %t) = %+v, blocked=%t", tc.screen, tc.read, got, tc.blocked)
+			}
+		})
+	}
+}

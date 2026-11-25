@@ -17,8 +17,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/startup"
+	"github.com/djalmajr/soho/internal/taskreport"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -469,4 +471,97 @@ func TestDispatchCursorWindowsClippedTrustRefusesNoInput(t *testing.T) {
 	}
 	dispatchAssertNoInput(t, dispatchCalls(t, f))
 	dispatchAssertNoTaskArtifacts(t, f, false)
+}
+
+func TestDispatchAgyLoginAdmission(t *testing.T) {
+	const login = "Welcome to the Antigravity CLI. You are currently not signed in.\nSelect login method:\n> 1. Google OAuth\n"
+	const ready = "Agy ready\n❯ "
+	readVisible := []string{"agent", "read", "worker", "--source", "visible"}
+	for _, tc := range []struct {
+		name, flag  string
+		blockAt     int
+		check       bool
+		wantPrompts int
+	}{
+		{"preflight", "", 1, false, 0},
+		{"queue", "--queue", 1, false, 0},
+		{"resend", "--resend", 1, false, 0},
+		{"amend", "--amend", 1, false, 0},
+		{"after claim", "--queue", 2, false, 0},
+		{"before retry", "", 5, true, 1},
+		{"unreadable", "", -1, false, 1},
+		{"stale transcript", "", 0, false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rules := []fakecli.Rule{}
+			if tc.blockAt > 0 {
+				rules = append(rules, fakecli.Rule{Argv: readVisible, Call: tc.blockAt, Stdout: login})
+			} else if tc.blockAt < 0 {
+				rules = append(rules, fakecli.Rule{Argv: readVisible, Code: 1, Stderr: "fixture read failed"})
+			}
+			rules = append(rules, fakecli.Rule{Argv: readVisible, Stdout: login + ready})
+			f := newDispatchArrivalFixture(t, "idle", 1, 1, "", "0", rules...)
+			sd := filepath.Join(f.state, "ws")
+			roster := "worker\tw0test:p0a\tagy\timplementer\tgoogle\t0\t\tnow\t\ttask\timplementer\t\t\t\thigh\n"
+			if err := os.WriteFile(filepath.Join(sd, "agents.tsv"), []byte(roster), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.check {
+				f.env["SOHO_PROMPT_CHECK_SECONDS"] = "0"
+			}
+			priorReport := filepath.Join(sd, "reports", "prior.md")
+			priorPointer := jsonjs.O("version", 1, "task_report", priorReport, "current", priorReport, "history", []any{}, "pane", "w0test:p0a")
+			preserved := map[string]string{
+				taskreport.TaskReportPointerPath(sd, "worker"):    jsonjs.Stringify(priorPointer) + "\n",
+				filepath.Join(sd, "last-report-worker"):           priorReport + "\n",
+				filepath.Join(sd, "wait", "worker.queued"):        "previous queue\n",
+				filepath.Join(sd, "wait", "worker.not-received"):  "previous delivery\n",
+				filepath.Join(sd, "wait", "worker.submit-failed"): "previous failure\n",
+			}
+			for path, value := range preserved {
+				if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := []string{"worker", f.brief, "--no-wait"}
+			if tc.flag != "" {
+				args = append(args, tc.flag)
+			}
+			code, out, warnings := f.run(t, args...)
+			if tc.blockAt > 0 {
+				if code != 7 || !strings.Contains(out, `"wait_status":"blocked"`) || !strings.Contains(out, `"cause":"agy-startup-sign-in-required"`) || !strings.Contains(out, `"startup_evidence":{"state":"idle","reason":"sign-in-required","source":"visible"}`) || !strings.Contains(warnings, "Agy requires Google OAuth sign-in") {
+					t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, warnings)
+				}
+				for path, want := range preserved {
+					got, err := os.ReadFile(path)
+					if err != nil || string(got) != want {
+						t.Fatalf("prior %s = %q, err=%v, want %q", filepath.Base(path), got, err, want)
+					}
+				}
+				if tc.blockAt == 1 {
+					entries, err := os.ReadDir(filepath.Join(sd, "briefs"))
+					if err != nil || len(entries) != 0 {
+						t.Fatalf("initial refusal wrote brief artifacts: %v, %v", entries, err)
+					}
+				}
+			} else if code != 0 || !strings.Contains(out, `"wait_status":"submitted"`) || strings.Contains(out, "startup_evidence") {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, warnings)
+			}
+			prompts := 0
+			for _, call := range dispatchCalls(t, f) {
+				if len(call.Argv) < 2 {
+					continue
+				}
+				switch strings.Join(call.Argv[:2], " ") {
+				case "agent prompt":
+					prompts++
+				case "agent send-keys", "pane send-keys", "pane send-text":
+					t.Fatalf("unexpected input: %#v", call)
+				}
+			}
+			if prompts != tc.wantPrompts {
+				t.Fatalf("prompt calls=%d, want %d", prompts, tc.wantPrompts)
+			}
+		})
+	}
 }
