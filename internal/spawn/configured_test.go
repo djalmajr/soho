@@ -24,7 +24,13 @@ const spawnPrivate = "SYNTHETIC_PRIVATE_CONFIG_R28"
 const spawnReuseReady = `{"result":{"type":"agent_info","agent":{"name":"old","agent":"opencode","pane_id":"p-old","terminal_id":"native-terminal","agent_status":"idle","interactive_ready":true,"launch_profile":"opencode-primary-v2"}}}`
 
 func TestConfiguredSpawnReuseConsumer(t *testing.T) {
-	for _, lane := range []bool{false, true} {
+	for _, mode := range []struct {
+		label, requestedName string
+	}{
+		{"ordinary", ""},
+		{"lane-same-name", "old"},
+		{"lane-distinct-name", "new"},
+	} {
 		for _, tc := range []struct {
 			name, body string
 			qualified  bool
@@ -40,7 +46,11 @@ func TestConfiguredSpawnReuseConsumer(t *testing.T) {
 			{"pending", strings.Replace(spawnReuseReady, `"interactive_ready":true`, `"interactive_ready":true,"launch_pending":true`, 1), false},
 			{"malformed-native-zero", `{}`, false},
 		} {
-			t.Run(fmt.Sprintf("lane=%v/%s", lane, tc.name), func(t *testing.T) {
+			distinctName := mode.requestedName == "new"
+			if distinctName && !tc.qualified {
+				continue
+			}
+			t.Run(mode.label+"/"+tc.name, func(t *testing.T) {
 				body, qualified := tc.body, tc.qualified
 				f := configuredFixture(t, []fakecli.Rule{
 					{Argv: []string{"status", "server", "--json"}, Stdout: spawnCapability},
@@ -50,14 +60,14 @@ func TestConfiguredSpawnReuseConsumer(t *testing.T) {
 				})
 				args := append(configuredArgs(""), "--effort", "high")
 				row := []string{"old", "p-old", "opencode", "scouter", "opencode", "1", f.cwd, "now", "provider/model#variant", "ask", "scouter", "", "", "", "high"}
-				if lane {
+				if mode.requestedName != "" {
 					f.env["SOHO_LANES"] = "on"
 					for k, v := range map[string]string{"lane_build_roles": "worker", "lane_build_kind": "opencode", "lane_build_panes": "1"} {
 						f.ctx.Entries[k] = core.ConfigEntry{Value: v, Source: "project"}
 						f.ctx.Order = append(f.ctx.Order, k)
 					}
 					row[11] = "build"
-					args = append(args, "--name", "new")
+					args = append(args, "--name", mode.requestedName)
 				}
 				f.roster(t, strings.Join(row, "\t"))
 				sd := filepath.Join(f.state, "ws")
@@ -79,20 +89,21 @@ func TestConfiguredSpawnReuseConsumer(t *testing.T) {
 				// outer CLI handler prints, so one call keeps that message beside
 				// the platform output actually written by this consumer.
 				code, message, out, stderr, calls := runCmdSpawnWithExitMessage(t, f, args)
-				if !qualified {
+				switch {
+				case distinctName:
+					if code != 10 || message != "" || !strings.Contains(stderr, "an explicit new name requires a new worker") ||
+						!strings.Contains(stderr, "lane 'build' has no room for a new worker (1 of 1)") {
+						t.Errorf("exit=%d message=%q out=%q stderr=%q calls=%+v", code, message, out, stderr, calls)
+					}
+					obj := parseOneSpawnJSONLine(t, out)
+					spawnOneLineField(t, obj, "status", "busy")
+					spawnOneLineField(t, obj, "lane", "build")
+					spawnOneLineField(t, obj, "name", "old")
+				case !qualified:
 					if code != 4 || message != "spawn: reusable configured worker profile is unverified" || out != "" {
 						t.Errorf("exit=%d message=%q out=%q stderr=%q calls=%+v", code, message, out, stderr, calls)
 					}
-					for p, want := range before {
-						got, err := os.ReadFile(p)
-						if err != nil || string(got) != string(want) {
-							t.Errorf("selected-worker state changed: %s got=%q err=%v", p, got, err)
-						}
-					}
-					if core.RosterLine(sd, "new") != "" {
-						t.Error("published renamed worker")
-					}
-				} else {
+				default:
 					var got struct {
 						Name     string
 						Pane     string `json:"pane_id"`
@@ -104,15 +115,27 @@ func TestConfiguredSpawnReuseConsumer(t *testing.T) {
 					if err := json.Unmarshal([]byte(out), &got); err != nil {
 						t.Fatal(err)
 					}
-					wantName := "old"
-					if lane {
-						wantName = "new"
-					}
-					if code != 0 || message != "" || got.Name != wantName || got.Pane != "p-old" || !got.Reused || got.Status != "ready" || got.Profile != kinds.OpenCodePrimaryProfile || got.Previous != "scouter" {
+					if code != 0 || message != "" || got.Name != "old" || got.Pane != "p-old" || !got.Reused || got.Status != "ready" || got.Profile != kinds.OpenCodePrimaryProfile || got.Previous != "scouter" {
 						t.Errorf("exit=%d message=%q out=%q stderr=%q", code, message, out, stderr)
 					}
-					if fieldAt(strings.Split(core.RosterLine(sd, wantName), "\t"), 3) != "worker" {
-						t.Error("role not updated")
+				}
+				wantReuse := qualified && !distinctName
+				for p, want := range before {
+					if wantReuse && p == filepath.Join(sd, "agents.tsv") {
+						continue
+					}
+					got, err := os.ReadFile(p)
+					if err != nil || string(got) != string(want) {
+						t.Errorf("selected-worker state changed: %s got=%q err=%v", p, got, err)
+					}
+				}
+				if core.RosterLine(sd, "new") != "" {
+					t.Error("published renamed worker")
+				}
+				if wantReuse {
+					row[3], row[10] = "worker", "scouter,worker"
+					if got := core.RosterRows(sd); !reflect.DeepEqual(got, []string{strings.Join(row, "\t")}) {
+						t.Errorf("configured reuse should only update the role and its history: roster=%q", got)
 					}
 				}
 				observed, renamed := 0, 0
@@ -123,19 +146,16 @@ func TestConfiguredSpawnReuseConsumer(t *testing.T) {
 					}
 					if strings.HasPrefix(a, "agent rename ") {
 						renamed++
-						if !qualified || observed != 1 {
-							t.Errorf("rename before qualification: %+v", calls)
-						}
 					}
-					if c.Stdin != "" || strings.HasPrefix(a, "agent start") || strings.HasPrefix(a, "pane send-") || strings.HasPrefix(a, "pane close") || strings.HasPrefix(a, "tab create") || strings.HasPrefix(a, "pane split") {
+					if c.Stdin != "" || strings.HasPrefix(a, "agent start") || strings.HasPrefix(a, "agent send-") || strings.HasPrefix(a, "agent prompt") || strings.HasPrefix(a, "pane send-") || strings.HasPrefix(a, "pane close") || strings.HasPrefix(a, "tab create") || strings.HasPrefix(a, "pane split") {
 						t.Errorf("reuse effect: %+v", c)
 					}
 				}
-				wantRenames := 0
-				if lane && qualified {
-					wantRenames = 1
+				wantObservations := 1
+				if distinctName {
+					wantObservations = 0
 				}
-				if observed != 1 || renamed != wantRenames {
+				if observed != wantObservations || renamed != 0 {
 					t.Errorf("observations=%d renames=%d calls=%+v", observed, renamed, calls)
 				}
 				for _, public := range []string{out, message, stderr, core.RosterLine(sd, "old"), core.RosterLine(sd, "new")} {
