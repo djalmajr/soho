@@ -203,7 +203,7 @@ func isOMPSetupWizard(screen string) bool {
 		return false
 	}
 	switch lines[footer] {
-	case "↑/↓ select · ⏎ confirm · ⎋ skip · ⌃C exit setup":
+	case "↑/↓ select · ⏎ confirm · ⎋ skip · ⌃C exit setup", "↑/↓ select · ⏎ confirm · ⎋ skip · Ctrl+C exit setup":
 		return true
 	case "press ⏎ to skip":
 		body := lines[pickerStart+picker+1 : footer]

@@ -448,6 +448,47 @@ func TestSpawnOMPStartupIdentityAndDeadline(t *testing.T) {
 	}
 }
 
+// ompLinuxSettledWizard is the terminal frame shown after the Linux splash.
+const ompLinuxSettledWizard = `
+                      ████████████
+                         ██  ██
+                         ██  ██
+                         ▒▒  ██
+                             ██
+                           omp
+                    Setup step 1 of 6
+
+    Sign in to your providers
+    Sign in to one or more providers. Press ⎋ when you'r…
+
+    Pick a provider to sign in — you can connect more
+    than one.
+
+    ╭─ Select provider to login ────────────────────╮
+    │ ❯ ChatGPT Plus/Pro (Codex Subscription)     █ │
+    │   Anthropic (Claude Pro/Max)                │ │
+    │   Anthropic (Claude Pro/Max, 1-year token)  │ │
+    │   Z.AI (GLM Coding Plan)                    │ │
+    │   Z.AI (GLM Coding Plan · Sign in)          │ │
+    │   Kimi Code                                 │ │
+    │   OpenRouter                                │ │
+    │   GitHub Copilot                            │ │
+    │   Cursor (Claude, GPT, etc.)                │ │
+    │   Devin                                     │ │
+    │ Type to search                                │
+    ╰───────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+   ↑/↓ select · ⏎ confirm · ⎋ skip · Ctrl+C exit setup
+`
+
 func TestSpawnOMPStartupAnimation(t *testing.T) {
 	const pane = "w1:p2"
 	const unrelated = "ordinary output\n░░░░ press ⏎ to skip  ░\n"
@@ -467,6 +508,7 @@ func TestSpawnOMPStartupAnimation(t *testing.T) {
 		{name: "macOS sparkly art with wider columns", first: strings.Replace(ompSparklyStartupAnimation, "████    ████", "█████    ████", 1)},
 		{name: "macOS sparkly art with ordinary text", first: "ordinary output\n" + ompSparklyStartupAnimation},
 		{name: "Linux splash then wizard", first: ompLinuxFullStartupAnimation, next: []string{ompLinuxWizardAfterStartupAnimation}, code: 7},
+		{name: "Linux splash then settled wizard", first: ompLinuxFullStartupAnimation, next: []string{ompLinuxSettledWizard}, code: 7},
 		{name: "Linux splash then composer", first: ompLinuxFullStartupAnimation, next: []string{ompLinuxComposerAfterStartupAnimation}},
 		{name: "Linux splash then unrelated picker body then composer", first: ompLinuxFullStartupAnimation, next: []string{
 			strings.Replace(ompLinuxWizardAfterStartupAnimation, "│   ", "ordinary output ", 1),
