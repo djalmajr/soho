@@ -41,8 +41,16 @@ func decodeOMPStartupAgent(raw string) ompStartupAgent {
 	return reply.Result.Agent
 }
 
-func (agent ompStartupAgent) matches(o spawnOptions) bool {
-	return o.pane != "" && agent.Name == o.name && agent.Pane == o.pane && agent.Kind == "omp" && agent.Terminal != ""
+func (agent ompStartupAgent) matches(name, pane string) bool {
+	return name != "" && pane != "" && agent.Name == name && agent.Pane == pane && agent.Kind == "omp" && agent.Terminal != ""
+}
+
+func readOMPAgent(ctx context.Context, legacy transport.LegacyTransport, pane string, call transport.Call) (ompStartupAgent, bool) {
+	reply := legacy.AgentGetRaw(ctx, transport.Target{ID: pane}, call)
+	if reply.Err != nil || !reply.Valid {
+		return ompStartupAgent{}, false
+	}
+	return decodeOMPStartupAgent(reply.Value), true
 }
 
 // observeOMPStart brackets a current, pane-addressed agent viewport with
@@ -54,7 +62,7 @@ func observeOMPStart(o spawnOptions, svc transport.Services, deadline time.Time)
 	unverified := func(reason string) {
 		core.DieFriction(fmt.Sprintf("spawn: could not verify OMP startup for '%s' in pane %s (%s); nothing was registered; the pane stays open for inspection", o.name, o.pane, reason), 4, "", "")
 	}
-	if o.ompLaunch == nil || !o.ompLaunch.matches(o) {
+	if o.ompLaunch == nil || !o.ompLaunch.matches(o.name, o.pane) {
 		unverified("the start did not prove the terminal identity")
 	}
 	launch := *o.ompLaunch
@@ -74,17 +82,17 @@ func observeOMPStart(o spawnOptions, svc transport.Services, deadline time.Time)
 		return transport.Call{Timeout: left}
 	}
 	readAgent := func() ompStartupAgent {
-		rep := svc.Legacy.AgentGetRaw(ctx, target, call())
+		agent, ok := readOMPAgent(ctx, svc.Legacy, target.ID, call())
 		if !time.Now().Before(deadline) {
 			expired()
 		}
-		if rep.Err != nil || !rep.Valid {
+		if !ok {
 			unverified("the launched agent could not be observed")
 		}
-		return decodeOMPStartupAgent(rep.Value)
+		return agent
 	}
 	before := readAgent()
-	if !before.matches(o) || before.Terminal != launch.Terminal || (launch.Session.Value != "" && before.Session != launch.Session) || before.Session.Value == "" {
+	if !before.matches(o.name, o.pane) || before.Terminal != launch.Terminal || (launch.Session.Value != "" && before.Session != launch.Session) || before.Session.Value == "" {
 		unverified("the launched terminal and OMP session could not be confirmed")
 	}
 	switch before.State {
@@ -106,11 +114,9 @@ func observeOMPStart(o spawnOptions, svc transport.Services, deadline time.Time)
 			unverified("the visible screen could not be verified")
 		}
 		checkAgent()
-		if waitingForAnimation {
-			if isOMPSetupWizard(screen.Value) || isOMPStartupComposer(screen.Value) {
-				return before.State, screen.Value, false
-			}
-		} else if !isOMPStartupAnimation(screen.Value) {
+		if waitingForAnimation && (isOMPSetupWizard(screen.Value) || isOMPStartupComposer(screen.Value)) ||
+			!waitingForAnimation && !isOMPStartupAnimation(screen.Value) {
+			*o.ompLaunch = before
 			return before.State, screen.Value, false
 		}
 		waitingForAnimation = true

@@ -25,7 +25,7 @@ func TestReopenOMPManagedPolicy(t *testing.T) {
 		{name: "missing", wantCode: 2},
 		{name: "invalid", body: strings.Replace(policy, "task: deny", "task: ask ", 1), wantCode: 2},
 		{name: "replace historical worker", body: policy},
-		{name: "replace managed worker", body: policy, priorPolicy: true},
+		{name: "replace worker with path-only policy", body: policy, priorPolicy: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, err := filepath.EvalSymlinks(t.TempDir())
@@ -143,9 +143,10 @@ func TestReopenOMPManagedPolicy(t *testing.T) {
 				PaneID       string `json:"pane_id"`
 			}
 			err = json.Unmarshal(out.Bytes(), &result)
+			fields := strings.Split(core.RosterLine(sd, "worker"), "\t")
 			if err != nil || result.Name != "worker" || result.PaneID != "p2" || result.Status != "ready" ||
 				!strings.Contains(string(rowBytes), "worker\tp2\tomp\tworker\t") || strings.Contains(string(rowBytes), "p-old") ||
-				!strings.Contains(string(rowBytes), "\tomp-policy:"+policyPath+"\n") {
+				len(fields) != 20 || !strings.HasPrefix(fields[19], "omp-policy:v2:") {
 				t.Fatalf("replacement not ready: stdout=%q stderr=%q roster=%q", out.String(), stderr.String(), rowBytes)
 			}
 		})

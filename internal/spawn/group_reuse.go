@@ -20,6 +20,7 @@ type laneReuseRequest struct {
 	role, lane, kind, model, effort, approvals, mcp, workerCwd, sd, nativeArgs string
 	kindFlag                                                                   bool
 	ompPolicyPath                                                              string
+	ompLegacy                                                                  transport.LegacyTransport
 	ctx                                                                        *core.Config
 	env                                                                        platform.Env
 	processCwd                                                                 string
@@ -45,7 +46,7 @@ func (r laneReuseRequest) eligible(f []string, state string) bool {
 	if state != "idle" && state != "done" || envDropMarker(f) != "" {
 		return false
 	}
-	if r.kind == "omp" && fieldAt(f, 2) == "omp" && !ompReuseVerified(f, r.approvals, r.ompPolicyPath) {
+	if r.kind == "omp" && fieldAt(f, 2) == "omp" && !ompReuseReady(r.ompLegacy, f, r.ompPolicyPath) {
 		return false
 	}
 	if report := core.LastReport(r.sd, fieldAt(f, 0)); report != "" {

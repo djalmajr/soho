@@ -1,10 +1,13 @@
 package spawn
 
 import (
+	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/kinds"
@@ -17,6 +20,8 @@ const (
 	ompPolicyBytes    = "retry:\n  modelFallback: false\ntools:\n  approval:\n    task: deny\n"
 	ompPolicyColumn   = 19 // After the optional E2E port, OMP approval and environment policy.
 	ompApprovalColumn = 17
+	ompPolicyVersion  = "omp-policy:v2:"
+	ompReuseReadLimit = time.Second
 )
 
 // managedOMPPolicy resolves the stable packaged asset. OMP watches this path,
@@ -48,24 +53,56 @@ func managedOMPPolicy(env platform.Env, cwd string) (string, error) {
 	return path, nil
 }
 
-func ompPolicyReceipt(path string) string { return "omp-policy:" + path }
-
-// The recorded launch options are required even when historical approval and
-// MCP labels match. Reuse also requires the same verified on-disk asset.
-func ompReuseVerified(fields []string, approvals, policy string) bool {
-	mode, err := kinds.OMPApprovalArgs(approvals)
-	return err == nil && policy != "" && fieldAt(fields, 2) == "omp" &&
-		fieldAt(fields, 9) == approvals && fieldAt(fields, 13) == "" &&
-		fieldAt(fields, 15) == "inherit" && fieldAt(fields, ompApprovalColumn) == strings.Join(mode, " ") &&
-		fieldAt(fields, ompPolicyColumn) == ompPolicyReceipt(policy)
+func ompPolicyReceipt(path, approvals string, agent ompStartupAgent) string {
+	if path == "" || !agent.matches(agent.Name, agent.Pane) || agent.Session.Kind != "path" ||
+		agent.Session.Source != "herdr:omp" || agent.Session.Value == "" {
+		return ""
+	}
+	// Quote each field before hashing so embedded whitespace and delimiters
+	// cannot create another identity or escape into the roster TSV.
+	key := fmt.Sprintf("%q", []string{path, approvals, agent.Name, agent.Kind, agent.Pane,
+		agent.Terminal, agent.Session.Kind, agent.Session.Source, agent.Session.Value})
+	return fmt.Sprintf("%s%x", ompPolicyVersion, sha256.Sum256([]byte(key)))
 }
 
-func guardOMPReuseName(rt transport.Transport, sd string, o spawnOptions) {
+// Validate the opening approval receipt against the recorded mode. The
+// caller's requested approval is a separate reuse compatibility check.
+func ompPolicyRecorded(fields []string) bool {
+	approvals := fieldAt(fields, 9)
+	mode, err := kinds.OMPApprovalArgs(approvals)
+	digest, versioned := strings.CutPrefix(fieldAt(fields, ompPolicyColumn), ompPolicyVersion)
+	return err == nil && versioned && len(digest) == 2*sha256.Size && fieldAt(fields, 2) == "omp" &&
+		fieldAt(fields, 13) == "" &&
+		fieldAt(fields, 15) == "inherit" && fieldAt(fields, ompApprovalColumn) == strings.Join(mode, " ")
+}
+
+func observeOMPReuse(legacy transport.LegacyTransport, fields []string, policy string) (ompStartupAgent, bool) {
+	pane := fieldAt(fields, 1)
+	if legacy == nil || pane == "" || policy == "" || !ompPolicyRecorded(fields) {
+		return ompStartupAgent{}, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ompReuseReadLimit)
+	defer cancel()
+	agent, ok := readOMPAgent(ctx, legacy, pane, transport.Call{Timeout: ompReuseReadLimit})
+	return agent, ok && ctx.Err() == nil && agent.matches(fieldAt(fields, 0), pane) &&
+		ompPolicyReceipt(policy, fieldAt(fields, 9), agent) == fieldAt(fields, ompPolicyColumn)
+}
+
+func ompReuseReady(legacy transport.LegacyTransport, fields []string, policy string) bool {
+	agent, verified := observeOMPReuse(legacy, fields, policy)
+	return verified && (agent.State == "idle" || agent.State == "done")
+}
+
+func guardOMPReuseName(svc transport.Services, sd string, o spawnOptions) {
 	fields := strings.Split(core.RosterLine(sd, o.name), "\t")
-	if fieldAt(fields, 2) == "omp" && !ompReuseVerified(fields, o.approvals, o.ompPolicyPath) {
-		if state, _ := agentGetState(rt, o.name); state != "gone" {
-			refuseOMPReuse()
-		}
+	if fieldAt(fields, 2) != "omp" {
+		return
+	}
+	if _, verified := observeOMPReuse(svc.Legacy, fields, o.ompPolicyPath); verified {
+		return
+	}
+	if state, _ := agentGetState(svc.Runtime, o.name); state != "gone" {
+		refuseOMPReuse()
 	}
 }
 

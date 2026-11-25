@@ -632,7 +632,7 @@ func lastRosterRows(rows []string) []string {
 
 // Return the exact row that passed selection, so emission can verify it again.
 func findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort, ompPolicy string, ctx *core.Config, env platform.Env, cwd, sd string) (string, string, bool) {
-	rt := backend.New(env).Runtime
+	svc := backend.New(env)
 	multi := core.Cfg(ctx, "multi_role", "on", env)
 	blockedName, blockedCause, crossHit := "", "", ""
 	for _, line := range lastRosterRows(core.RosterRows(sd)) {
@@ -653,7 +653,7 @@ func findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wa
 		if !effortMatches(f, wantEffort) {
 			continue
 		}
-		if kind == "omp" && !ompReuseVerified(f, wantApprovals, ompPolicy) {
+		if kind == "omp" && (!ompPolicyRecorded(f) || at(9) != wantApprovals) {
 			continue
 		}
 		isSame := at(3) == role
@@ -701,7 +701,7 @@ func findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wa
 				continue
 			}
 		}
-		state, cause := agentGetState(rt, nm)
+		state, cause := agentGetState(svc.Runtime, nm)
 		if state == "unavailable" {
 			if isSame && blockedName == "" {
 				blockedName, blockedCause = nm, cause
@@ -709,6 +709,12 @@ func findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wa
 			continue
 		}
 		if state == "idle" || state == "done" {
+			if kind == "omp" && !ompReuseReady(svc.Legacy, f, ompPolicy) {
+				if name != "" {
+					refuseOMPReuse()
+				}
+				continue
+			}
 			if isSame {
 				return line, "", false
 			}
@@ -731,13 +737,13 @@ func effortMatches(f []string, want string) bool {
 
 func EmitReuse(name, role, kind string, ctx *core.Config, env platform.Env, cwd string) bool {
 	sd := core.StateDirPath(ctx, env, cwd)
-	return emitReuse(sd, core.RosterLine(sd, name), role, kind, "", "default", env)
+	return emitReuse(sd, core.RosterLine(sd, name), role, kind, "", "default", env, nil)
 }
 
-func emitReuse(sd, line, role, kind, qualifiedProfile, modelChoice string, env platform.Env) bool {
+func emitReuse(sd, line, role, kind, qualifiedProfile, modelChoice string, env platform.Env, verify func()) bool {
 	f := strings.Split(line, "\t")
 	name, prev := fieldAt(f, 0), fieldAt(f, 3)
-	if name == "" || envDropMarker(f) != "" {
+	if name == "" || envDropMarker(f) != "" || kind == "omp" && verify == nil {
 		return false
 	}
 	if env.Get("SOHO_TRANSPORT") == "hc" {
@@ -747,7 +753,7 @@ func emitReuse(sd, line, role, kind, qualifiedProfile, modelChoice string, env p
 		}
 		defer unlock()
 	}
-	if !commitReuseRole(sd, name, line, role) {
+	if !commitReuseRole(sd, name, line, role, verify) {
 		return false
 	}
 	// model, effort and agent_args are the roster columns the spawn recorded
@@ -771,7 +777,7 @@ func emitReuse(sd, line, role, kind, qualifiedProfile, modelChoice string, env p
 
 // Compare and update the last row for the name under the roster lock.
 // Roster writers such as append do not take the worker lifecycle lock.
-func commitReuseRole(sd, name, expected, role string) (matched bool) {
+func commitReuseRole(sd, name, expected, role string, verify func()) (matched bool) {
 	core.WithRosterLock(sd, func() {
 		path := filepath.Join(sd, "agents.tsv")
 		content, err := platform.ReadTextFile(path)
@@ -790,6 +796,9 @@ func commitReuseRole(sd, name, expected, role string) (matched bool) {
 			}
 			if line != expected {
 				return
+			}
+			if verify != nil {
+				verify()
 			}
 			f := strings.Split(line, "\t")
 			if previous := fieldAt(f, 3); previous != role {
@@ -906,7 +915,7 @@ func gateReuseRow(svc transport.Services, name, role, kind, sd, line string, ctx
 		return
 	}
 	f := strings.Split(line, "\t")
-	if !commitReuseRole(sd, name, line, fieldAt(f, 3)) {
+	if !commitReuseRole(sd, name, line, fieldAt(f, 3), nil) {
 		refuseStaleReuse(name)
 	}
 	out := jsonjs.O("name", name, "pane_id", fieldAt(f, 1), "kind", kind, "role", role, "family", fieldAt(f, 4), "reused", true, "previous_role", fieldAt(f, 3), "effort", fieldAt(f, 14), "model", fieldAt(f, 8), "agent_args", fieldAt(f, 13), "status", "blocked_at_startup")
@@ -933,7 +942,16 @@ func reuseSelected(svc transport.Services, sd, line string, o spawnOptions, kind
 	}
 	qualifiedProfile := gateConfiguredReuse(svc.Terminal, line, o, kind, configuredArgs, env)
 	gateReuseRow(svc, name, o.role, kind, sd, line, ctx, env, cwd)
-	if !emitReuse(sd, line, o.role, kind, qualifiedProfile, modelChoice, env) {
+	var verify func()
+	if kind == "omp" {
+		fields := strings.Split(line, "\t")
+		verify = func() {
+			if !ompReuseReady(svc.Legacy, fields, o.ompPolicyPath) {
+				refuseOMPReuse()
+			}
+		}
+	}
+	if !emitReuse(sd, line, o.role, kind, qualifiedProfile, modelChoice, env, verify) {
 		refuseStaleReuse(name)
 	}
 }
@@ -983,8 +1001,8 @@ type spawnOptions struct {
 	launchProfile                                                                                                kinds.LaunchProfile
 	nativeArgsSnapshot                                                                                           string
 	loginShell                                                                                                   string
-	// ompLaunch is the successful legacy agent.start receipt, used only
-	// by the OMP startup window to pin the terminal being observed.
+	// ompLaunch pins the legacy agent.start terminal until startup confirms
+	// the session. The confirmed observation supplies the reuse receipt.
 	ompLaunch     *ompStartupAgent
 	ompPolicyPath string
 	// piStartScreen is hc's post-ready screen read, reused for the thinking
@@ -1385,10 +1403,11 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		}
 		o.ompPolicyPath = policy
 		if o.reuse == "on" && o.name != "" && o.pane == "" && reuseDir != "" {
-			guardOMPReuseName(svc.Runtime, reuseDir, o)
+			guardOMPReuseName(svc, reuseDir, o)
 		}
 	}
 	request := newLaneReuseRequest(o, res, reuseDir, native, ctx, env, cwd)
+	request.ompLegacy = svc.Legacy
 	modelSpec, modelChoice := modelForRequest(flagModel, res)
 	request.model, _ = kinds.ResolveModel(kind, modelSpec, o.effort, env, func(string) {})
 	var plan laneSpawnPlan
@@ -1503,27 +1522,24 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		selectOpenModel()
 	}
 	reused, _, _ := strings.Cut(reuseRow, "\t")
-	if kind == "omp" {
-		line := reuseRow
-		name := reused
-		if plan.action == "reuse" {
-			line = plan.candidate.line
-			name = fieldAt(strings.Split(line, "\t"), 0)
+	finishAdmission := func() {
+		if deferRename {
+			EnsureOrchestratorName(ctx, env, cwd, "spawn")
 		}
-		if name != "" {
-			if core.RosterLine(reuseDir, name) != line {
-				// Selection proved the policy on this exact roster row.
-				refuseOMPReuse()
-			}
+		for _, emit := range admittedWarnings {
+			emit()
 		}
 	}
-	if deferRename {
-		EnsureOrchestratorName(ctx, env, cwd, "spawn")
+	// A managed OMP reuse or refusal keeps ancillary writes behind the
+	// identity check and the exact-row commit. Stale rows are pruned when
+	// a later spawn opens a worker.
+	ompReadOnly := kind == "omp" && (reused != "" || unavailable != "" || capacity.Full ||
+		len(refuseParts) > 0 || plan.action != "" && plan.action != "open")
+	sd := reuseDir
+	if !ompReadOnly {
+		finishAdmission()
+		sd = core.StateDir(ctx, env, cwd)
 	}
-	for _, emit := range admittedWarnings {
-		emit()
-	}
-	sd := core.StateDir(ctx, env, cwd)
 	// A native registration hint must be absolute.
 	if filepath.IsAbs(sd) {
 		o.registryDir = sd
@@ -1533,7 +1549,11 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	var occupiedNames []string
 	if plan.action != "" {
 		d := plan.decision
-		for _, row := range d.GoneRows {
+		goneRows := d.GoneRows
+		if ompReadOnly {
+			goneRows = nil
+		}
+		for _, row := range goneRows {
 			fields := strings.Split(row, "\t")
 			gone := fieldAt(fields, 0)
 			removed, err := core.RosterRemoveIf(sd, fieldAt(fields, 1), row)
@@ -1553,6 +1573,9 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		switch plan.action {
 		case "reuse":
 			reuseSelected(svc, sd, line, o, actual, modelChoice, configuredArgs, ctx, env, cwd)
+			if ompReadOnly {
+				finishAdmission()
+			}
 			sameTreeEditors(selected, o.role, fieldAt(f, 6), sd, env, cwd, ctx)
 			Warn(fmt.Sprintf("reusing idle lane '%s' worker '%s' as %s; existing session context is retained", lane, selected, o.role), ctx, env, "spawn")
 			return
@@ -1594,6 +1617,9 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	if reused != "" {
 		previous := fieldAt(strings.Split(reuseRow, "\t"), 3)
 		reuseSelected(svc, sd, reuseRow, o, kind, modelChoice, configuredArgs, ctx, env, cwd)
+		if ompReadOnly {
+			finishAdmission()
+		}
 		sameTreeEditors(reused, o.role, o.cwd, sd, env, cwd, ctx)
 		if previous == o.role {
 			Warn(fmt.Sprintf("reusing idle worker '%s' (%s, %s; dispatch to '%s'); existing session context is retained", reused, kind, o.role, reused), ctx, env, "spawn")
@@ -1843,11 +1869,15 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	if len(o.envDrop) != 0 {
 		envDrop = envDropPrefix + strings.Join(o.envDrop, ",")
 	}
-	if envDrop != "" || o.ompPolicyPath != "" {
+	receipt := ""
+	if o.ompLaunch != nil {
+		receipt = ompPolicyReceipt(o.ompPolicyPath, o.approvals, *o.ompLaunch)
+	}
+	if envDrop != "" || receipt != "" {
 		row = append(row, envDrop)
 	}
-	if o.ompPolicyPath != "" {
-		row = append(row, ompPolicyReceipt(o.ompPolicyPath))
+	if receipt != "" {
+		row = append(row, receipt)
 	}
 	core.RosterAppend(sd, row)
 	// A spawn that re-rosters a released pane (spawn --pane on it) retires
