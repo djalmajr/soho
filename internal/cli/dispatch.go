@@ -909,6 +909,8 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		count, ok := transcriptCount(transcriptPath, transcriptPathMarker(composed))
 		return ok && count > transcriptPre
 	}
+	initialArrival := transcriptArrival
+	ompJournalArmed := false
 	// The dialog can land after the preflight (for example during the
 	// settle): a recheck right before the actual input — no AgentPrompt and
 	// no arrival/retry Enter go to the cursor workspace trust dialog. The
@@ -1017,6 +1019,11 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	}
 	if code, refused := checkAgyLogin(); refused {
 		return code
+	}
+	if checkOn && !hcMode && kind == "omp" && !wasWorking && !queue && !resend {
+		initialArrival = armOMPDispatchArrival(svc, sd, agent, at(1), line, transcriptPathMarker(composed), ceiling)
+		ompJournalArmed = initialArrival != nil
+		ceiling.abort("OMP journal preflight", 10)
 	}
 	// Decide at the delivery boundary, even if the earlier sample was working.
 	promptRep = svc.Runtime.Send(context.Background(), transport.Target{ID: agent}, transport.Send{Text: text, Queue: queue && !hcMode}, sendCall)
@@ -1191,28 +1198,44 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			}
 		}
 	} else if checkOn {
-		notReceived := func(why string) int {
+		notReceived := func(why string, knownSeq ...string) int {
 			finishAgyDelivery()
-			return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, why)
+			return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, why, knownSeq...)
 		}
 		window := time.Duration(checkSecs) * time.Second
 		arrivalState := preState.State
-		arrived := func() bool {
+		lastArrivalSeq := preSeq
+		sampleArrival := func(call transport.Call) bool {
 			if nonEmpty(report) {
 				return true
 			}
-			st := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
+			st := readState(svc, agent, call)
 			arrivalState = st.State
+			if st.Seq != "" {
+				lastArrivalSeq = st.Seq
+			}
 			return (st.State == "working" || st.State == "blocked") && preSeq != "" && st.Seq != "" && st.Seq != preSeq
+		}
+		arrived := func() bool { return sampleArrival(transport.Call{Timeout: herdr.Timeout}) }
+		initialStateArrival := arrived
+		if ompJournalArmed && ceiling != nil {
+			initialStateArrival = func() bool {
+				call, ok := dispatchObservationCall(ceiling)
+				return ok && sampleArrival(call)
+			}
 		}
 		promptEvidence := func() bool {
 			screen, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
 			return provider.PromptEvidence(screen, composed)
 		}
-		if !wasWorking && !waitDispatchArrivalExtra(window, env, arrived, transcriptArrival, ceiling) {
+		if !wasWorking && !waitDispatchArrivalExtra(window, env, initialStateArrival, initialArrival, ceiling) {
 			frame := readDispatchObservation(svc, agent, "visible", nil, ceiling)
 			if ceiling.softHit("prompt arrival") {
-				return notReceived("no arrival proof before the --no-wait ceiling")
+				const reason = "no arrival proof before the --no-wait ceiling"
+				if ompJournalArmed {
+					return notReceived(reason, lastArrivalSeq)
+				}
+				return notReceived(reason)
 			}
 			screen := frame.Value
 			if code, refused := refuseAgyLogin(screen, frame.Valid && frame.Err == nil); refused {
@@ -3534,4 +3557,97 @@ func splitRunArgs(argv []string) ([]string, []string, bool) {
 		}
 	}
 	return spawnArgs, dispatchArgs, noWait
+}
+
+type ompDispatchIdentity struct {
+	Name      string `json:"name"`
+	Kind      string `json:"agent"`
+	Pane      string `json:"pane_id"`
+	Terminal  string `json:"terminal_id"`
+	Workspace string `json:"workspace_id"`
+	Session   struct {
+		Kind string `json:"kind"`
+		Path string `json:"value"`
+	} `json:"agent_session"`
+}
+
+func readOMPDispatchIdentity(svc transport.Services, pane string, ceiling *dispatchWaitBudget) ompDispatchIdentity {
+	call, ok := dispatchObservationCall(ceiling)
+	if !ok {
+		return ompDispatchIdentity{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), call.Timeout)
+	defer cancel()
+	rep := svc.Legacy.AgentGetRaw(ctx, transport.Target{ID: pane}, call)
+	if !rep.Valid || rep.Err != nil || ctx.Err() != nil {
+		return ompDispatchIdentity{}
+	}
+	if _, ok := dispatchObservationCall(ceiling); !ok {
+		return ompDispatchIdentity{}
+	}
+	var response struct {
+		Result struct {
+			Agent ompDispatchIdentity `json:"agent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(rep.Value), &response); err != nil {
+		return ompDispatchIdentity{}
+	}
+	return response.Result.Agent
+}
+
+// armOMPDispatchArrival samples the journal before input. Only a single
+// added user marker can trigger a bounded post-send identity probe.
+func armOMPDispatchArrival(svc transport.Services, sd, agent, pane, row, marker string, ceiling *dispatchWaitBudget) func() bool {
+	if pane == "" {
+		return nil
+	}
+	initial := readOMPDispatchIdentity(svc, pane, ceiling)
+	path := initial.Session.Path
+	if initial.Name != agent || initial.Kind != "omp" || initial.Pane != pane || initial.Workspace != filepath.Base(sd) ||
+		strings.TrimSpace(initial.Terminal) == "" || initial.Session.Kind != "path" || !filepath.IsAbs(path) ||
+		strings.HasPrefix(filepath.ToSlash(filepath.VolumeName(path)), "//") {
+		return nil
+	}
+	call, ok := dispatchObservationCall(ceiling)
+	if !ok {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), call.Timeout)
+	receipt, armed := transcript.OpenOMPReceipt(ctx, path)
+	cancel()
+	if !armed {
+		return nil
+	}
+	if _, ok := dispatchObservationCall(ceiling); !ok {
+		return nil
+	}
+	count := func(confirm func() bool) (int, bool) {
+		call, ok := dispatchObservationCall(ceiling)
+		if !ok {
+			return 0, false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), call.Timeout)
+		defer cancel()
+		n, readable := receipt.Count(ctx, marker, confirm)
+		_, withinBudget := dispatchObservationCall(ceiling)
+		return n, readable && withinBudget
+	}
+	probed := false
+	return func() bool {
+		if probed {
+			return false
+		}
+		if current, ok := count(nil); !ok || current != 1 {
+			return false
+		}
+		probed = true
+		if readOMPDispatchIdentity(svc, pane, ceiling) != initial {
+			return false
+		}
+		// The same file must still contain exactly one new marker after
+		// observing the live worker. Unrelated append records can race it.
+		current, ok := count(func() bool { return core.RosterLine(sd, agent) == row })
+		return ok && current == 1
+	}
 }
