@@ -13,9 +13,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -44,6 +46,7 @@ var (
 	}
 	allowedPlatforms  = map[string]bool{"linux": true, "darwin": true, "windows": true, "any": true}
 	allowedTransports = map[string]bool{"hc": true, "herdr": true, "none": true}
+	utcTimestamp      = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z$`)
 )
 
 // Candidate is the frozen repository revision the manifest is about. Head is
@@ -124,9 +127,9 @@ type layerKey struct {
 	transport string
 }
 
-// Run implements the CLI entry point. It exits 0 only when every expected
-// layer passes, 1 for a manifest with a non-passing layer, and 2 for usage or
-// an unusable inventory. It writes JSON to stdout only for exit 0 or 1.
+// Run implements the CLI entry point. It exits 0 when every expected layer
+// passes and unbound is zero, 1 for a non-passing manifest, and 2 for usage
+// or an unusable inventory. It writes JSON to stdout only for exit 0 or 1.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		_, _ = fmt.Fprintln(stdout, usageLine)
@@ -180,6 +183,13 @@ func load(path string) (Inventory, string, error) {
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return Inventory{}, "", errors.New("input has trailing data")
 	}
+	// Inspect decoded member names before using any typed field. The first
+	// decode already checked syntax, nesting and the single-value boundary.
+	members := json.NewDecoder(bytes.NewReader(data))
+	members.UseNumber()
+	if !uniqueJSONMembers(members) {
+		return Inventory{}, "", errors.New("input has ambiguous JSON object fields")
+	}
 	if inventory.Schema != Schema {
 		return Inventory{}, "", errors.New("input schema must be 1")
 	}
@@ -198,6 +208,56 @@ func load(path string) (Inventory, string, error) {
 		seen[key] = true
 	}
 	return inventory, baseDir, nil
+}
+
+// uniqueJSONMembers verifies one syntactically valid JSON value. Each object
+// has its own member set, and JSON escapes are resolved by Decoder.Token.
+func uniqueJSONMembers(decoder *json.Decoder) bool {
+	token, err := decoder.Token()
+	if err != nil {
+		return false
+	}
+	switch token {
+	case json.Delim('{'):
+		seen := map[string]struct{}{}
+		for decoder.More() {
+			token, err := decoder.Token()
+			name, ok := token.(string)
+			if err != nil || !ok {
+				return false
+			}
+			folded := strings.Map(foldJSONRune, name)
+			if _, exists := seen[folded]; exists {
+				return false
+			}
+			seen[folded] = struct{}{}
+			if !uniqueJSONMembers(decoder) {
+				return false
+			}
+		}
+	case json.Delim('['):
+		for decoder.More() {
+			if !uniqueJSONMembers(decoder) {
+				return false
+			}
+		}
+	default:
+		return true
+	}
+	_, err = decoder.Token()
+	return err == nil
+}
+
+// foldJSONRune chooses the smallest rune in the simple-fold cycle, matching
+// encoding/json's case-insensitive struct field comparison.
+func foldJSONRune(r rune) rune {
+	for {
+		next := unicode.SimpleFold(r)
+		if next <= r {
+			return next
+		}
+		r = next
+	}
 }
 
 // Assemble turns declarations into a manifest. Claimed identity is checked
@@ -278,7 +338,7 @@ func evaluate(row Layer, receipt Receipt, candidate Candidate, root *os.Root, ro
 		row.Status = "unbound"
 		return row
 	}
-	if !validRevision(receipt.Identity.Source) || !validDigest(receipt.SHA256) {
+	if !validRevision(receipt.Identity.Base) || !validRevision(receipt.Identity.Source) || !validDigest(receipt.SHA256) {
 		row.Status = "unbound"
 		return row
 	}
@@ -484,19 +544,8 @@ func validHex(value string, size int) bool {
 }
 
 func normalizeUTC(value string) (time.Time, string, bool) {
-	if !strings.HasSuffix(value, "Z") || strings.Contains(value, ",") {
+	if !utcTimestamp.MatchString(value) {
 		return time.Time{}, "", false
-	}
-	if dot := strings.LastIndex(value, "."); dot >= 0 {
-		fraction := value[dot+1 : len(value)-1]
-		if len(fraction) == 0 || len(fraction) > 9 {
-			return time.Time{}, "", false
-		}
-		for i := 0; i < len(fraction); i++ {
-			if fraction[i] < '0' || fraction[i] > '9' {
-				return time.Time{}, "", false
-			}
-		}
 	}
 	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil || parsed.Location() != time.UTC {

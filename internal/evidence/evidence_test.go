@@ -153,6 +153,27 @@ func TestRunRejectsOversizedInventoryWithoutPath(t *testing.T) {
 	}
 }
 
+func TestRunAcceptsInventoryAtReadBound(t *testing.T) {
+	inventory, root := evidenceTestFixture(t)
+	data, err := json.Marshal(inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Unknown fields remain accepted, including numbers that need not fit float64.
+	data = append(data[:len(data)-1], `,"extra":[{"number":1e400},{"number":2}]}`...)
+	data = append(data, strings.Repeat(" ", int(maxInventorySize)-len(data))...)
+	input := filepath.Join(root, "inventory.json")
+	if err := os.WriteFile(input, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut strings.Builder
+	code := Run([]string{input}, &out, &errOut)
+	var manifest Manifest
+	if err := json.Unmarshal([]byte(out.String()), &manifest); code != 0 || errOut.Len() != 0 || err != nil || manifest.Result != "pass" {
+		t.Fatalf("code=%d stdout=%q stderr=%q parse=%v", code, out.String(), errOut.String(), err)
+	}
+}
+
 func evidenceRunInventory(t *testing.T, inventory Inventory, root string) (int, string, string) {
 	t.Helper()
 	data, err := json.Marshal(inventory)

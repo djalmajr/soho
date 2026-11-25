@@ -82,6 +82,11 @@ func evidenceArtifactContent(layer string) string {
 	return layer + " log SECRET-LOG-LINE HOME=/private/secret\n"
 }
 
+func evidenceArtifactDigest(layer string) string {
+	sum := sha256.Sum256([]byte(evidenceArtifactContent(layer)))
+	return hex.EncodeToString(sum[:])
+}
+
 func evidenceFixture(t *testing.T, mutate func(*evidenceInventory, string)) string {
 	t.Helper()
 	root := t.TempDir()
@@ -225,13 +230,9 @@ func TestEvidenceCLIStablePassWithoutHerdr(t *testing.T) {
 	if len(manifest.Layers) != 2 || manifest.Layers[0].Layer != "gate" || manifest.Layers[1].Layer != "unit" {
 		t.Fatalf("layers are not in stable order: %+v", manifest.Layers)
 	}
-	digestOf := func(layer string) string {
-		sum := sha256.Sum256([]byte(evidenceArtifactContent(layer)))
-		return hex.EncodeToString(sum[:])
-	}
 	want := []evidenceManifestLayer{
-		{Layer: "gate", Platform: "linux", Transport: "herdr", Status: "pass", ID: "sha256:" + digestOf("gate"), Source: evidenceHead, Digest: digestOf("gate"), Since: "2026-11-24T12:00:00Z", Until: "2026-11-24T12:05:00Z"},
-		{Layer: "unit", Platform: "linux", Transport: "herdr", Status: "pass", ID: "sha256:" + digestOf("unit"), Source: evidenceHead, Digest: digestOf("unit"), Since: "2026-11-24T12:00:00Z", Until: "2026-11-24T12:05:00Z"},
+		{Layer: "gate", Platform: "linux", Transport: "herdr", Status: "pass", ID: "sha256:" + evidenceArtifactDigest("gate"), Source: evidenceHead, Digest: evidenceArtifactDigest("gate"), Since: "2026-11-24T12:00:00Z", Until: "2026-11-24T12:05:00Z"},
+		{Layer: "unit", Platform: "linux", Transport: "herdr", Status: "pass", ID: "sha256:" + evidenceArtifactDigest("unit"), Source: evidenceHead, Digest: evidenceArtifactDigest("unit"), Since: "2026-11-24T12:00:00Z", Until: "2026-11-24T12:05:00Z"},
 	}
 	if !reflect.DeepEqual(manifest.Layers, want) {
 		t.Fatalf("layers=%+v want %+v", manifest.Layers, want)
@@ -339,6 +340,141 @@ func TestEvidenceCLIRejectsBadInvocation(t *testing.T) {
 	}
 }
 
+func replaceEvidenceInput(t *testing.T, input, original, replacement string) {
+	t.Helper()
+	data, err := os.ReadFile(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := []byte(original)
+	if !bytes.Contains(data, old) {
+		t.Fatal("input field not found in fixture")
+	}
+	if err := os.WriteFile(input, bytes.Replace(data, old, []byte(replacement), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEvidenceCLIRejectsAmbiguousInventory(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		original    string
+		replacement string
+	}{
+		{"blocked before pass", `"outcome": "pass"`, `"outcome":"blocked","outcome":"pass"`},
+		{"pass before blocked", `"outcome": "pass"`, `"outcome":"pass","outcome":"blocked"`},
+		{"case alias", `"outcome": "pass"`, `"outcome":"blocked","OUTCOME":"pass"`},
+		{"escaped name", `"outcome": "pass"`, `"outcome":"blocked","\u006futcome":"pass"`},
+		{"Unicode fold alias", `"since": "2026-11-24T12:00:00Z"`, `"since":"2026-11-24T12:00:00Z","\u017fince":"2026-11-24T12:00:00Z"`},
+		{"nested identity", `"source": "` + evidenceHead + `"`, `"source":"` + evidenceHead + `","SOURCE":"` + evidenceHead + `"`},
+		{"top-level member", `"schema": 1`, `"schema":1,"schema":1`},
+		{"nested extension member", `"schema": 1`, `"schema":1,"extra":[{"PRIVATE-FIELD":1,"PRIVATE-FIELD":2}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := evidenceFixture(t, nil)
+			replaceEvidenceInput(t, input, tc.original, tc.replacement)
+			root := filepath.Dir(input)
+			env := evidenceCLIEnv(t, root)
+			code, out, stderr := evidenceCLIRun(t, env, "evidence", input)
+			if code != 2 || out != "" || !strings.Contains(stderr, "ambiguous JSON object fields") {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, out, stderr)
+			}
+			evidenceAssertSanitized(t, out+stderr, root)
+			if strings.Contains(stderr, "PRIVATE-FIELD") {
+				t.Fatal("diagnostic exposed an input member name")
+			}
+		})
+	}
+	t.Run("single alternate spelling", func(t *testing.T) {
+		input := evidenceFixture(t, nil)
+		replaceEvidenceInput(t, input, `"outcome": "pass"`, `"OUTCOME":"pass"`)
+		root := filepath.Dir(input)
+		env := evidenceCLIEnv(t, root)
+		code, out, stderr := evidenceCLIRun(t, env, "evidence", input)
+		if code != 0 || stderr != "" || evidenceDecode(t, out).Result != "pass" {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, stderr)
+		}
+		evidenceAssertSanitized(t, out+stderr, root)
+	})
+}
+
+func TestEvidenceCLIProducerBaseContract(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		base   string
+		absent bool
+		code   int
+		status string
+	}{
+		{"absent", "", true, 1, "unbound"},
+		{"empty", "", false, 1, "unbound"},
+		{"malformed", "private-base-marker", false, 1, "unbound"},
+		{"uppercase revision", strings.Repeat("A", 40), false, 1, "unbound"},
+		{"valid foreign base", strings.Repeat("a", 40), false, 1, "stale"},
+		{"valid matching base", evidenceBase, false, 0, "pass"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := evidenceFixture(t, func(inv *evidenceInventory, _ string) {
+				inv.Receipts[0].Identity.Base = tc.base
+			})
+			if tc.absent {
+				replaceEvidenceInput(t, input, `"base": "",`, "")
+			}
+			root := filepath.Dir(input)
+			env := evidenceCLIEnv(t, root)
+			code, out, stderr := evidenceCLIRun(t, env, "evidence", input)
+			if code != tc.code || stderr != "" {
+				t.Fatalf("code=%d want=%d stdout=%q stderr=%q", code, tc.code, out, stderr)
+			}
+			evidenceAssertSanitized(t, out+stderr, root)
+			if strings.Contains(out+stderr, "private-base-marker") {
+				t.Fatal("output exposed the malformed base")
+			}
+			row := evidenceRow(t, evidenceDecode(t, out), "unit")
+			want := evidenceManifestLayer{Layer: "unit", Platform: "linux", Transport: "herdr", Status: tc.status}
+			if tc.status != "unbound" {
+				want.Source = evidenceHead
+				want.Digest = evidenceArtifactDigest("unit")
+				want.Since, want.Until = "2026-11-24T12:00:00Z", "2026-11-24T12:05:00Z"
+			}
+			if tc.status == "pass" {
+				want.ID = "sha256:" + want.Digest
+			}
+			if row != want {
+				t.Fatalf("unit row=%+v want=%+v", row, want)
+			}
+		})
+	}
+}
+
+func TestEvidenceCLIUnboundExtraWithPassingLayers(t *testing.T) {
+	for _, layer := range []string{"native", "private-layer-marker"} {
+		t.Run(layer, func(t *testing.T) {
+			input := evidenceFixture(t, func(inv *evidenceInventory, _ string) {
+				extra := inv.Receipts[0]
+				extra.Layer = layer
+				inv.Receipts = append(inv.Receipts, extra)
+			})
+			root := filepath.Dir(input)
+			env := evidenceCLIEnv(t, root)
+			code, out, stderr := evidenceCLIRun(t, env, "evidence", input)
+			if code != 1 || stderr != "" {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, out, stderr)
+			}
+			evidenceAssertSanitized(t, out+stderr, root)
+			manifest := evidenceDecode(t, out)
+			if manifest.Result != "fail" || manifest.Unbound != 1 || len(manifest.Layers) != 2 {
+				t.Fatalf("manifest=%+v", manifest)
+			}
+			for _, row := range manifest.Layers {
+				if row.Status != "pass" || row.ID != "sha256:"+evidenceArtifactDigest(row.Layer) {
+					t.Fatalf("expected row lost verified pass: %+v", row)
+				}
+			}
+		})
+	}
+}
+
 func TestEvidenceCLITimeRangeContract(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -366,6 +502,36 @@ func TestEvidenceCLITimeRangeContract(t *testing.T) {
 			wantUntil: "2026-11-24T12:00:00.9Z",
 		},
 		{
+			name:   "one-digit hour",
+			since:  "2026-11-24T1:00:00Z",
+			until:  "2026-11-24T1:05:00Z",
+			code:   1,
+			status: "unbound",
+		},
+		{
+			name:   "invalid calendar date",
+			since:  "2026-02-29T01:00:00Z",
+			until:  "2026-03-01T01:05:00Z",
+			code:   1,
+			status: "unbound",
+		},
+		{
+			name:   "offset rather than Z",
+			since:  "2026-11-24T01:00:00Z",
+			until:  "2026-11-24T01:05:00+00:00",
+			code:   1,
+			status: "unbound",
+		},
+		{
+			name:      "valid leap day and nanosecond",
+			since:     "2024-02-29T01:00:00.000000001Z",
+			until:     "2024-02-29T01:00:00.000000002Z",
+			code:      0,
+			status:    "pass",
+			wantSince: "2024-02-29T01:00:00.000000001Z",
+			wantUntil: "2024-02-29T01:00:00.000000002Z",
+		},
+		{
 			name:   "unrepresentable precision",
 			since:  "2026-11-24T12:00:00.1234567891Z",
 			until:  "2026-11-24T12:00:05Z",
@@ -390,6 +556,9 @@ func TestEvidenceCLITimeRangeContract(t *testing.T) {
 			row := evidenceRow(t, manifest, "unit")
 			if row.Status != tc.status {
 				t.Fatalf("status=%q want %q: %+v", row.Status, tc.status, row)
+			}
+			if tc.status == "unbound" && (row.ID != "" || row.Source != "" || row.Digest != "" || row.Since != "" || row.Until != "") {
+				t.Fatalf("unbound timestamp exposed receipt provenance: %+v", row)
 			}
 			if tc.wantSince != "" && (row.Since != tc.wantSince || row.Until != tc.wantUntil || row.Since == row.Until) {
 				t.Fatalf("range=%q..%q want %q..%q", row.Since, row.Until, tc.wantSince, tc.wantUntil)
