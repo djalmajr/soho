@@ -1127,7 +1127,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	flagModel := o.model
 	res := core.ResolveRoleSettings(o.role, ctx, env, cwd, core.RoleFlags{Kind: o.kind, Model: o.model, Effort: o.effort, Approvals: o.approvals})
 	if res.Kind == "omp" && env.Get("SOHO_TRANSPORT") == "hc" {
-		core.DieFriction("spawn: kind omp does not report status under transport=hc; use transport=herdr", 2, "", "spawn")
+		core.DieFriction("spawn: managed OMP workers require the legacy Herdr transport. Use transport=herdr", 2, "", "spawn")
 	}
 	if env.Get("SOHO_TRANSPORT") == "hc" {
 		// DJA-604 2b-2b: hc has no rename; the orchestrator keeps its

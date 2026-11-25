@@ -399,7 +399,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// DJA-604 2b-3a fixes: the transport mode is resolved before the first
 	// provider check. Under hc the worker's readiness is the hc state alone
 	// (the 7501 state words) plus the --if idle send guard, so the kinds
-	// whose status hc cannot report are refused before anything is read or
+	// outside the native launch policy are refused before anything is read or
 	// sent, and the screen-based pre-send steps below (the cursor startup
 	// and final checks, the pi/opencode context read, the pi compaction
 	// border, the cursor marker cleanup) are herdr-only: none of them runs
@@ -422,7 +422,11 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		hcProfile = got.Value.LaunchProfile
 	}
 	if hcMode && !kinds.NativeStatusSupported(kind, hcProfile) {
-		core.DieFriction(fmt.Sprintf("dispatch: kind %s does not report status under transport=hc; use transport=herdr", kind), 2, frictionLogPath, "dispatch")
+		message := fmt.Sprintf("dispatch: kind %s does not report status under transport=hc; use transport=herdr", kind)
+		if kind == "omp" {
+			message = "dispatch: managed OMP workers require the legacy Herdr transport. Use transport=herdr"
+		}
+		core.DieFriction(message, 2, frictionLogPath, "dispatch")
 	}
 	if kind == "codex" && !dispatchNativeArg(at(13), "--no-daemon") && !dispatchNativeArg(at(13), "--remote") && dispatchCodexSupportsNoDaemon(env, cwd) {
 		fmt.Fprintf(platform.Stderr, "soho: dispatch: '%s' was started without --no-daemon: codex runs its commands through a shared server that may carry another pane's identity, so its procs, copies and send can land in another workspace. Release it with --close and spawn it again\n", agent)

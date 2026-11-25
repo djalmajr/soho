@@ -1624,28 +1624,37 @@ func TestStart_CallerExecutableInPathWithSpaces(t *testing.T) {
 	}
 }
 
-func TestStart_UnsupportedKindCursorRefusedBeforeConnect(t *testing.T) {
-	env, conn, calls := startEnv(t, nil)
-	b := newBackend(env, conn)
-	rep := b.Start(context.Background(), transport.Start{
-		Name:    "w-cursor-unsupported",
-		Kind:    "cursor",
-		Timeout: "3000",
-		Args:    []string{"--some-arg"},
-	}, transport.Call{})
+func TestStart_UnsupportedKindsRefusedBeforeConnect(t *testing.T) {
+	for _, tc := range []struct {
+		kind    string
+		message string
+	}{
+		{"cursor", "kind cursor does not report status under transport=hc; use transport=herdr"},
+		{"omp", "managed OMP workers require the legacy Herdr transport. Use transport=herdr"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			env, conn, calls := startEnv(t, nil)
+			b := newBackend(env, conn)
+			rep := b.Start(context.Background(), transport.Start{
+				Name:    "w-" + tc.kind + "-unsupported",
+				Kind:    tc.kind,
+				Timeout: "3000",
+				Args:    []string{"--some-arg"},
+			}, transport.Call{})
 
-	if rep.Err == nil || rep.Err.Kind != transport.FailureUnsupported {
-		t.Fatalf("rep: %+v, want FailureUnsupported", rep)
-	}
-	wantMsg := "kind cursor does not report status under transport=hc; use transport=herdr"
-	if rep.Err.Message != wantMsg {
-		t.Fatalf("rep.Err.Message=%q, want %q", rep.Err.Message, wantMsg)
-	}
-	if conn.getConnectCount() != 0 {
-		t.Fatalf("connectCount=%d, want 0 when unsupported kind is refused before connect", conn.getConnectCount())
-	}
-	if got := len(calls()); got != 0 {
-		t.Fatalf("launches=%d, want 0 (no session or other hc launches)", got)
+			if rep.Err == nil || rep.Err.Kind != transport.FailureUnsupported || rep.Valid || rep.Value != "" {
+				t.Fatalf("rep: %+v, want FailureUnsupported and no terminal", rep)
+			}
+			if rep.Err.Message != tc.message {
+				t.Fatalf("rep.Err.Message=%q, want %q", rep.Err.Message, tc.message)
+			}
+			if conn.getConnectCount() != 0 {
+				t.Fatalf("connectCount=%d, want 0 when unsupported kind is refused before connect", conn.getConnectCount())
+			}
+			if got := len(calls()); got != 0 {
+				t.Fatalf("launches=%d, want 0 (no session or other hc launches)", got)
+			}
+		})
 	}
 }
 

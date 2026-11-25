@@ -132,7 +132,7 @@ func TestSpawnOMPRefusesUnverifiedReuse(t *testing.T) {
 	}
 }
 
-func assertOMPSpawnRefusal(t *testing.T, f spawnFixture, args []string, diagnostic string) {
+func assertOMPSpawnRefusal(t *testing.T, f spawnFixture, args []string, diagnostic string) string {
 	t.Helper()
 	path := filepath.Join(f.state, "ws", "agents.tsv")
 	before, beforeErr := os.ReadFile(path)
@@ -152,6 +152,7 @@ func assertOMPSpawnRefusal(t *testing.T, f spawnFixture, args []string, diagnost
 			}
 		}
 	}
+	return refusal
 }
 
 func TestSpawnOMPLaneAndCoreAdmission(t *testing.T) {
@@ -190,6 +191,15 @@ func TestSpawnOMPLaneAndCoreAdmission(t *testing.T) {
 		f := newOMPSpawnFixture(t)
 		f.env["SOHO_TRANSPORT"] = "hc"
 		args := []string{"worker", "--kind", "omp", "--mcp", "inherit", "--approvals", "ask", "--model", ompFixtureModel, "--effort", "high"}
-		assertOMPSpawnRefusal(t, f, args, "kind omp does not report status under transport=hc")
+		if _, err := fakecli.Install(t, f.bin, "hc", nil); err != nil {
+			t.Fatal(err)
+		}
+		const want = "spawn: managed OMP workers require the legacy Herdr transport. Use transport=herdr"
+		if got := assertOMPSpawnRefusal(t, f, args, want); got != want {
+			t.Fatalf("refusal=%q, want %q", got, want)
+		}
+		if _, err := os.Stat(filepath.Join(f.bin, "hc.calls.jsonl")); !os.IsNotExist(err) {
+			t.Fatalf("hc call log exists or cannot be checked: %v", err)
+		}
 	})
 }

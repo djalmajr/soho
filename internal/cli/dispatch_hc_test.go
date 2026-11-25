@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -629,6 +630,39 @@ func TestDispatchHcUnknownCapabilityZeroSend(t *testing.T) {
 		t.Fatalf("capability probes help=%d schema=%d, want the one read-only pair", help, schema)
 	}
 	f.assertHcNeverTouchedHerdr(t)
+}
+
+func TestDispatchHcOMPRefusedBeforeSend(t *testing.T) {
+	f := newDispatchHcFixture(t, nil)
+	roster := filepath.Join(f.sd, "agents.tsv")
+	body, err := os.ReadFile(roster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = bytes.Replace(body, []byte("worker\tt7\tcodex\t"), []byte("worker\tt7\tomp\t"), 1)
+	if err := os.WriteFile(roster, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
+	const want = "soho: dispatch: managed OMP workers require the legacy Herdr transport. Use transport=herdr\n"
+	if code != 2 || out != "" || stderr != want {
+		t.Fatalf("code=%d stdout=%q stderr=%q, want exit 2, empty stdout and %q", code, out, stderr, want)
+	}
+	for _, call := range f.hcCalls(t) {
+		if !slices.Equal(call.Argv, []string{"get", "t1", "--json"}) &&
+			!slices.Equal(call.Argv, []string{"ls", "--label", "soho.session=sX", "--json"}) {
+			t.Fatalf("unexpected hc call before refusal: %q", call.Argv)
+		}
+	}
+	f.assertHcNeverTouchedHerdr(t)
+	entries, err := os.ReadDir(filepath.Join(f.sd, "briefs"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("composed briefs=%v err=%v, want none", entries, err)
+	}
+	if _, err := os.Stat(taskreport.TaskReportPointerPath(f.sd, "worker")); !os.IsNotExist(err) {
+		t.Fatalf("task report pointer exists or cannot be checked: %v", err)
+	}
 }
 
 // composedStampOf recovers the composed brief's stamp from the fixture's

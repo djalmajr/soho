@@ -1496,6 +1496,8 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 			message = "opencode requires launch profile " + launchprofile.OpenCodePrimaryProfile + " under transport=hc"
 		case start.LaunchProfile != "":
 			message = "native launch profile is unsupported under transport=hc"
+		case start.Kind == "omp":
+			message = "managed OMP workers require the legacy Herdr transport. Use transport=herdr"
 		}
 		return transport.Reply[string]{Err: &transport.Failure{
 			Kind:    transport.FailureUnsupported,
