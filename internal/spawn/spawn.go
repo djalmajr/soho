@@ -2658,6 +2658,9 @@ func freshSpawnArgs(o spawnOptions, lane, kind string, ctx *core.Config, env pla
 			Warn(o.outputText(message), ctx, env, command)
 		}
 	}
+	if kind == "grok" && kinds.GrokClaudeHooksRisk(env, platform.ProjectRoot(env, o.cwd)) == kinds.GrokHooksWarn {
+		warnOnce("grok-claude-hooks", kinds.GrokClaudeHooksWarningText, ctx, env, o.cwd, admissionOnly, warn)
+	}
 	var native string
 	if o.launchProfile.Name != "" {
 		// SOH-201 phase B: the configured native args were snapshotted with

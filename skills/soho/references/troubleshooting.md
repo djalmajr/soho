@@ -452,3 +452,9 @@ The dedicated refusal says `HERDR_PANE_ID='<id>' cannot identify this Codex exec
 - **Symptom:** a worker settles without a report after its worktree was removed, and Codex hooks fail with `No such file or directory`.
 - **Cause:** the worker pane still uses the removed directory. Dispatch checks its roster cwd before task writes or input, doctor warns for live workers, and wait adds the missing cwd to a settled-no-report cause; permission errors are not classified as a removed directory.
 - **Fix:** release the old worker with `soho release <agent> --close`, then use `soho spawn <role> --cwd <existing-directory>` and dispatch the brief again. Check that the intended worktree exists before spawning.
+
+## Grok may execute configured Claude hooks
+
+- **Symptom:** `soho doctor`, `soho setup` or a fresh Grok `spawn` prints `grok may execute the same configured Claude hooks; set [compat.claude] hooks=false in Grok config or GROK_CLAUDE_HOOKS_ENABLED=0 to opt out`.
+- **Cause:** xAI documents that Grok scans global and project Claude hooks by default. Soho reads the visible Claude hook files and the documented compatibility setting; it does not launch Grok or read hook commands into the warning.
+- **Do:** set `[compat.claude] hooks=false` in Grok config or `GROK_CLAUDE_HOOKS_ENABLED=0` when those hooks must not also run under Grok. With no configured hooks, an effective opt-out or an unprovable config layer the warning stays quiet; the warning check itself edits neither Grok config nor Claude hook files.

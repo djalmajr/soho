@@ -667,6 +667,9 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	if standalone && piUsed {
 		doctorPiCapabilityWarning(env, cwd, s)
 	}
+	if kinds.GrokClaudeHooksRisk(env, platform.ProjectRoot(env, cwd)) == kinds.GrokHooksWarn {
+		s.Warning(kinds.GrokClaudeHooksWarningText)
+	}
 	doctorCodexApprovalOverrides(ctx, env, cwd, s)
 	doctorCodexNetwork(ctx, env, cwd, s)
 	codexenv.DoctorCodexPolicyWarnings(env, platform.Current(), s.Warning)
