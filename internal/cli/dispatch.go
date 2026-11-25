@@ -1205,23 +1205,37 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		window := time.Duration(checkSecs) * time.Second
 		arrivalState := preState.State
 		lastArrivalSeq := preSeq
-		sampleArrival := func(call transport.Call) bool {
-			if nonEmpty(report) {
+		sampleArrival := func(sampleCtx context.Context, call transport.Call, sampleCeiling *dispatchWaitBudget) bool {
+			reportExists := nonEmpty(report)
+			if !ompDispatchEvidenceCurrent(sampleCtx, sampleCeiling) {
+				return false
+			}
+			if reportExists {
 				return true
 			}
-			st := readState(svc, agent, call)
+			st := stateFromReply(svc.Runtime.Get(sampleCtx, transport.Target{ID: agent}, call))
+			if !ompDispatchEvidenceCurrent(sampleCtx, sampleCeiling) {
+				return false
+			}
 			arrivalState = st.State
 			if st.Seq != "" {
 				lastArrivalSeq = st.Seq
 			}
 			return (st.State == "working" || st.State == "blocked") && preSeq != "" && st.Seq != "" && st.Seq != preSeq
 		}
-		arrived := func() bool { return sampleArrival(transport.Call{Timeout: herdr.Timeout}) }
+		arrived := func() bool {
+			return sampleArrival(context.Background(), transport.Call{Timeout: herdr.Timeout}, nil)
+		}
 		initialStateArrival := arrived
 		if ompJournalArmed && ceiling != nil {
 			initialStateArrival = func() bool {
-				call, ok := dispatchObservationCall(ceiling)
-				return ok && sampleArrival(call)
+				call, ok := ompDispatchObservationCall(ceiling)
+				if !ok {
+					return false
+				}
+				sampleCtx, cancel := context.WithTimeout(context.Background(), call.Timeout)
+				defer cancel()
+				return sampleArrival(sampleCtx, call, ceiling)
 			}
 		}
 		promptEvidence := func() bool {
@@ -1416,7 +1430,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	gittree.Preserve(sidecar, gitFields)
 	var last *jsonjs.Object
 	if noWait && checkOn && !hcMode && status != "queued" {
-		status, last = noWaitObservation(agent, role, kind, lane, model, report, env, svc, ctx, priorAuth, ceiling)
+		status, last = noWaitObservation(agent, role, kind, lane, model, report, env, svc, ctx, priorAuth, ceiling, ompJournalArmed)
 	}
 	// Delivery and pointer restoration are complete. Waiting for a report
 	// must not reserve the worker against release or a later dispatch.
@@ -3402,15 +3416,28 @@ func readDispatchObservation(svc transport.Services, agent, source string, lines
 	return reply
 }
 
-func noWaitObservation(agent, role, kind, lane, model, report string, env platform.Env, svc transport.Services, ctx *core.Config, priorAuth map[string]bool, ceiling *dispatchWaitBudget) (string, *jsonjs.Object) {
+func noWaitObservation(agent, role, kind, lane, model, report string, env platform.Env, svc transport.Services, ctx *core.Config, priorAuth map[string]bool, ceiling *dispatchWaitBudget, ompJournalArmed bool) (string, *jsonjs.Object) {
 	if nonEmpty(report) {
 		return "submitted", nil
 	}
-	call, ok := dispatchObservationCall(ceiling)
+	observationCall := dispatchObservationCall
+	if ompJournalArmed {
+		observationCall = ompDispatchObservationCall
+	}
+	call, ok := observationCall(ceiling)
 	if !ok {
 		return "submitted", nil
 	}
-	st := readState(svc, agent, call)
+	sampleCtx := context.Background()
+	if ompJournalArmed {
+		var cancel context.CancelFunc
+		sampleCtx, cancel = context.WithTimeout(sampleCtx, call.Timeout)
+		defer cancel()
+	}
+	st := stateFromReply(svc.Runtime.Get(sampleCtx, transport.Target{ID: agent}, call))
+	if ompJournalArmed && !ompDispatchEvidenceCurrent(sampleCtx, ceiling) {
+		return "submitted", nil
+	}
 	if st.State == "working" || st.State == "unavailable" {
 		return "submitted", nil
 	}
@@ -3571,8 +3598,18 @@ type ompDispatchIdentity struct {
 	} `json:"agent_session"`
 }
 
-func readOMPDispatchIdentity(svc transport.Services, pane string, ceiling *dispatchWaitBudget) ompDispatchIdentity {
+// Legacy Herdr turns integer-millisecond subprocess timeouts of zero off.
+func ompDispatchObservationCall(ceiling *dispatchWaitBudget) (transport.Call, bool) {
 	call, ok := dispatchObservationCall(ceiling)
+	return call, ok && call.Timeout >= time.Millisecond
+}
+
+func ompDispatchEvidenceCurrent(ctx context.Context, ceiling *dispatchWaitBudget) bool {
+	return ctx.Err() == nil && (ceiling == nil || dispatchCeilingNow().Before(ceiling.deadline))
+}
+
+func readOMPDispatchIdentity(svc transport.Services, pane string, ceiling *dispatchWaitBudget) ompDispatchIdentity {
+	call, ok := ompDispatchObservationCall(ceiling)
 	if !ok {
 		return ompDispatchIdentity{}
 	}
@@ -3582,15 +3619,12 @@ func readOMPDispatchIdentity(svc transport.Services, pane string, ceiling *dispa
 	if !rep.Valid || rep.Err != nil || ctx.Err() != nil {
 		return ompDispatchIdentity{}
 	}
-	if _, ok := dispatchObservationCall(ceiling); !ok {
-		return ompDispatchIdentity{}
-	}
 	var response struct {
 		Result struct {
 			Agent ompDispatchIdentity `json:"agent"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal([]byte(rep.Value), &response); err != nil {
+	if err := json.Unmarshal([]byte(rep.Value), &response); err != nil || !ompDispatchEvidenceCurrent(ctx, ceiling) {
 		return ompDispatchIdentity{}
 	}
 	return response.Result.Agent

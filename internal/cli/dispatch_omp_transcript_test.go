@@ -15,6 +15,25 @@ import (
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
+func TestOMPDispatchObservationCallFloor(t *testing.T) {
+	now := time.Unix(1, 0)
+	oldClock := dispatchCeilingNow
+	t.Cleanup(func() { dispatchCeilingNow = oldClock })
+	dispatchCeilingNow = func() time.Time { return now }
+	for _, tc := range []struct {
+		remaining time.Duration
+		want      bool
+	}{
+		{time.Millisecond - time.Nanosecond, false},
+		{time.Millisecond, true},
+	} {
+		call, ok := ompDispatchObservationCall(&dispatchWaitBudget{deadline: now.Add(tc.remaining)})
+		if ok != tc.want || call.Timeout != tc.remaining {
+			t.Errorf("remaining=%s call=%+v allowed=%t want %t", tc.remaining, call, ok, tc.want)
+		}
+	}
+}
+
 func TestDispatchOMPTranscriptArrival(t *testing.T) {
 	probe := filepath.Join(t.TempDir(), "no-follow")
 	if err := os.WriteFile(probe, nil, 0o600); err != nil {
@@ -66,6 +85,12 @@ func TestDispatchOMPTranscriptArrival(t *testing.T) {
 		{name: "symlink journal", fileKind: "symlink", add: []string{"user"}, wantCode: 15, wantPaneGets: 1},
 		{name: "budget exhausted before verification", add: []string{"user"}, probeEvent: "before", wantCode: 15, wantPaneGets: 1},
 		{name: "budget exhausted during verification", add: []string{"user"}, probeEvent: "during", wantCode: 15, wantPaneGets: 2},
+		{name: "late working state does not prove arrival", probeEvent: "late-state", wantCode: 15, wantPaneGets: 1},
+		{name: "late report does not prove arrival", probeEvent: "late-report", wantCode: 15, wantPaneGets: 1},
+		{name: "transient state kill cannot retry beyond ceiling", probeEvent: "retry", wantCode: 15, wantPaneGets: 1},
+		{name: "submillisecond state budget skips launch", probeEvent: "sub-ms", wantCode: 15, wantPaneGets: 1},
+		{name: "submillisecond raw identity budget skips launch", add: []string{"user"}, probeEvent: "sub-ms-identity", wantCode: 15, wantPaneGets: 1},
+		{name: "submillisecond diagnostic budget keeps proved receipt", add: []string{"user"}, probeEvent: "sub-ms-diagnostic", wantPaneGets: 2},
 		{name: "confirmation disabled", add: []string{"user"}, noCheck: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -102,6 +127,16 @@ func TestDispatchOMPTranscriptArrival(t *testing.T) {
 				{Argv: paneGet, Call: 1, Stdout: raw},
 				{Argv: paneGet, Stdout: recheck},
 				{Argv: []string{"agent", "prompt", "worker"}, ArgvPrefix: true, WaitFile: gate, Stdout: `{"result":{"submitted":true}}`},
+			}
+			stateGet := []string{"agent", "get", "worker"}
+			switch tc.probeEvent {
+			case "late-state", "sub-ms":
+				rules = append(rules, fakecli.Rule{Argv: stateGet, Call: 2, Stdout: compactStateJSON("working", 2)})
+			case "retry":
+				rules = append(rules,
+					fakecli.Rule{Argv: stateGet, Call: 2, Code: 137},
+					fakecli.Rule{Argv: stateGet, Call: 3, Stdout: compactStateJSON("working", 2)},
+				)
 			}
 			if tc.compact != "" {
 				after := ompCompactBefore + "\n" + ompCompactDivider + "\n"
@@ -185,6 +220,8 @@ func TestDispatchOMPTranscriptArrival(t *testing.T) {
 				return false
 			}
 			start := time.Date(2026, 9, 29, 0, 0, 0, 0, time.UTC)
+			// The fixture config sets a one-second check and zero settle.
+			ceilingEnd := start.Add(11 * time.Second)
 			oldNow, oldCeilingNow := platform.Now, dispatchCeilingNow
 			t.Cleanup(func() { platform.Now, dispatchCeilingNow = oldNow, oldCeilingNow })
 			platform.Now = func() time.Time {
@@ -193,9 +230,51 @@ func TestDispatchOMPTranscriptArrival(t *testing.T) {
 				}
 				return start
 			}
-			verified, preflightChecks := false, 0
+			verified, preflightChecks, postSendChecks := false, 0, 0
+			var postSendStarted time.Time
 			dispatchCeilingNow = func() time.Time {
 				switch tc.probeEvent {
+				case "retry":
+					if countDispatchCalls(readCalls(), "prompt") != 0 {
+						if postSendStarted.IsZero() {
+							postSendStarted = time.Now()
+						}
+						return ceilingEnd.Add(time.Since(postSendStarted) - 750*time.Millisecond)
+					}
+				case "late-report", "sub-ms":
+					if countDispatchCalls(readCalls(), "prompt") != 0 {
+						postSendChecks++
+						if postSendChecks >= 4 {
+							return ceilingEnd
+						}
+						if tc.probeEvent == "sub-ms" {
+							return ceilingEnd.Add(-500 * time.Microsecond)
+						}
+						if postSendChecks == 3 {
+							report := filepath.Join(base.state, "ws", "reports", "worker-"+piTranscriptStamp+".md")
+							if err := os.WriteFile(report, []byte("late report\n"), 0o600); err != nil {
+								t.Fatal(err)
+							}
+						}
+						return ceilingEnd.Add(-750 * time.Millisecond)
+					}
+				case "late-state":
+					if postSendGet(readCalls()) {
+						return ceilingEnd
+					}
+				case "sub-ms-identity", "sub-ms-diagnostic":
+					calls := readCalls()
+					atProbe := tc.probeEvent == "sub-ms-identity" && postSendGet(calls) ||
+						tc.probeEvent == "sub-ms-diagnostic" && countArgv(calls, paneGet) == 2
+					if atProbe {
+						postSendChecks++
+						if postSendChecks >= 5 {
+							return ceilingEnd
+						}
+						if postSendChecks == 4 {
+							return ceilingEnd.Add(-500 * time.Microsecond)
+						}
+					}
 				case "preflight":
 					if countArgv(readCalls(), paneGet) == 1 {
 						preflightChecks++
@@ -307,6 +386,23 @@ func TestDispatchOMPTranscriptArrival(t *testing.T) {
 			}
 			if (tc.probeEvent == "before" || tc.probeEvent == "during") && postSendStateReads != 1 {
 				t.Errorf("state reads after send=%d want=1 with no state reads past expired receipt ceiling", postSendStateReads)
+			}
+			switch tc.probeEvent {
+			case "late-report", "sub-ms", "late-state", "retry", "sub-ms-identity", "sub-ms-diagnostic":
+				wantReads := 1
+				if tc.probeEvent == "late-report" || tc.probeEvent == "sub-ms" {
+					wantReads = 0
+				}
+				if postSendStateReads != wantReads {
+					t.Errorf("state reads after send=%d want=%d", postSendStateReads, wantReads)
+				}
+				if code == 15 {
+					marker := filepath.Join(base.state, "ws", "wait", "worker.not-received")
+					fields := strings.Fields(mustRead(t, marker))
+					if len(fields) != 2 || fields[1] != "1" {
+						t.Errorf("not-received marker=%q want last timely sequence 1", fields)
+					}
+				}
 			}
 			if tc.compact == "" {
 				requireNoEnter(t, base.bin)
