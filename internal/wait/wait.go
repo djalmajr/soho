@@ -841,7 +841,7 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 					if env.Get("SOHO_TRANSPORT") == "hc" {
 						inspect = "hc read " + agent
 					}
-					sendWarning(fmt.Sprintf("agent '%s' has shown the same screen (apart from counters) for %d min while working; it may be stuck in one tool call. Inspect: %s", agent, mins, inspect))
+					sendWarning(fmt.Sprintf("agent '%s' has shown the same screen (apart from counters) for %d min while working; it may be stuck in one tool call. Inspect: %s", agent, mins, inspect) + foregroundProcessHint(text))
 					writeWaitFile(sd, agent, "stuck-warned", "")
 				}
 			}
@@ -2123,6 +2123,24 @@ func releasedChildReason(name string, ctx *core.Config, env platform.Env, cwd st
 		safe := text.SanitizeCause(name)
 		return "; terminal " + text.SanitizeCause(terminal.PaneID) + " named '" + safe +
 			"' is still open outside the roster (released without --close); close it with: soho release " + safe + " --close"
+	}
+	return ""
+}
+
+var chromiumLogLine = regexp.MustCompile(`^\[\d+:\d+:\d{4}/[\d.]+:(ERROR|WARNING):`)
+
+// foregroundProcessHint looks for recent process output on an already stuck
+// screen. The text is advisory and the screen does not establish ownership.
+func foregroundProcessHint(screen string) string {
+	lines := strings.Split(strings.TrimSpace(screen), "\n")
+	for _, line := range lines[max(0, len(lines)-8):] {
+		line = strings.TrimSpace(line)
+		if chromiumLogLine.MatchString(line) ||
+			strings.HasPrefix(line, "DevTools listening on ws://") ||
+			strings.HasPrefix(line, "Server listening on http://") ||
+			strings.HasPrefix(line, "Server listening on https://") {
+			return ". Browser or server output is still visible. If a foreground process is blocking the turn, use soho procs stop <pid> for a verified process you started and registered"
+		}
 	}
 	return ""
 }
