@@ -16,14 +16,15 @@ import (
 )
 
 func TestReopenOMPManagedPolicy(t *testing.T) {
-	const policy = "retry:\n  modelFallback: false\ntools:\n  approval:\n    task: deny\n"
+	const policy = "retry:\n  modelFallback: false\ntask:\n  maxRecursionDepth: 0\n"
+	const oldPolicy = "retry:\n  modelFallback: false\ntools:\n  approval:\n    task: deny\n"
 	for _, tc := range []struct {
 		name, body  string
 		priorPolicy bool
 		wantCode    int
 	}{
 		{name: "missing", wantCode: 2},
-		{name: "invalid", body: strings.Replace(policy, "task: deny", "task: ask ", 1), wantCode: 2},
+		{name: "invalid", body: strings.Replace(policy, "maxRecursionDepth: 0", "maxRecursionDepth: 1", 1), wantCode: 2},
 		{name: "replace historical worker", body: policy},
 		{name: "replace worker with path-only policy", body: policy, priorPolicy: true},
 	} {
@@ -51,7 +52,9 @@ func TestReopenOMPManagedPolicy(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			policyPath := filepath.Join(skill, "templates", "omp-managed-v1.yml")
+			policyPath := filepath.Join(skill, "templates", "omp-managed-v2.yml")
+			oldPath := filepath.Join(skill, "templates", "omp-managed-v1.yml")
+			write(oldPath, oldPolicy)
 			if tc.body != "" {
 				write(policyPath, tc.body)
 			}
@@ -59,7 +62,7 @@ func TestReopenOMPManagedPolicy(t *testing.T) {
 			const model = "fixture/model"
 			row := []string{"worker", "p-old", "omp", "worker", "", "1", cwd, "now", model, "full", "worker", "", "", "", "xhigh", "inherit", "", "--approval-mode yolo"}
 			if tc.priorPolicy {
-				row = append(row, "", "omp-policy:"+policyPath)
+				row = append(row, "", "omp-policy:"+oldPath)
 			}
 			roster := filepath.Join(sd, "agents.tsv")
 			before := "# header\n" + strings.Join(row, "\t") + "\n"
@@ -110,7 +113,7 @@ func TestReopenOMPManagedPolicy(t *testing.T) {
 			}
 			if code != 0 {
 				pointerBody, err := os.ReadFile(pointer)
-				if err != nil || string(pointerBody) != report+"\n" || string(rowBytes) != before || out.Len() != 0 || !strings.Contains(stderr.String(), "managed OMP policy") {
+				if err != nil || string(pointerBody) != report+"\n" || string(rowBytes) != before || out.Len() != 0 || !strings.Contains(stderr.String(), "managed OMP policy omp-managed-v2.yml") {
 					t.Fatalf("refusal altered old worker: out=%q stderr=%q roster=%q pointer=%q err=%v", out.String(), stderr.String(), rowBytes, pointerBody, err)
 				}
 				if len(calls) != 0 {

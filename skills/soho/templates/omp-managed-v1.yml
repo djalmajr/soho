@@ -1,5 +1,0 @@
-retry:
-  modelFallback: false
-tools:
-  approval:
-    task: deny

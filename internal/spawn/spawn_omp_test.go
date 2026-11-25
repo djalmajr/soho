@@ -12,10 +12,11 @@ import (
 )
 
 const ompFixtureModel = "openrouter/anthropic/claude-test"
-const ompFixturePolicy = "retry:\n  modelFallback: false\ntools:\n  approval:\n    task: deny\n"
+const ompFixturePolicy = "retry:\n  modelFallback: false\ntask:\n  maxRecursionDepth: 0\n"
+const ompFixtureOldPolicy = "retry:\n  modelFallback: false\ntools:\n  approval:\n    task: deny\n"
 
 func ompFixturePolicyPath(skill string) string {
-	return filepath.Join(skill, "templates", "omp-managed-v1.yml")
+	return filepath.Join(skill, "templates", "omp-managed-v2.yml")
 }
 
 func newOMPSpawnFixture(t *testing.T, overrides ...fakecli.Rule) spawnFixture {
@@ -53,6 +54,10 @@ func TestSpawnOMPVerifiedLaunchAndReuse(t *testing.T) {
 	} {
 		t.Run(tc.approvals, func(t *testing.T) {
 			f := newOMPSpawnFixture(t)
+			old := filepath.Join(f.env["SOHO_SKILL_DIR"], "templates", "omp-managed-v1.yml")
+			if err := os.WriteFile(old, []byte(ompFixtureOldPolicy), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			args := []string{"worker", "--kind", "omp", "--mcp", "inherit", "--approvals", tc.approvals, "--model", ompFixtureModel, "--effort", "xhigh"}
 			code, out, stderr, calls := runCmdSpawn(t, f, args)
 			if code != 0 || !spawnJSONHasField(t, out, `"status": "ready"`) {
@@ -165,7 +170,7 @@ func TestSpawnOMPRefusesUnverifiedReuse(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				row = append(row, "", "omp-policy:"+policy)
+				row = append(row, "", "omp-policy:"+filepath.Join(filepath.Dir(policy), "omp-managed-v1.yml"))
 			}
 			f.roster(t, strings.Join(row, "\t"))
 			args := []string{"worker", "--kind", "omp", "--name", "worker", "--mcp", "inherit", "--approvals", "ask", "--model", ompFixtureModel, "--effort", "high"}
@@ -176,12 +181,16 @@ func TestSpawnOMPRefusesUnverifiedReuse(t *testing.T) {
 
 func TestSpawnOMPManagedPolicyRefusesBeforePaneEffects(t *testing.T) {
 	for _, tc := range []struct{ name, body, diagnostic string }{
-		{"missing", "", "managed OMP policy"},
-		{"invalid", strings.Replace(ompFixturePolicy, "task: deny", "task: ask ", 1), "managed OMP policy"},
+		{"missing", "", "is unavailable"},
+		{"invalid", strings.Replace(ompFixturePolicy, "maxRecursionDepth: 0", "maxRecursionDepth: 1", 1), "is invalid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newOMPSpawnFixture(t)
 			policy := ompFixturePolicyPath(f.env["SOHO_SKILL_DIR"])
+			old := filepath.Join(filepath.Dir(policy), "omp-managed-v1.yml")
+			if err := os.WriteFile(old, []byte(ompFixtureOldPolicy), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			if tc.body == "" {
 				if err := os.Remove(policy); err != nil {
 					t.Fatal(err)
@@ -190,7 +199,7 @@ func TestSpawnOMPManagedPolicyRefusesBeforePaneEffects(t *testing.T) {
 				t.Fatal(err)
 			}
 			args := []string{"worker", "--fresh", "--kind", "omp", "--mcp", "inherit", "--approvals", "full", "--model", ompFixtureModel, "--effort", "high"}
-			assertOMPSpawnRefusal(t, f, args, tc.diagnostic)
+			assertOMPSpawnRefusal(t, f, args, "managed OMP policy omp-managed-v2.yml "+tc.diagnostic)
 		})
 	}
 }
@@ -299,9 +308,9 @@ func TestSpawnOMPManagedReuseIdentity(t *testing.T) {
 
 func TestSpawnOMPManagedPolicyReuseAndCapacity(t *testing.T) {
 	for _, tc := range []struct {
-		name, requested            string
-		lane, compatible, replaced bool
-		wantCode                   int
+		name, requested                       string
+		lane, compatible, replaced, oldPolicy bool
+		wantCode                              int
 	}{
 		{name: "ungrouped skips historical row", compatible: true},
 		{name: "ungrouped skips replaced live worker", compatible: true, replaced: true},
@@ -309,12 +318,18 @@ func TestSpawnOMPManagedPolicyReuseAndCapacity(t *testing.T) {
 		{name: "lane preserves an explicit historical name with room", lane: true, compatible: true, requested: "worker", wantCode: 2},
 		{name: "global cap still counts historical worker", wantCode: 8},
 		{name: "lane cap still counts historical worker", lane: true, wantCode: 10},
+		{name: "global cap still counts v1 worker", oldPolicy: true, wantCode: 8},
+		{name: "lane cap still counts v1 worker", lane: true, oldPolicy: true, wantCode: 10},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			session := "replacement-session"
+			if tc.oldPolicy {
+				session = "original-session"
+			}
 			live := strings.Replace(ompStartupRecord("p-good", "term_compatible", "session-compatible"), `"name":"worker"`, `"name":"compatible"`, 1)
 			f := newOMPSpawnFixture(t, idleHerdrRule("compatible"),
 				fakecli.Rule{Argv: []string{"agent", "get", "p-good"}, Stdout: live},
-				fakecli.Rule{Argv: []string{"agent", "get", "p-old"}, Stdout: ompStartupRecord("p-old", "term_old", "replacement-session")},
+				fakecli.Rule{Argv: []string{"agent", "get", "p-old"}, Stdout: ompStartupRecord("p-old", "term_old", session)},
 				fakecli.Rule{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"worker","pane_id":"p-old","agent_status":"idle"}]}}`})
 			group := ""
 			if tc.lane {
@@ -332,6 +347,15 @@ func TestSpawnOMPManagedPolicyReuseAndCapacity(t *testing.T) {
 				f.env["SOHO_MAX_WORKERS"] = "1"
 			}
 			row := []string{"worker", "p-old", "omp", "worker", "anthropic", "1", f.cwd, "now", ompFixtureModel, "ask", "worker", group, "", "", "high", "inherit", "", "--approval-mode always-ask"}
+			if tc.oldPolicy {
+				policy, err := filepath.EvalSymlinks(ompFixturePolicyPath(f.env["SOHO_SKILL_DIR"]))
+				if err != nil {
+					t.Fatal(err)
+				}
+				opening := decodeOMPStartupAgent(ompStartupRecord("p-old", "term_old", session))
+				v1Path := filepath.Join(filepath.Dir(policy), "omp-managed-v1.yml")
+				row = append(row, "", ompPolicyReceipt(v1Path, "ask", opening))
+			}
 			rows := []string{strings.Join(row, "\t")}
 			if tc.compatible {
 				policy, err := filepath.EvalSymlinks(ompFixturePolicyPath(f.env["SOHO_SKILL_DIR"]))

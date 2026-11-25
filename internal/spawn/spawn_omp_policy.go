@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	ompPolicyAsset    = "omp-managed-v1.yml"
-	ompPolicyBytes    = "retry:\n  modelFallback: false\ntools:\n  approval:\n    task: deny\n"
+	ompPolicyAsset    = "omp-managed-v2.yml"
+	ompPolicyBytes    = "retry:\n  modelFallback: false\ntask:\n  maxRecursionDepth: 0\n"
 	ompPolicyColumn   = 19 // After the optional E2E port, OMP approval and environment policy.
 	ompApprovalColumn = 17
 	ompPolicyVersion  = "omp-policy:v2:"
@@ -25,7 +25,7 @@ const (
 )
 
 // managedOMPPolicy resolves the stable packaged asset. OMP watches this path,
-// so future policy revisions must use a new filename and retain this file.
+// so future revisions must use a new filename and retain published versions.
 func managedOMPPolicy(env platform.Env, cwd string) (string, error) {
 	skill := platform.SkillDir(env)
 	if !filepath.IsAbs(skill) {
