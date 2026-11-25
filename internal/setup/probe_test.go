@@ -5,13 +5,106 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
+
+func TestSetupProbeAgyExplicitModelContract(t *testing.T) {
+	const high = "gemini-4-hydrogen-high"
+	const low = "gemini-4-hydrogen-low"
+	const cached = "gemini-4-hydrogen-xhigh\n" + high + "\n" + low + "\n"
+	for _, tc := range []struct {
+		name, model, wantModel, catalog, configured, listing string
+		listingFault, noAuth                                 bool
+	}{
+		{name: "cached alias resolves with high effort", model: "hydrogen", wantModel: high, catalog: cached},
+		{name: "cold Hydrogen resolves to the listed generation", model: "hydrogen", wantModel: "gemini-5-hydrogen-high", listing: high + "  Hydrogen 4\ngemini-5-hydrogen-high  Hydrogen 5\n"},
+		{name: "cold Opus resolves a second alias", model: "opus", wantModel: "claude-opus-4-6", listing: "claude-opus-4-5  Opus\nclaude-opus-4-6  Opus\n"},
+		{name: "cached versioned base selects high", model: "gemini-4-hydrogen", wantModel: high, catalog: cached},
+		{name: "cold punctuated base selects high", model: "gemini-4.5-hydrogen", wantModel: "gemini-4.5-hydrogen-high", listing: "gemini-4.5-hydrogen-low  Low\ngemini-4.5-hydrogen-high  High\n"},
+		{name: "native ID stays exact", model: low, wantModel: low, catalog: cached},
+		{name: "exact listed base wins", model: "gemini-4-hydrogen", wantModel: "gemini-4-hydrogen", listing: high + "  High\ngemini-4-hydrogen  Native\n"},
+		{name: "exact native ID in cold catalog wins", model: "hydrogen", wantModel: "hydrogen", listing: high + "  Hydrogen high\nhydrogen  Native ID\n"},
+		{name: "unrecognized native form passes through", model: "hydrogen-provider-private", wantModel: "hydrogen-provider-private", listing: high + "  Hydrogen\n"},
+		{name: "unmatched native prefix is not a base alias", model: "gemini-4", wantModel: "gemini-4", listing: high + "  Hydrogen\n"},
+		{name: "unknown bare model passes through", model: "experimental", wantModel: "experimental", listing: high + "  Hydrogen\n"},
+		{name: "fresh cache miss refreshes once", model: "hydrogen", wantModel: high, catalog: "gemini-4-other-high\n", listing: high + "  Hydrogen\n"},
+		{name: "qualified model passes through", model: "custom/hydrogen", wantModel: "custom/hydrogen"},
+		{name: "cold catalog fault does not classify the probe", model: "hydrogen", wantModel: "hydrogen", listingFault: true},
+		{name: "cold catalog fault preserves inference no-auth", model: "hydrogen", wantModel: "hydrogen", listingFault: true, noAuth: true},
+		{name: "default model still uses default resolution", wantModel: "gemini-4-hydrogen-xhigh", catalog: cached, configured: "hydrogen"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin, cwd := t.TempDir(), t.TempDir()
+			env := fakeEnv(t, bin)
+			for _, key := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "TMPDIR"} {
+				env[key] = t.TempDir()
+			}
+			env["SOHO_SKILL_DIR"] = filepath.Join("..", "..", "skills", "soho")
+			if tc.catalog != "" {
+				if err := os.WriteFile(kinds.ModelsCacheFile("agy", env), []byte(tc.catalog), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			argv := []string{"-p", "Reply with exactly ok", "--model", tc.wantModel}
+			rule := fakecli.Rule{Argv: argv, Stdout: "ok\n"}
+			want := Probe{Kind: "agy", Model: tc.wantModel, Status: "ready", Source: "configured"}
+			if tc.noAuth {
+				rule.Stdout, rule.Stderr, rule.Code = "", "Please log in to continue. fixture-detail", 1
+				want.Status, want.Cause = "no-auth", "not authenticated"
+			}
+			rules := []fakecli.Rule{rule}
+			wantCalls := [][]string{argv}
+			if tc.listing != "" || tc.listingFault {
+				list := fakecli.Rule{Argv: []string{"models"}, Stdout: tc.listing}
+				if tc.listingFault {
+					list.Code, list.Stderr = 1, "Authentication required for catalog. fixture-detail"
+				}
+				rules = append(rules, list)
+				wantCalls = append([][]string{list.Argv}, wantCalls...)
+			}
+			if _, err := fakecli.Install(t, bin, "agy", rules); err != nil {
+				t.Fatal(err)
+			}
+			old := platform.Stdout
+			var out bytes.Buffer
+			platform.Stdout = &out
+			t.Cleanup(func() { platform.Stdout = old })
+			ctx := &core.Config{}
+			if tc.configured != "" {
+				ctx.Entries = map[string]core.ConfigEntry{"model_agy_worker": {Value: tc.configured, Source: "project"}}
+			}
+			args := []string{"--probe", "--kind", "agy"}
+			if tc.model != "" {
+				args = append(args, "--model", tc.model)
+			}
+			CmdSetup(args, ctx, env, cwd)
+			var got struct {
+				Probes        []Probe    `json:"probes"`
+				SkippedCustom []struct{} `json:"skipped_custom"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &got); err != nil || !slices.Equal(got.Probes, []Probe{want}) ||
+				got.SkippedCustom == nil || len(got.SkippedCustom) != 0 || strings.Contains(out.String(), "fixture-detail") {
+				t.Fatalf("setup argv=%q stdout=%q, want probe %+v and empty skipped_custom: %v", args, out.String(), want, err)
+			}
+			calls, err := fakecli.ReadCalls(filepath.Join(bin, "agy.calls.jsonl"))
+			if err != nil || len(calls) != len(wantCalls) {
+				t.Fatalf("Agy calls=%+v, want %q: %v", calls, wantCalls, err)
+			}
+			for i, call := range calls {
+				if !slices.Equal(call.Argv, wantCalls[i]) {
+					t.Fatalf("Agy call %d=%q, want %q", i, call.Argv, wantCalls[i])
+				}
+			}
+		})
+	}
+}
 
 func TestSetupProbeJavaScriptCases(t *testing.T) {
 	install := func(t *testing.T, bin string, rules []fakecli.Rule) platform.Env {
