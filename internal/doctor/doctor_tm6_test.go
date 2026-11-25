@@ -52,6 +52,12 @@ func tm6DoctorEnv(t *testing.T) (platform.Env, string) {
 		}
 	}
 	clean["HOME"], clean["USERPROFILE"], clean["PATH"] = home, home, bin
+	clean["XDG_CONFIG_HOME"] = filepath.Join(home, ".config")
+	delete(clean, "OPENCODE_CONFIG")
+	delete(clean, "PI_CODING_AGENT_DIR")
+	for _, name := range DisplayVariables {
+		delete(clean, name)
+	}
 	clean["TMPDIR"] = tmp
 	clean["HERDR_ENV"] = "1"
 	clean["SOHO_DIR"] = state
