@@ -663,6 +663,33 @@ type probeScreen struct {
 	claudeStream  claudeStreamProbe
 }
 
+// waitStartupStop uses the quota viewport as a cheap first check. On
+// legacy Herdr, confirm a possible stop on the complete visible capture.
+func waitStartupStop(sd, agent, kind, state string, frame transport.Reply[string], svc transport.Services, native bool) *provider.Detection {
+	screen, ok := provider.StartupStopScreen(frame, native)
+	if !ok {
+		return nil
+	}
+	d := provider.StartupProviderStop(kind, state, screen)
+	if d != nil && !native {
+		screen, ok = readScreen(svc, agent, "visible", nil)
+		if !ok {
+			return nil
+		}
+		d = provider.StartupProviderStop(kind, state, screen)
+	}
+	if d != nil {
+		// A frame shown on a working poll is already observed. Keep the
+		// existing screen hash as the comparison without storing its text.
+		previous, _ := readWaitFile(sd, agent, "stuck-hash")
+		current := strconv.FormatUint(uint64(CksumField(NormalizeScreen(screen))), 10)
+		if strings.TrimSpace(previous) == current {
+			return nil
+		}
+	}
+	return d
+}
+
 func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Services, env platform.Env, sample *probeScreen) string {
 	var previousClaudeStream claudeStreamProbe
 	if sample != nil {
@@ -948,7 +975,8 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 		}
 	}
 	if st.State != "working" {
-		quotaVisible, _ := readScreen(svc, agent, "visible", intPtr(20))
+		visible := svc.Runtime.Read(context.Background(), transport.Target{ID: agent}, transport.Read{Source: "visible", Lines: intPtr(20)}, transport.Call{})
+		quotaVisible := visible.Value
 		if quota := provider.QuotaDetect(st.State, quotaVisible); quota != nil {
 			_ = os.Remove(queuedFile)
 			_ = os.Remove(retryFile)
@@ -969,14 +997,19 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 		}
 		ptext, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
 		p := core.ProviderDetectTexts(st.State, ptext, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
+		immediate := p != nil && ((p.Status == "provider-error" && p.Auth) || p.Status == "provider-refusal" || p.Cause == provider.LostConnectionCause)
+		if p == nil && provider.StartupStopKind(probeKind) {
+			p = waitStartupStop(sd, agent, probeKind, st.State, visible, svc, env.Get("SOHO_TRANSPORT") == "hc")
+			immediate = p != nil
+		}
+		if immediate {
+			_ = os.Remove(queuedFile)
+			_ = os.Remove(retryFile)
+			clearProvider()
+			writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
+			return p.Status
+		}
 		if p != nil {
-			if (p.Status == "provider-error" && p.Auth) || p.Status == "provider-refusal" || p.Cause == provider.LostConnectionCause {
-				_ = os.Remove(queuedFile)
-				_ = os.Remove(retryFile)
-				clearProvider()
-				writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
-				return p.Status
-			}
 			target := fmt.Sprintf("%d\n%s", CksumField(ptext), p.Status)
 			prev, _ := readWaitFile(sd, agent, "provider")
 			if prev != target {

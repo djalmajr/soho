@@ -847,13 +847,14 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	}
 	H0, preSeq := "", ""
 	priorAuth := map[string]bool{}
+	priorRecent := ""
 	if checkOn && !hcMode {
 		visible, _ := readScreen(svc, agent, "visible", nil)
 		lastVisible = visible
 		H0 = strconv.FormatUint(uint64(waitpkg.CksumField(lastVisible)), 10)
 		preSeq = preState.Seq
-		recent, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
-		for _, cause := range authCauses(recent) {
+		priorRecent, _ = readScreen(svc, agent, "recent-unwrapped", intPtr(40))
+		for _, cause := range authCauses(priorRecent) {
 			priorAuth[cause] = true
 		}
 	}
@@ -1123,6 +1124,11 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		return writeDispatchError(agent, role, kind, composed, report, taskReport, sd, promptRep.Err.Message, 4, warning)
 	}
 	ceilingSubmitted = true
+	providerStopResult := func(d *provider.Detection) int {
+		finishAgyDelivery()
+		recordDispatchTask(sd, agent, role, brief, amend, env)
+		return emitDispatchResult(agent, role, kind, composed, report, taskReport, d.Status, amend, jsonjs.O("status", d.Status, "lane", lane, "model", model, "cause", d.Cause), 14, sd, false, false)
+	}
 	if err := writeDispatchSidecarWithAuthorContext(authorContext, sidecar, kind, model, effort, taskReport, briefSHA, "accepted", "", session, role); err != nil {
 		core.Warn(fmt.Sprintf("could not record the accepted submission in the attempt sidecar %s: %s; the prompt went out", sidecar, dispatchCauseOrUnknown(err)), frictionLogPath, "dispatch")
 	}
@@ -1154,12 +1160,9 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 		_ = writeQueuedMarker(filepath.Join(sd, "wait", agent+".queued"), fmt.Sprintf("%d %s %s\n", platform.Now().Unix(), seq, composed))
 
 	} else if hcMode {
-		// DJA-604 2b-3a: hc's arrival is the send's own proof — its started
-		// flag, or a turn rise or a working state read within the
-		// dispatch's existing arrival window. No screen read, no key, no
-		// dialog check, no resend; with the check window off a send without
-		// started is not probed, as the ported behavior keeps. A prompt with
-		// no turn rise takes the not-received path, once.
+		// An accepted hc send proves arrival with its started flag or
+		// a later turn rise. Only failed arrival allows a narrow visible
+		// startup observation. This branch never sends a key or resends.
 		started, sendTurn, sendTurnOK := hcSendResult(promptRep.Value)
 		if amend && !started {
 			_ = restoreTaskDispatch(sd, agent, lastPath, lastData, priorPointer)
@@ -1170,8 +1173,16 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			// The proof must be read inside the window: each get is capped
 			// to the remaining time and a result that returns after the
 			// deadline does not count as arrival.
-			arrived := hcTurnArrival(time.Duration(checkSecs)*time.Second, env, svc, agent, sendTurn, sendTurnOK, ceiling)
+			arrived, arrivalState := hcTurnArrival(time.Duration(checkSecs)*time.Second, env, svc, agent, sendTurn, sendTurnOK, ceiling)
 			if !arrived {
+				if provider.StartupStopKind(kind) && (arrivalState == "idle" || arrivalState == "done") && !nonEmpty(report) {
+					frame := readDispatchObservation(svc, agent, "visible", nil, ceiling)
+					if visible, ok := provider.StartupStopScreen(frame, true); ok {
+						if d := provider.StartupProviderStop(kind, arrivalState, visible); d != nil && !nonEmpty(report) {
+							return providerStopResult(d)
+						}
+					}
+				}
 				return dispatchNotReceived(agent, role, kind, composed, report, taskReport, sd, sidecar, lane, model, effort, session, briefSHA, env, wasWorking, "no turn started under hc")
 			}
 		}
@@ -1195,8 +1206,12 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			return provider.PromptEvidence(screen, composed)
 		}
 		if !wasWorking && !waitDispatchArrivalExtra(window, env, arrived, transcriptArrival, ceiling) {
-			screen, screenOK := readScreen(svc, agent, "visible", nil)
-			if code, refused := refuseAgyLogin(screen, screenOK); refused {
+			frame := readDispatchObservation(svc, agent, "visible", nil, ceiling)
+			if ceiling.softHit("prompt arrival") {
+				return notReceived("no arrival proof before the --no-wait ceiling")
+			}
+			screen := frame.Value
+			if code, refused := refuseAgyLogin(screen, frame.Valid && frame.Err == nil); refused {
 				return code
 			}
 			// A plan refusal leaves the pointer in the composer. Neither an
@@ -1205,10 +1220,15 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 			// check does not advance observation before the composer retry.
 			if !nonEmpty(report) {
 				d := core.ProviderDetectTexts(arrivalState, screen, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
-				if d != nil && (core.IsModelPlanError(d.Cause) || d.Status == "provider-refusal" || d.Cause == provider.LostConnectionCause) {
-					finishAgyDelivery()
-					recordDispatchTask(sd, agent, role, brief, amend, env)
-					return emitDispatchResult(agent, role, kind, composed, report, taskReport, d.Status, amend, jsonjs.O("status", d.Status, "lane", lane, "model", model, "cause", d.Cause), 14, sd, false, false)
+				if d != nil {
+					if !core.IsModelPlanError(d.Cause) && d.Status != "provider-refusal" && d.Cause != provider.LostConnectionCause {
+						d = nil
+					}
+				} else if visible, ok := provider.StartupStopScreen(frame, false); ok {
+					d = provider.StartupProviderStop(kind, arrivalState, visible, lastVisible, priorRecent)
+				}
+				if d != nil {
+					return providerStopResult(d)
 				}
 			}
 			if firstEnterReady(kind, screen, composed) {
@@ -1368,8 +1388,8 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	recordDispatchTask(sd, agent, role, brief, amend, env)
 	gittree.Preserve(sidecar, gitFields)
 	var last *jsonjs.Object
-	if noWait && checkOn && status != "queued" {
-		status, last = noWaitObservation(agent, role, kind, lane, model, report, env, svc, sd, ctx, priorAuth)
+	if noWait && checkOn && !hcMode && status != "queued" {
+		status, last = noWaitObservation(agent, role, kind, lane, model, report, env, svc, ctx, priorAuth, ceiling)
 	}
 	// Delivery and pointer restoration are complete. Waiting for a report
 	// must not reserve the worker against release or a later dispatch.
@@ -1951,42 +1971,40 @@ func hcSettled(svc transport.Services, agent string, timeoutRaw string, timeoutG
 // returns after the deadline is rejected, and no poll starts at or after
 // expiry. A send whose turn is missing or invalid (turnOK false) can only
 // arrive through the working state.
-func hcTurnArrival(window time.Duration, env platform.Env, svc transport.Services, agent string, sendTurn uint64, sendTurnOK bool, budgets ...*dispatchWaitBudget) bool {
-	var budget *dispatchWaitBudget
-	if len(budgets) > 0 {
-		budget = budgets[0]
-	}
+func hcTurnArrival(window time.Duration, env platform.Env, svc transport.Services, agent string, sendTurn uint64, sendTurnOK bool, budget *dispatchWaitBudget) (bool, string) {
 	wait := budget.window(window, "prompt arrival", 15)
 	deadline := platform.Now().Add(wait.duration)
+	lastState := ""
 	for {
 		if wait.abort() {
-			return false
+			return false, lastState
 		}
 		left := deadline.Sub(platform.Now())
 		if left <= 0 {
-			return false
+			return false, lastState
 		}
 		st := readState(svc, agent, transport.Call{Timeout: left})
 		if wait.abort() {
-			return false
+			return false, lastState
 		}
 		if !platform.Now().Before(deadline) {
 			// The read returned after the window ended (or was cut at the
 			// edge): its result is not arrival proof.
-			return false
+			return false, lastState
 		}
+		lastState = st.State
 		if st.State == "working" {
-			return true
+			return true, st.State
 		}
 		if sendTurnOK && st.Seq != "" {
 			n, err := strconv.ParseUint(st.Seq, 10, 64)
 			if err == nil && n > sendTurn {
-				return true
+				return true, st.State
 			}
 		}
 		left = deadline.Sub(platform.Now())
 		if left <= 0 {
-			return false
+			return false, lastState
 		}
 		poll := time.Duration(spawn.PollIntervalMs(env)) * time.Millisecond
 		if poll > left {
@@ -1994,7 +2012,7 @@ func hcTurnArrival(window time.Duration, env platform.Env, svc transport.Service
 		}
 		time.Sleep(poll)
 		if wait.abort() {
-			return false
+			return false, lastState
 		}
 	}
 }
@@ -2492,7 +2510,7 @@ func emitDispatchResult(agent, role, kind, composed, report, taskReport, status 
 		return 11
 	case "provider-error":
 		cause, _ := out.Get("cause")
-		if fmt.Sprint(cause) == provider.LostConnectionCause {
+		if fmt.Sprint(cause) == provider.LostConnectionCause || fmt.Sprint(cause) == provider.AgyModelCause || fmt.Sprint(cause) == provider.CodexConfigCause {
 			core.Warn(fmt.Sprintf("agent '%s': %v", agent, cause), frictionLogPath, "dispatch")
 			return 14
 		}
@@ -3333,15 +3351,43 @@ func staleAuthBlock(agent string, svc transport.Services, h0, preSeq string, ent
 	return d != nil && d.Status == "provider-error" && d.Auth
 }
 
-func noWaitObservation(agent, role, kind, lane, model, report string, env platform.Env, svc transport.Services, sd string, ctx *core.Config, priorAuth map[string]bool) (string, *jsonjs.Object) {
+// A post-send observation must both begin and finish within the shared
+// ceiling. Passing the remaining time bounds the transport call itself.
+func dispatchObservationCall(ceiling *dispatchWaitBudget) (transport.Call, bool) {
+	timeout := herdr.Timeout
+	if ceiling != nil {
+		timeout = min(timeout, ceiling.deadline.Sub(dispatchCeilingNow()))
+	}
+	return transport.Call{Timeout: timeout}, timeout > 0
+}
+
+func readDispatchObservation(svc transport.Services, agent, source string, lines *int, ceiling *dispatchWaitBudget) transport.Reply[string] {
+	call, ok := dispatchObservationCall(ceiling)
+	if !ok {
+		return transport.Reply[string]{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), call.Timeout)
+	defer cancel()
+	reply := svc.Runtime.Read(ctx, transport.Target{ID: agent}, transport.Read{Source: source, Lines: lines}, call)
+	if _, ok := dispatchObservationCall(ceiling); !ok {
+		return transport.Reply[string]{}
+	}
+	return reply
+}
+
+func noWaitObservation(agent, role, kind, lane, model, report string, env platform.Env, svc transport.Services, ctx *core.Config, priorAuth map[string]bool, ceiling *dispatchWaitBudget) (string, *jsonjs.Object) {
 	if nonEmpty(report) {
 		return "submitted", nil
 	}
-	st := readState(svc, agent, transport.Call{Timeout: herdr.Timeout})
+	call, ok := dispatchObservationCall(ceiling)
+	if !ok {
+		return "submitted", nil
+	}
+	st := readState(svc, agent, call)
 	if st.State == "working" || st.State == "unavailable" {
 		return "submitted", nil
 	}
-	visible20, _ := readScreen(svc, agent, "visible", intPtr(20))
+	visible20 := readDispatchObservation(svc, agent, "visible", intPtr(20), ceiling).Value
 	if q := provider.QuotaDetect(st.State, visible20); q != nil {
 		if lane == "" {
 			lane = core.LaneOfRole(ctx, role, env)
@@ -3351,11 +3397,11 @@ func noWaitObservation(agent, role, kind, lane, model, report string, env platfo
 	if line := provider.DiskFullDetect(st.State, visible20); line != "" {
 		fmt.Fprintf(platform.Stderr, "soho: warning: worker '%s' hit a disk error: %s; free space (soho gc removes registered copies) and dispatch again\n", agent, line)
 	}
-	visible40, _ := readScreen(svc, agent, "visible", intPtr(40))
+	visible40 := readDispatchObservation(svc, agent, "visible", intPtr(40), ceiling).Value
 	if provider.DialogKind(kind, visible40) == "question" {
 		return "submitted", nil
 	}
-	recent, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
+	recent := readDispatchObservation(svc, agent, "recent-unwrapped", intPtr(40), ceiling).Value
 	d := core.ProviderDetectTexts(st.State, recent, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
 	if d != nil && d.Status == "provider-error" && ((d.Auth && !priorAuth[d.Cause]) || core.IsModelPlanError(d.Cause)) {
 		if lane == "" {
@@ -3363,7 +3409,6 @@ func noWaitObservation(agent, role, kind, lane, model, report string, env platfo
 		}
 		return "provider-error", jsonjs.O("status", "provider-error", "lane", lane, "model", model, "cause", d.Cause)
 	}
-	_ = sd
 	return "submitted", nil
 }
 
