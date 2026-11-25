@@ -13,9 +13,14 @@ import (
 
 const ompFixtureModel = "openrouter/anthropic/claude-test"
 
-func newOMPSpawnFixture(t *testing.T) spawnFixture {
+func newOMPSpawnFixture(t *testing.T, overrides ...fakecli.Rule) spawnFixture {
 	t.Helper()
-	f := newSpawnFixture(t, append([]fakecli.Rule{idleHerdrRule("worker")}, freshSpawnRules()...))
+	rules := append(overrides, ompStartupRules("p2", ompReadyScreen)...)
+	rules = append(rules,
+		idleHerdrRule("worker"),
+		fakecli.Rule{Argv: []string{"tab", "create"}, ArgvPrefix: true, Stdout: `{"result":{"tab":{"tab_id":"t-herd","label":"herd"},"root_pane":{"pane_id":"p2"}}}`},
+	)
+	f := newSpawnFixture(t, freshSpawnRules(rules...))
 	configureSpawnFixture(t, &f)
 	f.env["PATH"] = f.bin
 	f.env["TMPDIR"] = f.root
