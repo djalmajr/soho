@@ -13,6 +13,7 @@ import (
 	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/doctor"
+	evidencepkg "github.com/djalmajr/soho/internal/evidence"
 	"github.com/djalmajr/soho/internal/gate"
 	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/job"
@@ -44,7 +45,7 @@ var knownCommands = map[string]bool{
 	"reopen": true, "compact": true, "metrics": true, "copies": true, "gc": true,
 	"procs": true, "install": true, "update": true, "promote": true, "validate": true,
 	"collaborate": true, "capabilities": true, "hook": true, "job": true, "inventory": true,
-	"report": true, "model-set": true,
+	"report": true, "model-set": true, "evidence": true,
 }
 
 // unknownCommandAliases maps a retired or natural word to the command that
@@ -269,6 +270,12 @@ func Run(args []string, env platform.Env) (code int) {
 		cwd, _ := os.Getwd()
 		_, _ = fmt.Fprintf(platform.Stdout, "{\"schema\":1,\"worker_collaboration\":1,\"ephemeral_job\":1,\"job_events\":1,\"inventory\":1,\"report_json\":1,\"team_json\":1,\"config_dry_run\":1,\"config_unset\":1,\"roster_workers\":1,\"roster_detached\":1,\"transport\":%q}\n", core.TransportModeAt(env, cwd))
 		return 0
+	}
+
+	// evidence routes locally before backend discovery, configuration and
+	// state: it reads the supplied inventory only and works under NOWRITE.
+	if len(args) > 0 && args[0] == "evidence" {
+		return evidencepkg.Run(args[1:], platform.Stdout, platform.Stderr)
 	}
 
 	// The job start's private launch locators are read once here and
