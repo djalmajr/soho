@@ -619,7 +619,7 @@ func findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wa
 			return ""
 		}
 		nm := at(0)
-		if nm == "" || name != "" && nm != name || at(2) != kind || at(6) != workerCwd {
+		if nm == "" || name != "" && nm != name || at(2) != kind || at(6) != workerCwd || envDropMarker(f) != "" {
 			continue
 		}
 		if !effortMatches(f, wantEffort) {
@@ -830,10 +830,13 @@ func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config
 // keeps its current process/configuration; this observation applies no overrides
 // and does not make the subsequent operations an atomic identity reservation.
 func gateConfiguredReuse(rt transport.Runtime, line string, o spawnOptions, kind string, args []string, env platform.Env) string {
+	f := strings.Split(line, "\t")
+	if envDropMarker(f) != "" {
+		refuseSpawnEnvDrop("worker has an environment removal policy; use --fresh")
+	}
 	if o.launchProfile.Name == "" || env.Get("SOHO_TRANSPORT") == "hc" {
 		return ""
 	}
-	f := strings.Split(line, "\t")
 	s := configuredSpawnRequest(o, kind, args)
 	s.Name, s.PaneID = fieldAt(f, 0), fieldAt(f, 1)
 	if preflight, ok := rt.(transport.ConfiguredLaunchReuse); ok {
@@ -855,10 +858,11 @@ func defaultValue(value, fallback string) string {
 
 type spawnOptions struct {
 	role, name, kind, direction, ratio, cwd, pane, timeout, effort, model, approvals, reuse, tabLabel, mcp, card string
-	nameSet, cardSet, cwdSet                                                                                     bool
+	nameSet, cardSet, cwdSet, reuseSet, paneSet                                                                  bool
 	force                                                                                                        bool
 	native                                                                                                       []string
 	envFrom                                                                                                      []string
+	envDrop                                                                                                      []string
 	envSnapshot                                                                                                  map[string]string
 	registryDir                                                                                                  string
 	blockedAtStartup                                                                                             bool
@@ -877,7 +881,7 @@ type spawnOptions struct {
 // spawnValueOption is the authoritative option/value grammar; values may look like flags.
 func spawnValueOption(arg string) bool {
 	switch arg {
-	case "--env-from", "--tab-label", "--effort", "--model", "--approvals", "--name", "--card", "--kind", "--direction", "--ratio", "--cwd", "--pane", "--timeout", "--mcp":
+	case "--env-from", "--env-drop", "--tab-label", "--effort", "--model", "--approvals", "--name", "--card", "--kind", "--direction", "--ratio", "--cwd", "--pane", "--timeout", "--mcp":
 		return true
 	}
 	return false
@@ -889,7 +893,7 @@ func hasSpawnEnvOption(argv []string) bool {
 		if arg == "--" {
 			break
 		}
-		if arg == "--env-from" {
+		if arg == "--env-from" || arg == "--env-drop" {
 			return true
 		}
 		if spawnValueOption(arg) {
@@ -911,7 +915,7 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 		}
 		switch a {
 		case "--reuse":
-			o.reuse = "on"
+			o.reuse, o.reuseSet = "on", true
 			continue
 		case "--fresh":
 			o.reuse = "off"
@@ -927,6 +931,9 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 			}
 		}
 		if i+1 >= len(argv) {
+			if a == "--env-drop" {
+				refuseSpawnEnvDrop("--env-drop expects a name")
+			}
 			if a == "--env-from" {
 				refuseSpawnEnv()
 			}
@@ -937,6 +944,8 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 		switch a {
 		case "--env-from":
 			o.envFrom = append(o.envFrom, v)
+		case "--env-drop":
+			o.envDrop = append(o.envDrop, v)
 		case "--tab-label":
 			o.tabLabel = v
 		case "--mcp":
@@ -970,7 +979,7 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 				o.cwd = filepath.Clean(v)
 			}
 		case "--pane":
-			o.pane = v
+			o.pane, o.paneSet = v, true
 		case "--timeout":
 			o.timeout = v
 		}
@@ -1039,6 +1048,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	explicitEnv := hasSpawnEnvOption(argv)
 	if explicitEnv {
 		o = parseArgs(argv, cwd)
+		prepareSpawnEnvDrop(&o, env)
 		prepareSpawnEnv(&o, ctx, env, cwd)
 	}
 	// Classify and clean up first; only the text handed to the outer CLI
@@ -1349,6 +1359,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	if profileErr != nil {
 		core.DieFriction(profileErr.Error(), 2, "", "spawn")
 	}
+	preflightSpawnEnvDrop(o, kind, profile, env)
 	var configuredArgs []string
 	if profile.Name != "" {
 		o.launchProfile = profile
@@ -1426,6 +1437,9 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		selected, actual := fieldAt(f, 0), fieldAt(f, 2)
 		switch plan.action {
 		case "reuse":
+			if current := core.RosterLine(sd, selected); envDropMarker(strings.Split(current, "\t")) != "" {
+				refuseSpawnEnvDrop("worker has an environment removal policy; use --fresh")
+			}
 			qualifiedProfile := gateConfiguredReuse(svc.Terminal, line, o, actual, configuredArgs, env)
 			gateReuse(svc, selected, o.role, actual, ctx, env, cwd)
 			emitReuse(selected, o.role, actual, qualifiedProfile, modelChoice, ctx, env, cwd)
@@ -1703,15 +1717,17 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		Warn(fmt.Sprintf("replaced the stale roster line of '%s' (pane %s)", stale[0], stale[1]), ctx, env, "spawn")
 	}
 	// DJA-392 fatia 2 R2: the effective MCP choice (inherit, none or a
-	// canonical list, DJA-693) is the
-	// row's last field; reopen reads it and passes --mcp <value> to the
+	// canonical list, DJA-693) has a fixed column. Reopen passes it to the
 	// respawn, so a worker keeps the MCP it was opened with.
 	row := []string{o.name, o.pane, kind, o.role, family, boolInt(created), o.cwd, core.NowStamp(platform.Now()), o.model, defaultValue(o.approvals, "auto"), o.role, lane, boolText(burst), native, o.effort, o.mcp}
-	if e2ePort != "" || ompApproval != "" {
+	if e2ePort != "" || ompApproval != "" || len(o.envDrop) != 0 {
 		row = append(row, e2ePort)
 	}
-	if ompApproval != "" {
+	if ompApproval != "" || len(o.envDrop) != 0 {
 		row = append(row, ompApproval)
+	}
+	if len(o.envDrop) != 0 {
+		row = append(row, envDropPrefix+strings.Join(o.envDrop, ","))
 	}
 	core.RosterAppend(sd, row)
 	// A spawn that re-rosters a released pane (spawn --pane on it) retires
@@ -2222,7 +2238,7 @@ func startHcAgentUsingServices(ctx *core.Config, o *spawnOptions, kind string, e
 				overrides[name] = value
 			}
 		}
-		start := transport.Start{Name: o.name, Kind: kind, Cwd: o.cwd, Timeout: o.timeout, Args: args, LaunchProfile: o.launchProfile.Name, EnvOverrides: overrides, LoginShell: o.loginShell, RegistryDir: o.registryDir, Agent: o.name}
+		start := transport.Start{Name: o.name, Kind: kind, Cwd: o.cwd, Timeout: o.timeout, Args: args, LaunchProfile: o.launchProfile.Name, EnvOverrides: overrides, EnvDrop: o.envDrop, LoginShell: o.loginShell, RegistryDir: o.registryDir, Agent: o.name}
 		if kind == "codex" {
 			approved := false
 			start.StartupDialog = func(callCtx context.Context, address, screen string) transport.StartupDialogAction {

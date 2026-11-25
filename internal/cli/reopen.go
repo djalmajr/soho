@@ -61,6 +61,10 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		core.DieFriction(message, 3, frictionLogPath, "reopen")
 	}
 	fields := strings.Split(line, "\t")
+	envDrop, err := spawn.RosterEnvDrop(fields)
+	if err != nil {
+		platform.Die("reopen: "+err.Error(), 2)
+	}
 	field := func(index int) string {
 		if index < len(fields) {
 			return fields[index]
@@ -123,7 +127,7 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 		}
 	}
 
-	// DJA-392 fatia 2 R2: the roster's last field carries the worker's
+	// DJA-392 fatia 2 R2: a fixed roster field carries the worker's
 	// effective MCP choice; reopen forwards it so the respawn keeps the MCP
 	// it was opened with. A row without the field (predating it) passes no
 	// --mcp and the normal resolution decides, as in a fresh open.
@@ -140,6 +144,9 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	if mcp != "" {
 		spawnArgs = append(spawnArgs, "--mcp", mcp)
 	}
+	for _, name := range envDrop {
+		spawnArgs = append(spawnArgs, "--env-drop", name)
+	}
 	if native != "" {
 		spawnArgs = append(spawnArgs, "--")
 		spawnArgs = append(spawnArgs, strings.Fields(native)...)
@@ -155,7 +162,7 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	oldOut := platform.Stdout
 	platform.Stdout = releaseDiscardWriter{}
 	defer func() { platform.Stdout = oldOut }()
-	code := cmdRelease(releaseArgs, ctx, env, cwd)
+	code := cmdReleaseWithExpectedRow(releaseArgs, ctx, env, cwd, releaseTarget{stateDir: sd, row: line})
 	// Successful release retires the task pointer before the replacement
 	// starts; spawn also retires legacy pointers on every new-agent path.
 	platform.Stdout = oldOut

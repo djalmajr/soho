@@ -40,7 +40,7 @@ func (r laneReuseRequest) forModel(model string) laneReuseRequest {
 }
 
 func (r laneReuseRequest) eligible(f []string, state string) bool {
-	if state != "idle" && state != "done" {
+	if state != "idle" && state != "done" || envDropMarker(f) != "" {
 		return false
 	}
 	if report := core.LastReport(r.sd, fieldAt(f, 0)); report != "" {

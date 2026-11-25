@@ -24,6 +24,15 @@ import (
 )
 
 func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
+	return cmdReleaseWithExpectedRow(argv, ctx, env, cwd, releaseTarget{})
+}
+
+type releaseTarget struct {
+	stateDir string
+	row      string
+}
+
+func cmdReleaseWithExpectedRow(argv []string, ctx *core.Config, env platform.Env, cwd string, expected releaseTarget) int {
 	if len(argv) == 0 {
 		platform.Die("agent: Parameter not set", 1)
 	}
@@ -56,6 +65,9 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 		defer unlock()
 	}
 	line := core.RosterLine(sd, agent)
+	if hcMode && expected.row != "" && (sd != expected.stateDir || line != expected.row) {
+		platform.Die("reopen: worker roster changed after preflight; retry", 4)
+	}
 	if line == "" {
 		if closePane && releaseOrphan(agent, force, ctx, env, cwd, svc) {
 			return 0
