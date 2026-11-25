@@ -21,7 +21,7 @@ func TestSetupProbeAgyExplicitModelContract(t *testing.T) {
 	const cached = "gemini-4-hydrogen-xhigh\n" + high + "\n" + low + "\n"
 	for _, tc := range []struct {
 		name, model, wantModel, catalog, configured, listing string
-		listingFault, noAuth                                 bool
+		listingFault, noAuth, slowCatalog                    bool
 	}{
 		{name: "cached alias resolves with high effort", model: "hydrogen", wantModel: high, catalog: cached},
 		{name: "cold Hydrogen resolves to the listed generation", model: "hydrogen", wantModel: "gemini-5-hydrogen-high", listing: high + "  Hydrogen 4\ngemini-5-hydrogen-high  Hydrogen 5\n"},
@@ -29,6 +29,9 @@ func TestSetupProbeAgyExplicitModelContract(t *testing.T) {
 		{name: "cached versioned base selects high", model: "gemini-4-hydrogen", wantModel: high, catalog: cached},
 		{name: "cold punctuated base selects high", model: "gemini-4.5-hydrogen", wantModel: "gemini-4.5-hydrogen-high", listing: "gemini-4.5-hydrogen-low  Low\ngemini-4.5-hydrogen-high  High\n"},
 		{name: "native ID stays exact", model: low, wantModel: low, catalog: cached},
+		{name: "cold concrete ID probes directly", model: low, wantModel: low},
+		{name: "cold concrete ID bypasses stalled catalog", model: low, wantModel: low, slowCatalog: true},
+		{name: "cold fast effort preserves inference no-auth", model: "gemini-4.5-hydrogen-max-fast", wantModel: "gemini-4.5-hydrogen-max-fast", slowCatalog: true, noAuth: true},
 		{name: "exact listed base wins", model: "gemini-4-hydrogen", wantModel: "gemini-4-hydrogen", listing: high + "  High\ngemini-4-hydrogen  Native\n"},
 		{name: "exact native ID in cold catalog wins", model: "hydrogen", wantModel: "hydrogen", listing: high + "  Hydrogen high\nhydrogen  Native ID\n"},
 		{name: "unrecognized native form passes through", model: "hydrogen-provider-private", wantModel: "hydrogen-provider-private", listing: high + "  Hydrogen\n"},
@@ -36,6 +39,7 @@ func TestSetupProbeAgyExplicitModelContract(t *testing.T) {
 		{name: "unknown bare model passes through", model: "experimental", wantModel: "experimental", listing: high + "  Hydrogen\n"},
 		{name: "fresh cache miss refreshes once", model: "hydrogen", wantModel: high, catalog: "gemini-4-other-high\n", listing: high + "  Hydrogen\n"},
 		{name: "qualified model passes through", model: "custom/hydrogen", wantModel: "custom/hydrogen"},
+		{name: "opaque model passes through", model: "vendor_model@preview", wantModel: "vendor_model@preview"},
 		{name: "cold catalog fault does not classify the probe", model: "hydrogen", wantModel: "hydrogen", listingFault: true},
 		{name: "cold catalog fault preserves inference no-auth", model: "hydrogen", wantModel: "hydrogen", listingFault: true, noAuth: true},
 		{name: "default model still uses default resolution", wantModel: "gemini-4-hydrogen-xhigh", catalog: cached, configured: "hydrogen"},
@@ -69,6 +73,9 @@ func TestSetupProbeAgyExplicitModelContract(t *testing.T) {
 				rules = append(rules, list)
 				wantCalls = append([][]string{list.Argv}, wantCalls...)
 			}
+			if tc.slowCatalog {
+				rules = append(rules, fakecli.Rule{Argv: []string{"models"}, Delay: 1800, Stdout: high + "  Hydrogen\n"})
+			}
 			if _, err := fakecli.Install(t, bin, "agy", rules); err != nil {
 				t.Fatal(err)
 			}
@@ -83,6 +90,9 @@ func TestSetupProbeAgyExplicitModelContract(t *testing.T) {
 			args := []string{"--probe", "--kind", "agy"}
 			if tc.model != "" {
 				args = append(args, "--model", tc.model)
+			}
+			if tc.slowCatalog {
+				args = append(args, "--timeout", "1")
 			}
 			CmdSetup(args, ctx, env, cwd)
 			var got struct {

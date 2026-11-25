@@ -449,10 +449,14 @@ func ResolveModel(kind, spec, effort string, env platform.Env, warn WarnFunc) (s
 	return resolveModel(kind, spec, effort, env, warn, nil)
 }
 
-// ResolveAgyProbeModel uses the normal Agy catalog within the probe deadline.
+// ResolveAgyProbeModel passes concrete effort IDs through directly and uses
+// the normal catalog within the probe deadline for other selectors.
 // A bare word is a catalog search. Other selectors match only exact IDs or
 // literal effort bases, so a native ID that is absent stays unchanged.
 func ResolveAgyProbeModel(ctx context.Context, spec string, env platform.Env, run func(string, []string, platform.RunOptions) platform.RunResult) string {
+	if effortSuffixRE.MatchString(spec) {
+		return spec
+	}
 	model, err := resolveModel("agy", spec, "high", env, func(string) {}, &agyProbeLookup{ctx: ctx, run: run})
 	if err != nil || model == "" {
 		return spec
