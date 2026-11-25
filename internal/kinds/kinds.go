@@ -169,6 +169,105 @@ func KindMcpArgs(kind, mcp string) (args []string, ok bool) {
 	}
 }
 
+// McpCapability is the authority of a capability observation. Inconclusive is
+// deliberately distinct from Unsupported: only a successful help read without
+// the option is an authoritative negative.
+type McpCapability uint8
+
+const (
+	McpCapabilityInconclusive McpCapability = iota
+	McpCapabilitySupported
+	McpCapabilityUnsupported
+)
+
+const piMcpProbeTimeoutMs = 2000
+
+// piHelpHeading recognizes the pi invocation line, not an arbitrary Usage
+// banner from a wrapper. The option block alone is only a structure marker.
+func piHelpHeading(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	if strings.HasPrefix(lower, "usage:") {
+		rest := strings.TrimSpace(strings.TrimPrefix(lower, "usage:"))
+		return rest == "pi" || strings.HasPrefix(rest, "pi ") || strings.HasPrefix(rest, "pi\t") || strings.HasPrefix(rest, "pi[")
+	}
+	return lower == "pi" || strings.HasPrefix(lower, "pi ") || strings.HasPrefix(lower, "pi\t")
+}
+
+// piOptionTokens reads indented option declarations, never prose or an
+// indented diagnostic. A standalone short-alias declaration is still help.
+func piOptionTokens(line string) []string {
+	if line == "" || line == strings.TrimLeft(line, " \t") {
+		return nil
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return nil
+	}
+	first := strings.Trim(fields[0], ",.;:()[]")
+	// An indented example starts with the program name (or a word), not an
+	// option, so neither it nor its later flags are declarations.
+	if !strings.HasPrefix(first, "-") {
+		return nil
+	}
+	second := strings.ToLower(strings.Trim(fields[1], ",.;:()[]"))
+	for _, diagnostic := range []string{"is", "was", "does", "did", "not", "cannot"} {
+		if second == diagnostic {
+			return nil
+		}
+	}
+	if !strings.HasPrefix(second, "-") {
+		return []string{first}
+	}
+	// A short alias only precedes a long flag when the raw token carries
+	// the separating comma: "-n, --no-mcp", never "-n --no-mcp".
+	if !strings.HasPrefix(first, "--") && !strings.HasSuffix(strings.TrimSpace(fields[0]), ",") {
+		return nil
+	}
+	return []string{first, second}
+}
+
+// PiNoMcpCapabilityProgram runs one bounded --help query against the exact
+// resolved program and reads both output streams without trimming leading
+// indentation. An authoritative absence needs a complete Pi usage token and
+// at least one real option declaration; a supported option can stand alone.
+// Wrappers, empty option blocks, diagnostics and generic banners stay
+// inconclusive.
+func PiNoMcpCapabilityProgram(env platform.Env, cwd, program string) McpCapability {
+	res := platform.RunExecutable(program, []string{"--help"}, platform.RunOptions{Env: env, TimeoutMs: piMcpProbeTimeoutMs, Cwd: cwd})
+	if res.NotFound || res.TimedOut || res.Status == nil || *res.Status != 0 {
+		return McpCapabilityInconclusive
+	}
+	output := res.Stdout
+	if res.Stderr != "" {
+		if output != "" && !strings.HasSuffix(output, "\n") {
+			output += "\n"
+		}
+		output += res.Stderr
+	}
+	if strings.TrimSpace(output) == "" {
+		return McpCapabilityInconclusive
+	}
+	piHelp, optionFound, supported := false, false, false
+	for _, line := range strings.Split(output, "\n") {
+		if piHelpHeading(line) {
+			piHelp = true
+		}
+		for _, token := range piOptionTokens(line) {
+			optionFound = true
+			if token == "--no-mcp" {
+				supported = true
+			}
+		}
+	}
+	if supported {
+		return McpCapabilitySupported
+	}
+	if piHelp && optionFound {
+		return McpCapabilityUnsupported
+	}
+	return McpCapabilityInconclusive
+}
+
 // KindMcpOff reports whether the kind can turn the user's MCP servers off
 // per process (the `soho kinds` table column): claude and pi through a
 // static flag, codex through a per-server override built from its live

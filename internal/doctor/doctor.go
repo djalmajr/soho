@@ -133,6 +133,7 @@ func CmdInit(ctx *core.Config, env platform.Env, cwd string) {
 	}
 	oldOut := platform.Stdout
 	platform.Stdout = platform.Stderr
+	// Init shares the diagnostic but must not add a Pi subprocess.
 	doctorCheck(ctx, env, cwd, platform.Stderr, false)
 	platform.Stdout = oldOut
 	state := core.StateDir(ctx, env, cwd)
@@ -367,9 +368,8 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	doctorCheck(ctx, env, cwd, out, true)
 }
 
-// Init's pre-registration check keeps every existing diagnostic and only
-// suppresses the advice to perform the registration init is about to do.
-func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, adviseRegistration bool) {
+// Init's pre-registration check skips standalone advice and the Pi probe.
+func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, standalone bool) {
 	s := &Say{Out: out}
 	// One backend for this invocation: every herdr probe of the doctor runs
 	// through it (DJA-596).
@@ -641,6 +641,16 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	doctorBackgroundPatterns(ctx, env, s)
 	doctorApprovals(ctx, env, s)
 	doctorMcp(ctx, env, s)
+	piUsed := slices.Contains(used, "pi")
+	// With lanes off, a configured Pi documenter can spawn with the role's
+	// default mcp: none even when no other effective role uses Pi. Keep the
+	// informational usedKinds list and its planner exclusion untouched.
+	if !piUsed && !core.LanesEnabled(ctx, env) && core.ResolvedRoleKind("documenter", ctx, env, cwd) == "pi" {
+		piUsed = true
+	}
+	if standalone && piUsed {
+		doctorPiCapabilityWarning(env, cwd, s)
+	}
 	doctorCodexApprovalOverrides(ctx, env, cwd, s)
 	doctorCodexNetwork(ctx, env, cwd, s)
 	codexenv.DoctorCodexPolicyWarnings(env, platform.Current(), s.Warning)
@@ -661,7 +671,7 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	doctorPeerInbound(ctx, svc, env, cwd, s)
 	doctorFootprint(ctx, svc, env, cwd, s)
 	doctorUpdateNotice(ctx, env, cwd, out)
-	if adviseRegistration && inventory.CurrentMissingRegistration(env, cwd, ctx.User, svc) {
+	if standalone && inventory.CurrentMissingRegistration(env, cwd, ctx.User, svc) {
 		s.Warning(inventory.MissingRegistrationAdvisory)
 	}
 	fmt.Fprintf(out, "first_run: %t\n%d ok, %d warning(s)\n", ProjectIsFirstRun(ctx, env, cwd), s.OK, s.Warn)
@@ -1595,6 +1605,26 @@ func doctorMcp(ctx *core.Config, env platform.Env, s *Say) {
 		if detail := core.McpValueError(value); detail != "" {
 			s.Warning(fmt.Sprintf("config: %s=%s: %s", textutil.SanitizeCause(keys[key]), textutil.SanitizeCause(value), detail))
 		}
+	}
+}
+
+// doctorPiCapabilityWarning covers the legacy limitation of #282: doctor
+// can only see the pi on its own PATH, while a herdr target pane resolves pi
+// inside the pane. An authoritative negative here is advisory only; the
+// worker's explicit MCP choice is never changed.
+func doctorPiCapabilityWarning(env platform.Env, cwd string, s *Say) {
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		return
+	}
+	program, ok := platform.FindExecutable("pi", env, platform.Current())
+	if !ok {
+		return
+	}
+	if absolute, err := filepath.Abs(program); err == nil {
+		program = absolute
+	}
+	if kinds.PiNoMcpCapabilityProgram(env, cwd, program) == kinds.McpCapabilityUnsupported {
+		s.Warning(fmt.Sprintf("pi visible to doctor at %s does not document --no-mcp; the target Herdr pane can resolve another pi, so check that pi before spawning with --mcp none (advisory only; no MCP policy or argv is changed)", program))
 	}
 }
 
