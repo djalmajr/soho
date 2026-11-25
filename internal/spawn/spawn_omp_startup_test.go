@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
@@ -133,6 +134,64 @@ const ompLinuxReadyScreen = `
 ╰─                           ⇧⇥ to change thinking effort
 `
 
+// ompFullStartupAnimation is a retained Herdr 0.9.5 macOS OMP 19.1.1 visible capture.
+const ompFullStartupAnimation = `
+    ✧   ✧                    ·
+
+         ·                     ✦
+                                    ·       ·
+                                           ·
+                ████████████████████████
+                ████████████████████████
+                      ████    ████     ✧
+           ✦          ████    ████                      ✧
+                ·     ████    ████
+                      ████   ·████             ·
+ ✧      ✦             ▒▒▒▒    ████                    ·
+                      ▒▒▒▒    ████             ·
+                ·             ████
+                              ████
+      ░░░▒▒▒▒░░░       ░░░▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░ ░
+       ░░░▒░░░░░       ░░▒▒▒▒▒▒▒▒▒▒░░░ ░░░░░░░░░
+        ░░░▒▒▒░░░░  ░░░░░▒▒▒▒▒▒▒░░░░░  ░░░░░▒▒░░░
+         ░░░▒░▒▒░░░░░░░▒▒▒▒▒▒▒▒▒░░░   ░░░▒▒▒▒░░░░
+           ░▒▒▒▒▒▒▒▒▒░░▒▒▒▒▒▒▒▒░░░░  ░░░░▒▒▒▒▒░░
+           ░░▒▒▒▒▓▓▒▒▒▒▒▒▒▒▒▓▒▒░░  ░░░░▒▒▒▒▒▒░░░
+            ░▒▒▒▓▓▓▓▓▓▓▒▒▒▒▓▒▒▒░░░░░░▒▒▒▒▒▒▒▒░░░
+            ░░▒▒▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒░░▒▒▒▒▒▒▒▒▒▒░░░
+             ░░▒▒▒▓▓▓▓▓▒▒▒▒▒▒▒▒░▒▒▒▒▒▓▒▒▒▒░░
+              ░░░▒▒▒▒▒▒▒▒▒░▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░
+                ░░░▒░░▒░░░░░░░░░░▒▒▒▒▒▒░░░
+                     ░ ░  ░  ░░░▒▒▒▒░░░
+                              ░░░░░░░
+                             ░░░░░░░
+                            ░░░░░░░
+                         ░░░░░░░░
+                        ░░░░▒▒░░░░
+              ░ ░░░░░░░░░░▒▒▒▒▒░░░
+              ░░░░░░░░░▒▒▒▒▒▒▒▒░░  ░  ░░░░░
+               ░░░▒░▒░░▒░░▒▒▒▒░░░  ░░░░░░░ ░
+               ░░░░▒▒▒░░░░░░░░░░   ░ ░░ ░░░
+                ░░░░ press ⏎ to skip  ░
+`
+
+// ompComposerAfterStartupAnimation is a retained Herdr 0.9.5 macOS OMP 19.1.1 visible capture.
+const ompComposerAfterStartupAnimation = `
+             ████████████
+                ██  ██       ▄▀▀▄ █▀▄▀▄ █▀▀▄
+                ██  ██       ▀▄▄▀ █ █ █ █▄▄▀
+                ▒▒  ██                  █
+                    ██       v19.1.1
+
+ Tip: Say ` + "`" + `workflowz` + "`" + ` in your message to drive the task
+ with parallel subagents in eval — watch it glow as you
+                          type
+
+
+ π > ◒ Delivery Canary > 🗑 …/project > ⑂ main ▶─╎─┃──32K─
+╰─                           ⇧⇥ to change thinking effort
+`
+
 func ompStartupRecord(pane, terminal, session string) string {
 	return fmt.Sprintf(`{"result":{"agent":{"name":"worker","agent":"omp","pane_id":%q,"terminal_id":%q,"agent_status":"idle","state_change_seq":1,"interactive_ready":true,"agent_session":{"agent":"omp","kind":"path","source":"herdr:omp","value":%q}}}}`, pane, terminal, session)
 }
@@ -250,6 +309,98 @@ func TestSpawnOMPStartupIdentityAndDeadline(t *testing.T) {
 	}
 }
 
+func TestSpawnOMPStartupAnimation(t *testing.T) {
+	const pane = "w1:p2"
+	const unrelated = "ordinary output\n░░░░ press ⏎ to skip  ░\n"
+	for _, tc := range []struct {
+		name       string
+		first      string
+		next       []string
+		replaced   bool
+		persistent bool
+		code       int
+	}{
+		{name: "splash then wizard", first: ompFullStartupAnimation, next: []string{ompWizardScreen}, code: 7},
+		{name: "splash then composer", first: ompFullStartupAnimation, next: []string{ompComposerAfterStartupAnimation}},
+		{name: "splash then unrelated then composer", first: ompFullStartupAnimation, next: []string{unrelated, ompComposerAfterStartupAnimation}},
+		{name: "persistent splash", first: ompFullStartupAnimation, persistent: true, code: 4},
+		{name: "changed identity before reread", first: ompFullStartupAnimation, next: []string{ompWizardScreen}, replaced: true, code: 4},
+		{name: "unrelated text without splash", first: unrelated},
+		{name: "unrelated art without OMP logo", first: "✧ ✦ ░▒▓█\n░░░░ press ⏎ to skip  ░\n"},
+		{name: "quoted full splash", first: "> " + strings.ReplaceAll(ompFullStartupAnimation, "\n", "\n> ")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var rules []fakecli.Rule
+			for i, screen := range tc.next {
+				rules = append(rules, fakecli.Rule{
+					Argv: []string{"agent", "read", pane, "--source", "visible"}, Call: i + 2, Stdout: screen,
+				})
+			}
+			if tc.replaced {
+				rules = append(rules, fakecli.Rule{
+					Argv: []string{"agent", "get", pane}, Call: 3,
+					Stdout: ompStartupRecord(pane, "term_omp_start", "omp-session-replacement"),
+				})
+			}
+			f := newOMPSpawnFixture(t, append(rules, ompStartupRules(pane, tc.first)...)...)
+			code, out, stderr, refusal, calls := runLaneModelSpawn(t, f, ompStartupArgs(pane))
+			if code != tc.code {
+				t.Fatalf("exit=%d want=%d stdout=%q stderr=%q refusal=%q", code, tc.code, out, stderr, refusal)
+			}
+			row := core.RosterLine(filepath.Join(f.state, "ws"), "worker")
+			switch tc.code {
+			case 7:
+				line, screen, _ := strings.Cut(out, "\n")
+				if !spawnJSONHasField(t, line, `"status": "blocked_at_startup"`) ||
+					!spawnJSONHasField(t, line, `"reason": "setup-required"`) ||
+					!spawnJSONHasField(t, line, `"source": "visible"`) ||
+					screen != ompWizardScreen || !strings.Contains(stderr, "complete OMP setup") {
+					t.Fatalf("wrong wizard outcome: stdout=%q stderr=%q", out, stderr)
+				}
+			case 4:
+				reason := "identity or state changed"
+				if tc.persistent {
+					reason = "startup animation did not resolve"
+				}
+				if out != "" || row != "" || !strings.Contains(refusal, "could not verify OMP startup") || !strings.Contains(refusal, reason) {
+					t.Fatalf("wrong unverified outcome: stdout=%q refusal=%q roster=%q", out, refusal, row)
+				}
+			default:
+				if !spawnJSONHasField(t, out, `"status": "ready"`) || strings.Contains(out, "startup_evidence") || strings.Contains(stderr, "complete OMP setup") {
+					t.Fatalf("wrong ready outcome: stdout=%q stderr=%q", out, stderr)
+				}
+			}
+			if tc.code != 4 {
+				fields := strings.Split(row, "\t")
+				if fieldAt(fields, 1) != pane || fieldAt(fields, 5) != "0" || fieldAt(fields, 8) != ompFixtureModel {
+					t.Fatalf("wrong managed worker after startup: %q", row)
+				}
+			}
+
+			observed := ompStartupCalls(t, calls, pane)
+			want := []string{"start", "get", "read", "get"}
+			for range tc.next {
+				want = append(want, "get", "read", "get")
+			}
+			switch {
+			case tc.persistent:
+				if len(observed) < len(want)+3 || len(observed) > 1+3*(1+int(startPollWindow/(500*time.Millisecond))) {
+					t.Fatalf("unresolved animation was not polled within the startup window: %q", observed)
+				}
+				for len(want) < len(observed) {
+					want = append(want, "get", "read", "get")
+				}
+				want = want[:len(observed)]
+			case tc.replaced:
+				want = want[:len(want)-2]
+			}
+			if !slices.Equal(observed, want) {
+				t.Fatalf("launch and observation sequence=%q want=%q", observed, want)
+			}
+		})
+	}
+}
+
 func ompStartupArgs(pane string) []string {
 	args := []string{"worker", "--fresh", "--kind", "omp", "--mcp", "inherit", "--approvals", "ask", "--model", ompFixtureModel, "--effort", "high"}
 	if pane != "" {
@@ -258,7 +409,7 @@ func ompStartupArgs(pane string) []string {
 	return args
 }
 
-func assertOMPStartupCalls(t *testing.T, calls []fakecli.Call, pane string, read, postGet bool) {
+func ompStartupCalls(t *testing.T, calls []fakecli.Call, pane string) []string {
 	t.Helper()
 	var observed []string
 	for _, call := range calls {
@@ -285,6 +436,12 @@ func assertOMPStartupCalls(t *testing.T, calls []fakecli.Call, pane string, read
 			t.Fatalf("unexpected terminal action: %q", call.Argv)
 		}
 	}
+	return observed
+}
+
+func assertOMPStartupCalls(t *testing.T, calls []fakecli.Call, pane string, read, postGet bool) {
+	t.Helper()
+	observed := ompStartupCalls(t, calls, pane)
 	want := []string{"start", "get"}
 	if read {
 		want = append(want, "read")

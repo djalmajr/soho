@@ -59,16 +59,26 @@ func observeOMPStart(o spawnOptions, svc transport.Services, deadline time.Time)
 	}
 	launch := *o.ompLaunch
 	target := transport.Target{ID: o.pane}
+	waitingForAnimation := false
+	expired := func() {
+		if waitingForAnimation {
+			unverified("the startup animation did not resolve before the startup window expired")
+		}
+		unverified("the startup window expired")
+	}
 	call := func() transport.Call {
 		left := time.Until(deadline)
 		if left <= 0 {
-			unverified("the startup window expired")
+			expired()
 		}
 		return transport.Call{Timeout: left}
 	}
 	readAgent := func() ompStartupAgent {
 		rep := svc.Legacy.AgentGetRaw(ctx, target, call())
-		if !time.Now().Before(deadline) || rep.Err != nil || !rep.Valid {
+		if !time.Now().Before(deadline) {
+			expired()
+		}
+		if rep.Err != nil || !rep.Valid {
 			unverified("the launched agent could not be observed")
 		}
 		return decodeOMPStartupAgent(rep.Value)
@@ -82,26 +92,89 @@ func observeOMPStart(o spawnOptions, svc transport.Services, deadline time.Time)
 	default:
 		unverified("the launched agent was not live")
 	}
-	screen := svc.Runtime.Read(ctx, target, transport.Read{Source: startup.SourceVisible}, call())
-	if !time.Now().Before(deadline) || screen.Err != nil || !screen.Valid || strings.TrimSpace(screen.Value) == "" {
-		unverified("the visible screen could not be verified")
+	checkAgent := func() {
+		if readAgent() != before {
+			unverified("the agent identity or state changed while observing the pane")
+		}
 	}
-	after := readAgent()
-	if after != before {
-		unverified("the agent identity or state changed while observing the pane")
+	for {
+		screen := svc.Runtime.Read(ctx, target, transport.Read{Source: startup.SourceVisible}, call())
+		if !time.Now().Before(deadline) {
+			expired()
+		}
+		if screen.Err != nil || !screen.Valid || (!waitingForAnimation && strings.TrimSpace(screen.Value) == "") {
+			unverified("the visible screen could not be verified")
+		}
+		checkAgent()
+		if waitingForAnimation {
+			if isOMPSetupWizard(screen.Value) || isOMPStartupComposer(screen.Value) {
+				return before.State, screen.Value, false
+			}
+		} else if !isOMPStartupAnimation(screen.Value) {
+			return before.State, screen.Value, false
+		}
+		waitingForAnimation = true
+
+		timer := time.NewTimer(500 * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+		timer.Stop()
+		// Recheck after the pause too, before reading the pane again.
+		checkAgent()
 	}
-	return after.State, screen.Value, false
 }
 
-// isOMPSetupWizard requires the captured first-run frame, including the
-// provider selector and setup footer as the last visible content.
-func isOMPSetupWizard(screen string) bool {
+func ompVisibleLines(screen string) []string {
 	var lines []string
 	for _, line := range strings.Split(screen, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			lines = append(lines, line)
 		}
 	}
+	return lines
+}
+
+// isOMPStartupAnimation recognizes the full startup splash on its own. The
+// paired beams and columns are the OMP logo in the captured animation.
+func isOMPStartupAnimation(screen string) bool {
+	lines := ompVisibleLines(screen)
+	if len(lines) < 5 {
+		return false
+	}
+	art := lines[:len(lines)-1]
+	left, right, ok := strings.Cut(lines[len(art)], " press ⏎ to skip ")
+	if !ok || strings.Trim(left, " ░") != "" || strings.Trim(right, " ░") != "" ||
+		!strings.ContainsRune(left, '░') || !strings.ContainsRune(right, '░') || !isOMPSetupSplash(art) {
+		return false
+	}
+	const beam = "████████████████████████"
+	const columns = "████    ████"
+	for i := 0; i+3 < len(art); i++ {
+		if art[i] == beam && art[i+1] == beam && strings.Contains(art[i+2], columns) && strings.Contains(art[i+3], columns) {
+			return true
+		}
+	}
+	return false
+}
+
+// isOMPStartupComposer checks the live editor footer, without interpreting
+// the model or any text drawn above it.
+func isOMPStartupComposer(screen string) bool {
+	lines := ompVisibleLines(screen)
+	if len(lines) < 2 {
+		return false
+	}
+	status, hint := lines[len(lines)-2], lines[len(lines)-1]
+	return strings.HasPrefix(status, "π > ") && strings.HasPrefix(hint, "╰─") &&
+		strings.HasSuffix(hint, "⇧⇥ to change thinking effort")
+}
+
+// isOMPSetupWizard requires the captured first-run frame, including the
+// provider selector and setup footer as the last visible content.
+func isOMPSetupWizard(screen string) bool {
+	lines := ompVisibleLines(screen)
 	brand := slices.Index(lines, "omp")
 	if brand < 0 || len(lines)-brand < 5 || lines[brand+1] != "Setup step 1 of 6" || lines[brand+2] != "Sign in to your providers" {
 		return false
