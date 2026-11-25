@@ -584,13 +584,91 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 	return probeAgent(sd, agent, report, ctx, backend.New(env), env, nil)
 }
 
+// claudeStreamWorker identifies a working observation from raw Herdr metadata.
+type claudeStreamWorker struct {
+	pane, session, sequence string
+}
+
+func readClaudeStreamWorker(svc transport.Services, agent, pane, sequence string) claudeStreamWorker {
+	var record struct {
+		Error  json.RawMessage
+		Result struct {
+			Agent struct {
+				Name     string          `json:"name"`
+				Pane     string          `json:"pane_id"`
+				Kind     string          `json:"agent"`
+				State    string          `json:"agent_status"`
+				Sequence json.RawMessage `json:"state_change_seq"`
+				Session  struct {
+					Kind  string `json:"kind"`
+					Value string `json:"value"`
+				} `json:"agent_session"`
+			}
+		}
+	}
+	reply := svc.Legacy.AgentGetRaw(context.Background(), transport.Target{ID: agent}, transport.Call{Timeout: herdr.Timeout})
+	if !reply.Valid || reply.Err != nil || json.Unmarshal([]byte(reply.Value), &record) != nil || len(record.Error) != 0 {
+		return claudeStreamWorker{}
+	}
+	worker := record.Result.Agent
+	if worker.Name != agent || worker.Pane != pane || worker.Kind != "claude" || worker.State != "working" ||
+		string(worker.Sequence) != sequence || worker.Session.Kind != "id" || strings.TrimSpace(worker.Session.Value) == "" {
+		return claudeStreamWorker{}
+	}
+	return claudeStreamWorker{pane: pane, session: worker.Session.Value, sequence: sequence}
+}
+
+// claudeStreamProbe is kept only for consecutive polls of one wait invocation.
+// An error already on screen could be old. A clean frame must first be seen,
+// then extended with the error, and the resulting full frame must repeat.
+type claudeStreamProbe struct {
+	worker    claudeStreamWorker
+	rosterRow string
+	report    string
+	size      int
+	frame     [sha256.Size]byte
+	candidate bool
+}
+
+func (previous claudeStreamProbe) observe(worker claudeStreamWorker, row, report, frame string) (claudeStreamProbe, string) {
+	frame = strings.TrimRight(strings.ReplaceAll(frame, "\r\n", "\n"), "\n \t")
+	if frame == "" {
+		return claudeStreamProbe{}, ""
+	}
+	next := claudeStreamProbe{worker: worker, rosterRow: row, report: report, size: len(frame), frame: sha256.Sum256([]byte(frame))}
+	history, cause := provider.ClaudeStreamStop(frame)
+	if cause == "" {
+		if strings.Contains(text.ASCIILower(frame), "the response stopped arriving") {
+			return claudeStreamProbe{}, ""
+		}
+		return next, ""
+	}
+	if previous.worker != worker || previous.rosterRow != row || previous.report != report {
+		return claudeStreamProbe{}, ""
+	}
+	if previous.candidate && previous.frame == next.frame {
+		return claudeStreamProbe{}, cause
+	}
+	if !previous.candidate && previous.size == len(history) && sha256.Sum256([]byte(history)) == previous.frame {
+		next.candidate = true
+		return next, ""
+	}
+	return claudeStreamProbe{}, ""
+}
+
 type probeScreen struct {
 	frames        []string
 	read          bool
 	nativeWorking bool
+	claudeStream  claudeStreamProbe
 }
 
 func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Services, env platform.Env, sample *probeScreen) string {
+	var previousClaudeStream claudeStreamProbe
+	if sample != nil {
+		previousClaudeStream = sample.claudeStream
+		sample.claudeStream = claudeStreamProbe{}
+	}
 	capture := func(text string, ok bool) string {
 		if sample != nil {
 			sample.read = true
@@ -785,12 +863,12 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 		clearProvider()
 	}
 	var screen string
-	screenRead := false
+	screenRead, screenOK := false, false
 	visible := func() string {
 		if !screenRead {
 			visibleText, visibleOK := readScreen(svc, agent, "visible", nil)
 			screen = capture(visibleText, visibleOK)
-			screenRead = true
+			screenRead, screenOK = true, visibleOK
 		}
 		return screen
 	}
@@ -810,10 +888,29 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 		removeWaitFile(sd, agent, "compacting")
 	}
 	if st.State == "working" {
+		var claudeWorker claudeStreamWorker
+		var claudeRow string
+		if sample != nil && env.Get("SOHO_TRANSPORT") != "hc" && probeKind == "claude" && uintPattern.MatchString(st.Seq) {
+			claudeRow = core.RosterLine(sd, agent)
+			fields := strings.Split(claudeRow, "\t")
+			if pane := field(fields, 1); pane != "" && field(fields, 2) == "claude" {
+				claudeWorker = readClaudeStreamWorker(svc, agent, pane, st.Seq)
+			}
+		}
 		text := visible()
 		if p := provider.LostConnection(text); p != nil {
 			writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
 			return "provider-error"
+		}
+		if claudeWorker != (claudeStreamWorker{}) && screenOK &&
+			readClaudeStreamWorker(svc, agent, claudeWorker.pane, st.Seq) == claudeWorker &&
+			core.RosterLine(sd, agent) == claudeRow && !reportNonEmpty(report) {
+			next, cause := previousClaudeStream.observe(claudeWorker, claudeRow, report, text)
+			sample.claudeStream = next
+			if cause != "" {
+				writeWaitFile(sd, agent, "provider-cause", cause+"\n")
+				return "provider-error"
+			}
 		}
 		hash := strconv.FormatUint(uint64(CksumField(NormalizeScreen(text))), 10)
 		now := platform.Now().Unix()
@@ -1160,6 +1257,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 	seenCollab := map[string]string{}
 	idleAlerts := map[string]*idleAlert{}
 	queuedAlerts := map[queuedAlertIdentity]bool{}
+	claudeStreams := map[string]claudeStreamProbe{}
 	idleMinutes := idleAlertMinutes(ctx, env)
 	settle := func(agent string) {
 		if anyDone {
@@ -1182,6 +1280,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 	}
 	for {
 		pending := []string{}
+		nextClaudeStreams := map[string]claudeStreamProbe{}
 		for _, agent := range remaining {
 			report := core.LastReport(sd, agent)
 			report = observeReport(sd, agent, report, ctx, env, cwd)
@@ -1246,8 +1345,11 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				settle(agent)
 				continue
 			}
-			var sample probeScreen
+			sample := probeScreen{claudeStream: claudeStreams[agent]}
 			state := probeAgent(sd, agent, report, ctx, svc, env, &sample)
+			if sample.claudeStream.size != 0 {
+				nextClaudeStreams[agent] = sample.claudeStream
+			}
 			tag := strings.SplitN(state, "\t", 2)[0]
 			alert := idleAlerts[agent]
 			if alert == nil {
@@ -1494,6 +1596,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			return rc
 		}
 		remaining = pending
+		claudeStreams = nextClaudeStreams
 		if len(remaining) == 0 {
 			return rc
 		}

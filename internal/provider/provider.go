@@ -124,6 +124,36 @@ func ProviderDetectTexts(state, screen, capacityTexts, errorTexts string) *Detec
 	return nil
 }
 
+var claudeStreamDoneRE = regexp.MustCompile(`^✻ Cogitated for (?:[0-9]+h(?: [0-9]+m)?(?: [0-9]+s)?|[0-9]+m(?: [0-9]+s)?|[0-9]+s) · done (?:[1-9]|1[0-2]):[0-5][0-9] (?:AM|PM)$`)
+
+// ClaudeStreamStop recognizes the signed Claude stream error followed by the
+// completed-turn footer and a bare, empty composer in a normalized visible frame.
+func ClaudeStreamStop(frame string) (history, cause string) {
+	const line = "● API Error: The response stopped arriving. The response above may be incomplete."
+	prompt := strings.LastIndexByte(frame, '\n')
+	if prompt < 0 || strings.TrimRight(frame[prompt+1:], " \t") != "❯" {
+		return "", ""
+	}
+	above := strings.TrimRight(frame[:prompt], "\n \t")
+	footer := strings.LastIndexByte(above, '\n')
+	if footer < 0 || !claudeStreamDoneRE.MatchString(above[footer+1:]) {
+		return "", ""
+	}
+	above = strings.TrimRight(above[:footer], "\n \t")
+	errorStart := strings.LastIndexByte(above, '\n') + 1
+	if above[errorStart:] != line {
+		return "", ""
+	}
+	history = strings.TrimRight(above[:errorStart], "\n \t")
+	for _, priorLine := range strings.Split(history, "\n") {
+		priorLine = strings.TrimSpace(priorLine)
+		if strings.HasPrefix(priorLine, "```") || strings.HasPrefix(priorLine, "~~~") {
+			return "", ""
+		}
+	}
+	return history, text.SanitizeCause(text.RedactSecrets(line))
+}
+
 const LostConnectionCause = "codex lost its server connection; run soho reopen <agent> --force and dispatch the task again with a resume note (the worktree keeps its diff)"
 
 // LostConnection detects only a terminal reconnect failure, including while working.
