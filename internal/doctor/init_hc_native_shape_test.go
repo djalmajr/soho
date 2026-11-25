@@ -12,6 +12,7 @@ import (
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/sessionmeta"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -108,6 +109,7 @@ func initHcTestFixture(t *testing.T, rulesFn func(root string) []fakecli.Rule) (
 		"HC_TERMINAL_ID":      "t2c",
 		"SOHO_DIR":            state,
 		"SOHO_FAKECLI_CONFIG": bin,
+		"GORACE":              fakecli.RaceOptions([]string{"GORACE=" + testutil.HostRaceOptions()}),
 	}
 	return env, root
 }
