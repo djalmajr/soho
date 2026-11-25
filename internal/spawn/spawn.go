@@ -867,6 +867,9 @@ type spawnOptions struct {
 	launchProfile                                                                                                kinds.LaunchProfile
 	nativeArgsSnapshot                                                                                           string
 	loginShell                                                                                                   string
+	// ompLaunch is the successful legacy agent.start receipt, used only
+	// by the OMP startup window to pin the terminal being observed.
+	ompLaunch *ompStartupAgent
 	// piStartScreen is hc's post-ready screen read, reused for the thinking
 	// footer so a fresh pi terminal keeps its established single-read start.
 	piStartScreen      string
@@ -1666,6 +1669,9 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	} else if o.launchProfile.Name != "" {
 		blocked = startConfiguredSpawn(svc, o, kind, configuredOwned, agentArgs)
 	} else {
+		if kind == "omp" {
+			o.ompLaunch = &ompStartupAgent{}
+		}
 		blocked = startAgent(o, kind, env, created, agentArgs)
 	}
 	layout.RestoreFocusIfStolen(focusBefore, o.pane, o.direction, env)
@@ -1674,6 +1680,8 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	if !blocked && env.Get("SOHO_TRANSPORT") != "hc" && o.launchProfile.Name == "" {
 		lastState, lastScreen, blocked = checkStartWindow(o, kind, env, created, agentArgs, ctx)
 	}
+	ompSetup := kind == "omp" && isOMPSetupWizard(lastScreen)
+	blocked = blocked || ompSetup
 	if kind == "codex" && !o.blockedAtStartup {
 		if blocked {
 			lastScreen = agentReadText(svc.Runtime, o.name, "visible", intPtr(40))
@@ -1800,6 +1808,10 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			warnStartupBlocked(o.name, kind, lastState, startupGateEv, ctx, env)
 			blocked = true
 		}
+	}
+	if ompSetup {
+		startupGate, startupGateEv = true, startup.Evaluation{Verdict: startup.VerdictBlocked, Reason: "setup-required", Source: startup.SourceVisible}
+		Warn(fmt.Sprintf("agent '%s' (omp) startup is blocked in pane %s; no input was sent; complete OMP setup in the pane before sending tasks", o.name, o.pane), ctx, env, "spawn")
 	}
 	agyLoginScreen := ""
 	if kind == "agy" && env.Get("SOHO_TRANSPORT") != "hc" {
@@ -1936,7 +1948,11 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			lines = nil
 		}
 		var screen string
-		if agyLoginScreen != "" {
+		if ompSetup {
+			// Print the same identity-checked viewport that proved the
+			// refusal. There is no second diagnostic read after the window.
+			screen = o.outputText(lastScreen)
+		} else if agyLoginScreen != "" {
 			screen = agyLoginScreen
 		} else if env.Get("SOHO_TRANSPORT") == "hc" {
 			reply := svc.Runtime.Read(context.Background(), transport.Target{ID: o.pane}, transport.Read{Source: "visible", Lines: lines}, transport.Call{})
@@ -2151,7 +2167,7 @@ func startAgent(o spawnOptions, kind string, env platform.Env, created bool, arg
 	}
 	rt := svc.Terminal
 	for tries := 0; ; tries++ {
-		if startup.CurrentPlatform() != "win32" && (!created || tries > 0) {
+		if kind != "omp" && startup.CurrentPlatform() != "win32" && (!created || tries > 0) {
 			// Send the raw character as text: a key event can still be
 			// encoded by a departing agent's kitty keyboard mode.
 			_ = rt.SendText(context.Background(), transport.Target{ID: o.pane}, "\x15", transport.Call{})
@@ -2160,6 +2176,9 @@ func startAgent(o spawnOptions, kind string, env platform.Env, created bool, arg
 		out := rep.Value
 		proc := rep.Process
 		if !proc.NotFound && proc.Status != nil && *proc.Status == 0 {
+			if o.ompLaunch != nil {
+				*o.ompLaunch = decodeOMPStartupAgent(out)
+			}
 			return false
 		}
 		if strings.Contains(out, "agent_not_ready") {
@@ -2589,7 +2608,11 @@ func legacyPiStartupAdmission(o spawnOptions, kind string, env platform.Env, age
 }
 
 func checkStartWindow(o spawnOptions, kind string, env platform.Env, created bool, args []string, ctx *core.Config) (string, string, bool) {
-	rt := backend.New(env).Runtime
+	svc := backend.New(env)
+	if kind == "omp" {
+		return observeOMPStart(o, svc, time.Now().Add(startPollWindow))
+	}
+	rt := svc.Runtime
 	poll := time.Duration(PollIntervalMs(env)) * time.Millisecond
 	canRelaunch := true
 	blocked := false
