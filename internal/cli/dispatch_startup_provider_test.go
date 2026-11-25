@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/provider"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
@@ -140,6 +142,7 @@ func TestDispatchHcStartupStopObservation(t *testing.T) {
 		{"stale on screen", "codex", codexConfigScreen + "\nReady for a new turn", "", true, false, 15, 1},
 		{"incomplete", "codex", codexConfigScreen, codexConfigScreen, false, false, 15, 1},
 		{"live draft", "codex", codexConfigScreen + "\n› Continue my draft", codexConfigScreen, true, false, 15, 1},
+		{"late idle", "codex", "ready", "", true, false, 15, 0},
 		{"other kind", "pi", codexConfigScreen, codexConfigScreen, true, false, 15, 0},
 		{"send confirms arrival", "codex", codexConfigScreen, codexConfigScreen, true, true, 0, 0},
 		{"turn rises", "codex", codexConfigScreen, codexConfigScreen, true, false, 0, 0},
@@ -168,22 +171,45 @@ func TestDispatchHcStartupStopObservation(t *testing.T) {
 			if err := os.WriteFile(roster, []byte(strings.Replace(string(body), "\tcodex\t", "\t"+tc.kind+"\t", 1)), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if tc.name == "ceiling exhausted" {
-				oldClock := dispatchCeilingNow
-				t.Cleanup(func() { dispatchCeilingNow = oldClock })
-				start := time.Now()
-				dispatchCeilingNow = func() time.Time {
-					sent := false
-					for _, call := range f.hcCalls(t) {
-						if isRealSend(call.Argv) {
-							sent = true
-						}
-						if sent && len(call.Argv) >= 2 && call.Argv[0] == "get" && call.Argv[1] == "worker" {
-							return start.Add(time.Minute)
-						}
+			postSendGet := func() bool {
+				sent := false
+				for _, call := range f.hcCalls(t) {
+					if isRealSend(call.Argv) {
+						sent = true
 					}
-					return start
+					if sent && slices.Equal(call.Argv, []string{"get", "worker", "--json"}) {
+						return true
+					}
 				}
+				return false
+			}
+			oldNow, oldCeilingNow := platform.Now, dispatchCeilingNow
+			t.Cleanup(func() { platform.Now, dispatchCeilingNow = oldNow, oldCeilingNow })
+			base := oldNow()
+			deadline := base.Add(time.Second)
+			postGetClockChecked, arrivalClosed, ceilingChecked := false, false, false
+			arrivesWithoutExpiry := tc.arrived || turn > 7
+			platform.Now = func() time.Time {
+				if arrivalClosed {
+					return deadline
+				}
+				if !arrivesWithoutExpiry && postSendGet() {
+					// The first post-get clock read decides whether to keep
+					// the result. Close on the next read for an on-time idle.
+					if tc.name == "late idle" || postGetClockChecked {
+						arrivalClosed = true
+						return deadline
+					}
+					postGetClockChecked = true
+				}
+				return base
+			}
+			dispatchCeilingNow = func() time.Time {
+				if tc.name == "ceiling exhausted" && arrivalClosed {
+					ceilingChecked = true
+					return base.Add(time.Minute)
+				}
+				return base
 			}
 			code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
 			if code != tc.wantCode || strings.Contains(out+stderr, provider.CodexConfigCause) {
@@ -207,6 +233,12 @@ func TestDispatchHcStartupStopObservation(t *testing.T) {
 			}
 			if reads != tc.wantReads || sends != 1 {
 				t.Errorf("reads=%d want=%d sends=%d want=1", reads, tc.wantReads, sends)
+			}
+			if !arrivesWithoutExpiry && !arrivalClosed {
+				t.Error("the arrival clock never reached the deadline after a worker get")
+			}
+			if tc.name == "ceiling exhausted" && !ceilingChecked {
+				t.Error("the shared ceiling was not checked after the arrival window closed")
 			}
 			f.assertHcNeverTouchedHerdr(t)
 		})
