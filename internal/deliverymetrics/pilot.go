@@ -30,11 +30,13 @@ type Record struct {
 	Revisions                   []Assessment
 }
 
-// Evidence records a verified instant and its source. A nil landmark is missing.
+// Evidence records a timestamp and its source. A nil landmark is missing.
+// At is exact when Resolution is zero. A positive resolution represents
+// the half-open range [At, At+Resolution). Negative resolution is invalid.
 type Evidence struct {
 	At         time.Time
 	Source     string
-	Resolution time.Duration // Optional precision of the recorded instant.
+	Resolution time.Duration
 }
 
 type Landmarks struct {
@@ -102,7 +104,7 @@ type Rating struct {
 	Rationale string
 }
 
-// Metrics uses nil for unavailable landmark spans. Observed window totals
+// Metrics uses nil for spans with a missing or coarse landmark. Observed window totals
 // are accompanied by counts so zero observations are distinguishable from zero time.
 type Metrics struct {
 	Lead, Cycle, RequestToStart, StartToMerge, MergeToRelease *time.Duration
@@ -112,26 +114,42 @@ type Metrics struct {
 }
 
 type Coverage struct {
-	Landmarks, ActivityWindows, WaitingWindows int
-	CIJobs, CIQueueWindows, CIRuntimeWindows   int
+	Landmarks, CoarseLandmarks               int
+	ActivityWindows, WaitingWindows          int
+	CIJobs, CIQueueWindows, CIRuntimeWindows int
 }
 
 // Measure computes elapsed and observed calendar durations. Duplicate receipts
 // are counted once, conflicting receipts are rejected and missing times stay unknown.
 func Measure(record Record) (Metrics, error) {
 	var result Metrics
-	for _, mark := range []*Evidence{record.Landmarks.Request, record.Landmarks.Start, record.Landmarks.Merge, record.Landmarks.Released} {
-		if mark != nil && (mark.At.IsZero() || mark.Source == "") {
+	request, start := record.Landmarks.Request, record.Landmarks.Start
+	merge, release := record.Landmarks.Merge, record.Landmarks.Released
+	var earliest time.Time
+	for _, mark := range []*Evidence{request, start, merge, release} {
+		if mark == nil {
+			continue
+		}
+		if mark.At.IsZero() || mark.Source == "" {
 			return Metrics{}, fmt.Errorf("landmark source and timestamp are required")
 		}
-		if mark != nil {
-			result.Coverage.Landmarks++
+		if mark.Resolution < 0 {
+			return Metrics{}, fmt.Errorf("negative landmark resolution")
 		}
-	}
-	request, start := landmarkTime(record.Landmarks.Request), landmarkTime(record.Landmarks.Start)
-	merge, release := landmarkTime(record.Landmarks.Merge), landmarkTime(record.Landmarks.Released)
-	if !chronological(request, start, merge, release) {
-		return Metrics{}, fmt.Errorf("landmark order is inconsistent")
+		result.Coverage.Landmarks++
+		if mark.Resolution > 0 {
+			result.Coverage.CoarseLandmarks++
+		}
+		// Carry the earliest feasible instant across all preceding marks.
+		// If the next mark starts before it, the mark must still contain it.
+		at := mark.At.UTC()
+		if !earliest.IsZero() && at.Before(earliest) {
+			if earliest.Sub(at) >= mark.Resolution {
+				return Metrics{}, fmt.Errorf("landmark order is inconsistent")
+			}
+			continue
+		}
+		earliest = at
 	}
 
 	var active, waiting, ciQueue, ciRuntime []timeWindow
@@ -200,23 +218,24 @@ func Measure(record Record) (Metrics, error) {
 	if record.State == Reopened || record.State == Canceled {
 		return result, nil
 	}
-	result.RequestToStart = elapsed(request, start)
-	result.StartToMerge = elapsed(start, merge)
+	result.RequestToStart = exactElapsed(request, start)
+	result.StartToMerge = exactElapsed(start, merge)
 	if record.State != Delivered {
 		return result, nil
 	}
-	result.Lead = elapsed(request, release)
-	result.Cycle = elapsed(start, release)
-	result.MergeToRelease = elapsed(merge, release)
+	result.Lead = exactElapsed(request, release)
+	result.Cycle = exactElapsed(start, release)
+	result.MergeToRelease = exactElapsed(merge, release)
 	if result.Cycle != nil {
+		cycleStart, cycleEnd := start.At.UTC(), release.At.UTC()
 		covered := make([]timeWindow, 0, len(active)+len(waiting))
 		for _, window := range append(active, waiting...) {
 			clipped := window
-			if start.After(clipped.start) {
-				clipped.start = start
+			if cycleStart.After(clipped.start) {
+				clipped.start = cycleStart
 			}
-			if release.Before(clipped.end) {
-				clipped.end = release
+			if cycleEnd.Before(clipped.end) {
+				clipped.end = cycleEnd
 			}
 			if clipped.start.Before(clipped.end) {
 				covered = append(covered, clipped)
@@ -226,13 +245,6 @@ func Measure(record Record) (Metrics, error) {
 		result.Unclassified = &unclassified
 	}
 	return result, nil
-}
-
-func landmarkTime(mark *Evidence) time.Time {
-	if mark == nil {
-		return time.Time{}
-	}
-	return mark.At.UTC()
 }
 
 func chronological(marks ...time.Time) bool {
@@ -249,11 +261,11 @@ func chronological(marks ...time.Time) bool {
 	return true
 }
 
-func elapsed(start, end time.Time) *time.Duration {
-	if start.IsZero() || end.IsZero() {
+func exactElapsed(start, end *Evidence) *time.Duration {
+	if start == nil || end == nil || start.Resolution != 0 || end.Resolution != 0 {
 		return nil
 	}
-	duration := end.Sub(start)
+	duration := end.At.UTC().Sub(start.At.UTC())
 	return &duration
 }
 

@@ -6,6 +6,8 @@ Use one record per delivery episode. A demand ID identifies the requested change
 
 Record timestamps in UTC and preserve the source's precision. A tracker creation event can establish the request timestamp. Use an explicit start transition or a contemporaneous start receipt for start. A first commit or PR opening can bound when work was already underway. Use the merge event and the publication event for the last two landmarks, and verify the released revision contains the change. Use publication time when a release is created earlier than it becomes available.
 
+A landmark with zero `Resolution` is exact. For a coarser source, record the first possible instant in `At` and the width of the range in `Resolution`. The range includes `At` and excludes `At + Resolution`. For example, if a source truncates to minutes, a displayed 13:05 UTC represents [13:05, 13:06). Negative resolution is invalid.
+
 | Measure | Calculation |
 | --- | --- |
 | Lead time | Published minus requested |
@@ -17,17 +19,17 @@ Record timestamps in UTC and preserve the source's precision. A tracker creation
 | Observed waiting time | Length of the union of evidenced waiting and CI queue intervals |
 | Unclassified cycle time | Cycle time minus the union of active and waiting intervals clipped to the cycle |
 
-Both landmarks are required for each elapsed span. Equal instants give a duration of zero. Contradictory timestamps return an error. An open item can have prepublication spans. Canceled and reopened records keep their observed windows and coverage. Calculate completed spans only for a verified delivery episode, with a new episode after reopening when the evidence identifies it.
+Both landmarks must be present and exact to report an elapsed span. Equal exact instants give a duration of zero. A missing or coarse endpoint leaves the span unavailable, including unclassified cycle time when either cycle endpoint is coarse. Overlapping ranges are accepted if the known milestones can occur in order. A chronology error means no such sequence exists. Unaffected spans and observed activity and CI windows remain available in compatible records. An open item can have prepublication spans. Canceled and reopened records keep their observed windows and coverage. Calculate completed spans only for a verified delivery episode, with a new episode after reopening when the evidence identifies it.
 
 Intervals use half-open bounds in elapsed calendar time. For CI jobs, use the source's queue timestamp, actual start and actual completion. For example, if the queue proxy is GitHub Actions job creation, label it `job created → started` and leave any earlier scheduling gap unclassified. Queue and runtime are separate unions. Their windows can overlap across jobs, so report each alongside its own coverage. Waiting records may name review, decision, dependency, changed scope, environment or release only when a source supports the cause.
 
 Deduplicate observations by receipt ID. For CI, use source, run, attempt and job. A rerun is a new attempt. Conflicting payloads for the same identity are evidence errors. The union prevents parallel jobs and repeated windows from inflating calendar time. Window totals describe observed coverage, and they can extend outside the cycle. The unclassified calculation always clips to the cycle and counts overlapping active and waiting windows once. Unclassified time has no assigned cause.
 
-Report the known landmarks out of four, coverage per window type, the number of unique CI jobs, the number with sufficient queue and runtime timestamps, and any known missing sources. If a planned check has no surviving receipt, record it as unobserved. Keep raw evidence in a location with access appropriate to its contents. Report times with units and with precision appropriate to the least precise endpoint.
+Report the known landmarks out of four and how many are coarse. Keep the source resolution with each landmark. Also report coverage per window type, the number of unique CI jobs, the number with sufficient queue and runtime timestamps, and any known missing sources. If a planned check has no surviving receipt, record it as unobserved. Keep raw evidence in a location with access appropriate to its contents. Report durations with units.
 
 ## Intake profile
 
-Record functional size as the inventory of observable flows with entry, exit, read and write counts for each flow. For example, if an existing export flow accepts a filter, reads records and emits a file, record one entry, one read, one exit and zero writes for that flow. Record the technical profile and uncertainty independently.
+Assess the proposed work as scoped at intake. For functional size, inventory the product-facing software flows the proposal adds or changes, with entry, exit, read and write counts for each flow. For example, if an existing export flow accepts a filter, reads records and emits a file, record one entry, one read, one exit and zero writes for that flow. Describe investigation artifacts, operations and recommendations separately. A pure investigation can require substantial work while adding or changing zero product flows. Record the technical profile and uncertainty independently.
 
 | Rubric v1 dimension | 0 | 1 | 2 |
 | --- | --- | --- | --- |
@@ -38,6 +40,8 @@ Record functional size as the inventory of observable flows with entry, exit, re
 | Uncertainty | Requirements and mechanism known | Bounded gaps | Open discovery or external dependency |
 
 Keep the rating and a short justification for each dimension. Leave an unsupported score unknown. For a genuine intake assessment, record the sources and what was known before work began. For a reconstructed assessment, label it retrospective, describe which information can be dated to intake, and leave undated dimensions unknown. Store subsequent assessments as separate revisions with the reason for the change. This pilot keeps the individual dimensions.
+
+For interfaces and dependencies, count contracts the proposed work must preserve even when their implementations stay unchanged. For planned validation, rate the checks the proposal requires. Count a platform or shell matrix only when the acceptance criteria require it. Historical environments and tools help explain the starting evidence and can inform uncertainty. Preserve original assessments and record any calibration as a separate revision with its basis.
 
 Record the intended validation scenarios, layers and platforms when available. Compare them at close with receipts for observed scenarios, results, attempts, runtimes and exact revisions. Treat counts as descriptive and retain gaps between planned and observed evidence.
 

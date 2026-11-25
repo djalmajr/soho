@@ -105,6 +105,79 @@ func TestMeasurePreservesZeroAndClipsUnclassifiedWindow(t *testing.T) {
 	}
 }
 
+func TestMeasureAcceptsOverlappingLandmarkPrecision(t *testing.T) {
+	request, start, merge, release := mark(1), mark(1), mark(5), mark(5)
+	merge.At = merge.At.Add(30 * time.Second)
+	release.Resolution = time.Minute
+	got, err := Measure(Record{
+		State:     Delivered,
+		Landmarks: Landmarks{Request: request, Start: start, Merge: merge, Released: release},
+		Activity:  []Interval{window("review", Review, 3, 5)},
+		CI:        []CIReceipt{ci(1, 1, 2, 4)},
+	})
+	if err != nil {
+		t.Fatalf("compatible release minute rejected: %v", err)
+	}
+	assertDuration(t, "exact zero request to start", got.RequestToStart, 0)
+	assertDuration(t, "exact start to merge", got.StartToMerge, 4*time.Hour+30*time.Second)
+	if got.Lead != nil || got.Cycle != nil || got.MergeToRelease != nil || got.Unclassified != nil {
+		t.Fatalf("reported durations from an uncertain release: %+v", got)
+	}
+	wantCoverage := Coverage{Landmarks: 4, CoarseLandmarks: 1, ActivityWindows: 1, CIJobs: 1, CIQueueWindows: 1, CIRuntimeWindows: 1}
+	if got.Coverage != wantCoverage || got.Active != 3*time.Hour || got.Waiting != time.Hour ||
+		got.CIQueue != time.Hour || got.CIRuntime != 2*time.Hour {
+		t.Fatalf("compatible precision lost activity or CI data: %+v", got)
+	}
+}
+
+func TestMeasureWithholdsSpansFromCoarseRequest(t *testing.T) {
+	request := mark(1)
+	request.Resolution = time.Minute
+	got, err := Measure(Record{
+		State:     Delivered,
+		Landmarks: Landmarks{Request: request, Start: mark(2), Merge: mark(5), Released: mark(7)},
+		Activity:  []Interval{window("review", Review, 3, 5)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Lead != nil || got.RequestToStart != nil || got.Coverage.Landmarks != 4 || got.Coverage.CoarseLandmarks != 1 {
+		t.Fatalf("coarse request produced exact durations or lost coverage: %+v", got)
+	}
+	assertDuration(t, "exact cycle", got.Cycle, 5*time.Hour)
+	assertDuration(t, "exact start to merge", got.StartToMerge, 3*time.Hour)
+	assertDuration(t, "exact merge to release", got.MergeToRelease, 2*time.Hour)
+	assertDuration(t, "unclassified", got.Unclassified, 3*time.Hour)
+}
+
+func TestMeasureRejectsImpossibleLandmarkPrecision(t *testing.T) {
+	request, start, merge := mark(5), mark(5), mark(5)
+	request.At = request.At.Add(90 * time.Second)
+	start.At = start.At.Add(time.Minute)
+	start.Resolution = time.Minute
+	merge.Resolution = 75 * time.Second
+	endedRelease := mark(6)
+	endedRelease.At = endedRelease.At.Add(-time.Minute)
+	endedRelease.Resolution = time.Minute
+	negative := mark(5)
+	negative.Resolution = -time.Second
+	for _, tc := range []struct {
+		name  string
+		marks Landmarks
+		want  string
+	}{
+		{"coarse range ends at prior exact mark", Landmarks{Merge: mark(6), Released: endedRelease}, "landmark order"},
+		{"overlapping adjacent pairs with no global order", Landmarks{Request: request, Start: start, Merge: merge}, "landmark order"},
+		{"negative resolution", Landmarks{Request: negative}, "negative landmark resolution"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Measure(Record{State: Delivered, Landmarks: tc.marks}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Measure error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestMeasureRejectsInconsistentEvidence(t *testing.T) {
 	conflict := ci(1, 1, 2, 3)
 	changed := conflict
