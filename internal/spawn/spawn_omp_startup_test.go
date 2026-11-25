@@ -290,6 +290,47 @@ const ompLinuxComposerAfterStartupAnimation = `
 ╰─                           ⇧⇥ to change thinking effort
 `
 
+// ompSparklyStartupAnimation is the retained macOS capture with sparkles beside both beams.
+const ompSparklyStartupAnimation = `
+
+                       ✦                      ✧
+                          · ✦            ✧
+
+                        ✦
+                ████████████████████████  ✧      ·
+                ████████████████████████          ·
+             ✦        ████    ████
+                      ████    ████
+                      ████    ████
+                      ████    ████                  ✦
+                      ▒▒▒▒    ████
+                      ▒▒▒▒    ████
+                              ████
+                              ████
+      ░░░▒▒▒▒░░░       ░░░▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░ ░
+      ░░░░▒░░░░        ░░▒▒▒▒▒▒▒▒▒▒░░░  ░░░░░░░░░
+       ░░░░▒▒░░░     ░░░░▒▒▒▒▒▒▒░░░░░   ░░░░░▒░░░
+         ░░░▒░░░░░░ ░░░▒▒▒▒▒▒▒▒▒░░░     ░░▒░░░░░░
+          ░░▒▒▒▒▒▒░▒▒░░▒▒▒▒▒▒▒▒░░░░   ░░░░▒▒▒▒░░
+           ░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓▒▒░░  ░ ░░░▒▒▒▒▒▒░░
+           ░░▒▒▒▓▓▓▓▓▓▓▒▒▒▒▓▒▒▒░░░░░░░▒▒▒▒▒▒▒░░░
+            ░▒▒▒▓▓▓▓▓▓▓▒▒▒▓▒▒▒▒░░░░▒▒▒▒▒▒▒▒▒░░
+             ░░▒▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒░▒░▒▒▒▒▒▒▒▒▒░░
+              ░░▒▒▒▓▓▓▒▒▒▒░▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░
+               ░░░░▒▒▒▒░░░░░░░░░░▒▒▒▒▒▒░░░
+                    ░░░░░ ░░ ░░░▒▒▒▒▒▒░░
+                              ░░░▒░░░░
+                             ░░░░░░░░
+                            ░░░░░░░░
+                          ░░░░░░░░
+                        ░░░░░▒░░░░
+              ░     ░░░░░░▒▒▒▒░░░░
+              ░░░░░░░░░▒▒░▒▒▒▒▒░░      ░░░░
+               ░░░▒░▒░░▒░░▒▒▒▒░░░  ░░░ ░ ░ ░
+               ░░░░▒▒▒░░░░░░▒░░░░  ░ ░░ ░░░
+                ░░░░ press ⏎ to skip  ░
+`
+
 func ompStartupRecord(pane, terminal, session string) string {
 	return fmt.Sprintf(`{"result":{"agent":{"name":"worker","agent":"omp","pane_id":%q,"terminal_id":%q,"agent_status":"idle","state_change_seq":1,"interactive_ready":true,"agent_session":{"agent":"omp","kind":"path","source":"herdr:omp","value":%q}}}}`, pane, terminal, session)
 }
@@ -420,6 +461,11 @@ func TestSpawnOMPStartupAnimation(t *testing.T) {
 	}{
 		{name: "splash then wizard", first: ompFullStartupAnimation, next: []string{ompWizardScreen}, code: 7},
 		{name: "splash then composer", first: ompFullStartupAnimation, next: []string{ompComposerAfterStartupAnimation}},
+		{name: "macOS sparkly splash then wizard", first: ompSparklyStartupAnimation, next: []string{ompWizardScreen}, code: 7},
+		{name: "macOS sparkly splash then composer", first: ompSparklyStartupAnimation, next: []string{ompComposerAfterStartupAnimation}},
+		{name: "macOS sparkly art with split beam", first: strings.Replace(ompSparklyStartupAnimation, strings.Repeat("█", 24), strings.Repeat("█", 12)+"✧"+strings.Repeat("█", 12), 1)},
+		{name: "macOS sparkly art with wider columns", first: strings.Replace(ompSparklyStartupAnimation, "████    ████", "█████    ████", 1)},
+		{name: "macOS sparkly art with ordinary text", first: "ordinary output\n" + ompSparklyStartupAnimation},
 		{name: "Linux splash then wizard", first: ompLinuxFullStartupAnimation, next: []string{ompLinuxWizardAfterStartupAnimation}, code: 7},
 		{name: "Linux splash then composer", first: ompLinuxFullStartupAnimation, next: []string{ompLinuxComposerAfterStartupAnimation}},
 		{name: "Linux splash then unrelated picker body then composer", first: ompLinuxFullStartupAnimation, next: []string{

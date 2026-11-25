@@ -158,8 +158,11 @@ func isOMPStartupAnimation(screen string) bool {
 	}
 	const beam = "████████████████████████"
 	const columns = "████    ████"
-	for i := 0; i+3 < len(art); i++ {
-		if art[i] == beam && art[i+1] == beam && strings.Contains(art[i+2], columns) && strings.Contains(art[i+3], columns) {
+	logo := [...]string{beam, beam, columns, columns}
+	for i := 0; i+len(logo) <= len(art); i++ {
+		if slices.EqualFunc(art[i:i+len(logo)], logo[:], func(line, want string) bool {
+			return strings.Trim(line, " ✦✧·") == want
+		}) {
 			return true
 		}
 	}
