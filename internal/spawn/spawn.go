@@ -2540,7 +2540,7 @@ func readLegacyPiIdentity(svc transport.Services, o spawnOptions, deadline time.
 		return id, "mismatch"
 	}
 	if live.Session.Value == "" {
-		return id, "Herdr reported no Pi session identity"
+		return id, "Herdr reported no Pi session identity. Load the Herdr Pi integration and retry. Install it with 'herdr integration install pi' if needed"
 	}
 	return legacyPiIdentity{name: live.Name, pane: live.Pane, kind: live.Kind, session: live.Session.Value}, ""
 }

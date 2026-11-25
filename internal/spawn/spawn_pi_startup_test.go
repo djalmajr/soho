@@ -124,8 +124,8 @@ func TestLegacyPiNoMcpStartupIdentity(t *testing.T) {
 		{name: "session changes", override: legacyPiIdentityRule(3, legacyPiStartupPane, "/sessions/replacement.jsonl"), wantGets: 3, wantError: "the worker identity changed"},
 		{name: "ready metadata without session identity", override: fakecli.Rule{Argv: legacyPiGetArgv,
 			Stdout: `{"result":{"agent":{"name":"worker","pane_id":"p-new","terminal_id":"term_pane","agent":"pi","agent_status":"idle","interactive_ready":true,"state_change_seq":42}}}`},
-			wantGets: 2, wantError: "Herdr reported no Pi session identity"},
-		{name: "no reported session identity", override: legacyPiIdentityRule(3, legacyPiStartupPane, ""), wantGets: 3, wantError: "Herdr reported no Pi session identity"},
+			wantGets: 2, wantError: "Herdr reported no Pi session identity. Load the Herdr Pi integration and retry. Install it with 'herdr integration install pi' if needed"},
+		{name: "no reported session identity", override: legacyPiIdentityRule(3, legacyPiStartupPane, ""), wantGets: 3, wantError: "Herdr reported no Pi session identity. Load the Herdr Pi integration and retry. Install it with 'herdr integration install pi' if needed"},
 		{name: "valid continued liveness", wantGets: 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
