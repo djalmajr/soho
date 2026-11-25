@@ -2,6 +2,7 @@ package setup
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,5 +196,38 @@ func TestSetupProbeJavaScriptCases(t *testing.T) {
 		t.Run("// JS: \""+tc.name+"\"", func(t *testing.T) { // Mutation captured: changing probe classification, argv or validation alters the externally reported JSON status.
 			tc.run(t)
 		})
+	}
+}
+
+func TestSetupProbeOMPExplicit(t *testing.T) {
+	const model = "openai/gpt-5"
+	bin, cwd := t.TempDir(), t.TempDir()
+	argv := []string{"-p", "--no-session", "--no-tools", "--approval-mode", "always-ask", "--model", model, "--", ProbePrompt}
+	if _, err := fakecli.Install(t, bin, "omp", []fakecli.Rule{{Argv: argv, Stdout: "ok\n"}}); err != nil {
+		t.Fatal(err)
+	}
+	env := fakeEnv(t, bin)
+	for _, key := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "TMPDIR"} {
+		env[key] = t.TempDir()
+	}
+	old := platform.Stdout
+	var out bytes.Buffer
+	platform.Stdout = &out
+	t.Cleanup(func() { platform.Stdout = old })
+
+	CmdProbe(nil, &core.Config{}, env, cwd)
+	if strings.Contains(out.String(), `"kind": "omp"`) {
+		t.Fatalf("OMP was included in the all-kinds probe: %s", out.String())
+	}
+
+	out.Reset()
+	CmdProbe([]string{"--kind", "omp", "--model", model}, &core.Config{}, env, cwd)
+	var result struct{ Probes []Probe }
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil || len(result.Probes) != 1 || result.Probes[0] != (Probe{Kind: "omp", Model: model, Status: "ready", Source: "configured"}) {
+		t.Fatalf("OMP probe output = %s, parse error = %v", out.String(), err)
+	}
+	calls, err := fakecli.ReadCalls(filepath.Join(bin, "omp.calls.jsonl"))
+	if err != nil || len(calls) != 1 || strings.Join(calls[0].Argv, "\x00") != strings.Join(argv, "\x00") {
+		t.Fatalf("OMP calls = %#v, err=%v, want exactly one call with %q", calls, err, argv)
 	}
 }

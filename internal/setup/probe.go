@@ -75,6 +75,10 @@ func probeArgs(k, m string) []string {
 		return append(append([]string{"-p", "--no-session", ProbePrompt}, ma...), nil...)
 	case "opencode":
 		return append(append([]string{"run", ProbePrompt}, ma...), nil...)
+	case "omp":
+		approval, _ := kinds.OMPApprovalArgs("ask")
+		args := append([]string{"-p", "--no-session", "--no-tools"}, approval...)
+		return append(append(args, ma...), "--", ProbePrompt)
 	default:
 		return []string{ProbePrompt}
 	}
@@ -181,6 +185,10 @@ func CmdProbe(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		pairs = append(pairs, pair{kind, model, "configured"})
 	} else {
 		for _, k := range kinds.KnownKinds {
+			// OMP's provider probe requires an explicit kind selection.
+			if k == "omp" {
+				continue
+			}
 			pairs = append(pairs, pair{k, probeDefaultModel(ctx, k, env, cwd), "configured"})
 		}
 		for _, k := range []string{"pi", "opencode"} {

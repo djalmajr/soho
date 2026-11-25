@@ -8,7 +8,7 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 )
 
-var KnownKinds = []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode"}
+var KnownKinds = []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode", "omp"}
 var families = []string{"anthropic", "openai", "xai", "google", "alibaba"}
 
 func KindFamily(kind string) string {
@@ -27,7 +27,7 @@ func KindFamily(kind string) string {
 }
 
 func KindFamilyDisplay(kind string) string {
-	if kind == "agy" || kind == "cursor" || kind == "pi" || kind == "opencode" {
+	if kind == "agy" || kind == "cursor" || kind == "pi" || kind == "opencode" || kind == "omp" {
 		return "by model"
 	}
 	return KindFamily(kind)
@@ -86,7 +86,7 @@ func EffortRank(effort string) int {
 
 func KindEffortCeiling(kind string) string {
 	switch kind {
-	case "claude", "pi", "codex":
+	case "claude", "pi", "codex", "omp":
 		return "max"
 	case "cursor", "grok":
 		return "xhigh"
@@ -136,7 +136,7 @@ func KindEffortArgs(kind, effort, model string, env platform.Env, warn WarnFunc)
 			return []string{"--model", CursorModelWithEffort(model, effort, env, warn)}
 		}
 		warn("cursor ignores --effort without --model (pick an id from: cursor-agent --list-models)")
-	case "pi":
+	case "pi", "omp":
 		return []string{"--thinking", effort}
 	case "opencode":
 		warn(fmt.Sprintf("opencode TUI takes no effort flag (--variant is only in 'opencode run'); effort '%s' ignored", effort))
@@ -289,7 +289,7 @@ func KindModelArgs(kind, model, effort string, warn WarnFunc) []string {
 		warn = DefaultWarn
 	}
 	switch kind {
-	case "claude", "agy", "gemini", "grok", "cursor", "pi":
+	case "claude", "agy", "gemini", "grok", "cursor", "pi", "omp":
 		if kind == "cursor" && effort != "" {
 			return nil
 		}
@@ -319,7 +319,24 @@ func CodexApprovalOverrideFlag(args []string) string {
 	return ""
 }
 
+// OMPApprovalArgs maps the OMP modes with an explicit SoHo equivalent.
+func OMPApprovalArgs(mode string) ([]string, error) {
+	switch mode {
+	case "ask":
+		return []string{"--approval-mode", "always-ask"}, nil
+	case "edits":
+		return []string{"--approval-mode", "write"}, nil
+	case "full":
+		return []string{"--approval-mode", "yolo"}, nil
+	default:
+		return nil, fmt.Errorf("omp requires approvals ask, edits, or full")
+	}
+}
+
 func KindApprovalArgs(kind, mode string, warn WarnFunc) ([]string, error) {
+	if kind == "omp" {
+		return OMPApprovalArgs(mode)
+	}
 	if mode == "" || mode == "ask" {
 		return nil, nil
 	}
@@ -404,6 +421,8 @@ func KindSummary(kind string) string {
 		return "Same screen-reading family as agy. Use for design and visual checks when agy is not installed."
 	case "pi":
 		return "Generic multi-model harness (pi). Set a provider/model id in the config; effort via --thinking; it has no approval prompts."
+	case "omp":
+		return "Generic multi-model harness (omp) with explicit approval modes. Available for an explicit setup probe."
 	case "opencode":
 		return "Generic multi-model harness (opencode). Set a provider/model id in the config; its TUI maps no effort flag; unattended runs use --auto."
 	default:

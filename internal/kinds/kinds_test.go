@@ -109,7 +109,7 @@ func TestKindRules(t *testing.T) {
 		}
 	})
 	t.Run("KNOWN_KINDS exact set", func(t *testing.T) { // JS: "KNOWN_KINDS exact set and kind config values (copilot rejected)"
-		if !reflect.DeepEqual(KnownKinds, []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode"}) {
+		if !reflect.DeepEqual(KnownKinds, []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode", "omp"}) {
 			t.Fatal(KnownKinds)
 		}
 		env := platform.Env{}
@@ -430,5 +430,50 @@ func TestERERegExpKeepsInvertedLetterRangesInvalid(t *testing.T) {
 		if _, ok := ERERegExp(pattern); ok != valid {
 			t.Errorf("ERERegExp(%q) ok=%v, want %v", pattern, ok, valid)
 		}
+	}
+}
+
+func TestOMPKindPolicy(t *testing.T) {
+	const model = "proxy/gpt-5"
+	if KindExe("omp") != "omp" || KindFamilyDisplay("omp") != "by model" || KindEffortCeiling("omp") != "max" {
+		t.Fatal("unexpected OMP executable, family display or effort ceiling")
+	}
+	if AgentFamily("omp", model) != "openai" || AgentFamily("omp", "custom-grok-gateway/fictional") != "unknown" {
+		t.Fatal("OMP family inference did not follow model metadata")
+	}
+	env, _ := fakeEnv(t, nil)
+	resolved, err := ResolveModel("omp", model, "xhigh", env, nil)
+	if err != nil || resolved != model {
+		t.Fatalf("OMP model resolution = %q, %v", resolved, err)
+	}
+	if got := KindModelArgs("omp", resolved, "xhigh", nil); !reflect.DeepEqual(got, []string{"--model", model}) {
+		t.Fatalf("OMP model flags = %q", got)
+	}
+	if got := KindEffortArgs("omp", "xhigh", resolved, env, nil); !reflect.DeepEqual(got, []string{"--thinking", "xhigh"}) {
+		t.Fatalf("OMP effort flags = %q", got)
+	}
+	for mode, value := range map[string]string{"ask": "always-ask", "edits": "write", "full": "yolo"} {
+		for _, resolve := range []func(string) ([]string, error){
+			OMPApprovalArgs,
+			func(mode string) ([]string, error) { return KindApprovalArgs("omp", mode, nil) },
+		} {
+			got, err := resolve(mode)
+			if err != nil || !reflect.DeepEqual(got, []string{"--approval-mode", value}) {
+				t.Errorf("OMP approval %q = %q, %v", mode, got, err)
+			}
+		}
+	}
+	for _, mode := range []string{"", "auto", "unsandboxed", "yolo"} {
+		if args, err := OMPApprovalArgs(mode); err == nil || len(args) != 0 {
+			t.Errorf("unsupported OMP approval %q = %q, %v", mode, args, err)
+		}
+	}
+	for _, mode := range []string{"", "auto", "unsandboxed"} {
+		if args, err := KindApprovalArgs("omp", mode, nil); err == nil || len(args) != 0 {
+			t.Errorf("interactive OMP approval %q = %q, %v", mode, args, err)
+		}
+	}
+	if KindMcpOff("omp") {
+		t.Fatal("OMP advertised interactive MCP isolation")
 	}
 }

@@ -1,6 +1,8 @@
 # soho
 
-Give the calling agent an **omp-style team**: one CLI agent per role (`scouter`, `researcher`, `designer`, `implementer`, `tasker`, `tester`, `reviewer`, `security-reviewer`, `ui-reviewer`, `inspector`, `validator`, `documenter`) running in [Herdr](https://herdr.dev) panes. `planner` is the orchestrator itself (`spawn planner` exits 12 and opens no pane), and a nested orchestrator takes the `sub-orchestrator` role. The caller stays the orchestrator: it decomposes, writes briefs, dispatches, collects file-based reports, integrates, runs the gates, and owns git.
+Give the calling agent a **team of role-specific agents**: one CLI agent per role (`scouter`, `researcher`, `designer`, `implementer`, `tasker`, `tester`, `reviewer`, `security-reviewer`, `ui-reviewer`, `inspector`, `validator`, `documenter`) running in [Herdr](https://herdr.dev) panes. `planner` is the orchestrator itself (`spawn planner` exits 12 and opens no pane), and a nested orchestrator takes the `sub-orchestrator` role. The caller stays the orchestrator: it decomposes, writes briefs, dispatches, collects file-based reports, integrates, runs the gates, and owns git.
+
+Soho can detect the `omp` executable and run an explicitly selected headless probe. New interactive OMP spawn requires MCP policy admission. [OMP configuration and probe](../skills/soho/references/kinds.md#omp-configuration-and-probe)
 
 ## When to use
 

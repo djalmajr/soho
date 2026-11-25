@@ -271,3 +271,29 @@ func TestDetectRespectsConfiguredModelTimeout(t *testing.T) { // Mutation captur
 		t.Fatalf("explicit 10ms timeout was ignored; models=%v", got)
 	}
 }
+
+func TestSetupDetectOMP(t *testing.T) {
+	bin := t.TempDir()
+	if _, err := fakecli.Install(t, bin, "omp", nil); err != nil {
+		t.Fatal(err)
+	}
+	env := fakeEnv(t, bin)
+	for _, key := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "TMPDIR"} {
+		env[key] = t.TempDir()
+	}
+	doc := Detect(&core.Config{}, env, t.TempDir())
+	kinds, _ := doc.Get("kinds")
+	for _, raw := range kinds.([]any) {
+		row := raw.(*jsonjs.Object)
+		if kind, _ := row.Get("kind"); kind != "omp" {
+			continue
+		}
+		for k, want := range map[string]any{"executable": "omp", "installed": true, "family": "by model", "effort_ceiling": "max"} {
+			if got, _ := row.Get(k); got != want {
+				t.Errorf("OMP detect %s = %v, want %v", k, got, want)
+			}
+		}
+		return
+	}
+	t.Fatal("setup detection omitted OMP")
+}

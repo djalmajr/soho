@@ -202,7 +202,7 @@ func hasModelSource(kind string) bool {
 // ignores the 1-hour copy read (the copy is still rewritten on success);
 // fromCopy reports whether the returned list came from that copy.
 func modelIDs(kind string, env platform.Env, skipCopy bool) ([]string, bool, error) {
-	if kind == "pi" || kind == "opencode" {
+	if kind == "pi" || kind == "opencode" || kind == "omp" {
 		return nil, false, nil
 	}
 	file := ModelsCacheFile(kind, env)

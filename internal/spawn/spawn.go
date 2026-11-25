@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -976,6 +977,20 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 	return o
 }
 
+// The optional approval receipt follows the existing optional E2E port.
+const ompApprovalColumn = 17
+
+var ompModelRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/@+-]*$`)
+
+// The recorded launch option is required even for historical rows whose
+// approval and MCP labels happen to match the new request.
+func ompReuseVerified(line, approvals, approvalMode string) bool {
+	f := strings.Split(line, "\t")
+	return fieldAt(f, 2) == "omp" && fieldAt(f, 9) == approvals &&
+		fieldAt(f, 13) == "" && fieldAt(f, 15) == "inherit" &&
+		fieldAt(f, ompApprovalColumn) == approvalMode
+}
+
 func approvalsOk(value string) bool {
 	return value == "ask" || value == "edits" || value == "auto" || value == "full" || value == "unsandboxed"
 }
@@ -1108,14 +1123,17 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	core.CallerGate("spawn", ctx, env, cwd)
 	callerGatePhase = false
 	core.ResolveRole(o.role, env, cwd)
+	flagModel := o.model
+	res := core.ResolveRoleSettings(o.role, ctx, env, cwd, core.RoleFlags{Kind: o.kind, Model: o.model, Effort: o.effort, Approvals: o.approvals})
+	if res.Kind == "omp" && env.Get("SOHO_TRANSPORT") == "hc" {
+		core.DieFriction("spawn: kind omp does not report status under transport=hc; use transport=herdr", 2, "", "spawn")
+	}
 	if env.Get("SOHO_TRANSPORT") == "hc" {
 		// DJA-604 2b-2b: hc has no rename; the orchestrator keeps its
 		// terminal name and nothing else happens.
 		warnOnce("hc-no-rename", "spawn: transport=hc has no rename; the orchestrator keeps its terminal name", ctx, env, cwd, admissionOnly, warn)
 	}
-	flagModel := o.model
-	res := core.ResolveRoleSettings(o.role, ctx, env, cwd, core.RoleFlags{Kind: o.kind, Model: o.model, Effort: o.effort, Approvals: o.approvals})
-	deferRename := false
+	deferRename := res.Kind == "omp"
 	if res.Kind == "opencode" && env.Get("SOHO_TRANSPORT") != "hc" {
 		selector, err := core.OpenCodeTUIProfile(ctx, env)
 		if err != nil {
@@ -1182,6 +1200,29 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		core.DieFriction("spawn: invalid mcp '"+text.SanitizeCause(o.mcp)+"': "+detail, 2, "", "")
 	}
 	o.mcp = core.McpCanonical(o.mcp)
+	ompApproval := ""
+	if kind == "omp" {
+		if o.mcp != "inherit" || sources.mcp == "default" {
+			core.DieFriction("spawn: omp requires explicit MCP inherit; this launch cannot enforce none or a server list", 2, "", "spawn")
+		}
+		approvalArgs, err := kinds.OMPApprovalArgs(o.approvals)
+		if err != nil {
+			core.DieFriction("spawn: "+err.Error(), 2, "", "spawn")
+		}
+		ompApproval = strings.Join(approvalArgs, " ")
+		models := res.LaneModels
+		if len(models) == 0 {
+			models = []string{o.model}
+		}
+		for _, model := range models {
+			if !ompModelRef.MatchString(model) {
+				core.DieFriction("spawn: omp requires an exact provider/model ID", 2, "", "spawn")
+			}
+		}
+		if o.effort == "" {
+			core.DieFriction("spawn: omp requires an explicit effort (low|medium|high|xhigh|max)", 2, "", "spawn")
+		}
+	}
 	if o.timeout == "" {
 		o.timeout = core.Cfg(ctx, "spawn_timeout", "60000", env)
 	} else if ms, ok := core.ParseTimeoutMS(o.timeout); !ok {
@@ -1219,6 +1260,9 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	}
 	native, argsSource := configNativeArgsSource(kind, lane, o.role, ctx, env, cwd, nil)
 	sources.args = argsSource
+	if kind == "omp" && (native != "" || len(o.native) != 0) {
+		core.DieFriction("spawn: omp does not accept extra native args; set model, effort and approvals with Soho options", 2, "", "spawn")
+	}
 	request := newLaneReuseRequest(o, res, reuseDir, native, ctx, env, cwd)
 	modelSpec, modelChoice := modelForRequest(flagModel, res)
 	request.model, _ = kinds.ResolveModel(kind, modelSpec, o.effort, env, func(string) {})
@@ -1331,6 +1375,20 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	}
 	if len(res.LaneModels) == 0 {
 		selectOpenModel()
+	}
+	if kind == "omp" {
+		line := ""
+		name := reused
+		if plan.action == "reuse" {
+			line = plan.candidate.line
+			name = fieldAt(strings.Split(line, "\t"), 0)
+		}
+		if name != "" {
+			current := core.RosterLine(reuseDir, name)
+			if (line != "" && current != line) || !ompReuseVerified(current, o.approvals, ompApproval) {
+				core.DieFriction("spawn: omp worker has no matching verified launch approval and MCP record; release it or use --fresh", 2, "", "spawn")
+			}
+		}
 	}
 	if deferRename {
 		EnsureOrchestratorName(ctx, env, cwd, "spawn")
@@ -1644,8 +1702,11 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	// row's last field; reopen reads it and passes --mcp <value> to the
 	// respawn, so a worker keeps the MCP it was opened with.
 	row := []string{o.name, o.pane, kind, o.role, family, boolInt(created), o.cwd, core.NowStamp(platform.Now()), o.model, defaultValue(o.approvals, "auto"), o.role, lane, boolText(burst), native, o.effort, o.mcp}
-	if e2ePort != "" {
+	if e2ePort != "" || ompApproval != "" {
 		row = append(row, e2ePort)
+	}
+	if ompApproval != "" {
+		row = append(row, ompApproval)
 	}
 	core.RosterAppend(sd, row)
 	// A spawn that re-rosters a released pane (spawn --pane on it) retires
@@ -2676,10 +2737,9 @@ func freshSpawnArgs(o spawnOptions, lane, kind string, ctx *core.Config, env pla
 		warnOnce("grok-claude-hooks", kinds.GrokClaudeHooksWarningText, ctx, env, o.cwd, admissionOnly, warn)
 	}
 	var native string
-	if o.launchProfile.Name != "" {
-		// SOH-201 phase B: the configured native args were snapshotted with
-		// the early primary-profile validation; the fresh path reuses the
-		// snapshot instead of re-reading the configuration.
+	if o.launchProfile.Name != "" || kind == "omp" {
+		// The profile snapshots its native args. OMP admitted only empty
+		// native args. Neither path re-reads them after admission.
 		native = o.nativeArgsSnapshot
 	} else {
 		native = ConfigNativeArgs(kind, lane, o.role, ctx, env, cwd, func(key, own string) {
