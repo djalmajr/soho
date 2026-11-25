@@ -144,9 +144,16 @@ func isOMPStartupAnimation(screen string) bool {
 		return false
 	}
 	art := lines[:len(lines)-1]
-	left, right, ok := strings.Cut(lines[len(art)], " press ⏎ to skip ")
-	if !ok || strings.Trim(left, " ░") != "" || strings.Trim(right, " ░") != "" ||
-		!strings.ContainsRune(left, '░') || !strings.ContainsRune(right, '░') || !isOMPSetupSplash(art) {
+	footer := lines[len(art)]
+	// Linux renders the skip hint on its own line. macOS insets it in shading.
+	if footer != "press ⏎ to skip" {
+		left, right, ok := strings.Cut(footer, " press ⏎ to skip ")
+		if !ok || strings.Trim(left, " ░") != "" || strings.Trim(right, " ░") != "" ||
+			!strings.ContainsRune(left, '░') || !strings.ContainsRune(right, '░') {
+			return false
+		}
+	}
+	if !isOMPSetupSplash(art) {
 		return false
 	}
 	const beam = "████████████████████████"
@@ -196,14 +203,22 @@ func isOMPSetupWizard(screen string) bool {
 	case "↑/↓ select · ⏎ confirm · ⎋ skip · ⌃C exit setup":
 		return true
 	case "press ⏎ to skip":
-		return isOMPSetupSplash(lines[pickerStart+picker+1 : footer])
+		body := lines[pickerStart+picker+1 : footer]
+		// A partially cleared Linux overlay can leave the selected provider
+		// and ordinary provider rows visible above the artwork.
+		if len(body) > 0 && strings.HasPrefix(body[0], "│ ❯ ") && strings.HasSuffix(body[0], " █ │") {
+			body = body[1:]
+			for len(body) > 0 && strings.HasPrefix(body[0], "│   ") && strings.HasSuffix(body[0], " │ │") {
+				body = body[1:]
+			}
+		}
+		return isOMPSetupSplash(body)
 	default:
 		return false
 	}
 }
 
-// The observed Linux splash covers the picker rows with shaded blocks and
-// sparkles. Ordinary text between the picker and the skip footer breaks it.
+// isOMPSetupSplash recognizes artwork made of shaded blocks and sparkles.
 func isOMPSetupSplash(lines []string) bool {
 	var shading, sparkle bool
 	for _, line := range lines {

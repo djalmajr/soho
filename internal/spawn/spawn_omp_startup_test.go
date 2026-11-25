@@ -192,6 +192,104 @@ const ompComposerAfterStartupAnimation = `
 ╰─                           ⇧⇥ to change thinking effort
 `
 
+// ompLinuxFullStartupAnimation is a retained Linux Herdr 0.9.5 / OMP 19.2.0 capture.
+const ompLinuxFullStartupAnimation = `  ·
+                    ✦                       ·
+                                        ✦
+                         ·
+                       ·
+                ████████████████████████
+                ████████████████████████
+                      ████    ████
+                      ████    ████
+                      ████    ████
+                      ████    ████
+                      ▒▒▒▒    ████
+                      ▒▒▒▒    ████
+                              ████
+                              ████
+   ·    ·
+                                      ✦
+           ✦                        ·
+✧                       ░       ✧
+   ✦                 ░ ░
+                      ░    ░
+░                     ░░         ·
+░                     ░░
+░                    ░ ░  ░
+░ ·                   ░  ░                       ·
+░░                     ✦         ✦
+░░                     ·    ✦          ✦               ░░
+                                             ░ ░ ░░░░▒░░░
+                ✧     ✦              ░ ░░░░░▒▒▒▒▒▒▒▒▒▒▒░░
+   ✧✦               ·                ░▒▒░▓▓▓▓▓▓▓█▓▓█▓▓▒▒▒
+                       ✦            ░░▒▒▓█▓██████████▓█▓▒
+             ·             ✧       ░░░▓▓███████████████▓▒
+                                   ░░▒▓▓████████████████▓
+                             ✦      ░▒▓▓███████████████▓▓
+                                    ░░▓▓██████████████▓▓▒
+                                    ░░▒▓██████████████▓▓▒
+                                     ░▒▓▓████████████▓▓▓▒
+                     press ⏎ to skip
+`
+
+// ompLinuxWizardAfterStartupAnimation is a retained Linux Herdr 0.9.5 / OMP 19.2.0 capture.
+const ompLinuxWizardAfterStartupAnimation = `
+                      ████████████
+                         ██  ██
+                         ██  ██
+                         ▒▒  ██
+                             ██
+                           omp
+                    Setup step 1 of 6
+
+    Sign in to your providers
+    Sign in to one or more providers. Press ⎋ when you'r…
+
+    Pick a provider to sign in — you can connect more
+    than one.
+
+    ╭─ Select provider to login ────────────────────╮
+    │ ❯ ChatGPT Plus/Pro (Codex Subscription)     █ │
+    │   Anthropic (Claude Pro/Max)                │ │
+    │   Anthropic (Claude Pro/Max, 1-year token)  │ │
+    │   Z.AI (GLM Coding Plan)                    │ │
+    │   Z.AI (GLM Coding Plan · Sign in)          │ │
+    │   Kimi Code                                 │ │
+    │   OpenRouter                                │ │
+    │   GitHub Copilot                            │ │
+    │   Cursor (Claude, GPT, etc.)                │ │
+    │   Devin                                     │ │
+░░                     ·    ✦                          ░░
+░                                                 ░░ ░░░░
+ ░                                       ░  ░░░░░░░▒▒▒▒░░
+                    ·                ░░▒░▒▒▒▒▒▓▒▓▓▓▓▓▓▒▒▒
+                                    ░░▒▒▓▓▓▓▓▓▓▓██▓▓▓▓▓▒▒
+                    ✧      ✧       ░░░▒▒▓▓█████████████▓▒
+                                   ░░▒▓▓███████████████▓▒
+                                    ░▒▓▓███████████████▓▓
+                                   ░░░▓▓██████████████▓▓▒
+                                    ░░▓▓██████████████▓▓▒
+                                    ░░▓▓▓████████████▓▓▓▒
+                     press ⏎ to skip
+`
+
+// ompLinuxComposerAfterStartupAnimation is a retained Linux Herdr 0.9.5 / OMP 19.2.0 capture.
+const ompLinuxComposerAfterStartupAnimation = `
+             ████████████
+                ██  ██       ▄▀▀▄ █▀▄▀▄ █▀▀▄
+                ██  ██       ▀▄▄▀ █ █ █ █▄▄▀
+                ▒▒  ██                  █
+                    ██       v19.2.0
+
+  Tip: ` + "`" + `/force read` + "`" + ` pins the next turn to one specific
+  tool when the model keeps reaching for the wrong one
+
+
+ π > ◒ Delivery Canary > 🗑 …roject > ⑂ master ▶─╎─┃──32K─
+╰─                           ⇧⇥ to change thinking effort
+`
+
 func ompStartupRecord(pane, terminal, session string) string {
 	return fmt.Sprintf(`{"result":{"agent":{"name":"worker","agent":"omp","pane_id":%q,"terminal_id":%q,"agent_status":"idle","state_change_seq":1,"interactive_ready":true,"agent_session":{"agent":"omp","kind":"path","source":"herdr:omp","value":%q}}}}`, pane, terminal, session)
 }
@@ -322,6 +420,14 @@ func TestSpawnOMPStartupAnimation(t *testing.T) {
 	}{
 		{name: "splash then wizard", first: ompFullStartupAnimation, next: []string{ompWizardScreen}, code: 7},
 		{name: "splash then composer", first: ompFullStartupAnimation, next: []string{ompComposerAfterStartupAnimation}},
+		{name: "Linux splash then wizard", first: ompLinuxFullStartupAnimation, next: []string{ompLinuxWizardAfterStartupAnimation}, code: 7},
+		{name: "Linux splash then composer", first: ompLinuxFullStartupAnimation, next: []string{ompLinuxComposerAfterStartupAnimation}},
+		{name: "Linux splash then unrelated picker body then composer", first: ompLinuxFullStartupAnimation, next: []string{
+			strings.Replace(ompLinuxWizardAfterStartupAnimation, "│   ", "ordinary output ", 1),
+			ompLinuxComposerAfterStartupAnimation,
+		}},
+		{name: "Linux standalone footer without logo", first: "✧·\n░▒▓█\n✦░\n·░\npress ⏎ to skip\n"},
+		{name: "Linux arbitrary Enter wording with logo", first: strings.Replace(ompLinuxFullStartupAnimation, "press ⏎ to skip", "press Enter to continue", 1)},
 		{name: "splash then unrelated then composer", first: ompFullStartupAnimation, next: []string{unrelated, ompComposerAfterStartupAnimation}},
 		{name: "persistent splash", first: ompFullStartupAnimation, persistent: true, code: 4},
 		{name: "changed identity before reread", first: ompFullStartupAnimation, next: []string{ompWizardScreen}, replaced: true, code: 4},
@@ -354,7 +460,7 @@ func TestSpawnOMPStartupAnimation(t *testing.T) {
 				if !spawnJSONHasField(t, line, `"status": "blocked_at_startup"`) ||
 					!spawnJSONHasField(t, line, `"reason": "setup-required"`) ||
 					!spawnJSONHasField(t, line, `"source": "visible"`) ||
-					screen != ompWizardScreen || !strings.Contains(stderr, "complete OMP setup") {
+					screen != tc.next[len(tc.next)-1] || !strings.Contains(stderr, "complete OMP setup") {
 					t.Fatalf("wrong wizard outcome: stdout=%q stderr=%q", out, stderr)
 				}
 			case 4:
