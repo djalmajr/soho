@@ -3,11 +3,13 @@ package setup
 import (
 	"errors"
 	"fmt"
-	"github.com/djalmajr/soho/internal/core"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/djalmajr/soho/internal/core"
 )
 
 func TestAudit542SetupKeepsExternalRoleLink(t *testing.T) {
@@ -99,6 +101,56 @@ func TestAudit542MigrationKeepsUnsupportedLink(t *testing.T) {
 	}
 	if _, err := os.Lstat(dst); !os.IsNotExist(err) {
 		t.Fatalf("unsupported link created destination: %v", err)
+	}
+}
+
+// A failed exclude write after the roles moved must be repairable by a
+// later run: the exclude step is idempotent and does not need the old dir.
+func TestRolesExcludeRetryAfterPermissionRepair(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("Unix permission bits with a non-root user are required")
+	}
+	root, env, ctx := codexSetupFixture(t)
+	old := filepath.Join(root, ".agents", "herdr-roles")
+	next := filepath.Join(root, ".agents", "soho-roles")
+	mustWriteFile(t, filepath.Join(old, "reviewer.md"), "review rules\n")
+	info := filepath.Join(commonGitDir(root, env), "info")
+	if err := os.MkdirAll(info, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exclude := filepath.Join(info, "exclude")
+	mustWriteFile(t, exclude, "/.agents/herdr-roles/\n")
+	if err := os.Chmod(info, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(info, 0o755) })
+
+	// First real command: the role moves, but the exclude write is refused.
+	code, out, msg := runSetupWrite([]string{"--roles"}, ctx, env, root)
+	if code != 0 || !strings.Contains(out, "migrate: moved ") || !strings.Contains(out, "migrate: kept "+exclude+":") {
+		t.Fatalf("first setup --roles: code=%d out=%s stderr=%s", code, out, msg)
+	}
+	if _, err := os.Lstat(old); !os.IsNotExist(err) {
+		t.Fatalf("former role directory still present: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(next, "reviewer.md")); err != nil {
+		t.Fatalf("migrated role missing: %v", err)
+	}
+	if data := mustReadFile(t, exclude); strings.Contains(data, "/.agents/soho-roles/\n") {
+		t.Fatalf("exclude changed during the refusal: %q", data)
+	}
+
+	// Repair permissions and run the real command again: with the former
+	// directory gone, the consumer must retry the idempotent exclude rule.
+	if err := os.Chmod(info, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, out, msg = runSetupWrite([]string{"--roles"}, ctx, env, root)
+	if code != 0 || !strings.Contains(out, "migrate: added /.agents/soho-roles/") {
+		t.Fatalf("second setup --roles: code=%d out=%s stderr=%s", code, out, msg)
+	}
+	if data := mustReadFile(t, exclude); !strings.Contains(data, "/.agents/soho-roles/\n") {
+		t.Fatalf("exclude=%q", data)
 	}
 }
 

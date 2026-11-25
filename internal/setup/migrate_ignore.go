@@ -37,9 +37,13 @@ func migrateIgnoreRule(root string, env platform.Env, dry bool) []string {
 	if confAlreadyIgnored(root, env) {
 		return nil
 	}
-	for _, file := range []string{filepath.Join(root, ".gitignore"), excludePath(root, env)} {
+	exclude := excludePath(root, env)
+	for _, file := range []string{filepath.Join(root, ".gitignore"), exclude} {
 		if file == "" || !lstatExists(file) {
 			continue
+		}
+		if file == exclude {
+			return migrateIgnoreExclude(root, env, dry, file)
 		}
 		// Raw bytes, not ReadTextFile: its CRLF-to-LF normalization would
 		// change the endings of the lines this step leaves untouched.
@@ -60,6 +64,42 @@ func migrateIgnoreRule(root string, env platform.Env, dry bool) []string {
 		return []string{fmt.Sprintf("migrate: added %s to %s", rule, file)}
 	}
 	return nil
+}
+
+func migrateIgnoreExclude(root string, env platform.Env, dry bool, file string) []string {
+	var result []string
+	if reason := lockedCommonExclude(root, env, "setup", dry, func(locked string) string {
+		info, err := os.Lstat(locked)
+		if os.IsNotExist(err) {
+			return ""
+		}
+		if err != nil || !info.Mode().IsRegular() {
+			result = []string{fmt.Sprintf("migrate: kept %s: not a readable regular exclude file", locked)}
+			return ""
+		}
+		data, err := os.ReadFile(locked)
+		if err != nil {
+			result = []string{fmt.Sprintf("migrate: kept %s: %v", locked, err)}
+			return ""
+		}
+		updated, rule, found := insertSohoConfRule(string(data))
+		if !found {
+			return ""
+		}
+		if dry {
+			result = []string{fmt.Sprintf("migrate: would add %s to %s", rule, locked)}
+			return ""
+		}
+		if err := writeSharedExclude(locked, string(data), updated, false); err != nil {
+			result = []string{fmt.Sprintf("migrate: kept %s: %v", locked, err)}
+			return ""
+		}
+		result = []string{fmt.Sprintf("migrate: added %s to %s", rule, locked)}
+		return ""
+	}); reason != "" {
+		return []string{"migrate: kept the exclude: " + reason}
+	}
+	return result
 }
 
 // insideGitRepo reports whether root is inside a git repository, through

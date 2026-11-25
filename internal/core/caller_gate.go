@@ -97,6 +97,18 @@ const callerGateFix = " Run soho from the pane that hosts this agent (a Claude C
 // roster line, event, delivery or message, nor changes a pane or a state
 // that already existed.
 func CallerGate(command string, ctx *Config, env platform.Env, cwd string) {
+	callerGateWithState(command, ctx, env, cwd, false)
+}
+
+// CallerGateLocal is CallerGate for local init: a mismatch emits the same
+// diagnostic and keeps the same status, but never resolves state, creates a
+// directory or opens a file-backed friction sink. Admission and the local
+// exclude happen after this gate in the init handler.
+func CallerGateLocal(command string, ctx *Config, env platform.Env, cwd string) {
+	callerGateWithState(command, ctx, env, cwd, true)
+}
+
+func callerGateWithState(command string, ctx *Config, env platform.Env, cwd string, readOnlyState bool) {
 	if ctx == nil {
 		ctx = &Config{}
 	}
@@ -127,7 +139,7 @@ func CallerGate(command string, ctx *Config, env platform.Env, cwd string) {
 		fix = " For intentional nested codex exec, caller_check=warn is available."
 	}
 	logFile := ""
-	if !callerGateStateless(ctx, env, cwd) {
+	if !readOnlyState && !callerGateStateless(ctx, env, cwd) {
 		logFile = filepath.Join(StateDirPath(ctx, env, cwd), "friction.log")
 		// Only the directory that holds the log: no roster, no other file.
 		_ = os.MkdirAll(filepath.Dir(logFile), 0o777)

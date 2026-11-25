@@ -582,8 +582,12 @@ func excludeRedirect(root string, env platform.Env) string {
 }
 
 func insideWorkTree(root string, env platform.Env) bool {
-	_, ok := gitOutput(env, root, "rev-parse", "--is-inside-work-tree")
-	return ok
+	out, ok := gitOutput(env, root, "rev-parse", "--is-inside-work-tree")
+	return ok && strings.EqualFold(strings.TrimSpace(out), "true")
+}
+
+func explicitGitLayout(env platform.Env) bool {
+	return env.Get("GIT_DIR") != "" || env.Get("GIT_WORK_TREE") != ""
 }
 
 func checkedExcludeStatus(root, rel string, env platform.Env) (int, bool) {
@@ -591,7 +595,7 @@ func checkedExcludeStatus(root, rel string, env platform.Env) (int, bool) {
 	if !ok {
 		return -1, false
 	}
-	cmd := exec.Command(git, "-C", root, "check-ignore", "-q", rel)
+	cmd := exec.Command(git, "-C", root, "check-ignore", "-q", "--", rel)
 	cmd.Env = env.List()
 	err := cmd.Run()
 	if err == nil {
@@ -612,6 +616,10 @@ func excludeAfter(current string, entries []string) (string, []string) {
 	for _, line := range strings.Split(current, "\n") {
 		have[strings.TrimSuffix(line, "\r")] = true
 	}
+	ending := "\n"
+	if strings.Contains(current, "\r\n") {
+		ending = "\r\n"
+	}
 	added := []string{}
 	out := current
 	for _, entry := range entries {
@@ -619,9 +627,9 @@ func excludeAfter(current string, entries []string) (string, []string) {
 			continue
 		}
 		if out != "" && !strings.HasSuffix(out, "\n") {
-			out += "\n"
+			out += ending
 		}
-		out += entry + "\n"
+		out += entry + ending
 		have[entry] = true
 		added = append(added, entry)
 	}
@@ -637,6 +645,10 @@ type localExcludePlan struct {
 // permission check before it only sees the mode bits, which on Windows do not
 // show the ACL, so the second preflight pass still needs this write.
 var createExcludeProbe = os.CreateTemp
+
+// excludeLockAcquired observes a successful common-exclude lock acquisition.
+// It exists so a contention fixture can prove the lock is actually taken.
+var excludeLockAcquired = func() {}
 
 func preflightLocalExcludes(root string, rels []string, env platform.Env, cmdName string, active, postMigration bool) *localExcludePlan {
 	assertSafeLocalRels(rels, cmdName, postMigration)
@@ -658,10 +670,13 @@ func preflightLocalExcludes(root string, rels []string, env platform.Env, cmdNam
 	if len(needed) == 0 {
 		return &localExcludePlan{path: excl}
 	}
-	current, err := platform.ReadTextFile(excl)
+	// Exact bytes: DecodeText/ReadTextFile would normalize CRLF and invalid
+	// UTF-8, so the in-place writer would see a mismatch against the inode.
+	raw, err := os.ReadFile(excl)
 	if os.IsNotExist(err) {
-		current, err = "", nil
+		raw, err = nil, nil
 	}
+	current := string(raw)
 	if err != nil {
 		platform.DieFriction(fmt.Sprintf("%s: cannot read the git exclude file at %s (file left untouched)", cmdName, excl), 4)
 	}
@@ -708,21 +723,121 @@ func setupTargetPath(root, target string) string {
 }
 
 func ensureLocalExcludes(root string, rels []string, env platform.Env, cmdName string) (string, []string) {
-	pre := preflightLocalExcludes(root, rels, env, cmdName, true, true)
+	// The optimistic pass is read-only: the existing setup probe-count gate
+	// admits exactly one active probe, taken inside the lock below.
+	pre := preflightLocalExcludes(root, rels, env, cmdName, false, true)
 	if pre == nil {
 		return "", nil
 	}
-	added := missingExcludeEntries(pre.before, pre.needed)
-	if len(added) == 0 {
-		return pre.path, nil
+	if len(missingExcludeEntries(pre.before, pre.needed)) == 0 {
+		return pre.path, nil // already ignored: keep the no-write plan pure
 	}
-	if err := os.MkdirAll(filepath.Dir(pre.path), 0o755); err != nil {
-		platform.DieFriction(fmt.Sprintf("%s: could not write local excludes to %s (file left untouched)", cmdName, pre.path), 4)
+	var resultPath string
+	var added []string
+	if reason := lockedCommonExclude(root, env, cmdName, false, func(file string) string {
+		current := preflightLocalExcludes(root, rels, env, cmdName, true, true)
+		if current == nil {
+			return ""
+		}
+		resultPath = current.path
+		added = missingExcludeEntries(current.before, current.needed)
+		if len(added) == 0 {
+			return ""
+		}
+		if err := writeSharedExclude(current.path, current.before, current.after, true); err != nil {
+			return fmt.Sprintf("%s: could not update local excludes at %s: %v (verify the file)", cmdName, current.path, err)
+		}
+		return ""
+	}); reason != "" {
+		platform.DieFriction(reason, 4)
 	}
-	if err := platform.AtomicWrite(pre.path, pre.after); err != nil {
-		platform.DieFriction(fmt.Sprintf("%s: could not write local excludes to %s (file left untouched)", cmdName, pre.path), 4)
+	return resultPath, added
+}
+
+// lockedCommonExclude serializes one read/modify/replace of the common Git
+// exclude for setup, init and migrations. The lock lives in the validated
+// common Git metadata, so a repository with no info directory still has a
+// parent, and every alias or linked worktree contends on the same file.
+// The callback runs after a fresh redirect check and under the held lock.
+func lockedCommonExclude(root string, env platform.Env, cmdName string, dry bool, fn func(file string) string) string {
+	file := excludePath(root, env)
+	if file == "" {
+		return fmt.Sprintf("%s: cannot resolve the git exclude file under %s; local excludes are unwritable (file left untouched)", cmdName, root)
 	}
-	return pre.path, added
+	if reason := excludeRedirect(root, env); reason != "" {
+		return reason
+	}
+	if dry {
+		return fn(file)
+	}
+	// Create an absent validated metadata parent before taking the lock. A
+	// shared repo may allow writes only in the existing info directory, so
+	// the lock itself lives there, not in the common metadata root.
+	parent := filepath.Dir(file)
+	if info, err := os.Lstat(parent); os.IsNotExist(err) {
+		if err := os.MkdirAll(parent, 0o755); err != nil {
+			return fmt.Sprintf("%s: could not create the git metadata directory at %s (%v; file left untouched)", cmdName, parent, err)
+		}
+	} else if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Sprintf("%s: the git metadata directory at %s is not a real directory (file left untouched)", cmdName, parent)
+	}
+	lockDir := excludeLockDir(root, env)
+	if lockDir == "" {
+		return fmt.Sprintf("%s: cannot resolve the common git dir for %s (file left untouched)", cmdName, file)
+	}
+	// All shared writers contend on the validated info directory itself; a
+	// process-held lock releases on death and needs no lock inode or chown.
+	unlock, err := core.LockSharedPath(sharedLockTarget(lockDir), "git exclude", 0o600)
+	if err != nil {
+		return fmt.Sprintf("%s: could not lock the git exclude file at %s (%v; file left untouched)", cmdName, file, err)
+	}
+	defer unlock()
+	if reason := excludeRedirect(root, env); reason != "" {
+		return reason
+	}
+	excludeLockAcquired()
+	return fn(file)
+}
+
+// excludeLockDir is the process-held lock identity of one common exclude:
+// the validated info directory itself. Linked worktrees resolve the same
+// common directory, so every writer serializes on one OS lock.
+func excludeLockDir(root string, env platform.Env) string {
+	file := excludePath(root, env)
+	if file == "" {
+		return ""
+	}
+	parent := filepath.Dir(file)
+	common := commonGitDir(root, env)
+	if common == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(common, parent)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return ""
+	}
+	if info, err := os.Lstat(parent); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return ""
+	}
+	return parent
+}
+
+// sharedExcludeLockPerm follows the validated parent's real write access
+// class: group read/write for a group-writable parent (whose group is then
+// applied to the published inode), world read/write only when that is the
+// parent's granting class, and private 0o600 otherwise.
+func sharedExcludeLockPerm(path string) os.FileMode {
+	perm := os.FileMode(0o600)
+	if info, err := os.Stat(filepath.Dir(path)); err == nil {
+		mode := info.Mode().Perm()
+		switch {
+		case mode&0o002 != 0:
+			perm = 0o666
+		case mode&0o020 != 0:
+			perm = 0o660
+		}
+	}
+	return perm
 }
 
 func missingExcludeEntries(current string, entries []string) []string {
@@ -831,6 +946,51 @@ func warnTrackedCanonical(root, file string, env platform.Env, before, after *st
 			fmt.Fprintf(platform.Stdout, "%s is tracked; make this change on a work branch and open a PR\n", file)
 		}
 	}
+}
+
+// LocalStateSetupInEffect reports whether this project resolves to local
+// setup: an explicit local target or the established implicit local setup.
+func LocalStateSetupInEffect(root string, ctx *core.Config, env platform.Env) bool {
+	return core.Cfg(ctx, "setup_target", "canonical", env) == "local" || ImplicitLocalSetupInEffect(root, ctx, env)
+}
+
+// EnsureLocalStateExclude hides the current state path through the common git
+// dir's info/exclude when local setup is in effect, reusing setup's safe
+// exclusion handling. It reports whether local mode applied; a non-repo,
+// external or unsafe state path keeps its existing behavior and writes nothing.
+func EnsureLocalStateExclude(root string, ctx *core.Config, env platform.Env, cwd, cmdName string) bool {
+	if !LocalStateSetupInEffect(root, ctx, env) {
+		return false
+	}
+	state := classifyLocalState(root, ctx, env, cwd)
+	if state.kind != "inside" && state.kind != "sibling" {
+		// A work-tree root or an in-repo symlink cannot be named in the
+		// exclude file. Refuse with setup's own diagnostic in local init
+		// instead of letting the legacy StateRoot append .gitignore.
+		if state.kind == "root" || state.kind == "symlink" {
+			refuseUnignorableStateDir(root, ctx, env, cwd, cmdName, false)
+		}
+		return false
+	}
+	// A sibling state checkout supplies its own ignore rules. The exclude
+	// file itself still comes from the shared Git common directory.
+	checkRoot := root
+	if state.kind == "sibling" && state.worktree != "" {
+		checkRoot = state.worktree
+	}
+	if !insideWorkTree(checkRoot, env) {
+		if hasGitMetadata(checkRoot) || explicitGitLayout(env) {
+			platform.DieFriction(fmt.Sprintf("%s: could not verify the Git work tree at %s before creating local state (no files were changed)", cmdName, checkRoot), 4)
+		}
+		// No applicable worktree: there is no exclusion to make or verify.
+		return true
+	}
+	ensureLocalExcludes(checkRoot, []string{state.rel}, env, cmdName)
+	// A trailing slash makes Git apply directory rules before the state exists.
+	if status, ok := checkedExcludeStatus(checkRoot, state.rel+"/", env); !ok || status != 0 {
+		platform.DieFriction(fmt.Sprintf("%s: refusing to create local state at '%s' because git still reports it unignored after updating the exclude file (a tracked negation or failed git check overrides the exclude; %s; remove the negation or move SOHO_DIR outside the work tree)", cmdName, state.shown, changedNote(true)), 4)
+	}
+	return true
 }
 
 // ImplicitLocalSetupInEffect reports whether plain setup in this repository

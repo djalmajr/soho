@@ -122,15 +122,31 @@ func CmdInit(ctx *core.Config, env platform.Env, cwd string) {
 		return
 	}
 	herdr.RequireEnv(env, platform.Current(), os.Getpid(), nil)
-	// The caller-pane check runs before naming the caller's agent and
-	// titling the claimed pane (DJA-394).
-	core.CallerGate("init", ctx, env, cwd)
 	// Refuse before DoctorCheck: the state check would create the state dir
 	// inside the skill before the refusal. Decided with StateInSkill/
 	// StateRootPath, so the refusal itself has no side effect.
 	if skill := core.StateInSkill(ctx, env, cwd); skill != "" {
 		platform.Die(fmt.Sprintf("the state dir '%s' would be inside the soho skill ('%s'); run soho from the project's directory (nothing was written)", core.StateRootPath(ctx, env, cwd), skill), 2)
 	}
+	localInit := setupcmd.LocalStateSetupInEffect(platform.StateProjectRoot(env, cwd), ctx, env)
+	if localInit {
+		// The shared pure admission check refuses a pending setup migration
+		// before any local exclude or state write, with the ordinary message.
+		if message := core.FormerStateRefusal(ctx, env, cwd); message != "" {
+			platform.Die(message, 2)
+		}
+	}
+	// The caller-pane check runs before naming the caller's agent and
+	// titling the claimed pane (DJA-394).
+	if localInit {
+		core.CallerGateLocal("init", ctx, env, cwd)
+	} else {
+		core.CallerGate("init", ctx, env, cwd)
+	}
+	// Caller and state-in-skill refusals above run before any write. In local
+	// mode, hide the state path through the common git dir here so the doctor
+	// state check can initialize state without touching the tracked .gitignore.
+	setupcmd.EnsureLocalStateExclude(platform.StateProjectRoot(env, cwd), ctx, env, cwd, "init")
 	oldOut := platform.Stdout
 	platform.Stdout = platform.Stderr
 	// Init shares the diagnostic but must not add a Pi subprocess.

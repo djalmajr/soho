@@ -15,6 +15,7 @@ import (
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/sessionmeta"
+	setupcmd "github.com/djalmajr/soho/internal/setup"
 	"github.com/djalmajr/soho/internal/transport"
 )
 
@@ -357,6 +358,10 @@ func cmdInitHc(ctx *core.Config, env platform.Env, cwd string) {
 	if err := sessionmeta.ValidateRecord(record); err != nil {
 		platform.Die("init: the orchestrator record could not be registered: "+err.Error(), 2)
 	}
+	// Native Core init validates the caller, root, roster and record above.
+	// Only now hide a local state path through the common git dir; state
+	// registration keeps its existing ordering.
+	setupcmd.EnsureLocalStateExclude(root, ctx, env, cwd, "init")
 	if err := core.EnsureSessionStateDirectory(stateBase, session); err != nil {
 		platform.Die("init: the session state could not be initialized: "+err.Error(), 2)
 	}
