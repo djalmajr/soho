@@ -12,7 +12,8 @@ func TestCommandHelpFirstPositionOnly(t *testing.T) {
 		"                      [--ratio F] [--cwd DIR] [--pane ID] [--timeout MS]\n" +
 		"                      [--effort low|medium|high|xhigh|max] [--model M]\n" +
 		"                      [--approvals ask|edits|auto|full|unsandboxed] [--mcp inherit|none|a,b] [--reuse|--fresh]\n" +
-		"                      [--env-from NAME]... [--tab-label TEXT] [--force] [-- <native agent args>]\n" +
+		"                      [--env-from NAME]... [--env-drop NAME]... [--tab-label TEXT] [--force] [-- <native agent args>]\n" +
+		"    --env-drop NAME  Remove a named variable at initial exec after the login profile. Requires --fresh on native Core (macOS/Linux), up to 16 names. This is separate from MCP selection and leaves filesystem and network access in place.\n" +
 		"    --env-from NAME  Copy an explicit executor variable to a fresh native HC Pi child (repeatable; maximum 16 distinct names). Spawn backend diagnostics and printed spawn metadata replace exact handed-off values with [redacted:NAME] (minimum 4 bytes). Split, URL-encoded and base64 forms are not protected. Core admission and pressure warnings are not filtered, and the terminal address is stored in the roster as the backend returned it. Core retains overrides; this is not a vault; forward NONSECRET metadata, never API keys.\n" +
 		"                                             # prints its result as one JSON line on stdout (spawn … | tail -1 returns the whole object)\n"
 	for _, flag := range []string{"--help", "-h"} {
@@ -23,6 +24,23 @@ func TestCommandHelpFirstPositionOnly(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("dispatch --help prints the legacy compaction scope", func(t *testing.T) {
+		const want = "                                             # --compact compacts an idle worker (claude, codex, pi, opencode, omp) on legacy Herdr before the brief. Core refuses --compact (exit 2). A timeout (9) or busy worker (10) leaves the brief unsent."
+		code, out, errOut := runIn(t, []string{"dispatch", "--help"}, env, cwd)
+		if code != 0 || strings.Count(out, "\n"+want+"\n") != 1 || errOut != "" {
+			t.Fatalf("code=%d out=%q err=%q; want the dispatch compaction help line", code, out, errOut)
+		}
+	})
+
+	t.Run("compact --help", func(t *testing.T) {
+		const want = "  soho compact <agent> [--timeout MS]\n" +
+			"                                             # on legacy Herdr, send /compact once to an idle worker (claude, codex, pi, opencode, omp) and wait for the CLI's proof and an idle or done state from the named target. Core refuses this command (exit 2). An unverified kind exits 2. A timeout exits 9 (status timeout JSON).\n"
+		code, out, errOut := runIn(t, []string{"compact", "--help"}, env, cwd)
+		if code != 0 || out != want || errOut != "" {
+			t.Fatalf("code=%d out=%q err=%q; want the compact usage lines on stdout", code, out, errOut)
+		}
+	})
 
 	t.Run("feedback --help", func(t *testing.T) {
 		const want = "  soho feedback send <report.md> \"<one-line summary>\"\n" +
