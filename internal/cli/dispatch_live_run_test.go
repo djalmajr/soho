@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -356,6 +357,15 @@ func TestDispatchLiveRunReviewDeliveryBoundary(t *testing.T) {
 			}...))
 			dispatchCeilingMargin = tc.margin
 			f.env["SOHO_PROMPT_CHECK_SECONDS"] = "1"
+			timelyRefusal := tc.name == "codex-amend-fast-error"
+			if timelyRefusal {
+				// This case proves advisory order and a timely refusal. Keep
+				// real room for the guard probes and send under the race detector.
+				f.env["SOHO_PROMPT_CHECK_SECONDS"] = "10"
+				now, oldClock := time.Now(), dispatchCeilingNow
+				dispatchCeilingNow = func() time.Time { return now }
+				t.Cleanup(func() { dispatchCeilingNow = oldClock })
+			}
 			setLiveRunWorkerCwd(t, f)
 			setLiveRunWorkerKind(t, f, tc.kind)
 			code, out, stderr := f.run(t, "worker", f.brief, tc.flag, "--no-wait")
@@ -367,6 +377,23 @@ func TestDispatchLiveRunReviewDeliveryBoundary(t *testing.T) {
 			}
 			if !strings.Contains(out, `"wait_status":"`+tc.wantStatus+`"`) {
 				t.Errorf("want %s JSON, got %s", tc.wantStatus, out)
+			}
+			if timelyRefusal {
+				const busy = "worker worker is still working; amendment was not sent. Wait for it to settle, then dispatch again without --amend"
+				var result struct {
+					Status string `json:"wait_status"`
+					Raw    string `json:"raw"`
+				}
+				if err := json.Unmarshal([]byte(out), &result); err != nil || result.Status != "error" || result.Raw != busy || !strings.Contains(stderr, busy) {
+					t.Errorf("want the guarded Codex busy refusal, out=%q stderr=%q parse=%v", out, stderr, err)
+				}
+				sends := hcSends(calls)
+				if len(sends) != 1 || len(sends[0].Argv) < len(guarded.Argv) || !slices.Equal(sends[0].Argv[:len(guarded.Argv)], guarded.Argv) {
+					t.Errorf("want one send with guarded prefix %q, got %#v", guarded.Argv, sends)
+				}
+				if _, err := os.Lstat(filepath.Join(f.sd, "wait", "worker.submit-failed")); !os.IsNotExist(err) {
+					t.Errorf("submit-failed marker written for a refused amendment: %v", err)
+				}
 			}
 			if tc.wantCode == 4 && tc.kind == "codex" {
 				if after := mustRead(t, pointer); after != string(prior) {
