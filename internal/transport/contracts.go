@@ -299,6 +299,11 @@ type Start struct {
 	// EnvOverrides. Empty adds nothing. The herdr backend ignores both.
 	RegistryDir string
 	Agent       string
+
+	// EnvDrop removes named entries at the native macOS or Linux worker's
+	// final exec, after any login shell profile. Empty keeps the normal
+	// launch. The legacy Herdr backend ignores it.
+	EnvDrop []string
 }
 
 // StartupDialogAction directs readiness polling after a dialog observation.
