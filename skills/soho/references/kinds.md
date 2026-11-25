@@ -28,6 +28,21 @@ Soho checks whether Grok may run configured Claude hooks and treats an absent co
 
 Where supported, `mcp: none` disables MCP servers. Access to the shell, files, network and credentials follows the executor's permissions. Use a restricted execution environment when a task requires isolation.
 
+## Session-end events
+
+`soho release --close` closes terminals created by SoHo through the active transport. It has no per-kind graceful shutdown step or hook receipt. A terminal closure is evidence that the terminal ended. To verify an end-of-session hook, check its own receipt before relying on any handoff, cleanup, or memory work it triggers. Hook configuration, trust, and timeouts follow the assistant CLI.
+
+| Kind | Upstream event and normal-exit behavior | Evidence from `soho release --close` |
+|---|---|---|
+| `claude` | `SessionEnd` supports normal exit and other session changes, with a bounded hook budget. [Claude Code hooks](https://code.claude.com/docs/en/hooks#sessionend) | Hook delivery is unverified. |
+| `codex` | `SessionEnd` runs synchronously for the main thread on normal close in versions that support it. [Codex hooks](https://learn.chatgpt.com/docs/hooks#sessionend) | Hook delivery is unverified. |
+| `grok` | `SessionEnd` runs during normal teardown, subject to the hook timeout. [Grok hooks](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md) | Hook delivery is unverified. |
+| `agy` | Normal CLI exit delivery is unverified. [Antigravity hook events](https://antigravity.google/docs/hooks) | Hook delivery is unverified. |
+| `gemini` | `SessionEnd` can fire on CLI exit or session clear. The hook is best-effort. [Gemini CLI hook reference](https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md#sessionend) | Hook delivery is unverified. |
+| `cursor` | The CLI documents `sessionEnd` support and an interactive exit key. Delivery on exit is version-dependent and unverified here. [Cursor CLI hooks](https://prod.cursor.com/changelog/cli-jan-16-2026), [Cursor CLI controls](https://cursor.com/docs/cli/using) | Hook delivery is unverified. |
+| `pi` | Extensions receive `session_shutdown` before a started runtime is torn down. [Pi extension lifecycle](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md#session_shutdown) | Hook delivery is unverified. |
+| `opencode` | Normal CLI exit delivery of a per-session teardown event is unverified. The plugin event catalog documents session and server lifecycle separately. [OpenCode event catalog](https://opencode.ai/docs/api) | Hook delivery is unverified. |
+
 ## Approvals per assistant
 
 `soho spawn --approvals <mode>` (or `approvals`, `role.<role>.approvals`, `lane.<lane>.approvals`) takes `ask`, `edits`, `auto`, `full` or `unsandboxed`, in that order of increasing trust. Each cell is what spawn passes to the assistant's CLI, arguments joined by spaces, or the warning spawn prints; `no flags` means the CLI's own default, and for `pi` it means its tools run without prompts.
