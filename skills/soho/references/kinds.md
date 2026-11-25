@@ -31,7 +31,7 @@ Where supported, `mcp: none` disables MCP servers. Access to the shell, files, n
 
 ## Session-end events
 
-`soho release --close` closes terminals created by SoHo through the active transport. It has no per-kind graceful shutdown step or hook receipt. A terminal closure is evidence that the terminal ended. To verify an end-of-session hook, check its own receipt before relying on any handoff, cleanup, or memory work it triggers. Hook configuration, trust, and timeouts follow the assistant CLI.
+`soho release --close` closes terminals created by SoHo through the active transport. Native Core requests a terminal kill, which sends a hangup and can escalate, then removes the record. A terminal closure is evidence that the terminal ended. Verify the hook's receipt before relying on any handoff, cleanup, or memory work it triggers. Hook configuration, trust, and timeouts follow the assistant CLI.
 
 | Kind | Upstream event and normal-exit behavior | Evidence from `soho release --close` |
 |---|---|---|
