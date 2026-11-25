@@ -270,9 +270,15 @@ func (r laneReuseRequest) planLaneSpawn(o spawnOptions, models []string, rt tran
 	case "reuse":
 		var rows, gone []string
 		var namedRow string
-		for _, row := range core.LaneWorkers(r.sd, r.lane, r.ctx, r.env) {
-			name, _, _ := strings.Cut(row, "\t")
-			if !has(d.Occupants, name) {
+		preset := !core.CustomLanesPresent(r.ctx, r.env)
+		for _, row := range lastRosterRows(core.RosterRows(r.sd)) {
+			f := strings.Split(row, "\t")
+			name := fieldAt(f, 0)
+			lane := core.RosterLaneName(fieldAt(f, 11), preset)
+			if lane == "" {
+				lane = name
+			}
+			if lane != r.lane || !has(d.Occupants, name) {
 				continue
 			}
 			if name == o.name {

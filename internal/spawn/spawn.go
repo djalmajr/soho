@@ -605,12 +605,29 @@ func FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, want
 	return selected, unavailable, blocked
 }
 
+// Keep the same last row per name as RosterLine, in retained roster order.
+func lastRosterRows(rows []string) []string {
+	last := make(map[string]int, len(rows))
+	for i, row := range rows {
+		name, _, _ := strings.Cut(row, "\t")
+		last[name] = i
+	}
+	retained := rows[:0]
+	for i, row := range rows {
+		name, _, _ := strings.Cut(row, "\t")
+		if last[name] == i {
+			retained = append(retained, row)
+		}
+	}
+	return retained
+}
+
 // Return the exact row that passed selection, so emission can verify it again.
 func findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort string, ctx *core.Config, env platform.Env, cwd, sd string) (string, string, bool) {
 	rt := backend.New(env).Runtime
 	multi := core.Cfg(ctx, "multi_role", "on", env)
 	blockedName, blockedCause, crossHit := "", "", ""
-	for _, line := range core.RosterRows(sd) {
+	for _, line := range lastRosterRows(core.RosterRows(sd)) {
 		if line == "" {
 			continue
 		}

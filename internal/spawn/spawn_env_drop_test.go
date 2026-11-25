@@ -12,6 +12,70 @@ import (
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
+func TestEnvDropReuseSelectsLastRosterRow(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, newerLane, newerPolicy, wantPane string
+		withDistinct                                 bool
+	}{
+		{name: "non-lane uses latest", mode: "off", wantPane: "t9"},
+		{name: "unnamed lane uses latest", mode: "on", wantPane: "t9"},
+		{name: "named lane uses latest", mode: "named", wantPane: "t9"},
+		{name: "non-lane skips newer marked name", mode: "off", newerPolicy: envDropPrefix + "DROP_TEST", wantPane: "t8", withDistinct: true},
+		{name: "lane skips newer marked name", mode: "on", newerPolicy: envDropPrefix + "DROP_TEST", wantPane: "t8", withDistinct: true},
+		{name: "lane cannot use older lane membership", mode: "on", newerLane: "build", wantPane: "t8", withDistinct: true},
+		{name: "lane keeps order of retained candidates", mode: "on", wantPane: "t8", withDistinct: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd, bin, state, env, ctx := hcReuseFixture(t, "3")
+			env["USERPROFILE"], env["XDG_CONFIG_HOME"] = env["HOME"], env["HOME"]
+			if tc.mode == "off" {
+				env["SOHO_LANES"] = "off"
+			}
+			args := []string{"reviewer", "--reuse"}
+			if tc.mode == "named" {
+				args = append(args, "--name", "a")
+			}
+			original := fmt.Sprintf(hcReuseWorkerRow, cwd)
+			rows := []string{"# roster fixture", original}
+			if tc.withDistinct {
+				rows = append(rows, "b\tt8\t"+strings.SplitN(original, "\t", 3)[2])
+			}
+			fields := strings.Split(original, "\t")
+			fields[1] = "t9"
+			if tc.newerLane != "" {
+				fields[11] = tc.newerLane
+			}
+			if tc.newerPolicy != "" {
+				fields = append(fields, "inherit", "", "", tc.newerPolicy)
+			}
+			rows = append(rows, strings.Join(fields, "\t"))
+			before := strings.Join(rows, "\n") + "\n"
+			roster := filepath.Join(state, "sX", "agents.tsv")
+			if err := os.WriteFile(roster, []byte(before), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			conn := newFakeSpawnRPCConn()
+			exit, out, stderr, calls := spawnHcExitWithConn(t, bin, args, ctx, env, cwd, conn)
+			after, err := os.ReadFile(roster)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if exit != nil || !spawnJSONHasField(t, out.String(), `"reused": true`) ||
+				!spawnJSONHasField(t, out.String(), `"pane_id": "`+tc.wantPane+`"`) || string(after) != before {
+				t.Fatalf("expected reuse of %s with an unchanged roster: exit=%+v stdout=%q stderr=%q roster=%q", tc.wantPane, exit, out, stderr, after)
+			}
+			if conn.getConnectCount() != 0 {
+				t.Fatal("reuse attempted terminal creation")
+			}
+			for _, call := range calls {
+				if !slices.Contains([]string{"get", "ls"}, call.Argv[0]) {
+					t.Fatalf("reuse performed a terminal action: %v", call.Argv)
+				}
+			}
+		})
+	}
+}
+
 func TestEnvDropReuseRejectsReplacedSelection(t *testing.T) {
 	for _, scope := range []string{"non-lane", "lane"} {
 		for _, policy := range []string{"unfiltered", "filtered"} {
