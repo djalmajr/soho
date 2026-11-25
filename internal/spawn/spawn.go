@@ -600,9 +600,12 @@ func mcpMatches(f []string, want string) bool {
 // choice to match wantMcp (DJA-392): a session opened without the user's
 // MCP servers cannot serve a role that needs them, nor the reverse.
 func FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort string, ctx *core.Config, env platform.Env, cwd string) (string, string, bool) {
-	return findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort, ctx, env, cwd, core.StateDirPath(ctx, env, cwd))
+	row, unavailable, blocked := findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort, ctx, env, cwd, core.StateDirPath(ctx, env, cwd))
+	selected, _, _ := strings.Cut(row, "\t")
+	return selected, unavailable, blocked
 }
 
+// Return the exact row that passed selection, so emission can verify it again.
 func findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort string, ctx *core.Config, env platform.Env, cwd, sd string) (string, string, bool) {
 	rt := backend.New(env).Runtime
 	multi := core.Cfg(ctx, "multi_role", "on", env)
@@ -679,10 +682,10 @@ func findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wa
 		}
 		if state == "idle" || state == "done" {
 			if isSame {
-				return nm, "", false
+				return line, "", false
 			}
 			if crossHit == "" {
-				crossHit = nm
+				crossHit = line
 			}
 		}
 	}
@@ -699,21 +702,25 @@ func effortMatches(f []string, want string) bool {
 }
 
 func EmitReuse(name, role, kind string, ctx *core.Config, env platform.Env, cwd string) bool {
-	return emitReuse(name, role, kind, "", "default", ctx, env, cwd)
+	sd := core.StateDirPath(ctx, env, cwd)
+	return emitReuse(sd, core.RosterLine(sd, name), role, kind, "", "default", env)
 }
 
-func emitReuse(name, role, kind, qualifiedProfile, modelChoice string, ctx *core.Config, env platform.Env, cwd string) bool {
-	sd := core.StateDirPath(ctx, env, cwd)
-	line := core.RosterLine(sd, name)
-	if line == "" {
+func emitReuse(sd, line, role, kind, qualifiedProfile, modelChoice string, env platform.Env) bool {
+	f := strings.Split(line, "\t")
+	name, prev := fieldAt(f, 0), fieldAt(f, 3)
+	if name == "" || envDropMarker(f) != "" {
 		return false
 	}
-	f := strings.Split(line, "\t")
-	prev := fieldAt(f, 3)
-	if prev != role {
-		core.RosterSetRole(sd, name, role)
-		line = core.RosterLine(sd, name)
-		f = strings.Split(line, "\t")
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		unlock, err := core.LockWorkerLifecycle(sd, name)
+		if err != nil {
+			core.DieFriction("spawn: "+err.Error(), 4, "", "spawn")
+		}
+		defer unlock()
+	}
+	if !commitReuseRole(sd, name, line, role) {
+		return false
 	}
 	// model, effort and agent_args are the roster columns the spawn recorded
 	// (8, 14, 13); a missing value comes out as "".
@@ -732,6 +739,63 @@ func emitReuse(name, role, kind, qualifiedProfile, modelChoice string, ctx *core
 	}
 	_, _ = fmt.Fprintln(platform.Stdout, jsonjs.Stringify(out))
 	return true
+}
+
+// Compare and update the last row for the name under the roster lock.
+// Roster writers such as append do not take the worker lifecycle lock.
+func commitReuseRole(sd, name, expected, role string) (matched bool) {
+	core.WithRosterLock(sd, func() {
+		path := filepath.Join(sd, "agents.tsv")
+		content, err := platform.ReadTextFile(path)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				core.DieFriction("spawn: could not read the roster for reuse: "+text.SanitizeCause(err.Error()), 4, "", "spawn")
+			}
+			return
+		}
+		lines := strings.Split(content, "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			line := lines[i]
+			rowName, _, _ := strings.Cut(line, "\t")
+			if rowName != name || strings.HasPrefix(line, "#") {
+				continue
+			}
+			if line != expected {
+				return
+			}
+			f := strings.Split(line, "\t")
+			if previous := fieldAt(f, 3); previous != role {
+				history := fieldAt(f, 10)
+				if history == "" {
+					history = previous
+				} else if !slices.Contains(strings.Split(history, ","), previous) {
+					history += "," + previous
+				}
+				if history != "" {
+					history += ","
+				}
+				for len(f) < 11 {
+					f = append(f, "")
+				}
+				f[3], f[10] = role, history+role
+				lines[i] = strings.Join(f, "\t")
+				updated := strings.Join(lines, "\n")
+				if !strings.HasSuffix(updated, "\n") {
+					updated += "\n"
+				}
+				if err := platform.AtomicWrite(path, updated); err != nil {
+					core.DieFriction("spawn: could not update reused worker role: "+text.SanitizeCause(err.Error()), 4, "", "spawn")
+				}
+			}
+			matched = true
+			return
+		}
+	})
+	return matched
+}
+
+func refuseStaleReuse(name string) {
+	platform.Die(fmt.Sprintf("spawn: roster changed while checking reusable worker '%s'; retry spawn", name), 4)
 }
 
 func fieldAt(values []string, i int) string {
@@ -772,6 +836,11 @@ func warnStartupBlocked(name, kind, state string, ev startup.Evaluation, ctx *co
 // gateReuse assesses the visible screen before an eligible reuse emits ready.
 // A refusal keeps the existing roster registration and pane.
 func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config, env platform.Env, cwd string) {
+	sd := core.StateDirPath(ctx, env, cwd)
+	gateReuseRow(svc, name, role, kind, sd, core.RosterLine(sd, name), ctx, env, cwd)
+}
+
+func gateReuseRow(svc transport.Services, name, role, kind, sd, line string, ctx *core.Config, env platform.Env, cwd string) {
 	// SOH-201 phase B: a reusable native opencode worker is qualified by its
 	// own terminal record, never by its display name. One Get on the
 	// roster's terminal id; the record's identity must match the queried
@@ -780,7 +849,6 @@ func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config
 	// else refuses the reuse with the fixed exit-4 line, before any role
 	// change, ready emission, input or close.
 	if kind == "opencode" && env.Get("SOHO_TRANSPORT") == "hc" {
-		line := core.RosterLine(core.StateDirPath(ctx, env, cwd), name)
 		queried := transport.Target{ID: fieldAt(strings.Split(line, "\t"), 1)}
 		ready := queried.ID != ""
 		if ready {
@@ -796,8 +864,6 @@ func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config
 	if !startup.Enabled(kind) && !agyGate {
 		return
 	}
-	sd := core.StateDirPath(ctx, env, cwd)
-	line := core.RosterLine(sd, name)
 	if line == "" {
 		return
 	}
@@ -812,6 +878,9 @@ func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config
 		return
 	}
 	f := strings.Split(line, "\t")
+	if !commitReuseRole(sd, name, line, fieldAt(f, 3)) {
+		refuseStaleReuse(name)
+	}
 	out := jsonjs.O("name", name, "pane_id", fieldAt(f, 1), "kind", kind, "role", role, "family", fieldAt(f, 4), "reused", true, "previous_role", fieldAt(f, 3), "effort", fieldAt(f, 14), "model", fieldAt(f, 8), "agent_args", fieldAt(f, 13), "status", "blocked_at_startup")
 	if port := core.RosterE2EPort(f); port != "" {
 		out.Set("e2e_port", port)
@@ -824,6 +893,21 @@ func gateReuse(svc transport.Services, name, role, kind string, ctx *core.Config
 	}
 	_, _ = fmt.Fprint(platform.Stdout, screen)
 	platform.Die("", 7)
+}
+
+func reuseSelected(svc transport.Services, sd, line string, o spawnOptions, kind, modelChoice string, configuredArgs []string, ctx *core.Config, env platform.Env, cwd string) {
+	name, _, _ := strings.Cut(line, "\t")
+	if current := core.RosterLine(sd, name); current != line {
+		if envDropMarker(strings.Split(current, "\t")) != "" {
+			refuseSpawnEnvDrop("worker has an environment removal policy; use --fresh")
+		}
+		refuseStaleReuse(name)
+	}
+	qualifiedProfile := gateConfiguredReuse(svc.Terminal, line, o, kind, configuredArgs, env)
+	gateReuseRow(svc, name, o.role, kind, sd, line, ctx, env, cwd)
+	if !emitReuse(sd, line, o.role, kind, qualifiedProfile, modelChoice, env) {
+		refuseStaleReuse(name)
+	}
 }
 
 // Qualify the selected worker before any rename or report/role mutation. Reuse
@@ -1280,7 +1364,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	var plan laneSpawnPlan
 	var capacity core.WorkerCapacity
 	var refuseParts []string
-	var reused, unavailable string
+	var reuseRow, unavailable string
 	if !admissionOnly {
 		if o.pane == "" && !o.force {
 			refuseParts = core.PressureRefuseParts(ctx, env, cwd)
@@ -1289,7 +1373,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			plan = request.planLaneSpawn(o, res.LaneModels, svc.Runtime)
 		} else if lane == "" && o.reuse == "on" && o.pane == "" && reuseDir != "" {
 			fixed := request.forModel(request.model)
-			reused, unavailable, _ = findReusableMcpAt(o.role, kind, o.cwd, o.name, fixed.model, o.approvals, o.mcp, fixed.effort, ctx, env, cwd, reuseDir)
+			reuseRow, unavailable, _ = findReusableMcpAt(o.role, kind, o.cwd, o.name, fixed.model, o.approvals, o.mcp, fixed.effort, ctx, env, cwd, reuseDir)
 		}
 	}
 	// Fixed-model profiles can be validated before taking the global
@@ -1299,7 +1383,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		if admissionOnly {
 			return
 		}
-		if plan.action == "different-name" || (plan.action == "" || plan.action == "open") && reused == "" && unavailable == "" && len(refuseParts) == 0 {
+		if plan.action == "different-name" || (plan.action == "" || plan.action == "open") && reuseRow == "" && unavailable == "" && len(refuseParts) == 0 {
 			capacity = core.WorkerCapacityAt(ctx, env, reuseDir, plan.decision.Gone...)
 		}
 		if plan.action == "different-name" {
@@ -1308,7 +1392,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		if plan.action == "reuse" && plan.candidate.modelSpec != "" {
 			modelSpec = plan.candidate.modelSpec
 		}
-		opens := (plan.action == "" || plan.action == "open") && reused == "" && unavailable == ""
+		opens := (plan.action == "" || plan.action == "open") && reuseRow == "" && unavailable == ""
 		nativeProfile := ""
 		if kind == "opencode" {
 			nativeProfile = kinds.OpenCodePrimaryProfile
@@ -1388,8 +1472,9 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	if len(res.LaneModels) == 0 {
 		selectOpenModel()
 	}
+	reused, _, _ := strings.Cut(reuseRow, "\t")
 	if kind == "omp" {
-		line := ""
+		line := reuseRow
 		name := reused
 		if plan.action == "reuse" {
 			line = plan.candidate.line
@@ -1397,7 +1482,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		}
 		if name != "" {
 			current := core.RosterLine(reuseDir, name)
-			if (line != "" && current != line) || !ompReuseVerified(current, o.approvals, ompApproval) {
+			if current != line || !ompReuseVerified(line, o.approvals, ompApproval) {
 				core.DieFriction("spawn: omp worker has no matching verified launch approval and MCP record; release it or use --fresh", 2, "", "spawn")
 			}
 		}
@@ -1437,12 +1522,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		selected, actual := fieldAt(f, 0), fieldAt(f, 2)
 		switch plan.action {
 		case "reuse":
-			if current := core.RosterLine(sd, selected); envDropMarker(strings.Split(current, "\t")) != "" {
-				refuseSpawnEnvDrop("worker has an environment removal policy; use --fresh")
-			}
-			qualifiedProfile := gateConfiguredReuse(svc.Terminal, line, o, actual, configuredArgs, env)
-			gateReuse(svc, selected, o.role, actual, ctx, env, cwd)
-			emitReuse(selected, o.role, actual, qualifiedProfile, modelChoice, ctx, env, cwd)
+			reuseSelected(svc, sd, line, o, actual, modelChoice, configuredArgs, ctx, env, cwd)
 			sameTreeEditors(selected, o.role, fieldAt(f, 6), sd, env, cwd, ctx)
 			Warn(fmt.Sprintf("reusing idle lane '%s' worker '%s' as %s; existing session context is retained", lane, selected, o.role), ctx, env, "spawn")
 			return
@@ -1482,10 +1562,8 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		}
 	}
 	if reused != "" {
-		qualifiedProfile := gateConfiguredReuse(svc.Terminal, core.RosterLine(sd, reused), o, kind, configuredArgs, env)
-		previous := fieldAt(strings.Split(core.RosterLine(sd, reused), "\t"), 3)
-		gateReuse(svc, reused, o.role, kind, ctx, env, cwd)
-		emitReuse(reused, o.role, kind, qualifiedProfile, modelChoice, ctx, env, cwd)
+		previous := fieldAt(strings.Split(reuseRow, "\t"), 3)
+		reuseSelected(svc, sd, reuseRow, o, kind, modelChoice, configuredArgs, ctx, env, cwd)
 		sameTreeEditors(reused, o.role, o.cwd, sd, env, cwd, ctx)
 		if previous == o.role {
 			Warn(fmt.Sprintf("reusing idle worker '%s' (%s, %s; dispatch to '%s'); existing session context is retained", reused, kind, o.role, reused), ctx, env, "spawn")

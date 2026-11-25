@@ -2,12 +2,107 @@ package spawn
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
+
+func TestEnvDropReuseRejectsReplacedSelection(t *testing.T) {
+	for _, scope := range []string{"non-lane", "lane"} {
+		for _, policy := range []string{"unfiltered", "filtered"} {
+			t.Run(scope+"/"+policy, func(t *testing.T) {
+				cwd, bin, state, env, ctx := hcSpawnFixture(t, "writer", "opencode")
+				env["OPENCODE_CONFIG_CONTENT"] = "{}"
+				env["USERPROFILE"], env["XDG_CONFIG_HOME"] = env["HOME"], env["HOME"]
+				env["FAKECLI_WAIT_FILE_TIMEOUT_MS"] = "18000"
+				lane := ""
+				if scope == "lane" {
+					lane = "build"
+					env["SOHO_LANES"] = "on"
+					env["SOHO_LANE_BUILD_ROLES"] = "writer,scouter"
+					env["SOHO_LANE_BUILD_KIND"] = "opencode"
+					env["SOHO_LANE_BUILD_PANES"] = "1"
+				}
+				sd := filepath.Join(state, "sX")
+				if err := os.MkdirAll(sd, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				roster := filepath.Join(sd, "agents.tsv")
+				const header = "# roster fixture\n"
+				fields := []string{"worker", "t7", "opencode", "scouter", "opencode", "1", cwd, "now",
+					opencodePrimaryModel, "full", "scouter", lane, "", "", "", "inherit"}
+				original := header + strings.Join(fields, "\t") + "\n"
+				if err := os.WriteFile(roster, []byte(original), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				fields[1], fields[7] = "t9", "replacement"
+				if policy == "filtered" {
+					fields = append(fields, "", "", envDropPrefix+"DROP_TEST")
+				}
+				replacement := header + strings.Join(fields, "\t") + "\n"
+				release := filepath.Join(t.TempDir(), "release-qualification")
+				get := []string{"get", "t7", "--json"}
+				rules := append(hcFixtureRules(),
+					fakecli.Rule{Argv: []string{"get", "worker", "--json"}, Stdout: opencodePrimaryRecord("t7")},
+					fakecli.Rule{Argv: get, Stdout: opencodePrimaryRecord("t7"), WaitFile: release},
+				)
+				if _, err := fakecli.Install(t, bin, "hc", rules); err != nil {
+					t.Fatal(err)
+				}
+				conn := newFakeSpawnRPCConn()
+				done := make(chan struct{})
+				var message, stdout, stderr string
+				var exitCode int
+				var calls []fakecli.Call
+				t.Cleanup(func() {
+					if err := os.WriteFile(release, nil, 0o600); err != nil {
+						t.Error(err)
+					}
+					<-done
+				})
+				go func() {
+					defer close(done)
+					exit, out, errOut, observed := spawnHcExitWithConn(t, bin, []string{
+						"writer", "--name", "worker", "--kind", "opencode", "--model", opencodePrimaryModel, "--approvals", "full", "--reuse",
+					}, ctx, env, cwd, conn)
+					if exit != nil {
+						exitCode, message = exit.Code, exit.Msg
+					}
+					stderr, stdout, calls = errOut.String(), out.String(), observed
+				}()
+				dja659WaitForCallInFlight(t, filepath.Join(bin, "hc.calls.jsonl"), get)
+				if err := os.WriteFile(roster, []byte(replacement), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(release, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				<-done
+				after, err := os.ReadFile(roster)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if exitCode != 4 || !strings.Contains(message, "roster changed while checking reusable worker") ||
+					stdout != "" || string(after) != replacement || strings.Contains(stderr, "reusing idle") {
+					t.Fatalf("replacement must survive without reuse: exit=%d message=%q stdout=%q stderr=%q roster=%q", exitCode, message, stdout, stderr, after)
+				}
+				if conn.getConnectCount() != 0 {
+					t.Fatal("refusal attempted terminal creation")
+				}
+				for _, call := range calls {
+					if !slices.Contains([]string{"get", "ls"}, call.Argv[0]) {
+						t.Fatalf("refusal performed a terminal action: %v", call.Argv)
+					}
+				}
+			})
+		}
+	}
+}
 
 func TestEnvDropRosterCodec(t *testing.T) {
 	legacy := make([]string, envDropColumn)
