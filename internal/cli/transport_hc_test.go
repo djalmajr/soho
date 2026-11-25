@@ -13,6 +13,7 @@ import (
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/setuptext"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -70,6 +71,7 @@ func newHcGuardFixture(t *testing.T) hcGuardFixture {
 		"TMPDIR":         root,
 		"PATH":           bin,
 		"SOHO_TRANSPORT": "hc",
+		"GORACE":         fakecli.RaceOptions([]string{"GORACE=" + testutil.HostRaceOptions()}),
 	}
 	return hcGuardFixture{root: root, env: env}
 }
