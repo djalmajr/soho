@@ -134,9 +134,10 @@ func TestCmdSpawnMcpPerRoleTranslation(t *testing.T) {
 	})
 
 	t.Run("a given --pane spawn carries the flag too", func(t *testing.T) {
-		f := newSpawnFixture(t, freshSpawnRules())
+		const pane = "w0test:p0a"
+		f := newSpawnFixture(t, freshSpawnRules(piHerdrIdentityRule("worker", pane, legacyPiSession)))
 		configureSpawnFixture(t, &f)
-		code, _, _, _ := runCmdSpawn(t, f, []string{"worker", "--pane", "w0test:p0a", "--kind", "pi", "--effort", "high", "--mcp", "none"})
+		code, _, _, _ := runCmdSpawn(t, f, []string{"worker", "--pane", pane, "--kind", "pi", "--effort", "high", "--mcp", "none"})
 		if code != 0 {
 			t.Fatalf("exit=%d", code)
 		}
@@ -149,16 +150,17 @@ func TestCmdSpawnMcpPerRoleTranslation(t *testing.T) {
 
 func TestCmdSpawnMcpArgvPosition(t *testing.T) {
 	isolateCodexMcpTemp(t)
-	mk := func(t *testing.T) spawnFixture {
+	mk := func(t *testing.T, rules ...fakecli.Rule) spawnFixture {
 		t.Helper()
-		f := newSpawnFixture(t, freshSpawnRules())
+		f := newSpawnFixture(t, freshSpawnRules(rules...))
 		configureSpawnFixture(t, &f)
 		f.env["SOHO_LAYOUT"] = "tab"
 		return f
 	}
+	pi := piHerdrIdentityRule("worker", "p-new", legacyPiSession)
 
 	t.Run("pi: the flag goes right after the effort args", func(t *testing.T) {
-		f := mk(t)
+		f := mk(t, pi)
 		code, _, _, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "pi", "--effort", "high", "--mcp", "none"})
 		if code != 0 {
 			t.Fatalf("exit=%d", code)
@@ -170,7 +172,7 @@ func TestCmdSpawnMcpArgvPosition(t *testing.T) {
 	})
 
 	t.Run("pi: the flag precedes the args.<kind> of the config", func(t *testing.T) {
-		f := mk(t)
+		f := mk(t, pi)
 		f.ctx.Entries["args_pi"] = core.ConfigEntry{Value: "--config-x", Source: "project"}
 		code, _, _, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "pi", "--effort", "high", "--mcp", "none"})
 		if code != 0 {
@@ -209,7 +211,7 @@ func TestCmdSpawnMcpArgvPosition(t *testing.T) {
 	})
 
 	t.Run("the user args after -- come after the flag", func(t *testing.T) {
-		f := mk(t)
+		f := mk(t, pi)
 		code, _, _, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "pi", "--effort", "high", "--mcp", "none", "--", "--user-x"})
 		if code != 0 {
 			t.Fatalf("exit=%d", code)

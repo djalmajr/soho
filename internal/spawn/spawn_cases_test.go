@@ -1,6 +1,7 @@
 package spawn
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,6 +78,17 @@ func idleHerdrRule(name string) fakecli.Rule {
 	return fakecli.Rule{Argv: []string{"agent", "get", name}, Stdout: `{"result":{"agent":{"name":"` + name + `","agent_status":"idle"}}}`}
 }
 
+func piHerdrIdentityRule(name, pane, session string) fakecli.Rule {
+	sessionField := ""
+	if session != "" {
+		sessionField = fmt.Sprintf(`,"agent_session":{"source":"herdr:pi","agent":"pi","kind":"path","value":%q}`, session)
+	}
+	return fakecli.Rule{
+		Argv:   []string{"agent", "get", name},
+		Stdout: fmt.Sprintf(`{"result":{"agent":{"name":%q,"pane_id":%q,"agent":"pi","agent_status":"idle"%s}}}`, name, pane, sessionField),
+	}
+}
+
 func runCmdSpawn(t *testing.T, f spawnFixture, args []string) (code int, stdout, stderr string, calls []fakecli.Call) {
 	t.Helper()
 	oldOut, oldErr := platform.Stdout, platform.Stderr
@@ -100,8 +112,8 @@ func runCmdSpawn(t *testing.T, f spawnFixture, args []string) (code int, stdout,
 	return code, out.String(), errOut.String(), calls
 }
 
-func freshSpawnRules() []fakecli.Rule {
-	return []fakecli.Rule{
+func freshSpawnRules(overrides ...fakecli.Rule) []fakecli.Rule {
+	return append(overrides, []fakecli.Rule{
 		{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},
 		{Argv: []string{"agent", "start"}, ArgvPrefix: true, Stdout: `{"result":{"started":true}}`},
 		{Argv: []string{"agent", "get"}, ArgvPrefix: true, Stdout: `{"result":{"agent":{"agent_status":"working"}}}`},
@@ -113,7 +125,7 @@ func freshSpawnRules() []fakecli.Rule {
 		{Argv: []string{"tab", "create"}, ArgvPrefix: true, Stdout: `{"result":{"tab":{"tab_id":"t-herd","label":"herd"},"root_pane":{"pane_id":"p-new"}}}`},
 		{Argv: []string{"tab", "get"}, ArgvPrefix: true, Stdout: `{"result":{"tab":{"tab_id":"t-herd","label":"herd"},"root_pane":{"pane_id":"p-root"}}}`},
 		{Argv: []string{"tab", "rename"}, ArgvPrefix: true},
-	}
+	}...)
 }
 
 func configureSpawnFixture(t *testing.T, f *spawnFixture) {

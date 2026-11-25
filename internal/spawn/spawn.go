@@ -19,6 +19,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/backend"
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/jsonjs"
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/layout"
@@ -1693,6 +1694,10 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			core.DieFriction(fmt.Sprintf("agent '%s' (%s) hit a terminal provider authentication error right after start: %s; pane %s stays open for inspection", o.name, kind, p.Cause, o.pane), 14, "", "")
 		}
 	}
+	// #360: a fresh legacy Pi with an effective --no-mcp must still exist,
+	// under the same identity, after the observation window. This runs before
+	// stale-row cleanup, roster append and the ready result.
+	legacyPiStartupAdmission(o, kind, env, agentArgs, lastScreen)
 	for _, stale := range staleRosterLines(sd, o.name, o.pane) {
 		core.RosterRemove(sd, stale[0])
 		Warn(fmt.Sprintf("replaced the stale roster line of '%s' (pane %s)", stale[0], stale[1]), ctx, env, "spawn")
@@ -2470,6 +2475,119 @@ func pollMillis(env platform.Env) time.Duration {
 	}
 	return 500 * time.Millisecond
 }
+
+type legacyPiIdentity struct {
+	name, pane, kind, session string
+}
+
+// legacyPiNoMcpOption reads the assembled options, stopping at the first
+// end-of-options marker. A literal flag in native args is not an effective
+// spawn option.
+func legacyPiNoMcpOption(args []string) bool {
+	for _, token := range args[:optionsEnd(args)] {
+		if token == "--no-mcp" {
+			return true
+		}
+	}
+	return false
+}
+
+func legacyPiErrorCode(raw string) string {
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(raw), &envelope) != nil {
+		return ""
+	}
+	return envelope.Error.Code
+}
+
+func readLegacyPiIdentity(svc transport.Services, o spawnOptions, deadline time.Time) (legacyPiIdentity, string) {
+	var id legacyPiIdentity
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	rep := svc.Legacy.AgentGetRaw(ctx, transport.Target{ID: o.name}, transport.Call{Timeout: herdr.Timeout})
+	raw := rep.Process.Stderr
+	if raw == "" {
+		raw = rep.Value
+	}
+	code := legacyPiErrorCode(raw)
+	if code == "agent_not_found" {
+		return id, "gone"
+	}
+	if !rep.Valid || rep.Err != nil || code != "" {
+		return id, "unavailable"
+	}
+	var body struct {
+		Result struct {
+			Agent struct {
+				Name    string `json:"name"`
+				Pane    string `json:"pane_id"`
+				Kind    string `json:"agent"`
+				Session struct {
+					Value string `json:"value"`
+				} `json:"agent_session"`
+			} `json:"agent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(rep.Value), &body); err != nil {
+		return id, "unavailable"
+	}
+	live := body.Result.Agent
+	if live.Name != o.name || live.Kind != "pi" || o.pane != "" && live.Pane != o.pane {
+		return id, "mismatch"
+	}
+	if live.Session.Value == "" {
+		return id, "Herdr reported no Pi session identity"
+	}
+	return legacyPiIdentity{name: live.Name, pane: live.Pane, kind: live.Kind, session: live.Session.Value}, ""
+}
+
+// legacyPiStartupAdmission is a bounded two-read check of the launched
+// worker. It never kills, closes, unlinks or relaunches: on an unproved
+// identity the pane is left for inspection and no roster row is written.
+func legacyPiStartupAdmission(o spawnOptions, kind string, env platform.Env, agentArgs []string, lastScreen string) {
+	if env.Get("SOHO_TRANSPORT") == "hc" || kind != "pi" || o.launchProfile.Name != "" || !legacyPiNoMcpOption(agentArgs) {
+		return
+	}
+	gone := func() {
+		core.DieFriction(fmt.Sprintf("agent '%s' (%s) exited right after start; last screen lines: %s", o.name, kind, lastLines(lastScreen, 5)), 4, "", "")
+	}
+	unknown := func(reason string) {
+		core.DieFriction(fmt.Sprintf("spawn: pi worker '%s' could not be confirmed after start in pane %s (%s); nothing was registered; the pane stays open for inspection", o.name, o.pane, reason), 4, "", "")
+	}
+	svc := backend.New(env)
+	deadline := time.Now().Add(startPollWindow)
+	first, reason := readLegacyPiIdentity(svc, o, deadline)
+	if reason == "gone" {
+		gone()
+	}
+	if reason != "" {
+		unknown(reason)
+	}
+	if remaining := time.Until(deadline); remaining > 0 {
+		pause := pollMillis(env)
+		if pause > remaining {
+			pause = remaining
+		}
+		if pause > 0 {
+			time.Sleep(pause)
+		}
+	}
+	second, reason := readLegacyPiIdentity(svc, o, deadline)
+	if reason == "gone" {
+		gone()
+	}
+	if reason != "" {
+		unknown(reason)
+	}
+	if second != first {
+		unknown("the worker identity changed during the startup check")
+	}
+}
+
 func checkStartWindow(o spawnOptions, kind string, env platform.Env, created bool, args []string, ctx *core.Config) (string, string, bool) {
 	rt := backend.New(env).Runtime
 	poll := time.Duration(PollIntervalMs(env)) * time.Millisecond

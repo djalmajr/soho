@@ -22,7 +22,7 @@ func TestSpawnGroupRoleArgsOverride(t *testing.T) {
 		{"trailing native flag", "--thinking high", "--thinking high --thinking low", []string{"--", "--thinking", "low"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := mcpListFixture(t)
+			f := mcpListFixture(t, piHerdrIdentityRule("implementer", "p-new", "/sessions/implementer.jsonl"))
 			f.env["SOHO_LANES"] = "on"
 			f.ctx.Entries["lane_builders_kind"] = core.ConfigEntry{Value: "pi", Source: "project"}
 			f.ctx.Entries["lane_builders_args"] = core.ConfigEntry{Value: "--thinking minimal", Source: "project"}
@@ -41,7 +41,7 @@ func TestSpawnGroupRoleArgsOverride(t *testing.T) {
 }
 
 func TestSpawnUsesMigratedCriticalArgsAndMcp(t *testing.T) {
-	f := mcpListFixture(t)
+	f := mcpListFixture(t, piHerdrIdentityRule("critical-implementer", "p-new", "/sessions/critical-implementer.jsonl"))
 	f.env["SOHO_LANES"] = "on"
 	conf := filepath.Join(f.cwd, ".agents", "soho.conf")
 	if err := os.MkdirAll(filepath.Dir(conf), 0o700); err != nil {

@@ -18,7 +18,10 @@ func laneKindFixture(t *testing.T, laneKind string) spawnFixture {
 	t.Helper()
 	// Herdr answers agent_not_found for the ghost, so the lane decision lists
 	// it as gone and would drop it from the roster.
-	rules := append([]fakecli.Rule{{Argv: []string{"agent", "get", "ghost"}, Code: 1, Stderr: `{"error":{"code":"agent_not_found","message":"gone"}}`}}, freshSpawnRules()...)
+	rules := freshSpawnRules(
+		fakecli.Rule{Argv: []string{"agent", "get", "ghost"}, Code: 1, Stderr: `{"error":{"code":"agent_not_found","message":"gone"}}`},
+		piHerdrIdentityRule("scouter", "p2", "/sessions/scouter.jsonl"),
+	)
 	f := newSpawnFixture(t, rules)
 	configureSpawnFixture(t, &f)
 	f.env["HERDR_PANE_ID"] = "p1"

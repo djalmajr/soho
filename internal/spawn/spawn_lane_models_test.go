@@ -551,7 +551,11 @@ func TestSpawnGroupModelListRequiresInheritedModel(t *testing.T) {
 		{name: "kind flag", args: []string{"--kind", "grok"}, wantKind: "grok", wantModel: "grok-worker"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := laneModelFixture(t, "off", "m1,m2")
+			var rules []fakecli.Rule
+			if tc.wantKind == "pi" {
+				rules = []fakecli.Rule{piHerdrIdentityRule("scouter", "p2", "/sessions/scouter.jsonl")}
+			}
+			f := laneModelFixture(t, "off", "m1,m2", rules...)
 			for key, value := range map[string]string{
 				"role_scouter_kind": tc.roleKind, "role_scouter_model": tc.roleModel,
 				"model_pi_worker": "pi-worker", "model_grok_worker": "grok-worker",
