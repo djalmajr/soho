@@ -123,10 +123,9 @@ func migrateProjectRoles(project string, env platform.Env, dry bool) []string {
 			lines = append(lines, "migrate: removed the empty "+filepath.Join(project, old))
 		}
 	}
-	// On a real run, retry the idempotent exclude step even when no role
-	// moved this time: a previous run may have moved the role but failed to
-	// extend the exclude, and the old role directory is now gone.
-	if moved || !dry {
+	// If the former directory was present, an actual move is what
+	// warrants extending the exclude. A conflict-only run leaves it alone.
+	if moved {
 		lines = append(lines, migrateRolesExclude(project, env, dry)...)
 	}
 	return lines

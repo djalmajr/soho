@@ -4,12 +4,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
 
 func TestSetupRolesOnly(t *testing.T) {
-	for _, mode := range []string{"write", "plan", "dry", "conflict", "already-excluded"} {
+	for _, mode := range []string{"write", "plan", "dry", "conflict", "conflict-and-move", "already-excluded"} {
 		t.Run(mode, func(t *testing.T) {
 			root, env, ctx := codexSetupFixture(t)
 			old := filepath.Join(root, ".agents", "herdr-roles", "critical-implementer.md")
@@ -30,9 +31,20 @@ func TestSetupRolesOnly(t *testing.T) {
 				initial += "/.agents/soho-roles/\r\n"
 			}
 			mustWriteFile(t, exclude, initial)
-			if mode == "conflict" {
+			hasConflict := mode == "conflict" || mode == "conflict-and-move"
+			if hasConflict {
 				mustWriteFile(t, next, "destination role\n")
 			}
+			other := filepath.Join(filepath.Dir(old), "reviewer.md")
+			if mode == "conflict-and-move" {
+				mustWriteFile(t, other, "review rules\n")
+			}
+			infoDir := filepath.Dir(exclude)
+			before := setupFilesystemSnapshot(t, infoDir)
+			locks := 0
+			onLock := excludeLockAcquired
+			excludeLockAcquired = func() { locks++ }
+			t.Cleanup(func() { excludeLockAcquired = onLock })
 			args := []string{"--roles"}
 			if mode == "plan" {
 				args = append(args, "--plan")
@@ -42,7 +54,7 @@ func TestSetupRolesOnly(t *testing.T) {
 			}
 			code, out, msg := runSetupWrite(args, ctx, env, root)
 			t.Logf("mode=%s exit=%d stdout=%s stderr=%s", mode, code, out, msg)
-			if code != 0 {
+			if code != 0 || msg != "" {
 				t.Fatalf("exit=%d stdout=%s stderr=%s", code, out, msg)
 			}
 			for path, body := range untouched {
@@ -54,8 +66,8 @@ func TestSetupRolesOnly(t *testing.T) {
 				t.Errorf("roles-only created state: %v", err)
 			}
 			if mode == "plan" || mode == "dry" {
-				if mustReadFile(t, old) != "custom role\n" || mustReadFile(t, exclude) != initial {
-					t.Fatal("plan wrote role/exclude")
+				if mustReadFile(t, old) != "custom role\n" || locks != 0 || !reflect.DeepEqual(before, setupFilesystemSnapshot(t, infoDir)) {
+					t.Fatalf("plan changed the role or Git metadata, or acquired the exclude lock: locks=%d", locks)
 				}
 				if _, err := os.Stat(next); !os.IsNotExist(err) {
 					t.Fatalf("plan created destination: %v", err)
@@ -65,12 +77,24 @@ func TestSetupRolesOnly(t *testing.T) {
 				}
 				return
 			}
-			if mode == "conflict" {
+			if hasConflict {
 				if mustReadFile(t, old) != "custom role\n" || mustReadFile(t, next) != "destination role\n" || !strings.Contains(out, "already exists; merge by hand") {
 					t.Fatalf("conflict contract: %s", out)
 				}
-				if mustReadFile(t, exclude) != initial {
-					t.Fatal("conflict-only run changed exclude")
+				if mode == "conflict" {
+					if after := setupFilesystemSnapshot(t, infoDir); locks != 0 || !reflect.DeepEqual(before, after) || strings.Contains(out, "migrate: added") {
+						t.Fatalf("conflict-only run touched exclude: locks=%d before=%v after=%v out=%q", locks, before, after, out)
+					}
+					return
+				}
+				if got := mustReadFile(t, filepath.Join(filepath.Dir(next), "reviewer.md")); got != "review rules\n" {
+					t.Fatalf("other role content after move: %q", got)
+				}
+				if _, err := os.Lstat(other); !os.IsNotExist(err) {
+					t.Fatalf("source of other role still exists: %v", err)
+				}
+				if want := initial + "/.agents/soho-roles/\r\n"; mustReadFile(t, exclude) != want || locks != 1 || !strings.Contains(out, "migrate: added /.agents/soho-roles/") {
+					t.Fatalf("successful move beside a conflict did not update the exclude: locks=%d out=%q", locks, out)
 				}
 				return
 			}

@@ -276,17 +276,30 @@ func TestInitLocalExcludeUsesStateCheckoutRules(t *testing.T) {
 	if err != nil {
 		t.Skip("git is required for linked worktree tests")
 	}
+	env := isolatedHerdrEnv(t, git)
+	home := t.TempDir()
+	env["HOME"] = home
+	env["USERPROFILE"] = home
+	env["XDG_CONFIG_HOME"] = filepath.Join(home, ".config")
+	env["GIT_AUTHOR_NAME"] = "test"
+	env["GIT_AUTHOR_EMAIL"] = "test@example.com"
+	env["GIT_COMMITTER_NAME"] = "test"
+	env["GIT_COMMITTER_EMAIL"] = "test@example.com"
 	run := func(dir string, args ...string) {
 		t.Helper()
 		cmd := exec.Command(git, append([]string{"-C", dir}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com")
+		cmd.Env = env.List()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
 
-	root, err := filepath.EvalSymlinks(t.TempDir())
+	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(parent, "main")
+	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	run(root, "init", "-q")
@@ -295,14 +308,13 @@ func TestInitLocalExcludeUsesStateCheckoutRules(t *testing.T) {
 	}
 	run(root, "add", "seed")
 	run(root, "commit", "-qm", "initial")
-	linked := filepath.Join(filepath.Dir(root), "linked-"+filepath.Base(root))
+	linked := filepath.Join(parent, "linked")
 	run(root, "worktree", "add", "-q", "-b", "linked", linked)
 
 	// Main ignores the relative state path; the linked checkout does not.
 	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("/state-cache/\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	env := isolatedHerdrEnv(t, git)
 	env["SOHO_SETUP_TARGET"] = "local"
 	env["SOHO_DIR"] = filepath.Join(linked, "state-cache")
 	cfg := core.LoadConfig(env, root)

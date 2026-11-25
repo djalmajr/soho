@@ -526,44 +526,54 @@ func TestLocalFinalExcludeRenameFailureDoesNotClaimSetup(t *testing.T) {
 	if resolved, err := filepath.EvalSymlinks(exclude); err == nil {
 		exclude = resolved
 	}
-	excludeBefore, err := os.ReadFile(exclude)
-	if err != nil {
-		t.Fatal(err)
-	}
+	infoDir := filepath.Dir(exclude)
+	excludeBefore := setupFilesystemSnapshot(t, infoDir)
 	if reflect.ValueOf(platformRenameFile).Pointer() != reflect.ValueOf(os.Rename).Pointer() {
 		t.Fatal("platform rename seam does not default to os.Rename")
 	}
 	realRename := platformRenameFile
+	renameAttempts := 0
+	injected := errors.New("EIO: injected final exclude rename failure")
 	platformRenameFile = func(src, dst string) error {
 		if filepath.Clean(dst) == filepath.Clean(exclude) {
-			return errors.New("EIO: injected final exclude rename failure")
+			renameAttempts++
+			return injected
 		}
 		return realRename(src, dst)
 	}
 	t.Cleanup(func() { platformRenameFile = realRename })
-	code, out, message := runSetupWrite([]string{"--local", "--panes", "3"}, ctx, env, root)
-	confAfter, confErr := os.ReadFile(conf)
-	excludeAfter, excludeErr := os.ReadFile(exclude)
-	if code != 4 || !strings.Contains(message, "could not write local excludes") || !bytes.Equal(confAfter, confBefore) || confErr != nil || !bytes.Equal(excludeAfter, excludeBefore) || excludeErr != nil {
-		t.Fatalf("code=%d out=%q message=%q config=%q/%v exclude=%q/%v", code, out, message, confAfter, confErr, excludeAfter, excludeErr)
+	var out bytes.Buffer
+	code, message := func() (code int, message string) {
+		old := platform.Stdout
+		platform.Stdout = &out
+		defer func() { platform.Stdout = old }()
+		defer func() {
+			if value := recover(); value != nil {
+				exit, ok := value.(*platform.ExitError)
+				if !ok {
+					panic(value)
+				}
+				code, message = exit.Code, exit.Msg
+			}
+		}()
+		CmdSetup([]string{"--local", "--panes", "3"}, ctx, env, root)
+		return 0, ""
+	}()
+	want := "setup: could not update local excludes at " + exclude + ": " + injected.Error()
+	if code != 4 || renameAttempts != 1 || !strings.HasPrefix(message, want) || out.Len() != 0 {
+		t.Fatalf("code=%d renames=%d stdout=%q message=%q want prefix %q", code, renameAttempts, out.String(), message, want)
 	}
-	if strings.Contains(out, "panes=3") || strings.Contains(out, "block written") || strings.Contains(out, "local excludes updated") {
-		t.Fatalf("claimed success before failed final rename: %q", out)
+	if after, err := os.ReadFile(conf); err != nil || !bytes.Equal(after, confBefore) {
+		t.Fatalf("tracked config changed after failed final rename: %q, %v", after, err)
+	}
+	if after := setupFilesystemSnapshot(t, infoDir); !reflect.DeepEqual(after, excludeBefore) {
+		t.Fatalf("Git metadata changed after failed final rename: before=%v after=%v", excludeBefore, after)
 	}
 	if _, err := os.Stat(filepath.Join(root, localInstructionFile)); !os.IsNotExist(err) {
 		t.Fatalf("local block exists after failed final rename: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".claude")); !os.IsNotExist(err) {
 		t.Fatalf("hooks exist after failed final rename: %v", err)
-	}
-	entries, err := os.ReadDir(filepath.Join(root, ".git", "info"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".exclude.") {
-			t.Fatalf("temporary exclude file leaked: %s", entry.Name())
-		}
 	}
 }
 
