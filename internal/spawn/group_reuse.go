@@ -19,6 +19,7 @@ import (
 type laneReuseRequest struct {
 	role, lane, kind, model, effort, approvals, mcp, workerCwd, sd, nativeArgs string
 	kindFlag                                                                   bool
+	ompPolicyPath                                                              string
 	ctx                                                                        *core.Config
 	env                                                                        platform.Env
 	processCwd                                                                 string
@@ -28,6 +29,7 @@ func newLaneReuseRequest(o spawnOptions, res core.RoleSettings, sd, nativeArgs s
 	return laneReuseRequest{
 		role: o.role, lane: res.Lane, kind: res.Kind, model: o.model, effort: o.effort, approvals: o.approvals, mcp: o.mcp,
 		workerCwd: o.cwd, sd: sd, nativeArgs: nativeArgs, kindFlag: o.kind != "", ctx: ctx, env: env, processCwd: cwd,
+		ompPolicyPath: o.ompPolicyPath,
 	}
 }
 
@@ -41,6 +43,9 @@ func (r laneReuseRequest) forModel(model string) laneReuseRequest {
 
 func (r laneReuseRequest) eligible(f []string, state string) bool {
 	if state != "idle" && state != "done" || envDropMarker(f) != "" {
+		return false
+	}
+	if r.kind == "omp" && fieldAt(f, 2) == "omp" && !ompReuseVerified(f, r.approvals, r.ompPolicyPath) {
 		return false
 	}
 	if report := core.LastReport(r.sd, fieldAt(f, 0)); report != "" {

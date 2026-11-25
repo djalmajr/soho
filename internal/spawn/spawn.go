@@ -600,7 +600,15 @@ func mcpMatches(f []string, want string) bool {
 // choice to match wantMcp (DJA-392): a session opened without the user's
 // MCP servers cannot serve a role that needs them, nor the reverse.
 func FindReusableMcp(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort string, ctx *core.Config, env platform.Env, cwd string) (string, string, bool) {
-	row, unavailable, blocked := findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort, ctx, env, cwd, core.StateDirPath(ctx, env, cwd))
+	policy := ""
+	if kind == "omp" {
+		var err error
+		policy, err = managedOMPPolicy(env, cwd)
+		if err != nil {
+			return "", "", false
+		}
+	}
+	row, unavailable, blocked := findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort, policy, ctx, env, cwd, core.StateDirPath(ctx, env, cwd))
 	selected, _, _ := strings.Cut(row, "\t")
 	return selected, unavailable, blocked
 }
@@ -623,7 +631,7 @@ func lastRosterRows(rows []string) []string {
 }
 
 // Return the exact row that passed selection, so emission can verify it again.
-func findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort string, ctx *core.Config, env platform.Env, cwd, sd string) (string, string, bool) {
+func findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wantMcp, wantEffort, ompPolicy string, ctx *core.Config, env platform.Env, cwd, sd string) (string, string, bool) {
 	rt := backend.New(env).Runtime
 	multi := core.Cfg(ctx, "multi_role", "on", env)
 	blockedName, blockedCause, crossHit := "", "", ""
@@ -643,6 +651,9 @@ func findReusableMcpAt(role, kind, workerCwd, name, wantModel, wantApprovals, wa
 			continue
 		}
 		if !effortMatches(f, wantEffort) {
+			continue
+		}
+		if kind == "omp" && !ompReuseVerified(f, wantApprovals, ompPolicy) {
 			continue
 		}
 		isSame := at(3) == role
@@ -974,7 +985,8 @@ type spawnOptions struct {
 	loginShell                                                                                                   string
 	// ompLaunch is the successful legacy agent.start receipt, used only
 	// by the OMP startup window to pin the terminal being observed.
-	ompLaunch *ompStartupAgent
+	ompLaunch     *ompStartupAgent
+	ompPolicyPath string
 	// piStartScreen is hc's post-ready screen read, reused for the thinking
 	// footer so a fresh pi terminal keeps its established single-read start.
 	piStartScreen      string
@@ -1091,19 +1103,7 @@ func parseArgs(argv []string, cwd string) spawnOptions {
 	return o
 }
 
-// The optional approval receipt follows the existing optional E2E port.
-const ompApprovalColumn = 17
-
 var ompModelRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/@+-]*$`)
-
-// The recorded launch option is required even for historical rows whose
-// approval and MCP labels happen to match the new request.
-func ompReuseVerified(line, approvals, approvalMode string) bool {
-	f := strings.Split(line, "\t")
-	return fieldAt(f, 2) == "omp" && fieldAt(f, 9) == approvals &&
-		fieldAt(f, 13) == "" && fieldAt(f, 15) == "inherit" &&
-		fieldAt(f, ompApprovalColumn) == approvalMode
-}
 
 func approvalsOk(value string) bool {
 	return value == "ask" || value == "edits" || value == "auto" || value == "full" || value == "unsandboxed"
@@ -1378,6 +1378,16 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	if kind == "omp" && (native != "" || len(o.native) != 0) {
 		core.DieFriction("spawn: omp does not accept extra native args; set model, effort and approvals with Soho options", 2, "", "spawn")
 	}
+	if kind == "omp" {
+		policy, err := managedOMPPolicy(env, cwd)
+		if err != nil {
+			core.DieFriction("spawn: "+err.Error(), 2, "", "spawn")
+		}
+		o.ompPolicyPath = policy
+		if o.reuse == "on" && o.name != "" && o.pane == "" && reuseDir != "" {
+			guardOMPReuseName(svc.Runtime, reuseDir, o)
+		}
+	}
 	request := newLaneReuseRequest(o, res, reuseDir, native, ctx, env, cwd)
 	modelSpec, modelChoice := modelForRequest(flagModel, res)
 	request.model, _ = kinds.ResolveModel(kind, modelSpec, o.effort, env, func(string) {})
@@ -1393,7 +1403,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			plan = request.planLaneSpawn(o, res.LaneModels, svc.Runtime)
 		} else if lane == "" && o.reuse == "on" && o.pane == "" && reuseDir != "" {
 			fixed := request.forModel(request.model)
-			reuseRow, unavailable, _ = findReusableMcpAt(o.role, kind, o.cwd, o.name, fixed.model, o.approvals, o.mcp, fixed.effort, ctx, env, cwd, reuseDir)
+			reuseRow, unavailable, _ = findReusableMcpAt(o.role, kind, o.cwd, o.name, fixed.model, o.approvals, o.mcp, fixed.effort, o.ompPolicyPath, ctx, env, cwd, reuseDir)
 		}
 	}
 	// Fixed-model profiles can be validated before taking the global
@@ -1501,9 +1511,9 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 			name = fieldAt(strings.Split(line, "\t"), 0)
 		}
 		if name != "" {
-			current := core.RosterLine(reuseDir, name)
-			if current != line || !ompReuseVerified(line, o.approvals, ompApproval) {
-				core.DieFriction("spawn: omp worker has no matching verified launch approval and MCP record; release it or use --fresh", 2, "", "spawn")
+			if core.RosterLine(reuseDir, name) != line {
+				// Selection proved the policy on this exact roster row.
+				refuseOMPReuse()
 			}
 		}
 	}
@@ -1829,8 +1839,15 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	if ompApproval != "" || len(o.envDrop) != 0 {
 		row = append(row, ompApproval)
 	}
+	envDrop := ""
 	if len(o.envDrop) != 0 {
-		row = append(row, envDropPrefix+strings.Join(o.envDrop, ","))
+		envDrop = envDropPrefix + strings.Join(o.envDrop, ",")
+	}
+	if envDrop != "" || o.ompPolicyPath != "" {
+		row = append(row, envDrop)
+	}
+	if o.ompPolicyPath != "" {
+		row = append(row, ompPolicyReceipt(o.ompPolicyPath))
 	}
 	core.RosterAppend(sd, row)
 	// A spawn that re-rosters a released pane (spawn --pane on it) retires
@@ -3027,6 +3044,9 @@ func freshSpawnArgs(o spawnOptions, lane, kind string, ctx *core.Config, env pla
 		warn(msg, ctx, env, "spawn")
 	}
 	args := launchArgs(kind, approvalsForArgs, o.model, o.effort, ctx, env, o.launchProfile, launchWarn)
+	if o.ompPolicyPath != "" {
+		args = append(args, "--config", o.ompPolicyPath)
+	}
 	// DJA-392/DJA-693: the mcp choice translates right after the effort args
 	// (buildArgs ends with them) and before the config and user args; a kind
 	// without a per-process flag warns once and the agent keeps the user's

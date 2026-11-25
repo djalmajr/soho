@@ -141,6 +141,9 @@ func cmdReopen(argv []string, ctx *core.Config, env platform.Env, cwd string) in
 	if newEffort != "" {
 		spawnArgs = append(spawnArgs, "--effort", newEffort)
 	}
+	if kind == "omp" && wkind == "omp" && field(9) != "" {
+		spawnArgs = append(spawnArgs, "--approvals", field(9))
+	}
 	if mcp != "" {
 		spawnArgs = append(spawnArgs, "--mcp", mcp)
 	}

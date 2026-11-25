@@ -12,6 +12,11 @@ import (
 )
 
 const ompFixtureModel = "openrouter/anthropic/claude-test"
+const ompFixturePolicy = "retry:\n  modelFallback: false\ntools:\n  approval:\n    task: deny\n"
+
+func ompFixturePolicyPath(skill string) string {
+	return filepath.Join(skill, "templates", "omp-managed-v1.yml")
+}
 
 func newOMPSpawnFixture(t *testing.T, overrides ...fakecli.Rule) spawnFixture {
 	t.Helper()
@@ -25,6 +30,17 @@ func newOMPSpawnFixture(t *testing.T, overrides ...fakecli.Rule) spawnFixture {
 	f.env["PATH"] = f.bin
 	f.env["TMPDIR"] = f.root
 	f.env["SOHO_CALLER_CHECK"] = "off"
+	policy := ompFixturePolicyPath(f.env["SOHO_SKILL_DIR"])
+	packaged, err := os.ReadFile(ompFixturePolicyPath(filepath.Join("..", "..", "skills", "soho")))
+	if err != nil || string(packaged) != ompFixturePolicy {
+		t.Fatalf("packaged OMP policy = %q, err=%v, want %q", packaged, err, ompFixturePolicy)
+	}
+	if err := os.MkdirAll(filepath.Dir(policy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policy, packaged, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := fakecli.Install(t, f.bin, "omp", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +58,11 @@ func TestSpawnOMPVerifiedLaunchAndReuse(t *testing.T) {
 			if code != 0 || !spawnJSONHasField(t, out, `"status": "ready"`) {
 				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, stderr)
 			}
-			want := []string{"--approval-mode", tc.mode, "--model", ompFixtureModel, "--thinking", "xhigh"}
+			policy, err := filepath.EvalSymlinks(ompFixturePolicyPath(f.env["SOHO_SKILL_DIR"]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"--approval-mode", tc.mode, "--model", ompFixtureModel, "--thinking", "xhigh", "--config", policy}
 			starts := 0
 			for _, call := range calls {
 				if len(call.Argv) < 2 || !slices.Equal(call.Argv[:2], []string{"agent", "start"}) {
@@ -60,7 +80,7 @@ func TestSpawnOMPVerifiedLaunchAndReuse(t *testing.T) {
 			sd := filepath.Join(f.state, "ws")
 			before := core.RosterLine(sd, "worker")
 			row := strings.Split(before, "\t")
-			if fieldAt(row, 9) != tc.approvals || fieldAt(row, 15) != "inherit" || fieldAt(row, 17) != "--approval-mode "+tc.mode {
+			if fieldAt(row, 9) != tc.approvals || fieldAt(row, 13) != "" || fieldAt(row, 15) != "inherit" || fieldAt(row, 17) != "--approval-mode "+tc.mode || fieldAt(row, 19) != "omp-policy:"+policy {
 				t.Fatalf("OMP opening settings missing from row: %q", before)
 			}
 			code, out, stderr, calls = runCmdSpawn(t, f, args)
@@ -123,6 +143,7 @@ func TestSpawnOMPRefusalsBeforeEffects(t *testing.T) {
 func TestSpawnOMPRefusesUnverifiedReuse(t *testing.T) {
 	for _, tc := range []struct{ name, approvals, receipt string }{
 		{"old row", "ask", ""}, {"mismatched receipt", "ask", "--approval-mode yolo"}, {"broader worker", "full", "--approval-mode yolo"},
+		{"historical approval but no policy", "ask", "--approval-mode always-ask"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newOMPSpawnFixture(t)
@@ -131,8 +152,101 @@ func TestSpawnOMPRefusesUnverifiedReuse(t *testing.T) {
 				row = append(row, "", tc.receipt)
 			}
 			f.roster(t, strings.Join(row, "\t"))
+			args := []string{"worker", "--kind", "omp", "--name", "worker", "--mcp", "inherit", "--approvals", "ask", "--model", ompFixtureModel, "--effort", "high"}
+			assertOMPSpawnRefusal(t, f, args, "no matching verified managed OMP launch")
+		})
+	}
+}
+
+func TestSpawnOMPManagedPolicyRefusesBeforePaneEffects(t *testing.T) {
+	for _, tc := range []struct{ name, body, diagnostic string }{
+		{"missing", "", "managed OMP policy"},
+		{"invalid", strings.Replace(ompFixturePolicy, "task: deny", "task: ask ", 1), "managed OMP policy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOMPSpawnFixture(t)
+			policy := ompFixturePolicyPath(f.env["SOHO_SKILL_DIR"])
+			if tc.body == "" {
+				if err := os.Remove(policy); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(policy, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"worker", "--fresh", "--kind", "omp", "--mcp", "inherit", "--approvals", "full", "--model", ompFixtureModel, "--effort", "high"}
+			assertOMPSpawnRefusal(t, f, args, tc.diagnostic)
+		})
+	}
+}
+
+func TestSpawnOMPManagedPolicyReuseAndCapacity(t *testing.T) {
+	for _, tc := range []struct {
+		name, requested  string
+		lane, compatible bool
+		wantCode         int
+	}{
+		{name: "ungrouped skips historical row", compatible: true},
+		{name: "lane skips historical row", lane: true, compatible: true},
+		{name: "lane preserves an explicit historical name with room", lane: true, compatible: true, requested: "worker", wantCode: 2},
+		{name: "global cap still counts historical worker", wantCode: 8},
+		{name: "lane cap still counts historical worker", lane: true, wantCode: 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOMPSpawnFixture(t, idleHerdrRule("compatible"),
+				fakecli.Rule{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"worker","pane_id":"p-old","agent_status":"idle"}]}}`})
+			group := ""
+			if tc.lane {
+				group = "build"
+				f.env["SOHO_LANES"] = "on"
+				limit := "1"
+				if tc.compatible {
+					limit = "3"
+				}
+				for key, value := range map[string]string{"lane_build_roles": "worker", "lane_build_panes": limit} {
+					f.ctx.Entries[key] = core.ConfigEntry{Value: value, Source: "project"}
+					f.ctx.Order = append(f.ctx.Order, key)
+				}
+			} else if !tc.compatible {
+				f.env["SOHO_MAX_WORKERS"] = "1"
+			}
+			row := []string{"worker", "p-old", "omp", "worker", "anthropic", "1", f.cwd, "now", ompFixtureModel, "ask", "worker", group, "", "", "high", "inherit", "", "--approval-mode always-ask"}
+			rows := []string{strings.Join(row, "\t")}
+			if tc.compatible {
+				policy, err := filepath.EvalSymlinks(ompFixturePolicyPath(f.env["SOHO_SKILL_DIR"]))
+				if err != nil {
+					t.Fatal(err)
+				}
+				row[0], row[1] = "compatible", "p-good"
+				rows = append(rows, strings.Join(append(row, "", "omp-policy:"+policy), "\t"))
+			}
+			f.roster(t, rows...)
+			before := rosterBytes(t, f)
 			args := []string{"worker", "--kind", "omp", "--mcp", "inherit", "--approvals", "ask", "--model", ompFixtureModel, "--effort", "high"}
-			assertOMPSpawnRefusal(t, f, args, "no matching verified launch approval and MCP record")
+			if tc.requested != "" {
+				args = append(args, "--name", tc.requested)
+			}
+			code, out, stderr, refusal, calls := runLaneModelSpawn(t, f, args)
+			if code != tc.wantCode || len(herdrActs(calls)) != 0 || rosterBytes(t, f) != before {
+				t.Fatalf("exit=%d want=%d out=%q stderr=%q refusal=%q terminal effects=%q", code, tc.wantCode, out, stderr, refusal, herdrActs(calls))
+			}
+			switch tc.wantCode {
+			case 0:
+				if !spawnJSONHasField(t, out, `"name": "compatible"`) || !spawnJSONHasField(t, out, `"reused": true`) {
+					t.Fatalf("compatible worker did not receive reuse: %q", out)
+				}
+			case 2:
+				if !strings.Contains(refusal, "no matching verified managed OMP launch") {
+					t.Fatalf("wrong same-name refusal: %q", refusal)
+				}
+			case 8:
+				if !strings.Contains(refusal, "max_workers=1 reached") {
+					t.Fatalf("wrong global cap refusal: %q", refusal)
+				}
+			case 10:
+				if !spawnJSONHasField(t, out, `"status": "busy"`) {
+					t.Fatalf("wrong lane cap result: %q", out)
+				}
+			}
 		})
 	}
 }
