@@ -23,6 +23,19 @@ const codexConfigScreen = "■ Failed to start turn: turn/start failed in TUI: t
 	"in `mcp_servers.old-server`\n" +
 	" (code -32600)\n"
 
+func hcStartupObservedPostSendGet(calls []fakecli.Call) bool {
+	sent := false
+	for _, call := range calls {
+		if isRealSend(call.Argv) {
+			sent = true
+		}
+		if sent && slices.Equal(call.Argv, []string{"get", "worker", "--json"}) {
+			return true
+		}
+	}
+	return false
+}
+
 // TestDispatchHcCodexConfigFailureDiagnosesReopen is the #314 consumer: after
 // one accepted send with no turn rise, the Codex config refusal is the cause
 // and the next command is soho reopen. No second send is issued.
@@ -32,9 +45,45 @@ func TestDispatchHcCodexConfigFailureDiagnosesReopen(t *testing.T) {
 		{Argv: []string{"read", "worker", "--lines", "0", "--json"}, Stdout: startupHcScreen(t, codexConfigScreen, true)},
 		{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":false}`},
 	}...))
+	// Give the fixture subprocess time under -race. Advance logical time
+	// only after accepting one post-send state, so the test reaches the
+	// visible-only diagnostic without depending on host scheduling.
+	f.env["SOHO_PROMPT_CHECK_SECONDS"] = "10"
+	oldNow, oldCeilingNow := platform.Now, dispatchCeilingNow
+	t.Cleanup(func() { platform.Now, dispatchCeilingNow = oldNow, oldCeilingNow })
+	base := oldNow()
+	deadline := base.Add(10 * time.Second)
+	postGetChecked := false
+	platform.Now = func() time.Time {
+		if postGetChecked {
+			return deadline
+		}
+		postGetChecked = hcStartupObservedPostSendGet(f.hcCalls(t))
+		return base
+	}
+	dispatchCeilingNow = func() time.Time { return base }
+
 	code, out, errText := f.run(t, "worker", f.brief, "--no-wait")
+	calls := f.hcCalls(t)
+	sends := hcSends(calls)
+	visibleReads := 0
+	sent := false
+	for _, call := range calls {
+		if isRealSend(call.Argv) {
+			sent = true
+		}
+		switch call.Argv[0] {
+		case "keys":
+			t.Fatalf("unexpected key send: %q", call.Argv)
+		case "read":
+			if !sent || !slices.Equal(call.Argv, []string{"read", "worker", "--lines", "0", "--json"}) {
+				t.Fatalf("unexpected screen read: %q", call.Argv)
+			}
+			visibleReads++
+		}
+	}
 	if code != 14 {
-		t.Fatalf("code=%d out=%s stderr=%s", code, out, errText)
+		t.Fatalf("code=%d sends=%d visible reads=%d post-send state observed=%t out=%s stderr=%s", code, len(sends), visibleReads, postGetChecked, out, errText)
 	}
 	if status := dispatchHcOutputStatus(t, out); status != "provider-error" {
 		t.Fatalf("status=%q, want provider-error (out=%s)", status, out)
@@ -42,8 +91,11 @@ func TestDispatchHcCodexConfigFailureDiagnosesReopen(t *testing.T) {
 	if !strings.Contains(out, provider.CodexConfigCause) || !strings.Contains(errText, provider.CodexConfigCause) {
 		t.Fatalf("missing reopen cause: out=%s stderr=%s", out, errText)
 	}
-	if sends := hcSends(f.hcCalls(t)); len(sends) != 1 {
+	if len(sends) != 1 {
 		t.Fatalf("sends=%#v, want exactly one (no retry)", sends)
+	}
+	if visibleReads != 1 || !postGetChecked {
+		t.Fatalf("visible reads=%d, post-send state observed=%t", visibleReads, postGetChecked)
 	}
 	f.assertHcNeverTouchedHerdr(t)
 }
@@ -171,18 +223,6 @@ func TestDispatchHcStartupStopObservation(t *testing.T) {
 			if err := os.WriteFile(roster, []byte(strings.Replace(string(body), "\tcodex\t", "\t"+tc.kind+"\t", 1)), 0600); err != nil {
 				t.Fatal(err)
 			}
-			postSendGet := func() bool {
-				sent := false
-				for _, call := range f.hcCalls(t) {
-					if isRealSend(call.Argv) {
-						sent = true
-					}
-					if sent && slices.Equal(call.Argv, []string{"get", "worker", "--json"}) {
-						return true
-					}
-				}
-				return false
-			}
 			oldNow, oldCeilingNow := platform.Now, dispatchCeilingNow
 			t.Cleanup(func() { platform.Now, dispatchCeilingNow = oldNow, oldCeilingNow })
 			base := oldNow()
@@ -193,7 +233,7 @@ func TestDispatchHcStartupStopObservation(t *testing.T) {
 				if arrivalClosed {
 					return deadline
 				}
-				if !arrivesWithoutExpiry && postSendGet() {
+				if !arrivesWithoutExpiry && hcStartupObservedPostSendGet(f.hcCalls(t)) {
 					// The first post-get clock read decides whether to keep
 					// the result. Close on the next read for an on-time idle.
 					if tc.name == "late idle" || postGetClockChecked {
