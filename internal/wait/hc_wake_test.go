@@ -155,9 +155,8 @@ func (f *hcWakeFixture) assertNoHerdr(t *testing.T) {
 }
 
 // runWait runs WaitFor with the fake writers. fakeClock advances one fake
-// minute per worker state read (the budget is then a generous 100 fake
-// minutes); otherwise the real clock and the given real-time budget run,
-// so the pause and the timeout are measured in wall time.
+// minute per worker state read and defaults to 100 fake minutes when no
+// budget is supplied. Otherwise the given budget uses the real clock.
 func (f *hcWakeFixture) runWait(t *testing.T, fakeClock bool, timeoutMs float64) (int, string, string) {
 	t.Helper()
 	var out, stderr bytes.Buffer
@@ -167,24 +166,16 @@ func (f *hcWakeFixture) runWait(t *testing.T, fakeClock bool, timeoutMs float64)
 	SetFrictionLogFile(friction)
 	if fakeClock {
 		platform.Now = func() time.Time {
-			n := 0
-			for _, c := range f.hcCalls(t) {
-				if len(c.Argv) == 3 && c.Argv[0] == "get" && c.Argv[1] == "worker" && c.Argv[2] == "--json" {
-					n++
-				}
-			}
-			return time.Unix(1700000000, 0).Add(time.Duration(n) * time.Minute)
+			return time.Unix(1700000000, 0).Add(time.Duration(f.getPolls(t)) * time.Minute)
 		}
 	}
 	t.Cleanup(func() {
 		platform.Now, platform.Stdout, platform.Stderr = oldNow, oldOut, oldErr
 		SetFrictionLogFile(oldFriction)
 	})
-	var timeout float64
-	if fakeClock {
+	timeout := timeoutMs
+	if fakeClock && timeout == 0 {
 		timeout = float64((100 * time.Minute) / time.Millisecond)
-	} else {
-		timeout = timeoutMs
 	}
 	code := WaitFor([]string{"worker"}, f.sd, f.ctx, f.env, timeout, false, f.base)
 	platform.Stdout, platform.Stderr = oldOut, oldErr
