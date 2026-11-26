@@ -16,11 +16,11 @@ import (
 )
 
 const (
-	ompPolicyAsset    = "omp-managed-v2.yml"
-	ompPolicyBytes    = "retry:\n  modelFallback: false\ntask:\n  maxRecursionDepth: 0\n"
+	ompPolicyAsset    = "omp-managed-v3.yml"
+	ompPolicyBytes    = "retry:\n  modelFallback: false\ncontextPromotion:\n  enabled: false\ntask:\n  maxRecursionDepth: 0\n"
 	ompPolicyColumn   = 19 // After the optional E2E port, OMP approval and environment policy.
 	ompApprovalColumn = 17
-	ompPolicyVersion  = "omp-policy:v2:"
+	ompPolicyVersion  = "omp-policy:v3:"
 	ompReuseReadLimit = time.Second
 )
 

@@ -16,7 +16,7 @@ import (
 )
 
 func TestReopenOMPManagedPolicy(t *testing.T) {
-	const policy = "retry:\n  modelFallback: false\ntask:\n  maxRecursionDepth: 0\n"
+	const policy = "retry:\n  modelFallback: false\ncontextPromotion:\n  enabled: false\ntask:\n  maxRecursionDepth: 0\n"
 	const oldPolicy = "retry:\n  modelFallback: false\ntools:\n  approval:\n    task: deny\n"
 	for _, tc := range []struct {
 		name, body  string
@@ -52,7 +52,7 @@ func TestReopenOMPManagedPolicy(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			policyPath := filepath.Join(skill, "templates", "omp-managed-v2.yml")
+			policyPath := filepath.Join(skill, "templates", "omp-managed-v3.yml")
 			oldPath := filepath.Join(skill, "templates", "omp-managed-v1.yml")
 			write(oldPath, oldPolicy)
 			if tc.body != "" {
@@ -113,7 +113,7 @@ func TestReopenOMPManagedPolicy(t *testing.T) {
 			}
 			if code != 0 {
 				pointerBody, err := os.ReadFile(pointer)
-				if err != nil || string(pointerBody) != report+"\n" || string(rowBytes) != before || out.Len() != 0 || !strings.Contains(stderr.String(), "managed OMP policy omp-managed-v2.yml") {
+				if err != nil || string(pointerBody) != report+"\n" || string(rowBytes) != before || out.Len() != 0 || !strings.Contains(stderr.String(), "managed OMP policy omp-managed-v3.yml") {
 					t.Fatalf("refusal altered old worker: out=%q stderr=%q roster=%q pointer=%q err=%v", out.String(), stderr.String(), rowBytes, pointerBody, err)
 				}
 				if len(calls) != 0 {
@@ -149,7 +149,7 @@ func TestReopenOMPManagedPolicy(t *testing.T) {
 			fields := strings.Split(core.RosterLine(sd, "worker"), "\t")
 			if err != nil || result.Name != "worker" || result.PaneID != "p2" || result.Status != "ready" ||
 				!strings.Contains(string(rowBytes), "worker\tp2\tomp\tworker\t") || strings.Contains(string(rowBytes), "p-old") ||
-				len(fields) != 20 || !strings.HasPrefix(fields[19], "omp-policy:v2:") {
+				len(fields) != 20 || !strings.HasPrefix(fields[19], "omp-policy:v3:") {
 				t.Fatalf("replacement not ready: stdout=%q stderr=%q roster=%q", out.String(), stderr.String(), rowBytes)
 			}
 		})

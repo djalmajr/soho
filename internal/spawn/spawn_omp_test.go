@@ -12,11 +12,11 @@ import (
 )
 
 const ompFixtureModel = "openrouter/anthropic/claude-test"
-const ompFixturePolicy = "retry:\n  modelFallback: false\ntask:\n  maxRecursionDepth: 0\n"
+const ompFixturePolicy = "retry:\n  modelFallback: false\ncontextPromotion:\n  enabled: false\ntask:\n  maxRecursionDepth: 0\n"
 const ompFixtureOldPolicy = "retry:\n  modelFallback: false\ntools:\n  approval:\n    task: deny\n"
 
 func ompFixturePolicyPath(skill string) string {
-	return filepath.Join(skill, "templates", "omp-managed-v2.yml")
+	return filepath.Join(skill, "templates", "omp-managed-v3.yml")
 }
 
 func newOMPSpawnFixture(t *testing.T, overrides ...fakecli.Rule) spawnFixture {
@@ -87,8 +87,8 @@ func TestSpawnOMPVerifiedLaunchAndReuse(t *testing.T) {
 			row := strings.Split(before, "\t")
 			receipt := fieldAt(row, 19)
 			if fieldAt(row, 9) != tc.approvals || fieldAt(row, 13) != "" || fieldAt(row, 15) != "inherit" ||
-				fieldAt(row, 17) != "--approval-mode "+tc.mode || !strings.HasPrefix(receipt, "omp-policy:v2:") ||
-				len(receipt) != len("omp-policy:v2:")+64 {
+				fieldAt(row, 17) != "--approval-mode "+tc.mode || !strings.HasPrefix(receipt, "omp-policy:v3:") ||
+				len(receipt) != len("omp-policy:v3:")+64 {
 				t.Fatalf("OMP opening settings missing from row: %q", before)
 			}
 			code, out, stderr, calls = runCmdSpawn(t, f, args)
@@ -151,13 +151,14 @@ func TestSpawnOMPRefusalsBeforeEffects(t *testing.T) {
 func TestSpawnOMPRefusesUnverifiedReuse(t *testing.T) {
 	for _, tc := range []struct {
 		name, approvals, receipt string
-		pathOnly                 bool
+		policyVersion            string
 	}{
 		{name: "old row", approvals: "ask"},
 		{name: "mismatched receipt", approvals: "ask", receipt: "--approval-mode yolo"},
 		{name: "broader worker", approvals: "full", receipt: "--approval-mode yolo"},
 		{name: "historical approval but no policy", approvals: "ask", receipt: "--approval-mode always-ask"},
-		{name: "historical path-only policy", approvals: "ask", receipt: "--approval-mode always-ask", pathOnly: true},
+		{name: "historical path-only policy", approvals: "ask", receipt: "--approval-mode always-ask", policyVersion: "v1"},
+		{name: "previous policy version", approvals: "ask", receipt: "--approval-mode always-ask", policyVersion: "v2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newOMPSpawnFixture(t)
@@ -165,12 +166,18 @@ func TestSpawnOMPRefusesUnverifiedReuse(t *testing.T) {
 			if tc.receipt != "" {
 				row = append(row, "", tc.receipt)
 			}
-			if tc.pathOnly {
+			if tc.policyVersion != "" {
 				policy, err := filepath.EvalSymlinks(ompFixturePolicyPath(f.env["SOHO_SKILL_DIR"]))
 				if err != nil {
 					t.Fatal(err)
 				}
-				row = append(row, "", "omp-policy:"+filepath.Join(filepath.Dir(policy), "omp-managed-v1.yml"))
+				oldPolicy := filepath.Join(filepath.Dir(policy), "omp-managed-"+tc.policyVersion+".yml")
+				receipt := "omp-policy:" + oldPolicy
+				if tc.policyVersion == "v2" {
+					opening := decodeOMPStartupAgent(ompStartupRecord("p2", "term_omp_start", "omp-session-start"))
+					receipt = strings.Replace(ompPolicyReceipt(oldPolicy, tc.approvals, opening), "omp-policy:v3:", "omp-policy:v2:", 1)
+				}
+				row = append(row, "", receipt)
 			}
 			f.roster(t, strings.Join(row, "\t"))
 			args := []string{"worker", "--kind", "omp", "--name", "worker", "--mcp", "inherit", "--approvals", "ask", "--model", ompFixtureModel, "--effort", "high"}
@@ -183,6 +190,7 @@ func TestSpawnOMPManagedPolicyRefusesBeforePaneEffects(t *testing.T) {
 	for _, tc := range []struct{ name, body, diagnostic string }{
 		{"missing", "", "is unavailable"},
 		{"invalid", strings.Replace(ompFixturePolicy, "maxRecursionDepth: 0", "maxRecursionDepth: 1", 1), "is invalid"},
+		{"context promotion enabled", strings.Replace(ompFixturePolicy, "enabled: false", "enabled: true", 1), "is invalid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newOMPSpawnFixture(t)
@@ -199,7 +207,7 @@ func TestSpawnOMPManagedPolicyRefusesBeforePaneEffects(t *testing.T) {
 				t.Fatal(err)
 			}
 			args := []string{"worker", "--fresh", "--kind", "omp", "--mcp", "inherit", "--approvals", "full", "--model", ompFixtureModel, "--effort", "high"}
-			assertOMPSpawnRefusal(t, f, args, "managed OMP policy omp-managed-v2.yml "+tc.diagnostic)
+			assertOMPSpawnRefusal(t, f, args, "managed OMP policy omp-managed-v3.yml "+tc.diagnostic)
 		})
 	}
 }

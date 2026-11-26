@@ -1,0 +1,6 @@
+retry:
+  modelFallback: false
+contextPromotion:
+  enabled: false
+task:
+  maxRecursionDepth: 0
