@@ -356,16 +356,10 @@ func TestDispatchLiveRunReviewDeliveryBoundary(t *testing.T) {
 				{Argv: []string{"send", "--json", "--", "worker"}, ArgvPrefix: true, Stdout: `{"turn":7,"started":false}`},
 			}...))
 			dispatchCeilingMargin = tc.margin
-			f.env["SOHO_PROMPT_CHECK_SECONDS"] = "1"
-			timelyRefusal := tc.name == "codex-amend-fast-error"
-			if timelyRefusal {
-				// This case proves advisory order and a timely refusal. Keep
-				// real room for the guard probes and send under the race detector.
-				f.env["SOHO_PROMPT_CHECK_SECONDS"] = "10"
-				now, oldClock := time.Now(), dispatchCeilingNow
-				dispatchCeilingNow = func() time.Time { return now }
-				t.Cleanup(func() { dispatchCeilingNow = oldClock })
+			if tc.flag == "--amend" {
+				f.scriptDispatchHc(t)
 			}
+			timelyRefusal := tc.name == "codex-amend-fast-error"
 			setLiveRunWorkerCwd(t, f)
 			setLiveRunWorkerKind(t, f, tc.kind)
 			code, out, stderr := f.run(t, "worker", f.brief, tc.flag, "--no-wait")

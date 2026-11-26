@@ -768,6 +768,9 @@ func TestDispatchHcBusyQueueRefusalAndSendError(t *testing.T) {
 			rules := []fakecli.Rule{{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "working")}, {Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`}, {Argv: []string{"send", "--json", "--", "worker"}, ArgvPrefix: true, Code: 1, Stderr: `{"error":{"kind":"unavailable","message":"failed"}}`}}
 			rules = append(rules, guardProbeRules()...)
 			f := newDispatchHcFixture(t, rules)
+			if tc.flag == "--amend" {
+				f.scriptDispatchHc(t)
+			}
 			rosterPath := filepath.Join(f.sd, "agents.tsv")
 			roster, err := os.ReadFile(rosterPath)
 			if err != nil {

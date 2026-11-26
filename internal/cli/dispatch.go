@@ -394,7 +394,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// One transport per dispatch: the herdr backend is built after the
 	// collaboration env clone above, so every herdr call sees the same env
 	// the adapter calls used to receive.
-	svc := backend.New(env)
+	svc := newDispatchServices(env)
 	kind := at(2)
 	// DJA-604 2b-3a fixes: the transport mode is resolved before the first
 	// provider check. Under hc the worker's readiness is the hc state alone

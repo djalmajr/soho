@@ -7,6 +7,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,13 +17,17 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/core"
+	"github.com/djalmajr/soho/internal/hc"
+	"github.com/djalmajr/soho/internal/hcbackend"
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/taskreport"
 	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
+	"github.com/djalmajr/soho/internal/transport"
 )
 
 const (
@@ -46,13 +51,14 @@ const (
 )
 
 type dispatchHcFixture struct {
-	root  string
-	state string
-	sd    string
-	bin   string
-	brief string
-	env   platform.Env
-	ctx   *core.Config
+	root    string
+	state   string
+	sd      string
+	bin     string
+	brief   string
+	env     platform.Env
+	ctx     *core.Config
+	hcRules []fakecli.Rule
 }
 
 // hcWorkerGet is one state read of the fixture's worker: live, the given
@@ -111,7 +117,180 @@ func newDispatchHcFixture(t *testing.T, rules []fakecli.Rule) *dispatchHcFixture
 		"SOHO_PROMPT_CHECK_SECONDS": "1", "SOHO_WAIT_POLL_MS": "50",
 		"GORACE": fakecli.RaceOptions(testutil.CleanEnv(t)),
 	}
-	return &dispatchHcFixture{root: root, state: state, sd: sd, bin: bin, brief: brief, env: env, ctx: &core.Config{Entries: map[string]core.ConfigEntry{}}}
+	return &dispatchHcFixture{root: root, state: state, sd: sd, bin: bin, brief: brief, env: env, ctx: &core.Config{Entries: map[string]core.ConfigEntry{}}, hcRules: all}
+}
+
+// scriptDispatchHc keeps the client parser and backend in the delivery path
+// while replacing their child launches. The shared ceiling advances with
+// scripted calls, including advisory reads before it starts. Calls still go
+// into the fixture log, in order with any real fake-exec calls from Run.
+func (f *dispatchHcFixture) scriptDispatchHc(t *testing.T) {
+	t.Helper()
+	log, err := os.OpenFile(filepath.Join(f.bin, "hc.calls.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldServices, oldClock := newDispatchServices, dispatchCeilingNow
+	t.Cleanup(func() {
+		newDispatchServices, dispatchCeilingNow = oldServices, oldClock
+		if err := log.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	clock := &dispatchHcScriptClock{t: t, now: time.Unix(0, 0)}
+	dispatchCeilingNow = func() time.Time { return clock.now }
+	calls := json.NewEncoder(log)
+	numbers := make(map[string]int)
+	for _, rule := range f.hcRules {
+		if rule.AnyArgs || rule.WaitFile != "" || rule.Signal != "" {
+			t.Fatalf("unsupported scripted dispatch hc rule: %+v", rule)
+		}
+	}
+	newDispatchServices = func(env platform.Env) transport.Services {
+		if env.Get("SOHO_TRANSPORT") != "hc" {
+			t.Fatal("scripted dispatch launcher requires transport=hc")
+		}
+		client := hc.New(env)
+		client.Launch = func(ctx context.Context, _ platform.Env, argv ...string) platform.RunResult {
+			remaining := clock.remaining(ctx)
+			if remaining <= 0 {
+				return platform.RunResult{TimedOut: true}
+			}
+			if err := calls.Encode(fakecli.Call{Argv: argv, Cwd: f.root}); err != nil {
+				t.Fatal(err)
+			}
+			key := strings.Join(argv, "\x00")
+			numbers[key]++
+			for _, rule := range f.hcRules {
+				matches := slices.Equal(argv, rule.Argv) ||
+					(rule.ArgvPrefix && len(argv) >= len(rule.Argv) && slices.Equal(argv[:len(rule.Argv)], rule.Argv))
+				if !matches || (rule.Call != 0 && rule.Call != numbers[key]) {
+					continue
+				}
+				elapsed := time.Duration(max(1, rule.Delay)) * time.Millisecond
+				clock.now = clock.now.Add(min(elapsed, remaining))
+				if elapsed >= remaining {
+					return platform.RunResult{TimedOut: true}
+				}
+				status := rule.Code
+				return platform.RunResult{Status: &status, Stdout: rule.Stdout + string(rule.StdoutBytes), Stderr: rule.Stderr + string(rule.StderrBytes)}
+			}
+			t.Fatalf("no scripted dispatch hc rule for %q", argv)
+			return platform.RunResult{}
+		}
+		svc := hcbackend.NewWithClient(env, client)
+		scripted := dispatchHcScriptTransport{Transport: svc.Runtime, LegacyTransport: svc.Legacy, clock: clock}
+		svc.Runtime, svc.Legacy = scripted, scripted
+		return svc
+	}
+}
+
+type dispatchHcScriptClock struct {
+	t   *testing.T
+	now time.Time
+}
+
+type dispatchHcScriptBudgetKey struct{}
+
+type dispatchHcScriptBudget struct {
+	parent   context.Context
+	launch   context.Context
+	deadline time.Time
+	timeout  time.Duration
+	guarded  bool
+}
+
+func (c *dispatchHcScriptClock) bind(ctx context.Context, call transport.Call, guarded bool) context.Context {
+	c.t.Helper()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// The scripted dispatch paths use deadline-free parents. Explicit
+	// cancellation is observable without consulting the adapter's real timer.
+	if _, ok := ctx.Deadline(); ok {
+		c.t.Fatal("scripted dispatch call has a parent deadline")
+	}
+	timeout := call.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second // Default for an unspecified hc call timeout.
+	}
+	budget := &dispatchHcScriptBudget{parent: ctx, deadline: c.now.Add(timeout), timeout: timeout, guarded: guarded}
+	return context.WithValue(ctx, dispatchHcScriptBudgetKey{}, budget)
+}
+
+func (c *dispatchHcScriptClock) remaining(ctx context.Context) time.Duration {
+	c.t.Helper()
+	budget, ok := ctx.Value(dispatchHcScriptBudgetKey{}).(*dispatchHcScriptBudget)
+	if !ok {
+		c.t.Fatal("scripted dispatch launch has no bound timeout")
+	}
+	if budget.parent.Err() != nil {
+		return 0
+	}
+	if budget.launch != nil && budget.launch != ctx {
+		if budget.guarded {
+			c.t.Fatal("guarded send changed context between launches")
+		}
+		// A raw roster read can resolve the session first, then list
+		// with a new adapter context and its own per-launch timeout.
+		budget.deadline = c.now.Add(budget.timeout)
+	}
+	budget.launch = ctx
+	return max(0, budget.deadline.Sub(c.now))
+}
+
+// The decorator binds the requested timeout before the real backend creates
+// a context or starts a launch. The advisory and delivery paths share only
+// the synthetic clock, never the same allowance.
+type dispatchHcScriptTransport struct {
+	transport.Transport
+	transport.LegacyTransport
+	clock *dispatchHcScriptClock
+}
+
+func (s dispatchHcScriptTransport) Get(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[transport.Terminal] {
+	return s.Transport.Get(s.clock.bind(ctx, call, false), target, call)
+}
+
+func (s dispatchHcScriptTransport) List(ctx context.Context, scope transport.Scope, call transport.Call) transport.Reply[[]transport.Terminal] {
+	return s.Transport.List(s.clock.bind(ctx, call, false), scope, call)
+}
+
+func (s dispatchHcScriptTransport) Send(ctx context.Context, target transport.Target, send transport.Send, call transport.Call) transport.Reply[string] {
+	return s.Transport.Send(s.clock.bind(ctx, call, !send.Queue), target, send, call)
+}
+
+func (s dispatchHcScriptTransport) AgentListRaw(ctx context.Context, call transport.Call) transport.Reply[[]json.RawMessage] {
+	return s.LegacyTransport.AgentListRaw(s.clock.bind(ctx, call, false), call)
+}
+
+func TestDispatchHcScriptBudgetIgnoresHostDeadline(t *testing.T) {
+	clock := &dispatchHcScriptClock{t: t, now: time.Unix(0, 0)}
+	parent, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	call := transport.Call{Timeout: time.Second}
+	bound := clock.bind(parent, call, true)
+	expired, cancel := context.WithDeadline(bound, time.Unix(-1, 0))
+	t.Cleanup(cancel)
+	if expired.Err() != context.DeadlineExceeded {
+		t.Fatal("the adapter deadline stand-in must already be expired")
+	}
+	if got := clock.remaining(expired); got != time.Second {
+		t.Fatalf("allowance at first launch = %s, want 1s", got)
+	}
+	clock.now = clock.now.Add(600 * time.Millisecond)
+	if got := clock.remaining(expired); got != 400*time.Millisecond {
+		t.Fatalf("allowance in the same guarded context = %s, want 400ms", got)
+	}
+	clock.now = clock.now.Add(400 * time.Millisecond)
+	if got := clock.remaining(expired); got != 0 {
+		t.Fatalf("exhausted allowance = %s, want 0", got)
+	}
+	next := clock.bind(parent, call, true)
+	stop()
+	if got := clock.remaining(next); got != 0 {
+		t.Fatalf("cancelled parent allowance = %s, want 0", got)
+	}
 }
 
 // newDispatchHcOpencodeFixture is the hc dispatch fixture with the roster

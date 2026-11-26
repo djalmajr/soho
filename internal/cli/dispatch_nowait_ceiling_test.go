@@ -289,10 +289,15 @@ func TestDispatchNoWaitCeilingRestoresUnsubmittedTask(t *testing.T) {
 // report, pointer and task title stand for the open task an amendment needs.
 func newHcAmendCeilingFixture(t *testing.T, rules []fakecli.Rule) (*dispatchHcFixture, string, []byte, string) {
 	t.Helper()
+	return newHcAmendCeilingFixtureWithProbes(t, guardProbeRules(), rules)
+}
+
+func newHcAmendCeilingFixtureWithProbes(t *testing.T, probes, rules []fakecli.Rule) (*dispatchHcFixture, string, []byte, string) {
+	t.Helper()
 	oldMargin := dispatchCeilingMargin
 	dispatchCeilingMargin = 0
 	t.Cleanup(func() { dispatchCeilingMargin = oldMargin })
-	f := newDispatchHcFixture(t, append(guardProbeRules(), rules...))
+	f := newDispatchHcFixture(t, append(probes, rules...))
 	f.env["SOHO_PROMPT_SETTLE_SECONDS"] = "0"
 	f.env["SOHO_PROMPT_CHECK_SECONDS"] = "1"
 	old := filepath.Join(f.sd, "reports", "worker-previous.md")
@@ -309,6 +314,33 @@ func newHcAmendCeilingFixture(t *testing.T, rules []fakecli.Rule) (*dispatchHcFi
 		t.Fatal(err)
 	}
 	return f, pointerPath, pointer, title
+}
+
+// Two individually timely probes exceed their shared guarded-send bound.
+// The schema launch is cancelled before any input can be sent.
+func TestDispatchNoWaitCeilingAmendGuardProbeAbortDoesNotSend(t *testing.T) {
+	probes := guardProbeRules()
+	probes[0].Delay, probes[1].Delay = 600, 600
+	f, _, _, _ := newHcAmendCeilingFixtureWithProbes(t, probes, []fakecli.Rule{
+		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
+		{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`},
+	})
+	f.scriptDispatchHc(t)
+	code, out, stderr := f.run(t, "worker", f.brief, "--amend", "--no-wait")
+	if code != 15 || dispatchHcOutputStatus(t, out) != "not-received" {
+		t.Fatalf("code=%d out=%s stderr=%s", code, out, stderr)
+	}
+	assertNoWaitCeilingLine(t, stderr, "1", "send to be accepted", "hc get worker && hc read worker")
+	calls := f.hcCalls(t)
+	var launchedProbes []string
+	for _, call := range calls {
+		if slices.Equal(call.Argv, probes[0].Argv) || slices.Equal(call.Argv, probes[1].Argv) {
+			launchedProbes = append(launchedProbes, strings.Join(call.Argv, " "))
+		}
+	}
+	if !slices.Equal(launchedProbes, []string{"send --help", "schema --json"}) || len(hcSends(calls)) != 0 {
+		t.Fatalf("probes=%v sends=%v, want two probes and no input", launchedProbes, hcSends(calls))
+	}
 }
 
 // F2: an hc amendment whose unproven send reaches the ceiling leaves exactly
