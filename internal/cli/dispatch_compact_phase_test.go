@@ -330,6 +330,179 @@ func TestDispatchCompactSuccessShowsThePhaseAndSendsAfterIt(t *testing.T) {
 	}
 }
 
+func TestDispatchPiCompactFailureReception(t *testing.T) {
+	const idle = `{"result":{"agent":{"name":"worker","pane_id":"p1","agent":"pi","agent_status":"idle","agent_session":{"kind":"pi","value":"session-1"},"state_change_seq":1}}}`
+	const empty = "────────────────────────\n\n────────────────────────\n"
+	for _, tc := range []struct {
+		name, state, screen, ending, marker string
+		clockStep                           time.Duration
+		sends                               int
+		replaceAfterScreen                  bool
+	}{
+		{name: "idle", state: idle, screen: empty, ending: compactScreens.piFailed, sends: 1},
+		{name: "busy", state: strings.Replace(idle, `"idle"`, `"working"`, 1), screen: empty, ending: compactScreens.piFailed},
+		{name: "draft", state: idle, screen: strings.Replace(empty, "\n\n", "\nunsent draft\n", 1), ending: compactScreens.piFailed},
+		{name: "different session", state: strings.Replace(idle, "session-1", "session-2", 1), screen: empty, ending: compactScreens.piFailed},
+		{name: "different session after screen", state: strings.Replace(idle, "session-1", "session-2", 1), screen: empty, ending: compactScreens.piFailed, replaceAfterScreen: true},
+		{name: "different pane", state: strings.Replace(idle, `"p1"`, `"p2"`, 1), screen: empty, ending: compactScreens.piFailed},
+		{name: "identity unavailable", state: compactPhaseIdleJSON, screen: empty, ending: compactScreens.piFailed},
+		{name: "working border", state: idle, screen: "── Working ──────────────\n\n────────────────────────\n", ending: compactScreens.piFailed},
+		{name: "pending receipt", state: idle, screen: empty, ending: compactScreens.piFailed, marker: "worker.not-received"},
+		{name: "matching prose", state: idle, screen: empty, ending: "Pi reported Compaction failed: example from the transcript\n"},
+		{name: "timeout", state: idle, screen: empty, ending: "> /compact\n", clockStep: 400 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			step := tc.clockStep
+			if step == 0 {
+				step = 500 * time.Millisecond
+			}
+			f := newCompactPhaseDispatchFixture(t, "", step)
+			rosterPath := filepath.Join(f.stateDir, "agents.tsv")
+			row := core.RosterLine(f.stateDir, "worker")
+			row = strings.Replace(row, "\tcodex\t", "\tpi\t", 1)
+			if err := os.WriteFile(rosterPath, []byte(row+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.marker != "" {
+				if err := os.WriteFile(filepath.Join(f.stateDir, "wait", tc.marker), []byte("pending\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			get := []string{"agent", "get", "worker"}
+			visible := []string{"agent", "read", "worker", "--source", "visible"}
+			var release string
+			if tc.sends == 1 || tc.replaceAfterScreen {
+				release = filepath.Join(f.root, "release")
+			}
+			firstFallback := tc.state
+			if tc.replaceAfterScreen {
+				firstFallback = idle
+			}
+			f.install(t, []fakecli.Rule{
+				{Argv: get, Call: 1, Stdout: idle},
+				{Argv: get, Call: 2, Stdout: idle},
+				{Argv: get, Call: 3, Stdout: firstFallback},
+				{Argv: get, Stdout: tc.state},
+				{Argv: compactReadArgv("worker"), Call: 1, Stdout: "old output line\n"},
+				{Argv: compactReadArgv("worker"), Stdout: tc.ending},
+				{Argv: visible, Stdout: tc.screen, WaitFile: release},
+				{Argv: []string{"pane", "send-text", "p1", "/compact"}, Stdout: `{"result":{}}`},
+				{Argv: []string{"pane", "send-keys", "p1", "Enter"}, Stdout: `{"result":{}}`},
+				{Argv: []string{"agent", "list"}, ArgvPrefix: true, Stdout: `{"result":{"agents":[]}}`},
+				{Argv: []string{"agent", "prompt", "worker"}, ArgvPrefix: true, Stdout: `{"result":{"sent":true}}`},
+				{Argv: []string{"pane", "title"}, ArgvPrefix: true, Code: 1},
+			})
+			marker := core.CompactPendingPath(f.stateDir, "worker")
+			var code int
+			var out, stderr string
+			if release != "" {
+				result := f.runAsync(t, "worker", f.brief, "--compact", "--no-wait")
+				deadline := time.Now().Add(8 * time.Second)
+				for countArgvPrefix(f.calls(t), visible) == 0 {
+					select {
+					case got := <-result:
+						t.Fatalf("dispatch stopped before the reception check: code=%d stdout=%q stderr=%q", got.code, got.out, got.err)
+					default:
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("dispatch did not reach the reception check")
+					}
+					time.Sleep(25 * time.Millisecond)
+				}
+				compactPhaseMarkerAbsent(t, marker)
+				compactPhaseNoTaskState(t, f)
+				if tc.replaceAfterScreen {
+					if n := countArgvPrefix(f.calls(t), get); n != 3 {
+						t.Fatalf("worker lookups before the visible response=%d, want 3", n)
+					}
+				}
+				if n := countArgvPrefix(f.calls(t), []string{"agent", "prompt"}); n != 0 {
+					t.Fatalf("brief prompt ran before fresh screen finished: %d", n)
+				}
+				if err := os.WriteFile(release, []byte("go\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				got := <-result
+				code, out, stderr = got.code, got.out, got.err
+			} else {
+				code, out, stderr = f.run(t, "worker", f.brief, "--compact", "--no-wait")
+			}
+			compactPhaseMarkerAbsent(t, marker)
+			calls := f.calls(t)
+			if n := countArgvPrefix(calls, []string{"pane", "send-text", "p1", "/compact"}); n != 1 {
+				t.Fatalf("compact sends=%d, want 1", n)
+			}
+			if n := countArgvPrefix(calls, []string{"agent", "prompt"}); n != tc.sends {
+				t.Fatalf("brief sends=%d, want %d; code=%d stdout=%q stderr=%q", n, tc.sends, code, out, stderr)
+			}
+			if tc.sends == 1 {
+				if code != 0 || strings.Count(strings.TrimSpace(out), "\n") != 0 ||
+					!strings.Contains(out, `"composed_prompt":`) || strings.Contains(out, `"status":"failed"`) ||
+					strings.Count(stderr, "continuing with the brief") != 1 {
+					t.Fatalf("safe result code=%d stdout=%q stderr=%q", code, out, stderr)
+				}
+				if !strings.Contains(out, `"compact":"failed"`) {
+					t.Fatalf("the resumed result omits compact=failed: code=%d stdout=%q", code, out)
+				}
+				if _, err := os.Stat(taskreport.TaskReportPointerPath(f.stateDir, "worker")); err != nil {
+					t.Fatalf("normal dispatch pointer missing: %v", err)
+				}
+				if n := countArgvPrefix(calls, visible); n == 0 {
+					t.Fatal("the successful fallback did not read a fresh visible screen")
+				}
+				return
+			}
+			status := `"status":"failed"`
+			if tc.name == "timeout" {
+				status = `"status":"timeout"`
+			}
+			if code != 9 || !strings.Contains(out, status) || !strings.Contains(stderr, "the brief was not sent") {
+				t.Fatalf("refused result code=%d stdout=%q stderr=%q", code, out, stderr)
+			}
+			if strings.Contains(out, `"compact"`) {
+				t.Fatalf("a refused dispatch reported a compact outcome: code=%d stdout=%q", code, out)
+			}
+			compactPhaseNoTaskState(t, f)
+		})
+	}
+}
+
+// TestDispatchStreamStopLogKeepsTheOrdinaryResult: dispatch's settled
+// observation keeps a raw tool log from becoming a provider-error result for
+// another kind, and a Claude kind alone is not enough either.
+func TestDispatchStreamStopLogKeepsTheOrdinaryResult(t *testing.T) {
+	for _, tc := range []struct{ name, kind, screen string }{
+		{name: "pi raw tool log", kind: "pi", screen: "Tool output:\nError: The response stopped arriving.\n"},
+		{name: "claude raw tool log", kind: "claude", screen: "Tool output:\nError: The response stopped arriving.\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCompactPhaseDispatchFixture(t, "", 500*time.Millisecond)
+			rosterPath := filepath.Join(f.stateDir, "agents.tsv")
+			row := core.RosterLine(f.stateDir, "worker")
+			row = strings.Replace(row, "\tcodex\t", "\t"+tc.kind+"\t", 1)
+			if err := os.WriteFile(rosterPath, []byte(row+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			state := fmt.Sprintf(`{"result":{"agent":{"name":"worker","pane_id":"p1","agent":%q,"agent_status":"idle","state_change_seq":1}}}`, tc.kind)
+			rules := []fakecli.Rule{
+				{Argv: []string{"agent", "get", "worker"}, Stdout: state},
+				{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "20"}, Stdout: tc.screen},
+				{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "40"}, Stdout: tc.screen},
+				{Argv: []string{"agent", "read", "worker", "--source", "recent-unwrapped", "--lines", "40"}, Stdout: tc.screen},
+			}
+			f.install(t, append(rules, compactPhasePlainDispatchRules...))
+			code, out, stderrText := f.run(t, "worker", f.brief, "--no-wait")
+			if code != 0 || !strings.Contains(out, `"wait_status":"submitted"`) ||
+				strings.Contains(out, `"status":"provider-error"`) {
+				t.Fatalf("code=%d stdout=%q stderr=%q; want the ordinary submitted result", code, out, stderrText)
+			}
+			if n := countArgvPrefix(f.calls(t), []string{"agent", "prompt"}); n != 1 {
+				t.Fatalf("brief sends=%d, want one", n)
+			}
+		})
+	}
+}
+
 // TestDispatchCompactTimeoutRemovesTheMarkerAndSendsNothing: a timeout in the
 // phase removes the marker, keeps the phase's own exit 9 and stdout JSON, and
 // sends nothing (no prompt, no task state).
@@ -1211,6 +1384,39 @@ func TestStatusCompactPhaseUnderNowriteWritesNothing(t *testing.T) {
 			after, err := os.ReadFile(marker)
 			if err != nil || string(after) != string(before) {
 				t.Fatalf("the marker changed under NOWRITE: %q err=%v", after, err)
+			}
+		})
+	}
+}
+
+// TestDispatchProviderEvidenceBehindStreamLog: the operational dispatch
+// scans must keep an older auth or model-plan diagnosis when an untrusted
+// stream-like line is the newest diagnostic on the same bounded screen.
+func TestDispatchProviderEvidenceBehindStreamLog(t *testing.T) {
+	const stream = "Error: The response stopped arriving."
+	const plan = "Error: Model unavailable on Plus"
+	for _, tc := range []struct {
+		name, screen, cause string
+		arrival             bool
+	}{
+		{name: "no-wait auth with trailing log", screen: r11Auth + "\n" + stream, cause: r11Auth},
+		{name: "no-wait reversed order", screen: stream + "\n" + r11Auth, cause: r11Auth},
+		{name: "arrival plan with trailing log", screen: plan + "\n" + stream, cause: plan, arrival: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setup := r11Case{initial: "Welcome to the worker", post: tc.screen, recent: tc.screen, mode: "idle", check: "1", authScreen: true}
+			if tc.arrival {
+				setup = r11Case{initial: tc.screen, mode: "idle", check: "1", cursorPlan: true}
+			}
+			f := newR11Fixture(t, setup)
+			args := []string{"worker", f.brief, "--timeout", "3000"}
+			if !tc.arrival {
+				args = append(args, "--no-wait")
+			}
+			code, out, stderr := f.run(t, args...)
+			if code != 14 || !strings.Contains(out, `"wait_status":"provider-error"`) ||
+				!strings.Contains(out, `"cause":"`+tc.cause+`"`) {
+				t.Fatalf("code=%d stdout=%q stderr=%q, want provider-error with cause %q", code, out, stderr, tc.cause)
 			}
 		})
 	}

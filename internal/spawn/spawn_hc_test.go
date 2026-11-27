@@ -29,6 +29,7 @@ import (
 	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/spawn/codexhooks"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 	"github.com/djalmajr/soho/internal/transport"
 )
@@ -202,6 +203,7 @@ func hcSpawnFixture(t *testing.T, role, kind string) (cwd, bin, state string, en
 	}
 	env = platform.Env{
 		"PATH": bin, "HOME": root, "TMPDIR": root, "SOHO_FAKECLI_CONFIG": bin,
+		"GORACE":         fakecli.RaceOptions([]string{"GORACE=" + testutil.HostRaceOptions()}),
 		"SOHO_SKILL_DIR": filepath.Join(root, "skill"), "SOHO_ROLES": roles,
 		"SOHO_DIR": state, "SOHO_TRANSPORT": "hc", "HC_TERMINAL_ID": "t1",
 		"SOHO_LANES": "off", "SOHO_NOWRITE": "0", "SOHO_WAIT_POLL_MS": "1",

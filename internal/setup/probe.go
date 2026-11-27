@@ -1,11 +1,13 @@
 package setup
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/jsonjs"
@@ -23,15 +25,20 @@ const ProbePrompt = "Reply with exactly ok"
 const timeoutRetryHint = " (a timeout does not prove the assistant is unavailable; retry with --timeout 90)"
 
 // probeKindDefaultTimeout is the window a kind probes with when neither
-// --timeout nor SOHO_PROBE_TIMEOUT is set: codex gets 60 s (its
-// Windows cold start timed out at the 20 s window, a false negative), every
-// other kind stays at 20 s.
+// --timeout nor SOHO_PROBE_TIMEOUT is set: codex and agy get 60 s (codex's
+// Windows cold start and a reported agy setup probe exhausted the 20 s
+// window while the same model subsequently started), every other kind stays
+// at 20 s. The agy duration is reported, not measured here.
 func probeKindDefaultTimeout(kind string) int {
-	if kind == "codex" {
+	if kind == "codex" || kind == "agy" {
 		return 60
 	}
 	return 20
 }
+
+// probeRunCLI is the bounded command runner used by the probe. Tests replace
+// it to record the effective timeout without waiting for a real CLI.
+var probeRunCLI = platform.RunCli
 
 var noAuthRE = regexp.MustCompile(`(?i)not logged in|not (yet )?authenticated|please (log|sign) ?in|log ?in (to|first)|unauthorized|unauthenticated|(missing|no|invalid) (api )?key|api key (is )?(missing|required)|authentication (failed|required|error)|access denied|no (valid )?credentials`)
 
@@ -57,6 +64,18 @@ func probeDefaultModel(ctx *core.Config, k string, env platform.Env, cwd string)
 	}
 	return m
 }
+
+var probeAgySelectorRE = regexp.MustCompile(`^[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*$`)
+
+func probeAgyModel(model, source string, timeout int, env platform.Env, cwd string) Probe {
+	const maxSeconds = int64((1<<63 - 1) / time.Second)
+	budget := time.Duration(min(int64(timeout), maxSeconds)) * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	model = kinds.ResolveAgyProbeModel(ctx, model, env, probeRunCLI)
+	return probeOneWithContext(ctx, "agy", model, source, timeout, env, cwd)
+}
+
 func probeArgs(k, m string) []string {
 	ma := kinds.KindModelArgs(k, m, "", nil)
 	switch k {
@@ -70,20 +89,42 @@ func probeArgs(k, m string) []string {
 		return append(append([]string{"-p", "--no-session", ProbePrompt}, ma...), nil...)
 	case "opencode":
 		return append(append([]string{"run", ProbePrompt}, ma...), nil...)
+	case "omp":
+		approval, _ := kinds.OMPApprovalArgs("ask")
+		args := append([]string{"-p", "--no-session", "--no-tools"}, approval...)
+		return append(append(args, ma...), "--", ProbePrompt)
 	default:
 		return []string{ProbePrompt}
 	}
 }
 
 func probeOne(ctx *core.Config, k, m, source string, timeout int, env platform.Env, cwd string) Probe {
+	return probeOneWithContext(nil, k, m, source, timeout, env, cwd)
+}
+
+func probeOneWithContext(ctx context.Context, k, m, source string, timeout int, env platform.Env, cwd string) Probe {
+	timedOut := func() Probe {
+		return Probe{k, m, "error", fmt.Sprintf("timeout after %ds%s", timeout, timeoutRetryHint), source}
+	}
+	opts := platform.RunOptions{Context: ctx, Env: env, Cwd: cwd, OutputFiles: true}
+	if ctx == nil {
+		opts.TimeoutMs = timeout * 1000
+	} else {
+		deadline, _ := ctx.Deadline()
+		remaining := time.Until(deadline).Milliseconds()
+		if ctx.Err() != nil || remaining <= 0 {
+			return timedOut()
+		}
+		opts.TimeoutMs = int(min(remaining, int64(^uint(0)>>1)))
+	}
 	exe := kinds.KindExe(k)
 	if _, ok := platform.FindExecutable(exe, env, platform.Current()); !ok {
 		return Probe{k, m, "error", "not installed", source}
 	}
-	r := platform.RunCli(exe, probeArgs(k, m), platform.RunOptions{Env: env, Cwd: cwd, TimeoutMs: timeout * 1000, OutputFiles: true})
+	r := probeRunCLI(exe, probeArgs(k, m), opts)
 	combined := r.Stdout + r.Stderr
-	if r.TimedOut || (r.Status == nil && r.Signal != "") {
-		return Probe{k, m, "error", fmt.Sprintf("timeout after %ds%s", timeout, timeoutRetryHint), source}
+	if r.TimedOut || (r.Status == nil && (r.Signal != "" || (ctx != nil && ctx.Err() != nil))) {
+		return timedOut()
 	}
 	for _, line := range strings.Split(combined, "\n") {
 		if noAuthRE.MatchString(line) {
@@ -155,6 +196,7 @@ func CmdProbe(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		}
 		flagTimeout = n
 	}
+	explicitAgySelector := kind == "agy" && probeAgySelectorRE.MatchString(model)
 	if kind != "" {
 		found := false
 		for _, k := range kinds.KnownKinds {
@@ -176,6 +218,10 @@ func CmdProbe(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		pairs = append(pairs, pair{kind, model, "configured"})
 	} else {
 		for _, k := range kinds.KnownKinds {
+			// OMP's provider probe requires an explicit kind selection.
+			if k == "omp" {
+				continue
+			}
 			pairs = append(pairs, pair{k, probeDefaultModel(ctx, k, env, cwd), "configured"})
 		}
 		for _, k := range []string{"pi", "opencode"} {
@@ -209,7 +255,12 @@ func CmdProbe(args []string, ctx *core.Config, env platform.Env, cwd string) {
 		if flagTimeout > 0 {
 			timeout = flagTimeout
 		}
-		result := probeOne(ctx, p.k, p.m, p.s, timeout, env, cwd)
+		var result Probe
+		if explicitAgySelector {
+			result = probeAgyModel(p.m, p.s, timeout, env, cwd)
+		} else {
+			result = probeOne(ctx, p.k, p.m, p.s, timeout, env, cwd)
+		}
 		probes = append(probes, jsonjs.O("kind", result.Kind, "model", result.Model, "status", result.Status, "cause", result.Cause, "source", result.Source))
 	}
 	if skipped == nil {

@@ -275,10 +275,11 @@ func sendWarning(message string) { core.Warn(message, frictionLogFile, "wait") }
 // reported state, the unavailable cause, the reported status message and
 // the rendered state_change_seq ("" when the read carries none).
 type stateProbe struct {
-	State string
-	Cause string
-	Msg   string
-	Seq   string
+	State                    string
+	Cause                    string
+	Msg                      string
+	Seq                      string
+	legacyWorkingClaudeReply string
 }
 
 // readScreen runs the agent's screen read through the transport with the
@@ -300,7 +301,7 @@ func readState(svc transport.Services, agent string) stateProbe {
 	if rep.Err != nil {
 		cause = rep.Err.Message
 	}
-	return stateProbe{State: rep.Value.State, Cause: cause, Msg: rep.Value.Msg, Seq: seqText(rep.Value.Sequence)}
+	return stateProbe{State: rep.Value.State, Cause: cause, Msg: rep.Value.Msg, Seq: seqText(rep.Value.Sequence), legacyWorkingClaudeReply: rep.Value.LegacyWorkingClaudeReply}
 }
 
 // seqText renders the transported state_change_seq as jsString rendered the
@@ -584,13 +585,125 @@ func ProbeAgent(sd, agent, report string, ctx *core.Config, env platform.Env) st
 	return probeAgent(sd, agent, report, ctx, backend.New(env), env, nil)
 }
 
+// claudeStreamWorker identifies a working observation from raw Herdr metadata.
+type claudeStreamWorker struct {
+	pane, session, sequence string
+}
+
+func claudeStreamIdentity(raw, agent, pane, sequence string) claudeStreamWorker {
+	if raw == "" || pane == "" || !uintPattern.MatchString(sequence) {
+		return claudeStreamWorker{}
+	}
+	var record struct {
+		Error  json.RawMessage
+		Result struct {
+			Agent struct {
+				Name     string          `json:"name"`
+				Pane     string          `json:"pane_id"`
+				Kind     string          `json:"agent"`
+				State    string          `json:"agent_status"`
+				Sequence json.RawMessage `json:"state_change_seq"`
+				Session  struct {
+					Kind  string `json:"kind"`
+					Value string `json:"value"`
+				} `json:"agent_session"`
+			}
+		}
+	}
+	if json.Unmarshal([]byte(raw), &record) != nil || len(record.Error) != 0 {
+		return claudeStreamWorker{}
+	}
+	worker := record.Result.Agent
+	if worker.Name != agent || worker.Pane != pane || worker.Kind != "claude" || worker.State != "working" ||
+		string(worker.Sequence) != sequence || worker.Session.Kind != "id" || strings.TrimSpace(worker.Session.Value) == "" {
+		return claudeStreamWorker{}
+	}
+	return claudeStreamWorker{pane: pane, session: worker.Session.Value, sequence: sequence}
+}
+
+func confirmClaudeStreamWorker(svc transport.Services, agent string, worker claudeStreamWorker) bool {
+	reply := svc.Legacy.AgentGetRaw(context.Background(), transport.Target{ID: agent}, transport.Call{Timeout: herdr.Timeout})
+	return reply.Valid && reply.Err == nil && claudeStreamIdentity(reply.Value, agent, worker.pane, worker.sequence) == worker
+}
+
+// claudeStreamProbe is kept only for consecutive polls of one wait invocation.
+// An error already on screen could be old. A clean frame must first be seen,
+// then extended with the error, and the resulting full frame must repeat.
+type claudeStreamProbe struct {
+	worker    claudeStreamWorker
+	rosterRow string
+	report    string
+	size      int
+	frame     [sha256.Size]byte
+	candidate bool
+}
+
+func (previous claudeStreamProbe) observe(worker claudeStreamWorker, row, report, frame string) (claudeStreamProbe, string) {
+	frame = strings.TrimRight(strings.ReplaceAll(frame, "\r\n", "\n"), "\n \t")
+	if frame == "" {
+		return claudeStreamProbe{}, ""
+	}
+	next := claudeStreamProbe{worker: worker, rosterRow: row, report: report, size: len(frame), frame: sha256.Sum256([]byte(frame))}
+	history, cause := provider.ClaudeStreamStop(frame)
+	if cause == "" {
+		if strings.Contains(text.ASCIILower(frame), "the response stopped arriving") {
+			return claudeStreamProbe{}, ""
+		}
+		return next, ""
+	}
+	if previous.worker != worker || previous.rosterRow != row || previous.report != report {
+		return claudeStreamProbe{}, ""
+	}
+	if previous.candidate && previous.frame == next.frame {
+		return claudeStreamProbe{}, cause
+	}
+	if !previous.candidate && previous.size == len(history) && sha256.Sum256([]byte(history)) == previous.frame {
+		next.candidate = true
+		return next, ""
+	}
+	return claudeStreamProbe{}, ""
+}
+
 type probeScreen struct {
 	frames        []string
 	read          bool
 	nativeWorking bool
+	claudeStream  claudeStreamProbe
+}
+
+// waitStartupStop uses the quota viewport as a cheap first check. On
+// legacy Herdr, confirm a possible stop on the complete visible capture.
+func waitStartupStop(sd, agent, kind, state string, frame transport.Reply[string], svc transport.Services, native bool) *provider.Detection {
+	screen, ok := provider.StartupStopScreen(frame, native)
+	if !ok {
+		return nil
+	}
+	d := provider.StartupProviderStop(kind, state, screen)
+	if d != nil && !native {
+		screen, ok = readScreen(svc, agent, "visible", nil)
+		if !ok {
+			return nil
+		}
+		d = provider.StartupProviderStop(kind, state, screen)
+	}
+	if d != nil {
+		// A frame shown on a working poll is already observed. Keep the
+		// existing screen hash as the comparison without storing its text.
+		previous, _ := readWaitFile(sd, agent, "stuck-hash")
+		current := strconv.FormatUint(uint64(CksumField(NormalizeScreen(screen))), 10)
+		if strings.TrimSpace(previous) == current {
+			return nil
+		}
+	}
+	return d
 }
 
 func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Services, env platform.Env, sample *probeScreen) string {
+	var previousClaudeStream claudeStreamProbe
+	if sample != nil {
+		previousClaudeStream = sample.claudeStream
+		sample.claudeStream = claudeStreamProbe{}
+	}
 	capture := func(text string, ok bool) string {
 		if sample != nil {
 			sample.read = true
@@ -667,7 +780,9 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 	// dialog and exits 7). A launch-only or blank screen does not block the
 	// wait: the guard acts only on the active dialog, so no TUI banner is
 	// demanded and ordinary in-progress output is never inferred away.
-	probeKind := field(strings.Split(core.RosterLine(sd, agent), "\t"), 2)
+	probeRow := core.RosterLine(sd, agent)
+	probeFields := strings.Split(probeRow, "\t")
+	probeKind := field(probeFields, 2)
 	if startup.Enabled(probeKind) {
 		cursorScreen, cursorScreenOK := readScreen(svc, agent, "visible", nil)
 		capture(cursorScreen, cursorScreenOK)
@@ -717,7 +832,7 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 	}
 	if st.State == "blocked" {
 		blockedRecent, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
-		p := provider.ProviderDetectTexts(st.State, blockedRecent, "", "")
+		p := provider.ProviderDetectTextsWithStreamGate(st.State, blockedRecent, "", "", provider.NoStreamProvenance)
 		if p != nil && (p.Status == "provider-refusal" || p.Cause == provider.LostConnectionCause) {
 			_ = os.Remove(queuedFile)
 			_ = os.Remove(retryFile)
@@ -785,12 +900,12 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 		clearProvider()
 	}
 	var screen string
-	screenRead := false
+	screenRead, screenOK := false, false
 	visible := func() string {
 		if !screenRead {
 			visibleText, visibleOK := readScreen(svc, agent, "visible", nil)
 			screen = capture(visibleText, visibleOK)
-			screenRead = true
+			screenRead, screenOK = true, visibleOK
 		}
 		return screen
 	}
@@ -814,6 +929,24 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 		if p := provider.LostConnection(text); p != nil {
 			writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
 			return "provider-error"
+		}
+		if sample != nil && env.Get("SOHO_TRANSPORT") != "hc" && probeKind == "claude" && screenOK {
+			worker := claudeStreamIdentity(st.legacyWorkingClaudeReply, agent, field(probeFields, 1), st.Seq)
+			if worker != (claudeStreamWorker{}) {
+				next, cause := previousClaudeStream.observe(worker, probeRow, report, text)
+				// The ordinary state read binds the clean anchor. The next
+				// poll must match it. A possible stop also needs a fresh
+				// identity check after each error frame before it can count.
+				if (next.size != 0 || cause != "") &&
+					(!(next.candidate || cause != "") || confirmClaudeStreamWorker(svc, agent, worker)) &&
+					core.RosterLine(sd, agent) == probeRow && !reportNonEmpty(report) {
+					sample.claudeStream = next
+					if cause != "" {
+						writeWaitFile(sd, agent, "provider-cause", cause+"\n")
+						return "provider-error"
+					}
+				}
+			}
 		}
 		hash := strconv.FormatUint(uint64(CksumField(NormalizeScreen(text))), 10)
 		now := platform.Now().Unix()
@@ -841,7 +974,7 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 					if env.Get("SOHO_TRANSPORT") == "hc" {
 						inspect = "hc read " + agent
 					}
-					sendWarning(fmt.Sprintf("agent '%s' has shown the same screen (apart from counters) for %d min while working; it may be stuck in one tool call. Inspect: %s", agent, mins, inspect))
+					sendWarning(fmt.Sprintf("agent '%s' has shown the same screen (apart from counters) for %d min while working; it may be stuck in one tool call. Inspect: %s", agent, mins, inspect) + foregroundProcessHint(text))
 					writeWaitFile(sd, agent, "stuck-warned", "")
 				}
 			}
@@ -851,7 +984,8 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 		}
 	}
 	if st.State != "working" {
-		quotaVisible, _ := readScreen(svc, agent, "visible", intPtr(20))
+		visible := svc.Runtime.Read(context.Background(), transport.Target{ID: agent}, transport.Read{Source: "visible", Lines: intPtr(20)}, transport.Call{})
+		quotaVisible := visible.Value
 		if quota := provider.QuotaDetect(st.State, quotaVisible); quota != nil {
 			_ = os.Remove(queuedFile)
 			_ = os.Remove(retryFile)
@@ -871,15 +1005,20 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 			}
 		}
 		ptext, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
-		p := core.ProviderDetectTexts(st.State, ptext, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
+		p := core.ProviderDetectTextsWithStreamGate(st.State, ptext, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env), claudeStreamSettledGate(sd, agent, probeRow, report, probeKind, env, visible))
+		immediate := p != nil && ((p.Status == "provider-error" && p.Auth) || p.Status == "provider-refusal" || p.Cause == provider.LostConnectionCause)
+		if p == nil && provider.StartupStopKind(probeKind) {
+			p = waitStartupStop(sd, agent, probeKind, st.State, visible, svc, env.Get("SOHO_TRANSPORT") == "hc")
+			immediate = p != nil
+		}
+		if immediate {
+			_ = os.Remove(queuedFile)
+			_ = os.Remove(retryFile)
+			clearProvider()
+			writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
+			return p.Status
+		}
 		if p != nil {
-			if (p.Status == "provider-error" && p.Auth) || p.Status == "provider-refusal" || p.Cause == provider.LostConnectionCause {
-				_ = os.Remove(queuedFile)
-				_ = os.Remove(retryFile)
-				clearProvider()
-				writeWaitFile(sd, agent, "provider-cause", p.Cause+"\n")
-				return p.Status
-			}
 			target := fmt.Sprintf("%d\n%s", CksumField(ptext), p.Status)
 			prev, _ := readWaitFile(sd, agent, "provider")
 			if prev != target {
@@ -1160,6 +1299,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 	seenCollab := map[string]string{}
 	idleAlerts := map[string]*idleAlert{}
 	queuedAlerts := map[queuedAlertIdentity]bool{}
+	claudeStreams := map[string]claudeStreamProbe{}
 	idleMinutes := idleAlertMinutes(ctx, env)
 	settle := func(agent string) {
 		if anyDone {
@@ -1182,6 +1322,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 	}
 	for {
 		pending := []string{}
+		nextClaudeStreams := map[string]claudeStreamProbe{}
 		for _, agent := range remaining {
 			report := core.LastReport(sd, agent)
 			report = observeReport(sd, agent, report, ctx, env, cwd)
@@ -1246,8 +1387,11 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 				settle(agent)
 				continue
 			}
-			var sample probeScreen
+			sample := probeScreen{claudeStream: claudeStreams[agent]}
 			state := probeAgent(sd, agent, report, ctx, svc, env, &sample)
+			if sample.claudeStream.size != 0 {
+				nextClaudeStreams[agent] = sample.claudeStream
+			}
 			tag := strings.SplitN(state, "\t", 2)[0]
 			alert := idleAlerts[agent]
 			if alert == nil {
@@ -1494,6 +1638,7 @@ func waitFor(agents []string, sd string, ctx *core.Config, env platform.Env, tim
 			return rc
 		}
 		remaining = pending
+		claudeStreams = nextClaudeStreams
 		if len(remaining) == 0 {
 			return rc
 		}
@@ -2125,4 +2270,39 @@ func releasedChildReason(name string, ctx *core.Config, env platform.Env, cwd st
 			"' is still open outside the roster (released without --close); close it with: soho release " + safe + " --close"
 	}
 	return ""
+}
+
+var chromiumLogLine = regexp.MustCompile(`^\[\d+:\d+:\d{4}/[\d.]+:(ERROR|WARNING):`)
+
+// foregroundProcessHint looks for recent process output on an already stuck
+// screen. The text is advisory and the screen does not establish ownership.
+func foregroundProcessHint(screen string) string {
+	lines := strings.Split(strings.TrimSpace(screen), "\n")
+	for _, line := range lines[max(0, len(lines)-8):] {
+		line = strings.TrimSpace(line)
+		if chromiumLogLine.MatchString(line) ||
+			strings.HasPrefix(line, "DevTools listening on ws://") ||
+			strings.HasPrefix(line, "Server listening on http://") ||
+			strings.HasPrefix(line, "Server listening on https://") {
+			return ". Browser or server output is still visible. If a foreground process is blocking the turn, use soho procs stop <pid> for a verified process you started and registered"
+		}
+	}
+	return ""
+}
+
+// claudeStreamSettledGate authorizes only the built-in stream branch of the
+// existing scan: a Claude roster row with a readable visible frame carrying
+// the exact signed stop, completed-turn footer and bare composer. Auth,
+// configured, capacity and all other diagnoses are selected by the scan
+// without consulting this gate. No extra read or write happens here.
+func claudeStreamSettledGate(sd, agent, row, report, kind string, env platform.Env, frame transport.Reply[string]) func(string) string {
+	return func(string) string {
+		if kind != "claude" || env.Get("SOHO_TRANSPORT") == "hc" || !frame.Valid || frame.Err != nil ||
+			core.RosterLine(sd, agent) != row || reportNonEmpty(report) {
+			return ""
+		}
+		visible := strings.TrimRight(strings.ReplaceAll(frame.Value, "\r\n", "\n"), "\n \t")
+		_, cause := provider.ClaudeStreamStop(visible)
+		return cause
+	}
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/dispatch"
+	"github.com/djalmajr/soho/internal/kinds"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/setuptext"
 	textutil "github.com/djalmajr/soho/internal/text"
@@ -377,6 +378,9 @@ func CmdSetup(args []string, ctx *core.Config, env platform.Env, cwd string) {
 	}
 	if wantPlan && wantProbe {
 		platform.DieFriction("setup: --probe and --plan are exclusive", 2)
+	}
+	if !wantProbe && !containsSetupArg(args, "--detect") && !containsSetupArg(args, "--roles") && kinds.GrokClaudeHooksRisk(env, platform.ProjectRoot(env, cwd)) == kinds.GrokHooksWarn {
+		_, _ = fmt.Fprintf(platform.Stderr, "soho: warning: %s\n", kinds.GrokClaudeHooksWarningText)
 	}
 	implicitLocal := false
 	if !wantProbe && !containsSetupArg(args, "--detect") {

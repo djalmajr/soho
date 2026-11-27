@@ -820,18 +820,23 @@ func TestMutationRunsCarryPerRunTimeout(t *testing.T) {
 	}
 }
 
-// The pre-move embedded tree contained 35 files, references/review-severity.md
-// made 36 and references/recipes.md 37; the count and two representative paths
-// guard the package boundary and embed patterns.
+// The pre-move embedded tree contained 35 files. review-severity.md,
+// recipes.md and the managed OMP policy versions brought the count to 39. The count
+// and representative paths guard the package boundary and embed patterns.
 func TestEmbeddedTreeBeforePackageMove(t *testing.T) {
 	files, _, err := bundledFiles()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 37 {
-		t.Fatalf("embedded file count = %d, want 37", len(files))
+	if len(files) != 39 {
+		t.Fatalf("embedded file count = %d, want 39", len(files))
 	}
-	found := map[string]bool{"SKILL.md": false, "roles/implementer.md": false}
+	found := map[string]bool{
+		"SKILL.md":                     false,
+		"roles/implementer.md":         false,
+		"templates/omp-managed-v2.yml": false,
+		"templates/omp-managed-v3.yml": false,
+	}
 	for _, file := range files {
 		if _, ok := found[file.name]; ok {
 			found[file.name] = true

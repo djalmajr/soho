@@ -2,12 +2,14 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/djalmajr/soho/internal/herdr"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
@@ -769,4 +771,394 @@ func runAndCapture(t *testing.T, env platform.Env, args []string, out, stderr *s
 	if code := Run(args, env); code != 0 {
 		t.Fatalf("soho %v exited %d (stderr %s)", args, code, stderr.String())
 	}
+}
+
+// The CLI preamble takes a state path before CmdInit runs. These fixtures
+// put the state INSIDE the fixture repo (commandFixture defaults to outside)
+// so the real command has to choose between .gitignore and info/exclude.
+func TestInitLocalStateIgnoreThroughCLI(t *testing.T) {
+	ignoreBytes := func(t *testing.T, repo string) []byte {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(repo, ".gitignore"))
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			t.Fatalf("read .gitignore: %v", err)
+		}
+		return data
+	}
+	assertIgnored := func(t *testing.T, env platform.Env, repo, rel string) {
+		t.Helper()
+		cmd := exec.Command("git", "-C", repo, "check-ignore", "-q", rel)
+		cmd.Env = env.List()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git check-ignore %q failed: %v: %s", rel, err, out)
+		}
+	}
+
+	t.Run("legacy local init uses the exclude and preserves .gitignore", func(t *testing.T) {
+		env, repo := commandFixture(t)
+		env = herdrInitFixtureOver(t, env, repo, herdrAgentEntry("orchestrator", "p1", "claude", "ws", repo))
+		env["SOHO_SETUP_TARGET"] = "local"
+		const rel = "local-state"
+		env["SOHO_DIR"] = filepath.Join(repo, rel)
+		before := ignoreBytes(t, repo)
+
+		code, out, stderr := runInitCaptured(t, env)
+		if code != 0 || !strings.Contains(out, `"orchestrator": "orchestrator"`) {
+			t.Fatalf("legacy local init exit=%d stdout=%s stderr=%s", code, out, stderr)
+		}
+		if after := ignoreBytes(t, repo); string(before) != string(after) {
+			t.Fatalf("local init changed .gitignore: %q -> %q", before, after)
+		}
+		exclude, err := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude"))
+		if err != nil || !strings.Contains(string(exclude), "/"+rel+"\n") {
+			t.Fatalf("exclude=%q err=%v", exclude, err)
+		}
+		assertIgnored(t, env, repo, rel)
+		rec := readRecordJSON(t, env["SOHO_DIR"], "ws")
+		assertRecordFields(t, rec, recordJSON{Schema: 1, ProjectRoot: repo, SessionID: "ws", Terminal: "p1", Name: "orchestrator", Kind: "claude", Task: filepath.Base(repo)})
+	})
+
+	t.Run("explicit canonical control keeps the tracked ignore append", func(t *testing.T) {
+		env, repo := commandFixture(t)
+		env = herdrInitFixtureOver(t, env, repo, herdrAgentEntry("orchestrator", "p1", "claude", "ws", repo))
+		env["SOHO_SETUP_TARGET"] = "canonical"
+		const rel = "local-state"
+		env["SOHO_DIR"] = filepath.Join(repo, rel)
+
+		code, out, stderr := runInitCaptured(t, env)
+		if code != 0 || !strings.Contains(out, `"orchestrator": "orchestrator"`) {
+			t.Fatalf("canonical init exit=%d stdout=%s stderr=%s", code, out, stderr)
+		}
+		data, err := os.ReadFile(filepath.Join(repo, ".gitignore"))
+		if err != nil || !strings.Contains(string(data), rel) {
+			t.Fatalf("canonical .gitignore=%q err=%v", data, err)
+		}
+	})
+
+	t.Run("local mode with an external state path keeps existing behavior", func(t *testing.T) {
+		env, repo := commandFixture(t)
+		env = herdrInitFixtureOver(t, env, repo, herdrAgentEntry("orchestrator", "p1", "claude", "ws", repo))
+		env["SOHO_SETUP_TARGET"] = "local"
+		// commandFixture's SOHO_DIR is outside the repo; leave it as is.
+		before := ignoreBytes(t, repo)
+
+		code, out, stderr := runInitCaptured(t, env)
+		if code != 0 || !strings.Contains(out, `"orchestrator": "orchestrator"`) {
+			t.Fatalf("external local init exit=%d stdout=%s stderr=%s", code, out, stderr)
+		}
+		if after := ignoreBytes(t, repo); string(before) != string(after) {
+			t.Fatalf("external state changed .gitignore: %q -> %q", before, after)
+		}
+	})
+
+	t.Run("refused legacy local caller leaves Git ignore files unchanged", func(t *testing.T) {
+		herdr.ResetCallerCheck()
+		scriptCallerTree(t, true)
+		env, repo := commandFixture(t)
+		const pane = "ws:p1"
+		shell, _ := callerShellPIDs()
+		bin := t.TempDir()
+		if _, err := fakecli.Install(t, bin, "herdr", []fakecli.Rule{
+			{Argv: []string{"pane", "process-info", "--pane", pane}, Stdout: fmt.Sprintf(`{"result":{"process_info":{"shell_pid":%d}}}`, shell)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		env["PATH"] = bin + string(os.PathListSeparator) + env.Get("PATH")
+		env["SOHO_FAKECLI_CONFIG"] = bin
+		env["HERDR_ENV"] = "1"
+		env["HERDR_PANE_ID"] = pane
+		env["SOHO_CALLER_CHECK"] = "refuse"
+		env["SOHO_SETUP_TARGET"] = "local"
+		env["SOHO_DIR"] = filepath.Join(repo, "local-state")
+		exclude := filepath.Join(repo, ".git", "info", "exclude")
+		before := []byte("# pre-existing exclude\n")
+		if err := os.MkdirAll(filepath.Dir(exclude), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(exclude, before, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		code, out, stderr := runInitCaptured(t, env)
+		if code != 2 || out != "" || !strings.Contains(stderr, "its process tree does not reach the pane's shell") {
+			t.Fatalf("refused local init code=%d stdout=%q stderr=%q", code, out, stderr)
+		}
+		if _, err := os.Stat(filepath.Join(repo, ".gitignore")); !os.IsNotExist(err) {
+			t.Fatalf("refused local init wrote .gitignore: %v", err)
+		}
+		after, err := os.ReadFile(exclude)
+		if err != nil || string(after) != string(before) {
+			t.Fatalf("refused local init changed info/exclude: %q -> %q err=%v", before, after, err)
+		}
+		for _, path := range []string{
+			env["SOHO_DIR"],
+			filepath.Join(env["SOHO_DIR"], "friction.log"),
+			filepath.Join(env["SOHO_DIR"], "ws", "orchestrator.json"),
+			filepath.Join(env["SOHO_DIR"], "ws", "agents.tsv"),
+		} {
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatalf("refused local init left %s behind: %v", path, err)
+			}
+		}
+	})
+
+	t.Run("pending former-state migration refuses before any local write", func(t *testing.T) {
+		env, repo := commandFixture(t)
+		env = herdrInitFixtureOver(t, env, repo, herdrAgentEntry("orchestrator", "p1", "claude", "ws", repo))
+		env["SOHO_SETUP_TARGET"] = "local"
+		delete(env, "SOHO_DIR")
+		if err := os.MkdirAll(filepath.Join(repo, ".herdr-soho"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		exclude := filepath.Join(repo, ".git", "info", "exclude")
+		before := []byte("# pre-existing exclude\n")
+		if err := os.MkdirAll(filepath.Dir(exclude), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(exclude, before, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		code, out, stderr := runInitCaptured(t, env)
+		if code != 2 || out != "" || !strings.Contains(stderr, "is waiting for 'soho setup'") {
+			t.Fatalf("pending migration init code=%d stdout=%q stderr=%q", code, out, stderr)
+		}
+		if _, err := os.Lstat(filepath.Join(repo, ".gitignore")); !os.IsNotExist(err) {
+			t.Fatalf("pending migration wrote .gitignore: %v", err)
+		}
+		after, err := os.ReadFile(exclude)
+		if err != nil || string(after) != string(before) {
+			t.Fatalf("pending migration changed info/exclude: %q -> %q err=%v", before, after, err)
+		}
+		if _, err := os.Lstat(filepath.Join(repo, ".soho")); !os.IsNotExist(err) {
+			t.Fatalf("pending migration initialized state: %v", err)
+		}
+	})
+
+	t.Run("failed pane discovery keeps the migration diagnostic", func(t *testing.T) {
+		herdr.ResetCallerCheck()
+		env, repo := commandFixture(t)
+		// Without this deletion an inherited workspace id bypasses the
+		// failing pane-current rule and the fixture proves nothing.
+		delete(env, "HERDR_WORKSPACE_ID")
+		rules := append(herdrInitRules(repo, herdrAgentEntry("orchestrator", "p1", "claude", "ws", repo)),
+			fakecli.Rule{Argv: []string{"pane", "current", "--current"}, Code: 1, Stderr: "cannot resolve current pane\n"})
+		bin := t.TempDir()
+		if _, err := fakecli.Install(t, bin, "herdr", rules); err != nil {
+			t.Fatal(err)
+		}
+		env = withFakeCLI(env, bin)
+		env = withHostGit(t, env, bin)
+		env["HERDR_ENV"] = "1"
+		env["HERDR_PANE_ID"] = "p1"
+		env["SOHO_SETUP_TARGET"] = "local"
+		delete(env, "SOHO_DIR")
+		if err := os.MkdirAll(filepath.Join(repo, ".herdr-soho"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		exclude := filepath.Join(repo, ".git", "info", "exclude")
+		before := []byte("# pre-existing exclude\n")
+		if err := os.MkdirAll(filepath.Dir(exclude), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(exclude, before, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		code, out, stderr := runInitCaptured(t, env)
+		if code != 2 || out != "" || !strings.Contains(stderr, "is waiting for 'soho setup'") || strings.Contains(stderr, "cannot resolve current pane") {
+			t.Fatalf("failed-discovery migration init code=%d stdout=%q stderr=%q", code, out, stderr)
+		}
+		if _, err := os.Lstat(filepath.Join(repo, ".gitignore")); !os.IsNotExist(err) {
+			t.Fatalf("failed discovery wrote .gitignore: %v", err)
+		}
+		after, err := os.ReadFile(exclude)
+		if err != nil || string(after) != string(before) {
+			t.Fatalf("failed discovery changed info/exclude: %q -> %q err=%v", before, after, err)
+		}
+		if _, err := os.Lstat(filepath.Join(repo, ".soho")); !os.IsNotExist(err) {
+			t.Fatalf("failed discovery initialized state: %v", err)
+		}
+	})
+
+	t.Run("denied caller with an existing unignored session writes no log", func(t *testing.T) {
+		herdr.ResetCallerCheck()
+		scriptCallerTree(t, true)
+		env, repo := commandFixture(t)
+		const pane = "ws:p1"
+		shell, _ := callerShellPIDs()
+		bin := t.TempDir()
+		if _, err := fakecli.Install(t, bin, "herdr", []fakecli.Rule{
+			{Argv: []string{"pane", "process-info", "--pane", pane}, Stdout: fmt.Sprintf(`{"result":{"process_info":{"shell_pid":%d}}}`, shell)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		env["PATH"] = bin + string(os.PathListSeparator) + env.Get("PATH")
+		env["SOHO_FAKECLI_CONFIG"] = bin
+		env["HERDR_ENV"] = "1"
+		env["HERDR_PANE_ID"] = pane
+		env["SOHO_CALLER_CHECK"] = "refuse"
+		env["SOHO_SETUP_TARGET"] = "local"
+		state := filepath.Join(repo, "local-state")
+		env["SOHO_DIR"] = state
+		session := filepath.Join(state, "ws")
+		if err := os.MkdirAll(session, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		ignore := filepath.Join(repo, ".gitignore")
+		// Both rules name the session path: the old literal-rule fallback
+		// checked exactly this operand after Git returned an unignored 1.
+		ignoreBefore := []byte("local-state/ws/\n!local-state/ws/\n")
+		if err := os.WriteFile(ignore, ignoreBefore, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		exclude := filepath.Join(repo, ".git", "info", "exclude")
+		excludeBefore := []byte("# pre-existing exclude\n")
+		if err := os.MkdirAll(filepath.Dir(exclude), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(exclude, excludeBefore, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(repo, "outside-friction.log")
+		if err := os.Symlink(target, filepath.Join(session, "friction.log")); err != nil {
+			t.Skipf("symlinks are unavailable: %v", err)
+		}
+
+		code, out, stderr := runInitCaptured(t, env)
+		if code != 2 || out != "" || !strings.Contains(stderr, "its process tree does not reach the pane's shell") {
+			t.Fatalf("denied caller code=%d stdout=%q stderr=%q", code, out, stderr)
+		}
+		if after, err := os.ReadFile(ignore); err != nil || string(after) != string(ignoreBefore) {
+			t.Fatalf("denied caller changed .gitignore: %q -> %q err=%v", ignoreBefore, after, err)
+		}
+		if after, err := os.ReadFile(exclude); err != nil || string(after) != string(excludeBefore) {
+			t.Fatalf("denied caller changed info/exclude: %q -> %q err=%v", excludeBefore, after, err)
+		}
+		if _, err := os.Lstat(target); !os.IsNotExist(err) {
+			t.Fatalf("denied caller wrote through the redirected log: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(session, "orchestrator.json")); !os.IsNotExist(err) {
+			t.Fatalf("denied caller registered a record: %v", err)
+		}
+	})
+
+	t.Run("explicit local init outside Git keeps in-project state", func(t *testing.T) {
+		env, _ := commandFixture(t)
+		outside := t.TempDir()
+		t.Chdir(outside)
+		env = herdrInitFixtureOver(t, env, outside, herdrAgentEntry("orchestrator", "p1", "claude", "ws", outside))
+		env["SOHO_SETUP_TARGET"] = "local"
+		delete(env, "SOHO_DIR")
+
+		code, out, stderr := runInitCaptured(t, env)
+		if code != 0 || !strings.Contains(out, `"orchestrator": "orchestrator"`) {
+			t.Fatalf("non-git local init exit=%d stdout=%q stderr=%q", code, out, stderr)
+		}
+		// The auxiliary orchestrator record requires a Git root. Outside
+		// Git, init still creates and reports its ordinary state directory.
+		var result struct {
+			StateDir string `json:"state_dir"`
+		}
+		if err := json.Unmarshal([]byte(out), &result); err != nil {
+			t.Fatalf("decode non-git init result: %v, stdout=%q", err, out)
+		}
+		want, err := filepath.EvalSymlinks(filepath.Join(outside, ".soho", "ws"))
+		if err != nil {
+			t.Fatalf("non-git local init did not create in-project state: %v", err)
+		}
+		got, err := filepath.EvalSymlinks(result.StateDir)
+		if err != nil || got != want {
+			t.Fatalf("non-git local init reported state_dir=%q, want %q (err=%v)", result.StateDir, want, err)
+		}
+		if info, err := os.Stat(filepath.Join(want, "agents.tsv")); err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("non-git local init did not create an ordinary roster: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(outside, ".gitignore")); !os.IsNotExist(err) {
+			t.Fatalf("non-git local init wrote .gitignore: %v", err)
+		}
+	})
+
+	t.Run("Git failure in a worktree refuses local state creation", func(t *testing.T) {
+		env, repo := commandFixture(t)
+		env = herdrInitFixtureOver(t, env, repo, herdrAgentEntry("orchestrator", "p1", "claude", "ws", repo))
+		if _, err := fakecli.Install(t, env.Get("SOHO_FAKECLI_CONFIG"), "git", []fakecli.Rule{{AnyArgs: true, Code: 128, Stderr: "git probe failed"}}); err != nil {
+			t.Fatal(err)
+		}
+		env["SOHO_SETUP_TARGET"] = "local"
+		env["SOHO_DIR"] = filepath.Join(repo, "local-state")
+		exclude := filepath.Join(repo, ".git", "info", "exclude")
+		original := []byte("# existing exclude\n")
+		if err := os.MkdirAll(filepath.Dir(exclude), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(exclude, original, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		code, out, stderr := runInitCaptured(t, env)
+		if code != 4 || out != "" || !strings.Contains(stderr, "could not verify the Git work tree") {
+			t.Fatalf("failed Git probe exit=%d stdout=%q stderr=%q", code, out, stderr)
+		}
+		if _, err := os.Lstat(env["SOHO_DIR"]); !os.IsNotExist(err) {
+			t.Fatalf("failed Git probe created state: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(repo, ".gitignore")); !os.IsNotExist(err) {
+			t.Fatalf("failed Git probe wrote .gitignore: %v", err)
+		}
+		if after, err := os.ReadFile(exclude); err != nil || string(after) != string(original) {
+			t.Fatalf("failed Git probe changed info/exclude: %q, err=%v", after, err)
+		}
+	})
+
+	t.Run("leading-dash state operand is passed to Git after --", func(t *testing.T) {
+		env, repo := commandFixture(t)
+		env = herdrInitFixtureOver(t, env, repo, herdrAgentEntry("orchestrator", "p1", "claude", "ws", repo))
+		env["SOHO_SETUP_TARGET"] = "local"
+		const rel = "-state"
+		env["SOHO_DIR"] = filepath.Join(repo, rel)
+		ignore := filepath.Join(repo, ".gitignore")
+		before := ignoreBytes(t, repo)
+
+		code, out, stderr := runInitCaptured(t, env)
+		if code != 0 || !strings.Contains(out, `"orchestrator": "orchestrator"`) {
+			t.Fatalf("leading-dash local init exit=%d stdout=%q stderr=%q", code, out, stderr)
+		}
+		if after := ignoreBytes(t, repo); string(before) != string(after) {
+			t.Fatalf("leading-dash state changed .gitignore: %q -> %q", before, after)
+		}
+		cmd := exec.Command("git", "-C", repo, "check-ignore", "-q", "--", rel+"/")
+		cmd.Env = env.List()
+		if probeOut, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("state operand %q was not ignored: %v: %s", rel, err, probeOut)
+		}
+		if _, err := os.Lstat(ignore); !os.IsNotExist(err) && string(before) != string(ignoreBytes(t, repo)) {
+			t.Fatal("leading-dash state modified the tracked ignore file")
+		}
+	})
+
+	t.Run("native local init uses the exclude after validation", func(t *testing.T) {
+		env, repo := commandFixture(t)
+		env, _ = hcFixture(t, env, repo, "t1")
+		env["SOHO_SETUP_TARGET"] = "local"
+		const rel = "local-state"
+		env["SOHO_DIR"] = filepath.Join(repo, rel)
+		before := ignoreBytes(t, repo)
+
+		code, out, stderr := runInitCaptured(t, env)
+		if code != 0 || !strings.Contains(out, `"orchestrator": "orchestrator"`) {
+			t.Fatalf("native local init exit=%d stdout=%s stderr=%s", code, out, stderr)
+		}
+		if after := ignoreBytes(t, repo); string(before) != string(after) {
+			t.Fatalf("native local init changed .gitignore: %q -> %q", before, after)
+		}
+		exclude, err := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude"))
+		if err != nil || !strings.Contains(string(exclude), "/"+rel+"\n") {
+			t.Fatalf("native exclude=%q err=%v", exclude, err)
+		}
+		assertIgnored(t, env, repo, rel)
+	})
 }

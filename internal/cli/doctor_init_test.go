@@ -139,6 +139,8 @@ func TestDoctorCodexHooksWindowsCommands(t *testing.T) {
 	env = withFakeCLI(env, bin)
 	env["HERDR_ENV"] = "1"
 	env["HERDR_WORKSPACE_ID"] = "ws"
+	// This fixture checks Codex hook diagnostics. Grok's Claude hook advisory has its own coverage.
+	env["GROK_CLAUDE_HOOKS_ENABLED"] = "0"
 	tm6Write(t, filepath.Join(env.Get("SOHO_DIR"), "ws", "agents.tsv"), "# name\tpane\tkind\trole\nreview\tp2\tcodex\treviewer\n")
 	tm6Write(t, filepath.Join(repo, ".claude", "settings.json"), `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"soho hook reminder"}]}],"SessionStart":[{"hooks":[{"type":"command","command":"soho hook doctor"}]}]}}`)
 	// A missing Codex hook must trigger the warning, proving that the live roster was inspected.

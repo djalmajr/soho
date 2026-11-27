@@ -26,6 +26,16 @@ func migrateProjectRoles(project string, env platform.Env, dry bool) []string {
 	defer root.Close()
 	info, err := root.Lstat(old)
 	if os.IsNotExist(err) {
+		// A previous command may have moved the last role but failed the
+		// exclude write. On a real run, retry only that idempotent step when
+		// the migrated directory is a valid roles directory. Plans and
+		// projects with neither directory stay passive.
+		if dry {
+			return nil
+		}
+		if dest, statErr := root.Lstat(next); statErr == nil && dest.IsDir() {
+			return migrateRolesExclude(project, env, dry)
+		}
 		return nil
 	}
 	kept := func(path string, cause any) string {
@@ -113,8 +123,10 @@ func migrateProjectRoles(project string, env platform.Env, dry bool) []string {
 			lines = append(lines, "migrate: removed the empty "+filepath.Join(project, old))
 		}
 	}
+	// If the former directory was present, an actual move is what
+	// warrants extending the exclude. A conflict-only run leaves it alone.
 	if moved {
-		lines = append(lines, migrateRolesExclude(project, env)...)
+		lines = append(lines, migrateRolesExclude(project, env, dry)...)
 	}
 	return lines
 }
@@ -143,33 +155,43 @@ func cmdSetupRoles(args []string, env platform.Env, cwd string) {
 
 // Only Git's local exclude is extended; tracked ignore/instruction files are
 // never candidates. Git resolves a linked worktree to its common exclude.
-func migrateRolesExclude(project string, env platform.Env) []string {
-	file := excludePath(project, env)
-	if file == "" {
+func migrateRolesExclude(project string, env platform.Env, dry bool) []string {
+	if excludePath(project, env) == "" {
 		return nil
 	}
-	if reason := excludeRedirect(project, env); reason != "" {
+	var result []string
+	if reason := lockedCommonExclude(project, env, "setup", dry, func(file string) string {
+		info, err := os.Lstat(file)
+		if os.IsNotExist(err) {
+			return ""
+		}
+		if err != nil || !info.Mode().IsRegular() {
+			result = []string{fmt.Sprintf("migrate: kept %s: not a readable regular exclude file", file)}
+			return ""
+		}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			result = []string{fmt.Sprintf("migrate: kept %s: %v", file, err)}
+			return ""
+		}
+		updated, rule := rolesExcludeResult(string(data))
+		if rule == "" {
+			return ""
+		}
+		if dry {
+			result = []string{fmt.Sprintf("migrate: would add %s to %s", rule, file)}
+			return ""
+		}
+		if err := writeSharedExclude(file, string(data), updated, false); err != nil {
+			result = []string{fmt.Sprintf("migrate: kept %s: %v", file, err)}
+			return ""
+		}
+		result = []string{fmt.Sprintf("migrate: added %s to %s", rule, file)}
+		return ""
+	}); reason != "" {
 		return []string{"migrate: kept the exclude: " + reason}
 	}
-	info, err := os.Lstat(file)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil || !info.Mode().IsRegular() {
-		return []string{fmt.Sprintf("migrate: kept %s: not a readable regular exclude file", file)}
-	}
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return []string{fmt.Sprintf("migrate: kept %s: %v", file, err)}
-	}
-	updated, rule := rolesExcludeResult(string(data))
-	if rule == "" {
-		return nil
-	}
-	if err := platform.AtomicWrite(file, updated); err != nil {
-		return []string{fmt.Sprintf("migrate: kept %s: %v", file, err)}
-	}
-	return []string{fmt.Sprintf("migrate: added %s to %s", rule, file)}
+	return result
 }
 
 func rolesExcludeResult(text string) (string, string) {

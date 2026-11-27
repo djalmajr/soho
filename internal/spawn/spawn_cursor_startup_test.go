@@ -471,3 +471,54 @@ func TestSpawnCursorWindowsReuseClippedTrustRefuses(t *testing.T) {
 	assertNoStart(t, calls)
 	assertNoInputIntoTheDialog(t, calls)
 }
+
+func TestSpawnAgyLoginAdmission(t *testing.T) {
+	const login = "Welcome to the Antigravity CLI. You are currently not signed in.\r\nSelect login method:\r\n> 1. Google OAuth\r\n"
+	for _, tc := range []struct {
+		name, screen   string
+		reuse, blocked bool
+	}{
+		{"fresh selector", login, false, true},
+		{"reused selector", login, true, true},
+		{"fresh history", login + "Agy ready\n❯ ", false, false},
+		{"reused ready", "Agy ready\n❯ ", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSpawnFixture(t, append(cursorFreshRules(tc.screen, false), freshSpawnRules()...))
+			configureSpawnFixture(t, &f)
+			if _, err := fakecli.Install(t, f.bin, "agy", nil); err != nil {
+				t.Fatal(err)
+			}
+			if tc.reuse {
+				cols := strings.Split(cursorReuseRow("implementer", f.cwd), "\t")
+				cols[2], cols[4], cols[14] = "agy", "google", "high"
+				f.roster(t, strings.Join(cols, "\t"))
+			}
+			code, out, errText, calls := runCmdSpawn(t, f, []string{"implementer", "--kind", "agy", "--effort", "high", "--mcp", "inherit"})
+			if tc.blocked {
+				if code != 7 || !spawnJSONHasField(t, out, `"status": "blocked_at_startup"`) || !strings.Contains(out, "> 1. Google OAuth") || !strings.Contains(errText, "Agy requires Google OAuth sign-in") {
+					t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, errText)
+				}
+				assertCursorSpawnEvidence(t, out, "idle", "sign-in-required")
+			} else if code != 0 || !spawnJSONHasField(t, out, `"status": "ready"`) || strings.Contains(out, "startup_evidence") {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, errText)
+			}
+			if tc.reuse {
+				assertNoStart(t, calls)
+				if !spawnJSONHasField(t, out, `"reused": true`) {
+					t.Fatalf("reuse missing from spawn JSON: %s", out)
+				}
+			}
+			body, err := os.ReadFile(filepath.Join(f.state, "ws", "agents.tsv"))
+			if err != nil || !strings.Contains(string(body), "\tagy\timplementer\t") {
+				t.Fatalf("managed Agy row missing: %q, err=%v", body, err)
+			}
+			assertNoInputIntoTheDialog(t, calls)
+			for _, call := range calls {
+				if len(call.Argv) >= 2 && call.Argv[0] == "pane" && call.Argv[1] == "close" {
+					t.Fatalf("spawn closed the Agy pane: %#v", call)
+				}
+			}
+		})
+	}
+}

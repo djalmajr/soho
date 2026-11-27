@@ -1,6 +1,7 @@
 package kinds
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -202,7 +203,18 @@ func hasModelSource(kind string) bool {
 // ignores the 1-hour copy read (the copy is still rewritten on success);
 // fromCopy reports whether the returned list came from that copy.
 func modelIDs(kind string, env platform.Env, skipCopy bool) ([]string, bool, error) {
-	if kind == "pi" || kind == "opencode" {
+	return lookupModelIDs(kind, env, skipCopy, nil)
+}
+
+const agyModelListTimeout = 30 * time.Second
+
+type agyProbeLookup struct {
+	ctx context.Context
+	run func(string, []string, platform.RunOptions) platform.RunResult
+}
+
+func lookupModelIDs(kind string, env platform.Env, skipCopy bool, probe *agyProbeLookup) ([]string, bool, error) {
+	if kind == "pi" || kind == "opencode" || kind == "omp" {
 		return nil, false, nil
 	}
 	file := ModelsCacheFile(kind, env)
@@ -245,14 +257,31 @@ func modelIDs(kind string, env platform.Env, skipCopy bool) ([]string, bool, err
 	case "cursor", "agy", "grok":
 		timeout, ok := seconds(20)
 		if kind == "agy" {
-			timeout, ok = seconds(30)
+			timeout, ok = seconds(agyModelListTimeout.Seconds())
 		}
 		if ok {
 			exe, args := kind, []string{"models"}
 			if kind == "cursor" {
 				exe, args = "cursor-agent", []string{"--list-models"}
 			}
-			r := platform.RunCli(exe, args, platform.RunOptions{Env: env, TimeoutMs: timeout})
+			run := platform.RunCli
+			opts := platform.RunOptions{Env: env, TimeoutMs: timeout}
+			if probe != nil {
+				deadline, bounded := probe.ctx.Deadline()
+				remaining := time.Until(deadline).Milliseconds()
+				if !bounded || probe.ctx.Err() != nil || remaining <= 0 {
+					return nil, false, nil
+				}
+				// Zero and sub-millisecond overrides can otherwise
+				// disable RunCli's timeout. Use the bounded default.
+				if timeout <= 0 {
+					timeout = int(agyModelListTimeout.Milliseconds())
+				}
+				run = probe.run
+				opts.Context = probe.ctx
+				opts.TimeoutMs = int(min(int64(timeout), remaining))
+			}
+			r := run(exe, args, opts)
 			if r.Status != nil && *r.Status == 0 {
 				switch kind {
 				case "cursor":
@@ -417,13 +446,32 @@ func asciiFoldPattern(pattern string) string {
 	return b.String()
 }
 func ResolveModel(kind, spec, effort string, env platform.Env, warn WarnFunc) (string, error) {
+	return resolveModel(kind, spec, effort, env, warn, nil)
+}
+
+// ResolveAgyProbeModel passes concrete effort IDs through directly and uses
+// the normal catalog within the probe deadline for other selectors.
+// A bare word is a catalog search. Other selectors match only exact IDs or
+// literal effort bases, so a native ID that is absent stays unchanged.
+func ResolveAgyProbeModel(ctx context.Context, spec string, env platform.Env, run func(string, []string, platform.RunOptions) platform.RunResult) string {
+	if effortSuffixRE.MatchString(spec) {
+		return spec
+	}
+	model, err := resolveModel("agy", spec, "high", env, func(string) {}, &agyProbeLookup{ctx: ctx, run: run})
+	if err != nil || model == "" {
+		return spec
+	}
+	return model
+}
+
+func resolveModel(kind, spec, effort string, env platform.Env, warn WarnFunc, probe *agyProbeLookup) (string, error) {
 	if spec == "" {
 		return "", nil
 	}
 	if warn == nil {
 		warn = DefaultWarn
 	}
-	ids, fromCopy, _ := modelIDs(kind, env, false)
+	ids, fromCopy, _ := lookupModelIDs(kind, env, false, probe)
 	if len(ids) == 0 {
 		if kind == "claude" {
 			if m := claudeDottedAliasRE.FindStringSubmatch(spec); m != nil {
@@ -432,7 +480,11 @@ func ResolveModel(kind, spec, effort string, env platform.Env, warn WarnFunc) (s
 		}
 		return spec, nil
 	}
-	if resolved, matched := resolveModelInList(kind, spec, effort, ids); matched {
+	match := resolveModelInList
+	if probe != nil {
+		match = resolveAgyProbeModelInList
+	}
+	if resolved, matched := match(kind, spec, effort, ids); matched {
 		return resolved, nil
 	}
 	// A list that came from the 1-hour copy may be stale (the source gained
@@ -442,11 +494,11 @@ func ResolveModel(kind, spec, effort string, env platform.Env, warn WarnFunc) (s
 	// one is all the list there is, and a now-empty source passes the spec
 	// through unchanged, as with a cold list.
 	if fromCopy && hasModelSource(kind) {
-		fresh, _, _ := modelIDs(kind, env, true)
+		fresh, _, _ := lookupModelIDs(kind, env, true, probe)
 		if len(fresh) == 0 {
 			return spec, nil
 		}
-		if resolved, matched := resolveModelInList(kind, spec, effort, fresh); matched {
+		if resolved, matched := match(kind, spec, effort, fresh); matched {
 			return resolved, nil
 		}
 	}
@@ -455,6 +507,18 @@ func ResolveModel(kind, spec, effort string, env platform.Env, warn WarnFunc) (s
 	}
 	warn(fmt.Sprintf("no %s model matches '%s'; passing it through unchanged", kind, spec))
 	return spec, nil
+}
+
+func resolveAgyProbeModelInList(kind, spec, effort string, ids []string) (string, bool) {
+	if strings.IndexFunc(spec, func(r rune) bool { return !isASCIILetter(r) }) < 0 {
+		return resolveModelInList(kind, spec, effort, ids)
+	}
+	for _, id := range ids {
+		if id == spec {
+			return id, true
+		}
+	}
+	return resolveModelInList(kind, "^"+regexp.QuoteMeta(spec)+"$", effort, ids)
 }
 
 // resolveModelInList tries the spec against one concrete list — exact id,

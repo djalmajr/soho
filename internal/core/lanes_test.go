@@ -628,3 +628,20 @@ func TestReadLaneMoveKeepsTheWinningAssignment(t *testing.T) {
 		})
 	}
 }
+
+func TestSetupOMPLaneConfiguration(t *testing.T) {
+	env, repo := fixture(t)
+	for _, key := range []string{"lane.ops.kind", "role.implementer.kind"} {
+		if !ConfigValueOk(key, "omp", env, repo) || ConfigValueOk(key, "omp.exe", env, repo) {
+			t.Errorf("%s did not validate the canonical OMP kind", key)
+		}
+	}
+	const model = "openai/gpt-5"
+	cfg, err := SetupLaneSpec("ops=omp:" + model + ":max")
+	if err != nil || cfg.Name != "ops" || cfg.Kind != "omp" || cfg.Model != model || cfg.Effort != "max" {
+		t.Fatalf("OMP lane = %+v, %v", cfg, err)
+	}
+	if ConfigValueOk("fallback_edit", "omp "+model+" high", env, repo) {
+		t.Fatal("configuration accepted OMP as an automatic fallback")
+	}
+}

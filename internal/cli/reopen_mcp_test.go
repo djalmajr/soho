@@ -57,6 +57,30 @@ func reopenStartArgv(run releaseRun) []string {
 	return nil
 }
 
+func setReopenPiMcpRules(t *testing.T, f *releaseFixture) {
+	t.Helper()
+	// The old row and its report refer to p-worker. The replacement
+	// starts in the new tab's root pane and reports its own session.
+	setReopenRulesWith(t, f, []fakecli.Rule{{
+		Argv:   []string{"agent", "get", "worker"},
+		Stdout: `{"result":{"agent":{"name":"worker","agent":"pi","pane_id":"p-new","agent_status":"idle","agent_session":{"source":"herdr:pi","agent":"pi","kind":"path","value":"/sessions/reopened-worker.jsonl"}}}}`,
+	}})
+}
+
+func assertReopenPiLaunch(t *testing.T, run releaseRun, wantGets int) []string {
+	t.Helper()
+	start := reopenStartArgv(run)
+	starts := callsTo(run.calls, start...)
+	closes := callsTo(run.calls, "pane", "close", "p-worker")
+	gets := callsTo(run.calls, "agent", "get", "worker")
+	if !containsReopenArgPair(start, "--pane", "p-new") || len(starts) != 1 || len(closes) != 1 ||
+		len(gets) != wantGets || closes[0] >= starts[0] || gets[0] <= starts[0] {
+		t.Fatalf("reopen close calls=%v, start calls=%v argv=%q, replacement lookups=%v, want close, launch in p-new, then %d lookups",
+			closes, starts, start, gets, wantGets)
+	}
+	return start
+}
+
 func reopenFinalRow(t *testing.T, f *releaseFixture) string {
 	t.Helper()
 	roster, err := os.ReadFile(filepath.Join(f.state, "agents.tsv"))
@@ -75,7 +99,7 @@ func TestReopenKeepsThePersistedMcpChoice(t *testing.T) {
 		f := newReopenFixture(t, "idle")
 		reopenMcpRow(t, f, "pi", "inherit")
 		reopenWithReport(t, f)
-		setReopenRules(t, f)
+		setReopenPiMcpRules(t, f)
 		if _, err := fakecli.Install(t, f.fakeDir, "pi", nil); err != nil {
 			t.Fatal(err)
 		}
@@ -83,10 +107,7 @@ func TestReopenKeepsThePersistedMcpChoice(t *testing.T) {
 		if run.code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", run.code, run.stdout, run.stderr)
 		}
-		start := reopenStartArgv(run)
-		if start == nil {
-			t.Fatalf("no agent start call: %#v", run.calls)
-		}
+		start := assertReopenPiLaunch(t, run, 1)
 		for _, arg := range start {
 			if arg == "--no-mcp" {
 				t.Fatalf("reopen changed inherited MCP to none: %#v", start)
@@ -104,7 +125,7 @@ func TestReopenKeepsThePersistedMcpChoice(t *testing.T) {
 		f := newReopenFixture(t, "idle")
 		reopenMcpRow(t, f, "pi", "none")
 		reopenWithReport(t, f)
-		setReopenRules(t, f)
+		setReopenPiMcpRules(t, f)
 		if _, err := fakecli.Install(t, f.fakeDir, "pi", nil); err != nil {
 			t.Fatal(err)
 		}
@@ -112,10 +133,7 @@ func TestReopenKeepsThePersistedMcpChoice(t *testing.T) {
 		if run.code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", run.code, run.stdout, run.stderr)
 		}
-		start := reopenStartArgv(run)
-		if start == nil {
-			t.Fatalf("no agent start call: %#v", run.calls)
-		}
+		start := assertReopenPiLaunch(t, run, 3)
 		found := false
 		for _, arg := range start {
 			if arg == "--no-mcp" {
@@ -137,7 +155,7 @@ func TestReopenKeepsThePersistedMcpChoice(t *testing.T) {
 		f := newReopenFixture(t, "idle")
 		reopenMcpRow(t, f, "pi", "")
 		reopenWithReport(t, f)
-		setReopenRules(t, f)
+		setReopenPiMcpRules(t, f)
 		if _, err := fakecli.Install(t, f.fakeDir, "pi", nil); err != nil {
 			t.Fatal(err)
 		}
@@ -145,10 +163,7 @@ func TestReopenKeepsThePersistedMcpChoice(t *testing.T) {
 		if run.code != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", run.code, run.stdout, run.stderr)
 		}
-		start := reopenStartArgv(run)
-		if start == nil {
-			t.Fatalf("no agent start call: %#v", run.calls)
-		}
+		start := assertReopenPiLaunch(t, run, 3)
 		found := false
 		for _, arg := range start {
 			if arg == "--no-mcp" {

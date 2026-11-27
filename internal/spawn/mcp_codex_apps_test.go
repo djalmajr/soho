@@ -119,7 +119,11 @@ func TestCmdSpawnMcpCodexAppsOverride(t *testing.T) {
 func TestCmdSpawnMcpAppsOverrideStaysCodexOnly(t *testing.T) {
 	for _, kind := range []string{"claude", "pi"} {
 		t.Run(kind, func(t *testing.T) {
-			f := newSpawnFixture(t, freshSpawnRules())
+			var rules []fakecli.Rule
+			if kind == "pi" {
+				rules = []fakecli.Rule{piHerdrIdentityRule("worker", "p-new", legacyPiSession)}
+			}
+			f := newSpawnFixture(t, freshSpawnRules(rules...))
 			configureSpawnFixture(t, &f)
 			f.env["SOHO_LAYOUT"] = "tab"
 			if _, err := fakecli.Install(t, f.bin, kind, nil); err != nil {

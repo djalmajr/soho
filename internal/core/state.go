@@ -214,6 +214,25 @@ func statePathRecover() {
 	}
 }
 
+// FormerStateRefusal returns the exact diagnostic when a former state dir
+// still waits for setup, without touching state. Ordinary state acquisition
+// and local init share it so a refusal keeps the same message and code.
+func FormerStateRefusal(ctx *Config, env platform.Env, cwd string) string {
+	if former, target, waiting := FormerStateWaiting(ctx, env, cwd); waiting {
+		return fmt.Sprintf("the former state dir '%s' is waiting for 'soho setup': run 'soho setup' first; it moves it to '%s' (nothing was written)", former, target)
+	}
+	return ""
+}
+
+// StateAdmissionRefusal returns the exact diagnostic for a state path that
+// cannot be opened yet, without creating or changing state.
+func StateAdmissionRefusal(ctx *Config, env platform.Env, cwd string) string {
+	if skill := StateInSkill(ctx, env, cwd); skill != "" {
+		return fmt.Sprintf("the state dir '%s' would be inside the soho skill ('%s'); run soho from the project's directory (nothing was written)", StateRootPath(ctx, env, cwd), skill)
+	}
+	return FormerStateRefusal(ctx, env, cwd)
+}
+
 // StateDir decides with StateInSkill and FormerStateWaiting — both use only
 // StateRootPath — before touching StateDirPath/StateRoot/WorkspaceID, so a
 // refusal leaves no side effect (no .gitignore append, no pane current, no
@@ -221,15 +240,8 @@ func statePathRecover() {
 // former/target dirs, not the full state dir.
 func stateDirRefuse(ctx *Config, env platform.Env, cwd string) {
 	if !Nowrite(env) {
-		if skill := StateInSkill(ctx, env, cwd); skill != "" {
-			platform.Die(fmt.Sprintf("the state dir '%s' would be inside the soho skill ('%s'); run soho from the project's directory (nothing was written)", StateRootPath(ctx, env, cwd), skill), 2)
-		}
-		// The former state dir waiting for the setup move is refused before
-		// any side effect: creating .soho/<ws> would block the migration's
-		// empty-target rule, and the .gitignore append would point at a dir
-		// setup has not created yet.
-		if former, target, waiting := FormerStateWaiting(ctx, env, cwd); waiting {
-			platform.Die(fmt.Sprintf("the former state dir '%s' is waiting for 'soho setup': run 'soho setup' first; it moves it to '%s' (nothing was written)", former, target), 2)
+		if message := StateAdmissionRefusal(ctx, env, cwd); message != "" {
+			platform.Die(message, 2)
 		}
 	}
 }

@@ -185,6 +185,12 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 - **Now:** `background_patterns.claude` (shipped; one RE2 regular expression per kind) is checked right before `wait` would return `settled-no-report`: when any of the last 15 non-empty lines of the visible screen matches, alone or joined to the next one by a space (a wrapped line; this applies to every kind's pattern), the wait keeps waiting for the report until `--timeout`, and prints once per `wait` and agent `'<agent>' is idle with a background task still running ("<match>"); waiting for its report`. `status` is unchanged.
 - **Do:** other kinds have no pattern: wait for the report file (a `settled-no-report` is not proof that the worker ended), or set `background_patterns.<kind>` for the text that kind prints. An expression that does not compile is ignored and `doctor` warns. Workers should wait for their own background gates before ending the turn.
 
+## A foreground browser or server blocks a worker
+
+- **Symptom:** the worker stays `working`, the pane shows browser or server output, and `wait` may report that the screen has stayed the same. The output suggests where to look but cannot identify the process to stop.
+- **Inspect:** read the worker screen with `herdr agent read <agent> --source visible` or, under `transport=hc`, `hc read <terminal-address>` using the worker's address from the roster. Use `soho procs` to check any PID the worker registered for this task.
+- **Recover:** if the worker can act, have it stop its own registered child with `soho procs stop <pid>`. Keep the worker tracked while investigating. If you decide to abandon the slice, follow the [abandon flow](#a-worker-sits-stuck-without-a-report-the-abandon-flow). Leave unverified PIDs alone. Retry with an approved nonblocking tool or a detached process, immediate PID registration, and a bounded readiness check.
+
 ## Codex worker: `wait` returned `settled-no-report` and the pane shows `Hooks need review` or the hooks table
 
 - **Now:** with `hooks_review=trust` (default) `spawn`, `dispatch` and `send` approve the screen before typing (`<command>: trusted <n> codex hook(s) …` on stderr); with `hooks_review=block` they type nothing and exit 7 (`spawn`, `dispatch`) or 17 (`send`); a `wait` that still ends `settled-no-report` carries the screen in `screen` and says `agent '<agent>' is on codex's hooks review screen; …` — answer it (`2. Trust all and continue`) or set `hooks_review=trust`, then dispatch again.
@@ -225,9 +231,8 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 
 ## Orphan lines in the roster (a line of an agent that died)
 
-- **Named lane spawn:** a new explicit name opens a new worker only when both caps allow it. Existing or omitted names retain reuse; when capacity requires a compatible rename, the warning lists the actual limiting caps and says the old name no longer works. `--fresh` still requires capacity.
-- **Dispatch after a rename:** an old name exits 3 and sends nothing. Valid bounded history may suggest the current name; stale, released, replaced or recreated names have no suggestion. Use the current roster name explicitly.
-- **Rename reconciliation:** native rename can succeed before registry publication detects a changed source or a persistence error. Spawn then exits 4 before moving per-name state or claiming readiness. Reconcile the native worker with the roster before retrying; there is no automatic reversal or second rename.
+- **Named lane spawn:** when a compatible idle worker has a different name, a new explicit name requires room in both the lane and the caller-adjusted `max_workers`. At capacity, spawn preserves the existing worker and reports the binding limits. Dispatch to the existing worker, request reuse by its current name, or release a slot before retrying with `--fresh`.
+- **Dispatch after an older rename:** an old name exits 3 and sends nothing. Valid bounded history may suggest the current name. Use the current roster name explicitly.
 
 - **Symptom:** `roster` shows a line whose pane is dead or whose name is used by another live agent; the worker count seems off.
 - **Cause:** a worker exited without `release`; its roster line stayed.
@@ -357,7 +362,11 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 - **Symptom:** a worker is `working` for many minutes (a high-effort model thinking) without writing anything; two `ctrl+c` presses queue answers instead of interrupting, and the lane stays stuck.
 - **Cause:** the model is inside one long reasoning or tool phase; keys are queued, not injected.
 - **Now:** after `stuck_warn_minutes` (20) of an unchanged screen (apart from counters) while `working`, the wait logs one friction line ("may be stuck in one tool call") and goes on; nothing is sent and nothing is killed automatically.
-- **Do:** interrupt with `herdr agent send-keys <agent> esc` (or `ctrl+c`), release the slot with `release <agent> --close --force`, and log what happened with `friction add "<text>"`.
+- **Do:** try `hc interrupt <terminal-address>` under `transport=hc`, using the worker's roster address. In legacy Herdr, use `herdr agent send-keys <agent> esc` (or `ctrl+c`). Check the worker after the attempt. If you still need to abandon the task, close a SoHo-created worker with `soho release <agent> --close --force` and log what happened with `soho friction add "<text>"`.
+
+## Pi compact reports a terminal failure before dispatch
+
+A fresh Pi compaction failure under legacy Herdr can produce a warning followed by the dispatch JSON result with `compact: failed`. That branch requires completed phase cleanup and a new check of the same idle session and empty composer. If dispatch instead reports that the brief was unsent, inspect the worker before retrying. A compact timeout does not authorize sending.
 
 ## Exit 137 with no cause: the skill's own process was killed from outside
 
@@ -443,3 +452,9 @@ The dedicated refusal says `HERDR_PANE_ID='<id>' cannot identify this Codex exec
 - **Symptom:** a worker settles without a report after its worktree was removed, and Codex hooks fail with `No such file or directory`.
 - **Cause:** the worker pane still uses the removed directory. Dispatch checks its roster cwd before task writes or input, doctor warns for live workers, and wait adds the missing cwd to a settled-no-report cause; permission errors are not classified as a removed directory.
 - **Fix:** release the old worker with `soho release <agent> --close`, then use `soho spawn <role> --cwd <existing-directory>` and dispatch the brief again. Check that the intended worktree exists before spawning.
+
+## Grok may execute configured Claude hooks
+
+- **Symptom:** `soho doctor`, `soho setup` or a fresh Grok `spawn` prints `grok may execute the same configured Claude hooks; set [compat.claude] hooks=false in Grok config or GROK_CLAUDE_HOOKS_ENABLED=0 to opt out`.
+- **Cause:** xAI documents that Grok scans global and project Claude hooks by default. Soho reads the visible Claude hook files and the documented compatibility setting; it does not launch Grok or read hook commands into the warning.
+- **Do:** set `[compat.claude] hooks=false` in Grok config or `GROK_CLAUDE_HOOKS_ENABLED=0` when those hooks must not also run under Grok. With no configured hooks, an effective opt-out or an unprovable config layer the warning stays quiet; the warning check itself edits neither Grok config nor Claude hook files.

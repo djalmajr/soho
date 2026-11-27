@@ -659,9 +659,9 @@ func retireStatusCase(t *testing.T, name string) retireStatusScenario {
 				retireScreenRule("worker", "terminal-fallback"),
 			},
 			seed: func(f *retirementFixture) { retireWriteRoster(t, f, retireR8+retireWorker8) },
-			// The legacy step envs (parity-status.test.mjs): step 1 has no
-			// HERDR_ENV, step 2 points PATH at a dir without herdr.
-			stepEnv: []map[string]string{{}, {"HERDR_ENV": ""}, {"HERDR_ENV": "1", "PATH": "/usr/bin:/bin"}},
+			// Step 1 has no HERDR_ENV. Use an empty directory for step 2
+			// so a host installation of Herdr cannot satisfy the lookup.
+			stepEnv: []map[string]string{{}, {"HERDR_ENV": ""}, {"HERDR_ENV": "1", "PATH": t.TempDir()}},
 			want: map[int]retireStepWant{
 				0: {RC: 0, Out: "worker\tworking\t\t-\t-\n", Err: ""},
 			},

@@ -297,8 +297,9 @@ func (b *backend) List(ctx context.Context, scope transport.Scope, call transpor
 // reported, plus the cause as an error; a gone terminal is a valid state
 // with no error.
 func (b *backend) Get(ctx context.Context, target transport.Target, call transport.Call) transport.Reply[transport.Terminal] {
-	res := AgentState(target.ID, b.env, timeoutFor(call), nil, ctxArgs(ctx)...)
-	term := transport.Terminal{Target: target, State: res.State, Sequence: seqRaw(res.Seq)}
+	var workingClaudeReply string
+	res := agentState(target.ID, b.env, timeoutFor(call), nil, &workingClaudeReply, ctxArgs(ctx)...)
+	term := transport.Terminal{Target: target, State: res.State, Sequence: seqRaw(res.Seq), LegacyWorkingClaudeReply: workingClaudeReply}
 	if res.State == "" || res.State == "unavailable" {
 		return transport.Reply[transport.Terminal]{Value: term, Valid: true, Err: &transport.Failure{Kind: transport.FailureUnavailable, Message: res.Cause}}
 	}

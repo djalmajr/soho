@@ -120,7 +120,7 @@ var inventoryKeys = []string{"inventory", "inventory_name"}
 // Fallback assistant keys stay outside the frozen configuration listing order.
 var fallbackKeys = []string{"fallback_edit", "fallback_review"}
 
-var KnownKinds = []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode"}
+var KnownKinds = []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode", "omp"}
 var EffortLadder = []string{"low", "medium", "high", "xhigh", "max"}
 
 var dottedKeyRE = regexp.MustCompile(`^(?:role\.[a-z][a-z0-9_-]*\.(?:kind|model|effort|approvals|mcp|args)|lane\.[a-z][a-z0-9_-]*\.(?:roles|kind|model|models|effort|approvals|panes|args|mcp)|model\.[a-z][a-z0-9_.-]+|effort\.[a-z][a-z0-9_-]+|context_window\.[a-z][a-z0-9_-]+|background_patterns\.[a-z][a-z0-9_-]+|args\.[a-z][a-z0-9_-]+|worker_messages\.rules\.[a-z][a-z0-9_]*\.(?:from|to|types|scope|enabled))$`)
@@ -637,13 +637,13 @@ func ConfigValueOk(key, value string, env platform.Env, cwd string) bool {
 }
 
 // fallbackValueOk accepts the empty default or exactly three fields:
-// a known kind, a model id and an effort from the ladder.
+// a kind eligible for automatic fallback, a model id and an effort from the ladder.
 func fallbackValueOk(value string) bool {
 	if value == "" {
 		return true
 	}
 	fields := strings.Fields(value)
-	if len(fields) != 3 || !contains(KnownKinds, fields[0]) || fields[1] == "" || !contains(EffortLadder, fields[2]) {
+	if len(fields) != 3 || fields[0] == "omp" || !contains(KnownKinds, fields[0]) || fields[1] == "" || !contains(EffortLadder, fields[2]) {
 		return false
 	}
 	return true

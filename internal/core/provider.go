@@ -15,6 +15,14 @@ var modelPlanLine = regexp.MustCompile(`^[ \t]*(?:┃[ \t]*)?(?:(?:[■✗✘×�
 // screen content as configuration. Only a code-owned marker enters the error
 // list; the shared classifier still owns the ten-line region and stop ordering.
 func ProviderDetectTexts(state, screen, capacityTexts, errorTexts string) *provider.Detection {
+	return ProviderDetectTextsWithStreamGate(state, screen, capacityTexts, errorTexts, nil)
+}
+
+// ProviderDetectTextsWithStreamGate applies the model-plan preprocessor and
+// forwards the built-in stream gate to the shared bounded scan. A nil gate is
+// the ordinary core.ProviderDetectTexts behavior; every other caller and rule
+// stays the same.
+func ProviderDetectTextsWithStreamGate(state, screen, capacityTexts, errorTexts string, streamAllowed func(string) string) *provider.Detection {
 	if state == "working" || screen == "" {
 		return nil
 	}
@@ -47,7 +55,7 @@ func ProviderDetectTexts(state, screen, capacityTexts, errorTexts string) *provi
 	if lastPlanLine != "" {
 		errorTexts += "|" + marker
 	}
-	detection := provider.ProviderDetectTexts(state, strings.Join(lines, "\n"), capacityTexts, errorTexts)
+	detection := provider.ProviderDetectTextsWithStreamGate(state, strings.Join(lines, "\n"), capacityTexts, errorTexts, streamAllowed)
 	if detection != nil && lastPlanLine != "" && detection.Cause == marker {
 		detection.Status = "provider-error"
 		detection.Cause = text.SanitizeCause(text.RedactSecrets(lastPlanLine))

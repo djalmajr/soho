@@ -168,6 +168,10 @@ const compactOpenCodeProofMarker = "opencode: compactOpenCodeDoneRE"
 // compaction still running) is not proof.
 var compactOpenCodeDoneRE = regexp.MustCompile(`^\x{25A3}\s+Compaction\s+\x{B7}\s+.+\s+\x{B7}\s+\d\S*(\s+\d\S*)*\s*$`)
 
+// OMP prints the same collapsed divider on macOS and Linux with different
+// shortcut labels. Match the whole divider, varying only the border widths.
+var compactOMPDoneRE = regexp.MustCompile(`^─+ 📷 soft-compacted · (?:⌃O|Ctrl\+O) ─+[ \t]*$`)
+
 // compactOpenCodeMenuLineRE matches a line of opencode's command menu, the
 // popup above the input box after / is typed: a box border, one space, and
 // the command name. The input box itself pads with two spaces, so the text
@@ -187,6 +191,7 @@ var compactProofByKind = map[string]string{
 	"codex":    "Context compacted",
 	"pi":       "Compacted from",
 	"opencode": compactOpenCodeProofMarker,
+	"omp":      "omp: compactOMPDoneRE",
 }
 
 var compactPiFooterRE = regexp.MustCompile(`(?:^|\s)(\d{1,3}(?:\.\d+)?%|\?)/\d+(?:\.\d+)?[kKmM](?:\s|$)`)
@@ -400,6 +405,79 @@ func compactEndings(kind string) []compactEnding {
 	return compactEndingsByKind[kind]
 }
 
+var compactOMPEmptyRE = regexp.MustCompile(`^ ?Warning: Nothing to compact \(no messages yet\)[ \t]*$`)
+var compactOMPFailedRE = regexp.MustCompile(`^ ?Error: Compaction failed: \S.*$`)
+
+// Quoted examples in visible fenced blocks are conversation content.
+func compactOMPFrameLines(screen string) []string {
+	lines := compactLines(screen)
+	out := lines[:0]
+	fence := ""
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if fence != "" {
+			if strings.HasPrefix(trimmed, fence) && strings.Trim(trimmed, fence[:1]) == "" {
+				fence = ""
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			rest := strings.TrimLeft(trimmed, trimmed[:1])
+			fence = trimmed[:len(trimmed)-len(rest)]
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+func compactOMPProofCount(screen string) int {
+	count := 0
+	for _, line := range compactOMPFrameLines(screen) {
+		if compactOMPDoneRE.MatchString(line) {
+			count++
+		}
+	}
+	return count
+}
+
+func compactOMPEndingNew(screen, before string) (status, line string) {
+	old := map[string]int{}
+	for _, candidate := range compactOMPFrameLines(before) {
+		if compactOMPFailedRE.MatchString(candidate) || compactOMPEmptyRE.MatchString(candidate) {
+			old[strings.TrimSpace(candidate)]++
+		}
+	}
+	for _, candidate := range compactOMPFrameLines(screen) {
+		failed := compactOMPFailedRE.MatchString(candidate)
+		if !failed && !compactOMPEmptyRE.MatchString(candidate) {
+			continue
+		}
+		ending := strings.TrimSpace(candidate)
+		if old[ending] > 0 {
+			old[ending]--
+		} else if failed {
+			return "failed", ending
+		} else {
+			status, line = "nothing-to-compact", ending
+		}
+	}
+	return status, line
+}
+
+func compactPiTerminalFailure(screen, line string) bool {
+	if !strings.HasPrefix(line, "Error: Compaction failed:") && !strings.HasPrefix(line, "Compaction failed:") {
+		return false
+	}
+	start, end, recognized := provider.ComposerRegionBounds("pi", screen)
+	for i, candidate := range compactLines(screen) {
+		if strings.TrimSpace(candidate) == line && (!recognized || i < start || i >= end) {
+			return true
+		}
+	}
+	return false
+}
+
 func cmdCompact(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
 	agent := ""
 	// Without --timeout the compact_timeout key sets the limit; the flag
@@ -457,7 +535,8 @@ func cmdCompact(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 // the pre-send read, or a proof below the last /compact echo when the echo
 // count grew since the pre-send read; a claude also counts when its session
 // transcript gains a compact_boundary line, because the screen shows no
-// confirmation; an opencode counts its dated done line), then for the worker
+// confirmation; opencode counts its dated done line and OMP counts its
+// collapsed dividers), then for the worker
 // back at idle or done. It is the shared step behind the `compact`
 // command and `dispatch --compact`. The caller must have checked the roster
 // and the kind. A pi worker whose footer shows a thinking level gets it
@@ -491,8 +570,17 @@ func compactRun(agent, pane, kind, role, lane, model string, timeoutMS int64, ct
 }
 
 type compactStepResult struct {
-	Code    int
-	Screens string
+	Code               int
+	Screens            string
+	PiFailure          *compactPiFailure
+	PhaseMarkerRemoved bool
+}
+
+type compactPiFailure struct {
+	Line     string
+	JSON     string
+	Worker   compactPiWorker
+	Deadline time.Time
 }
 
 // compactRunWithScreens carries the local diagnostic path to dispatch without
@@ -562,6 +650,14 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 		// would read as this one's proof: send nothing.
 		core.DieFriction(fmt.Sprintf("compact: could not read the screen of '%s' before sending; nothing was sent", agent), 4, frictionLogPath, "compact")
 	}
+	// Capture the worker incarnation before issuing /compact. A failed
+	// identity read only disables dispatch's recovery from a proved Pi error.
+	var piWorker compactPiWorker
+	if inDispatch && kind == "pi" {
+		identityCtx, cancel := context.WithTimeout(budgetCtx, time.Second)
+		piWorker = readCompactPiWorker(identityCtx, budget.svc, agent, pane)
+		cancel()
+	}
 	// opencode proves the compaction with the done-line regex instead of a
 	// substring, and counts a screen whose count of proof lines grew (it does
 	// not echo the /compact it runs); claude, codex and pi compare each screen
@@ -569,10 +665,16 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 	// count, or a grown echo count with the proof below the last echo. A stale
 	// proof below a stale echo on an otherwise unchanged screen is not proof.
 	var proofNew func(screen string) bool
-	if kind == "opencode" {
+	switch kind {
+	case "opencode":
 		seen := compactOpenCodeProofLines(before)
 		proofNew = func(screen string) bool { return compactOpenCodeProofNew(screen, before, seen) }
-	} else {
+	case "omp":
+		// OMP does not echo the command. The count ignores width and the
+		// platform's shortcut label, so a redraw of an old divider is stale.
+		count := compactOMPProofCount(before)
+		proofNew = func(screen string) bool { return compactOMPProofCount(screen) > count }
+	default:
 		base := compactProofBaseline{screen: before, proof: proof, seen: compactProofLines(before, proof)}
 		proofNew = func(screen string) bool { return compactProofNew(screen, base) }
 	}
@@ -706,6 +808,18 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 	// text is sent; Enter runs the top item, so only press it when /compact is
 	// on top.
 	endLine := ""
+	observeEnding := func(screen string) {
+		if kind == "omp" {
+			endStatus, endLine = compactOMPEndingNew(screen, before)
+			return
+		}
+		for i := range endings {
+			if line, ok := compactEndingNew(screen, before, endings[i].text, endSeen[i]); ok {
+				endStatus, endLine = endings[i].status, line
+				return
+			}
+		}
+	}
 	compacted := false
 	// proofObserved latches the first positive evidence of this attempt — a
 	// screen proof or the claude transcript — for the rest of the run,
@@ -763,6 +877,12 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 					// was compacted).
 					screen = compactCodexComposerRetry(agent, pane, kind, proof, env, budget)
 				}
+				if kind == "omp" {
+					observeEnding(screen)
+					if endStatus != "" {
+						break
+					}
+				}
 				if proofNew(screen) || footerDropped(screen) || transcriptRisen() {
 					proofObserved = true
 				}
@@ -774,12 +894,8 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 					// not there before the send, or when its line count on screen
 					// grew (a CLI that does not echo the command); it never waits
 					// for the worker back at idle.
-					for i := range endings {
-						if line, ok := compactEndingNew(screen, before, endings[i].text, endSeen[i]); ok {
-							endStatus = endings[i].status
-							endLine = line
-							break
-						}
+					if kind != "omp" {
+						observeEnding(screen)
 					}
 					if endStatus == "" {
 						// No proof yet: a worker that died meanwhile stops the wait now (6, 4)
@@ -802,19 +918,23 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 	// capped idle wait that follows.
 	if !compacted && endStatus == "" {
 		screen := budget.read(agent, "recent", intPtr(compactScreenLines))
-		if proofObserved || proofNew(screen) || footerDropped(screen) || transcriptRisen() {
-			// The idle wait that follows gets a short cap of its own: ten poll
-			// intervals from now.
-			compacted = compactWaitIdle(agent, env, platform.Now().Add(compactPollInterval*10), budget)
-		} else {
-			for i := range endings {
-				if line, ok := compactEndingNew(screen, before, endings[i].text, endSeen[i]); ok {
-					endStatus = endings[i].status
-					endLine = line
-					break
-				}
+		if kind == "omp" {
+			observeEnding(screen)
+		}
+		if endStatus == "" {
+			if proofObserved || proofNew(screen) || footerDropped(screen) || transcriptRisen() {
+				// The idle wait that follows gets a short cap of its own: ten poll
+				// intervals from now.
+				compacted = compactWaitIdle(agent, env, platform.Now().Add(compactPollInterval*10), budget)
+			} else if kind != "omp" {
+				observeEnding(screen)
 			}
 		}
+	}
+	// The normal compact result keeps its existing matcher. Dispatch recovery
+	// additionally requires an actual Pi error line outside the input box.
+	if inDispatch && kind == "pi" && endStatus == "failed" && !compactPiTerminalFailure(budget.screen, endLine) {
+		piWorker = compactPiWorker{}
 	}
 	elapsed := platform.Now().Sub(start).Milliseconds()
 	budget.ctx = budgetCtx
@@ -843,6 +963,15 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 		return jsonjs.Stringify(jsonjs.O(pairs...))
 	}
 	if endStatus != "" {
+		if inDispatch && kind == "pi" && endStatus == "failed" {
+			deadline, _ := budgetCtx.Deadline()
+			// Hold the compact output until dispatch decides whether it can
+			// continue with its own single result or must return this failure.
+			return compactStepResult{Code: 9, PiFailure: &compactPiFailure{
+				Line: text.SanitizeCause(text.RedactSecrets(endLine)),
+				JSON: resultJSON(endStatus), Worker: piWorker, Deadline: deadline,
+			}}
+		}
 		if endStatus == "failed" {
 			// Cite the screen line that matched the failure (claude and pi),
 			// sanitized and redacted, so the warning shows what the CLI reported.
@@ -859,6 +988,11 @@ func compactRunWithScreens(agent, pane, kind, role, lane, model string, timeoutM
 		}
 		fmt.Fprintln(platform.Stdout, resultJSON(endStatus))
 		if endStatus == "failed" {
+			if inDispatch && kind == "omp" {
+				// Use the dispatch phase's operational-exit cleanup. Its
+				// ordinary exit-9 result is reported as a timeout.
+				platform.Die("", 9)
+			}
 			return compactStepResult{Code: 9}
 		}
 		return compactStepResult{}

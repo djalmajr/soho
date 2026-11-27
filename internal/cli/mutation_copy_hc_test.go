@@ -15,6 +15,7 @@ import (
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -35,6 +36,7 @@ func mutationCopyHCFixture(t *testing.T) (mutationCopyFixture, string, string) {
 	mutationAbsoluteSymlink(t, git, filepath.Join(bin, filepath.Base(git)))
 	// A fresh environment cannot inherit a legacy pane, registry hint or user config.
 	f.env = platform.Env{"HOME": f.home, "USERPROFILE": f.home, "XDG_CONFIG_HOME": filepath.Join(f.root, "config"), "TMPDIR": f.tmp, "PATH": bin, "SOHO_DIR": filepath.Join(f.root, "state"), "SOHO_TRANSPORT": "hc", "HC_TERMINAL_ID": "t-copy", "SOHO_FAKECLI_CONFIG": bin, "GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_SYSTEM": os.DevNull}
+	f.env["GORACE"] = fakecli.RaceOptions([]string{"GORACE=" + testutil.HostRaceOptions()})
 	caller := `{"address":"t-copy","state":"live","labels":{"soho.session":"native-session"}}`
 	if _, err := fakecli.Install(t, bin, "hc", []fakecli.Rule{{Argv: []string{"get", "t-copy", "--json"}, Stdout: caller}}); err != nil {
 		t.Fatal(err)

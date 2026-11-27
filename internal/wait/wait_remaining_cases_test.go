@@ -368,38 +368,54 @@ func TestWaitRemainingExitRankCases(t *testing.T) {
 }
 
 func TestWaitStuckScreenWarningOnceCase(t *testing.T) {
-	t.Run("wait: a still screen (counters aside) warns once after stuck_warn_minutes", func(t *testing.T) { // JS: "wait: a still screen (counters aside) warns once after stuck_warn_minutes"
-		// Mutation captured: warning on every probe duplicates friction, while skipping the threshold leaves the operator without a stuck-screen notice.
-		fixed := time.Unix(2_000_000_000, 0)
-		oldNow := platform.Now
-		platform.Now = func() time.Time { return fixed }
-		t.Cleanup(func() { platform.Now = oldNow })
-		screen := "Running tests 42% ◐ 3.1s\n"
-		f := newQueuedProbeFixture(t, "working", "5", screen, nil)
-		f.env["SOHO_STUCK_WARN_MINUTES"] = "1"
-		if err := os.WriteFile(f.marker("stuck-hash"), []byte(stringInt(CksumField(NormalizeScreen(screen)))+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(f.marker("stuck-since"), []byte("1999999930\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		var stderr strings.Builder
-		oldErr := platform.Stderr
-		platform.Stderr = &stderr
-		t.Cleanup(func() { platform.Stderr = oldErr })
-		for i := 0; i < 2; i++ {
-			if got := f.probe(""); got != "working" {
-				t.Fatalf("probe %d state=%q", i+1, got)
+	for _, tc := range []struct {
+		name, screen string
+		hint         bool
+	}{
+		{name: "counters aside", screen: "Running tests 42% ◐ 3.1s\n"},
+		{name: "chromium log", screen: "[3694:3700:1124/104140.341:ERROR:bus.cc:23] Failed to connect\n", hint: true},
+		{name: "server log", screen: "Server listening on http://localhost:8080\n", hint: true},
+		{name: "quoted log", screen: "The docs say: \"DevTools listening on ws://localhost\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Mutation captured: warning on every probe duplicates friction, while skipping the threshold leaves the operator without a stuck-screen notice.
+			fixed := time.Unix(2_000_000_000, 0)
+			oldNow := platform.Now
+			platform.Now = func() time.Time { return fixed }
+			t.Cleanup(func() { platform.Now = oldNow })
+			f := newQueuedProbeFixture(t, "working", "5", tc.screen, nil)
+			f.env["SOHO_STUCK_WARN_MINUTES"] = "1"
+			if err := os.WriteFile(f.marker("stuck-hash"), []byte(stringInt(CksumField(NormalizeScreen(tc.screen)))+"\n"), 0o600); err != nil {
+				t.Fatal(err)
 			}
-		}
-		warning := "agent 'worker' has shown the same screen (apart from counters) for 1 min while working"
-		if strings.Count(stderr.String(), warning) != 1 {
-			t.Fatalf("warning output=%q", stderr.String())
-		}
-		if _, err := os.Stat(f.marker("stuck-warned")); err != nil {
-			t.Fatalf("stuck-warned marker: %v", err)
-		}
-	})
+			if err := os.WriteFile(f.marker("stuck-since"), []byte("1999999930\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var stderr strings.Builder
+			oldErr := platform.Stderr
+			platform.Stderr = &stderr
+			t.Cleanup(func() { platform.Stderr = oldErr })
+			for i := 0; i < 2; i++ {
+				if got := f.probe(""); got != "working" {
+					t.Fatalf("probe %d state=%q", i+1, got)
+				}
+			}
+			warning := "agent 'worker' has shown the same screen (apart from counters) for 1 min while working"
+			if strings.Count(stderr.String(), warning) != 1 {
+				t.Fatalf("warning output=%q", stderr.String())
+			}
+			wantHints := 0
+			if tc.hint {
+				wantHints = 1
+			}
+			if count := strings.Count(stderr.String(), "use soho procs stop <pid> for a verified process you started and registered"); count != wantHints {
+				t.Fatalf("foreground process hints=%d, want %d; stderr=%q", count, wantHints, stderr.String())
+			}
+			if _, err := os.Stat(f.marker("stuck-warned")); err != nil {
+				t.Fatalf("stuck-warned marker: %v", err)
+			}
+		})
+	}
 }
 
 func TestWaitRemainingProviderCases(t *testing.T) {

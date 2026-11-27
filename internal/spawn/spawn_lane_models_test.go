@@ -551,7 +551,11 @@ func TestSpawnGroupModelListRequiresInheritedModel(t *testing.T) {
 		{name: "kind flag", args: []string{"--kind", "grok"}, wantKind: "grok", wantModel: "grok-worker"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := laneModelFixture(t, "off", "m1,m2")
+			var rules []fakecli.Rule
+			if tc.wantKind == "pi" {
+				rules = []fakecli.Rule{piHerdrIdentityRule("scouter", "p2", "/sessions/scouter.jsonl")}
+			}
+			f := laneModelFixture(t, "off", "m1,m2", rules...)
 			for key, value := range map[string]string{
 				"role_scouter_kind": tc.roleKind, "role_scouter_model": tc.roleModel,
 				"model_pi_worker": "pi-worker", "model_grok_worker": "grok-worker",
@@ -717,20 +721,23 @@ func TestGroupReuseOtherKindAndAdditionalDifferences(t *testing.T) {
 func TestCappedListedReuseWithStaleRequestedName(t *testing.T) {
 	for _, tc := range []struct {
 		name, panes, state string
-		named              bool
+		requested          string
 		code               int
 		reused             string
+		prunesStale        bool
 	}{
-		{"gone named in full lane", "1", "gone", true, 0, "stale"},
-		{"gone unnamed", "1", "gone", false, 0, "compatible"},
-		{"live unnamed", "1", "idle", false, 0, "compatible"},
-		{"live named keeps its slot", "1", "idle", true, 13, ""},
-		{"unavailable named keeps its slot", "1", "unavailable", true, 10, ""},
-		{"gone named with room still checks cap", "2", "gone", true, 13, ""},
+		{"gone distinct name in full lane", "1", "gone", "stale", 10, "", true},
+		{"gone same name in full lane", "1", "gone", "compatible", 0, "compatible", true},
+		{"gone unnamed", "1", "gone", "", 0, "compatible", true},
+		{"live unnamed", "1", "idle", "", 0, "compatible", false},
+		{"live named keeps its slot", "1", "idle", "stale", 13, "", false},
+		{"unavailable named keeps its slot", "1", "unavailable", "stale", 10, "", false},
+		{"gone named with room still checks cap", "2", "gone", "stale", 13, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rename := []string{"agent", "rename", "p-compatible", "stale"}
 			rules := []fakecli.Rule{
+				{Argv: []string{"agent", "get", "p1"}, Stdout: `{"result":{"agent":{"name":"orchestrator","agent_status":"idle"}}}`},
 				idleHerdrRule("compatible"),
 				{Argv: rename, Stdout: `{"result":{}}`},
 			}
@@ -746,23 +753,27 @@ func TestCappedListedReuseWithStaleRequestedName(t *testing.T) {
 			appendLaneIdleRowWith(t, f, "stale", "m1", f.cwd, "low", "auto", "none", "")
 			appendLaneIdleRow(t, f, "compatible", "m1")
 			before := rosterBytes(t, f)
+			sd := filepath.Join(f.state, "ws")
+			healthy := core.RosterLine(sd, "compatible")
 			args := []string{"scouter", "--mcp", "none"}
-			if tc.named {
-				args = append(args, "--name", "stale")
+			if tc.requested != "" {
+				args = append(args, "--name", tc.requested)
 			}
 			code, out, stderr, refusal, calls := runLaneModelSpawn(t, f, args)
 			t.Logf("exit=%d stdout=%s stderr=%s refusal=%s", code, out, stderr, refusal)
 			if code != tc.code {
 				t.Fatalf("exit=%d want=%d stdout=%q stderr=%q refusal=%q", code, tc.code, out, stderr, refusal)
 			}
-			var renames int
-			for _, call := range calls {
-				if slices.Equal(call.Argv, rename) {
-					renames++
-				}
+			if renames := dja659AgentCalls(calls, "rename"); renames != 0 || len(herdrActs(calls)) != 0 {
+				t.Fatalf("unexpected terminal actions: renames=%d actions=%v calls=%+v", renames, herdrActs(calls), calls)
 			}
-			if len(herdrActs(calls)) != 0 {
-				t.Fatalf("unexpected terminal actions: %v", herdrActs(calls))
+			if tc.prunesStale {
+				if got := core.RosterRows(sd); !slices.Equal(got, []string{healthy}) ||
+					!strings.Contains(stderr, "worker 'stale' is gone; removed its roster row") {
+					t.Fatalf("stale row was not retired with the healthy row intact: roster=%q stderr=%q", got, stderr)
+				}
+			} else if rosterBytes(t, f) != before {
+				t.Fatalf("worker state changed: stdout=%q refusal=%q roster=%q", out, refusal, rosterBytes(t, f))
 			}
 			if tc.reused == "" {
 				switch tc.state {
@@ -773,24 +784,24 @@ func TestCappedListedReuseWithStaleRequestedName(t *testing.T) {
 						t.Fatalf("wrong unavailable name refusal: %q", out)
 					}
 				default:
-					if !strings.Contains(refusal, "every model of lane 'build' is at the cap") {
+					if tc.code == 10 {
+						obj := parseOneSpawnJSONLine(t, out)
+						spawnOneLineField(t, obj, "status", "busy")
+						spawnOneLineField(t, obj, "lane", "build")
+						spawnOneLineField(t, obj, "name", "compatible")
+						if refusal != "" || !strings.Contains(stderr, "an explicit new name requires a new worker") ||
+							!strings.Contains(stderr, "lane 'build' has no room for a new worker (1 of 1)") {
+							t.Fatalf("wrong full-lane refusal: refusal=%q stderr=%q", refusal, stderr)
+						}
+					} else if !strings.Contains(refusal, "every model of lane 'build' is at the cap") {
 						t.Fatalf("wrong creation refusal: %q", refusal)
 					}
-				}
-				if rosterBytes(t, f) != before || renames != 0 {
-					t.Fatalf("refusal changed worker state: stdout=%q refusal=%q roster=%q", out, refusal, rosterBytes(t, f))
 				}
 				return
 			}
 			if !spawnJSONHasField(t, out, `"name": "`+tc.reused+`"`) || !spawnJSONHasField(t, out, `"pane_id": "p-compatible"`) ||
 				!spawnJSONHasField(t, out, `"reused": true`) || !spawnJSONHasField(t, out, `"model_choice": "list"`) {
 				t.Fatalf("compatible worker was not reused on its pane: %s", out)
-			}
-			if tc.state == "gone" && (len(rosterModels(t, f)) != 1 || !strings.Contains(rosterBytes(t, f), tc.reused+"\tp-compatible\t")) {
-				t.Fatalf("stale row was not retired: %q", rosterBytes(t, f))
-			}
-			if tc.named && renames != 1 {
-				t.Fatalf("expected exactly one legacy rename: %#v", calls)
 			}
 		})
 	}

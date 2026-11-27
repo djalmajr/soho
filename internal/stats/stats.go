@@ -1076,7 +1076,7 @@ func CmdCollect(args []string, command CommandContext) int {
 		}
 	}
 	if report != "" {
-		if st, e := os.Stat(report); e == nil && st.Size() > 0 {
+		if st, e := os.Stat(report); e == nil && (st.IsDir() || st.Size() > 0) {
 			if verify {
 				return verifyFiles(sd, agent, report, env, cwd, logFile)
 			}

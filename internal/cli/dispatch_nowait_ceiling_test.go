@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -85,40 +86,101 @@ func TestDispatchNoWaitCeilingLegacyNeverIdle(t *testing.T) {
 	}
 }
 
-// A submission that never proves itself returns 15 with the ceiling line.
-// The composer holds the exact composed path, so the one allowed Enter is
-// sent; the second arrival wait is where the shared ceiling binds. No screen
-// text is echoed, and no prompt is repeated.
 func TestDispatchNoWaitCeilingLegacySubmissionNeverProves(t *testing.T) {
-	zeroCeilingMargin(t)
-	stamp := pinComposedStamp(t)
-	screen := "SECRET_SCREEN_MARKER\n› Read the file " + filepath.Join("$ROOT", "state", "ws", "briefs", "worker-"+stamp+".md") + " in full and execute it.\n"
-	f := newDispatchArrivalFixture(t, "idle", 1, 1, "old output\n", "0",
-		fakecli.Rule{Argv: []string{"agent", "read", "worker", "--source", "visible"}, Call: 1, ArgvPrefix: true, Stdout: "boot\n"},
-		fakecli.Rule{Argv: []string{"agent", "read", "worker", "--source", "visible"}, ArgvPrefix: true, Stdout: screen},
-		fakecli.Rule{Argv: []string{"agent", "send-keys", "worker", "enter"}, ArgvPrefix: true},
-	)
-	f.env["SOHO_PROMPT_SETTLE_SECONDS"] = "1"
-	f.env["SOHO_PROMPT_CHECK_SECONDS"] = "2"
-	started := time.Now()
-	code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
-	assertWithinCeiling(t, started, 3*time.Second, 4*time.Second)
-	if code != 15 || dispatchOutputStatus(t, out) != "not-received" {
-		t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
-	}
-	assertNoWaitCeilingLine(t, stderr, "3", "prompt arrival", "herdr agent get worker && herdr agent read worker")
-	if strings.Contains(stderr, "SECRET_SCREEN_MARKER") {
-		t.Fatalf("the ceiling line echoed screen text: %q", stderr)
-	}
-	calls, err := fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := countDispatchCalls(calls, "prompt"); n != 1 {
-		t.Fatalf("prompt calls=%d, want the original send only: %#v", n, calls)
-	}
-	if n := countDispatchCalls(calls, "send-keys"); n != 1 {
-		t.Fatalf("send-keys calls=%d, want one Enter: %#v", n, calls)
+	for _, tc := range []struct {
+		name         string
+		expireOnRead bool
+		wantEnters   int
+	}{
+		{name: "exact draft before the ceiling", wantEnters: 1},
+		{name: "exact draft read reaches the ceiling", expireOnRead: true, wantEnters: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			zeroCeilingMargin(t)
+			base := time.Date(2026, 9, 29, 0, 0, 0, 0, time.UTC)
+			briefName := "worker-" + base.Format("20060102T150405") + ".md"
+			draft := "Read the file " + filepath.Join("$ROOT", "state", "ws", "briefs", briefName) + " in full and execute it."
+			screen := "SECRET_SCREEN_MARKER\n› " + draft + "\n"
+			visible := []string{"agent", "read", "worker", "--source", "visible"}
+			enter := []string{"agent", "send-keys", "worker", "enter"}
+			f := newDispatchArrivalFixture(t, "idle", 1, 1, "old output\n", "0",
+				fakecli.Rule{Argv: visible, Call: 1, Stdout: "boot\n"},
+				fakecli.Rule{Argv: visible, Stdout: screen},
+				fakecli.Rule{Argv: enter},
+			)
+			f.env["SOHO_PROMPT_SETTLE_SECONDS"] = "1"
+			f.env["SOHO_PROMPT_CHECK_SECONDS"] = "2"
+			readCalls := func() []fakecli.Call {
+				calls, err := fakecli.ReadCalls(filepath.Join(f.bin, "herdr.calls.jsonl"))
+				if err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
+				return calls
+			}
+			isPrompt := func(c fakecli.Call) bool {
+				return len(c.Argv) == 4 && slices.Equal(c.Argv[:3], []string{"agent", "prompt", "worker"})
+			}
+			postPrompt := func(calls []fakecli.Call) []fakecli.Call {
+				i := slices.IndexFunc(calls, isPrompt)
+				if i < 0 {
+					return nil
+				}
+				return calls[i+1:]
+			}
+			isGet := func(c fakecli.Call) bool {
+				return slices.Equal(c.Argv, []string{"agent", "get", "worker"})
+			}
+			isVisible := func(c fakecli.Call) bool { return slices.Equal(c.Argv, visible) }
+			isEnter := func(c fakecli.Call) bool { return slices.Equal(c.Argv, enter) }
+
+			// Keep the composed stamp fixed. Expire the first arrival window
+			// after an actual worker poll. The shared clock still has room for
+			// the composer read, then reaches 3 s at the selected milestone.
+			oldNow, oldCeilingNow := platform.Now, dispatchCeilingNow
+			t.Cleanup(func() { platform.Now, dispatchCeilingNow = oldNow, oldCeilingNow })
+			platform.Now = func() time.Time {
+				if slices.ContainsFunc(postPrompt(readCalls()), isGet) {
+					return base.Add(2 * time.Second)
+				}
+				return base
+			}
+			dispatchCeilingNow = func() time.Time {
+				tail := postPrompt(readCalls())
+				switch {
+				case slices.ContainsFunc(tail, isEnter), tc.expireOnRead && slices.ContainsFunc(tail, isVisible):
+					return base.Add(3 * time.Second)
+				case slices.ContainsFunc(tail, isGet):
+					return base.Add(2500 * time.Millisecond)
+				default:
+					return base
+				}
+			}
+
+			started := time.Now()
+			code, out, stderr := f.run(t, "worker", f.brief, "--no-wait")
+			assertWithinCeiling(t, started, 3*time.Second, 4*time.Second)
+			if code != 15 || dispatchOutputStatus(t, out) != "not-received" {
+				t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+			}
+			assertNoWaitCeilingLine(t, stderr, "3", "prompt arrival", "herdr agent get worker && herdr agent read worker")
+			if strings.Count(stderr, "--no-wait gave up after") != 1 || strings.Contains(out+stderr, "SECRET_SCREEN_MARKER") {
+				t.Fatalf("want one ceiling line and no echoed screen: out=%q stderr=%q", out, stderr)
+			}
+			calls := readCalls()
+			prompt := slices.IndexFunc(calls, isPrompt)
+			if n := countDispatchCalls(calls, "prompt"); n != 1 || prompt < 0 ||
+				!strings.Contains(calls[prompt].Argv[3], strings.ReplaceAll(draft, "$ROOT", f.root)) {
+				t.Fatalf("prompt calls=%d, want the original composed draft only: %#v", n, calls)
+			}
+			tail := calls[prompt+1:]
+			get, read, key := slices.IndexFunc(tail, isGet), slices.IndexFunc(tail, isVisible), slices.IndexFunc(tail, isEnter)
+			if get < 0 || read <= get || (tc.wantEnters == 1 && key <= read) {
+				t.Fatalf("want prompt, poll, composer read, then any Enter: %#v", calls)
+			}
+			if n := countDispatchCalls(calls, "send-keys"); n != tc.wantEnters {
+				t.Fatalf("send-keys calls=%d, want %d corrective Enter commands: %#v", n, tc.wantEnters, calls)
+			}
+		})
 	}
 }
 
@@ -227,10 +289,15 @@ func TestDispatchNoWaitCeilingRestoresUnsubmittedTask(t *testing.T) {
 // report, pointer and task title stand for the open task an amendment needs.
 func newHcAmendCeilingFixture(t *testing.T, rules []fakecli.Rule) (*dispatchHcFixture, string, []byte, string) {
 	t.Helper()
+	return newHcAmendCeilingFixtureWithProbes(t, guardProbeRules(), rules)
+}
+
+func newHcAmendCeilingFixtureWithProbes(t *testing.T, probes, rules []fakecli.Rule) (*dispatchHcFixture, string, []byte, string) {
+	t.Helper()
 	oldMargin := dispatchCeilingMargin
 	dispatchCeilingMargin = 0
 	t.Cleanup(func() { dispatchCeilingMargin = oldMargin })
-	f := newDispatchHcFixture(t, append(guardProbeRules(), rules...))
+	f := newDispatchHcFixture(t, append(probes, rules...))
 	f.env["SOHO_PROMPT_SETTLE_SECONDS"] = "0"
 	f.env["SOHO_PROMPT_CHECK_SECONDS"] = "1"
 	old := filepath.Join(f.sd, "reports", "worker-previous.md")
@@ -247,6 +314,33 @@ func newHcAmendCeilingFixture(t *testing.T, rules []fakecli.Rule) (*dispatchHcFi
 		t.Fatal(err)
 	}
 	return f, pointerPath, pointer, title
+}
+
+// Two individually timely probes exceed their shared guarded-send bound.
+// The schema launch is cancelled before any input can be sent.
+func TestDispatchNoWaitCeilingAmendGuardProbeAbortDoesNotSend(t *testing.T) {
+	probes := guardProbeRules()
+	probes[0].Delay, probes[1].Delay = 600, 600
+	f, _, _, _ := newHcAmendCeilingFixtureWithProbes(t, probes, []fakecli.Rule{
+		{Argv: []string{"get", "worker", "--json"}, ArgvPrefix: true, Stdout: hcWorkerGet(7, "idle")},
+		{Argv: []string{"send", "--if", "idle", "--json", "--", "worker"}, ArgvPrefix: true, Code: 10, Stderr: `{"error":{"kind":"status_mismatch","message":"busy"}}`},
+	})
+	f.scriptDispatchHc(t)
+	code, out, stderr := f.run(t, "worker", f.brief, "--amend", "--no-wait")
+	if code != 15 || dispatchHcOutputStatus(t, out) != "not-received" {
+		t.Fatalf("code=%d out=%s stderr=%s", code, out, stderr)
+	}
+	assertNoWaitCeilingLine(t, stderr, "1", "send to be accepted", "hc get worker && hc read worker")
+	calls := f.hcCalls(t)
+	var launchedProbes []string
+	for _, call := range calls {
+		if slices.Equal(call.Argv, probes[0].Argv) || slices.Equal(call.Argv, probes[1].Argv) {
+			launchedProbes = append(launchedProbes, strings.Join(call.Argv, " "))
+		}
+	}
+	if !slices.Equal(launchedProbes, []string{"send --help", "schema --json"}) || len(hcSends(calls)) != 0 {
+		t.Fatalf("probes=%v sends=%v, want two probes and no input", launchedProbes, hcSends(calls))
+	}
 }
 
 // F2: an hc amendment whose unproven send reaches the ceiling leaves exactly

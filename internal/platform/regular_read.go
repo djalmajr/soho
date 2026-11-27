@@ -18,7 +18,20 @@ var ErrNotRegular = errors.New("not a regular file")
 // replacement after a path check cannot slip a different kind of file in.
 // Any other kind of file is closed and refused with ErrNotRegular.
 func OpenRegularFile(file string) (*os.File, error) {
-	f, err := os.OpenFile(file, ReadOnlyNonBlocking, 0)
+	return openRegularFile(file, ReadOnlyNonBlocking)
+}
+
+// OpenRegularFileNoFollow refuses a symlink at the last path component.
+// Platforms without an atomic no-follow open return errors.ErrUnsupported.
+func OpenRegularFileNoFollow(file string) (*os.File, error) {
+	if regularNoFollowFlag == 0 {
+		return nil, errors.ErrUnsupported
+	}
+	return openRegularFile(file, ReadOnlyNonBlocking|regularNoFollowFlag)
+}
+
+func openRegularFile(file string, flags int) (*os.File, error) {
+	f, err := os.OpenFile(file, flags, 0)
 	if err != nil {
 		return nil, err
 	}

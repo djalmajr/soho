@@ -512,7 +512,16 @@ func Run(args []string, env platform.Env) (code int) {
 							frictionLogPath = filepath.Join(sd, "friction.log")
 						}
 					} else {
-						frictionLogPath = filepath.Join(core.StateDir(commandConfig, decisionEnv, commandCwd), "friction.log")
+						// Local init does no state discovery here: WorkspaceID would
+						// query the legacy pane and could replace the pure state
+						// admission diagnostic, and an early friction sink could
+						// write before admission. CmdInit runs the admission checks
+						// and caller gate first, then resolves state itself.
+						localInit := command == "init" && commandConfig != nil &&
+							setup.LocalStateSetupInEffect(platform.StateProjectRoot(decisionEnv, commandCwd), commandConfig, decisionEnv)
+						if !localInit {
+							frictionLogPath = filepath.Join(core.StateDir(commandConfig, decisionEnv, commandCwd), "friction.log")
+						}
 					}
 				}
 			}

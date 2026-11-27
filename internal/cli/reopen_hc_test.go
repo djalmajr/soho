@@ -16,6 +16,7 @@ import (
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/platform"
 	"github.com/djalmajr/soho/internal/taskreport"
+	"github.com/djalmajr/soho/internal/testutil"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
 )
 
@@ -108,6 +109,7 @@ func newReopenHcFixture(t *testing.T) *reopenHcFixture {
 	env := platform.Env{
 		"PATH": bin, "HOME": home, "USERPROFILE": home, "XDG_CONFIG_HOME": conf,
 		"TMPDIR": root, "SOHO_FAKECLI_CONFIG": bin, "SOHO_DIR": state,
+		"GORACE":         fakecli.RaceOptions([]string{"GORACE=" + testutil.HostRaceOptions()}),
 		"SOHO_TRANSPORT": "hc", "HC_TERMINAL_ID": "t1", "SOHO_LANES": "off",
 		"SOHO_ROLES": roles, "SOHO_PROMPT_CHECK_SECONDS": "0", "SOHO_WAIT_POLL_MS": "50",
 		"SOHO_REOPEN_RPC_FRAME":   `{"jsonrpc":"2.0","id":2,"result":{"address":"t7"}}`,

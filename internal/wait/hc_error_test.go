@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djalmajr/soho/internal/core"
 	"github.com/djalmajr/soho/internal/testutil/fakecli"
@@ -124,7 +125,7 @@ func TestWaitHcStuckHintNamesHc(t *testing.T) {
 		fakecliRuleGetWorker(hcWakeWorking5),
 		fakecliRuleHcWaitAny(),
 	)
-	code, out, stderr := f.runWait(t, true, 0)
+	code, out, stderr := f.runWait(t, true, float64((3*time.Minute)/time.Millisecond))
 	if code != 9 {
 		t.Fatalf("code=%d out=%q stderr=%q, want the timeout exit (a working worker never settles)", code, out, stderr)
 	}
@@ -133,6 +134,9 @@ func TestWaitHcStuckHintNamesHc(t *testing.T) {
 	}
 	if strings.Contains(stderr, "herdr agent read") {
 		t.Fatalf("stderr=%q, want no herdr hint under transport=hc", stderr)
+	}
+	if polls := f.getPolls(t); polls < 2 || polls > 4 {
+		t.Fatalf("worker polls=%d, want 2 to 4 probes for the stuck warning and timeout", polls)
 	}
 	f.assertNoHerdr(t)
 }

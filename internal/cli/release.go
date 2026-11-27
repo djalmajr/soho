@@ -24,6 +24,15 @@ import (
 )
 
 func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) int {
+	return cmdReleaseWithExpectedRow(argv, ctx, env, cwd, releaseTarget{})
+}
+
+type releaseTarget struct {
+	stateDir string
+	row      string
+}
+
+func cmdReleaseWithExpectedRow(argv []string, ctx *core.Config, env platform.Env, cwd string, expected releaseTarget) int {
 	if len(argv) == 0 {
 		platform.Die("agent: Parameter not set", 1)
 	}
@@ -56,6 +65,9 @@ func cmdRelease(argv []string, ctx *core.Config, env platform.Env, cwd string) i
 		defer unlock()
 	}
 	line := core.RosterLine(sd, agent)
+	if hcMode && expected.row != "" && (sd != expected.stateDir || line != expected.row) {
+		platform.Die("reopen: worker roster changed after preflight; retry", 4)
+	}
 	if line == "" {
 		if closePane && releaseOrphan(agent, force, ctx, env, cwd, svc) {
 			return 0
@@ -267,13 +279,13 @@ func releaseEndedInProviderError(sd, agent, state string, ctx *core.Config, env 
 	}
 	capacityTexts := core.Cfg(ctx, "provider_capacity_texts", "", env)
 	errorTexts := core.Cfg(ctx, "provider_error_texts", "", env)
-	detection := core.ProviderDetectTexts(state, screen, capacityTexts, errorTexts)
+	detection := core.ProviderDetectTextsWithStreamGate(state, screen, capacityTexts, errorTexts, provider.NoStreamProvenance)
 	if detection == nil && state == "working" {
 		// The shared classifier suppresses non-lost detections while the
 		// terminal reports working. That is exactly the field case here:
 		// Herdr/hc still says working while the worker sits at a refusal or
 		// auth error, so classify the fresh screen without that guard.
-		detection = core.ProviderDetectTexts("", screen, capacityTexts, errorTexts)
+		detection = core.ProviderDetectTextsWithStreamGate("", screen, capacityTexts, errorTexts, provider.NoStreamProvenance)
 	}
 	if detection == nil {
 		return "", false

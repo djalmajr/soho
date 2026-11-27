@@ -245,25 +245,23 @@ func TestSpawnA12NameDoesNotSwapNames(t *testing.T) {
 		assertGroupMismatch(t, code, stdout, stderr, "model differs (old-model vs grok-4.7)", `"name": "a"`)
 	})
 
-	t.Run("--name not on the lane still renames a candidate to it (the pre-existing flow)", func(t *testing.T) {
+	t.Run("a new name cannot take a full lane worker's slot", func(t *testing.T) {
 		f := a12Fixture(t, []fakecli.Rule{
 			{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[{"name":"b","pane_id":"p-b","agent_status":"idle"}]}}`},
 			idleHerdrRule("b"),
 			{Argv: []string{"agent", "rename", "p-b", "a"}, Stdout: `{"result":{}}`},
 		}, "1")
 		f.roster(t, a12Row("b", "grok", "grok-4.7", f.cwd))
+		before := rosterBytes(t, f)
 		code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--kind", "grok", "--model", "grok-4.7", "--name", "a"})
-		if code != 0 {
-			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+		if code != 10 || !spawnJSONHasField(t, stdout, `"name": "b"`) || !spawnJSONHasField(t, stdout, `"status": "busy"`) {
+			t.Fatalf("exit=%d stdout=%q stderr=%q, want busy on b", code, stdout, stderr)
 		}
-		if renameCalls(calls) != 1 {
-			t.Fatalf("rename calls=%#v", calls)
+		if renameCalls(calls) != 0 || len(herdrActs(calls)) != 0 {
+			t.Fatalf("a refusal must leave the worker and pane alone: %#v", calls)
 		}
-		if !spawnJSONHasField(t, stdout, `"name": "a"`) || !spawnJSONHasField(t, stdout, `"reused": true`) {
-			t.Fatalf("JSON=%q", stdout)
-		}
-		if !strings.Contains(stderr, "renamed to 'a'") {
-			t.Fatalf("stderr=%q", stderr)
+		if after := rosterBytes(t, f); after != before {
+			t.Fatalf("roster changed: before=%q after=%q", before, after)
 		}
 	})
 }

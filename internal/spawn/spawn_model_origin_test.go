@@ -15,9 +15,9 @@ import (
 // SOH-473: the advisory states only that soho passes no model argument and,
 // with lanes off, what lane configuration exists. It predicts neither the
 // assistant's model nor the model a lane would choose.
-func modelOriginFixture(t *testing.T) spawnFixture {
+func modelOriginFixture(t *testing.T, rules ...fakecli.Rule) spawnFixture {
 	t.Helper()
-	f := newSpawnFixture(t, freshSpawnRules())
+	f := newSpawnFixture(t, freshSpawnRules(rules...))
 	configureSpawnFixture(t, &f)
 	if err := os.WriteFile(filepath.Join(f.root, "roles", "validator.md"), []byte("---\nkind: pi\n---\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -110,7 +110,11 @@ func TestSpawnNativeModelStillGetsNoModelLine(t *testing.T) {
 		{name: "codex config", kind: "codex", extra: []string{"--", "-c", `model="worker-model"`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := modelOriginFixture(t)
+			var rules []fakecli.Rule
+			if tc.kind == "pi" {
+				rules = []fakecli.Rule{piHerdrIdentityRule("validator", "p-new", "/sessions/validator.jsonl")}
+			}
+			f := modelOriginFixture(t, rules...)
 			if tc.kind == "codex" {
 				if _, err := fakecli.Install(t, f.bin, "codex", nil); err != nil {
 					t.Fatal(err)

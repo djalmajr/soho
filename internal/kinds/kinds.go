@@ -8,7 +8,7 @@ import (
 	"github.com/djalmajr/soho/internal/platform"
 )
 
-var KnownKinds = []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode"}
+var KnownKinds = []string{"claude", "codex", "grok", "agy", "gemini", "cursor", "pi", "opencode", "omp"}
 var families = []string{"anthropic", "openai", "xai", "google", "alibaba"}
 
 func KindFamily(kind string) string {
@@ -27,7 +27,7 @@ func KindFamily(kind string) string {
 }
 
 func KindFamilyDisplay(kind string) string {
-	if kind == "agy" || kind == "cursor" || kind == "pi" || kind == "opencode" {
+	if kind == "agy" || kind == "cursor" || kind == "pi" || kind == "opencode" || kind == "omp" {
 		return "by model"
 	}
 	return KindFamily(kind)
@@ -86,7 +86,7 @@ func EffortRank(effort string) int {
 
 func KindEffortCeiling(kind string) string {
 	switch kind {
-	case "claude", "pi", "codex":
+	case "claude", "pi", "codex", "omp":
 		return "max"
 	case "cursor", "grok":
 		return "xhigh"
@@ -136,7 +136,7 @@ func KindEffortArgs(kind, effort, model string, env platform.Env, warn WarnFunc)
 			return []string{"--model", CursorModelWithEffort(model, effort, env, warn)}
 		}
 		warn("cursor ignores --effort without --model (pick an id from: cursor-agent --list-models)")
-	case "pi":
+	case "pi", "omp":
 		return []string{"--thinking", effort}
 	case "opencode":
 		warn(fmt.Sprintf("opencode TUI takes no effort flag (--variant is only in 'opencode run'); effort '%s' ignored", effort))
@@ -169,6 +169,105 @@ func KindMcpArgs(kind, mcp string) (args []string, ok bool) {
 	}
 }
 
+// McpCapability is the authority of a capability observation. Inconclusive is
+// deliberately distinct from Unsupported: only a successful help read without
+// the option is an authoritative negative.
+type McpCapability uint8
+
+const (
+	McpCapabilityInconclusive McpCapability = iota
+	McpCapabilitySupported
+	McpCapabilityUnsupported
+)
+
+const piMcpProbeTimeoutMs = 2000
+
+// piHelpHeading recognizes the pi invocation line, not an arbitrary Usage
+// banner from a wrapper. The option block alone is only a structure marker.
+func piHelpHeading(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	if strings.HasPrefix(lower, "usage:") {
+		rest := strings.TrimSpace(strings.TrimPrefix(lower, "usage:"))
+		return rest == "pi" || strings.HasPrefix(rest, "pi ") || strings.HasPrefix(rest, "pi\t") || strings.HasPrefix(rest, "pi[")
+	}
+	return lower == "pi" || strings.HasPrefix(lower, "pi ") || strings.HasPrefix(lower, "pi\t")
+}
+
+// piOptionTokens reads indented option declarations, never prose or an
+// indented diagnostic. A standalone short-alias declaration is still help.
+func piOptionTokens(line string) []string {
+	if line == "" || line == strings.TrimLeft(line, " \t") {
+		return nil
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return nil
+	}
+	first := strings.Trim(fields[0], ",.;:()[]")
+	// An indented example starts with the program name (or a word), not an
+	// option, so neither it nor its later flags are declarations.
+	if !strings.HasPrefix(first, "-") {
+		return nil
+	}
+	second := strings.ToLower(strings.Trim(fields[1], ",.;:()[]"))
+	for _, diagnostic := range []string{"is", "was", "does", "did", "not", "cannot"} {
+		if second == diagnostic {
+			return nil
+		}
+	}
+	if !strings.HasPrefix(second, "-") {
+		return []string{first}
+	}
+	// A short alias only precedes a long flag when the raw token carries
+	// the separating comma: "-n, --no-mcp", never "-n --no-mcp".
+	if !strings.HasPrefix(first, "--") && !strings.HasSuffix(strings.TrimSpace(fields[0]), ",") {
+		return nil
+	}
+	return []string{first, second}
+}
+
+// PiNoMcpCapabilityProgram runs one bounded --help query against the exact
+// resolved program and reads both output streams without trimming leading
+// indentation. An authoritative absence needs a complete Pi usage token and
+// at least one real option declaration; a supported option can stand alone.
+// Wrappers, empty option blocks, diagnostics and generic banners stay
+// inconclusive.
+func PiNoMcpCapabilityProgram(env platform.Env, cwd, program string) McpCapability {
+	res := platform.RunExecutable(program, []string{"--help"}, platform.RunOptions{Env: env, TimeoutMs: piMcpProbeTimeoutMs, Cwd: cwd})
+	if res.NotFound || res.TimedOut || res.Status == nil || *res.Status != 0 {
+		return McpCapabilityInconclusive
+	}
+	output := res.Stdout
+	if res.Stderr != "" {
+		if output != "" && !strings.HasSuffix(output, "\n") {
+			output += "\n"
+		}
+		output += res.Stderr
+	}
+	if strings.TrimSpace(output) == "" {
+		return McpCapabilityInconclusive
+	}
+	piHelp, optionFound, supported := false, false, false
+	for _, line := range strings.Split(output, "\n") {
+		if piHelpHeading(line) {
+			piHelp = true
+		}
+		for _, token := range piOptionTokens(line) {
+			optionFound = true
+			if token == "--no-mcp" {
+				supported = true
+			}
+		}
+	}
+	if supported {
+		return McpCapabilitySupported
+	}
+	if piHelp && optionFound {
+		return McpCapabilityUnsupported
+	}
+	return McpCapabilityInconclusive
+}
+
 // KindMcpOff reports whether the kind can turn the user's MCP servers off
 // per process (the `soho kinds` table column): claude and pi through a
 // static flag, codex through a per-server override built from its live
@@ -190,7 +289,7 @@ func KindModelArgs(kind, model, effort string, warn WarnFunc) []string {
 		warn = DefaultWarn
 	}
 	switch kind {
-	case "claude", "agy", "gemini", "grok", "cursor", "pi":
+	case "claude", "agy", "gemini", "grok", "cursor", "pi", "omp":
 		if kind == "cursor" && effort != "" {
 			return nil
 		}
@@ -220,7 +319,24 @@ func CodexApprovalOverrideFlag(args []string) string {
 	return ""
 }
 
+// OMPApprovalArgs maps the OMP modes with an explicit SoHo equivalent.
+func OMPApprovalArgs(mode string) ([]string, error) {
+	switch mode {
+	case "ask":
+		return []string{"--approval-mode", "always-ask"}, nil
+	case "edits":
+		return []string{"--approval-mode", "write"}, nil
+	case "full":
+		return []string{"--approval-mode", "yolo"}, nil
+	default:
+		return nil, fmt.Errorf("omp requires approvals ask, edits, or full")
+	}
+}
+
 func KindApprovalArgs(kind, mode string, warn WarnFunc) ([]string, error) {
+	if kind == "omp" {
+		return OMPApprovalArgs(mode)
+	}
 	if mode == "" || mode == "ask" {
 		return nil, nil
 	}
@@ -305,6 +421,8 @@ func KindSummary(kind string) string {
 		return "Same screen-reading family as agy. Use for design and visual checks when agy is not installed."
 	case "pi":
 		return "Generic multi-model harness (pi). Set a provider/model id in the config; effort via --thinking; it has no approval prompts."
+	case "omp":
+		return "Generic multi-model harness (omp) with explicit approval modes. Available for an explicit setup probe."
 	case "opencode":
 		return "Generic multi-model harness (opencode). Set a provider/model id in the config; its TUI maps no effort flag; unattended runs use --auto."
 	default:

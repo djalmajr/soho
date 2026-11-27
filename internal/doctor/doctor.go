@@ -122,17 +122,34 @@ func CmdInit(ctx *core.Config, env platform.Env, cwd string) {
 		return
 	}
 	herdr.RequireEnv(env, platform.Current(), os.Getpid(), nil)
-	// The caller-pane check runs before naming the caller's agent and
-	// titling the claimed pane (DJA-394).
-	core.CallerGate("init", ctx, env, cwd)
 	// Refuse before DoctorCheck: the state check would create the state dir
 	// inside the skill before the refusal. Decided with StateInSkill/
 	// StateRootPath, so the refusal itself has no side effect.
 	if skill := core.StateInSkill(ctx, env, cwd); skill != "" {
 		platform.Die(fmt.Sprintf("the state dir '%s' would be inside the soho skill ('%s'); run soho from the project's directory (nothing was written)", core.StateRootPath(ctx, env, cwd), skill), 2)
 	}
+	localInit := setupcmd.LocalStateSetupInEffect(platform.StateProjectRoot(env, cwd), ctx, env)
+	if localInit {
+		// The shared pure admission check refuses a pending setup migration
+		// before any local exclude or state write, with the ordinary message.
+		if message := core.FormerStateRefusal(ctx, env, cwd); message != "" {
+			platform.Die(message, 2)
+		}
+	}
+	// The caller-pane check runs before naming the caller's agent and
+	// titling the claimed pane (DJA-394).
+	if localInit {
+		core.CallerGateLocal("init", ctx, env, cwd)
+	} else {
+		core.CallerGate("init", ctx, env, cwd)
+	}
+	// Caller and state-in-skill refusals above run before any write. In local
+	// mode, hide the state path through the common git dir here so the doctor
+	// state check can initialize state without touching the tracked .gitignore.
+	setupcmd.EnsureLocalStateExclude(platform.StateProjectRoot(env, cwd), ctx, env, cwd, "init")
 	oldOut := platform.Stdout
 	platform.Stdout = platform.Stderr
+	// Init shares the diagnostic but must not add a Pi subprocess.
 	doctorCheck(ctx, env, cwd, platform.Stderr, false)
 	platform.Stdout = oldOut
 	state := core.StateDir(ctx, env, cwd)
@@ -367,9 +384,8 @@ func DoctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer) 
 	doctorCheck(ctx, env, cwd, out, true)
 }
 
-// Init's pre-registration check keeps every existing diagnostic and only
-// suppresses the advice to perform the registration init is about to do.
-func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, adviseRegistration bool) {
+// Init's pre-registration check skips standalone advice and the Pi probe.
+func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, standalone bool) {
 	s := &Say{Out: out}
 	// One backend for this invocation: every herdr probe of the doctor runs
 	// through it (DJA-596).
@@ -507,29 +523,19 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	if declared && len(warnings) == 0 {
 		s.Ok("own providers: no known trap")
 	}
-	// A state dir inside the skill is a warn, not a probe: no StateRoot, no
-	// MkdirAll, and the doctor goes on. The former state dir waiting for the
-	// setup migration is the same: probing would create the target and touch
-	// the .gitignore, so the check says the dir is intentionally not created
-	// and runs no StateRoot and no MkdirAll (nowrite keeps today's branch).
+	// A state dir inside the skill is a warn, not a probe: the pure path
+	// resolver resolves it without creating anything, and the doctor goes on.
+	// The former state dir waiting for the setup migration is the same: probing
+	// would create the target, so the check says the dir is intentionally not
+	// created and runs no MkdirAll (nowrite keeps today's branch). The ordinary
+	// branch below resolves the configured state path without writing a Git
+	// ignore file.
 	if skill := core.StateInSkill(ctx, env, cwd); skill != "" {
 		s.Warning(fmt.Sprintf("state dir: '%s' would be inside the soho skill ('%s'); run soho from the project's directory", core.StateRootPath(ctx, env, cwd), skill))
 	} else if former, target, waiting := core.FormerStateWaiting(ctx, env, cwd); waiting && !core.Nowrite(env) {
 		s.Ok(fmt.Sprintf("state dir not created: 'soho setup' moves %s to %s", former, target))
 	} else {
 		d := core.StateRootPath(ctx, env, cwd)
-		func() {
-			defer func() {
-				if value := recover(); value != nil {
-					err, ok := value.(*os.PathError)
-					if !ok {
-						panic(value)
-					}
-					s.Warning("state ignore update failed: " + err.Error())
-				}
-			}()
-			d = core.StateRoot(ctx, env, cwd)
-		}()
 		if core.Nowrite(env) {
 			if st, e := os.Stat(d); e != nil {
 				if os.IsNotExist(e) {
@@ -651,6 +657,19 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	doctorBackgroundPatterns(ctx, env, s)
 	doctorApprovals(ctx, env, s)
 	doctorMcp(ctx, env, s)
+	piUsed := slices.Contains(used, "pi")
+	// With lanes off, a configured Pi documenter can spawn with the role's
+	// default mcp: none even when no other effective role uses Pi. Keep the
+	// informational usedKinds list and its planner exclusion untouched.
+	if !piUsed && !core.LanesEnabled(ctx, env) && core.ResolvedRoleKind("documenter", ctx, env, cwd) == "pi" {
+		piUsed = true
+	}
+	if standalone && piUsed {
+		doctorPiCapabilityWarning(env, cwd, s)
+	}
+	if kinds.GrokClaudeHooksRisk(env, platform.ProjectRoot(env, cwd)) == kinds.GrokHooksWarn {
+		s.Warning(kinds.GrokClaudeHooksWarningText)
+	}
 	doctorCodexApprovalOverrides(ctx, env, cwd, s)
 	doctorCodexNetwork(ctx, env, cwd, s)
 	codexenv.DoctorCodexPolicyWarnings(env, platform.Current(), s.Warning)
@@ -671,7 +690,7 @@ func doctorCheck(ctx *core.Config, env platform.Env, cwd string, out io.Writer, 
 	doctorPeerInbound(ctx, svc, env, cwd, s)
 	doctorFootprint(ctx, svc, env, cwd, s)
 	doctorUpdateNotice(ctx, env, cwd, out)
-	if adviseRegistration && inventory.CurrentMissingRegistration(env, cwd, ctx.User, svc) {
+	if standalone && inventory.CurrentMissingRegistration(env, cwd, ctx.User, svc) {
 		s.Warning(inventory.MissingRegistrationAdvisory)
 	}
 	fmt.Fprintf(out, "first_run: %t\n%d ok, %d warning(s)\n", ProjectIsFirstRun(ctx, env, cwd), s.OK, s.Warn)
@@ -1271,7 +1290,12 @@ func doctorOrphans(ctx *core.Config, svc transport.Services, env platform.Env, c
 				}
 			}
 		}()
-		orphans = core.OrphansWithServices(ctx, env, cwd, svc)
+		// The roster and released-pane registry reads are diagnostic-only:
+		// keep them off the Git ignore write path without changing the
+		// invocation's environment or the live agent listing.
+		readEnv := env.Clone()
+		readEnv["SOHO_NOWRITE"] = "1"
+		orphans = core.OrphansWithServices(ctx, readEnv, cwd, svc)
 	}()
 	for _, orphan := range orphans {
 		state := orphan.State
@@ -1600,6 +1624,26 @@ func doctorMcp(ctx *core.Config, env platform.Env, s *Say) {
 		if detail := core.McpValueError(value); detail != "" {
 			s.Warning(fmt.Sprintf("config: %s=%s: %s", textutil.SanitizeCause(keys[key]), textutil.SanitizeCause(value), detail))
 		}
+	}
+}
+
+// doctorPiCapabilityWarning covers the legacy limitation of #282: doctor
+// can only see the pi on its own PATH, while a herdr target pane resolves pi
+// inside the pane. An authoritative negative here is advisory only; the
+// worker's explicit MCP choice is never changed.
+func doctorPiCapabilityWarning(env platform.Env, cwd string, s *Say) {
+	if env.Get("SOHO_TRANSPORT") == "hc" {
+		return
+	}
+	program, ok := platform.FindExecutable("pi", env, platform.Current())
+	if !ok {
+		return
+	}
+	if absolute, err := filepath.Abs(program); err == nil {
+		program = absolute
+	}
+	if kinds.PiNoMcpCapabilityProgram(env, cwd, program) == kinds.McpCapabilityUnsupported {
+		s.Warning(fmt.Sprintf("pi visible to doctor at %s does not document --no-mcp; the target Herdr pane can resolve another pi, so check that pi before spawning with --mcp none (advisory only; no MCP policy or argv is changed)", program))
 	}
 }
 
@@ -2025,7 +2069,11 @@ func doctorNativeOrphanChildren(ctx *core.Config, svc transport.Services, env pl
 	if listed.Err != nil || !listed.Valid {
 		return
 	}
-	sd := core.StateDirPath(ctx, env, cwd)
+	// Roster and released-registry lookups are read-only; keep the
+	// top-level state-writability probe on the invocation environment.
+	readEnv := env.Clone()
+	readEnv["SOHO_NOWRITE"] = "1"
+	sd := core.StateDirPath(ctx, readEnv, cwd)
 	seen := map[string]bool{}
 	for _, terminal := range listed.Value {
 		if terminal.PaneID == "" || seen[terminal.PaneID] || terminal.Name == "" {
@@ -2037,7 +2085,7 @@ func doctorNativeOrphanChildren(ctx *core.Config, svc transport.Services, env pl
 		if kinds.KindFromProgramHints(terminal.ProgramHints) == "" || core.RosterLine(sd, terminal.Name) != "" {
 			continue
 		}
-		if !waitpkg.ReleasedPaneRegistered(terminal.Name, terminal.PaneID, ctx, env, cwd) {
+		if !waitpkg.ReleasedPaneRegistered(terminal.Name, terminal.PaneID, ctx, readEnv, cwd) {
 			continue
 		}
 		seen[terminal.PaneID] = true

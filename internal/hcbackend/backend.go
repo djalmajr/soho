@@ -80,9 +80,10 @@ type backend struct {
 	sessionValue string
 	sessionErr   error
 
-	abs            func(string) (string, error)
-	readyRemaining func(time.Time) time.Duration
-	readyContext   func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	abs               func(string) (string, error)
+	readyRemaining    func(time.Time) time.Duration
+	readyContext      func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	envDropExecutable func() (string, error)
 }
 
 func (b *backend) readinessRemaining(deadline time.Time) time.Duration {
@@ -1496,6 +1497,8 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 			message = "opencode requires launch profile " + launchprofile.OpenCodePrimaryProfile + " under transport=hc"
 		case start.LaunchProfile != "":
 			message = "native launch profile is unsupported under transport=hc"
+		case start.Kind == "omp":
+			message = "managed OMP workers require the legacy Herdr transport. Use transport=herdr"
 		}
 		return transport.Reply[string]{Err: &transport.Failure{
 			Kind:    transport.FailureUnsupported,
@@ -1508,25 +1511,27 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 			Message: fmt.Sprintf("worker name '%s' is not a valid hc terminal name (1-32 of a-z 0-9 - _)", start.Name),
 		}}
 	}
-	// The five empty-profile kinds keep the request's own argv and
-	// environment aliases, exactly as the original start does: no clone
-	// and no native validation, so a synchronous callback that mutates
-	// the caller's values before the launch still reaches the serialized
-	// request.
+	// Keep the empty-profile pass-through aliases unless an explicit
+	// removal needs a per-call snapshot for validation and launch.
 	args := start.Args
 	envOverrides := start.EnvOverrides
-	if start.Kind == "opencode" {
-		// The admitted opencode plan is owned per-call snapshots of the
-		// request's argv and environment, taken before the validation and
-		// every session, lookup or launch callback: the start uses only
-		// these values from here on, so a synchronous callback that
-		// mutates the caller's slice or map cannot change the admitted
-		// plan or the serialized launch.
+	if len(start.EnvDrop) > maxEnvDropNames {
+		return transport.Reply[string]{Err: invalidEnvDrop("environment removal accepts at most 16 names")}
+	}
+	envDrop := append([]string(nil), start.EnvDrop...)
+	if start.Kind == "opencode" || len(envDrop) > 0 {
 		args = append([]string(nil), start.Args...)
 		envOverrides = make(map[string]string, len(start.EnvOverrides))
 		for name, value := range start.EnvOverrides {
 			envOverrides[name] = value
 		}
+	}
+	if len(envDrop) > 0 {
+		if failure := b.preflightEnvDrop(envDrop, envOverrides); failure != nil {
+			return transport.Reply[string]{Err: failure}
+		}
+	}
+	if start.Kind == "opencode" {
 		if err := launchprofile.ValidateNativeLaunchProfile(start.Kind, start.LaunchProfile, args, envOverrides); err != nil {
 			// The shared validator's one fixed value-free error: no
 			// supplied argument, configuration or environment text
@@ -1594,6 +1599,22 @@ func (b *backend) Start(ctx context.Context, start transport.Start, call transpo
 		program = abs
 	}
 
+	if len(envDrop) > 0 {
+		// The worker must be an absolute executable before any PATH entry is
+		// removed; a bare name could only be resolved by a wrapper.
+		if !filepath.IsAbs(program) {
+			return transport.Reply[string]{Err: &transport.Failure{
+				Kind:    transport.FailureUnavailable,
+				Message: "environment removal requires an absolute worker executable path",
+			}}
+		}
+		helper, failure := b.workerEnvExecProgram()
+		if failure != nil {
+			return transport.Reply[string]{Err: failure}
+		}
+		argv := platform.WorkerEnvExecArgv(envDrop, program, args)
+		program, args = helper, append([]string{platform.WorkerEnvExecMode}, argv...)
+	}
 	if start.LoginShell != "" {
 		program, args = loginShellLaunch(start.LoginShell, program, args)
 	}
@@ -2310,4 +2331,52 @@ func hcKeyName(keys string) (string, bool) {
 		return keys, true
 	}
 	return "", false
+}
+
+const maxEnvDropNames = platform.WorkerEnvExecMaxNames
+
+func (b *backend) preflightEnvDrop(names []string, overrides map[string]string) *transport.Failure {
+	for _, name := range names {
+		switch platform.WorkerEnvDropNameProblem(name) {
+		case platform.WorkerEnvDropNameInvalid:
+			return invalidEnvDrop("environment removal requires portable environment names")
+		case platform.WorkerEnvDropNameReserved:
+			return invalidEnvDrop("environment removal cannot remove reserved routing names")
+		}
+		if _, present := overrides[name]; present {
+			return invalidEnvDrop("environment removal cannot remove a name supplied by an environment override")
+		}
+	}
+	if _, failure := b.workerEnvExecProgram(); failure != nil {
+		return failure
+	}
+	return nil
+}
+
+// workerEnvExecProgram resolves the current soho executable that runs the
+// internal helper. The seam keeps the refusal testable without depending on
+// the test binary's own location.
+func (b *backend) workerEnvExecProgram() (string, *transport.Failure) {
+	if !platform.WorkerEnvExecSupported() {
+		return "", &transport.Failure{
+			Kind:    transport.FailureUnsupported,
+			Message: "environment removal requires a macOS or Linux Core host",
+		}
+	}
+	resolve := b.envDropExecutable
+	if resolve == nil {
+		resolve = platform.WorkerExecutable
+	}
+	path, err := resolve()
+	if err != nil || path == "" || !filepath.IsAbs(path) {
+		return "", &transport.Failure{
+			Kind:    transport.FailureUnavailable,
+			Message: "environment removal requires a usable absolute soho executable on the Core host",
+		}
+	}
+	return path, nil
+}
+
+func invalidEnvDrop(message string) *transport.Failure {
+	return &transport.Failure{Kind: transport.FailureCommand, Message: message}
 }

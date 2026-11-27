@@ -48,7 +48,7 @@ func dispatchLiveRunPreflight(agent, briefFile string, cfg *core.Config, env pla
 	if env.Get("SOHO_TRANSPORT") != "hc" || caller == "" {
 		return
 	}
-	svc := backend.New(env)
+	svc := newDispatchServices(env)
 	call := transport.Call{Timeout: dispatchLiveRunTransportTimeout}
 	reply := svc.Runtime.Get(context.Background(), transport.Target{ID: caller}, call)
 	if reply.Err != nil || !reply.Valid || reply.Value.WorkspaceID == "" {
@@ -129,3 +129,6 @@ func warnDispatchLiveRun(svc transport.Services, briefBody string, rows []core.R
 		core.Warn(fmt.Sprintf("dispatch: a run of yours is live in this worktree (%s, %s); edits now change what it tests — wait for its exit note, or run long checks in a worktree pinned to the commit under test", dispatchLiveRunPrintable(terminal.Name), dispatchLiveRunPrintable(terminal.Target.ID)), frictionLogPath, "dispatch")
 	}
 }
+
+// Tests can script advisory and delivery launches on the same clock.
+var newDispatchServices = backend.New

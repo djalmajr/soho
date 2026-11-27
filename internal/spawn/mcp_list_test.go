@@ -20,7 +20,7 @@ func TestSpawnGroupRoleMcpOverride(t *testing.T) {
 		{"explicit flag", "none", "inherit", "inherit"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := mcpListFixture(t)
+			f := mcpListFixture(t, piHerdrIdentityRule("implementer", "p-new", "/sessions/implementer.jsonl"))
 			f.env["SOHO_LANES"] = "on"
 			f.ctx.Entries["lane_builders_kind"] = core.ConfigEntry{Value: "pi", Source: "project"}
 			f.ctx.Entries["lane_builders_mcp"] = core.ConfigEntry{Value: "inherit", Source: "project"}
@@ -58,9 +58,9 @@ func listWarnPrefix(kind string) string {
 	return "soho: warning: spawn: " + kind + " cannot limit its MCP servers to the requested list per process; '"
 }
 
-func mcpListFixture(t *testing.T) spawnFixture {
+func mcpListFixture(t *testing.T, rules ...fakecli.Rule) spawnFixture {
 	t.Helper()
-	f := newSpawnFixture(t, freshSpawnRules())
+	f := newSpawnFixture(t, freshSpawnRules(rules...))
 	configureSpawnFixture(t, &f)
 	f.env["SOHO_LAYOUT"] = "tab"
 	return f
@@ -93,8 +93,12 @@ func TestShippedNoneRolesOpenWithoutMcpLikeNone(t *testing.T) {
 	for _, role := range roles {
 		for _, kind := range []string{"claude", "codex", "pi"} {
 			t.Run(role+" as "+kind, func(t *testing.T) {
-				f1 := mcpListFixture(t)
-				f2 := mcpListFixture(t)
+				var rules []fakecli.Rule
+				if kind == "pi" {
+					rules = []fakecli.Rule{piHerdrIdentityRule(role, "p-new", "/sessions/"+role+".jsonl")}
+				}
+				f1 := mcpListFixture(t, rules...)
+				f2 := mcpListFixture(t, rules...)
 				if kind == "codex" {
 					installCodexMcpList(t, f1, listing)
 					installCodexMcpList(t, f2, listing)
@@ -325,7 +329,7 @@ func TestPiMcpList(t *testing.T) {
 	}
 
 	t.Run("none of the names present: --no-mcp, no warning", func(t *testing.T) {
-		f := mcpListFixture(t)
+		f := mcpListFixture(t, piHerdrIdentityRule("worker", "p-new", legacyPiSession))
 		installPi(t, f, `{"servers":[{"name":"gamma"},{"name":"delta"}]}`)
 		code, _, stderr, _ := runCmdSpawn(t, f, []string{"worker", "--kind", "pi", "--effort", "high", "--mcp", "alpha,beta"})
 		if code != 0 {

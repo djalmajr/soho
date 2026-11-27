@@ -246,6 +246,233 @@ func TestStartArgvPerKind(t *testing.T) {
 	}
 }
 
+func TestStartEnvDropArgv(t *testing.T) {
+	if osName := platform.Current(); osName != "darwin" && osName != "linux" {
+		t.Skip("final-exec filtering is available only on macOS and Linux")
+	}
+	// The helper path is a synthetic absolute path: the argv shape, not this
+	// binary's location, is under test.
+	helper := filepath.Join(t.TempDir(), "soho helper with spaces")
+	for _, tc := range []struct {
+		name  string
+		login bool
+		drop  []string
+	}{
+		{name: "direct", drop: []string{"DROP_ONE", "DROP_TWO"}},
+		{name: "login shell", login: true, drop: []string{"DROP_ONE", "DROP_TWO"}},
+		{name: "nil list"},
+		{name: "empty list", login: true, drop: []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agentDir := filepath.Join(t.TempDir(), "agents with spaces")
+			exe := installFakeAgentExecutable(t, agentDir, "claude")
+			env, conn, calls := startEnv(t, []fakecli.Rule{
+				{Argv: []string{"get", "t7", "--json"}, Stdout: startReadyIdle},
+			})
+			env["PATH"] = agentDir + string(filepath.ListSeparator) + env["PATH"]
+			argv := []string{"two words", `' " $(literal)`, "--", "NAME=value"}
+			overrides := map[string]string{"KEEP_ONE": "synthetic value"}
+			var shell string
+			var want []string
+			if tc.login {
+				shell = filepath.Join(t.TempDir(), "login shell")
+				want = []string{shell, "-l", "-c", `exec "$0" "$@"`}
+			}
+			if len(tc.drop) != 0 {
+				want = append(want, helper, platform.WorkerEnvExecMode, "DROP_ONE", "DROP_TWO", "--")
+			}
+			want = append(want, exe)
+			want = append(want, argv...)
+			req := transport.Start{
+				Name: "w7", Kind: "claude", Cwd: agentDir, Timeout: "3000", Args: argv,
+				EnvOverrides: overrides, EnvDrop: tc.drop, LoginShell: shell,
+				RegistryDir: agentDir, Agent: "w7",
+			}
+			b := newBackend(env, conn)
+			b.envDropExecutable = func() (string, error) { return helper, nil }
+			rep := b.Start(context.Background(), req, transport.Call{})
+			if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+				t.Fatalf("Start result = %+v, want ready t7", rep)
+			}
+			wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}, {"get", "t7", "--json"}})
+			run, params := parseTerminalRunReq(t, conn.getWritten())
+			if run["method"] != "terminal.run" || !reflect.DeepEqual(params["argv"], toAnySlice(want)) {
+				t.Fatalf("terminal.run argv = %#v, want %#v", params["argv"], want)
+			}
+			wantParams := map[string]any{
+				"argv": toAnySlice(want), "cwd": agentDir, "name": "w7", "caller": "t1",
+				"no_notify": true, "outlive_parent": true, "wait": false,
+				"labels": map[string]any{"soho.session": "sX"},
+				"env": map[string]any{
+					"SOHO_TRANSPORT": "hc", "KEEP_ONE": "synthetic value",
+					"SOHO_REGISTRY_DIR": agentDir, "SOHO_AGENT": "w7",
+				},
+			}
+			if !reflect.DeepEqual(params, wantParams) {
+				t.Fatalf("terminal.run context/overrides changed: %#v", params)
+			}
+		})
+	}
+}
+
+func TestStartEnvDropPreflight(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		drop      []string
+		overrides map[string]string
+		want      string
+	}{
+		{name: "option-shaped name", drop: []string{"--PRIVATE_SENTINEL"}, want: "portable environment names"},
+		{name: "empty name", drop: []string{""}, want: "portable environment names"},
+		{name: "assignment-shaped name", drop: []string{"PRIVATE_SENTINEL=VALUE"}, want: "portable environment names"},
+		{name: "leading digit", drop: []string{"9PRIVATE_SENTINEL"}, want: "portable environment names"},
+		{name: "invalid UTF-8", drop: []string{"PRIVATE_SENTINEL\xff"}, want: "portable environment names"},
+		{name: "reserved Soho routing", drop: []string{"SoHo_PRIVATE_SENTINEL"}, want: "routing"},
+		{name: "reserved Core routing", drop: []string{"hc_PRIVATE_SENTINEL"}, want: "routing"},
+		{name: "reserved Herdr routing", drop: []string{"HERDR_PRIVATE_SENTINEL"}, want: "routing"},
+		{name: "override collision", drop: []string{"PRIVATE_SENTINEL"}, overrides: map[string]string{"PRIVATE_SENTINEL": "PRIVATE_VALUE"}, want: "override"},
+		{name: "over limit", drop: strings.Fields(strings.Repeat("PRIVATE_SENTINEL ", 17)), want: "16"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, conn, calls := startEnv(t, []fakecli.Rule{
+				{Argv: []string{"get", "t7", "--json"}, Stdout: startReadyIdle},
+			})
+			rep := newBackend(env, conn).Start(context.Background(), transport.Start{
+				Name: "w7", Kind: "claude", Timeout: "3000", EnvDrop: tc.drop, EnvOverrides: tc.overrides,
+			}, transport.Call{})
+			if rep.Err == nil || rep.Err.Kind != transport.FailureCommand || rep.Valid || rep.Value != "" ||
+				!strings.Contains(rep.Err.Error(), tc.want) || strings.Contains(rep.Err.Error(), "PRIVATE_") {
+				t.Fatalf("Start result = %+v, want value-free FailureCommand mentioning %q", rep, tc.want)
+			}
+			if len(calls()) != 0 || conn.getConnectCount() != 0 || len(conn.getWritten()) != 0 {
+				t.Fatal("invalid filter reached hc or terminal.run")
+			}
+		})
+	}
+}
+
+// A portable removal name longer than 256 bytes must reach terminal.run: the
+// transport accepted it, so the private helper must accept the same name.
+func TestStartEnvDropAcceptsLongPortableName(t *testing.T) {
+	if osName := platform.Current(); osName != "darwin" && osName != "linux" {
+		t.Skip("final-exec filtering is available only on macOS and Linux")
+	}
+	long := "PRIVATE_" + strings.Repeat("A", 300)
+	agentDir := t.TempDir()
+	exe := installFakeAgentExecutable(t, agentDir, "claude")
+	env, conn, _ := startEnv(t, []fakecli.Rule{
+		{Argv: []string{"get", "t7", "--json"}, Stdout: startReadyIdle},
+	})
+	env["PATH"] = agentDir + string(filepath.ListSeparator) + env["PATH"]
+	helper := filepath.Join(t.TempDir(), "soho")
+	b := newBackend(env, conn)
+	b.envDropExecutable = func() (string, error) { return helper, nil }
+	rep := b.Start(context.Background(), transport.Start{
+		Name: "w7", Kind: "claude", Timeout: "3000", EnvDrop: []string{long},
+	}, transport.Call{})
+	if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+		t.Fatalf("Start result = %+v, want the long portable name accepted", rep)
+	}
+	_, params := parseTerminalRunReq(t, conn.getWritten())
+	want := []any{helper, platform.WorkerEnvExecMode, long, "--", exe}
+	if !reflect.DeepEqual(params["argv"], want) {
+		t.Fatalf("terminal.run argv = %#v, want %#v", params["argv"], want)
+	}
+}
+
+func TestStartEnvDropHelperRefusal(t *testing.T) {
+	if osName := platform.Current(); osName != "darwin" && osName != "linux" {
+		t.Skip("the helper refusal is reachable only on macOS and Linux")
+	}
+	for _, tc := range []struct {
+		name    string
+		resolve func() (string, error)
+	}{
+		{"unresolvable executable", func() (string, error) { return "", os.ErrNotExist }},
+		{"empty executable path", func() (string, error) { return "", nil }},
+		{"relative executable path", func() (string, error) { return "soho", nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, conn, calls := startEnv(t, nil)
+			b := newBackend(env, conn)
+			b.envDropExecutable = tc.resolve
+			rep := b.Start(context.Background(), transport.Start{
+				Name: "w7", Kind: "claude", Timeout: "3000", EnvDrop: []string{"PRIVATE_SENTINEL"},
+			}, transport.Call{})
+			if rep.Err == nil || rep.Err.Kind != transport.FailureUnavailable || rep.Valid || rep.Value != "" ||
+				strings.Contains(rep.Err.Error(), "PRIVATE_SENTINEL") ||
+				len(calls()) != 0 || conn.getConnectCount() != 0 || len(conn.getWritten()) != 0 {
+				t.Fatalf("Start result = %+v, want unavailable and zero calls", rep)
+			}
+		})
+	}
+}
+
+func TestStartEnvDropPassesAssignmentLikeExecutablePathLiterally(t *testing.T) {
+	if osName := platform.Current(); osName != "darwin" && osName != "linux" {
+		t.Skip("final-exec filtering is available only on macOS and Linux")
+	}
+	agentDir := filepath.Join(t.TempDir(), "agents=PRIVATE_SENTINEL")
+	exe := installFakeAgentExecutable(t, agentDir, "claude")
+	env, conn, calls := startEnv(t, []fakecli.Rule{
+		{Argv: []string{"get", "t7", "--json"}, Stdout: startReadyIdle},
+	})
+	env["PATH"] = agentDir + string(filepath.ListSeparator) + env["PATH"]
+	helper := filepath.Join(t.TempDir(), "soho")
+	b := newBackend(env, conn)
+	b.envDropExecutable = func() (string, error) { return helper, nil }
+	rep := b.Start(context.Background(), transport.Start{
+		Name: "w7", Kind: "claude", Timeout: "3000", EnvDrop: []string{"DROP_ONE"},
+	}, transport.Call{})
+	if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+		t.Fatalf("Start result = %+v, want ready t7", rep)
+	}
+	_, params := parseTerminalRunReq(t, conn.getWritten())
+	want := []any{helper, platform.WorkerEnvExecMode, "DROP_ONE", "--", exe}
+	if !reflect.DeepEqual(params["argv"], want) {
+		t.Fatalf("terminal.run argv = %#v, want %#v", params["argv"], want)
+	}
+	wantArgv(t, calls(), [][]string{{"get", "t1", "--json"}, {"get", "t7", "--json"}})
+}
+
+func TestStartEnvDropSnapshotsLaunchPlan(t *testing.T) {
+	if osName := platform.Current(); osName != "darwin" && osName != "linux" {
+		t.Skip("final-exec filtering is available only on macOS and Linux")
+	}
+	agentDir := t.TempDir()
+	exe := installFakeAgentExecutable(t, agentDir, "claude")
+	env, conn, _ := startEnv(t, []fakecli.Rule{
+		{Argv: []string{"get", "t7", "--json"}, Stdout: startReadyIdle},
+	})
+	env["PATH"] = agentDir + string(filepath.ListSeparator) + env["PATH"]
+	args := []string{"original arg"}
+	drop := []string{"DROP_ONE"}
+	overrides := map[string]string{"KEEP_ONE": "first"}
+	b := newBackend(env, conn)
+	b.abs = func(path string) (string, error) {
+		args[0] = "changed concurrently with lookup"
+		drop[0] = "SOHO_TRANSPORT"
+		overrides["DROP_ONE"] = "new override"
+		return filepath.Abs(path)
+	}
+	rep := b.Start(context.Background(), transport.Start{
+		Name: "w7", Kind: "claude", Timeout: "3000", Args: args, EnvDrop: drop, EnvOverrides: overrides,
+	}, transport.Call{})
+	if rep.Err != nil || !rep.Valid || rep.Value != "t7" {
+		t.Fatalf("Start result = %+v, want ready t7", rep)
+	}
+	_, params := parseTerminalRunReq(t, conn.getWritten())
+	helper, err := platform.WorkerExecutable()
+	if err != nil {
+		t.Fatalf("worker executable: %v", err)
+	}
+	want := []any{helper, platform.WorkerEnvExecMode, "DROP_ONE", "--", exe, "original arg"}
+	if !reflect.DeepEqual(params["argv"], want) ||
+		!reflect.DeepEqual(params["env"], map[string]any{"SOHO_TRANSPORT": "hc", "KEEP_ONE": "first"}) {
+		t.Fatalf("terminal.run uses caller-mutated plan: %#v", params)
+	}
+}
+
 // TestStartEnvOverrides: an explicit synthetic override (valid Unicode and a
 // literal U+FFFD value) reaches the exact terminal.run request's env
 // alongside the mandatory SOHO_TRANSPORT=hc marker, with no unrelated
@@ -1624,28 +1851,37 @@ func TestStart_CallerExecutableInPathWithSpaces(t *testing.T) {
 	}
 }
 
-func TestStart_UnsupportedKindCursorRefusedBeforeConnect(t *testing.T) {
-	env, conn, calls := startEnv(t, nil)
-	b := newBackend(env, conn)
-	rep := b.Start(context.Background(), transport.Start{
-		Name:    "w-cursor-unsupported",
-		Kind:    "cursor",
-		Timeout: "3000",
-		Args:    []string{"--some-arg"},
-	}, transport.Call{})
+func TestStart_UnsupportedKindsRefusedBeforeConnect(t *testing.T) {
+	for _, tc := range []struct {
+		kind    string
+		message string
+	}{
+		{"cursor", "kind cursor does not report status under transport=hc; use transport=herdr"},
+		{"omp", "managed OMP workers require the legacy Herdr transport. Use transport=herdr"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			env, conn, calls := startEnv(t, nil)
+			b := newBackend(env, conn)
+			rep := b.Start(context.Background(), transport.Start{
+				Name:    "w-" + tc.kind + "-unsupported",
+				Kind:    tc.kind,
+				Timeout: "3000",
+				Args:    []string{"--some-arg"},
+			}, transport.Call{})
 
-	if rep.Err == nil || rep.Err.Kind != transport.FailureUnsupported {
-		t.Fatalf("rep: %+v, want FailureUnsupported", rep)
-	}
-	wantMsg := "kind cursor does not report status under transport=hc; use transport=herdr"
-	if rep.Err.Message != wantMsg {
-		t.Fatalf("rep.Err.Message=%q, want %q", rep.Err.Message, wantMsg)
-	}
-	if conn.getConnectCount() != 0 {
-		t.Fatalf("connectCount=%d, want 0 when unsupported kind is refused before connect", conn.getConnectCount())
-	}
-	if got := len(calls()); got != 0 {
-		t.Fatalf("launches=%d, want 0 (no session or other hc launches)", got)
+			if rep.Err == nil || rep.Err.Kind != transport.FailureUnsupported || rep.Valid || rep.Value != "" {
+				t.Fatalf("rep: %+v, want FailureUnsupported and no terminal", rep)
+			}
+			if rep.Err.Message != tc.message {
+				t.Fatalf("rep.Err.Message=%q, want %q", rep.Err.Message, tc.message)
+			}
+			if conn.getConnectCount() != 0 {
+				t.Fatalf("connectCount=%d, want 0 when unsupported kind is refused before connect", conn.getConnectCount())
+			}
+			if got := len(calls()); got != 0 {
+				t.Fatalf("launches=%d, want 0 (no session or other hc launches)", got)
+			}
+		})
 	}
 }
 

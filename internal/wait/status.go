@@ -498,7 +498,7 @@ func resolveAgentStatus(req agentStatusRequest, rc int) (agentStatusResult, int)
 		var queuedErr error
 		queuedUnresolved := func() bool {
 			var unresolved bool
-			unresolved, queuedErr = queuedPromptIsUnresolved(req, agent, orig, ctx, env, svc)
+			unresolved, queuedErr = queuedPromptIsUnresolved(req, agent, orig, field(fields, 2), ctx, env, svc)
 			return unresolved || queuedErr != nil
 		}
 		if state == "unavailable" {
@@ -1218,9 +1218,10 @@ func idleAlertMark(sd, agent, report string) int64 {
 	}
 	return idleAlertMinutesOf(raw, idleTask(sd, agent, report))
 }
-func queuedPromptIsUnresolved(req agentStatusRequest, agent, state string, ctx *core.Config, env platform.Env, svc transport.Services) (bool, error) {
+func queuedPromptIsUnresolved(req agentStatusRequest, agent, state, kind string, ctx *core.Config, env platform.Env, svc transport.Services) (bool, error) {
 	marker, _ := waitMarker(req, agent, "queued")
-	visible, _ := readScreen(svc, agent, "visible", nil)
+	visibleReply := svc.Runtime.Read(context.Background(), transport.Target{ID: agent}, transport.Read{Source: "visible"}, transport.Call{})
+	visible := visibleReply.Value
 	recent, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
 	path, err := queuedPromptPathFor(req, agent, marker)
 	if err != nil {
@@ -1233,7 +1234,8 @@ func queuedPromptIsUnresolved(req agentStatusRequest, agent, state string, ctx *
 		return false, nil
 	}
 	unresolvedRecent, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
-	return provider.ProviderDetectTexts(state, unresolvedRecent, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env)) == nil, nil
+	p := provider.ProviderDetectTextsWithStreamGate(state, unresolvedRecent, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env), claudeStreamStatusGate(kind, state, visible, visibleReply.Err == nil && visibleReply.Valid, env))
+	return p == nil, nil
 }
 
 // queuedPromptPathFor confines the legacy fallback to the retained source.
@@ -1411,6 +1413,22 @@ type terminalStop struct {
 	diskFull     string
 }
 
+// claudeStreamStatusGate is the status twin of the wait consumer's scan gate:
+// it authorizes only the built-in stream branch for a settled Claude worker
+// with a readable legacy visible frame and the exact signed stop. Other
+// provider rules, configured matches and queued/blocked semantics are chosen
+// by the scan itself. No new transport read or write happens here.
+func claudeStreamStatusGate(kind, state, visible string, trusted bool, env platform.Env) func(string) string {
+	return func(string) string {
+		if kind != "claude" || !trusted || env.Get("SOHO_TRANSPORT") == "hc" ||
+			(state != "idle" && state != "done" && state != "error") {
+			return ""
+		}
+		_, cause := provider.ClaudeStreamStop(strings.TrimRight(strings.ReplaceAll(visible, "\r\n", "\n"), "\n \t"))
+		return cause
+	}
+}
+
 // classifyTerminal applies the status resolver's exact detection order to
 // one probed terminal state: the blocked screen's question dialog or
 // provider cause, the non-working terminal's quota or provider
@@ -1425,15 +1443,17 @@ func classifyTerminal(svc transport.Services, target, orig, kind string, ctx *co
 	errorTexts := core.Cfg(ctx, "provider_error_texts", "", env)
 	switch {
 	case orig == "blocked":
-		visible, _ := readScreen(svc, target, "visible", intPtr(40))
+		visibleReply := svc.Runtime.Read(context.Background(), transport.Target{ID: target}, transport.Read{Source: "visible", Lines: intPtr(40)}, transport.Call{})
+		visible := visibleReply.Value
 		if provider.DialogKind(kind, visible) == "question" {
 			stop.question = provider.QuestionText(visible)
 			return stop, ""
 		}
 		recent, _ := readScreen(svc, target, "recent-unwrapped", intPtr(40))
-		stop.p = provider.ProviderDetectTexts(orig, recent, capacity, errorTexts)
+		stop.p = provider.ProviderDetectTextsWithStreamGate(orig, recent, capacity, errorTexts, claudeStreamStatusGate(kind, orig, visible, visibleReply.Err == nil && visibleReply.Valid, env))
 	case orig != "working" && orig != "gone" && orig != "unavailable":
-		visible, _ := readScreen(svc, target, "visible", intPtr(20))
+		visibleReply := svc.Runtime.Read(context.Background(), transport.Target{ID: target}, transport.Read{Source: "visible", Lines: intPtr(20)}, transport.Call{})
+		visible := visibleReply.Value
 		if q := provider.QuotaDetect(orig, visible); q != nil {
 			stop.quota = true
 			stop.quotaMatch, stop.quotaRenewal = q[0], q[1]
@@ -1441,7 +1461,7 @@ func classifyTerminal(svc transport.Services, target, orig, kind string, ctx *co
 		}
 		stop.diskFull = provider.DiskFullDetect(orig, visible)
 		recent, _ := readScreen(svc, target, "recent-unwrapped", intPtr(40))
-		stop.p = provider.ProviderDetectTexts(orig, recent, capacity, errorTexts)
+		stop.p = provider.ProviderDetectTextsWithStreamGate(orig, recent, capacity, errorTexts, claudeStreamStatusGate(kind, orig, visible, visibleReply.Err == nil && visibleReply.Valid, env))
 	case orig == "working":
 		visible, _ := readScreen(svc, target, "visible", nil)
 		stop.p = provider.LostConnection(visible)

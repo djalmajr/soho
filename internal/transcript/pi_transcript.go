@@ -38,20 +38,7 @@ func CountPiUserMarkerLines(path, marker string) (int, bool) {
 	markerBytes := []byte(marker)
 	n := 0
 	for scanner.Scan() {
-		line := scanner.Bytes()
-		if !bytes.Contains(line, markerBytes) {
-			continue
-		}
-		entry := parsed(string(line))
-		if str(get(entry, "type")) != "message" {
-			continue
-		}
-		message := get(entry, "message")
-		if str(get(message, "role")) != "user" {
-			continue
-		}
-		content := get(message, "content")
-		if content != nil && bytes.Contains([]byte(jsonjs.Stringify(content)), markerBytes) {
+		if piUserMarkerLine(scanner.Bytes(), markerBytes) {
 			n++
 		}
 	}
@@ -59,6 +46,22 @@ func CountPiUserMarkerLines(path, marker string) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+func piUserMarkerLine(line, marker []byte) bool {
+	if !bytes.Contains(line, marker) {
+		return false
+	}
+	entry := parsed(string(line))
+	if str(get(entry, "type")) != "message" {
+		return false
+	}
+	message := get(entry, "message")
+	if str(get(message, "role")) != "user" {
+		return false
+	}
+	content := get(message, "content")
+	return content != nil && bytes.Contains([]byte(jsonjs.Stringify(content)), marker)
 }
 
 // CountPiUserClosingLines counts the session's user records that carry the

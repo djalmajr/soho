@@ -19,6 +19,8 @@ import (
 type laneReuseRequest struct {
 	role, lane, kind, model, effort, approvals, mcp, workerCwd, sd, nativeArgs string
 	kindFlag                                                                   bool
+	ompPolicyPath                                                              string
+	ompLegacy                                                                  transport.LegacyTransport
 	ctx                                                                        *core.Config
 	env                                                                        platform.Env
 	processCwd                                                                 string
@@ -28,6 +30,7 @@ func newLaneReuseRequest(o spawnOptions, res core.RoleSettings, sd, nativeArgs s
 	return laneReuseRequest{
 		role: o.role, lane: res.Lane, kind: res.Kind, model: o.model, effort: o.effort, approvals: o.approvals, mcp: o.mcp,
 		workerCwd: o.cwd, sd: sd, nativeArgs: nativeArgs, kindFlag: o.kind != "", ctx: ctx, env: env, processCwd: cwd,
+		ompPolicyPath: o.ompPolicyPath,
 	}
 }
 
@@ -40,7 +43,10 @@ func (r laneReuseRequest) forModel(model string) laneReuseRequest {
 }
 
 func (r laneReuseRequest) eligible(f []string, state string) bool {
-	if state != "idle" && state != "done" {
+	if state != "idle" && state != "done" || envDropMarker(f) != "" {
+		return false
+	}
+	if r.kind == "omp" && fieldAt(f, 2) == "omp" && !ompReuseReady(r.ompLegacy, f, r.ompPolicyPath) {
 		return false
 	}
 	if report := core.LastReport(r.sd, fieldAt(f, 0)); report != "" {
@@ -257,12 +263,12 @@ type laneSpawnPlan struct {
 	candidate          laneCandidate
 	action             string
 	busyName, busyHint string
-	renameRefused      bool
+	newNameRefused     bool
 	burst              bool
 }
 
 // planLaneSpawn applies the lane and transport admission rules before model
-// rotation. The global cap is also used to choose rename versus creation.
+// rotation. A different name requires a new slot.
 func (r laneReuseRequest) planLaneSpawn(o spawnOptions, models []string, rt transport.Transport) laneSpawnPlan {
 	d := core.LaneDecideAt(r.ctx, r.lane, r.role, r.env, r.sd, r.processCwd, o.reuse == "on")
 	p := laneSpawnPlan{decision: d, action: d.Decision}
@@ -270,9 +276,15 @@ func (r laneReuseRequest) planLaneSpawn(o spawnOptions, models []string, rt tran
 	case "reuse":
 		var rows, gone []string
 		var namedRow string
-		for _, row := range core.LaneWorkers(r.sd, r.lane, r.ctx, r.env) {
-			name, _, _ := strings.Cut(row, "\t")
-			if !has(d.Occupants, name) {
+		preset := !core.CustomLanesPresent(r.ctx, r.env)
+		for _, row := range lastRosterRows(core.RosterRows(r.sd)) {
+			f := strings.Split(row, "\t")
+			name := fieldAt(f, 0)
+			lane := core.RosterLaneName(fieldAt(f, 11), preset)
+			if lane == "" {
+				lane = name
+			}
+			if lane != r.lane || !has(d.Occupants, name) {
 				continue
 			}
 			if name == o.name {
@@ -342,20 +354,12 @@ func (r laneReuseRequest) planLaneSpawn(o spawnOptions, models []string, rt tran
 	return p
 }
 
-// resolveName decides if an otherwise compatible worker can serve an
-// explicitly different name, or if that request needs a new terminal.
-func (p *laneSpawnPlan) resolveName(o spawnOptions, r laneReuseRequest, capacity core.WorkerCapacity) {
-	full := p.decision.N >= p.decision.Capacity || capacity.Full
+// resolveName applies both limits to a request for a different worker name.
+func (p *laneSpawnPlan) resolveName(capacity core.WorkerCapacity) {
 	p.action = "open"
-	if r.env.Get("SOHO_TRANSPORT") == "hc" {
-		if full {
-			p.action = "busy"
-			p.busyName, _, _ = strings.Cut(p.candidate.line, "\t")
-			p.renameRefused = true
-		}
-		return
-	}
-	if full || core.RosterLine(r.sd, o.name) != "" && !has(p.decision.Gone, o.name) {
-		p.action = "reuse"
+	if p.decision.N >= p.decision.Capacity || capacity.Full {
+		p.action = "busy"
+		p.busyName, _, _ = strings.Cut(p.candidate.line, "\t")
+		p.newNameRefused = true
 	}
 }

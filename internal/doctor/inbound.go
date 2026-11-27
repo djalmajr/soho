@@ -125,8 +125,13 @@ func doctorUnprotectedAgentsWithServices(ctx *core.Config, svc transport.Service
 			}
 		}()
 		rep := svc.Legacy.AgentListRaw(context.Background(), transport.Call{Timeout: herdr.Timeout})
+		// The roster classification is a diagnostic-only lookup: use the
+		// no-write convention so it cannot append to the repository ignore
+		// file, while the live agent listing keeps the invocation environment.
+		readEnv := env.Clone()
+		readEnv["SOHO_NOWRITE"] = "1"
 		seen := map[string]bool{}
-		for _, row := range core.RosterRows(core.StateDirPath(ctx, env, cwd)) {
+		for _, row := range core.RosterRows(core.StateDirPath(ctx, readEnv, cwd)) {
 			f := strings.Split(row, "\t")
 			if len(f) < 3 || f[0] == "" || seen[f[0]] {
 				continue

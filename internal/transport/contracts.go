@@ -151,6 +151,10 @@ type Terminal struct {
 	PaneID   string
 	State    string
 	Sequence json.RawMessage
+	// LegacyWorkingClaudeReply carries the same successful Herdr agent get
+	// response used for State and Sequence. Wait uses it for strict identity
+	// corroboration without issuing a second pre-screen command.
+	LegacyWorkingClaudeReply string `json:"-"`
 	// NativeState is the terminal record's actual string lifecycle as
 	// reported by the backend (e.g. hc record's actual "live" or "finished";
 	// missing/non-string stays empty), independent of mapped agent activity
@@ -295,6 +299,11 @@ type Start struct {
 	// EnvOverrides. Empty adds nothing. The herdr backend ignores both.
 	RegistryDir string
 	Agent       string
+
+	// EnvDrop removes named entries at the native macOS or Linux worker's
+	// final exec, after any login shell profile. Empty keeps the normal
+	// launch. The legacy Herdr backend ignores it.
+	EnvDrop []string
 }
 
 // StartupDialogAction directs readiness polling after a dialog observation.
