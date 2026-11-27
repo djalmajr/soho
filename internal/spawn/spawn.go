@@ -1843,7 +1843,7 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 		}
 	}
 	if !blocked && lastState != "unavailable" {
-		if p := provider.ProviderDetect(lastState, lastScreen); p != nil && p.Status == "provider-error" && p.Auth {
+		if p := provider.ProviderDetectTextsWithStreamGate(lastState, lastScreen, "", "", provider.NoStreamProvenance); p != nil && p.Status == "provider-error" && p.Auth {
 			core.DieFriction(fmt.Sprintf("agent '%s' (%s) hit a terminal provider authentication error right after start: %s; pane %s stays open for inspection", o.name, kind, p.Cause, o.pane), 14, "", "")
 		}
 	}
@@ -2812,7 +2812,7 @@ func checkStartWindow(o spawnOptions, kind string, env platform.Env, created boo
 						lastScreen = pane
 					}
 				}
-				providerErr := provider.ProviderDetect("gone", lastScreen)
+				providerErr := provider.ProviderDetectTextsWithStreamGate("gone", lastScreen, "", "", provider.NoStreamProvenance)
 				if providerErr != nil && providerErr.Status == "provider-error" && providerErr.Auth {
 					core.DieFriction(fmt.Sprintf("agent '%s' (%s) hit a terminal provider authentication error right after start: %s; pane %s stays open for inspection", o.name, kind, providerErr.Cause, o.pane), 14, "", "")
 				}

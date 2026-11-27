@@ -1262,7 +1262,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				return notReceived(ceilingReason)
 			}
 			if !reportExists {
-				d := core.ProviderDetectTexts(arrivalState, screen, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
+				d := core.ProviderDetectTextsWithStreamGate(arrivalState, screen, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env), provider.NoStreamProvenance)
 				if d != nil {
 					if !core.IsModelPlanError(d.Cause) && d.Status != "provider-refusal" && d.Cause != provider.LostConnectionCause {
 						d = nil
@@ -3424,7 +3424,7 @@ func staleAuthBlock(readState func() stateProbe, readVisible func() (string, boo
 	if strconv.FormatUint(uint64(waitpkg.CksumField(screen)), 10) != h0 {
 		return false
 	}
-	d := provider.ProviderDetect(st.State, screen)
+	d := provider.ProviderDetectTextsWithStreamGate(st.State, screen, "", "", provider.NoStreamProvenance)
 	return d != nil && d.Status == "provider-error" && d.Auth
 }
 
@@ -3495,7 +3495,7 @@ func noWaitObservation(agent, role, kind, lane, model, report string, env platfo
 		return "submitted", nil
 	}
 	recent := readDispatchObservation(svc, agent, "recent-unwrapped", intPtr(40), ceiling, ompJournalArmed).Value
-	d := core.ProviderDetectTexts(st.State, recent, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
+	d := core.ProviderDetectTextsWithStreamGate(st.State, recent, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env), provider.NoStreamProvenance)
 	if d != nil && d.Status == "provider-error" && ((d.Auth && !priorAuth[d.Cause]) || core.IsModelPlanError(d.Cause)) {
 		if lane == "" {
 			lane = core.LaneOfRole(ctx, role, env)

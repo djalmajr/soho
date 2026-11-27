@@ -279,13 +279,13 @@ func releaseEndedInProviderError(sd, agent, state string, ctx *core.Config, env 
 	}
 	capacityTexts := core.Cfg(ctx, "provider_capacity_texts", "", env)
 	errorTexts := core.Cfg(ctx, "provider_error_texts", "", env)
-	detection := core.ProviderDetectTexts(state, screen, capacityTexts, errorTexts)
+	detection := core.ProviderDetectTextsWithStreamGate(state, screen, capacityTexts, errorTexts, provider.NoStreamProvenance)
 	if detection == nil && state == "working" {
 		// The shared classifier suppresses non-lost detections while the
 		// terminal reports working. That is exactly the field case here:
 		// Herdr/hc still says working while the worker sits at a refusal or
 		// auth error, so classify the fresh screen without that guard.
-		detection = core.ProviderDetectTexts("", screen, capacityTexts, errorTexts)
+		detection = core.ProviderDetectTextsWithStreamGate("", screen, capacityTexts, errorTexts, provider.NoStreamProvenance)
 	}
 	if detection == nil {
 		return "", false

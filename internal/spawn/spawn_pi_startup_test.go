@@ -222,6 +222,40 @@ func TestLegacyPiNativeArgFlagIsNotStartupGate(t *testing.T) {
 	assertLegacyPiSpawnResult(t, f, stdout, true, "inherit")
 }
 
+// TestSpawnAuthBehindUntrustedStreamLog: an unproven stream-like last log
+// must not mask the earlier auth diagnosis at the spawn admission boundary.
+func TestSpawnAuthBehindUntrustedStreamLog(t *testing.T) {
+	const auth = "Error: 401 Unauthorized: Incorrect API key provided token=sk_test_fakestartup1\n"
+	const stream = "Error: The response stopped arriving.\n"
+	for _, tc := range []struct{ name, screen string }{
+		{"auth before stream log", auth + stream},
+		{"auth after stream log", stream + auth},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rules := []fakecli.Rule{
+				{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},
+				{Argv: []string{"agent", "start"}, ArgvPrefix: true, Stderr: "agent_not_ready: login prompt\n", Code: 0},
+				{Argv: []string{"agent", "get"}, ArgvPrefix: true, Stdout: `{"result":{"agent":{"agent_status":"gone"}}}`},
+				{Argv: []string{"agent", "read"}, ArgvPrefix: true, Stdout: tc.screen},
+			}
+			f := newSpawnFixture(t, rules)
+			configureSpawnFixture(t, &f)
+			code, stdout, stderr, calls := runCmdSpawn(t, f, []string{"worker", "--name", "worker", "--pane", "w0test:p0a"})
+			if code != 14 || strings.Contains(stdout, `"status": "ready"`) {
+				t.Fatalf("exit=%d stdout=%q stderr=%q, want the auth refusal", code, stdout, stderr)
+			}
+			if strings.Contains(stderr, "sk_test_fakestartup1") {
+				t.Fatalf("secret was not redacted: %q", stderr)
+			}
+			for _, call := range calls {
+				if len(call.Argv) >= 2 && call.Argv[0] == "pane" && call.Argv[1] == "close" {
+					t.Fatalf("auth pane was closed: %#v", calls)
+				}
+			}
+		})
+	}
+}
+
 func TestPiNoMcpCapabilityConsumer(t *testing.T) {
 	f := newLegacyPiStartupFixture(t)
 	if _, err := fakecli.Install(t, f.bin, "pi", []fakecli.Rule{

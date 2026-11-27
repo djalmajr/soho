@@ -832,7 +832,7 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 	}
 	if st.State == "blocked" {
 		blockedRecent, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
-		p := provider.ProviderDetectTexts(st.State, blockedRecent, "", "")
+		p := provider.ProviderDetectTextsWithStreamGate(st.State, blockedRecent, "", "", provider.NoStreamProvenance)
 		if p != nil && (p.Status == "provider-refusal" || p.Cause == provider.LostConnectionCause) {
 			_ = os.Remove(queuedFile)
 			_ = os.Remove(retryFile)

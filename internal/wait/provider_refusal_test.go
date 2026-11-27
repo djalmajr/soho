@@ -15,6 +15,7 @@ func TestProviderRefusalWait(t *testing.T) {
 	for _, tc := range []struct{ name, state, screen, status, cause string }{
 		{"refusal", "idle", "■ We take extra care with some cybersecurity requests", "provider-refusal", "We take extra care with some cybersecurity requests"},
 		{"refusal blocked", "blocked", "■ We take extra care with some cybersecurity requests", "provider-refusal", "We take extra care with some cybersecurity requests"},
+		{"blocked refusal with unrelated stream log", "blocked", "■ We take extra care with some cybersecurity requests\nError: The response stopped arriving.", "provider-refusal", "We take extra care with some cybersecurity requests"},
 		{"lost working", "working", "■ Server connection could not be restored", "provider-error", provider.LostConnectionCause},
 		{"lost idle", "idle", "■ Automatic reconnect could not restore this session. Your draft is", "provider-error", provider.LostConnectionCause},
 	} {

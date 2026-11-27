@@ -1389,6 +1389,39 @@ func TestStatusCompactPhaseUnderNowriteWritesNothing(t *testing.T) {
 	}
 }
 
+// TestDispatchProviderEvidenceBehindStreamLog: the operational dispatch
+// scans must keep an older auth or model-plan diagnosis when an untrusted
+// stream-like line is the newest diagnostic on the same bounded screen.
+func TestDispatchProviderEvidenceBehindStreamLog(t *testing.T) {
+	const stream = "Error: The response stopped arriving."
+	const plan = "Error: Model unavailable on Plus"
+	for _, tc := range []struct {
+		name, screen, cause string
+		arrival             bool
+	}{
+		{name: "no-wait auth with trailing log", screen: r11Auth + "\n" + stream, cause: r11Auth},
+		{name: "no-wait reversed order", screen: stream + "\n" + r11Auth, cause: r11Auth},
+		{name: "arrival plan with trailing log", screen: plan + "\n" + stream, cause: plan, arrival: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setup := r11Case{initial: "Welcome to the worker", post: tc.screen, recent: tc.screen, mode: "idle", check: "1", authScreen: true}
+			if tc.arrival {
+				setup = r11Case{initial: tc.screen, mode: "idle", check: "1", cursorPlan: true}
+			}
+			f := newR11Fixture(t, setup)
+			args := []string{"worker", f.brief, "--timeout", "3000"}
+			if !tc.arrival {
+				args = append(args, "--no-wait")
+			}
+			code, out, stderr := f.run(t, args...)
+			if code != 14 || !strings.Contains(out, `"wait_status":"provider-error"`) ||
+				!strings.Contains(out, `"cause":"`+tc.cause+`"`) {
+				t.Fatalf("code=%d stdout=%q stderr=%q, want provider-error with cause %q", code, out, stderr, tc.cause)
+			}
+		})
+	}
+}
+
 // compactRemoveWithRetry removes dir, retrying while a process that is still
 // exiting holds one of its files (Windows sharing violations), for at most
 // limit. A path that cannot be removed in time is left for t.TempDir to report.

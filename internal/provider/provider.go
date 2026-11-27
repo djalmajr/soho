@@ -85,6 +85,12 @@ func ProviderDetectTexts(state, screen, capacityTexts, errorTexts string) *Detec
 	return ProviderDetectTextsWithStreamGate(state, screen, capacityTexts, errorTexts, nil)
 }
 
+// NoStreamProvenance is the gate for operational consumers with no independent
+// worker evidence for the built-in stream signature. It rejects only that
+// branch inside the same bounded scan; ordinary and configured matches keep
+// their existing precedence, and direct classifier callers stay generic.
+func NoStreamProvenance(string) string { return "" }
+
 // ProviderDetectTextsWithStreamGate is ProviderDetectTexts with a gate on the
 // built-in stream signature. The gate is consulted lazily only where that
 // pattern competes in the existing bounded scan: an empty answer leaves the

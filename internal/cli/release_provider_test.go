@@ -342,6 +342,9 @@ func TestReleaseProviderCauseBoundary(t *testing.T) {
 		{name: "capacity-only screen", screen: releaseCapacityScreen, setup: func(t *testing.T, sd string) {
 			writeReleaseProviderCause(t, sd, "worker", releaseProviderCauseV)
 		}},
+		{name: "unconfirmed stream log retains working refusal", screen: "Error: The response stopped arriving.", setup: func(t *testing.T, sd string) {
+			writeReleaseProviderCause(t, sd, "worker", releaseProviderCauseV)
+		}},
 		{name: "ordinary working screen", screen: "still working on the brief", setup: func(t *testing.T, sd string) {
 			writeReleaseProviderCause(t, sd, "worker", releaseProviderCauseV)
 		}},
