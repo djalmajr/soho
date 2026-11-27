@@ -366,7 +366,7 @@ A stable report with a working pane stays pending in `wait` and blocking `dispat
 
 ## Pi compact reports a terminal failure before dispatch
 
-A fresh Pi compaction failure under legacy Herdr can produce a warning followed by the normal dispatch result. That branch requires completed phase cleanup and a new check of the same idle session and empty composer. If dispatch instead reports that the brief was unsent, inspect the worker before retrying. A compact timeout does not authorize sending.
+A fresh Pi compaction failure under legacy Herdr can produce a warning followed by the dispatch JSON result with `compact: failed`. That branch requires completed phase cleanup and a new check of the same idle session and empty composer. If dispatch instead reports that the brief was unsent, inspect the worker before retrying. A compact timeout does not authorize sending.
 
 ## Exit 137 with no cause: the skill's own process was killed from outside
 

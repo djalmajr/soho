@@ -571,6 +571,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 	// which would skip the note below; compactDispatchStep prints the note
 	// there and re-raises, so the CLI boundary still prints the compact
 	// message and records the friction line.
+	compactFailed := false
 	if compact {
 		// The compact phase's limit, read once: the same value the phase is
 		// given (in place of the former constant) and the one the timeout's
@@ -589,6 +590,7 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 					return dispatchCompactFailure(agent, compactTimeoutMS, result)
 				}
 				core.Warn(fmt.Sprintf("dispatch: compact of '%s' failed (%q); continuing with the brief because the Pi worker is idle with an empty composer", agent, result.PiFailure.Line), frictionLogPath, "dispatch")
+				compactFailed = true
 			}
 		}
 	}
@@ -1494,6 +1496,12 @@ func cmdDispatchWithOptions(argv []string, ctx *core.Config, env platform.Env, c
 				last, _ = value.(*jsonjs.Object)
 			}
 		}
+	}
+	if compactFailed {
+		if last == nil {
+			last = jsonjs.O()
+		}
+		last.Set("compact", "failed")
 	}
 	resultCode := emitDispatchResult(agent, role, kind, composed, report, taskReport, status, amend, last, waitCode, sd, enterSent, resent, resentFirst)
 	return resultCode
@@ -2528,7 +2536,7 @@ func emitDispatchResult(agent, role, kind, composed, report, taskReport, status 
 	}
 	out.Set("auto_approved", approved)
 	if last != nil {
-		for _, key := range []string{"question", "lane", "model", "match", "renewal", "cause", "retries", "startup_evidence", "head_moved", "diff_stat", "outside_owned", "cited_unchanged", "committed_during_task"} {
+		for _, key := range []string{"question", "lane", "model", "match", "renewal", "cause", "retries", "compact", "startup_evidence", "head_moved", "diff_stat", "outside_owned", "cited_unchanged", "committed_during_task"} {
 			if v, ok := last.Get(key); ok {
 				out.Set(key, v)
 			}

@@ -56,7 +56,6 @@ var (
 		regexp.MustCompile(`\b(internal server error|bad gateway|service unavailable|gateway time-?out)\b`),
 		regexp.MustCompile(`unexpected status`),
 		regexp.MustCompile(`stream disconnected before completion`),
-		regexp.MustCompile(`^` + jsWhitespace + `*([■✗✘×⚠●•⎿]` + jsWhitespace + `+)?(api error|error):` + jsWhitespace + `+the response stopped arriving\b`),
 		regexp.MustCompile(`socket hang up`),
 		regexp.MustCompile(`fetch failed`),
 	}
@@ -83,6 +82,17 @@ func ProviderDetect(state, screen string) *Detection {
 // provider-error stop even without the Error prefix. The existing rules win;
 // an empty text changes nothing.
 func ProviderDetectTexts(state, screen, capacityTexts, errorTexts string) *Detection {
+	return ProviderDetectTextsWithStreamGate(state, screen, capacityTexts, errorTexts, nil)
+}
+
+// ProviderDetectTextsWithStreamGate is ProviderDetectTexts with a gate on the
+// built-in stream signature. The gate is consulted lazily only where that
+// pattern competes in the existing bounded scan: an empty answer leaves the
+// same line's configured matches and earlier ordinary lines in place, while a
+// nonempty answer supplies the detection's cause. Nothing about the line
+// budget, chronology, code filters or other rules changes; a nil gate keeps
+// the generic behavior for callers with no provenance evidence.
+func ProviderDetectTextsWithStreamGate(state, screen, capacityTexts, errorTexts string, streamAllowed func(string) string) *Detection {
 	if d := LostConnection(screen); d != nil {
 		return d
 	}
@@ -121,7 +131,20 @@ func ProviderDetectTexts(state, screen, capacityTexts, errorTexts string) *Detec
 			if auth401RE.MatchString(line) || matchesAny(authRes, lowerLine) {
 				return &Detection{Status: "provider-error", Cause: cause, Auth: true}
 			}
-			if matchesAny(providerRes, lowerLine) || providerStatusRE.MatchString(line) || econnRE.MatchString(line) {
+			streamCause := ""
+			if responseStoppedRE.MatchString(lowerLine) {
+				// The gate is lazy: only a built-in stream line pays for provenance
+				// checks. An empty answer rejects this branch and the scan moves
+				// to earlier lines; a nonempty answer supplies the fixed cause.
+				streamCause = cause
+				if streamAllowed != nil {
+					streamCause = streamAllowed(line)
+				}
+			}
+			if matchesAny(providerRes, lowerLine) || providerStatusRE.MatchString(line) || econnRE.MatchString(line) || streamCause != "" {
+				if streamCause != "" {
+					cause = streamCause
+				}
 				return &Detection{Status: "provider-error", Cause: cause}
 			}
 		}
@@ -440,3 +463,8 @@ func matchesAny(patterns []*regexp.Regexp, value string) bool {
 	}
 	return false
 }
+
+// responseStoppedRE is the generic provider diagnosis for the Claude stream
+// error. It is consulted at the built-in branch of the scan so provenance-aware
+// consumers can gate only that branch without changing other provider rules.
+var responseStoppedRE = regexp.MustCompile(`^` + jsWhitespace + `*([■✗✘×⚠●•⎿]` + jsWhitespace + `+)?(api error|error):` + jsWhitespace + `+the response stopped arriving\b`)

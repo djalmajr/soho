@@ -1310,3 +1310,203 @@ func TestStatusViewCompactRegularControl(t *testing.T) {
 	wantCalls(t, f.callLog(t))
 	assertTreeUnchanged(t, "invalid regular compact marker", before, f.fixtureBefore(t))
 }
+
+const statusStreamFrame = "● working on the task\n\n● API Error: The response stopped arriving. The response above may be incomplete.\n✻ Cogitated for 23m 53s · done 7:12 PM\n❯\n"
+const statusStreamCause = "API Error: The response stopped arriving. The response above may be incomplete."
+
+// TestStatusViewStreamStopProvenance: the public status line and the read-only
+// view reject the generic stream phrase for other kinds and for a Claude kind
+// without the exact frame. Only a signed coherent Claude frame is a stop.
+func TestStatusViewStreamStopProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, visible, recent, want string
+		code                              int
+	}{
+		{name: "pi raw log", kind: "pi", visible: "plain screen\n", recent: "Tool output:\nError: The response stopped arriving.\n", want: "no-report-yet", code: 0},
+		{name: "pi closed fenced log", kind: "pi", visible: "plain screen\n", recent: "Tool output:\n```\nError: The response stopped arriving.\n```\n", want: "no-report-yet", code: 0},
+		{name: "claude quoted tool output", kind: "claude", visible: "plain screen\n", recent: "● explaining: \"" + statusStreamCause + "\"\n", want: "no-report-yet", code: 0},
+		{name: "claude signed settled frame", kind: "claude", visible: statusStreamFrame, recent: statusStreamFrame, want: "provider-error", code: 14},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newStatusViewFixture(t, "worker\tp1\t"+tc.kind+"\timplementer\tanthropic\t\t\t\tmodel-x\t\t\t\n", []fakecli.Rule{
+				{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"agent_status":"idle"}}}`},
+				{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},
+				{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "20"}, Stdout: tc.visible},
+				{Argv: []string{"agent", "read", "worker", "--source", "recent-unwrapped", "--lines", "40"}, Stdout: tc.recent},
+			})
+			before := f.fixtureBefore(t)
+			view := f.inspect(t, "ws", "worker")
+			if view.State != tc.want || view.TerminalState != "idle" || view.ReportReady {
+				t.Fatalf("view=%+v, want %s over terminal idle", view, tc.want)
+			}
+			assertTreeUnchanged(t, "inspect", before, f.fixtureBefore(t))
+			wantCalls(t, f.callLog(t),
+				"agent\x00get\x00worker",
+				"agent\x00list",
+				"agent\x00read\x00worker\x00--source\x00visible\x00--lines\x0020",
+				"agent\x00read\x00worker\x00--source\x00recent-unwrapped\x00--lines\x0040",
+			)
+			code, out, errOut := f.runStatus(t, []string{"worker"})
+			if code != tc.code || renderedState(t, out) != tc.want {
+				t.Fatalf("cmdstatus code=%d out=%q stderr=%q, want %s/%d", code, out, errOut, tc.want, tc.code)
+			}
+			stop := strings.Contains(out, `"status":"provider-error"`)
+			if tc.want == "provider-error" && (!stop || !strings.Contains(out, statusStreamCause)) {
+				t.Fatalf("signed Claude stop missing from %q", out)
+			}
+			if tc.want != "provider-error" && (stop || strings.Contains(out, "The response stopped arriving")) {
+				t.Fatalf("generic stream log classified: %q", out)
+			}
+		})
+	}
+}
+
+// TestStatusViewBlockedStreamStopProvenance: the blocked branch's visible
+// read uses the same guard before its recent-screen diagnosis can render
+// provider-error for another kind.
+func TestStatusViewBlockedStreamStopProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, visible, recent, want string
+		code                              int
+	}{
+		{name: "pi raw log", kind: "pi", visible: "plain screen\n", recent: "Tool output:\nError: The response stopped arriving.\n", want: "blocked", code: 0},
+		{name: "claude signed frame", kind: "claude", visible: statusStreamFrame, recent: statusStreamFrame, want: "blocked", code: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newStatusViewFixture(t, "worker\tp1\t"+tc.kind+"\timplementer\tanthropic\t\t\t\tmodel-x\t\t\t\n", []fakecli.Rule{
+				{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"agent_status":"blocked"}}}`},
+				{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},
+				{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "40"}, Stdout: tc.visible},
+				{Argv: []string{"agent", "read", "worker", "--source", "recent-unwrapped", "--lines", "40"}, Stdout: tc.recent},
+			})
+			before := f.fixtureBefore(t)
+			view := f.inspect(t, "ws", "worker")
+			if view.State != tc.want || view.TerminalState != "blocked" || view.ReportReady {
+				t.Fatalf("view=%+v, want %s over terminal blocked", view, tc.want)
+			}
+			assertTreeUnchanged(t, "inspect", before, f.fixtureBefore(t))
+			code, out, errOut := f.runStatus(t, []string{"worker"})
+			if code != tc.code || renderedState(t, out) != tc.want {
+				t.Fatalf("cmdstatus code=%d out=%q stderr=%q, want %s/%d", code, out, errOut, tc.want, tc.code)
+			}
+			if strings.Contains(out, `"status":"provider-error"`) {
+				t.Fatalf("blocked branch promoted a stream diagnosis: %q", out)
+			}
+		})
+	}
+}
+
+// TestStatusViewQueuedStreamStopProvenance: a queued prompt stays unresolved
+// for a raw or closed-fenced stream log of any kind; the marker's bytes and
+// the read-only fixture are unchanged. The signed Claude frame still resolves
+// it into the existing provider-error result.
+func TestStatusViewQueuedStreamStopProvenance(t *testing.T) {
+	const promptPath = "/tmp/worker-brief.md"
+	for _, tc := range []struct {
+		name, kind, visible, recent, want string
+		code                              int
+	}{
+		{name: "pi raw log", kind: "pi", visible: "plain screen\n", recent: "Tool output:\nError: The response stopped arriving.\n" + promptPath + "\n", want: "not-received", code: 15},
+		{name: "pi closed fenced log", kind: "pi", visible: "plain screen\n", recent: "Tool output:\n```\nError: The response stopped arriving.\n```\n" + promptPath + "\n", want: "not-received", code: 15},
+		{name: "claude signed settled frame", kind: "claude", visible: statusStreamFrame, recent: statusStreamFrame + promptPath + "\n", want: "provider-error", code: 14},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newStatusViewFixture(t, "worker\tp1\t"+tc.kind+"\timplementer\tanthropic\t\t\t\tmodel-x\t\t\t\n", []fakecli.Rule{
+				{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"agent_status":"idle","state_change_seq":5}}}`},
+				{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},
+				{Argv: []string{"agent", "read", "worker", "--source", "visible"}, Stdout: tc.visible},
+				{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "20"}, Stdout: tc.visible},
+				{Argv: []string{"agent", "read", "worker", "--source", "recent-unwrapped", "--lines", "40"}, Stdout: tc.recent},
+			})
+			marker := filepath.Join(f.sd, "wait", "worker.queued")
+			body := "1 5 " + promptPath + "\n"
+			if err := os.WriteFile(marker, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before := f.fixtureBefore(t)
+			view := f.inspect(t, "ws", "worker")
+			if view.State != tc.want || view.TerminalState != "idle" || view.ReportReady {
+				t.Fatalf("view=%+v, want %s over terminal idle", view, tc.want)
+			}
+			assertTreeUnchanged(t, "inspect", before, f.fixtureBefore(t))
+			code, out, errOut := f.runStatus(t, []string{"worker"})
+			if code != tc.code || renderedState(t, out) != tc.want {
+				t.Fatalf("cmdstatus code=%d out=%q stderr=%q, want %s/%d", code, out, errOut, tc.want, tc.code)
+			}
+			if after, err := os.ReadFile(marker); err != nil || string(after) != body {
+				t.Fatalf("queued marker changed: %q (%v)", after, err)
+			}
+		})
+	}
+}
+
+// TestStatusViewSignedCauseOverRawRecent: the accepted built-in branch takes
+// its cause from the signed visible frame, not from a raw lookalike in the
+// recent history that competes in the same scan.
+func TestStatusViewSignedCauseOverRawRecent(t *testing.T) {
+	f := newStatusViewFixture(t, "worker\tp1\tclaude\timplementer\n", []fakecli.Rule{
+		{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"agent_status":"idle"}}}`},
+		{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},
+		{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "20"}, Stdout: statusStreamFrame},
+		{Argv: []string{"agent", "read", "worker", "--source", "recent-unwrapped", "--lines", "40"}, Stdout: "Error: The response stopped arriving.\n"},
+	})
+	before := f.fixtureBefore(t)
+	view := f.inspect(t, "ws", "worker")
+	if view.State != "provider-error" || view.TerminalState != "idle" {
+		t.Fatalf("view=%+v, want the signed Claude stop", view)
+	}
+	assertTreeUnchanged(t, "inspect", before, f.fixtureBefore(t))
+	code, out, errOut := f.runStatus(t, []string{"worker"})
+	if code != 14 || renderedState(t, out) != "provider-error" {
+		t.Fatalf("cmdstatus code=%d out=%q stderr=%q, want provider-error/14", code, out, errOut)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("status output is not one JSON object: %q (%v)", out, err)
+	}
+	if cause, _ := result["cause"].(string); cause != statusStreamCause {
+		t.Fatalf("status cause=%q, want the fixed visible-frame cause %q", cause, statusStreamCause)
+	}
+}
+
+// TestStatusViewStreamScanPriority: the read-only public status keeps an
+// ordinary auth diagnosis, or an explicit configured match, even when a Pi
+// stream-like log is the last line on the screen.
+func TestStatusViewStreamScanPriority(t *testing.T) {
+	const auth = "Error: incorrect API key\n"
+	const stream = "Error: The response stopped arriving.\n"
+	for _, tc := range []struct {
+		name, screen, configured, want, cause string
+		code                                  int
+	}{
+		{name: "pi raw stream alone", screen: stream, want: "no-report-yet", code: 0},
+		{name: "pi auth before stream log", screen: auth + stream, want: "provider-error", cause: "Error: incorrect API key", code: 14},
+		{name: "pi auth after stream log", screen: stream + auth, want: "provider-error", cause: "Error: incorrect API key", code: 14},
+		{name: "pi explicit configured match", screen: stream, configured: "The response stopped arriving.", want: "provider-error", cause: "Error: The response stopped arriving.", code: 14},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newStatusViewFixture(t, "worker\tp1\tpi\timplementer\n", []fakecli.Rule{
+				{Argv: []string{"agent", "get", "worker"}, Stdout: `{"result":{"agent":{"agent_status":"idle"}}}`},
+				{Argv: []string{"agent", "list"}, Stdout: `{"result":{"agents":[]}}`},
+				{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "20"}, Stdout: "plain screen\n"},
+				{Argv: []string{"agent", "read", "worker", "--source", "recent-unwrapped", "--lines", "40"}, Stdout: tc.screen},
+			})
+			if tc.configured != "" {
+				f.ctx.Entries["provider_error_texts"] = core.ConfigEntry{Value: tc.configured}
+			}
+			before := f.fixtureBefore(t)
+			view := f.inspect(t, "ws", "worker")
+			if view.State != tc.want || view.TerminalState != "idle" || view.ReportReady {
+				t.Fatalf("view=%+v, want %s over terminal idle", view, tc.want)
+			}
+			assertTreeUnchanged(t, "inspect", before, f.fixtureBefore(t))
+			code, out, errOut := f.runStatus(t, []string{"worker"})
+			if code != tc.code || renderedState(t, out) != tc.want {
+				t.Fatalf("cmdstatus code=%d out=%q stderr=%q, want %s/%d", code, out, errOut, tc.want, tc.code)
+			}
+			if tc.cause != "" && !strings.Contains(out, tc.cause) {
+				t.Fatalf("status output missing cause %q: %q", tc.cause, out)
+			}
+		})
+	}
+}

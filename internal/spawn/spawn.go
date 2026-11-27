@@ -1850,7 +1850,13 @@ func cmdSpawnPrepared(argv []string, ctx *core.Config, env platform.Env, cwd str
 	// #360: a fresh legacy Pi with an effective --no-mcp must still exist,
 	// under the same identity, after the observation window. This runs before
 	// stale-row cleanup, roster append and the ready result.
-	legacyPiStartupAdmission(o, kind, env, agentArgs, lastScreen)
+	// gh541 F3: a transport-confirmed blocked start is already a managed
+	// result (screen, live row, exit 7). The ready-only Pi identity gate
+	// must not turn it into an exit-4 refusal when a blocked worker has not
+	// published a session identifier yet. Ready starts keep the check.
+	if !blocked {
+		legacyPiStartupAdmission(o, kind, env, agentArgs, lastScreen)
+	}
 	for _, stale := range staleRosterLines(sd, o.name, o.pane) {
 		core.RosterRemove(sd, stale[0])
 		Warn(fmt.Sprintf("replaced the stale roster line of '%s' (pane %s)", stale[0], stale[1]), ctx, env, "spawn")

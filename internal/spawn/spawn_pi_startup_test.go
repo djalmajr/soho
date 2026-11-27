@@ -155,6 +155,61 @@ func TestLegacyPiNoMcpStartupIdentity(t *testing.T) {
 	}
 }
 
+// gh541 F3: a transport-confirmed blocked startup is a managed result (JSON
+// blocked_at_startup, live roster row, exit 7, pane left open). The ready-only
+// Pi identity check must not replace it with the exit-4 refusal when the
+// blocked Pi has not published a session identifier yet.
+func TestLegacyPiBlockedStartupKeepsManagedResult(t *testing.T) {
+	for _, tc := range []struct {
+		name, mcp, session string
+		wantArgs           []string
+	}{
+		{name: "inherited MCP without a session", mcp: "inherit", wantArgs: []string{"--thinking", "high"}},
+		{name: "MCP off without a session", mcp: "none", wantArgs: []string{"--thinking", "high", "--no-mcp"}},
+		{name: "MCP off with a session", mcp: "none", session: legacyPiSession, wantArgs: []string{"--thinking", "high", "--no-mcp"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLegacyPiStartupFixture(t,
+				fakecli.Rule{Argv: []string{"agent", "start", "worker"}, ArgvPrefix: true,
+					Code: 1, Stderr: `{"error":{"code":"agent_not_ready"}}`},
+				piHerdrIdentityRule("worker", legacyPiStartupPane, tc.session),
+				fakecli.Rule{Argv: []string{"agent", "read", "worker"}, ArgvPrefix: true, Stdout: "Trust this workspace?\n"},
+			)
+			code, message, stdout, stderr, calls := runCmdSpawnWithExitMessage(t, f,
+				[]string{"worker", "--kind", "pi", "--effort", "high", "--mcp", tc.mcp})
+			if code != 7 || message != "" || !strings.Contains(stdout, `"status":"blocked_at_startup"`) {
+				t.Fatalf("exit=%d message=%q stdout=%q stderr=%q", code, message, stdout, stderr)
+			}
+			other := spawnRosterRow("other", "worker", "old-model", "ask", "")
+			roster := core.RosterRows(filepath.Join(f.state, "ws"))
+			if len(roster) != 2 || roster[0] != other {
+				t.Fatalf("roster=%q, want the original row and the managed blocked worker", roster)
+			}
+			fields := strings.Split(roster[1], "\t")
+			if len(fields) < 16 || !slices.Equal(fields[:4], []string{"worker", legacyPiStartupPane, "pi", "worker"}) || fields[15] != tc.mcp {
+				t.Fatalf("blocked row=%q, want worker in %s with mcp=%s", roster[1], legacyPiStartupPane, tc.mcp)
+			}
+			starts := 0
+			for _, call := range calls {
+				if len(call.Argv) >= 2 && slices.Equal(call.Argv[:2], []string{"agent", "start"}) {
+					starts++
+					delimiter := slices.Index(call.Argv, "--")
+					if delimiter < 0 || !slices.Equal(call.Argv[delimiter+1:], tc.wantArgs) {
+						t.Fatalf("launch argv=%q, want assistant argv %q", call.Argv, tc.wantArgs)
+					}
+				}
+				if len(call.Argv) > 1 && slices.Contains([]string{"pane", "agent"}, call.Argv[0]) &&
+					slices.Contains([]string{"close", "kill", "stop", "prompt"}, call.Argv[1]) {
+					t.Fatalf("blocked target was acted on: %q", call.Argv)
+				}
+			}
+			if starts != 1 {
+				t.Fatalf("launched %d times, want 1; calls=%v", starts, calls)
+			}
+		})
+	}
+}
+
 func TestLegacyPiNativeArgFlagIsNotStartupGate(t *testing.T) {
 	f := newLegacyPiStartupFixture(t, fakecli.Rule{Argv: legacyPiGetArgv, Call: 2, Stderr: legacyPiGone, Code: 1})
 	// Soho consumes the first delimiter. The second is Pi's delimiter.

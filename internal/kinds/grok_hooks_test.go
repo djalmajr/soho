@@ -43,6 +43,9 @@ func TestGrokClaudeHooksRisk(t *testing.T) {
 	}{
 		{"hooks with default compatibility warns", withHooks, "", nil, GrokHooksWarn},
 		{"hooks with config opt-out is quiet", withHooks, "[compat.claude]\nhooks = false\n", nil, GrokHooksQuiet},
+		{"config opt-out in a table with a comment is quiet", withHooks, "[compat.claude] # local settings\nhooks = false\n", nil, GrokHooksQuiet},
+		{"other table with a comment does not opt out", withHooks, "[compat.claude]\n[other] # other settings\nhooks = false\n", nil, GrokHooksWarn},
+		{"hash in a quoted table name does not opt out", withHooks, "[compat.claude]\n[\"other#table\"] # other settings\nhooks = false\n", nil, GrokHooksWarn},
 		{"hooks with env opt-out is quiet", withHooks, "", map[string]string{"GROK_CLAUDE_HOOKS_ENABLED": "0"}, GrokHooksQuiet},
 		{"env true wins over config false", withHooks, "[compat.claude]\nhooks=false\n", map[string]string{"GROK_CLAUDE_HOOKS_ENABLED": "true"}, GrokHooksWarn},
 		{"no hooks stays quiet", noHooks, "", nil, GrokHooksQuiet},

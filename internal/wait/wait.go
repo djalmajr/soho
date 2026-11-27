@@ -1005,7 +1005,7 @@ func probeAgent(sd, agent, report string, ctx *core.Config, svc transport.Servic
 			}
 		}
 		ptext, _ := readScreen(svc, agent, "recent-unwrapped", intPtr(40))
-		p := core.ProviderDetectTexts(st.State, ptext, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env))
+		p := core.ProviderDetectTextsWithStreamGate(st.State, ptext, core.Cfg(ctx, "provider_capacity_texts", "", env), core.Cfg(ctx, "provider_error_texts", "", env), claudeStreamSettledGate(sd, agent, probeRow, report, probeKind, env, visible))
 		immediate := p != nil && ((p.Status == "provider-error" && p.Auth) || p.Status == "provider-refusal" || p.Cause == provider.LostConnectionCause)
 		if p == nil && provider.StartupStopKind(probeKind) {
 			p = waitStartupStop(sd, agent, probeKind, st.State, visible, svc, env.Get("SOHO_TRANSPORT") == "hc")
@@ -2288,4 +2288,21 @@ func foregroundProcessHint(screen string) string {
 		}
 	}
 	return ""
+}
+
+// claudeStreamSettledGate authorizes only the built-in stream branch of the
+// existing scan: a Claude roster row with a readable visible frame carrying
+// the exact signed stop, completed-turn footer and bare composer. Auth,
+// configured, capacity and all other diagnoses are selected by the scan
+// without consulting this gate. No extra read or write happens here.
+func claudeStreamSettledGate(sd, agent, row, report, kind string, env platform.Env, frame transport.Reply[string]) func(string) string {
+	return func(string) string {
+		if kind != "claude" || env.Get("SOHO_TRANSPORT") == "hc" || !frame.Valid || frame.Err != nil ||
+			core.RosterLine(sd, agent) != row || reportNonEmpty(report) {
+			return ""
+		}
+		visible := strings.TrimRight(strings.ReplaceAll(frame.Value, "\r\n", "\n"), "\n \t")
+		_, cause := provider.ClaudeStreamStop(visible)
+		return cause
+	}
 }

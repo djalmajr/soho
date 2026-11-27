@@ -86,8 +86,15 @@ func configClaudeHooks(raw string) (bool, bool) {
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			section = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+		if strings.HasPrefix(trimmed, "[") {
+			// A different header ends the compatibility table even when its
+			// name contains a hash inside a quoted key.
+			section = ""
+			header, _, _ := strings.Cut(trimmed, "#")
+			header = strings.TrimSpace(header)
+			if strings.HasSuffix(header, "]") {
+				section = strings.TrimSpace(header[1 : len(header)-1])
+			}
 			continue
 		}
 		if section != "compat.claude" {

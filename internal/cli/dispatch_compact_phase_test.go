@@ -441,6 +441,9 @@ func TestDispatchPiCompactFailureReception(t *testing.T) {
 					strings.Count(stderr, "continuing with the brief") != 1 {
 					t.Fatalf("safe result code=%d stdout=%q stderr=%q", code, out, stderr)
 				}
+				if !strings.Contains(out, `"compact":"failed"`) {
+					t.Fatalf("the resumed result omits compact=failed: code=%d stdout=%q", code, out)
+				}
 				if _, err := os.Stat(taskreport.TaskReportPointerPath(f.stateDir, "worker")); err != nil {
 					t.Fatalf("normal dispatch pointer missing: %v", err)
 				}
@@ -456,7 +459,46 @@ func TestDispatchPiCompactFailureReception(t *testing.T) {
 			if code != 9 || !strings.Contains(out, status) || !strings.Contains(stderr, "the brief was not sent") {
 				t.Fatalf("refused result code=%d stdout=%q stderr=%q", code, out, stderr)
 			}
+			if strings.Contains(out, `"compact"`) {
+				t.Fatalf("a refused dispatch reported a compact outcome: code=%d stdout=%q", code, out)
+			}
 			compactPhaseNoTaskState(t, f)
+		})
+	}
+}
+
+// TestDispatchStreamStopLogKeepsTheOrdinaryResult: dispatch's settled
+// observation keeps a raw tool log from becoming a provider-error result for
+// another kind, and a Claude kind alone is not enough either.
+func TestDispatchStreamStopLogKeepsTheOrdinaryResult(t *testing.T) {
+	for _, tc := range []struct{ name, kind, screen string }{
+		{name: "pi raw tool log", kind: "pi", screen: "Tool output:\nError: The response stopped arriving.\n"},
+		{name: "claude raw tool log", kind: "claude", screen: "Tool output:\nError: The response stopped arriving.\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCompactPhaseDispatchFixture(t, "", 500*time.Millisecond)
+			rosterPath := filepath.Join(f.stateDir, "agents.tsv")
+			row := core.RosterLine(f.stateDir, "worker")
+			row = strings.Replace(row, "\tcodex\t", "\t"+tc.kind+"\t", 1)
+			if err := os.WriteFile(rosterPath, []byte(row+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			state := fmt.Sprintf(`{"result":{"agent":{"name":"worker","pane_id":"p1","agent":%q,"agent_status":"idle","state_change_seq":1}}}`, tc.kind)
+			rules := []fakecli.Rule{
+				{Argv: []string{"agent", "get", "worker"}, Stdout: state},
+				{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "20"}, Stdout: tc.screen},
+				{Argv: []string{"agent", "read", "worker", "--source", "visible", "--lines", "40"}, Stdout: tc.screen},
+				{Argv: []string{"agent", "read", "worker", "--source", "recent-unwrapped", "--lines", "40"}, Stdout: tc.screen},
+			}
+			f.install(t, append(rules, compactPhasePlainDispatchRules...))
+			code, out, stderrText := f.run(t, "worker", f.brief, "--no-wait")
+			if code != 0 || !strings.Contains(out, `"wait_status":"submitted"`) ||
+				strings.Contains(out, `"status":"provider-error"`) {
+				t.Fatalf("code=%d stdout=%q stderr=%q; want the ordinary submitted result", code, out, stderrText)
+			}
+			if n := countArgvPrefix(f.calls(t), []string{"agent", "prompt"}); n != 1 {
+				t.Fatalf("brief sends=%d, want one", n)
+			}
 		})
 	}
 }
